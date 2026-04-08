@@ -29,7 +29,7 @@ const SHEET_NAME = 'Wizard Trees AR';
 // Column definitions (order must match appendRow calls below)
 const COLS = {
   users:    ['username', 'password'],
-  contacts: ['company', 'email', 'name', 'repEmail', 'phone', 'region'],
+  contacts: ['company', 'email', 'name', 'repEmail', 'phone', 'cc'],
   reps:     ['name', 'email'],
   sent:     ['id', 'sentAt', 'sentBy', 'to', 'cc', 'subject', 'body', 'source', 'tone']
 };
@@ -164,7 +164,7 @@ function handleAddContact(params) {
     params.name     || '',
     params.repEmail || '',
     params.phone    || '',
-    params.region   || ''
+    params.cc       || ''
   ]);
   return jsonOk(null);
 }
@@ -198,7 +198,7 @@ function handleUpdateContact(params) {
         params.name     || '',
         params.repEmail || '',
         params.phone    || '',
-        params.region   || ''
+        params.cc       || ''
       ]]);
       break;
     }
