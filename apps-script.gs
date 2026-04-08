@@ -31,7 +31,7 @@ const COLS = {
   users:    ['username', 'password'],
   contacts: ['company', 'email', 'name', 'repEmail', 'phone', 'cc'],
   reps:     ['name', 'email'],
-  sent:     ['id', 'sentAt', 'sentBy', 'to', 'cc', 'subject', 'body', 'source', 'tone']
+  sent:     ['id', 'sentAt', 'dispensary', 'to', 'cc', 'subject', 'body', 'orderNumber', 'tone']
 };
 
 // ── Spreadsheet bootstrap ─────────────────────────────────────
@@ -271,15 +271,15 @@ function handleGetSent() {
 
 function handleAddSent(params) {
   getTab('Sent').appendRow([
-    params.id      || Date.now().toString(),
-    params.sentAt  || new Date().toISOString(),
-    params.sentBy  || '',
-    params.to      || '',
-    params.cc      || '',
-    params.subject || '',
-    params.body    || '',
-    params.source  || '',
-    params.tone    || ''
+    params.id          || Date.now().toString(),
+    params.sentAt      || new Date().toISOString(),
+    params.dispensary  || '',
+    params.to          || '',
+    params.cc          || '',
+    params.subject     || '',
+    params.body        || '',
+    params.orderNumber || '',
+    params.tone        || ''
   ]);
   return jsonOk(null);
 }
