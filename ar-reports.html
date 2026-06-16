@@ -185,7 +185,7 @@
       <div class="tab" data-tab="dispensary">AR by Dispensary</div>
       <div class="tab" data-tab="cd-disp">Credits/Discounts by Dispensary</div>
       <div class="tab" data-tab="cd-brand">Credits/Discounts by Brand</div>
-      <div class="tab" data-tab="sku">Sales by SKU</div>
+      <div class="tab" data-tab="sku">Sales by Type</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -353,21 +353,19 @@
         <label class="dt">From <input type="date" id="sku-start" /></label>
         <label class="dt">To <input type="date" id="sku-end" /></label>
         <div class="grow"></div>
-        <input type="text" id="sku-search" placeholder="Search SKU…" />
+        <input type="text" id="sku-search" placeholder="Search type or SKU…" />
         <select id="sku-source"><option value="">Distru + Nabis</option><option>Distru</option><option>Nabis</option></select>
         <button class="btn" id="sku-export">⬇ Export CSV</button>
       </div>
       <div class="tablewrap">
         <table id="sku-table">
           <thead><tr>
-            <th data-sort="sku">SKU / Product</th>
-            <th data-sort="source">Src</th>
-            <th data-sort="fmt">Format</th>
+            <th style="width:24px"></th>
+            <th data-sort="type">Product Type</th>
             <th data-sort="units" class="num">Units</th>
             <th data-sort="samples" class="num">Samples</th>
             <th data-sort="revenue" class="num">Revenue</th>
             <th data-sort="avg" class="num">Avg $/Unit</th>
-            <th data-sort="orders" class="num">Orders</th>
           </tr></thead>
           <tbody id="sku-body"></tbody>
           <tfoot id="sku-foot"></tfoot>
@@ -1350,12 +1348,21 @@ function buildSkuEvents(){
 function aggregateSku(){
   const start=parseDate($('#sku-start').value), end=parseDate($('#sku-end').value);
   if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,0);
-  const map={};
-  SKU_EVENTS.forEach(e=>{ if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
-    const k=e.src+'|'+e.sku, g=map[k]||(map[k]={sku:e.sku,source:e.src,fmt:e.fmt,units:0,samples:0,revenue:0,orders:0});
-    g.units+=e.u||0; g.samples+=e.su||0; g.revenue+=e.rev||0; g.orders+=e.no||0;
-    if((!g.fmt||g.fmt==='Other')&&e.fmt) g.fmt=e.fmt; });
-  SKU=Object.values(map).map(g=>Object.assign(g,{avg:g.units?g.revenue/g.units:0})).filter(r=>r.units>0||r.samples>0||r.revenue>0.005);
+  const srcFilter=$('#sku-source').value;
+  const types={}; const getT=l=>types[l]||(types[l]={type:l,units:0,samples:0,revenue:0,skus:{}});
+  SKU_EVENTS.forEach(e=>{
+    if(srcFilter && e.src!==srcFilter) return;
+    if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
+    const t=getT(e.fmt||'Other');
+    t.units+=e.u||0; t.samples+=e.su||0; t.revenue+=e.rev||0;
+    const sk=e.src+'|'+e.sku, s=t.skus[sk]||(t.skus[sk]={sku:e.sku,source:e.src,units:0,samples:0,revenue:0});
+    s.units+=e.u||0; s.samples+=e.su||0; s.revenue+=e.rev||0;
+  });
+  CONC_FORMATS.forEach(f=>getT(f.label));   // always show the main types, even at 0
+  const isMain=l=>CONC_FORMATS.some(f=>f.label===l);
+  SKU=Object.values(types).map(t=>({type:t.type,units:t.units,samples:t.samples,revenue:t.revenue,avg:t.units?t.revenue/t.units:0,
+      skus:Object.values(t.skus).map(s=>Object.assign(s,{avg:s.units?s.revenue/s.units:0})).filter(s=>s.units||s.samples||s.revenue>0.005).sort((a,b)=>b.revenue-a.revenue)}))
+    .filter(t=>t.units||t.samples||t.revenue>0.005||isMain(t.type));
 }
 function buildSku(){
   if(FILES.distru_items || FILES.nabis_detail) SKU_EVENTS=buildSkuEvents();
@@ -1365,33 +1372,49 @@ function buildSku(){
   renderSku(); renderShareBar();
 }
 function skuFiltered(){
-  const q=$('#sku-search').value.trim().toLowerCase(), src=$('#sku-source').value;
-  let rows=SKU.filter(r=>{ if(src&&r.source!==src) return false; if(q&&!((r.sku+' '+r.fmt).toLowerCase().includes(q))) return false; return true; });
+  const q=$('#sku-search').value.trim().toLowerCase();
+  let rows=SKU.filter(t=>{ if(!q) return true; if(t.type.toLowerCase().includes(q)) return true; return (t.skus||[]).some(s=>s.sku.toLowerCase().includes(q)); });
   const k=skuSort.key,d=skuSort.dir;
   rows.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-d:av>bv?d:0; });
   return rows;
 }
 function renderSku(){
   const body=$('#sku-body'), foot=$('#sku-foot'), note=$('#sku-note');
-  if(!SKU.length){ body.innerHTML=`<tr><td colspan="8" class="empty">Upload the <b>Distru sales-order items</b> and/or <b>Nabis detailed brand</b> file to see sales by SKU.</td></tr>`; foot.innerHTML=''; note.innerHTML=''; return; }
+  if(!SKU.length){ body.innerHTML=`<tr><td colspan="6" class="empty">Upload the <b>Distru sales-order items</b> and/or <b>Nabis detailed brand</b> file to see sales by product type.</td></tr>`; foot.innerHTML=''; note.innerHTML=''; return; }
   const rows=skuFiltered();
   const intl=n=>Math.round(n).toLocaleString();
-  body.innerHTML=rows.map(r=>`<tr>
-    <td>${esc(r.sku)}</td>
-    <td><span class="src ${r.source}">${r.source}</span></td>
-    <td class="rep">${esc(r.fmt)}</td>
-    <td class="num">${intl(r.units)}</td>
-    <td class="num">${r.samples?intl(r.samples):'<span class="neg">—</span>'}</td>
-    <td class="num money">${fmt$(r.revenue)}</td>
-    <td class="num money">${r.avg?fmt$(r.avg):'—'}</td>
-    <td class="num">${r.orders||0}</td>
-  </tr>`).join('');
-  const T={units:0,samples:0,revenue:0,orders:0}; rows.forEach(r=>{T.units+=r.units;T.samples+=r.samples;T.revenue+=r.revenue;T.orders+=r.orders;});
-  foot.innerHTML=`<tr class="totals"><td colspan="3">Totals · ${rows.length} SKU${rows.length!==1?'s':''}</td>
+  const q=$('#sku-search').value.trim().toLowerCase();
+  body.innerHTML=rows.map((t,i)=>{
+    let skus=t.skus||[];
+    if(q && !t.type.toLowerCase().includes(q)) skus=skus.filter(s=>s.sku.toLowerCase().includes(q));
+    const sub=skus.map(s=>`<tr>
+      <td>${esc(s.sku)}</td>
+      <td><span class="src ${s.source}">${s.source}</span></td>
+      <td class="num">${intl(s.units)}</td>
+      <td class="num">${s.samples?intl(s.samples):''}</td>
+      <td class="num money">${fmt$(s.revenue)}</td>
+      <td class="num money">${s.avg?fmt$(s.avg):''}</td>
+    </tr>`).join('');
+    const has=skus.length;
+    return `<tr class="parent">
+      <td>${has?'<span class="caret">▶</span>':''}</td>
+      <td><b>${esc(t.type)}</b></td>
+      <td class="num">${intl(t.units)}</td>
+      <td class="num">${t.samples?intl(t.samples):'<span class="neg">—</span>'}</td>
+      <td class="num money">${fmt$(t.revenue)}</td>
+      <td class="num money">${t.avg?fmt$(t.avg):'—'}</td>
+    </tr>`+(has?`<tr class="detail hidden"><td colspan="6"><div class="detailbox">
+      <div class="ddhead">SKUs in ${esc(t.type)} — ${has} product${has!==1?'s':''}</div>
+      <table class="ddtable"><thead><tr><th>SKU / Product</th><th>Src</th><th class="num">Units</th><th class="num">Samples</th><th class="num">Revenue</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${sub}</tbody></table>
+    </div></td></tr>`:'');
+  }).join('');
+  body.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;if(x&&x.classList.contains('detail')){x.classList.toggle('hidden');tr.classList.toggle('open');}});
+  const T={units:0,samples:0,revenue:0}; rows.forEach(t=>{T.units+=t.units;T.samples+=t.samples;T.revenue+=t.revenue;});
+  foot.innerHTML=`<tr class="totals"><td></td><td>Total · ${rows.length} type${rows.length!==1?'s':''}</td>
     <td class="num">${intl(T.units)}</td><td class="num">${intl(T.samples)}</td><td class="num money">${fmt$(T.revenue)}</td>
-    <td class="num money">${T.units?fmt$(T.revenue/T.units):'—'}</td><td class="num">${T.orders}</td></tr>`;
+    <td class="num money">${T.units?fmt$(T.revenue/T.units):'—'}</td></tr>`;
   const rng=($('#sku-start').value||'2021-01-01')+' → '+($('#sku-end').value||'today');
-  note.innerHTML=`Range ${esc(rng)}. Units &amp; revenue are actual billed (dated by invoice/delivery); Samples are the $0.01 give-away units (excluded from revenue). Distru and Nabis are listed under each system's own product name.`;
+  note.innerHTML=`Range ${esc(rng)}. Units &amp; revenue are actual billed (dated by invoice/delivery), combining Distru + Nabis. Click a type to see the individual SKUs within it. Samples are the $0.01 give-away units (excluded from revenue).`;
 }
 function applySkuPreset(p){
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
@@ -1438,12 +1461,15 @@ function concExport(rows,label,fname){
 $('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort),'Dispensary','credits-discounts-by-dispensary.csv');
 $('#cb-export').onclick=()=>concExport(concFilterSort(CONC_BRAND,'cb-search',null,cbSort),'Brand','credits-discounts-by-brand.csv');
 $('#sku-export').onclick=()=>{
-  const rows=[['SKU / Product','Source','Format','Units','Samples','Revenue','Avg $/Unit','Orders']];
+  const rows=[['Product Type','SKU / Product','Source','Units','Samples','Revenue','Avg $/Unit']];
   const d=skuFiltered(); const f2=v=>(+v||0).toFixed(2);
-  d.forEach(r=>rows.push([r.sku,r.source,r.fmt,Math.round(r.units),Math.round(r.samples),f2(r.revenue),f2(r.avg),r.orders]));
-  const T=d.reduce((a,r)=>({u:a.u+r.units,s:a.s+r.samples,rev:a.rev+r.revenue,o:a.o+r.orders}),{u:0,s:0,rev:0,o:0});
-  rows.push(['TOTAL','','',Math.round(T.u),Math.round(T.s),f2(T.rev),T.u?f2(T.rev/T.u):'',T.o]);
-  downloadCSV('sales-by-sku.csv',rows);
+  d.forEach(t=>{
+    rows.push([t.type,'(all)','',Math.round(t.units),Math.round(t.samples),f2(t.revenue),t.avg?f2(t.avg):'']);
+    (t.skus||[]).forEach(s=>rows.push([t.type,s.sku,s.source,Math.round(s.units),Math.round(s.samples),f2(s.revenue),s.avg?f2(s.avg):'']));
+  });
+  const T=d.reduce((a,t)=>({u:a.u+t.units,s:a.s+t.samples,rev:a.rev+t.revenue}),{u:0,s:0,rev:0});
+  rows.push(['TOTAL','','',Math.round(T.u),Math.round(T.s),f2(T.rev),T.u?f2(T.rev/T.u):'']);
+  downloadCSV('sales-by-type.csv',rows);
 };
 
 /* ============================ Wiring ============================ */
@@ -1483,11 +1509,12 @@ function applyConcPreset(p){
   $('#conc-start').value=s; $('#conc-end').value=e; buildConcessions();
 }
 $('#conc-preset').addEventListener('change',ev=>applyConcPreset(ev.target.value));
-['sku-search','sku-source'].forEach(id=>$('#'+id).addEventListener('input',renderSku));
+$('#sku-search').addEventListener('input',renderSku);
+$('#sku-source').addEventListener('change',buildSku);   // source filter re-aggregates the type totals
 ['sku-start','sku-end'].forEach(id=>$('#'+id).addEventListener('change',()=>{ $('#sku-preset').value='custom'; buildSku(); }));
 $('#sku-preset').addEventListener('change',ev=>applySkuPreset(ev.target.value));
 document.querySelectorAll('#sku-table th[data-sort]').forEach(th=>th.onclick=()=>{
-  const k=th.dataset.sort; skuSort.dir = skuSort.key===k? -skuSort.dir : (k==='sku'||k==='source'||k==='fmt'?1:-1); skuSort.key=k; renderSku();
+  const k=th.dataset.sort; skuSort.dir = skuSort.key===k? -skuSort.dir : (k==='type'?1:-1); skuSort.key=k; renderSku();
 });
 document.querySelectorAll('#cd-table th[data-sort]').forEach(th=>th.onclick=()=>{
   const k=th.dataset.sort; cdSort.dir = cdSort.key===k? -cdSort.dir : (k==='customer'||k==='source'?1:-1); cdSort.key=k; renderConcDisp();
