@@ -1299,6 +1299,13 @@ function renderConcessions(){ computeBrandRollup(); renderConcDisp(); renderConc
 /* ============================ Sales by Type ============================ */
 let SKU=[], SKU_EVENTS=[];
 const SKU_DISP={jar35:'3.5g Jars', fivepk:'.7g Prerolls', pr15:'1.5g Prerolls', vape:'Vapes', other:'Other'};
+// "Other" = budtender give-away pouches. Value them at list (by size in the name) so the
+// give-away shows as a Unit Discount. Edit these two prices to taste. null = no list price.
+const POUCH_LIST={'3.5':24, '1.5':10};
+function pouchListFor(name){ const s=String(name||'').toLowerCase();
+  if(/3\.5/.test(s)) return POUCH_LIST['3.5'];
+  if(/1\.5|pouch|budtender|sample/.test(s)) return POUCH_LIST['1.5'];
+  return null; }
 function fmtLabel(k){ if(!k) return 'Other'; if(k==='pouch') return 'Pouch'; const f=CONC_FORMATS.find(x=>x.key===k); return f?f.label:'Other'; }
 const skuClean = s => String(s||'').replace(/\s+/g,' ').trim() || '(unnamed)';
 // compact (de)serialization for sharing — intern SKU/format names to keep the payload small
@@ -1367,18 +1374,24 @@ function aggregateSku(){
   (CONC_EVENTS||[]).forEach(e=>{ if(e.s!=='Distru'&&e.s!=='Nabis') return;
     if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
     dc[e.s]+=(e.invoiceDisc||0)+(e.creditMemos||0); });
-  const mkSkus=(map,L)=>Object.values(map).map(s=>({sku:s.sku,units:s.units,actualized:s.actualized,projected:s.units*L,unitDisc:s.units*L-s.actualized}))
+  const mkRow=(units,projected,actualized)=>({units,projected,actualized,unitDisc:projected-actualized,avg:units?actualized/units:0});
+  const mkSkus=(map,L)=>Object.values(map).map(s=>Object.assign({sku:s.sku},mkRow(s.units,s.units*L,s.actualized)))
       .filter(s=>s.units||Math.abs(s.actualized)>0.005).sort((a,b)=>b.actualized-a.actualized);
   const build=src=>{
     const rows=CONC_FORMATS.map(f=>{                       // always the 4 main formats, even at 0
       const g=acc[src][f.label]||{units:0,actualized:0,skus:{}}, L=A[f.key]||0;
-      return {key:f.key,label:f.label,units:g.units,projected:g.units*L,actualized:g.actualized,unitDisc:g.units*L-g.actualized,skus:mkSkus(g.skus,L)};
+      return Object.assign({key:f.key,label:f.label},mkRow(g.units,g.units*L,g.actualized),{skus:mkSkus(g.skus,L)});
     });
     const o=other[src];
-    if(o.units>0.0001 || Math.abs(o.actualized)>0.005)     // surface unmapped sales so nothing is hidden
-      rows.push({key:'other',label:'Other',units:o.units,projected:o.actualized,actualized:o.actualized,unitDisc:0,
-        skus:Object.values(o.skus).map(s=>({sku:s.sku,units:s.units,actualized:s.actualized,projected:s.actualized,unitDisc:0})).sort((a,b)=>b.actualized-a.actualized)});
+    if(o.units>0.0001 || Math.abs(o.actualized)>0.005){    // surface unmapped sales (budtender pouches) so nothing is hidden
+      const skus=Object.values(o.skus).map(s=>{ const L=pouchListFor(s.sku); const proj=L!=null?s.units*L:s.actualized;
+          return Object.assign({sku:s.sku},mkRow(s.units,proj,s.actualized)); })
+        .filter(s=>s.units||Math.abs(s.actualized)>0.005).sort((a,b)=>b.actualized-a.actualized);
+      const oProj=skus.reduce((a,s)=>a+s.projected,0);
+      rows.push(Object.assign({key:'other',label:'Other'},mkRow(o.units,oProj,o.actualized),{skus}));
+    }
     const totals=rows.reduce((t,r)=>({units:t.units+r.units,projected:t.projected+r.projected,actualized:t.actualized+r.actualized,unitDisc:t.unitDisc+r.unitDisc}),{units:0,projected:0,actualized:0,unitDisc:0});
+    totals.avg=totals.units?totals.actualized/totals.units:0;
     return {source:src, rows, discCredits:dc[src]||0, totals};
   };
   SKU=[build('Nabis'), build('Distru')];
@@ -1405,6 +1418,7 @@ function renderSku(){
         <td class="num">${intl(x.units)}</td>
         <td class="num money">${fmt$(x.projected)}</td>
         <td class="num money">${fmt$(x.actualized)}</td>
+        <td class="num money">${x.units?fmt$(x.avg):'—'}</td>
         <td class="num money">${x.unitDisc?fmt$(x.unitDisc):'—'}</td>
       </tr>`).join('');
       return `<tr class="parent">
@@ -1412,18 +1426,19 @@ function renderSku(){
         <td class="num">${intl(r.units)}</td>
         <td class="num money">${fmt$(r.projected)}</td>
         <td class="num money">${fmt$(r.actualized)}</td>
+        <td class="num money">${r.units?fmt$(r.avg):'—'}</td>
         <td class="num money ud">${r.unitDisc?fmt$(r.unitDisc):'—'}</td>
         <td class="num"></td>
-      </tr>`+(has?`<tr class="detail hidden"><td colspan="6"><div class="detailbox">
+      </tr>`+(has?`<tr class="detail hidden"><td colspan="7"><div class="detailbox">
         <div class="ddhead">${esc(SKU_DISP[r.key]||r.label)} — SKUs</div>
-        <table class="ddtable"><thead><tr><th>SKU / Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Disc</th></tr></thead><tbody>${sub}</tbody></table>
+        <table class="ddtable"><thead><tr><th>SKU / Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Avg $/Unit</th><th class="num">Unit Disc</th></tr></thead><tbody>${sub}</tbody></table>
       </div></td></tr>`:'');
     }).join('');
     const t=sys.totals, dc=sys.discCredits||0;
     return `<table class="skutbl">
       <thead>
-        <tr><th class="sys ${sys.source}" colspan="6">${sys.source}</th></tr>
-        <tr><th>Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Discounts</th><th class="num">Discounts/Credits</th></tr>
+        <tr><th class="sys ${sys.source}" colspan="7">${sys.source}</th></tr>
+        <tr><th>Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Avg $/Unit</th><th class="num">Unit Discounts</th><th class="num">Discounts/Credits</th></tr>
       </thead>
       <tbody>${rowsHtml}</tbody>
       <tfoot><tr class="totals">
@@ -1431,6 +1446,7 @@ function renderSku(){
         <td class="num">${intl(t.units)}</td>
         <td class="num money">${fmt$(t.projected)}</td>
         <td class="num money">${fmt$(t.actualized)}</td>
+        <td class="num money">${t.units?fmt$(t.avg):'—'}</td>
         <td class="num money ud">${t.unitDisc?fmt$(t.unitDisc):'—'}</td>
         <td class="num money dc">${dc?('-'+fmt$(dc)):'—'}</td>
       </tr></tfoot>
@@ -1444,7 +1460,7 @@ function renderSku(){
     + `<div class="sku-weektotal"><div class="lbl">Total for week (Distru + Nabis)</div><div class="amt money">${fmt$(net)}</div></div>`;
   wrap.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;if(x&&x.classList.contains('detail')){x.classList.toggle('hidden');tr.classList.toggle('open');}});
   const lp=(id,d)=>{const el=$('#'+id);return el&&el.value?el.value:d;};
-  note.innerHTML=`<b>Projected</b> = units × list price (3.5g $${esc(lp('a-jar35','27.50'))}, .7g $${esc(lp('a-fivepk','22.50'))}, 1.5g $${esc(lp('a-pr15','12'))}, vape $${esc(lp('a-vape','25'))} — editable on the Credits/Discounts tab). <b>Actualized</b> = actual billed. <b>Unit Discounts</b> = Projected − Actualized. <b>Discounts/Credits</b> = order/invoice-level discounts + credit memos. <b>Total for week</b> = total Actualized − total Discounts/Credits. Click a row to see its SKUs. Samples ($0.01 give-aways) are excluded.`;
+  note.innerHTML=`<b>Projected</b> = units × list price (3.5g $${esc(lp('a-jar35','27.50'))}, .7g $${esc(lp('a-fivepk','22.50'))}, 1.5g $${esc(lp('a-pr15','12'))}, vape $${esc(lp('a-vape','25'))} — editable on the Credits/Discounts tab; <b>Other</b> = budtender pouches valued at $${POUCH_LIST['1.5']} for 1.5g / $${POUCH_LIST['3.5']} for 3.5g). <b>Actualized</b> = actual billed. <b>Avg $/Unit</b> = Actualized ÷ Units (average actual sale price). <b>Unit Discounts</b> = Projected − Actualized. <b>Discounts/Credits</b> = order/invoice-level discounts + credit memos. <b>Total for week</b> = total Actualized − total Discounts/Credits. Click a row to see its SKUs. Sample lines ($0.01 give-aways) are excluded.`;
 }
 function applySkuPreset(p){
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
@@ -1491,15 +1507,15 @@ function concExport(rows,label,fname){
 $('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort),'Dispensary','credits-discounts-by-dispensary.csv');
 $('#cb-export').onclick=()=>concExport(concFilterSort(CONC_BRAND,'cb-search',null,cbSort),'Brand','credits-discounts-by-brand.csv');
 $('#sku-export').onclick=()=>{
-  const rows=[['System','Product','Units','Projected','Actualized','Unit Discounts','Discounts/Credits']];
+  const rows=[['System','Product','Units','Projected','Actualized','Avg $/Unit','Unit Discounts','Discounts/Credits']];
   const f2=v=>(+v||0).toFixed(2);
   SKU.forEach(sys=>{
-    sys.rows.forEach(r=>rows.push([sys.source,'Total '+(SKU_DISP[r.key]||r.label),Math.round(r.units),f2(r.projected),f2(r.actualized),f2(r.unitDisc),'']));
+    sys.rows.forEach(r=>rows.push([sys.source,'Total '+(SKU_DISP[r.key]||r.label),Math.round(r.units),f2(r.projected),f2(r.actualized),r.units?f2(r.avg):'',f2(r.unitDisc),'']));
     const t=sys.totals;
-    rows.push([sys.source,'TOTALS',Math.round(t.units),f2(t.projected),f2(t.actualized),f2(t.unitDisc),f2(-(sys.discCredits||0))]);
+    rows.push([sys.source,'TOTALS',Math.round(t.units),f2(t.projected),f2(t.actualized),t.units?f2(t.avg):'',f2(t.unitDisc),f2(-(sys.discCredits||0))]);
   });
   const net=SKU.reduce((a,sys)=>a+(sys.totals.actualized-(sys.discCredits||0)),0);
-  rows.push(['','Total for week (Distru + Nabis)','','','','',f2(net)]);
+  rows.push(['','Total for week (Distru + Nabis)','','','','','',f2(net)]);
   downloadCSV('sales-by-type.csv',rows);
 };
 
