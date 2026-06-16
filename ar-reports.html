@@ -169,7 +169,7 @@
   <div class="card" id="uploadCard">
     <div class="drop" id="drop">
       <div class="big">Drop your CSV files here, or click to browse</div>
-      <div class="small">Distru invoice history · Distru sales-order items · Nabis aging report · Nabis detailed brand · Distru payments (for the concessions report) — order doesn't matter, files are auto-detected.</div>
+      <div class="small">Distru invoice history · Distru sales-order items · Nabis aging report · Nabis detailed brand · Distru payments · Nabis brand summary (for clean discounts/credits) — order doesn't matter, files are auto-detected.</div>
       <input type="file" id="fileInput" accept=".csv" multiple class="hidden" />
     </div>
     <div class="filechips" id="chips"></div>
@@ -392,6 +392,7 @@ function classify(rows){
     if(has('Invoice Number','Outstanding'))             return {type:'distru_invoice',hr:i};
     if(has('Line Item Id','Order Item Price'))           return {type:'distru_items',hr:i};
     if(has('Overdue','Subtotal Due Date','Dispensary'))  return {type:'nabis_aging',hr:i};
+    if(has('Net Order Subtotal','Net Invoice','Line-Item Discount Sum')) return {type:'nabis_brand',hr:i};
     if(has('Order Type','Order Status','Line Item SKU Code')) return {type:'nabis_detail',hr:i};
   }
   return {type:'unknown',hr:-1};
@@ -424,13 +425,14 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
   nabis_aging:'Nabis aging report',
   nabis_detail:'Nabis detailed brand',
-  distru_payments:'Distru payments'
+  distru_payments:'Distru payments',
+  nabis_brand:'Nabis brand summary'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -599,7 +601,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -618,6 +620,14 @@ function parseDiscSummary(s){
   const out=[]; const re=/(.+?)\s*-\s*\$(-?[\d,]+\.?\d*)(?:,\s*|$)/g; let m;
   while((m=re.exec(s||''))!==null){ if(!m[0]) break; out.push({label:m[1].trim(), amt:Math.abs(num(m[2]))}); }
   return out;
+}
+// Order-level Nabis discounts/credits from the brand summary CSV (the clean source)
+function nabisBrandMap(){
+  const m={}; if(!FILES.nabis_brand) return m;
+  FILES.nabis_brand.data.forEach(r=>{ const on=(r['Order Number']||'').trim(); if(!on) return;
+    m[on]={ priceRed:num(r['Price Reduction']), orderDisc:num(r['Order Discount']),
+            lineDisc:num(r['Line-Item Discount Sum']), credit:num(r['Order Credit Amount']) }; });
+  return m;
 }
 
 function ingestFromFiles(){
@@ -696,15 +706,26 @@ function ingestFromFiles(){
   }
 
   /* ---- Nabis aging ---- */
+  const brandMap=nabisBrandMap();
   if(FILES.nabis_aging){
     FILES.nabis_aging.data.forEach(r=>{
       const on=(r['Order Number']||'').trim();
       if(excluded[on]) return; // cleaned out
-      const nd=nabisDiscByOrder[on];
-      const discountLines = nd ? nd.discountLines.slice() : [];
-      if(nd && nd.orderDisc>0.005) discountLines.unshift({label:'Order discount',amt:nd.orderDisc});
-      const totalDiscounts = discountLines.reduce((s,d)=>s+d.amt,0);
-      const creditLines = (nd && nd.credit>0.005) ? [{ref:'Order credit',amt:nd.credit,date:null,note:nd.creditNote}] : [];
+      let discountLines, creditLines, totalDiscounts;
+      const bm=brandMap[on];
+      if(bm){
+        // clean order-level figures from the Nabis brand summary
+        discountLines=[{label:'Price reduction (vs wholesale)',amt:bm.priceRed},{label:'Order discount',amt:bm.orderDisc},{label:'Line-item discounts',amt:bm.lineDisc}].filter(d=>d.amt>0.005);
+        totalDiscounts=discountLines.reduce((s,d)=>s+d.amt,0);
+        creditLines = bm.credit>0.005 ? [{ref:'Order credit',amt:bm.credit,date:null,note:''}] : [];
+      } else {
+        // fallback: derive from the detailed-brand file (less precise)
+        const nd=nabisDiscByOrder[on];
+        discountLines = nd ? nd.discountLines.slice() : [];
+        if(nd && nd.orderDisc>0.005) discountLines.unshift({label:'Order discount',amt:nd.orderDisc});
+        totalDiscounts = discountLines.reduce((s,d)=>s+d.amt,0);
+        creditLines = (nd && nd.credit>0.005) ? [{ref:'Order credit',amt:nd.credit,date:null,note:nd.creditNote}] : [];
+      }
       recs.push({
         source:'Nabis',
         number:on,
@@ -989,9 +1010,9 @@ function buildConcessions(){
     const A=concAssum();
     const start=parseDate($('#conc-start').value), end=parseDate($('#conc-end').value);
     if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,0);
-    const map={};
+    const map={}; const bMap=nabisBrandMap();
     const get=(name,source)=>{ const k=source+'|'+name; if(!map[k]){ const f={}; CONC_FORMATS.forEach(x=>f[x.key]={paidU:0,bill:0,sampU:0});
-      map[k]={customer:name,source,fmt:f,otherU:0,otherBill:0,pouchU:0,invoiceDisc:0,creditMemos:0,invoiceLines:[],creditLines:[]}; } return map[k]; };
+      map[k]={customer:name,source,fmt:f,otherU:0,otherBill:0,pouchU:0,invoiceDisc:0,creditMemos:0,invoiceLines:[],creditLines:[],_seen:new Set()}; } return map[k]; };
 
     /* Distru items → units by format */
     if(FILES.distru_items) FILES.distru_items.data.forEach(r=>{
@@ -1019,13 +1040,19 @@ function buildConcessions(){
       const g=get((r['Company']||'').trim()||'Unknown','Distru');
       g.creditMemos+=amt; g.creditLines.push({ref:(r['Payment #']||'').trim(),date:d,amt,note:(r['Reference']||'').trim()});
     });
-    /* Nabis detail → units by format (forced list pricing) */
+    /* Nabis detail → units by format (forced list pricing); order discount/credit from brand summary */
     if(FILES.nabis_detail) FILES.nabis_detail.data.forEach(r=>{
       const type=(r['Order Type']||'').trim().toUpperCase(), st=(r['Order Status']||'').trim().toUpperCase();
       if(type==='PICKUP_FROM_BRAND'||st==='CANCELLED'||st==='REJECTED') return;
       if(!concInRange(parseDate(r['Delivery Date'])||parseDate(r['Created Date']),start,end)) return;
       const cust=(r['Site']||r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim()||'Unknown';
       const g=get(cust,'Nabis');
+      // order-level discount + credit (once per order) from the clean brand summary
+      const on=(r['Order Number']||'').trim(), bm=bMap[on];
+      if(bm && on && !g._seen.has(on)){ g._seen.add(on);
+        if(bm.orderDisc>0.005){ g.invoiceDisc+=bm.orderDisc; g.invoiceLines.push({ref:on,date:null,amt:bm.orderDisc,note:'Order discount'}); }
+        if(bm.credit>0.005){ g.creditMemos+=bm.credit; g.creditLines.push({ref:on,date:null,amt:bm.credit,note:'Order credit'}); }
+      }
       const qty=num(r['Units']), bill=num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);
       const isSample=(r['Is Sample']||'').trim().toLowerCase()==='yes';
       const fk=detectFmt(r['Unit Description'])||detectFmt(r['Strain'])||detectFmt(r['Line Item SKU Code']);
@@ -1141,7 +1168,7 @@ function renderConcGrid(allRows, ids, sortState, kind){
   if(note){
     const rng=(CONC_META&&CONC_META.start?CONC_META.start:'2021-01-01')+' → '+(CONC_META&&CONC_META.end?CONC_META.end:'today');
     const other=rows.reduce((s,r)=>s+(r.otherU||0),0);
-    note.innerHTML=`Range ${esc(rng)}. Distru breaks out invoice discounts &amp; credit memos (payments file); Nabis concessions are via list-vs-billed + samples (its discounts/credits are already baked into billed price).`+(other?` · <b>${other}</b> unmapped-format unit(s) valued at billed (0 concession).`:'');
+    note.innerHTML=`Range ${esc(rng)}. Per-unit columns = units × full list − billed. Distru invoice discounts/credits come from the invoice + payments files; Nabis order discounts/credits from the brand summary (line price-reductions are already captured in the per-unit columns).`+(other?` · <b>${other}</b> unmapped-format unit(s) valued at billed (0 concession).`:'');
   }
 }
 function renderConcDisp(){ renderConcGrid(CONC, {body:'cd-body',foot:'cd-foot',note:'cd-note',search:'cd-search',source:'cd-source'}, cdSort, 'disp'); }
