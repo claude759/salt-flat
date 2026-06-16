@@ -1023,14 +1023,24 @@ function concInRange(d,start,end){ if(!d) return false; if(start&&d<start) retur
 function buildConcEvents(){
   const ev=[]; const epoch=d=>d?d.getTime():null;
   const emptyFmt=()=>{const f={};CONC_FORMATS.forEach(x=>f[x.key]={paidU:0,bill:0,sampU:0});return f;};
-  /* Distru items → one event per sales order */
+  // Accrual anchor: every Distru piece is dated by its invoice date (when it was billed),
+  // so an invoice's units, discount, and credit all land in the same period.
+  const invDateByNum={}, invDateBySO={};
+  if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
+    const d=parseDate(r['Invoice Date']);
+    const n=(r['Invoice Number']||'').trim(), so=(r['Sales Order']||'').trim();
+    if(n) invDateByNum[n]=d; if(so) invDateBySO[so]=d;
+  });
+  /* Distru items → one event per sales order, dated by invoice date */
   if(FILES.distru_items){
     const byso={};
     FILES.distru_items.data.forEach(r=>{
       const status=(r['Status']||'').trim();
       if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
       const cust=(r['Customer']||'').trim()||'Unknown', so=(r['Order Number']||'').trim(), k=cust+'|'+so;
-      const e=byso[k]||(byso[k]={c:cust,s:'Distru',d:epoch(parseDate(r['Order Date'])),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0});
+      const invNum=(r['Invoice Numbers']||'').trim();
+      const accrual = invDateByNum[invNum] || invDateBySO[so] || parseDate(r['Delivery Date']) || parseDate(r['Order Date']);
+      const e=byso[k]||(byso[k]={c:cust,s:'Distru',d:epoch(accrual),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0});
       const qty=num(r['Quantity']), up=num(r['Order Item Price']), bill=up*qty, fk=distruFmt(r['Subcategory']);
       if(fk==='pouch'){ e.pouchU+=qty; return; }
       if(!fk){ e.otherU+=qty; e.otherBill+=bill; return; }
@@ -1038,16 +1048,18 @@ function buildConcEvents(){
     });
     Object.values(byso).forEach(e=>ev.push(e));
   }
-  /* Distru invoice discounts → one event per invoice */
+  /* Distru invoice discounts → one event per invoice (invoice date) */
   if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
     const disc=Math.abs(num(r['Total Discounts'])); if(!disc) return;
     ev.push({c:(r['Customer']||'').trim()||'Unknown',s:'Distru',d:epoch(parseDate(r['Invoice Date'])),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:disc,creditMemos:0});
   });
-  /* Distru credit memos → one event per payment */
+  /* Distru credit memos → dated to the invoice they offset (falls back to payment date) */
   if(FILES.distru_payments) FILES.distru_payments.data.forEach(r=>{
     if((r['Payment Method']||'').trim()!=='Credit') return;
     const amt=num(r['Amount']); if(!amt) return;
-    ev.push({c:(r['Company']||'').trim()||'Unknown',s:'Distru',d:epoch(parseDate(r['Date'])),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:amt});
+    const ref=(r['Reference']||'').trim();
+    const d=invDateByNum[ref] || parseDate(r['Date']);
+    ev.push({c:(r['Company']||'').trim()||'Unknown',s:'Distru',d:epoch(d),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:amt});
   });
   /* Nabis → one event per order (aggregate its detail lines; disc/credit from brand summary) */
   if(FILES.nabis_detail){
