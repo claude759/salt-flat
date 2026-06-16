@@ -30,6 +30,19 @@
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow)}
 
+  /* Share bar */
+  .sharebar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 16px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .sb-status{font-size:13px;color:var(--text);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sb-status .muted2{color:var(--muted);font-size:12px}
+  .sb-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sb-actions input{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;min-width:150px}
+  .btn:disabled{opacity:.45;cursor:not-allowed;border-color:var(--line)}
+  .pill.ok{color:#7ee2a8;border-color:#1f5a3a;background:#0f2a1c}
+  .pill.live{color:#9cc8ff;border-color:#1f3f5a;background:#0f2030}
+  .dot.pulse{width:9px;height:9px;border-radius:50%;background:var(--accent2);animation:pulse 1.1s infinite}
+  @keyframes pulse{0%{opacity:.35}50%{opacity:1}100%{opacity:.35}}
+
   /* Upload */
   .drop{border:2px dashed var(--line);border-radius:14px;padding:26px;text-align:center;background:var(--panel);transition:.15s;cursor:pointer}
   .drop.hot{border-color:var(--accent);background:#1b1830}
@@ -130,6 +143,16 @@
       <input type="date" id="asof" />
     </div>
   </header>
+
+  <!-- SHARE BAR -->
+  <div class="sharebar" id="sharebar">
+    <div class="sb-status" id="sb-status">…</div>
+    <div class="sb-actions">
+      <input type="text" id="sb-name" placeholder="Your name (optional)" maxlength="80" />
+      <button class="btn" id="sb-refresh" title="Reload the latest team report">↻ Refresh</button>
+      <button class="btn primary" id="sb-publish" disabled title="Publish the current data so the whole team sees it">⇪ Publish to team</button>
+    </div>
+  </div>
 
   <!-- UPLOAD -->
   <div class="card" id="uploadCard">
@@ -304,10 +327,112 @@ const LABELS = {
   nabis_aging:'Nabis aging report',
   nabis_detail:'Nabis detailed brand'
 };
-let INVOICES=[];        // combined invoice-level rows
+let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
-let CLEAN={excludedOrders:0,excludedLines:0,byReason:{}};
+let RAW=null;           // source-agnostic records (dates as Date objs), from files OR shared
+let SHARED=null;        // {uploadedAt, uploadedBy} when viewing the published team report
+let CLEAN={excludedOrders:0,excludedLines:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0}};
 let asOf = new Date();
+
+/* ============================ Team sharing ============================ */
+// Paste your deployed Apps Script Web App URL here (see apps-script-reports.gs).
+const REPORTS_SCRIPT_URL = 'YOUR_APPS_SCRIPT_URL_HERE';
+const isPlaceholder = () => !REPORTS_SCRIPT_URL || REPORTS_SCRIPT_URL.indexOf('YOUR_APPS_SCRIPT')===0;
+
+// Cross-origin GET that always works with Apps Script (no CORS headaches)
+function jsonp(){
+  return new Promise((res,rej)=>{
+    const cb='__arcb'+Math.floor(Date.now()+Math.random()*1e6);
+    let s; const done=()=>{ try{delete window[cb];}catch(e){} if(s&&s.parentNode)s.remove(); };
+    window[cb]=d=>{ res(d); done(); };
+    s=document.createElement('script');
+    s.src=REPORTS_SCRIPT_URL+(REPORTS_SCRIPT_URL.includes('?')?'&':'?')+'callback='+cb+'&t='+Date.now();
+    s.onerror=()=>{ rej(new Error('network')); done(); };
+    document.body.appendChild(s);
+    setTimeout(()=>{ if(window[cb]){ rej(new Error('timeout')); done(); } },15000);
+  });
+}
+
+function relTime(iso){
+  const d=new Date(iso), s=Math.round((Date.now()-d)/1000);
+  if(s<45) return 'just now';
+  if(s<90) return 'a minute ago';
+  const m=Math.round(s/60); if(m<60) return m+' min ago';
+  const h=Math.round(m/60); if(h<24) return h+(h===1?' hour ago':' hours ago');
+  const dd=Math.round(h/24); if(dd<30) return dd+(dd===1?' day ago':' days ago');
+  return d.toLocaleDateString();
+}
+const fmtDateTime = iso => new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+
+// Compact (de)serialization for the shared payload
+function recordsToPayload(recs){
+  return recs.map(x=>({s:x.source,n:x.number,sub:x.sub,d:x.dispensary,r:x.rep,
+    id:x.invoiceDate?x.invoiceDate.getTime():null, dd:x.dueDate?x.dueDate.getTime():null,
+    o:x.outstanding, t:x.total, rs:x.rawStatus,
+    it:(x.items&&x.items.length)?x.items.map(i=>({p:i.product,q:i.qty,pr:i.price})):[]}));
+}
+function payloadToRecords(arr){
+  return (arr||[]).map(x=>({source:x.s,number:x.n,sub:x.sub||'',dispensary:x.d,rep:x.r||'',
+    invoiceDate:x.id?new Date(x.id):null, dueDate:x.dd?new Date(x.dd):null,
+    outstanding:+x.o||0, total:+x.t||0, rawStatus:x.rs||'',
+    items:(x.it||[]).map(i=>({product:i.p,qty:i.q,price:i.pr}))}));
+}
+
+function renderShareBar(state){
+  const st=$('#sb-status'), pub=$('#sb-publish');
+  if(isPlaceholder()){
+    st.innerHTML='<span class="pill warn">sharing off</span> Team sharing isn\'t set up yet — the app works on this device only. See <b>apps-script-reports.gs</b> for the 5-minute setup.';
+    pub.disabled=true; pub.title='Set up team sharing first (see apps-script-reports.gs)'; return;
+  }
+  pub.disabled = !(RAW && RAW.length);
+  pub.title = pub.disabled ? 'Upload files first, then publish' : 'Publish the current data so the whole team sees it';
+  if(state==='loading'){ st.innerHTML='<span class="dot pulse"></span> Loading the team report…'; return; }
+  if(state==='error'){ st.innerHTML='<span class="pill warn">offline</span> Couldn\'t reach the team report — check the connection or the script URL.'; return; }
+  if(SHARED && SHARED.uploadedAt){
+    st.innerHTML=`<span class="pill live">live</span> Team report — updated <b>${relTime(SHARED.uploadedAt)}</b> <span class="muted2">(${fmtDateTime(SHARED.uploadedAt)})</span>${SHARED.uploadedBy?` by <b>${esc(SHARED.uploadedBy)}</b>`:''}`;
+  } else if(RAW && RAW.length){
+    st.innerHTML='<span class="pill">local</span> Showing files from this device only — click <b>Publish to team</b> to share them.';
+  } else {
+    st.innerHTML='<span class="pill">no report yet</span> No team report published. Upload the 4 files, then <b>Publish to team</b>.';
+  }
+}
+
+async function loadShared(){
+  if(isPlaceholder()){ renderShareBar(); return; }
+  renderShareBar('loading');
+  try{
+    const d=await jsonp();
+    if(d && d.data && d.data.records && d.data.records.length){
+      RAW=payloadToRecords(d.data.records);
+      CLEAN=d.data.cleaning||{excludedOrders:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0}};
+      SHARED={uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy};
+      Object.keys(FILES).forEach(k=>FILES[k]=null); renderChips();
+      rebuild();
+    } else {
+      SHARED=null; renderShareBar();
+    }
+  }catch(e){ renderShareBar('error'); }
+}
+
+async function publishToTeam(){
+  if(isPlaceholder()){ alert('Team sharing isn\'t set up yet. See apps-script-reports.gs for the one-time setup.'); return; }
+  if(!RAW || !RAW.length) return;
+  const btn=$('#sb-publish'), old=btn.textContent; btn.disabled=true; btn.textContent='Publishing…';
+  try{
+    const payload=JSON.stringify({v:1,records:recordsToPayload(RAW),cleaning:CLEAN});
+    const body=new URLSearchParams({action:'publish',uploadedBy:$('#sb-name').value.trim(),payload});
+    await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});
+    await new Promise(r=>setTimeout(r,1600));
+    const d=await jsonp();                  // confirm + get server timestamp
+    if(d && d.uploadedAt){ SHARED={uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy}; }
+    renderShareBar();
+    btn.textContent='Published ✓';
+    setTimeout(()=>{ btn.textContent=old; renderShareBar(); },2600);
+  }catch(e){
+    alert('Publish failed: '+e.message);
+    btn.textContent=old; renderShareBar();
+  }
+}
 
 /* ============================ Ingest ============================ */
 function handleFiles(fileList){
@@ -346,15 +471,10 @@ function renderChips(){
 }
 
 /* ============================ Build model ============================ */
-function build(){
-  // Need at minimum one AR source to show anything
-  const haveAny = FILES.distru_invoice || FILES.nabis_aging;
-  if(!haveAny){ $('#reports').classList.add('hidden'); renderNotes(); return; }
-
-  asOf = parseDate($('#asof').value) || new Date();
-  asOf.setHours(0,0,0,0);
-
-  INVOICES=[];
+// Parse the loaded CSVs into source-agnostic records (dates kept as Date objects,
+// dpd/bucket/status deferred to rebuild so the "as of" date can change freely).
+function ingestFromFiles(){
+  const recs=[];
 
   /* ---- Distru ---- */
   const distruItemsBySO={};
@@ -363,26 +483,22 @@ function build(){
       const so=(r['Order Number']||'').trim(); if(!so) return;
       (distruItemsBySO[so]=distruItemsBySO[so]||[]).push({
         product:r['Product']||r['Product SKU']||'', qty:num(r['Quantity']),
-        price:num(r['Order Item Price']), brand:r['Brand']||''
+        price:num(r['Order Item Price'])
       });
     });
   }
   if(FILES.distru_invoice){
     FILES.distru_invoice.data.forEach(r=>{
-      const out=num(r['Outstanding']);
-      const due=parseDate(r['Due Date']), invd=parseDate(r['Invoice Date']);
-      const dpd=due?Math.floor((asOf-due)/DAY):0;
       const so=(r['Sales Order']||'').trim();
-      INVOICES.push({
+      recs.push({
         source:'Distru',
         number:(r['Invoice Number']||'').trim(),
         sub:so,
         dispensary:(r['Customer']||'').trim()||'Unknown',
         rep:(r['Owner']||'').trim(),
-        invoiceDate:invd, dueDate:due,
-        dpd, bucket:bucketOf(dpd),
-        status:(r['Status']||'').trim(),
-        outstanding:out, total:num(r['Total']),
+        invoiceDate:parseDate(r['Invoice Date']), dueDate:parseDate(r['Due Date']),
+        rawStatus:(r['Status']||'').trim(),
+        outstanding:num(r['Outstanding']), total:num(r['Total']),
         items: distruItemsBySO[so]||[]
       });
     });
@@ -416,29 +532,50 @@ function build(){
     FILES.nabis_aging.data.forEach(r=>{
       const on=(r['Order Number']||'').trim();
       if(excluded[on]) return; // cleaned out
-      const out=num(r['Due']);
-      const due=parseDate(r['Subtotal Due Date']), del=parseDate(r['Delivery Date']);
-      const dpd=due?Math.floor((asOf-due)/DAY):0;
-      INVOICES.push({
+      recs.push({
         source:'Nabis',
         number:on,
         sub:firstLine(r['PO / SO Number'])==='-'?'':firstLine(r['PO / SO Number']),
         dispensary:nabisName(r['Dispensary'],r['Name']),
         rep:firstLine(r['Sold by']),
-        invoiceDate:del, dueDate:due,
-        dpd, bucket:bucketOf(dpd),
-        status: out>0 ? (dpd>0?'Overdue':'Open') : 'Paid',
-        outstanding:out, total:num(r['Subtotal']),
+        invoiceDate:parseDate(r['Delivery Date']), dueDate:parseDate(r['Subtotal Due Date']),
+        rawStatus:'',
+        outstanding:num(r['Due']), total:num(r['Subtotal']),
         items: nabisItemsByOrder[on]||[]
       });
     });
   }
+  return recs;
+}
 
+// Called when files are dropped/cleared: parse them, switch to local view, render.
+function build(){
+  const haveAny = FILES.distru_invoice || FILES.nabis_aging;
+  if(!haveAny){ RAW=null; SHARED=null; $('#reports').classList.add('hidden'); renderNotes(); renderShareBar(); return; }
+  RAW = ingestFromFiles();
+  SHARED = null;                 // uploading puts us in local (unpublished) mode
+  rebuild();
+}
+
+// Apply the current "as of" date to RAW, compute aging, and render. Source-agnostic.
+function rebuild(){
+  if(!RAW || !RAW.length){ $('#reports').classList.add('hidden'); renderNotes(); renderShareBar(); return; }
+  asOf = parseDate($('#asof').value) || new Date();
+  asOf.setHours(0,0,0,0);
+  INVOICES = RAW.map(x=>{
+    const dpd = x.dueDate ? Math.floor((asOf - x.dueDate)/DAY) : 0;
+    const bucket = bucketOf(dpd);
+    const status = x.source==='Nabis'
+      ? (x.outstanding>0.005 ? (dpd>0?'Overdue':'Open') : 'Paid')
+      : x.rawStatus;
+    return Object.assign({}, x, {dpd, bucket, status});
+  });
   groupDispensaries();
   renderNotes();
   renderSummary();
   renderInvoices();
   renderDispensaries();
+  renderShareBar();
   $('#reports').classList.remove('hidden');
 }
 
@@ -460,17 +597,21 @@ function groupDispensaries(){
 /* ============================ Notes / Summary ============================ */
 function renderNotes(){
   const n=$('#notes'); const parts=[];
-  if(!FILES.distru_invoice && !FILES.nabis_aging){
-    n.innerHTML='<span class="pill warn">waiting</span> Load at least the <b>Distru invoice history</b> or <b>Nabis aging report</b> to generate reports.';
+  if(!RAW || !RAW.length){
+    n.innerHTML='<span class="pill warn">waiting</span> Drop the 4 CSV files above to generate reports'+(isPlaceholder()?'.':', or wait for a teammate to publish one.');
     return;
   }
-  if(FILES.nabis_aging && !FILES.nabis_detail)
-    parts.push('<span class="pill warn">heads-up</span> Nabis aging loaded without the <b>detailed brand</b> file — orders can\'t be cleaned (PICKUP_FROM_BRAND / CANCELLED / REJECTED still included).');
-  if(FILES.nabis_detail && CLEAN.excludedOrders)
+  if(SHARED){
+    parts.push('<span class="pill live">shared</span> Viewing the team report'+(SHARED.uploadedBy?` published by <b>${esc(SHARED.uploadedBy)}</b>`:'')+'. Drop new files to build a fresh one, then Publish.');
+  } else {
+    if(FILES.nabis_aging && !FILES.nabis_detail)
+      parts.push('<span class="pill warn">heads-up</span> Nabis aging loaded without the <b>detailed brand</b> file — orders can\'t be cleaned (PICKUP_FROM_BRAND / CANCELLED / REJECTED still included).');
+    if(!FILES.distru_invoice) parts.push('No Distru invoice history — Distru receivables omitted.');
+    if(!FILES.nabis_aging) parts.push('No Nabis aging report — Nabis receivables omitted.');
+  }
+  if(CLEAN.excludedOrders)
     parts.push(`<b>Cleaned ${CLEAN.excludedOrders}</b> Nabis order(s) — `+
       `${CLEAN.byReason.PICKUP_FROM_BRAND} pickup-from-brand · ${CLEAN.byReason.CANCELLED} cancelled · ${CLEAN.byReason.REJECTED} rejected line(s).`);
-  if(!FILES.distru_invoice) parts.push('No Distru invoice history — Distru receivables omitted.');
-  if(!FILES.nabis_aging) parts.push('No Nabis aging report — Nabis receivables omitted.');
   n.innerHTML = parts.join('<br>') || 'All set.';
 }
 
@@ -653,11 +794,15 @@ document.querySelectorAll('#inv-table th[data-sort]').forEach(th=>th.onclick=()=
 document.querySelectorAll('#disp-table th[data-sort]').forEach(th=>th.onclick=()=>{
   const k=th.dataset.sort; dispSort.dir = dispSort.key===k? -dispSort.dir : (k==='name'||k==='sources'?1:-1); dispSort.key=k; renderDispensaries();
 });
-$('#asof').addEventListener('change',build);
+$('#asof').addEventListener('change',rebuild);
+$('#sb-refresh').onclick=()=>loadShared();
+$('#sb-publish').onclick=publishToTeam;
 
 // init as-of = today
 (function(){ const d=new Date(); $('#asof').value=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
 renderChips();
+renderShareBar();
+loadShared();   // pull the latest team report on open (no-op until REPORTS_SCRIPT_URL is set)
 </script>
 </body>
 </html>
