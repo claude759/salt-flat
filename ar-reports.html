@@ -185,6 +185,7 @@
       <div class="tab" data-tab="dispensary">AR by Dispensary</div>
       <div class="tab" data-tab="cd-disp">Credits/Discounts by Dispensary</div>
       <div class="tab" data-tab="cd-brand">Credits/Discounts by Brand</div>
+      <div class="tab" data-tab="sku">Sales by SKU</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -335,6 +336,44 @@
         </table>
       </div>
       <div class="notes" id="cb-note"></div>
+    </div>
+
+    <!-- SALES BY SKU -->
+    <div id="view-sku" class="hidden">
+      <div class="toolbar">
+        <select id="sku-preset" title="Quick date range">
+          <option value="thisweek">This week (Mon–Sun)</option>
+          <option value="lastweek">Last week (Mon–Sun)</option>
+          <option value="month">This month</option>
+          <option value="lastmonth">Last month</option>
+          <option value="ytd">Year to date</option>
+          <option value="all">All time (2021 → today)</option>
+          <option value="custom">Custom range…</option>
+        </select>
+        <label class="dt">From <input type="date" id="sku-start" /></label>
+        <label class="dt">To <input type="date" id="sku-end" /></label>
+        <div class="grow"></div>
+        <input type="text" id="sku-search" placeholder="Search SKU…" />
+        <select id="sku-source"><option value="">Distru + Nabis</option><option>Distru</option><option>Nabis</option></select>
+        <button class="btn" id="sku-export">⬇ Export CSV</button>
+      </div>
+      <div class="tablewrap">
+        <table id="sku-table">
+          <thead><tr>
+            <th data-sort="sku">SKU / Product</th>
+            <th data-sort="source">Src</th>
+            <th data-sort="fmt">Format</th>
+            <th data-sort="units" class="num">Units</th>
+            <th data-sort="samples" class="num">Samples</th>
+            <th data-sort="revenue" class="num">Revenue</th>
+            <th data-sort="avg" class="num">Avg $/Unit</th>
+            <th data-sort="orders" class="num">Orders</th>
+          </tr></thead>
+          <tbody id="sku-body"></tbody>
+          <tfoot id="sku-foot"></tfoot>
+        </table>
+      </div>
+      <div class="notes" id="sku-note"></div>
     </div>
   </div>
 </div>
@@ -494,13 +533,13 @@ function renderShareBar(state){
     st.innerHTML='<span class="pill warn">sharing off</span> Team sharing isn\'t set up yet — the app works on this device only. See <b>apps-script-reports.gs</b> for the 5-minute setup.';
     pub.disabled=true; pub.title='Set up team sharing first (see apps-script-reports.gs)'; return;
   }
-  pub.disabled = !((RAW && RAW.length) || (CONC_EVENTS && CONC_EVENTS.length));
+  pub.disabled = !((RAW && RAW.length) || (CONC_EVENTS && CONC_EVENTS.length) || (SKU_EVENTS && SKU_EVENTS.length));
   pub.title = pub.disabled ? 'Upload files first, then publish' : 'Publish the current data so the whole team sees it';
   if(state==='loading'){ st.innerHTML='<span class="dot pulse"></span> Loading the team report…'; return; }
   if(state==='error'){ st.innerHTML='<span class="pill warn">offline</span> Couldn\'t reach the team report — check the connection or the script URL.'; return; }
   if(SHARED && SHARED.uploadedAt){
     st.innerHTML=`<span class="pill live">live</span> Team report — updated <b>${relTime(SHARED.uploadedAt)}</b> <span class="muted2">(${fmtDateTime(SHARED.uploadedAt)})</span>${SHARED.uploadedBy?` by <b>${esc(SHARED.uploadedBy)}</b>`:''}`;
-  } else if((RAW && RAW.length) || (CONC_EVENTS && CONC_EVENTS.length)){
+  } else if((RAW && RAW.length) || (CONC_EVENTS && CONC_EVENTS.length) || (SKU_EVENTS && SKU_EVENTS.length)){
     st.innerHTML='<span class="pill">local</span> Showing files from this device only — click <b>Publish to team</b> to share them.';
   } else {
     st.innerHTML='<span class="pill">no report yet</span> No team report published. Upload the 4 files, then <b>Publish to team</b>.';
@@ -538,6 +577,10 @@ async function loadShared(){
       else { CONC=data.conc.rows; computeBrandRollup(); }   // legacy snapshot (fixed range)
       $('#reports').classList.remove('hidden'); renderConcDisp(); renderConcBrand(); any=true;
     }
+    if(data.sku && data.sku.ev && data.sku.ev.length){
+      SKU_EVENTS=skuFromWire(data.sku); aggregateSku();
+      $('#reports').classList.remove('hidden'); renderSku(); any=true;
+    }
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
     renderShareBar();
   }catch(e){ renderShareBar('error'); }
@@ -545,8 +588,8 @@ async function loadShared(){
 
 async function publishToTeam(){
   if(isPlaceholder()){ alert('Team sharing isn\'t set up yet. See apps-script-reports.gs for the one-time setup.'); return; }
-  const hasAR=RAW&&RAW.length, hasConc=CONC_EVENTS&&CONC_EVENTS.length;
-  if(!hasAR && !hasConc) return;
+  const hasAR=RAW&&RAW.length, hasConc=CONC_EVENTS&&CONC_EVENTS.length, hasSku=SKU_EVENTS&&SKU_EVENTS.length;
+  if(!hasAR && !hasConc && !hasSku) return;
   const who=$('#sb-name').value.trim();
   const btn=$('#sb-publish'), old=btn.textContent; btn.disabled=true; btn.textContent='Publishing…';
   try{
@@ -556,6 +599,7 @@ async function publishToTeam(){
     // per-format/credit breakdowns). Summary numbers, aging, discounts/credits, brand rollup all survive.
     if(hasAR)  cur.ar  ={records:recordsToPayload(RAW).map(({it,...r})=>r),cleaning:CLEAN};
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
+    if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
     const body=new URLSearchParams({action:'publish',uploadedBy:who,payload:JSON.stringify(cur)});
     await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});   // throws only on real network failure
     // Confirm is best-effort: the POST above is opaque (no-cors), so a failed read-back
@@ -590,7 +634,7 @@ function handleFiles(fileList){
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); }
+      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); }
     };
     reader.readAsText(f);
   });
@@ -605,7 +649,7 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); });
 }
 
 /* ============================ Build model ============================ */
@@ -1257,6 +1301,113 @@ function renderConcDisp(){ renderConcGrid(CONC, {body:'cd-body',foot:'cd-foot',n
 function renderConcBrand(){ renderConcGrid(CONC_BRAND, {body:'cb-body',foot:'cb-foot',note:'cb-note',search:'cb-search',source:null}, cbSort, 'brand'); }
 function renderConcessions(){ computeBrandRollup(); renderConcDisp(); renderConcBrand(); }
 
+/* ============================ Sales by SKU ============================ */
+let SKU=[], SKU_EVENTS=[], skuSort={key:'revenue',dir:-1};
+function fmtLabel(k){ if(!k) return 'Other'; if(k==='pouch') return 'Pouch'; const f=CONC_FORMATS.find(x=>x.key===k); return f?f.label:'Other'; }
+const skuClean = s => String(s||'').replace(/\s+/g,' ').trim() || '(unnamed)';
+// compact (de)serialization for sharing — intern SKU/format names to keep the payload small
+function skuToWire(evs){
+  const skus=[],fmts=[],si={},fi={};
+  const ev=(evs||[]).map(e=>{ let a=si[e.sku]; if(a===undefined){a=skus.length;si[e.sku]=a;skus.push(e.sku);}
+    let b=fi[e.fmt]; if(b===undefined){b=fmts.length;fi[e.fmt]=b;fmts.push(e.fmt);}
+    return [a, e.src==='Nabis'?1:0, b, e.d, e.u||0, e.su||0, Math.round((e.rev||0)*100)/100, e.no||0]; });
+  return {skus,fmts,ev};
+}
+function skuFromWire(w){
+  if(!w||!w.ev) return [];
+  const skus=w.skus||[], fmts=w.fmts||[];
+  return w.ev.map(a=>({sku:skus[a[0]],src:a[1]?'Nabis':'Distru',fmt:fmts[a[2]],d:a[3],u:a[4]||0,su:a[5]||0,rev:a[6]||0,no:a[7]||0}));
+}
+
+// One row per (SKU, source, date): units sold, sample units, revenue, distinct orders.
+function buildSkuEvents(){
+  const epoch=d=>d?d.getTime():null, map={};
+  const invDateByNum={}, invDateBySO={};
+  if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{ const d=parseDate(r['Invoice Date']);
+    const n=(r['Invoice Number']||'').trim(), so=(r['Sales Order']||'').trim(); if(n)invDateByNum[n]=d; if(so)invDateBySO[so]=d; });
+  const add=(sku,src,fmt,d,units,rev,isSample,ord)=>{ if(!d) return;
+    const ep=epoch(d), k=src+'|'+sku+'|'+ep, g=map[k]||(map[k]={sku,src,fmt,d:ep,u:0,su:0,rev:0,ords:new Set()});
+    if(!g.fmt||g.fmt==='Other') g.fmt=fmt;
+    if(isSample) g.su+=units; else { g.u+=units; g.rev+=rev; } if(ord) g.ords.add(ord); };
+  if(FILES.distru_items) FILES.distru_items.data.forEach(r=>{
+    const status=(r['Status']||'').trim();
+    if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
+    const so=(r['Order Number']||'').trim(), invNum=(r['Invoice Numbers']||'').trim();
+    const d=invDateByNum[invNum]||invDateBySO[so]||parseDate(r['Delivery Date'])||parseDate(r['Order Date']);
+    const qty=num(r['Quantity']), up=num(r['Order Item Price']);
+    add(skuClean(r['Product']||r['Product SKU']),'Distru',fmtLabel(distruFmt(r['Subcategory'])),d,qty,up*qty,up<=0.02,invNum||so);
+  });
+  if(FILES.nabis_detail) FILES.nabis_detail.data.forEach(r=>{
+    const type=(r['Order Type']||'').trim().toUpperCase(), st=(r['Order Status']||'').trim().toUpperCase();
+    if(type==='PICKUP_FROM_BRAND'||st==='CANCELLED'||st==='REJECTED') return;
+    const d=parseDate(r['Delivery Date'])||parseDate(r['Created Date']);
+    const qty=num(r['Units']), bill=num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);
+    const isSample=(r['Is Sample']||'').trim().toLowerCase()==='yes';
+    add(skuClean(r['Strain']||r['Line Item SKU Code']),'Nabis',fmtLabel(detectFmt(r['Unit Description'])||detectFmt(r['Strain'])),d,qty,bill,isSample,(r['Order Number']||'').trim());
+  });
+  return Object.values(map).map(g=>({sku:g.sku,src:g.src,fmt:g.fmt,d:g.d,u:g.u,su:g.su,rev:g.rev,no:g.ords.size}));
+}
+function aggregateSku(){
+  const start=parseDate($('#sku-start').value), end=parseDate($('#sku-end').value);
+  if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,0);
+  const map={};
+  SKU_EVENTS.forEach(e=>{ if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
+    const k=e.src+'|'+e.sku, g=map[k]||(map[k]={sku:e.sku,source:e.src,fmt:e.fmt,units:0,samples:0,revenue:0,orders:0});
+    g.units+=e.u||0; g.samples+=e.su||0; g.revenue+=e.rev||0; g.orders+=e.no||0;
+    if((!g.fmt||g.fmt==='Other')&&e.fmt) g.fmt=e.fmt; });
+  SKU=Object.values(map).map(g=>Object.assign(g,{avg:g.units?g.revenue/g.units:0})).filter(r=>r.units>0||r.samples>0||r.revenue>0.005);
+}
+function buildSku(){
+  if(FILES.distru_items || FILES.nabis_detail) SKU_EVENTS=buildSkuEvents();
+  if(SKU_EVENTS && SKU_EVENTS.length) aggregateSku();
+  else if(!(SHARED && SKU && SKU.length)) SKU=[];
+  if(SKU.length) $('#reports').classList.remove('hidden');
+  renderSku(); renderShareBar();
+}
+function skuFiltered(){
+  const q=$('#sku-search').value.trim().toLowerCase(), src=$('#sku-source').value;
+  let rows=SKU.filter(r=>{ if(src&&r.source!==src) return false; if(q&&!((r.sku+' '+r.fmt).toLowerCase().includes(q))) return false; return true; });
+  const k=skuSort.key,d=skuSort.dir;
+  rows.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-d:av>bv?d:0; });
+  return rows;
+}
+function renderSku(){
+  const body=$('#sku-body'), foot=$('#sku-foot'), note=$('#sku-note');
+  if(!SKU.length){ body.innerHTML=`<tr><td colspan="8" class="empty">Upload the <b>Distru sales-order items</b> and/or <b>Nabis detailed brand</b> file to see sales by SKU.</td></tr>`; foot.innerHTML=''; note.innerHTML=''; return; }
+  const rows=skuFiltered();
+  const intl=n=>Math.round(n).toLocaleString();
+  body.innerHTML=rows.map(r=>`<tr>
+    <td>${esc(r.sku)}</td>
+    <td><span class="src ${r.source}">${r.source}</span></td>
+    <td class="rep">${esc(r.fmt)}</td>
+    <td class="num">${intl(r.units)}</td>
+    <td class="num">${r.samples?intl(r.samples):'<span class="neg">—</span>'}</td>
+    <td class="num money">${fmt$(r.revenue)}</td>
+    <td class="num money">${r.avg?fmt$(r.avg):'—'}</td>
+    <td class="num">${r.orders||0}</td>
+  </tr>`).join('');
+  const T={units:0,samples:0,revenue:0,orders:0}; rows.forEach(r=>{T.units+=r.units;T.samples+=r.samples;T.revenue+=r.revenue;T.orders+=r.orders;});
+  foot.innerHTML=`<tr class="totals"><td colspan="3">Totals · ${rows.length} SKU${rows.length!==1?'s':''}</td>
+    <td class="num">${intl(T.units)}</td><td class="num">${intl(T.samples)}</td><td class="num money">${fmt$(T.revenue)}</td>
+    <td class="num money">${T.units?fmt$(T.revenue/T.units):'—'}</td><td class="num">${T.orders}</td></tr>`;
+  const rng=($('#sku-start').value||'2021-01-01')+' → '+($('#sku-end').value||'today');
+  note.innerHTML=`Range ${esc(rng)}. Units &amp; revenue are actual billed (dated by invoice/delivery); Samples are the $0.01 give-away units (excluded from revenue). Distru and Nabis are listed under each system's own product name.`;
+}
+function applySkuPreset(p){
+  const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const d=new Date(), y=d.getFullYear(), mo=d.getMonth(), today=isoD(d);
+  const thisMon=new Date(y,mo,d.getDate()-((d.getDay()+6)%7));   // Monday of this week
+  let s,e;
+  if(p==='thisweek'){ s=isoD(thisMon); e=today; }
+  else if(p==='lastweek'){ const lm=new Date(thisMon); lm.setDate(lm.getDate()-7); const ls=new Date(thisMon); ls.setDate(ls.getDate()-1); s=isoD(lm); e=isoD(ls); }
+  else if(p==='month'){ s=isoD(new Date(y,mo,1)); e=today; }
+  else if(p==='lastmonth'){ s=isoD(new Date(y,mo-1,1)); e=isoD(new Date(y,mo,0)); }
+  else if(p==='ytd'){ s=`${y}-01-01`; e=today; }
+  else if(p==='all'){ s='2021-01-01'; e=today; }
+  else return;
+  $('#sku-start').value=s; $('#sku-end').value=e; buildSku();
+}
+
 /* ============================ CSV export ============================ */
 function downloadCSV(name,rows){
   const csv=rows.map(r=>r.map(c=>{ c=c==null?'':String(c); return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c; }).join(',')).join('\r\n');
@@ -1286,6 +1437,14 @@ function concExport(rows,label,fname){
 }
 $('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort),'Dispensary','credits-discounts-by-dispensary.csv');
 $('#cb-export').onclick=()=>concExport(concFilterSort(CONC_BRAND,'cb-search',null,cbSort),'Brand','credits-discounts-by-brand.csv');
+$('#sku-export').onclick=()=>{
+  const rows=[['SKU / Product','Source','Format','Units','Samples','Revenue','Avg $/Unit','Orders']];
+  const d=skuFiltered(); const f2=v=>(+v||0).toFixed(2);
+  d.forEach(r=>rows.push([r.sku,r.source,r.fmt,Math.round(r.units),Math.round(r.samples),f2(r.revenue),f2(r.avg),r.orders]));
+  const T=d.reduce((a,r)=>({u:a.u+r.units,s:a.s+r.samples,rev:a.rev+r.revenue,o:a.o+r.orders}),{u:0,s:0,rev:0,o:0});
+  rows.push(['TOTAL','','',Math.round(T.u),Math.round(T.s),f2(T.rev),T.u?f2(T.rev/T.u):'',T.o]);
+  downloadCSV('sales-by-sku.csv',rows);
+};
 
 /* ============================ Wiring ============================ */
 const drop=$('#drop'),fi=$('#fileInput');
@@ -1302,6 +1461,7 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   $('#view-dispensary').classList.toggle('hidden',tab!=='dispensary');
   $('#view-cd-disp').classList.toggle('hidden',tab!=='cd-disp');
   $('#view-cd-brand').classList.toggle('hidden',tab!=='cd-brand');
+  $('#view-sku').classList.toggle('hidden',tab!=='sku');
   $('#conc-controls').classList.toggle('hidden', tab!=='cd-disp' && tab!=='cd-brand');
 });
 ['inv-search','inv-source','inv-bucket','inv-open'].forEach(id=>$('#'+id).addEventListener('input',renderInvoices));
@@ -1323,6 +1483,12 @@ function applyConcPreset(p){
   $('#conc-start').value=s; $('#conc-end').value=e; buildConcessions();
 }
 $('#conc-preset').addEventListener('change',ev=>applyConcPreset(ev.target.value));
+['sku-search','sku-source'].forEach(id=>$('#'+id).addEventListener('input',renderSku));
+['sku-start','sku-end'].forEach(id=>$('#'+id).addEventListener('change',()=>{ $('#sku-preset').value='custom'; buildSku(); }));
+$('#sku-preset').addEventListener('change',ev=>applySkuPreset(ev.target.value));
+document.querySelectorAll('#sku-table th[data-sort]').forEach(th=>th.onclick=()=>{
+  const k=th.dataset.sort; skuSort.dir = skuSort.key===k? -skuSort.dir : (k==='sku'||k==='source'||k==='fmt'?1:-1); skuSort.key=k; renderSku();
+});
 document.querySelectorAll('#cd-table th[data-sort]').forEach(th=>th.onclick=()=>{
   const k=th.dataset.sort; cdSort.dir = cdSort.key===k? -cdSort.dir : (k==='customer'||k==='source'?1:-1); cdSort.key=k; renderConcDisp();
 });
@@ -1339,12 +1505,14 @@ $('#asof').addEventListener('change',rebuild);
 $('#sb-refresh').onclick=()=>loadShared();
 $('#sb-publish').onclick=publishToTeam;
 
-// init dates: as-of = today; concessions range = Jan 1 2021 → today
+// init dates: as-of = today; concessions range = Jan 1 2021 → today; SKU = last week (Mon–Sun)
 (function(){ const d=new Date(); const today=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  $('#asof').value=today; $('#conc-end').value=today; $('#conc-start').value='2021-01-01'; })();
+  $('#asof').value=today; $('#conc-end').value=today; $('#conc-start').value='2021-01-01';
+  $('#sku-preset').value='lastweek'; applySkuPreset('lastweek'); })();
 renderChips();
 renderShareBar();
 renderConcessions();   // show the concessions empty-state until files/shared data arrive
+renderSku();
 loadShared();   // pull the latest team report on open (no-op until REPORTS_SCRIPT_URL is set)
 </script>
 </body>
