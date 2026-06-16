@@ -131,6 +131,18 @@
   .detailbox th{position:static;background:transparent;border-bottom:1px solid var(--line)}
   .caret{display:inline-block;width:12px;color:var(--muted);transition:.15s}
   tr.open .caret{transform:rotate(90deg)}
+  /* Sales by Type — two-system layout */
+  th.sys{text-align:center;font-size:13px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:9px}
+  th.sys.Nabis{background:rgba(255,143,94,.13);color:var(--nabis)}
+  th.sys.Distru{background:rgba(78,161,255,.13);color:var(--distru)}
+  table.skutbl{margin:0 0 26px}
+  table.skutbl td.ud{color:var(--orange)}
+  table.skutbl td.dc{color:var(--red)}
+  .sku-week{margin:2px 0 14px;font-size:13px;color:var(--muted)}
+  .sku-week b{color:var(--text)}
+  .sku-weektotal{margin-top:4px;padding:15px 20px;border:1px solid var(--line);border-radius:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;background:linear-gradient(135deg,rgba(124,92,255,.14),rgba(47,191,113,.10))}
+  .sku-weektotal .lbl{color:var(--muted);font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+  .sku-weektotal .amt{font-size:23px;font-weight:800}
   .empty{padding:40px;text-align:center;color:var(--muted)}
   .foot{display:flex;justify-content:space-between;padding:10px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);background:var(--panel2)}
   .hidden{display:none!important}
@@ -338,7 +350,7 @@
       <div class="notes" id="cb-note"></div>
     </div>
 
-    <!-- SALES BY SKU -->
+    <!-- SALES BY TYPE -->
     <div id="view-sku" class="hidden">
       <div class="toolbar">
         <select id="sku-preset" title="Quick date range">
@@ -353,24 +365,9 @@
         <label class="dt">From <input type="date" id="sku-start" /></label>
         <label class="dt">To <input type="date" id="sku-end" /></label>
         <div class="grow"></div>
-        <input type="text" id="sku-search" placeholder="Search type or SKU…" />
-        <select id="sku-source"><option value="">Distru + Nabis</option><option>Distru</option><option>Nabis</option></select>
         <button class="btn" id="sku-export">⬇ Export CSV</button>
       </div>
-      <div class="tablewrap">
-        <table id="sku-table">
-          <thead><tr>
-            <th style="width:24px"></th>
-            <th data-sort="type">Product Type</th>
-            <th data-sort="units" class="num">Units</th>
-            <th data-sort="samples" class="num">Samples</th>
-            <th data-sort="revenue" class="num">Revenue</th>
-            <th data-sort="avg" class="num">Avg $/Unit</th>
-          </tr></thead>
-          <tbody id="sku-body"></tbody>
-          <tfoot id="sku-foot"></tfoot>
-        </table>
-      </div>
+      <div class="tablewrap" id="sku-wrap"></div>
       <div class="notes" id="sku-note"></div>
     </div>
   </div>
@@ -1299,8 +1296,9 @@ function renderConcDisp(){ renderConcGrid(CONC, {body:'cd-body',foot:'cd-foot',n
 function renderConcBrand(){ renderConcGrid(CONC_BRAND, {body:'cb-body',foot:'cb-foot',note:'cb-note',search:'cb-search',source:null}, cbSort, 'brand'); }
 function renderConcessions(){ computeBrandRollup(); renderConcDisp(); renderConcBrand(); }
 
-/* ============================ Sales by SKU ============================ */
-let SKU=[], SKU_EVENTS=[], skuSort={key:'revenue',dir:-1};
+/* ============================ Sales by Type ============================ */
+let SKU=[], SKU_EVENTS=[];
+const SKU_DISP={jar35:'3.5g Jars', fivepk:'.7g Prerolls', pr15:'1.5g Prerolls', vape:'Vapes', other:'Other'};
 function fmtLabel(k){ if(!k) return 'Other'; if(k==='pouch') return 'Pouch'; const f=CONC_FORMATS.find(x=>x.key===k); return f?f.label:'Other'; }
 const skuClean = s => String(s||'').replace(/\s+/g,' ').trim() || '(unnamed)';
 // compact (de)serialization for sharing — intern SKU/format names to keep the payload small
@@ -1348,21 +1346,42 @@ function buildSkuEvents(){
 function aggregateSku(){
   const start=parseDate($('#sku-start').value), end=parseDate($('#sku-end').value);
   if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,0);
-  const srcFilter=$('#sku-source').value;
-  const types={}; const getT=l=>types[l]||(types[l]={type:l,units:0,samples:0,revenue:0,skus:{}});
+  const A=concAssum();                                   // editable list prices (Credits/Discounts tab)
+  const Lkey={'3.5G Jar':'jar35','.7G 5PK':'fivepk','1.5G PR':'pr15','Vape / Live Resin':'vape'};
+  // per source → per format label → {units, actualized, skus}; plus an "Other" catch-all
+  const acc={Distru:{}, Nabis:{}}, other={Distru:{units:0,actualized:0,skus:{}}, Nabis:{units:0,actualized:0,skus:{}}};
   SKU_EVENTS.forEach(e=>{
-    if(srcFilter && e.src!==srcFilter) return;
+    if(e.src!=='Distru' && e.src!=='Nabis') return;
     if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
-    const t=getT(e.fmt||'Other');
-    t.units+=e.u||0; t.samples+=e.su||0; t.revenue+=e.rev||0;
-    const sk=e.src+'|'+e.sku, s=t.skus[sk]||(t.skus[sk]={sku:e.sku,source:e.src,units:0,samples:0,revenue:0});
-    s.units+=e.u||0; s.samples+=e.su||0; s.revenue+=e.rev||0;
+    if(Lkey.hasOwnProperty(e.fmt)){
+      const b=acc[e.src], g=b[e.fmt]||(b[e.fmt]={units:0,actualized:0,skus:{}});
+      g.units+=e.u||0; g.actualized+=e.rev||0;
+      const s=g.skus[e.sku]||(g.skus[e.sku]={sku:e.sku,units:0,actualized:0}); s.units+=e.u||0; s.actualized+=e.rev||0;
+    } else if((e.u||0)>0 || Math.abs(e.rev||0)>0.005){      // unmapped format that still has paid sales
+      const o=other[e.src]; o.units+=e.u||0; o.actualized+=e.rev||0;
+      const s=o.skus[e.sku]||(o.skus[e.sku]={sku:e.sku,units:0,actualized:0}); s.units+=e.u||0; s.actualized+=e.rev||0;
+    }
   });
-  CONC_FORMATS.forEach(f=>getT(f.label));   // always show the main types, even at 0
-  const isMain=l=>CONC_FORMATS.some(f=>f.label===l);
-  SKU=Object.values(types).map(t=>({type:t.type,units:t.units,samples:t.samples,revenue:t.revenue,avg:t.units?t.revenue/t.units:0,
-      skus:Object.values(t.skus).map(s=>Object.assign(s,{avg:s.units?s.revenue/s.units:0})).filter(s=>s.units||s.samples||s.revenue>0.005).sort((a,b)=>b.revenue-a.revenue)}))
-    .filter(t=>t.units||t.samples||t.revenue>0.005||isMain(t.type));
+  // order/invoice-level discounts + credit memos, per source, from the concession events
+  const dc={Distru:0, Nabis:0};
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s!=='Distru'&&e.s!=='Nabis') return;
+    if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
+    dc[e.s]+=(e.invoiceDisc||0)+(e.creditMemos||0); });
+  const mkSkus=(map,L)=>Object.values(map).map(s=>({sku:s.sku,units:s.units,actualized:s.actualized,projected:s.units*L,unitDisc:s.units*L-s.actualized}))
+      .filter(s=>s.units||Math.abs(s.actualized)>0.005).sort((a,b)=>b.actualized-a.actualized);
+  const build=src=>{
+    const rows=CONC_FORMATS.map(f=>{                       // always the 4 main formats, even at 0
+      const g=acc[src][f.label]||{units:0,actualized:0,skus:{}}, L=A[f.key]||0;
+      return {key:f.key,label:f.label,units:g.units,projected:g.units*L,actualized:g.actualized,unitDisc:g.units*L-g.actualized,skus:mkSkus(g.skus,L)};
+    });
+    const o=other[src];
+    if(o.units>0.0001 || Math.abs(o.actualized)>0.005)     // surface unmapped sales so nothing is hidden
+      rows.push({key:'other',label:'Other',units:o.units,projected:o.actualized,actualized:o.actualized,unitDisc:0,
+        skus:Object.values(o.skus).map(s=>({sku:s.sku,units:s.units,actualized:s.actualized,projected:s.actualized,unitDisc:0})).sort((a,b)=>b.actualized-a.actualized)});
+    const totals=rows.reduce((t,r)=>({units:t.units+r.units,projected:t.projected+r.projected,actualized:t.actualized+r.actualized,unitDisc:t.unitDisc+r.unitDisc}),{units:0,projected:0,actualized:0,unitDisc:0});
+    return {source:src, rows, discCredits:dc[src]||0, totals};
+  };
+  SKU=[build('Nabis'), build('Distru')];
 }
 function buildSku(){
   if(FILES.distru_items || FILES.nabis_detail) SKU_EVENTS=buildSkuEvents();
@@ -1371,50 +1390,61 @@ function buildSku(){
   if(SKU.length) $('#reports').classList.remove('hidden');
   renderSku(); renderShareBar();
 }
-function skuFiltered(){
-  const q=$('#sku-search').value.trim().toLowerCase();
-  let rows=SKU.filter(t=>{ if(!q) return true; if(t.type.toLowerCase().includes(q)) return true; return (t.skus||[]).some(s=>s.sku.toLowerCase().includes(q)); });
-  const k=skuSort.key,d=skuSort.dir;
-  rows.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-d:av>bv?d:0; });
-  return rows;
-}
 function renderSku(){
-  const body=$('#sku-body'), foot=$('#sku-foot'), note=$('#sku-note');
-  if(!SKU.length){ body.innerHTML=`<tr><td colspan="6" class="empty">Upload the <b>Distru sales-order items</b> and/or <b>Nabis detailed brand</b> file to see sales by product type.</td></tr>`; foot.innerHTML=''; note.innerHTML=''; return; }
-  const rows=skuFiltered();
+  const wrap=$('#sku-wrap'), note=$('#sku-note');
+  if(!SKU.length){ wrap.innerHTML=`<div class="empty" style="padding:34px;text-align:center">Upload the <b>Distru sales-order items</b> and/or <b>Nabis detailed brand</b> file to see sales by product type.</div>`; note.innerHTML=''; return; }
   const intl=n=>Math.round(n).toLocaleString();
-  const q=$('#sku-search').value.trim().toLowerCase();
-  body.innerHTML=rows.map((t,i)=>{
-    let skus=t.skus||[];
-    if(q && !t.type.toLowerCase().includes(q)) skus=skus.filter(s=>s.sku.toLowerCase().includes(q));
-    const sub=skus.map(s=>`<tr>
-      <td>${esc(s.sku)}</td>
-      <td><span class="src ${s.source}">${s.source}</span></td>
-      <td class="num">${intl(s.units)}</td>
-      <td class="num">${s.samples?intl(s.samples):''}</td>
-      <td class="num money">${fmt$(s.revenue)}</td>
-      <td class="num money">${s.avg?fmt$(s.avg):''}</td>
-    </tr>`).join('');
-    const has=skus.length;
-    return `<tr class="parent">
-      <td>${has?'<span class="caret">▶</span>':''}</td>
-      <td><b>${esc(t.type)}</b></td>
-      <td class="num">${intl(t.units)}</td>
-      <td class="num">${t.samples?intl(t.samples):'<span class="neg">—</span>'}</td>
-      <td class="num money">${fmt$(t.revenue)}</td>
-      <td class="num money">${t.avg?fmt$(t.avg):'—'}</td>
-    </tr>`+(has?`<tr class="detail hidden"><td colspan="6"><div class="detailbox">
-      <div class="ddhead">SKUs in ${esc(t.type)} — ${has} product${has!==1?'s':''}</div>
-      <table class="ddtable"><thead><tr><th>SKU / Product</th><th>Src</th><th class="num">Units</th><th class="num">Samples</th><th class="num">Revenue</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${sub}</tbody></table>
-    </div></td></tr>`:'');
-  }).join('');
-  body.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;if(x&&x.classList.contains('detail')){x.classList.toggle('hidden');tr.classList.toggle('open');}});
-  const T={units:0,samples:0,revenue:0}; rows.forEach(t=>{T.units+=t.units;T.samples+=t.samples;T.revenue+=t.revenue;});
-  foot.innerHTML=`<tr class="totals"><td></td><td>Total · ${rows.length} type${rows.length!==1?'s':''}</td>
-    <td class="num">${intl(T.units)}</td><td class="num">${intl(T.samples)}</td><td class="num money">${fmt$(T.revenue)}</td>
-    <td class="num money">${T.units?fmt$(T.revenue/T.units):'—'}</td></tr>`;
-  const rng=($('#sku-start').value||'2021-01-01')+' → '+($('#sku-end').value||'today');
-  note.innerHTML=`Range ${esc(rng)}. Units &amp; revenue are actual billed (dated by invoice/delivery), combining Distru + Nabis. Click a type to see the individual SKUs within it. Samples are the $0.01 give-away units (excluded from revenue).`;
+  const shortD=v=>{ if(!v) return ''; const p=v.split('-'); return p.length===3?(+p[1])+'/'+(+p[2]):v; };
+  const s=$('#sku-start').value, e=$('#sku-end').value;
+  const rng=(s||e)?`${shortD(s)||'…'} – ${shortD(e)||'today'}`:'all time';
+  const tableFor=sys=>{
+    const rowsHtml=sys.rows.map(r=>{
+      const has=(r.skus||[]).length;
+      const sub=(r.skus||[]).map(x=>`<tr>
+        <td>${esc(x.sku)}</td>
+        <td class="num">${intl(x.units)}</td>
+        <td class="num money">${fmt$(x.projected)}</td>
+        <td class="num money">${fmt$(x.actualized)}</td>
+        <td class="num money">${x.unitDisc?fmt$(x.unitDisc):'—'}</td>
+      </tr>`).join('');
+      return `<tr class="parent">
+        <td>${has?'<span class="caret">▶</span> ':''}Total ${esc(SKU_DISP[r.key]||r.label)}</td>
+        <td class="num">${intl(r.units)}</td>
+        <td class="num money">${fmt$(r.projected)}</td>
+        <td class="num money">${fmt$(r.actualized)}</td>
+        <td class="num money ud">${r.unitDisc?fmt$(r.unitDisc):'—'}</td>
+        <td class="num"></td>
+      </tr>`+(has?`<tr class="detail hidden"><td colspan="6"><div class="detailbox">
+        <div class="ddhead">${esc(SKU_DISP[r.key]||r.label)} — SKUs</div>
+        <table class="ddtable"><thead><tr><th>SKU / Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Disc</th></tr></thead><tbody>${sub}</tbody></table>
+      </div></td></tr>`:'');
+    }).join('');
+    const t=sys.totals, dc=sys.discCredits||0;
+    return `<table class="skutbl">
+      <thead>
+        <tr><th class="sys ${sys.source}" colspan="6">${sys.source}</th></tr>
+        <tr><th>Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Discounts</th><th class="num">Discounts/Credits</th></tr>
+      </thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot><tr class="totals">
+        <td>TOTALS</td>
+        <td class="num">${intl(t.units)}</td>
+        <td class="num money">${fmt$(t.projected)}</td>
+        <td class="num money">${fmt$(t.actualized)}</td>
+        <td class="num money ud">${t.unitDisc?fmt$(t.unitDisc):'—'}</td>
+        <td class="num money dc">${dc?('-'+fmt$(dc)):'—'}</td>
+      </tr></tfoot>
+    </table>`;
+  };
+  const nabis=SKU.find(x=>x.source==='Nabis'), distru=SKU.find(x=>x.source==='Distru');
+  const sys=[nabis,distru].filter(Boolean);
+  const net=sys.reduce((a,x)=>a+(x.totals.actualized-(x.discCredits||0)),0);
+  wrap.innerHTML=`<div class="sku-week">Week: <b>${esc(rng)}</b></div>`
+    + sys.map(tableFor).join('')
+    + `<div class="sku-weektotal"><div class="lbl">Total for week (Distru + Nabis)</div><div class="amt money">${fmt$(net)}</div></div>`;
+  wrap.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;if(x&&x.classList.contains('detail')){x.classList.toggle('hidden');tr.classList.toggle('open');}});
+  const lp=(id,d)=>{const el=$('#'+id);return el&&el.value?el.value:d;};
+  note.innerHTML=`<b>Projected</b> = units × list price (3.5g $${esc(lp('a-jar35','27.50'))}, .7g $${esc(lp('a-fivepk','22.50'))}, 1.5g $${esc(lp('a-pr15','12'))}, vape $${esc(lp('a-vape','25'))} — editable on the Credits/Discounts tab). <b>Actualized</b> = actual billed. <b>Unit Discounts</b> = Projected − Actualized. <b>Discounts/Credits</b> = order/invoice-level discounts + credit memos. <b>Total for week</b> = total Actualized − total Discounts/Credits. Click a row to see its SKUs. Samples ($0.01 give-aways) are excluded.`;
 }
 function applySkuPreset(p){
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
@@ -1461,14 +1491,15 @@ function concExport(rows,label,fname){
 $('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort),'Dispensary','credits-discounts-by-dispensary.csv');
 $('#cb-export').onclick=()=>concExport(concFilterSort(CONC_BRAND,'cb-search',null,cbSort),'Brand','credits-discounts-by-brand.csv');
 $('#sku-export').onclick=()=>{
-  const rows=[['Product Type','SKU / Product','Source','Units','Samples','Revenue','Avg $/Unit']];
-  const d=skuFiltered(); const f2=v=>(+v||0).toFixed(2);
-  d.forEach(t=>{
-    rows.push([t.type,'(all)','',Math.round(t.units),Math.round(t.samples),f2(t.revenue),t.avg?f2(t.avg):'']);
-    (t.skus||[]).forEach(s=>rows.push([t.type,s.sku,s.source,Math.round(s.units),Math.round(s.samples),f2(s.revenue),s.avg?f2(s.avg):'']));
+  const rows=[['System','Product','Units','Projected','Actualized','Unit Discounts','Discounts/Credits']];
+  const f2=v=>(+v||0).toFixed(2);
+  SKU.forEach(sys=>{
+    sys.rows.forEach(r=>rows.push([sys.source,'Total '+(SKU_DISP[r.key]||r.label),Math.round(r.units),f2(r.projected),f2(r.actualized),f2(r.unitDisc),'']));
+    const t=sys.totals;
+    rows.push([sys.source,'TOTALS',Math.round(t.units),f2(t.projected),f2(t.actualized),f2(t.unitDisc),f2(-(sys.discCredits||0))]);
   });
-  const T=d.reduce((a,t)=>({u:a.u+t.units,s:a.s+t.samples,rev:a.rev+t.revenue}),{u:0,s:0,rev:0});
-  rows.push(['TOTAL','','',Math.round(T.u),Math.round(T.s),f2(T.rev),T.u?f2(T.rev/T.u):'']);
+  const net=SKU.reduce((a,sys)=>a+(sys.totals.actualized-(sys.discCredits||0)),0);
+  rows.push(['','Total for week (Distru + Nabis)','','','','',f2(net)]);
   downloadCSV('sales-by-type.csv',rows);
 };
 
@@ -1495,6 +1526,8 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
 ['cd-search','cd-source'].forEach(id=>$('#'+id).addEventListener('input',renderConcDisp));
 $('#cb-search').addEventListener('input',renderConcBrand);
 ['conc-start','conc-end','a-jar35','a-fivepk','a-pr15','a-vape','a-pouch'].forEach(id=>$('#'+id).addEventListener('change',buildConcessions));
+// list-price edits also drive the Sales-by-Type "Projected" column
+['a-jar35','a-fivepk','a-pr15','a-vape'].forEach(id=>$('#'+id).addEventListener('change',buildSku));
 // manual date edits switch the preset to "Custom"
 ['conc-start','conc-end'].forEach(id=>$('#'+id).addEventListener('change',()=>{ $('#conc-preset').value='custom'; }));
 function applyConcPreset(p){
@@ -1509,13 +1542,8 @@ function applyConcPreset(p){
   $('#conc-start').value=s; $('#conc-end').value=e; buildConcessions();
 }
 $('#conc-preset').addEventListener('change',ev=>applyConcPreset(ev.target.value));
-$('#sku-search').addEventListener('input',renderSku);
-$('#sku-source').addEventListener('change',buildSku);   // source filter re-aggregates the type totals
 ['sku-start','sku-end'].forEach(id=>$('#'+id).addEventListener('change',()=>{ $('#sku-preset').value='custom'; buildSku(); }));
 $('#sku-preset').addEventListener('change',ev=>applySkuPreset(ev.target.value));
-document.querySelectorAll('#sku-table th[data-sort]').forEach(th=>th.onclick=()=>{
-  const k=th.dataset.sort; skuSort.dir = skuSort.key===k? -skuSort.dir : (k==='type'?1:-1); skuSort.key=k; renderSku();
-});
 document.querySelectorAll('#cd-table th[data-sort]').forEach(th=>th.onclick=()=>{
   const k=th.dataset.sort; cdSort.dir = cdSort.key===k? -cdSort.dir : (k==='customer'||k==='source'?1:-1); cdSort.key=k; renderConcDisp();
 });
