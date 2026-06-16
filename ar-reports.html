@@ -975,9 +975,9 @@ let CONC_BRAND=[];      // rolled up by retail chain/brand
 let CONC_EVENTS=[];     // per-order date-stamped events (shareable; date range re-applied from these)
 // compact (de)serialization of events for the shared payload
 function eventsToWire(evs){ return (evs||[]).map(e=>{ const f=[]; CONC_FORMATS.forEach(x=>{const c=e.fmt[x.key]||{};f.push(c.paidU||0,c.bill||0,c.sampU||0);});
-  return {c:e.c,s:e.s,d:e.d,f,p:e.pouchU||0,ou:e.otherU||0,ob:e.otherBill||0,id:e.invoiceDisc||0,cr:e.creditMemos||0}; }); }
+  return {c:e.c,s:e.s,d:e.d,f,p:e.pouchU||0,pb:e.pouchBill||0,sb:e.sampBill||0,ou:e.otherU||0,ob:e.otherBill||0,id:e.invoiceDisc||0,cr:e.creditMemos||0,n:e.ref||''}; }); }
 function eventsFromWire(arr){ return (arr||[]).map(w=>{ const fmt={}; CONC_FORMATS.forEach((x,i)=>fmt[x.key]={paidU:(w.f||[])[i*3]||0,bill:(w.f||[])[i*3+1]||0,sampU:(w.f||[])[i*3+2]||0});
-  return {c:w.c,s:w.s,d:w.d,fmt,pouchU:w.p||0,otherU:w.ou||0,otherBill:w.ob||0,invoiceDisc:w.id||0,creditMemos:w.cr||0}; }); }
+  return {c:w.c,s:w.s,d:w.d,fmt,pouchU:w.p||0,pouchBill:w.pb||0,sampBill:w.sb||0,otherU:w.ou||0,otherBill:w.ob||0,invoiceDisc:w.id||0,creditMemos:w.cr||0,ref:w.n||''}; }); }
 let CONC_META=null;     // {start,end,assumptions,builtAt}
 let cdSort={key:'totalConc',dir:-1}, cbSort={key:'totalConc',dir:-1};
 const CONC_FORMATS=[
@@ -1055,18 +1055,18 @@ function buildConcEvents(){
       const cust=(r['Customer']||'').trim()||'Unknown', so=(r['Order Number']||'').trim(), k=cust+'|'+so;
       const invNum=(r['Invoice Numbers']||'').trim();
       const accrual = invDateByNum[invNum] || invDateBySO[so] || parseDate(r['Delivery Date']) || parseDate(r['Order Date']);
-      const e=byso[k]||(byso[k]={c:cust,s:'Distru',d:epoch(accrual),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0});
+      const e=byso[k]||(byso[k]={c:cust,s:'Distru',d:epoch(accrual),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0,ref:(invNum||so)});
       const qty=num(r['Quantity']), up=num(r['Order Item Price']), bill=up*qty, fk=distruFmt(r['Subcategory']);
-      if(fk==='pouch'){ e.pouchU+=qty; return; }
+      if(fk==='pouch'){ e.pouchU+=qty; e.pouchBill+=bill; return; }
       if(!fk){ e.otherU+=qty; e.otherBill+=bill; return; }
-      if(up<=0.02) e.fmt[fk].sampU+=qty; else { e.fmt[fk].paidU+=qty; e.fmt[fk].bill+=bill; }
+      if(up<=0.02){ e.fmt[fk].sampU+=qty; e.sampBill+=bill; } else { e.fmt[fk].paidU+=qty; e.fmt[fk].bill+=bill; }
     });
     Object.values(byso).forEach(e=>ev.push(e));
   }
   /* Distru invoice discounts → one event per invoice (invoice date) */
   if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
     const disc=Math.abs(num(r['Total Discounts'])); if(!disc) return;
-    ev.push({c:(r['Customer']||'').trim()||'Unknown',s:'Distru',d:epoch(parseDate(r['Invoice Date'])),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:disc,creditMemos:0});
+    ev.push({c:(r['Customer']||'').trim()||'Unknown',s:'Distru',d:epoch(parseDate(r['Invoice Date'])),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:disc,creditMemos:0,ref:(r['Invoice Number']||'').trim()});
   });
   /* Distru credit memos → dated to the invoice they offset (falls back to payment date) */
   if(FILES.distru_payments) FILES.distru_payments.data.forEach(r=>{
@@ -1074,7 +1074,7 @@ function buildConcEvents(){
     const amt=num(r['Amount']); if(!amt) return;
     const ref=(r['Reference']||'').trim();
     const d=invDateByNum[ref] || parseDate(r['Date']);
-    ev.push({c:(r['Company']||'').trim()||'Unknown',s:'Distru',d:epoch(d),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:amt});
+    ev.push({c:(r['Company']||'').trim()||'Unknown',s:'Distru',d:epoch(d),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:amt,ref:(ref||(r['Payment #']||'').trim())});
   });
   /* Nabis → one event per order (aggregate its detail lines; disc/credit from brand summary) */
   if(FILES.nabis_detail){
@@ -1087,13 +1087,13 @@ function buildConcEvents(){
       const cust = /pacafi/i.test(rawSite)
         ? 'Pacafi — '+pacafiStore(r['Order Name'])                                  // split co-op into stores
         : (rawSite.replace(/\s*\[[^\]]*\]\s*$/,'').trim() || (r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim() || 'Unknown');
-      const e=byord[on]||(byord[on]={c:cust,s:'Nabis',d:epoch(parseDate(r['Delivery Date'])||parseDate(r['Created Date'])),fmt:emptyFmt(),pouchU:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0,_on:on});
+      const e=byord[on]||(byord[on]={c:cust,s:'Nabis',d:epoch(parseDate(r['Delivery Date'])||parseDate(r['Created Date'])),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0,ref:on,_on:on});
       const qty=num(r['Units']), bill=num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);
       const isSample=(r['Is Sample']||'').trim().toLowerCase()==='yes';
       const fk=detectFmt(r['Unit Description'])||detectFmt(r['Strain'])||detectFmt(r['Line Item SKU Code']);
-      if(fk==='pouch'){ e.pouchU+=qty; }
+      if(fk==='pouch'){ e.pouchU+=qty; e.pouchBill+=bill; }
       else if(!fk){ e.otherU+=qty; e.otherBill+=bill; }
-      else if(isSample) e.fmt[fk].sampU+=qty; else { e.fmt[fk].paidU+=qty; e.fmt[fk].bill+=bill; }
+      else if(isSample){ e.fmt[fk].sampU+=qty; e.sampBill+=bill; } else { e.fmt[fk].paidU+=qty; e.fmt[fk].bill+=bill; }
     });
     Object.values(byord).forEach(e=>{ const bm=bMap[e._on];
       if(bm){ e.invoiceDisc=bm.orderDisc>0.005?bm.orderDisc:0; e.creditMemos=bm.credit>0.005?bm.credit:0; }
@@ -1109,25 +1109,32 @@ function aggregateConcessions(){
   if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,0);
   const map={};
   const get=(name,source)=>{ const k=source+'|'+name; if(!map[k]){ const f={}; CONC_FORMATS.forEach(x=>f[x.key]={paidU:0,bill:0,sampU:0});
-    map[k]={customer:name,source,fmt:f,otherU:0,otherBill:0,pouchU:0,invoiceDisc:0,creditMemos:0}; } return map[k]; };
+    map[k]={customer:name,source,fmt:f,otherU:0,otherBill:0,pouchU:0,pouchBill:0,sampBill:0,invoiceDisc:0,creditMemos:0,orders:{}}; } return map[k]; };
   CONC_EVENTS.forEach(e=>{
     if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
     const g=get(e.c,e.s);
-    CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c){ g.fmt[f.key].paidU+=c.paidU||0; g.fmt[f.key].bill+=c.bill||0; g.fmt[f.key].sampU+=c.sampU||0; } });
-    g.pouchU+=e.pouchU||0; g.otherU+=e.otherU||0; g.otherBill+=e.otherBill||0; g.invoiceDisc+=e.invoiceDisc||0; g.creditMemos+=e.creditMemos||0;
+    // per-event billed + concession (penny billing counted; samples/pouches net of it)
+    let eb=(e.otherBill||0)+(e.sampBill||0)+(e.pouchBill||0), ec=(e.invoiceDisc||0)+(e.creditMemos||0)+((e.pouchU||0)*A.pouch-(e.pouchBill||0))-(e.sampBill||0);
+    CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c){
+      g.fmt[f.key].paidU+=c.paidU||0; g.fmt[f.key].bill+=c.bill||0; g.fmt[f.key].sampU+=c.sampU||0;
+      eb+=c.bill||0; ec+=(c.paidU*A[f.key]-c.bill)+(c.sampU*A[f.key]); } });
+    g.pouchU+=e.pouchU||0; g.pouchBill+=e.pouchBill||0; g.sampBill+=e.sampBill||0;
+    g.otherU+=e.otherU||0; g.otherBill+=e.otherBill||0; g.invoiceDisc+=e.invoiceDisc||0; g.creditMemos+=e.creditMemos||0;
+    const ref=e.ref||'(no #)', o=g.orders[ref]||(g.orders[ref]={ref,date:e.d,billed:0,conc:0}); o.billed+=eb; o.conc+=ec; if(e.d&&(!o.date||e.d<o.date))o.date=e.d;
   });
   CONC=Object.values(map).map(g=>{
-    const row={customer:g.customer,source:g.source}; let puTotal=0,grossList=0,billed=g.otherBill,samplesList=0;
+    const row={customer:g.customer,source:g.source}; let puTotal=0,grossList=0,billed=g.otherBill+g.sampBill+g.pouchBill,samplesList=-g.sampBill;
     CONC_FORMATS.forEach(f=>{ const c=g.fmt[f.key], L=A[f.key];
       row['pu_'+f.key]=c.paidU*L-c.bill; puTotal+=row['pu_'+f.key];
       grossList+=(c.paidU+c.sampU)*L; billed+=c.bill; samplesList+=c.sampU*L; });
     grossList+=g.otherBill;
-    const pouch=g.pouchU*A.pouch;
+    const pouch=g.pouchU*A.pouch-g.pouchBill;
     const totalConc=puTotal+samplesList+pouch+g.invoiceDisc+g.creditMemos;
+    const orders=Object.values(g.orders).filter(o=>Math.abs(o.billed)>0.005||Math.abs(o.conc)>0.005).sort((a,b)=>b.conc-a.conc);
     Object.assign(row,{grossList,billed,puTotal,samplesList,pouch,invoiceDisc:g.invoiceDisc,creditMemos:g.creditMemos,
       totalConc,pctGross:grossList?totalConc/grossList:0,otherU:g.otherU,
       detail:{formats:CONC_FORMATS.map(f=>({label:f.label,paidU:g.fmt[f.key].paidU,bill:g.fmt[f.key].bill,sampU:g.fmt[f.key].sampU,list:A[f.key],disc:row['pu_'+f.key]})),
-        pouchU:g.pouchU,pouchVal:pouch,pouchList:A.pouch,
+        pouchU:g.pouchU,pouchVal:pouch,pouchList:A.pouch,orders,
         invoiceLines:g.invoiceDisc>0.005?[{ref:'Order/invoice discounts',date:null,amt:g.invoiceDisc,note:''}]:[],
         creditLines:g.creditMemos>0.005?[{ref:'Credits',date:null,amt:g.creditMemos,note:''}]:[],
         otherU:g.otherU,otherBill:g.otherBill}});
@@ -1159,7 +1166,7 @@ function computeBrandRollup(){
   const m={};
   CONC.forEach(r=>{ const b=brandOf(r.customer); const g=m[b]||(m[b]={customer:b,sources:new Set(),members:[]});
     CONC_NUM.forEach(k=>g[k]=(g[k]||0)+(r[k]||0)); g.sources.add(r.source);
-    g.members.push({customer:r.customer,source:r.source,grossList:r.grossList,billed:r.billed,totalConc:r.totalConc,pctGross:r.pctGross}); });
+    g.members.push({customer:r.customer,source:r.source,grossList:r.grossList,billed:r.billed,totalConc:r.totalConc,pctGross:r.pctGross,orders:(r.detail&&r.detail.orders)||[]}); });
   CONC_BRAND=Object.values(m).map(g=>{ g.source=[...g.sources].sort().join(' + '); delete g.sources;
     g.pctGross=g.grossList?g.totalConc/g.grossList:0; g.members.sort((a,b)=>b.totalConc-a.totalConc);
     g.detail={members:g.members}; return g; });
@@ -1172,6 +1179,12 @@ function concFilterSort(rows, searchId, sourceId, sortState){
   const k=sortState.key,d=sortState.dir;
   out.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-d:av>bv?d:0; });
   return out;
+}
+function ordersTable(orders){
+  if(!orders||!orders.length) return '<div class="rep" style="padding:4px 0">No invoices in this range.</div>';
+  return `<table class="ddtable"><thead><tr><th>Invoice / Order #</th><th>Date</th><th class="num">Billed</th><th class="num">Concessions</th></tr></thead><tbody>`+
+    orders.map(o=>`<tr><td>${esc(o.ref)}</td><td>${o.date?fmtDate(new Date(o.date)):'—'}</td><td class="num money">${fmt$(o.billed)}</td><td class="num money">${fmt$(o.conc)}</td></tr>`).join('')+
+    `</tbody></table>`;
 }
 function concRowHtml(r,i,kind){
   const m$=v=>v?fmt$(v):'<span class="neg">—</span>';
@@ -1189,10 +1202,14 @@ function concRowHtml(r,i,kind){
     `<tr><td>Invoice discounts</td><td class="num money">${m$(r.invoiceDisc)}</td></tr>`+
     `<tr><td>Credit memos</td><td class="num money">${m$(r.creditMemos)}</td></tr>`+
     `<tr class="dsubrow"><td>Total</td><td class="num money">${fmt$(dcTot)}</td></tr></tbody></table>`;
-  let inner=pfTable+sampTable+dcTable;
+  let inner;
   if(kind==='brand'){
-    const mem=((r.detail&&r.detail.members)||[]).map(x=>`<tr><td>${esc(x.customer)}</td><td><span class="src ${x.source}">${x.source}</span></td><td class="num money">${fmt$(x.billed)}</td><td class="num money">${fmt$(x.grossList)}</td><td class="num money">${fmt$(x.totalConc)}</td><td class="num">${(x.pctGross*100).toFixed(1)}%</td></tr>`).join('');
-    inner+=`<div class="ddhead">Member stores</div><table class="ddtable"><thead><tr><th>Store</th><th>Src</th><th class="num">Billed</th><th class="num">Gross @ List</th><th class="num">Total Concessions</th><th class="num">% Gross</th></tr></thead><tbody>${mem}</tbody></table>`;
+    const mem=((r.detail&&r.detail.members)||[]).map((x,j)=>
+      `<tr class="memrow" data-mi="${j}" style="cursor:pointer"><td><span class="caret">▶</span> ${esc(x.customer)}</td><td><span class="src ${String(x.source||'').replace(/[^A-Za-z]/g,'')}">${esc(x.source)}</span></td><td class="num money">${fmt$(x.billed)}</td><td class="num money">${fmt$(x.grossList)}</td><td class="num money">${fmt$(x.totalConc)}</td><td class="num">${(x.pctGross*100).toFixed(1)}%</td></tr>`+
+      `<tr class="memdetail hidden"><td colspan="6">${ordersTable(x.orders)}</td></tr>`).join('');
+    inner=pfTable+sampTable+dcTable+`<div class="ddhead">Member stores — click a store for its invoices</div><table class="ddtable"><thead><tr><th>Store</th><th>Src</th><th class="num">Billed</th><th class="num">Gross @ List</th><th class="num">Total Concessions</th><th class="num">% Gross</th></tr></thead><tbody>${mem}</tbody></table>`;
+  } else {
+    inner=pfTable+sampTable+dcTable+`<div class="ddhead">Invoices / orders</div>`+ordersTable(r.detail&&r.detail.orders);
   }
   return `<tr class="parent" data-i="${i}">
     <td><span class="caret">▶</span></td>
@@ -1217,6 +1234,7 @@ function renderConcGrid(allRows, ids, sortState, kind){
   const rows=concFilterSort(allRows, ids.search, ids.source, sortState);
   body.innerHTML=rows.map((r,i)=>concRowHtml(r,i,kind)).join('');
   body.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;x.classList.toggle('hidden');tr.classList.toggle('open');});
+  body.querySelectorAll('tr.memrow').forEach(tr=>tr.onclick=e=>{ e.stopPropagation(); const d=tr.nextElementSibling; if(d&&d.classList.contains('memdetail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } });
   const T={grossList:0,billed:0,pu_jar35:0,pu_fivepk:0,pu_pr15:0,pu_vape:0,puTotal:0,samplesList:0,pouch:0,invoiceDisc:0,creditMemos:0,totalConc:0};
   rows.forEach(r=>Object.keys(T).forEach(k=>T[k]+=r[k]||0));
   foot.innerHTML=`<tr class="totals">
