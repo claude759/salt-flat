@@ -146,6 +146,24 @@
   .invdetail .ddtable tfoot td{position:sticky;bottom:0;z-index:2;background:var(--panel2);box-shadow:inset 0 1px 0 var(--line)}
   .caret{display:inline-block;width:12px;color:var(--muted);transition:.15s}
   tr.open .caret{transform:rotate(90deg)}
+  /* Sales Scorecard — drillable cells + in-tab modal */
+  #sc-table td.drill{cursor:pointer;position:relative}
+  #sc-table td.drill:hover{background:rgba(124,92,255,.16);box-shadow:inset 0 0 0 1px var(--accent)}
+  .scm{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center}
+  .scm.hidden{display:none}
+  .scm-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(2px)}
+  .scm-panel{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 24px 60px rgba(0,0,0,.5);width:min(900px,92vw);max-height:84vh;display:flex;flex-direction:column}
+  .scm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line)}
+  .scm-title{font-size:16px;font-weight:700}
+  .scm-sub{font-size:12px;color:var(--muted);margin-top:3px}
+  .scm-x{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:9px;width:32px;height:32px;font-size:15px;cursor:pointer;flex:none}
+  .scm-x:hover{background:var(--line)}
+  .scm-body{overflow:auto;padding:6px 18px 16px}
+  .scm-body table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .scm-body thead th{position:sticky;top:0;background:var(--panel2);color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.4px;z-index:1}
+  .scm-body tfoot td{position:sticky;bottom:0;background:var(--panel2);font-weight:700;border-top:2px solid var(--line)}
+  .scm-empty{padding:26px 4px;color:var(--muted);text-align:center}
   /* Sales by Type — two-system layout */
   th.sys{text-align:center;font-size:13px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:9px}
   th.sys.Nabis{background:rgba(255,143,94,.13);color:var(--nabis)}
@@ -402,6 +420,18 @@
   </div>
 </div>
 
+<!-- In-tab drill-down modal for the Sales Scorecard -->
+<div id="sc-modal" class="scm hidden">
+  <div class="scm-backdrop"></div>
+  <div class="scm-panel" role="dialog" aria-modal="true">
+    <div class="scm-head">
+      <div><div class="scm-title" id="scm-title"></div><div class="scm-sub" id="scm-sub"></div></div>
+      <button class="scm-x" id="scm-close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="scm-body" id="scm-body"></div>
+  </div>
+</div>
+
 <script>
 /* ============================ Utilities ============================ */
 const $ = s => document.querySelector(s);
@@ -512,6 +542,10 @@ let asOf = new Date();
 // (YYYY-MM-DD). Each entry: {projN, projD, onHand}. Captured on publish (so each weekly
 // auto-publish accumulates one Monday's snapshot), preserved across publishes.
 let SCORECARD_SNAPS={};
+// Slim current-week line-item detail for the Scorecard drill-down in SHARED mode (the raw
+// FILES aren't present then): {inv:[{name,qty,price}], pN:[{ref,customer,amount}], pD:[...]}.
+// Captured on publish; null when viewing locally (drill-downs use FILES directly instead).
+let SC_DETAIL=null;
 
 /* ============================ Team sharing ============================ */
 // Paste your deployed Apps Script Web App URL here (see apps-script-reports.gs).
@@ -669,6 +703,7 @@ async function loadShared(){
       $('#reports').classList.remove('hidden'); renderSku(); any=true;
     }
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
+    SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
     renderShareBar();
   }catch(e){ renderShareBar('error'); }
@@ -697,7 +732,7 @@ async function publishToTeam(){
     // Enrich every past Monday with computed AR so shared viewers (no raw FILES) see real
     // values, not blanks. Past snapshots are merged additively — projN/projD/onHand stay.
     snaps = enrichSnapsWithAllAR(snaps);
-    cur.scorecard = { snaps };
+    cur.scorecard = { snaps, detail: buildScDetail() };
     const body=new URLSearchParams({action:'publish',uploadedBy:who,payload:JSON.stringify(cur)});
     await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});   // throws only on real network failure
     // Confirm is best-effort: the POST above is opaque (no-cors), so a failed read-back
@@ -1837,20 +1872,56 @@ function computeProjectedForCurrentWeek(monday){
   return {projN, projD};
 }
 
-// Compute Total On Hand Inventory (dollar value) from the Nabis inventory CSV.
-// Sums total_available × sku_price_per_unit across non-sample, non-archived SKUs.
-// Returns null if no inventory file is loaded.
-function computeOnHandValue(){
+// Per-SKU on-hand detail from the Nabis inventory CSV (non-sample, non-archived, qty&price>0).
+// Returns [{name, batch, qty, price, value}] sorted by value desc, or null if no inventory file.
+function onHandDetail(){
   if(!FILES.nabis_inventory) return null;
-  let total=0;
+  const out=[];
   FILES.nabis_inventory.data.forEach(r=>{
     if((r['sku_is_sample']||'').toLowerCase()==='yes') return;          // exclude penny samples
     if((r['sku_is_archived']||'').toLowerCase()==='yes') return;
     if((r['sku_batch_is_archived']||'').toLowerCase()==='yes') return;
     const qty=num(r['total_available']); const price=num(r['sku_price_per_unit']);
-    if(qty>0 && price>0) total+=qty*price;
+    if(qty>0 && price>0) out.push({name:(r['sku_name']||r['sku_code']||'').trim(),
+      batch:(r['batch_code']||'').trim(), qty, price, value:qty*price});
   });
-  return total;
+  return out.sort((a,b)=>b.value-a.value);
+}
+// Total On Hand Inventory ($) = sum of the per-SKU detail. Null if no inventory file.
+function computeOnHandValue(){
+  const d=onHandDetail();
+  return d ? d.reduce((s,x)=>s+x.value,0) : null;
+}
+// Per-order projected-sales detail for `monday`'s week (orders scheduled, not yet delivered).
+// Returns {nabis:[{ref,customer,amount}], distru:[...]} or null arrays if the file is absent.
+function projectedDetail(monday){
+  const weekEnd=new Date(monday); weekEnd.setDate(monday.getDate()+6); weekEnd.setHours(23,59,59,999);
+  let nabis=null, distru=null;
+  if(FILES.distru_items){ const agg={};
+    FILES.distru_items.data.forEach(r=>{
+      const status=(r['Status']||'').trim();
+      if(status==='Delivered'||status==='Completed') return;
+      if(isNabisCust(r['Customer'])) return;
+      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      const ref=(r['Order Number']||r['Sales Order']||r['Invoice Number']||'').trim()||'(order)';
+      const amt=num(r['Quantity'])*num(r['Order Item Price']);
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),amount:0}); g.amount+=amt;
+    });
+    distru=Object.values(agg).filter(x=>Math.abs(x.amount)>0.005).sort((a,b)=>b.amount-a.amount);
+  }
+  if(FILES.nabis_detail){ const agg={};
+    FILES.nabis_detail.data.forEach(r=>{
+      const type=(r['Order Type']||'').trim().toUpperCase();
+      const status=(r['Order Status']||'').trim().toUpperCase();
+      if(type==='PICKUP_FROM_BRAND'||status==='CANCELLED'||status==='REJECTED'||status==='DELIVERED') return;
+      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      const ref=(r['Order Number']||'').trim()||'(order)';
+      const amt=num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Site']||r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim(),amount:0}); g.amount+=amt;
+    });
+    nabis=Object.values(agg).filter(x=>Math.abs(x.amount)>0.005).sort((a,b)=>b.amount-a.amount);
+  }
+  return {nabis, distru};
 }
 
 // Lock THIS week's canonical AR (the exact figure the AR pages show) into the snapshot so
@@ -1981,23 +2052,41 @@ function renderScorecard(){
   const i=v=>v==null?'<span class="neg">—</span>':Math.round(v).toLocaleString();
   const fmtD=d=>{ if(!d) return ''; const p=d.split('-'); return `${+p[1]}/${+p[2]}/${p[0]}`; };
   const liveIdx = (CONC_EVENTS||[]).length||(RAW||[]).length ? 0 : -1;
-  const trs=rows.map((r,idx)=>`<tr${idx===liveIdx?' class="totals"':''}>
-    <td>${esc(fmtD(r[0]))}${idx===liveIdx?' <span class="pill live" style="font-size:9.5px;margin-left:4px">live</span>':''}</td>
-    <td class="num money">${m(r[1])}</td>
-    <td class="num money">${m(r[2])}</td>
-    <td class="num money">${m(r[3])}</td>
-    <td class="num money">${m(r[4])}</td>
-    <td class="num money"><b>${m(r[5])}</b></td>
-    <td class="num">${i(r[6])}</td>
-    <td class="num money">${m(r[7])}</td>
-    <td class="num money">${m(r[8])}</td>
-    <td class="num money">${m(r[9])}</td>
-    <td class="num money">${m(r[10])}</td>
-    <td class="num money">${m(r[11])}</td>
-    <td class="num money">${m(r[12])}</td>
-    <td class="num money">${m(r[13])}</td>
-    <td class="num money"><b>${m(r[14])}</b></td>
-  </tr>`).join('');
+  // Drillability per column, by data availability:
+  const hasEv=(CONC_EVENTS||[]).length>0, hasInv=(INVOICES||[]).length>0;
+  const hasOnHand = !!FILES.nabis_inventory || !!(SC_DETAIL&&SC_DETAIL.inv);
+  const hasProj   = !!(FILES.distru_items||FILES.nabis_detail) || !!SC_DETAIL;
+  const COLKEY=['date','projN','projD','lwN','lwD','lwT','cust','mtd','priorMtd','fourWk','onHand','arCur','arPd1_60','arPd60_90','arTotal'];
+  const SALES=new Set(['lwN','lwD','lwT','cust','mtd','priorMtd','fourWk']);
+  const AR=new Set(['arCur','arPd1_60','arPd60_90','arTotal']);
+  const canDrill=(idx,r,isLive)=>{ if(r[idx]==null) return false; const c=COLKEY[idx];
+    if(SALES.has(c)) return hasEv;
+    if(AR.has(c)) return isLive && hasInv;
+    if(c==='onHand') return isLive && hasOnHand;
+    if(c==='projN'||c==='projD') return isLive && hasProj;
+    return false; };
+  const trs=rows.map((r,idx)=>{
+    const isLive=idx===liveIdx;
+    const C=(i,cls,content)=>{ const dr=canDrill(i,r,isLive);
+      return `<td class="${cls}${dr?' drill':''}"${dr?` data-d="${esc(r[0])}" data-c="${COLKEY[i]}" title="Click to see what makes up this number"`:''}>${content}</td>`; };
+    return `<tr${isLive?' class="totals"':''}>
+    <td>${esc(fmtD(r[0]))}${isLive?' <span class="pill live" style="font-size:9.5px;margin-left:4px">live</span>':''}</td>
+    ${C(1,'num money',m(r[1]))}
+    ${C(2,'num money',m(r[2]))}
+    ${C(3,'num money',m(r[3]))}
+    ${C(4,'num money',m(r[4]))}
+    ${C(5,'num money','<b>'+m(r[5])+'</b>')}
+    ${C(6,'num',i(r[6]))}
+    ${C(7,'num money',m(r[7]))}
+    ${C(8,'num money',m(r[8]))}
+    ${C(9,'num money',m(r[9]))}
+    ${C(10,'num money',m(r[10]))}
+    ${C(11,'num money',m(r[11]))}
+    ${C(12,'num money',m(r[12]))}
+    ${C(13,'num money',m(r[13]))}
+    ${C(14,'num money','<b>'+m(r[14])+'</b>')}
+  </tr>`;
+  }).join('');
   wrap.innerHTML=`<table id="sc-table">
     <thead><tr>
       <th>Date</th>
@@ -2018,7 +2107,7 @@ function renderScorecard(){
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
-  note.innerHTML=`Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> is filled only on the current row — it's a point-in-time snapshot of orders scheduled but not yet delivered; we don't have those snapshots for past weeks. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
+  note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> is filled only on the current row — it's a point-in-time snapshot of orders scheduled but not yet delivered; we don't have those snapshots for past weeks. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
 }
 
 $('#sc-export').onclick=()=>{
@@ -2027,6 +2116,118 @@ $('#sc-export').onclick=()=>{
   scorecardRows().forEach(r=>rows.push(r.map((c,i)=>c==null?'':(i===0?c:(i===6?Math.round(c):(+c).toFixed(2))))));
   downloadCSV('sales-scorecard.csv',rows);
 };
+
+// Slim current-week detail for the shared payload (so the team can drill On Hand / Projected
+// without the raw files). Built from FILES at publish time.
+function buildScDetail(){
+  const now=new Date(); now.setHours(0,0,0,0);
+  const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
+  const inv=(onHandDetail()||[]).map(x=>({name:x.name,qty:x.qty,price:x.price}));
+  const pd=projectedDetail(currentMon);
+  return { inv, pN:(pd.nabis||[]), pD:(pd.distru||[]) };
+}
+
+// ── Scorecard drill-down: given a cell (week Monday + column), return the line items ────────
+function scDrill(dateStr, col){
+  const [y,mo,da]=dateStr.split('-').map(Number);
+  const monday=new Date(y,mo-1,da); monday.setHours(0,0,0,0);
+  const wkLabel=`${mo}/${da}/${y}`;
+  const lwStart=new Date(monday); lwStart.setDate(monday.getDate()-7);
+  const lwEnd=new Date(monday); lwEnd.setDate(monday.getDate()-1); lwEnd.setHours(23,59,59,999);
+  const rng=(a,b)=>`${a.getMonth()+1}/${a.getDate()} – ${b.getMonth()+1}/${b.getDate()}`;
+  const fmtDt=dt=>`${dt.getMonth()+1}/${dt.getDate()}/${String(dt.getFullYear()).slice(2)}`;
+  const events=(a,b,src)=>{ const out=[];
+    (CONC_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!dt||dt<a||dt>b) return;
+      if(src && e.s!==src) return; const amt=eventBilling(e); if(Math.abs(amt)<0.005) return;
+      out.push({dt, s:e.s, c:(e.c||'').trim()||'—', ref:(e.ref||'').trim()||'—', amt}); });
+    return out.sort((x,z)=>z.amt-x.amt); };
+  const oCols=[{l:'Date'},{l:'Source'},{l:'Customer'},{l:'Order / Inv #'},{l:'Billed',num:true,money:true}];
+  const oRows=evs=>evs.map(e=>[fmtDt(e.dt), e.s, e.c, e.ref, e.amt]);
+
+  if(col==='lwN'||col==='lwD'||col==='lwT'){
+    const src=col==='lwN'?'Nabis':col==='lwD'?'Distru':null;
+    const evs=events(lwStart,lwEnd,src);
+    const label=col==='lwN'?'LW Nabis Delivered':col==='lwD'?'LW Distru Sales':'LW Total Delivered';
+    return {title:`${label} — week of ${wkLabel}`, sub:`Orders delivered ${rng(lwStart,lwEnd)} · ${evs.length} orders`,
+      columns:oCols, rows:oRows(evs), totalLabel:'Total', total:evs.reduce((s,e)=>s+e.amt,0)};
+  }
+  if(col==='mtd'||col==='priorMtd'){
+    let a,b,label;
+    if(col==='mtd'){ a=new Date(monday.getFullYear(),monday.getMonth(),1); b=lwEnd; label='Month-to-Date Sales'; }
+    else { a=new Date(monday.getFullYear(),monday.getMonth()-1,1); b=new Date(monday.getFullYear(),monday.getMonth(),0,23,59,59,999); label='Prior Month Sales'; }
+    const evs=events(a,b,null);
+    return {title:`${label} — week of ${wkLabel}`, sub:`Orders ${rng(a,b)} · ${evs.length} orders`,
+      columns:oCols, rows:oRows(evs), totalLabel:'Total', total:evs.reduce((s,e)=>s+e.amt,0)};
+  }
+  if(col==='cust'){
+    const evs=events(lwStart,lwEnd,null); const byC={};
+    evs.forEach(e=>{ const g=byC[e.c]||(byC[e.c]={c:e.c,orders:0,amt:0}); g.orders++; g.amt+=e.amt; });
+    const list=Object.values(byC).sort((a,b)=>b.amt-a.amt);
+    return {title:`LW Customers — week of ${wkLabel}`, sub:`${list.length} distinct customers · ${rng(lwStart,lwEnd)}`,
+      columns:[{l:'Customer'},{l:'Orders',num:true},{l:'Billed',num:true,money:true}],
+      rows:list.map(g=>[g.c, g.orders, g.amt]), totalLabel:`${list.length} customers`, total:list.reduce((s,g)=>s+g.amt,0)};
+  }
+  if(col==='fourWk'){
+    const rows=[]; let sum=0;
+    for(let k=0;k<4;k++){ const ws=new Date(lwStart); ws.setDate(lwStart.getDate()-7*k);
+      const we=new Date(lwEnd); we.setDate(lwEnd.getDate()-7*k);
+      const t=sumEventsInRange(ws,we,false).t; sum+=t; rows.push([rng(ws,we), t]); }
+    return {title:`Last 4-Week Average — week of ${wkLabel}`, sub:'Average of the four weekly LW totals',
+      columns:[{l:'Week (Mon–Sun)'},{l:'LW Total',num:true,money:true}], rows, totalLabel:'Average', total:sum/4};
+  }
+  if(col==='arCur'||col==='arPd1_60'||col==='arPd60_90'||col==='arTotal'){
+    const test=col==='arCur'?(d=>d<=0):col==='arPd1_60'?(d=>d>0&&d<=60):col==='arPd60_90'?(d=>d>60&&d<=90):(()=>true);
+    const inv=(INVOICES||[]).filter(x=>x.outstanding>0.005&&test(x.dpd)).sort((a,b)=>b.outstanding-a.outstanding);
+    const label={arCur:'Current (Not Due)',arPd1_60:'Past Due 1–60',arPd60_90:'Past Due 60–90',arTotal:'TOTAL A/R'}[col];
+    return {title:`${label} — open invoices`, sub:`${inv.length} invoices`+(col==='arTotal'?' (TOTAL includes 90+ days)':''),
+      columns:[{l:'Invoice / Order #'},{l:'Source'},{l:'Customer'},{l:'Due'},{l:'Days past due',num:true},{l:'Outstanding',num:true,money:true}],
+      rows:inv.map(x=>[x.number||'—', x.source, x.dispensary||'—', x.dueDate?fmtDt(x.dueDate):'—', x.dpd>0?x.dpd:0, x.outstanding]),
+      totalLabel:'Total', total:inv.reduce((s,x)=>s+x.outstanding,0)};
+  }
+  if(col==='onHand'){
+    let det=onHandDetail();
+    if(!det && SC_DETAIL && SC_DETAIL.inv) det=SC_DETAIL.inv.map(x=>({name:x.name,qty:x.qty,price:x.price,value:x.qty*x.price}));
+    if(!det) return {title:'Total On Hand Inventory', empty:'Inventory line-item detail isn’t available in this view.'};
+    det=det.slice().sort((a,b)=>b.value-a.value);
+    return {title:'Total On Hand Inventory', sub:`${det.length} SKUs · available units × unit price (samples & archived excluded)`,
+      columns:[{l:'SKU'},{l:'Available',num:true},{l:'Unit price',num:true,money:true},{l:'Value',num:true,money:true}],
+      rows:det.map(x=>[x.name, Math.round(x.qty).toLocaleString(), x.price, x.value]), totalLabel:'Total', total:det.reduce((s,x)=>s+x.value,0)};
+  }
+  if(col==='projN'||col==='projD'){
+    let list=null;
+    if(FILES.distru_items||FILES.nabis_detail){ const pd=projectedDetail(monday); list=col==='projN'?pd.nabis:pd.distru; }
+    else if(SC_DETAIL) list=col==='projN'?SC_DETAIL.pN:SC_DETAIL.pD;
+    if(!list) return {title:'Projected Sales', empty:'Projected line-item detail isn’t available in this view.'};
+    list=list.slice().sort((a,b)=>b.amount-a.amount);
+    const label=col==='projN'?'Projected Sales (Nabis)':'Projected Sales (Distru)';
+    return {title:`${label} — week of ${wkLabel}`, sub:`Scheduled this week, not yet delivered · ${list.length} orders`,
+      columns:[{l:'Order #'},{l:'Customer'},{l:'Amount',num:true,money:true}],
+      rows:list.map(x=>[x.ref||'—', x.customer||'—', x.amount]), totalLabel:'Total', total:list.reduce((s,x)=>s+x.amount,0)};
+  }
+  return null;
+}
+function openScModal(spec){
+  if(!spec) return;
+  $('#scm-title').textContent=spec.title||'';
+  $('#scm-sub').textContent=spec.sub||'';
+  const body=$('#scm-body');
+  if(spec.empty){ body.innerHTML=`<div class="scm-empty">${esc(spec.empty)}</div>`; }
+  else if(!spec.rows||!spec.rows.length){ body.innerHTML='<div class="scm-empty">No line items make up this figure.</div>'; }
+  else {
+    const thead=spec.columns.map(c=>`<th class="${c.num?'num':''}">${esc(c.l)}</th>`).join('');
+    const trs=spec.rows.map(r=>'<tr>'+r.map((v,j)=>{const c=spec.columns[j];return `<td class="${c.num?'num money':''}">${c.money?fmt$(+v||0):esc(String(v))}</td>`;}).join('')+'</tr>').join('');
+    const foot=spec.total!=null?`<tfoot><tr><td colspan="${spec.columns.length-1}">${esc(spec.totalLabel||'Total')}</td><td class="num money">${fmt$(spec.total)}</td></tr></tfoot>`:'';
+    body.innerHTML=`<table><thead><tr>${thead}</tr></thead><tbody>${trs}</tbody>${foot}</table>`;
+  }
+  $('#sc-modal').classList.remove('hidden');
+}
+function closeScModal(){ const m=$('#sc-modal'); if(m) m.classList.add('hidden'); }
+// Wire the modal + delegated cell clicks once (static elements; #sc-wrap survives re-renders).
+$('#scm-close').onclick=closeScModal;
+$('#sc-modal .scm-backdrop').onclick=closeScModal;
+$('#sc-wrap').onclick=(ev)=>{ const td=ev.target.closest?ev.target.closest('td.drill'):null; if(!td) return;
+  openScModal(scDrill(td.getAttribute('data-d'), td.getAttribute('data-c'))); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeScModal(); });
 
 /* ============================ CSV export ============================ */
 function downloadCSV(name,rows){
