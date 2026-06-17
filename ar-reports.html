@@ -241,6 +241,7 @@
     <div class="tabs">
       <div class="tab active" data-tab="invoice">AR by Invoice</div>
       <div class="tab" data-tab="dispensary">AR by Dispensary</div>
+      <div class="tab" data-tab="brand">AR by Brand</div>
       <div class="tab" data-tab="cd-disp">Credits/Discounts by Dispensary</div>
       <div class="tab" data-tab="cd-brand">Credits/Discounts by Brand</div>
       <div class="tab" data-tab="sku">Sales by Type</div>
@@ -336,6 +337,38 @@
           </thead>
           <tbody id="disp-body"></tbody>
           <tfoot id="disp-foot"></tfoot>
+        </table>
+      </div>
+    </div>
+
+    <!-- BY BRAND (retail chain) -->
+    <div id="view-brand" class="hidden">
+      <div class="toolbar">
+        <input type="text" id="brand-search" placeholder="Search brand…" />
+        <select id="brand-source"><option value="">All sources</option><option>Distru</option><option>Nabis</option></select>
+        <div class="grow"></div>
+        <button class="btn" id="brand-export">⬇ Export CSV</button>
+      </div>
+      <div class="tablewrap">
+        <table id="brand-table">
+          <thead>
+            <tr>
+              <th style="width:24px"></th>
+              <th data-sort="name">Brand</th>
+              <th data-sort="sources">Source</th>
+              <th data-sort="count" class="num">Open Inv.</th>
+              <th data-sort="stores" class="num">Stores</th>
+              <th data-sort="current" class="num">Current</th>
+              <th data-sort="b1" class="num">1–30</th>
+              <th data-sort="b2" class="num">31–60</th>
+              <th data-sort="b3" class="num">61–90</th>
+              <th data-sort="b4" class="num">&gt;90</th>
+              <th data-sort="total" class="num">Total Outstanding</th>
+              <th data-sort="totalConc" class="num">Discounts + Credits</th>
+            </tr>
+          </thead>
+          <tbody id="brand-body"></tbody>
+          <tfoot id="brand-foot"></tfoot>
         </table>
       </div>
     </div>
@@ -544,6 +577,7 @@ const LABELS = {
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
+let BRANDS=[];          // grouped by retail chain (brandOf)
 let RAW=null;           // source-agnostic records (dates as Date objs), from files OR shared
 let SHARED=null;        // {uploadedAt, uploadedBy} when viewing the published team report
 let CLEAN={excludedOrders:0,excludedLines:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0}};
@@ -966,10 +1000,12 @@ function rebuild(){
     return Object.assign({}, x, {dpd, bucket, status});
   });
   groupDispensaries();
+  groupBrands();
   renderNotes();
   renderSummary();
   renderInvoices();
   renderDispensaries();
+  renderBrands();
   renderShareBar();
   $('#reports').classList.remove('hidden');
 }
@@ -987,6 +1023,23 @@ function groupDispensaries(){
     else g.b4+=x.outstanding;
   });
   DISPENSARIES=Object.values(m).map(g=>({...g,sources:[...g.sources].sort().join(' + ')}));
+}
+// Group open invoices by retail chain (brandOf). Each invoice keeps its own dispensary name,
+// shown in the brand drill-down (a brand spans multiple stores).
+function groupBrands(){
+  const m={};
+  INVOICES.filter(x=>x.outstanding>0.005).forEach(x=>{
+    const k=brandOf(x.dispensary);
+    const g=m[k]||(m[k]={name:k,sources:new Set(),stores:new Set(),count:0,current:0,b1:0,b2:0,b3:0,b4:0,total:0,totalDiscounts:0,creditTotal:0,totalConc:0,rows:[]});
+    g.sources.add(x.source); g.stores.add(x.dispensary); g.count++; g.total+=x.outstanding;
+    g.totalDiscounts+=x.totalDiscounts||0; g.creditTotal+=x.creditTotal||0; g.totalConc+=(x.totalDiscounts||0)+(x.creditTotal||0); g.rows.push(x);
+    if(x.bucket==='Current')g.current+=x.outstanding;
+    else if(x.bucket==='1–30')g.b1+=x.outstanding;
+    else if(x.bucket==='31–60')g.b2+=x.outstanding;
+    else if(x.bucket==='61–90')g.b3+=x.outstanding;
+    else g.b4+=x.outstanding;
+  });
+  BRANDS=Object.values(m).map(g=>({...g,sources:[...g.sources].sort().join(' + '),stores:g.stores.size}));
 }
 
 /* ============================ Notes / Summary ============================ */
@@ -1183,6 +1236,68 @@ function renderDispensaries(){
   $('#disp-foot').innerHTML=`<tr class="totals">
     <td colspan="3">Totals · ${rows.length} dispensar${rows.length!==1?'ies':'y'}</td>
     <td class="num">${T.count}</td>
+    <td class="num money">${T.current?fmt$(T.current):'—'}</td>
+    ${cell(T.b1,'1–30')}${cell(T.b2,'31–60')}${cell(T.b3,'61–90')}${cell(T.b4,'>90')}
+    <td class="num money"><b>${fmt$(T.total)}</b></td>
+    <td class="num money">${T.totalConc?fmt$(T.totalConc):'—'}</td>
+  </tr>`;
+}
+
+/* ============================ By Brand (retail chain) ============================ */
+let brandSort={key:'total',dir:-1};
+function brandFiltered(){
+  const q=$('#brand-search').value.trim().toLowerCase(), src=$('#brand-source').value;
+  let rows=BRANDS.filter(g=>{
+    if(src && !g.sources.includes(src)) return false;
+    if(q && !g.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const k=brandSort.key,d=brandSort.dir;
+  rows.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-d:av>bv?d:0; });
+  return rows;
+}
+function renderBrands(){
+  const rows=brandFiltered(), body=$('#brand-body');
+  if(!rows.length){ body.innerHTML=`<tr><td colspan="12" class="empty">No brands match.</td></tr>`; $('#brand-foot').innerHTML=''; return; }
+  body.innerHTML=rows.map((g,i)=>{
+    const inv=g.rows.slice().sort((a,b)=>b.dpd-a.dpd).map(x=>{ const lk=invLinkUrl(x); return `<tr>
+        <td><span class="src ${x.source}">${x.source}</span></td>
+        <td>${esc(x.number)}</td>
+        <td>${esc(x.dispensary)}</td>
+        <td>${fmtDate(x.dueDate)}</td>
+        <td><span class="bucket ${bucketClass(x.bucket)}">${x.bucket}</span></td>
+        <td class="num money">${fmt$(x.outstanding)}</td>
+        <td class="num money">${x.totalDiscounts?fmt$(x.totalDiscounts):'<span class="neg">—</span>'}</td>
+        <td class="num money">${x.creditTotal?fmt$(x.creditTotal):'<span class="neg">—</span>'}</td>
+        <td>${lk?`<a class="inv-link sm" href="${esc(lk)}" target="_blank" rel="noopener">Open ↗</a>`:''}</td></tr>`; }).join('');
+    return `<tr class="parent" data-i="${i}">
+      <td><span class="caret">▶</span></td>
+      <td>${esc(g.name)}</td>
+      <td class="rep">${esc(g.sources)}</td>
+      <td class="num">${g.count}</td>
+      <td class="num">${g.stores}</td>
+      <td class="num money">${g.current?fmt$(g.current):'<span class="neg">—</span>'}</td>
+      <td class="num money" style="color:${g.b1?BCOLOR['1–30']:'var(--muted)'}">${g.b1?fmt$(g.b1):'—'}</td>
+      <td class="num money" style="color:${g.b2?BCOLOR['31–60']:'var(--muted)'}">${g.b2?fmt$(g.b2):'—'}</td>
+      <td class="num money" style="color:${g.b3?BCOLOR['61–90']:'var(--muted)'}">${g.b3?fmt$(g.b3):'—'}</td>
+      <td class="num money" style="color:${g.b4?BCOLOR['>90']:'var(--muted)'}">${g.b4?fmt$(g.b4):'—'}</td>
+      <td class="num money"><b>${fmt$(g.total)}</b></td>
+      <td class="num money">${g.totalConc?fmt$(g.totalConc):'<span class="neg">—</span>'}</td>
+    </tr>
+    <tr class="detail hidden"><td colspan="12"><div class="detailbox">
+      <table class="ddtable"><thead><tr><th>Source</th><th>Invoice / Order #</th><th>Dispensary</th><th>Due</th><th>Aging</th><th class="num">Outstanding</th><th class="num">Discounts</th><th class="num">Credits</th><th></th></tr></thead><tbody>${inv}</tbody></table>
+    </div></td></tr>`;
+  }).join('');
+  body.querySelectorAll('tr.parent').forEach(tr=>{
+    tr.onclick=()=>{ const d=tr.nextElementSibling; d.classList.toggle('hidden'); tr.classList.toggle('open'); };
+  });
+  const T={count:0,stores:0,current:0,b1:0,b2:0,b3:0,b4:0,total:0,totalConc:0};
+  rows.forEach(g=>{T.count+=g.count;T.stores+=g.stores;T.current+=g.current;T.b1+=g.b1;T.b2+=g.b2;T.b3+=g.b3;T.b4+=g.b4;T.total+=g.total;T.totalConc+=g.totalConc||0;});
+  const cell=(v,b)=>`<td class="num money" style="color:${v?BCOLOR[b]:'var(--muted)'}">${v?fmt$(v):'—'}</td>`;
+  $('#brand-foot').innerHTML=`<tr class="totals">
+    <td colspan="3">Totals · ${rows.length} brand${rows.length!==1?'s':''}</td>
+    <td class="num">${T.count}</td>
+    <td class="num">${T.stores}</td>
     <td class="num money">${T.current?fmt$(T.current):'—'}</td>
     ${cell(T.b1,'1–30')}${cell(T.b2,'31–60')}${cell(T.b3,'61–90')}${cell(T.b4,'>90')}
     <td class="num money"><b>${fmt$(T.total)}</b></td>
@@ -2288,6 +2403,14 @@ $('#disp-export').onclick=()=>{
   rows.push(['TOTAL','',T.count,T.current.toFixed(2),T.b1.toFixed(2),T.b2.toFixed(2),T.b3.toFixed(2),T.b4.toFixed(2),T.total.toFixed(2),T.tc.toFixed(2)]);
   downloadCSV('ar-by-dispensary.csv',rows);
 };
+$('#brand-export').onclick=()=>{
+  const rows=[['Brand','Sources','Open Invoices','Stores','Current','1-30','31-60','61-90','>90','Total Outstanding','Discounts + Credits']];
+  const d=brandFiltered();
+  d.forEach(g=>rows.push([g.name,g.sources,g.count,g.stores,g.current.toFixed(2),g.b1.toFixed(2),g.b2.toFixed(2),g.b3.toFixed(2),g.b4.toFixed(2),g.total.toFixed(2),(g.totalConc||0).toFixed(2)]));
+  const T=d.reduce((a,g)=>({count:a.count+g.count,stores:a.stores+g.stores,current:a.current+g.current,b1:a.b1+g.b1,b2:a.b2+g.b2,b3:a.b3+g.b3,b4:a.b4+g.b4,total:a.total+g.total,tc:a.tc+(g.totalConc||0)}),{count:0,stores:0,current:0,b1:0,b2:0,b3:0,b4:0,total:0,tc:0});
+  rows.push(['TOTAL','',T.count,T.stores,T.current.toFixed(2),T.b1.toFixed(2),T.b2.toFixed(2),T.b3.toFixed(2),T.b4.toFixed(2),T.total.toFixed(2),T.tc.toFixed(2)]);
+  downloadCSV('ar-by-brand.csv',rows);
+};
 function concExport(rows,label,fname){
   const hd=[label,'Source','Actual Billed','Gross @ List','Disc 3.5G','Disc 5PK','Disc 1.5G','Disc Vape','Per-Unit Total','Samples @ List','Pouches','Invoice Disc','Credit Memos','Total Concessions','% of Gross'];
   const out=[hd]; const f2=v=>(+v||0).toFixed(2);
@@ -2324,6 +2447,7 @@ function activateTab(tab, fromHash){
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
   $('#view-invoice').classList.toggle('hidden',tab!=='invoice');
   $('#view-dispensary').classList.toggle('hidden',tab!=='dispensary');
+  $('#view-brand').classList.toggle('hidden',tab!=='brand');
   $('#view-cd-disp').classList.toggle('hidden',tab!=='cd-disp');
   $('#view-cd-brand').classList.toggle('hidden',tab!=='cd-brand');
   $('#view-sku').classList.toggle('hidden',tab!=='sku');
@@ -2340,6 +2464,7 @@ function tabFromHash(){ const h=(location.hash||'').replace(/^#/,'').trim(); ret
 window.addEventListener('hashchange',()=>{ const t=tabFromHash(); if(t) activateTab(t,true); });
 ['inv-search','inv-source','inv-bucket','inv-open'].forEach(id=>$('#'+id).addEventListener('input',renderInvoices));
 ['disp-search','disp-source'].forEach(id=>$('#'+id).addEventListener('input',renderDispensaries));
+['brand-search','brand-source'].forEach(id=>$('#'+id).addEventListener('input',renderBrands));
 ['cd-search','cd-source'].forEach(id=>$('#'+id).addEventListener('input',renderConcDisp));
 $('#cb-search').addEventListener('input',renderConcBrand);
 ['conc-start','conc-end','a-jar35','a-fivepk','a-pr15','a-vape','a-pouch'].forEach(id=>$('#'+id).addEventListener('change',buildConcessions));
@@ -2372,6 +2497,9 @@ document.querySelectorAll('#inv-table th[data-sort]').forEach(th=>th.onclick=()=
 });
 document.querySelectorAll('#disp-table th[data-sort]').forEach(th=>th.onclick=()=>{
   const k=th.dataset.sort; dispSort.dir = dispSort.key===k? -dispSort.dir : (k==='name'||k==='sources'?1:-1); dispSort.key=k; renderDispensaries();
+});
+document.querySelectorAll('#brand-table th[data-sort]').forEach(th=>th.onclick=()=>{
+  const k=th.dataset.sort; brandSort.dir = brandSort.key===k? -brandSort.dir : (k==='name'||k==='sources'?1:-1); brandSort.key=k; renderBrands();
 });
 $('#asof').addEventListener('change',rebuild);
 $('#sb-refresh').onclick=hardRefresh;
