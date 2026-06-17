@@ -1633,63 +1633,142 @@ const SCORECARD_HISTORY = [
 ];
 
 // Compute the current week's row from live CONC_EVENTS + RAW aging. Returns null if no data.
-function computeCurrentScorecardRow(){
-  const hasEv = (CONC_EVENTS||[]).length>0, hasAR=(RAW||[]).length>0;
-  if(!hasEv && !hasAR) return null;
-  // Monday of this calendar week
-  const now=new Date(); now.setHours(0,0,0,0);
-  const dow=now.getDay(); const mon=new Date(now); mon.setDate(now.getDate() - ((dow+6)%7));
-  const lwStart=new Date(mon); lwStart.setDate(mon.getDate()-7);
-  const lwEnd=new Date(mon); lwEnd.setDate(mon.getDate()-1); lwEnd.setHours(23,59,59,999);
-  const inRng=(d,a,b)=>d&&d>=a&&d<=b;
-  const eventBill=e=>{ let b=(e.otherBill||0); if(e.s==='Nabis') b+=(e.pouchBill||0);
-    CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c) b+=c.bill||0; }); return b; };
-  const sumRange=(a,b,srcFilter)=>{ let n=0,d=0; const cs=new Set();
-    (CONC_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!inRng(dt,a,b)) return;
-      const bb=eventBill(e); if(srcFilter && e.s!==srcFilter) return;
-      if(e.s==='Nabis') n+=bb; else if(e.s==='Distru') d+=bb;
-      if(bb>0.005 && (e.c||'').trim()) cs.add((e.c||'').trim());
-    }); return {n,d,t:n+d,cust:cs.size}; };
-  const lw=sumRange(lwStart,lwEnd);
-  // MTD = month-to-date through last Sun (the day before this Monday)
-  const mtdStart=new Date(mon.getFullYear(),mon.getMonth(),1);
-  const mtd=sumRange(mtdStart,lwEnd).t;
-  // Prior MTD = total for last calendar month
-  const priorStart=new Date(mon.getFullYear(),mon.getMonth()-1,1);
-  const priorEnd=new Date(mon.getFullYear(),mon.getMonth(),0,23,59,59,999);
-  const priorMtd=sumRange(priorStart,priorEnd).t;
-  // 4-week avg of LW Total (this LW + 3 prior)
-  let s=lw.t,n=1;
+// ── Historical AR reconstruction ────────────────────────────────────────────
+// Build a unified invoice list with payment timelines so we can answer "what was open
+// at end-of-week X?" for any past Sunday. Distru is high-fidelity (we have per-invoice
+// payment dates). Nabis is approximate (brand_csv has Paid At — date paid in full —
+// but not partial-payment timing); aging covers currently-open Nabis invoices.
+let HIST_INVS_CACHE=null;
+function invalidateHistInvs(){ HIST_INVS_CACHE=null; }
+function buildHistoricalInvoices(){
+  const out=[];
+  // Distru: invoice file + payments file (Reference=INV#)
+  if(FILES.distru_invoice){
+    const paysByInv={};
+    if(FILES.distru_payments) FILES.distru_payments.data.forEach(p=>{
+      const ref=(p['Reference']||'').trim(), amt=num(p['Amount'])||num(p['Credits Applied Amount']);
+      const d=parseDate(p['Date']); if(!ref||!d||!amt) return;
+      (paysByInv[ref]=paysByInv[ref]||[]).push({date:d,amt});
+    });
+    Object.values(paysByInv).forEach(a=>a.sort((x,y)=>x.date-y.date));
+    FILES.distru_invoice.data.forEach(r=>{
+      if(isNabisCust(r['Customer'])) return;
+      const inv=(r['Invoice Number']||'').trim();
+      const invoiceDate=parseDate(r['Invoice Date']);
+      const dueDate=parseDate(r['Due Date']);
+      const total=num(r['Total']);
+      if(!invoiceDate||!total) return;
+      out.push({s:'Distru',c:(r['Customer']||'').trim(),inv,invoiceDate,dueDate,total,
+                payments:paysByInv[inv]||[]});
+    });
+  }
+  // Nabis: aging (currently open) + brand_csv (closed orders, by Paid At)
+  const inAging=new Set();
+  if(FILES.nabis_aging) FILES.nabis_aging.data.forEach(r=>{
+    const on=(r['Order Number']||'').trim(); if(!on) return; inAging.add(on);
+    const delivery=parseDate(r['Delivery Date']);
+    const due=parseDate(r['Subtotal Due Date']);
+    const outstanding=num(r['Due']);
+    if(!delivery||!outstanding) return;
+    out.push({s:'Nabis',c:(r['Name']||r['Dispensary']||'').trim(),inv:on,invoiceDate:delivery,
+              dueDate:due,total:outstanding,paidAt:null});
+  });
+  if(FILES.nabis_brand) FILES.nabis_brand.data.forEach(r=>{
+    const on=(r['Order Number']||'').trim();
+    if(!on||inAging.has(on)) return;
+    const type=(r['Order Type']||'').trim().toUpperCase();
+    const status=(r['Order Status']||'').trim().toUpperCase();
+    if(type==='PICKUP_FROM_BRAND'||status==='CANCELLED'||status==='REJECTED') return;
+    const delivery=parseDate(r['Delivery Date']);
+    const total=num(r['Invoice Total'])||num(r['Order Subtotal']);
+    if(!delivery||!total) return;
+    const paidAtStr=(r['Paid At']||'').trim();
+    const paidAt=paidAtStr?parseDate(paidAtStr):null;
+    // Due date from payment terms (default Net 30 if unparseable)
+    let netDays=30; const m=(r['Payment Terms']||'').toLowerCase().match(/net\s*(\d+)/);
+    if(m) netDays=+m[1];
+    const dueDate=new Date(delivery); dueDate.setDate(dueDate.getDate()+netDays);
+    const cust=(r['Site']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim()||(r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim()||'Unknown';
+    out.push({s:'Nabis',c:cust,inv:on,invoiceDate:delivery,dueDate,total,paidAt});
+  });
+  return out;
+}
+function arSnapshotAt(date){
+  if(!HIST_INVS_CACHE) HIST_INVS_CACHE=buildHistoricalInvoices();
+  const list=HIST_INVS_CACHE;
+  let curB=0, pdB=0, pdC=0, totalAR=0;
+  for(const x of list){
+    if(!x.invoiceDate||x.invoiceDate>date) continue;
+    let amt;
+    if(x.s==='Distru'){
+      let paid=0; for(const p of x.payments){ if(p.date>date) break; paid+=p.amt; }
+      amt=x.total-paid;
+    } else {
+      if(x.paidAt && x.paidAt<=date) continue;
+      amt=x.total;
+    }
+    if(amt<=0.005) continue;
+    totalAR+=amt;
+    const dpd=x.dueDate?Math.floor((date-x.dueDate)/DAY):0;
+    if(dpd<=0) curB+=amt;
+    else if(dpd<=60) pdB+=amt;
+    else if(dpd<=90) pdC+=amt;
+  }
+  return {cur:curB, pd1_60:pdB, pd60_90:pdC, totalAR};
+}
+
+// ── Per-week sales metrics from CONC_EVENTS ─────────────────────────────────
+function eventBilling(e){
+  let b=(e.otherBill||0); if(e.s==='Nabis') b+=(e.pouchBill||0);
+  CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c) b+=c.bill||0; });
+  return b;
+}
+function sumEventsInRange(start, end, splitBySource){
+  let n=0, d=0; const cs=new Set();
+  (CONC_EVENTS||[]).forEach(e=>{
+    const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
+    const b=eventBilling(e);
+    if(e.s==='Nabis') n+=b; else if(e.s==='Distru') d+=b;
+    if(b>0.005 && (e.c||'').trim()) cs.add((e.c||'').trim());
+  });
+  return splitBySource?{n,d,t:n+d,cust:cs.size}:{t:n+d,cust:cs.size};
+}
+function weekMetrics(monday){
+  // LW = the 7 days Mon–Sun before this Monday
+  const lwStart=new Date(monday); lwStart.setDate(monday.getDate()-7);
+  const lwEnd=new Date(monday); lwEnd.setDate(monday.getDate()-1); lwEnd.setHours(23,59,59,999);
+  const lw=sumEventsInRange(lwStart, lwEnd, true);
+  // MTD = month start → previous Sunday
+  const mtdStart=new Date(monday.getFullYear(), monday.getMonth(), 1);
+  const mtd = mtdStart<=lwEnd ? sumEventsInRange(mtdStart, lwEnd, false).t : 0;
+  // Prior MTD = entire prior calendar month
+  const pStart=new Date(monday.getFullYear(), monday.getMonth()-1, 1);
+  const pEnd=new Date(monday.getFullYear(), monday.getMonth(), 0, 23, 59, 59, 999);
+  const priorMtd=sumEventsInRange(pStart, pEnd, false).t;
+  // 4-week avg: average of LW Total for current LW + 3 prior LWs
+  let s=lw.t, n=1;
   for(let i=1;i<=3;i++){
     const ws=new Date(lwStart); ws.setDate(lwStart.getDate()-7*i);
     const we=new Date(lwEnd);   we.setDate(lwEnd.getDate()-7*i);
-    s+=sumRange(ws,we).t; n++;
+    s+=sumEventsInRange(ws, we, false).t; n++;
   }
-  const fourWk=s/n;
-  // AR breakdown — current snapshot from RAW (open only). Compute dpd from asOf inline:
-  // RAW records don't carry .bucket (that field lives on the derived INVOICES list), so the
-  // earlier r.bucket comparison silently fell through, leaving the three bands at $0 while
-  // TOTAL A/R was correct.
-  const _aso = (asOf||new Date()); _aso.setHours(0,0,0,0);
-  let cur=0, pd1_60=0, pd60_90=0, totalAR=0;
-  (RAW||[]).forEach(r=>{ if(!(r.outstanding>0)) return; totalAR+=r.outstanding;
-    const dpd = r.dueDate ? Math.floor((_aso - r.dueDate)/DAY) : 0;
-    if(dpd<=0) cur+=r.outstanding;
-    else if(dpd<=60) pd1_60+=r.outstanding;
-    else if(dpd<=90) pd60_90+=r.outstanding;
-    // >90 still counted in TOTAL A/R, not broken out (matches the workbook's column set)
-  });
-  // Projected Sales: orders scheduled with delivery date in THIS Monday's week (Mon–Sun)
-  // that are not yet delivered. Distru: items with Status not Delivered/Completed; Nabis:
-  // detail orders not delivered/cancelled/rejected/pickup-from-brand. Sum the line billing.
-  const weekEnd=new Date(mon); weekEnd.setDate(mon.getDate()+6); weekEnd.setHours(23,59,59,999);
+  return {lwN:lw.n, lwD:lw.d, lwT:lw.t, cust:lw.cust, mtd, priorMtd, fourWk:s/n};
+}
+
+function computeProjectedForCurrentWeek(monday){
+  // Only valid for the current calendar week (past projections were point-in-time snapshots
+  // we no longer have). Returns {projN, projD} or {projN:null, projD:null} if not current week.
+  const now=new Date(); now.setHours(0,0,0,0);
+  const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
+  if(monday.getTime()!==currentMon.getTime()) return {projN:null, projD:null};
+  const weekEnd=new Date(monday); weekEnd.setDate(monday.getDate()+6); weekEnd.setHours(23,59,59,999);
   let projD=null, projN=null;
   if(FILES.distru_items){ projD=0;
     FILES.distru_items.data.forEach(r=>{
       const status=(r['Status']||'').trim();
-      if(status==='Delivered' || status==='Completed') return;
+      if(status==='Delivered'||status==='Completed') return;
       if(isNabisCust(r['Customer'])) return;
-      const dd=parseDate(r['Delivery Date']); if(!dd || dd<mon || dd>weekEnd) return;
+      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
       projD += num(r['Quantity']) * num(r['Order Item Price']);
     });
   }
@@ -1697,27 +1776,45 @@ function computeCurrentScorecardRow(){
     FILES.nabis_detail.data.forEach(r=>{
       const type=(r['Order Type']||'').trim().toUpperCase();
       const status=(r['Order Status']||'').trim().toUpperCase();
-      if(type==='PICKUP_FROM_BRAND' || status==='CANCELLED' || status==='REJECTED' || status==='DELIVERED') return;
-      const dd=parseDate(r['Delivery Date']); if(!dd || dd<mon || dd>weekEnd) return;
-      projN += num(r['Discounted Line Item Total']) || num(r['Line Item Subtotal']);
+      if(type==='PICKUP_FROM_BRAND'||status==='CANCELLED'||status==='REJECTED'||status==='DELIVERED') return;
+      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      projN += num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);
     });
   }
-  const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-  return [isoD(mon),
-    projN, projD,
-    hasEv?lw.n:null, hasEv?lw.d:null, hasEv?lw.t:null,
-    hasEv?lw.cust:null,
-    hasEv?mtd:null, hasEv?priorMtd:null, hasEv?fourWk:null,
-    null,                                                       // total on hand inventory
-    hasAR?cur:null, hasAR?pd1_60:null, hasAR?pd60_90:null, hasAR?totalAR:null];
+  return {projN, projD};
 }
 
 function scorecardRows(){
-  const out=[]; const live=computeCurrentScorecardRow();
-  if(live) out.push(live);
-  const have=new Set(out.map(r=>r[0]));
-  SCORECARD_HISTORY.forEach(h=>{ if(!have.has(h[0])) out.push(h); });
-  return out;
+  // No data yet → fall back to historical PDF seed so the page still shows something
+  if(!(CONC_EVENTS||[]).length && !(RAW||[]).length) return SCORECARD_HISTORY.slice();
+  invalidateHistInvs();
+  // Earliest Monday: derived from earliest CONC_EVENT date (or earliest invoice if no events)
+  let minDate=null;
+  (CONC_EVENTS||[]).forEach(e=>{ if(!e.d) return; const d=new Date(e.d); if(!minDate||d<minDate) minDate=d; });
+  if(!minDate && FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
+    const d=parseDate(r['Invoice Date']); if(d && (!minDate||d<minDate)) minDate=d;
+  });
+  if(!minDate) minDate=new Date();
+  const startMon=new Date(minDate); startMon.setHours(0,0,0,0);
+  startMon.setDate(startMon.getDate() - ((startMon.getDay()+6)%7));
+  const now=new Date(); now.setHours(0,0,0,0);
+  const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
+  const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const rows=[];
+  for(const mon=new Date(startMon); mon<=currentMon; mon.setDate(mon.getDate()+7)){
+    const monClone=new Date(mon);
+    const m=weekMetrics(monClone);
+    // AR as of the Sunday before this Monday (i.e., end-of-prior-week snapshot)
+    const sunday=new Date(monClone); sunday.setDate(monClone.getDate()-1); sunday.setHours(23,59,59,999);
+    const ar=arSnapshotAt(sunday);
+    const pr=computeProjectedForCurrentWeek(monClone);
+    rows.push([isoD(monClone), pr.projN, pr.projD,
+      m.lwN, m.lwD, m.lwT, m.cust,
+      m.mtd, m.priorMtd, m.fourWk,
+      null,                              // total on hand inventory — needs new report
+      ar.cur, ar.pd1_60, ar.pd60_90, ar.totalAR]);
+  }
+  return rows.reverse();   // newest first
 }
 
 function renderScorecard(){
@@ -1768,7 +1865,7 @@ function renderScorecard(){
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
-  note.innerHTML=`Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The top "live" row is computed from the latest uploaded files; older rows are seeded from your workbook PDF. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in; <b>Projected Sales</b> needs scheduled-order data we don't have yet.`;
+  note.innerHTML=`Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The AR breakdown is <b>reconstructed</b> for each historical Sunday: high-fidelity for Distru (uses the payments file to compute partial-payment timing); approximate for Nabis (uses <i>Paid At</i> from brand_csv — full-payment date only). <b>Projected Sales</b> is filled only on the current row — it's a point-in-time snapshot of orders scheduled but not yet delivered; we don't have those snapshots for past weeks. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
 }
 
 $('#sc-export').onclick=()=>{
