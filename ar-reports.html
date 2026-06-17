@@ -387,6 +387,11 @@ const fmt$ = n => (n<0?'-':'') + '$' + Math.abs(n).toLocaleString('en-US',{minim
 const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 function num(s){ if(s==null) return 0; const v=parseFloat(String(s).replace(/[$,]/g,'')); return isNaN(v)?0:v; }
+// Filifera sells to Nabis (the distributor) THROUGH Distru, so Distru has orders with
+// Customer/Company = "Nabis". That product is tracked downstream in the Nabis system, so
+// counting these Distru rows too would double-count. Exclude them. EXACT match only — must
+// not catch "…Cannabis…" dispensary names.
+const isNabisCust = s => String(s||'').trim().toLowerCase()==='nabis';
 
 function parseDate(s){
   if(!s) return null; s=String(s).trim(); if(!s||s==='-'||s==='N/A') return null;
@@ -732,8 +737,10 @@ function ingestFromFiles(){
       (distruCreditsByInv[ref]=distruCreditsByInv[ref]||[]).push({ref:(r['Payment #']||'').trim(),amt,date:parseDate(r['Date']),note:''});
     });
   }
+  let distruNabisExcl=0;
   if(FILES.distru_invoice){
     FILES.distru_invoice.data.forEach(r=>{
+      if(isNabisCust(r['Customer'])){ distruNabisExcl++; return; }   // Distru→Nabis transfer, tracked downstream
       const so=(r['Sales Order']||'').trim();
       const inv=(r['Invoice Number']||'').trim();
       const discountLines=parseDiscSummary(r['Discount Summary']);
@@ -756,7 +763,7 @@ function ingestFromFiles(){
   }
 
   /* ---- Nabis cleaning + per-order discount/credit detail via detailed brand ---- */
-  const excluded={}; CLEAN={excludedOrders:0,excludedLines:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0}};
+  const excluded={}; CLEAN={excludedOrders:0,excludedLines:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0},distruNabis:distruNabisExcl};
   const nabisItemsByOrder={}, nabisDiscByOrder={};
   if(FILES.nabis_detail){
     FILES.nabis_detail.data.forEach(r=>{
@@ -887,6 +894,8 @@ function renderNotes(){
   if(CLEAN.excludedOrders)
     parts.push(`<b>Cleaned ${CLEAN.excludedOrders}</b> Nabis order(s) — `+
       `${CLEAN.byReason.PICKUP_FROM_BRAND} pickup-from-brand · ${CLEAN.byReason.CANCELLED} cancelled · ${CLEAN.byReason.REJECTED} rejected line(s).`);
+  if(CLEAN.distruNabis)
+    parts.push(`<b>Excluded ${CLEAN.distruNabis}</b> Distru invoice(s) billed to <b>Nabis</b> (the distributor) — counted in the Nabis system instead, to avoid double-counting.`);
   n.innerHTML = parts.join('<br>') || 'All set.';
 }
 
@@ -1128,6 +1137,7 @@ function buildConcEvents(){
   if(FILES.distru_items){
     const byso={};
     FILES.distru_items.data.forEach(r=>{
+      if(isNabisCust(r['Customer'])) return;   // exclude Distru→Nabis transfer
       const status=(r['Status']||'').trim();
       if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
       const cust=(r['Customer']||'').trim()||'Unknown', so=(r['Order Number']||'').trim(), k=cust+'|'+so;
@@ -1143,11 +1153,13 @@ function buildConcEvents(){
   }
   /* Distru invoice discounts → one event per invoice (invoice date) */
   if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
+    if(isNabisCust(r['Customer'])) return;
     const disc=Math.abs(num(r['Total Discounts'])); if(!disc) return;
     ev.push({c:(r['Customer']||'').trim()||'Unknown',s:'Distru',d:epoch(parseDate(r['Invoice Date'])),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:disc,creditMemos:0,ref:(r['Invoice Number']||'').trim()});
   });
   /* Distru credit memos → dated to the invoice they offset (falls back to payment date) */
   if(FILES.distru_payments) FILES.distru_payments.data.forEach(r=>{
+    if(isNabisCust(r['Company'])) return;
     if((r['Payment Method']||'').trim()!=='Credit') return;
     const amt=num(r['Amount']); if(!amt) return;
     const ref=(r['Reference']||'').trim();
@@ -1372,6 +1384,7 @@ function buildSkuEvents(){
     if(!g.fmt||g.fmt==='Other') g.fmt=fmt;
     if(isSample) g.su+=units; else { g.u+=units; g.rev+=rev; } if(ord) g.ords.add(ord); };
   if(FILES.distru_items) FILES.distru_items.data.forEach(r=>{
+    if(isNabisCust(r['Customer'])) return;   // exclude Distru→Nabis transfer
     const status=(r['Status']||'').trim();
     if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
     const so=(r['Order Number']||'').trim(), invNum=(r['Invoice Numbers']||'').trim();
