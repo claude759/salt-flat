@@ -501,6 +501,10 @@ let RAW=null;           // source-agnostic records (dates as Date objs), from fi
 let SHARED=null;        // {uploadedAt, uploadedBy} when viewing the published team report
 let CLEAN={excludedOrders:0,excludedLines:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0}};
 let asOf = new Date();
+// Persisted point-in-time snapshots for the Sales Scorecard, keyed by Monday date
+// (YYYY-MM-DD). Each entry: {projN, projD, onHand}. Captured on publish (so each weekly
+// auto-publish accumulates one Monday's snapshot), preserved across publishes.
+let SCORECARD_SNAPS={};
 
 /* ============================ Team sharing ============================ */
 // Paste your deployed Apps Script Web App URL here (see apps-script-reports.gs).
@@ -657,6 +661,7 @@ async function loadShared(){
       SKU_EVENTS=skuFromWire(data.sku); aggregateSku();
       $('#reports').classList.remove('hidden'); renderSku(); any=true;
     }
+    SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
     renderShareBar();
   }catch(e){ renderShareBar('error'); }
@@ -676,6 +681,12 @@ async function publishToTeam(){
     if(hasAR)  cur.ar  ={records:recordsToPayload(RAW).map(({it,...r})=>r),cleaning:CLEAN};
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
+    // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
+    // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
+    // latest values for the current week; past weeks are never overwritten.
+    const existingSnaps = (cur.scorecard && cur.scorecard.snaps) || SCORECARD_SNAPS || {};
+    const liveSnap = captureScorecardSnap();
+    cur.scorecard = { snaps: liveSnap ? {...existingSnaps, [liveSnap.date]:liveSnap.values} : existingSnaps };
     const body=new URLSearchParams({action:'publish',uploadedBy:who,payload:JSON.stringify(cur)});
     await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});   // throws only on real network failure
     // Confirm is best-effort: the POST above is opaque (no-cors), so a failed read-back
@@ -1784,6 +1795,22 @@ function computeProjectedForCurrentWeek(monday){
   return {projN, projD};
 }
 
+// Snapshot today's "current Monday" values for persisting across publishes. Each weekly
+// auto-publish accumulates Monday's data — past Mondays are preserved (never overwritten
+// by a later week), this Monday is updated each publish until the week moves on.
+// Returns {date, values:{projN, projD, onHand}} or null if not computable yet.
+function captureScorecardSnap(){
+  const now=new Date(); now.setHours(0,0,0,0);
+  const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
+  const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const pr=computeProjectedForCurrentWeek(currentMon);
+  // Only capture if we have something worth storing (projected from FILES or on-hand from
+  // a future inventory hook). Skip otherwise so we don't pollute snapshots with all-nulls.
+  const onHand=null;  // TODO: populate once an inventory report is wired into FILES
+  if(pr.projN==null && pr.projD==null && onHand==null) return null;
+  return { date:isoD(currentMon), values:{projN:pr.projN, projD:pr.projD, onHand} };
+}
+
 function scorecardRows(){
   // No data yet → fall back to historical PDF seed so the page still shows something
   if(!(CONC_EVENTS||[]).length && !(RAW||[]).length) return SCORECARD_HISTORY.slice();
@@ -1816,14 +1843,21 @@ function scorecardRows(){
       m.mtd, m.priorMtd, m.fourWk,
       null,                              // total on hand inventory — needs new report
       ar.cur, ar.pd1_60, ar.pd60_90, ar.totalAR];
-    // Backfill from the PDF seed where computation produced null (past Projected Sales
-    // is the only column that does this for now; we leave On Hand Inventory blank since
-    // the user hasn't decided whether to seed it from PDF).
+    // Backfill priority for cells we can't recompute (Projected Sales for past weeks,
+    // On Hand Inventory): saved snapshot (captured on prior publishes, locked once the week
+    // moves on) → PDF workbook seed → null. Live computed values from FILES always win on
+    // the current row (because computeProjectedForCurrentWeek returns non-null for it).
+    const snap=SCORECARD_SNAPS && SCORECARD_SNAPS[row[0]];
     const seed=seedByDate[row[0]];
-    if(seed){
-      if(row[1]==null && seed[1]!=null) row[1]=seed[1];
-      if(row[2]==null && seed[2]!=null) row[2]=seed[2];
-    }
+    const pick=(cur, snapKey, seedIdx) => {
+      if(cur!=null) return cur;
+      if(snap && snap[snapKey]!=null) return snap[snapKey];
+      if(seed && seed[seedIdx]!=null) return seed[seedIdx];
+      return null;
+    };
+    row[1]=pick(row[1],'projN',1);   // Projected Sales (Nabis)
+    row[2]=pick(row[2],'projD',2);   // Projected Sales (Distru)
+    row[10]=pick(row[10],'onHand',10); // Total On Hand Inventory
     rows.push(row);
   }
   return rows.reverse();   // newest first
