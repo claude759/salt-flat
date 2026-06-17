@@ -1654,12 +1654,11 @@ const SCORECARD_HISTORY = [
   ['2025-12-29',     null,     null,  1115.02,     0.00,  1115.02,  2,  56189.31,  81563.00, 14047.33,      0.00,  45386.84,  11789.00,     0.00,  57175.84],
 ];
 
-// Compute the current week's row from live CONC_EVENTS + RAW aging. Returns null if no data.
-// ── Historical AR reconstruction ────────────────────────────────────────────
-// Build a unified invoice list with payment timelines so we can answer "what was open
-// at end-of-week X?" for any past Sunday. Distru is high-fidelity (we have per-invoice
-// payment dates). Nabis is approximate (brand_csv has Paid At — date paid in full —
-// but not partial-payment timing); aging covers currently-open Nabis invoices.
+// ── DEPRECATED: historical AR reconstruction (UNUSED — kept for reference) ────
+// These tried to reconstruct what was open at any past Sunday, but it can't be done
+// accurately: off-platform Distru payment dates and Nabis per-order paid dates aren't in any
+// export, which produced large over-counts (~$107K). NOTHING calls these anymore. Past-week
+// AR now comes from the workbook PDF / canonical-locked snapshots — see enrichSnapsWithAllAR.
 let HIST_INVS_CACHE=null;
 function invalidateHistInvs(){ HIST_INVS_CACHE=null; }
 function buildHistoricalInvoices(){
@@ -1754,8 +1753,8 @@ function arSnapshotAt(date){
 // Current-snapshot AR straight from INVOICES — the exact same canonical list (and dpd as of
 // asOf) the AR by Invoice / AR by Dispensary pages aggregate, so the Scorecard's current row
 // matches them to the cent. Used for the current week (and the current Monday on publish);
-// historical weeks use arSnapshotAt's reconstruction. Works in shared mode (INVOICES is built
-// from the shared RAW). Note: TOTAL A/R includes the >90 bucket (not shown as a column).
+// past weeks use the workbook PDF / canonical-locked snapshots. Works in shared mode (INVOICES
+// is built from the shared RAW). Note: TOTAL A/R includes the >90 bucket (not shown as a column).
 function arFromInvoices(){
   if(!INVOICES || !INVOICES.length) return {cur:null, pd1_60:null, pd60_90:null, totalAR:null};
   let cur=0, pd1_60=0, pd60_90=0, total=0;
@@ -1854,33 +1853,34 @@ function computeOnHandValue(){
   return total;
 }
 
-// Compute AR snapshots for EVERY past Monday in the data range and merge them into the
-// existing snapshot map. Past Mondays' AR values are locked into the snapshot so shared-mode
-// viewers (who don't have the raw FILES) still see real AR breakdowns instead of blanks.
-// Existing snapshot fields for the same Monday are preserved (additive merge).
+// Lock THIS week's canonical AR (the exact figure the AR pages show) into the snapshot so
+// future viewers — and the week once it scrolls into the past — keep the real number. Also
+// strips stale AR from older snapshots so past weeks fall back to the workbook PDF.
+//
+// Why no historical reconstruction: we tried walking payments backward, but it can't be done
+// accurately. Distru settles many invoices by methods absent from the payments export (their
+// dates are unknown), and Nabis brand orders have no reliable per-order paid date — both led
+// to large over-counts. The workbook PDF holds the user's hand-recorded AR for past weeks;
+// going forward each week's canonical AR is captured here and persists.
 function enrichSnapsWithAllAR(snaps){
-  if(!(CONC_EVENTS||[]).length && !(RAW||[]).length) return snaps;
-  invalidateHistInvs();
-  let minDate=null;
-  (CONC_EVENTS||[]).forEach(e=>{ if(!e.d) return; const d=new Date(e.d); if(!minDate||d<minDate) minDate=d; });
-  if(!minDate && FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
-    const d=parseDate(r['Invoice Date']); if(d && (!minDate||d<minDate)) minDate=d;
-  });
-  if(!minDate) return snaps;
-  const startMon=new Date(minDate); startMon.setHours(0,0,0,0);
-  startMon.setDate(startMon.getDate() - ((startMon.getDay()+6)%7));
+  if(!(RAW||[]).length) return snaps;
   const now=new Date(); now.setHours(0,0,0,0);
   const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const curKey=isoD(currentMon);
   const out={...snaps};
-  for(const mon=new Date(startMon); mon<=currentMon; mon.setDate(mon.getDate()+7)){
-    const monClone=new Date(mon);
-    const key=isoD(monClone);
-    const sunday=new Date(monClone); sunday.setDate(monClone.getDate()-1); sunday.setHours(23,59,59,999);
-    // Current week → canonical (matches AR pages); past weeks → historical reconstruction.
-    const ar=(monClone.getTime()===currentMon.getTime()) ? arFromInvoices() : arSnapshotAt(sunday);
-    if(ar.totalAR==null) continue;   // no historical-invoice data on this side; can't compute
-    out[key] = {...(out[key]||{}), arCur:ar.cur, arPd1_60:ar.pd1_60, arPd60_90:ar.pd60_90, arTotal:ar.totalAR};
+  // Drop unreliable/old AR from every snapshot except canonical-locked ones (past weeks then
+  // show the workbook PDF instead of a bad reconstruction).
+  Object.keys(out).forEach(k=>{
+    if(k===curKey) return;
+    const v=out[k]; if(v && v.arSrc!=='canonical'){
+      const c={...v}; delete c.arCur; delete c.arPd1_60; delete c.arPd60_90; delete c.arTotal; delete c.arSrc;
+      out[k]=c;
+    }
+  });
+  const ar=arFromInvoices();
+  if(ar.totalAR!=null){
+    out[curKey]={...(out[curKey]||{}), arCur:ar.cur, arPd1_60:ar.pd1_60, arPd60_90:ar.pd60_90, arTotal:ar.totalAR, arSrc:'canonical'};
   }
   return out;
 }
@@ -1904,7 +1904,6 @@ function captureScorecardSnap(){
 function scorecardRows(){
   // No data yet → fall back to historical PDF seed so the page still shows something
   if(!(CONC_EVENTS||[]).length && !(RAW||[]).length) return SCORECARD_HISTORY.slice();
-  invalidateHistInvs();
   // Earliest Monday: derived from earliest CONC_EVENT date (or earliest invoice if no events)
   let minDate=null;
   (CONC_EVENTS||[]).forEach(e=>{ if(!e.d) return; const d=new Date(e.d); if(!minDate||d<minDate) minDate=d; });
@@ -1924,16 +1923,15 @@ function scorecardRows(){
   for(const mon=new Date(startMon); mon<=currentMon; mon.setDate(mon.getDate()+7)){
     const monClone=new Date(mon);
     const m=weekMetrics(monClone);
-    // AR as of the Sunday before this Monday (i.e., end-of-prior-week snapshot).
-    // Current week → canonical from INVOICES (matches the AR pages exactly); past weeks →
-    // historical reconstruction (corrected for off-platform settlements).
-    const sunday=new Date(monClone); sunday.setDate(monClone.getDate()-1); sunday.setHours(23,59,59,999);
-    const ar=(monClone.getTime()===currentMon.getTime()) ? arFromInvoices() : arSnapshotAt(sunday);
+    const isCur = monClone.getTime()===currentMon.getTime();
     const pr=computeProjectedForCurrentWeek(monClone);
     // Total On Hand Inventory: only the CURRENT Monday's row can be computed from the
-    // loaded inventory file (it's a today snapshot, not historical). Past rows fall back
-    // to snapshot → PDF via the backfill below.
-    const liveOnHand = monClone.getTime()===currentMon.getTime() ? computeOnHandValue() : null;
+    // loaded inventory file (it's a today snapshot). Past rows fall back to snapshot → PDF.
+    const liveOnHand = isCur ? computeOnHandValue() : null;
+    // AR: current week = canonical from INVOICES (matches the AR pages to the cent). Past
+    // weeks are filled by the backfill below (canonical-locked snapshot → workbook PDF).
+    // No historical reconstruction — see enrichSnapsWithAllAR for why it's not reliable.
+    const ar = isCur ? arFromInvoices() : {cur:null,pd1_60:null,pd60_90:null,totalAR:null};
     const row=[isoD(monClone), pr.projN, pr.projD,
       m.lwN, m.lwD, m.lwT, m.cust,
       m.mtd, m.priorMtd, m.fourWk,
@@ -1954,12 +1952,19 @@ function scorecardRows(){
     row[1]=pick(row[1],'projN',1);     // Projected Sales (Nabis)
     row[2]=pick(row[2],'projD',2);     // Projected Sales (Distru)
     row[10]=pick(row[10],'onHand',10); // Total On Hand Inventory
-    // AR backfill — in shared mode (no local files) arSnapshotAt returns null fields so
-    // we fall back here to snapshots (captured at publish time) → PDF workbook → blank.
-    row[11]=pick(row[11],'arCur',11);    // Current (Not Due)
-    row[12]=pick(row[12],'arPd1_60',12); // Past Due 1–60
-    row[13]=pick(row[13],'arPd60_90',13);// Past Due 60–90
-    row[14]=pick(row[14],'arTotal',14);  // TOTAL A/R
+    // AR backfill: current row already holds canonical values. Past rows take a
+    // canonical-LOCKED snapshot (arSrc='canonical', captured while that week was current)
+    // → workbook PDF → blank. Untagged AR (stale reconstruction) is intentionally ignored.
+    const arPick=(cur, snapKey, seedIdx) => {
+      if(cur!=null) return cur;
+      if(snap && snap.arSrc==='canonical' && snap[snapKey]!=null) return snap[snapKey];
+      if(seed && seed[seedIdx]!=null) return seed[seedIdx];
+      return null;
+    };
+    row[11]=arPick(row[11],'arCur',11);    // Current (Not Due)
+    row[12]=arPick(row[12],'arPd1_60',12); // Past Due 1–60
+    row[13]=arPick(row[13],'arPd60_90',13);// Past Due 60–90
+    row[14]=arPick(row[14],'arTotal',14);  // TOTAL A/R
     rows.push(row);
   }
   return rows.reverse();   // newest first
@@ -2013,7 +2018,7 @@ function renderScorecard(){
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
-  note.innerHTML=`Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The AR breakdown is <b>reconstructed</b> for each historical Sunday: high-fidelity for Distru (uses the payments file to compute partial-payment timing); approximate for Nabis (uses <i>Paid At</i> from brand_csv — full-payment date only). <b>Projected Sales</b> is filled only on the current row — it's a point-in-time snapshot of orders scheduled but not yet delivered; we don't have those snapshots for past weeks. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
+  note.innerHTML=`Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> is filled only on the current row — it's a point-in-time snapshot of orders scheduled but not yet delivered; we don't have those snapshots for past weeks. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
 }
 
 $('#sc-export').onclick=()=>{
