@@ -688,7 +688,11 @@ async function publishToTeam(){
     // latest values for the current week; past weeks are never overwritten.
     const existingSnaps = (cur.scorecard && cur.scorecard.snaps) || SCORECARD_SNAPS || {};
     const liveSnap = captureScorecardSnap();
-    cur.scorecard = { snaps: liveSnap ? {...existingSnaps, [liveSnap.date]:liveSnap.values} : existingSnaps };
+    let snaps = liveSnap ? {...existingSnaps, [liveSnap.date]:{...(existingSnaps[liveSnap.date]||{}), ...liveSnap.values}} : {...existingSnaps};
+    // Enrich every past Monday with computed AR so shared viewers (no raw FILES) see real
+    // values, not blanks. Past snapshots are merged additively — projN/projD/onHand stay.
+    snaps = enrichSnapsWithAllAR(snaps);
+    cur.scorecard = { snaps };
     const body=new URLSearchParams({action:'publish',uploadedBy:who,payload:JSON.stringify(cur)});
     await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});   // throws only on real network failure
     // Confirm is best-effort: the POST above is opaque (no-cors), so a failed read-back
@@ -1709,6 +1713,9 @@ function buildHistoricalInvoices(){
 function arSnapshotAt(date){
   if(!HIST_INVS_CACHE) HIST_INVS_CACHE=buildHistoricalInvoices();
   const list=HIST_INVS_CACHE;
+  // No source files (e.g., shared mode) → return null so the scorecard backfill takes
+  // over (snapshot → PDF → blank). Returning 0s would mask the missing data as zeroes.
+  if(!list.length) return {cur:null, pd1_60:null, pd60_90:null, totalAR:null};
   let curB=0, pdB=0, pdC=0, totalAR=0;
   for(const x of list){
     if(!x.invoiceDate||x.invoiceDate>date) continue;
@@ -1813,6 +1820,36 @@ function computeOnHandValue(){
   return total;
 }
 
+// Compute AR snapshots for EVERY past Monday in the data range and merge them into the
+// existing snapshot map. Past Mondays' AR values are locked into the snapshot so shared-mode
+// viewers (who don't have the raw FILES) still see real AR breakdowns instead of blanks.
+// Existing snapshot fields for the same Monday are preserved (additive merge).
+function enrichSnapsWithAllAR(snaps){
+  if(!(CONC_EVENTS||[]).length && !(RAW||[]).length) return snaps;
+  invalidateHistInvs();
+  let minDate=null;
+  (CONC_EVENTS||[]).forEach(e=>{ if(!e.d) return; const d=new Date(e.d); if(!minDate||d<minDate) minDate=d; });
+  if(!minDate && FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
+    const d=parseDate(r['Invoice Date']); if(d && (!minDate||d<minDate)) minDate=d;
+  });
+  if(!minDate) return snaps;
+  const startMon=new Date(minDate); startMon.setHours(0,0,0,0);
+  startMon.setDate(startMon.getDate() - ((startMon.getDay()+6)%7));
+  const now=new Date(); now.setHours(0,0,0,0);
+  const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
+  const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const out={...snaps};
+  for(const mon=new Date(startMon); mon<=currentMon; mon.setDate(mon.getDate()+7)){
+    const monClone=new Date(mon);
+    const key=isoD(monClone);
+    const sunday=new Date(monClone); sunday.setDate(monClone.getDate()-1); sunday.setHours(23,59,59,999);
+    const ar=arSnapshotAt(sunday);
+    if(ar.totalAR==null) continue;   // no historical-invoice data on this side; can't compute
+    out[key] = {...(out[key]||{}), arCur:ar.cur, arPd1_60:ar.pd1_60, arPd60_90:ar.pd60_90, arTotal:ar.totalAR};
+  }
+  return out;
+}
+
 // Snapshot today's "current Monday" values for persisting across publishes. Each weekly
 // auto-publish accumulates Monday's data — past Mondays are preserved (never overwritten
 // by a later week), this Monday is updated each publish until the week moves on.
@@ -1877,9 +1914,15 @@ function scorecardRows(){
       if(seed && seed[seedIdx]!=null) return seed[seedIdx];
       return null;
     };
-    row[1]=pick(row[1],'projN',1);   // Projected Sales (Nabis)
-    row[2]=pick(row[2],'projD',2);   // Projected Sales (Distru)
+    row[1]=pick(row[1],'projN',1);     // Projected Sales (Nabis)
+    row[2]=pick(row[2],'projD',2);     // Projected Sales (Distru)
     row[10]=pick(row[10],'onHand',10); // Total On Hand Inventory
+    // AR backfill — in shared mode (no local files) arSnapshotAt returns null fields so
+    // we fall back here to snapshots (captured at publish time) → PDF workbook → blank.
+    row[11]=pick(row[11],'arCur',11);    // Current (Not Due)
+    row[12]=pick(row[12],'arPd1_60',12); // Past Due 1–60
+    row[13]=pick(row[13],'arPd60_90',13);// Past Due 60–90
+    row[14]=pick(row[14],'arTotal',14);  // TOTAL A/R
     rows.push(row);
   }
   return rows.reverse();   // newest first
