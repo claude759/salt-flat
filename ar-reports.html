@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- Defeat aggressive browser caching of this HTML. GitHub Pages serves the file with
+     Cache-Control: max-age=600 (10 min). These hints tell the browser to revalidate
+     the document on every navigation, so a Refresh actually fetches the latest copy. -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <title>Wizard Trees — AR Reports</title>
 <style>
   :root{
@@ -582,16 +588,33 @@ function normShared(data){
 async function hardRefresh(){
   const haveLocal=(RAW&&RAW.length)||(CONC_EVENTS&&CONC_EVENTS.length)||(SKU_EVENTS&&SKU_EVENTS.length);
   if(!SHARED && haveLocal && !confirm('Refresh reloads the latest team report and discards files you’ve loaded but not published yet. Continue?')) return;
-  const btn=$('#sb-refresh'); if(btn){ btn.disabled=true; btn.textContent='Refreshing…'; }
+  const btn=$('#sb-refresh'); const oldLabel=btn?btn.textContent:''; if(btn){ btn.disabled=true; btn.textContent='Refreshing…'; }
+  // wipe browser-side caches
   try{ localStorage.clear(); }catch(e){}
   try{ sessionStorage.clear(); }catch(e){}
   try{ document.cookie.split(';').forEach(c=>{ const n=c.split('=')[0].trim(); if(n) document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'; }); }catch(e){}
-  // best-effort, NON-blocking (don't let a slow Cache/SW API delay or prevent the reload)
   try{ if(window.caches&&caches.keys) caches.keys().then(ks=>ks.forEach(k=>caches.delete(k))); }catch(e){}
   try{ if(navigator.serviceWorker&&navigator.serviceWorker.getRegistrations) navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())); }catch(e){}
-  // Reload to a unique URL so the browser can't serve the cached HTML. The leading "v" + time
-  // guarantees a fresh cache key on GitHub Pages' CDN every press.
-  const base=location.href.replace(/[?#].*$/,'');           // drop any existing ?cb / #hash
+  // THE REAL CACHE-DEFEATER for GitHub Pages: fetch with cache:'reload' forces a network
+  // round-trip past every layer of HTTP cache (browser disk + CDN), and warms the browser
+  // cache with the freshest copy of the document — so the subsequent location.reload uses
+  // that fresh copy. This is what bypasses Pages' 10-min CDN window reliably.
+  const url=location.pathname; let serverLastMod=null;
+  try{
+    const r=await fetch(url+'?_t='+Date.now(),{cache:'reload',headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}});
+    serverLastMod=r.headers.get('Last-Modified');
+  }catch(e){}
+  // If the server's version is the same one we're already running, don't bother with a full
+  // reload — just refresh the shared report data and tell the user we're up to date.
+  const ourBuild=document.lastModified?Date.parse(document.lastModified):0;
+  const theirBuild=serverLastMod?Date.parse(serverLastMod):0;
+  if(serverLastMod && ourBuild && theirBuild && theirBuild<=ourBuild){
+    try{ await loadShared(); }catch(e){}
+    if(btn){ btn.textContent='Already up to date'; setTimeout(()=>{btn.disabled=false; btn.textContent=oldLabel;},2200); }
+    return;
+  }
+  // Reload to a unique URL — the browser disk cache and CDN are now both bypassed/warm.
+  const base=location.href.replace(/[?#].*$/,'');
   location.replace(base+'?v='+Date.now()+(location.hash||''));
 }
 async function loadShared(){
