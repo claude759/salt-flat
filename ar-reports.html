@@ -194,7 +194,7 @@
   <div class="card" id="uploadCard">
     <div class="drop" id="drop">
       <div class="big">Drop your CSV files here, or click to browse</div>
-      <div class="small">Distru invoice history · Distru sales-order items · Nabis aging report · Nabis detailed brand · Distru payments · Nabis brand summary (for clean discounts/credits) — order doesn't matter, files are auto-detected.</div>
+      <div class="small">Distru invoice history · Distru sales-order items · Nabis aging report · Nabis detailed brand · Distru payments · Nabis brand summary (for clean discounts/credits) · Nabis inventory (for on-hand value) — order doesn't matter, files are auto-detected.</div>
       <input type="file" id="fileInput" accept=".csv" multiple class="hidden" />
     </div>
     <div class="filechips" id="chips"></div>
@@ -455,6 +455,7 @@ function classify(rows){
     // "Export orders CSV" (Wholesale Value/Order Subtotal/Invoice Total) — checked
     // AFTER nabis_detail so the line-item file (which shares some cols) isn't caught here.
     if(has('Order Number','Price Reduction','Order Discount','Order Credit Amount')) return {type:'nabis_brand',hr:i};
+    if(has('sku_code','sku_name','total_available','sku_price_per_unit')) return {type:'nabis_inventory',hr:i};
   }
   return {type:'unknown',hr:-1};
 }
@@ -486,14 +487,15 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
   nabis_aging:'Nabis aging report',
   nabis_detail:'Nabis detailed brand',
   distru_payments:'Distru payments',
-  nabis_brand:'Nabis brand summary'
+  nabis_brand:'Nabis brand summary',
+  nabis_inventory:'Nabis inventory'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -728,7 +730,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -1795,6 +1797,22 @@ function computeProjectedForCurrentWeek(monday){
   return {projN, projD};
 }
 
+// Compute Total On Hand Inventory (dollar value) from the Nabis inventory CSV.
+// Sums total_available × sku_price_per_unit across non-sample, non-archived SKUs.
+// Returns null if no inventory file is loaded.
+function computeOnHandValue(){
+  if(!FILES.nabis_inventory) return null;
+  let total=0;
+  FILES.nabis_inventory.data.forEach(r=>{
+    if((r['sku_is_sample']||'').toLowerCase()==='yes') return;          // exclude penny samples
+    if((r['sku_is_archived']||'').toLowerCase()==='yes') return;
+    if((r['sku_batch_is_archived']||'').toLowerCase()==='yes') return;
+    const qty=num(r['total_available']); const price=num(r['sku_price_per_unit']);
+    if(qty>0 && price>0) total+=qty*price;
+  });
+  return total;
+}
+
 // Snapshot today's "current Monday" values for persisting across publishes. Each weekly
 // auto-publish accumulates Monday's data — past Mondays are preserved (never overwritten
 // by a later week), this Monday is updated each publish until the week moves on.
@@ -1804,9 +1822,9 @@ function captureScorecardSnap(){
   const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   const pr=computeProjectedForCurrentWeek(currentMon);
-  // Only capture if we have something worth storing (projected from FILES or on-hand from
-  // a future inventory hook). Skip otherwise so we don't pollute snapshots with all-nulls.
-  const onHand=null;  // TODO: populate once an inventory report is wired into FILES
+  const onHand=computeOnHandValue();
+  // Only capture if we have something worth storing. Skip otherwise so we don't pollute
+  // snapshots with all-null entries.
   if(pr.projN==null && pr.projD==null && onHand==null) return null;
   return { date:isoD(currentMon), values:{projN:pr.projN, projD:pr.projD, onHand} };
 }
@@ -1838,10 +1856,14 @@ function scorecardRows(){
     const sunday=new Date(monClone); sunday.setDate(monClone.getDate()-1); sunday.setHours(23,59,59,999);
     const ar=arSnapshotAt(sunday);
     const pr=computeProjectedForCurrentWeek(monClone);
+    // Total On Hand Inventory: only the CURRENT Monday's row can be computed from the
+    // loaded inventory file (it's a today snapshot, not historical). Past rows fall back
+    // to snapshot → PDF via the backfill below.
+    const liveOnHand = monClone.getTime()===currentMon.getTime() ? computeOnHandValue() : null;
     const row=[isoD(monClone), pr.projN, pr.projD,
       m.lwN, m.lwD, m.lwT, m.cust,
       m.mtd, m.priorMtd, m.fourWk,
-      null,                              // total on hand inventory — needs new report
+      liveOnHand,
       ar.cur, ar.pd1_60, ar.pd60_90, ar.totalAR];
     // Backfill priority for cells we can't recompute (Projected Sales for past weeks,
     // On Hand Inventory): saved snapshot (captured on prior publishes, locked once the week
