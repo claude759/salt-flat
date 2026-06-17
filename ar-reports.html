@@ -1679,8 +1679,9 @@ function buildHistoricalInvoices(){
       const invoiceDate=parseDate(r['Invoice Date']);
       const dueDate=parseDate(r['Due Date']);
       const total=num(r['Total']);
+      const outstanding=num(r['Outstanding']);   // canonical current balance (authoritative)
       if(!invoiceDate||!total) return;
-      out.push({s:'Distru',c:(r['Customer']||'').trim(),inv,invoiceDate,dueDate,total,
+      out.push({s:'Distru',c:(r['Customer']||'').trim(),inv,invoiceDate,dueDate,total,outstanding,
                 payments:paysByInv[inv]||[]});
     });
   }
@@ -1726,8 +1727,16 @@ function arSnapshotAt(date){
     if(!x.invoiceDate||x.invoiceDate>date) continue;
     let amt;
     if(x.s==='Distru'){
+      // Payments recorded through this date (ACH/Check/Cash/Credit, from the payments file).
       let paid=0; for(const p of x.payments){ if(p.date>date) break; paid+=p.amt; }
-      amt=x.total-paid;
+      // Many invoices are settled by methods NOT in the payments file (wire/off-platform/
+      // adjustments) — they show canonical Outstanding≈0 with no payment record. Without
+      // this, those invoices look fully open forever (the ~$543K over-count). We know the
+      // off-platform amount cleared by NOW; assume it cleared by the due date.
+      const recordedTotal=x.payments.reduce((s,p)=>s+p.amt,0);
+      const untracked=Math.max(0, x.total-(x.outstanding||0)-recordedTotal);
+      const untrackedCleared=(x.dueDate && date>=x.dueDate) ? untracked : 0;
+      amt=Math.max(0, x.total-paid-untrackedCleared);   // clamp (handles over-paid invoices)
     } else {
       if(x.paidAt && x.paidAt<=date) continue;
       amt=x.total;
@@ -1740,6 +1749,26 @@ function arSnapshotAt(date){
     else if(dpd<=90) pdC+=amt;
   }
   return {cur:curB, pd1_60:pdB, pd60_90:pdC, totalAR};
+}
+
+// Current-snapshot AR straight from INVOICES — the exact same canonical list (and dpd as of
+// asOf) the AR by Invoice / AR by Dispensary pages aggregate, so the Scorecard's current row
+// matches them to the cent. Used for the current week (and the current Monday on publish);
+// historical weeks use arSnapshotAt's reconstruction. Works in shared mode (INVOICES is built
+// from the shared RAW). Note: TOTAL A/R includes the >90 bucket (not shown as a column).
+function arFromInvoices(){
+  if(!INVOICES || !INVOICES.length) return {cur:null, pd1_60:null, pd60_90:null, totalAR:null};
+  let cur=0, pd1_60=0, pd60_90=0, total=0;
+  INVOICES.forEach(x=>{
+    if(!(x.outstanding>0.005)) return;
+    total+=x.outstanding;
+    const dpd=x.dpd;
+    if(dpd<=0) cur+=x.outstanding;
+    else if(dpd<=60) pd1_60+=x.outstanding;
+    else if(dpd<=90) pd60_90+=x.outstanding;
+    // dpd>90 → counted in total only (matches the workbook's column set)
+  });
+  return {cur, pd1_60, pd60_90, totalAR:total};
 }
 
 // ── Per-week sales metrics from CONC_EVENTS ─────────────────────────────────
@@ -1848,7 +1877,8 @@ function enrichSnapsWithAllAR(snaps){
     const monClone=new Date(mon);
     const key=isoD(monClone);
     const sunday=new Date(monClone); sunday.setDate(monClone.getDate()-1); sunday.setHours(23,59,59,999);
-    const ar=arSnapshotAt(sunday);
+    // Current week → canonical (matches AR pages); past weeks → historical reconstruction.
+    const ar=(monClone.getTime()===currentMon.getTime()) ? arFromInvoices() : arSnapshotAt(sunday);
     if(ar.totalAR==null) continue;   // no historical-invoice data on this side; can't compute
     out[key] = {...(out[key]||{}), arCur:ar.cur, arPd1_60:ar.pd1_60, arPd60_90:ar.pd60_90, arTotal:ar.totalAR};
   }
@@ -1894,9 +1924,11 @@ function scorecardRows(){
   for(const mon=new Date(startMon); mon<=currentMon; mon.setDate(mon.getDate()+7)){
     const monClone=new Date(mon);
     const m=weekMetrics(monClone);
-    // AR as of the Sunday before this Monday (i.e., end-of-prior-week snapshot)
+    // AR as of the Sunday before this Monday (i.e., end-of-prior-week snapshot).
+    // Current week → canonical from INVOICES (matches the AR pages exactly); past weeks →
+    // historical reconstruction (corrected for off-platform settlements).
     const sunday=new Date(monClone); sunday.setDate(monClone.getDate()-1); sunday.setHours(23,59,59,999);
-    const ar=arSnapshotAt(sunday);
+    const ar=(monClone.getTime()===currentMon.getTime()) ? arFromInvoices() : arSnapshotAt(sunday);
     const pr=computeProjectedForCurrentWeek(monClone);
     // Total On Hand Inventory: only the CURRENT Monday's row can be computed from the
     // loaded inventory file (it's a today snapshot, not historical). Past rows fall back
