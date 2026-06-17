@@ -143,6 +143,22 @@
     border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none}
   a.inv-link:hover{background:var(--accent);color:#fff}
   a.inv-link.sm{padding:2px 9px;font-size:11px;white-space:nowrap}
+  /* Sales Over Time */
+  .time-summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .time-summary .metric{flex:1;min-width:150px}
+  .time-summary .ml{font-size:12px;color:var(--muted)}
+  .time-summary .mv{font-size:21px;font-weight:800;margin-top:3px}
+  .chart-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:16px}
+  .chart-card h4{margin:0;font-size:14px}
+  .chart-card .csub{font-size:12px;color:var(--muted);margin:2px 0 10px}
+  .chart-legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-top:8px}
+  .chart-legend span{display:inline-flex;align-items:center;gap:6px}
+  .chart-legend i{width:11px;height:11px;border-radius:3px}
+  svg .ax{fill:var(--muted);font-size:10px}
+  svg .gl{stroke:var(--line);stroke-width:1;opacity:.6}
+  svg .gll{fill:var(--muted);font-size:9.5px}
+  svg rect.barseg{transition:opacity .1s}
+  svg rect.barseg:hover{opacity:.78}
   .detailbox .ddtable{margin-bottom:4px;width:auto;min-width:340px}
   td.disc-link{cursor:pointer;color:var(--accent2);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .detailbox th{position:static;background:transparent;border-bottom:1px solid var(--line)}
@@ -247,6 +263,7 @@
       <div class="tab" data-tab="cd-disp">Credits/Discounts by Dispensary</div>
       <div class="tab" data-tab="cd-brand">Credits/Discounts by Brand</div>
       <div class="tab" data-tab="sku">Sales by Type</div>
+      <div class="tab" data-tab="time">Sales Over Time</div>
       <div class="tab" data-tab="scorecard">Sales Scorecard</div>
     </div>
 
@@ -451,6 +468,28 @@
       </div>
       <div class="tablewrap" id="sku-wrap"></div>
       <div class="notes" id="sku-note"></div>
+    </div>
+
+    <!-- SALES OVER TIME -->
+    <div id="view-time" class="hidden">
+      <div class="toolbar">
+        <select id="time-preset" title="Quick range">
+          <option value="12m">Last 12 months</option>
+          <option value="6m">Last 6 months</option>
+          <option value="ytd">Year to date</option>
+          <option value="24m">Last 24 months</option>
+          <option value="all">All time</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <label class="dt">From <input type="date" id="time-start" /></label>
+        <label class="dt">To <input type="date" id="time-end" /></label>
+        <select id="time-gran" title="Bucket size"><option value="month">Monthly</option><option value="week">Weekly</option></select>
+        <div class="grow"></div>
+        <button class="btn" id="time-export">⬇ Export CSV</button>
+      </div>
+      <div id="time-summary" class="time-summary"></div>
+      <div id="time-wrap"></div>
+      <div class="notes" id="time-note"></div>
     </div>
 
     <!-- SALES SCORECARD -->
@@ -757,6 +796,7 @@ async function loadShared(){
     // the team report arrived (e.g. opened via #scorecard), it'd keep showing the non-clickable
     // PDF-seed fallback instead of the live, drillable rows.
     if(any) renderScorecard();
+    if(any) renderTimeSeries();
     renderShareBar();
   }catch(e){ renderShareBar('error'); }
 }
@@ -2450,6 +2490,84 @@ $('#sku-export').onclick=()=>{
   downloadCSV('sales-by-type.csv',rows);
 };
 
+/* ============================ Sales Over Time ============================ */
+const TIME_SRC_COLORS={Nabis:'#ff8f5e',Distru:'#4ea1ff',QuickBooks:'#2fbf71'};
+const TIME_FMT_COLORS={jar35:'#7c5cff',fivepk:'#2fbf71',pr15:'#ff8f5e',vape:'#4ea1ff',other:'#9aa3b2'};
+const isoDay=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+function timeApplyPreset(p){
+  const now=new Date(); let s=new Date(now), e=new Date(now);
+  if(p==='12m') s.setMonth(s.getMonth()-12);
+  else if(p==='6m') s.setMonth(s.getMonth()-6);
+  else if(p==='24m') s.setMonth(s.getMonth()-24);
+  else if(p==='ytd') s=new Date(now.getFullYear(),0,1);
+  else if(p==='all'){ s=new Date(2021,0,1); }
+  else return;
+  $('#time-start').value=isoDay(s); $('#time-end').value=isoDay(e);
+}
+function shortNum(v){ const a=Math.abs(v); if(a>=1e6) return (v/1e6).toFixed(a>=1e7?0:1)+'M'; if(a>=1e3) return Math.round(v/1e3)+'k'; return String(Math.round(v)); }
+function stackedBars(buckets, series){
+  const W=880,H=260,padL=58,padB=30,padT=12,padR=12;
+  const maxV=Math.max(1,...buckets.map(b=>b.total));
+  const pow=Math.pow(10,Math.floor(Math.log10(maxV))); let nm=Math.ceil(maxV/pow)*pow; if(nm/maxV>1.9 && pow>=2) nm=Math.ceil(maxV/(pow/2))*(pow/2);
+  const plotH=H-padT-padB, plotW=W-padL-padR, y=v=>padT+(1-v/nm)*plotH, n=buckets.length, bw=plotW/n;
+  let svg='';
+  for(let g=0;g<=4;g++){ const v=nm*g/4, yy=y(v).toFixed(1); svg+=`<line class="gl" x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}"/><text class="gll" x="${padL-6}" y="${(+yy+3).toFixed(1)}" text-anchor="end">$${shortNum(v)}</text>`; }
+  const every=Math.ceil(n/15);
+  buckets.forEach((b,i)=>{ const x=padL+i*bw+bw*0.14, w=Math.max(1,bw*0.72); let acc=0;
+    series.forEach(s=>{ const v=b.parts[s.key]||0; if(v<=0) return; const y0=y(acc+v),y1=y(acc);
+      svg+=`<rect class="barseg" x="${x.toFixed(1)}" y="${y0.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(0,y1-y0).toFixed(1)}" fill="${s.color}"><title>${esc(b.label)} · ${esc(s.label)}: ${fmt$(v)}</title></rect>`;
+      acc+=v; });
+    if(i%every===0) svg+=`<text class="ax" x="${(x+w/2).toFixed(1)}" y="${H-padB+13}" text-anchor="middle">${esc(b.label)}</text>`;
+  });
+  const legend=series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:300px">${svg}</svg><div class="chart-legend">${legend}</div>`;
+}
+function timeBuckets(){
+  const start=parseDate($('#time-start').value), end=parseDate($('#time-end').value);
+  if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,999);
+  const gran=$('#time-gran').value||'month';
+  const bkey=d=> gran==='week' ? (()=>{ const m=new Date(d); m.setHours(0,0,0,0); m.setDate(m.getDate()-((m.getDay()+6)%7)); return m.getTime(); })() : (d.getFullYear()*12+d.getMonth());
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const blabel=k=> gran==='week' ? (()=>{ const dt=new Date(k); return `${dt.getMonth()+1}/${dt.getDate()}`; })() : `${MON[k%12]} '${String(Math.floor(k/12)).slice(2)}`;
+  const fmtKeyOf=label=>{ const f=CONC_FORMATS.find(x=>x.label===label); return f?f.key:'other'; };
+  const buckets={};
+  (SKU_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!dt) return; if(start&&dt<start) return; if(end&&dt>end) return;
+    const rev=e.rev||0; if(Math.abs(rev)<0.005) return;
+    const k=bkey(dt), b=buckets[k]||(buckets[k]={k,src:{},fmt:{},total:0});
+    b.src[e.src]=(b.src[e.src]||0)+rev; const fk=fmtKeyOf(e.fmt); b.fmt[fk]=(b.fmt[fk]||0)+rev; b.total+=rev; });
+  const keys=Object.keys(buckets).map(Number).sort((a,b)=>a-b);
+  return {arr:keys.map(k=>buckets[k]), blabel, gran};
+}
+function renderTimeSeries(){
+  const wrap=$('#time-wrap'), note=$('#time-note'), sumEl=$('#time-summary');
+  if(!wrap) return;
+  if(!$('#time-start').value || !$('#time-end').value){ timeApplyPreset($('#time-preset').value||'12m'); }
+  if(!(SKU_EVENTS&&SKU_EVENTS.length)){ wrap.innerHTML='<div class="empty" style="padding:34px;text-align:center">Load the sales files (or open the team report) to see sales over time.</div>'; sumEl.innerHTML=''; note.innerHTML=''; return; }
+  const {arr, blabel, gran}=timeBuckets();
+  if(!arr.length){ wrap.innerHTML='<div class="empty" style="padding:34px;text-align:center">No sales in this range.</div>'; sumEl.innerHTML=''; note.innerHTML=''; return; }
+  const total=arr.reduce((s,b)=>s+b.total,0), best=arr.reduce((m,b)=>b.total>m.total?b:m,arr[0]), avg=total/arr.length;
+  const per=gran==='week'?'week':'month';
+  sumEl.innerHTML=[['Total sales',fmt$(total)],['Avg / '+per,fmt$(avg)],
+    ['Best '+per,`${fmt$(best.total)} <span class="rep">${esc(blabel(best.k))}</span>`],
+    [per[0].toUpperCase()+per.slice(1)+'s',String(arr.length)]
+  ].map(([l,v])=>`<div class="metric"><div class="ml">${l}</div><div class="mv">${v}</div></div>`).join('');
+  const srcSeries=['Distru','Nabis','QuickBooks'].filter(s=>arr.some(b=>b.src[s])).map(s=>({key:s,label:s,color:TIME_SRC_COLORS[s]}));
+  const fmtSeries=['jar35','fivepk','pr15','vape','other'].filter(k=>arr.some(b=>b.fmt[k])).map(k=>({key:k,label:SKU_DISP[k]||'Other',color:TIME_FMT_COLORS[k]}));
+  const forChart=which=>arr.map(b=>({label:blabel(b.k),parts:b[which],total:b.total}));
+  const card=(t,s,svg)=>`<div class="chart-card"><h4>${esc(t)}</h4><div class="csub">${esc(s)}</div>${svg}</div>`;
+  wrap.innerHTML=
+      card('Billed sales by channel', 'Distru · Nabis · QuickBooks (historical, pre-2026) — stacked; hover a segment for its value', stackedBars(forChart('src'), srcSeries))
+    + card('Sales by product format', 'how the product mix shifts over time', stackedBars(forChart('fmt'), fmtSeries));
+  note.innerHTML=`Billed (actualized) sales, bucketed ${gran==='week'?'weekly':'monthly'}. Spans all sources including the QuickBooks historical channel (2023–2025). Hover any bar segment for its exact value.`;
+}
+$('#time-export').onclick=()=>{
+  const {arr, blabel}=timeBuckets();
+  const rows=[['Period','Distru','Nabis','QuickBooks','3.5g Jars','.7g Prerolls','1.5g Prerolls','Vapes','Other','Total']];
+  arr.forEach(b=>rows.push([blabel(b.k),(b.src.Distru||0).toFixed(2),(b.src.Nabis||0).toFixed(2),(b.src.QuickBooks||0).toFixed(2),
+    (b.fmt.jar35||0).toFixed(2),(b.fmt.fivepk||0).toFixed(2),(b.fmt.pr15||0).toFixed(2),(b.fmt.vape||0).toFixed(2),(b.fmt.other||0).toFixed(2),b.total.toFixed(2)]));
+  downloadCSV('sales-over-time.csv',rows);
+};
+
 /* ============================ Wiring ============================ */
 const drop=$('#drop'),fi=$('#fileInput');
 drop.onclick=()=>fi.click();
@@ -2469,6 +2587,8 @@ function activateTab(tab, fromHash){
   $('#view-sku').classList.toggle('hidden',tab!=='sku');
   $('#view-scorecard').classList.toggle('hidden',tab!=='scorecard');
   if(tab==='scorecard') renderScorecard();
+  $('#view-time').classList.toggle('hidden',tab!=='time');
+  if(tab==='time') renderTimeSeries();
   $('#conc-controls').classList.toggle('hidden', tab!=='cd-disp' && tab!=='cd-brand');
   if(!fromHash){ try{ history.replaceState(null,'','#'+tab); }catch(e){ location.hash=tab; } }
   return true;
@@ -2502,6 +2622,9 @@ function applyConcPreset(p){
 $('#conc-preset').addEventListener('change',ev=>applyConcPreset(ev.target.value));
 ['sku-start','sku-end'].forEach(id=>$('#'+id).addEventListener('change',()=>{ $('#sku-preset').value='custom'; buildSku(); }));
 $('#sku-preset').addEventListener('change',ev=>applySkuPreset(ev.target.value));
+['time-start','time-end'].forEach(id=>$('#'+id).addEventListener('change',()=>{ $('#time-preset').value='custom'; renderTimeSeries(); }));
+$('#time-gran').addEventListener('change',renderTimeSeries);
+$('#time-preset').addEventListener('change',ev=>{ timeApplyPreset(ev.target.value); renderTimeSeries(); });
 document.querySelectorAll('#cd-table th[data-sort]').forEach(th=>th.onclick=()=>{
   const k=th.dataset.sort; cdSort.dir = cdSort.key===k? -cdSort.dir : (k==='customer'||k==='source'?1:-1); cdSort.key=k; renderConcDisp();
 });
@@ -2524,7 +2647,8 @@ $('#sb-publish').onclick=publishToTeam;
 // init dates: as-of = today; concessions range = Jan 1 2021 → today; SKU = last week (Mon–Sun)
 (function(){ const d=new Date(); const today=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   $('#asof').value=today; $('#conc-end').value=today; $('#conc-start').value='2021-01-01';
-  $('#sku-preset').value='lastweek'; applySkuPreset('lastweek'); })();
+  $('#sku-preset').value='lastweek'; applySkuPreset('lastweek');
+  $('#time-preset').value='12m'; timeApplyPreset('12m'); })();
 renderChips();
 renderShareBar();
 renderConcessions();   // show the concessions empty-state until files/shared data arrive
