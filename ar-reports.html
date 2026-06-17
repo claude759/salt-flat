@@ -1666,17 +1666,45 @@ function computeCurrentScorecardRow(){
     s+=sumRange(ws,we).t; n++;
   }
   const fourWk=s/n;
-  // AR breakdown — current snapshot from RAW (open only)
+  // AR breakdown — current snapshot from RAW (open only). Compute dpd from asOf inline:
+  // RAW records don't carry .bucket (that field lives on the derived INVOICES list), so the
+  // earlier r.bucket comparison silently fell through, leaving the three bands at $0 while
+  // TOTAL A/R was correct.
+  const _aso = (asOf||new Date()); _aso.setHours(0,0,0,0);
   let cur=0, pd1_60=0, pd60_90=0, totalAR=0;
   (RAW||[]).forEach(r=>{ if(!(r.outstanding>0)) return; totalAR+=r.outstanding;
-    if(r.bucket==='Current') cur+=r.outstanding;
-    else if(r.bucket==='1–30'||r.bucket==='31–60') pd1_60+=r.outstanding;
-    else if(r.bucket==='61–90') pd60_90+=r.outstanding;
-    // >90 still counted in TOTAL A/R, not broken out here (matches the workbook's columns)
+    const dpd = r.dueDate ? Math.floor((_aso - r.dueDate)/DAY) : 0;
+    if(dpd<=0) cur+=r.outstanding;
+    else if(dpd<=60) pd1_60+=r.outstanding;
+    else if(dpd<=90) pd60_90+=r.outstanding;
+    // >90 still counted in TOTAL A/R, not broken out (matches the workbook's column set)
   });
+  // Projected Sales: orders scheduled with delivery date in THIS Monday's week (Mon–Sun)
+  // that are not yet delivered. Distru: items with Status not Delivered/Completed; Nabis:
+  // detail orders not delivered/cancelled/rejected/pickup-from-brand. Sum the line billing.
+  const weekEnd=new Date(mon); weekEnd.setDate(mon.getDate()+6); weekEnd.setHours(23,59,59,999);
+  let projD=null, projN=null;
+  if(FILES.distru_items){ projD=0;
+    FILES.distru_items.data.forEach(r=>{
+      const status=(r['Status']||'').trim();
+      if(status==='Delivered' || status==='Completed') return;
+      if(isNabisCust(r['Customer'])) return;
+      const dd=parseDate(r['Delivery Date']); if(!dd || dd<mon || dd>weekEnd) return;
+      projD += num(r['Quantity']) * num(r['Order Item Price']);
+    });
+  }
+  if(FILES.nabis_detail){ projN=0;
+    FILES.nabis_detail.data.forEach(r=>{
+      const type=(r['Order Type']||'').trim().toUpperCase();
+      const status=(r['Order Status']||'').trim().toUpperCase();
+      if(type==='PICKUP_FROM_BRAND' || status==='CANCELLED' || status==='REJECTED' || status==='DELIVERED') return;
+      const dd=parseDate(r['Delivery Date']); if(!dd || dd<mon || dd>weekEnd) return;
+      projN += num(r['Discounted Line Item Total']) || num(r['Line Item Subtotal']);
+    });
+  }
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   return [isoD(mon),
-    null, null,                                                 // projected — needs scheduled-order data we don't have yet
+    projN, projD,
     hasEv?lw.n:null, hasEv?lw.d:null, hasEv?lw.t:null,
     hasEv?lw.cust:null,
     hasEv?mtd:null, hasEv?priorMtd:null, hasEv?fourWk:null,
