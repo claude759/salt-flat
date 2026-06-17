@@ -136,6 +136,10 @@
   .detailbox table{font-size:12px}
   .detailbox tr.dsubrow td{font-weight:700;color:var(--accent2);text-transform:uppercase;font-size:10.5px;letter-spacing:.4px;padding-top:10px;border-bottom:1px solid var(--line)}
   .detailbox .ddhead{font-weight:700;color:var(--accent2);font-size:10.5px;text-transform:uppercase;letter-spacing:.4px;margin:10px 0 4px}
+  .inv-link-row{margin:2px 0 10px}
+  a.inv-link{display:inline-block;background:var(--panel2);border:1px solid var(--accent);color:var(--accent2);
+    border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none}
+  a.inv-link:hover{background:var(--accent);color:#fff}
   .detailbox .ddtable{margin-bottom:4px;width:auto;min-width:340px}
   td.disc-link{cursor:pointer;color:var(--accent2);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .detailbox th{position:static;background:transparent;border-bottom:1px solid var(--line)}
@@ -587,9 +591,10 @@ function recordsToPayload(recs){
     id:x.invoiceDate?x.invoiceDate.getTime():null, dd:x.dueDate?x.dueDate.getTime():null,
     o:x.outstanding, t:x.total, rs:x.rawStatus,
     td:x.totalDiscounts||0,
+    oid:x.orderId||'',
     dl:(x.discountLines&&x.discountLines.length)?x.discountLines.map(d=>({l:d.label,a:d.amt})):[],
     cl:(x.creditLines&&x.creditLines.length)?x.creditLines.map(c=>({rf:c.ref,a:c.amt,nt:c.note||''})):[],
-    it:(x.items&&x.items.length)?x.items.map(i=>({p:i.product,q:i.qty,pr:i.price})):[]}));
+    it:(x.items&&x.items.length)?x.items.map(i=>({s:i.sku,p:i.product,q:i.qty,lt:i.lineTotal})):[]}));
 }
 function payloadToRecords(arr){
   return (arr||[]).map(x=>{
@@ -600,7 +605,8 @@ function payloadToRecords(arr){
       outstanding:+x.o||0, total:+x.t||0, rawStatus:x.rs||'',
       totalDiscounts:+x.td||0, discountLines, creditLines,
       creditTotal:creditLines.reduce((s,c)=>s+c.amt,0),
-      items:(x.it||[]).map(i=>({product:i.p,qty:i.q,price:i.pr}))};
+      orderId:x.oid||'',
+      items:(x.it||[]).map(i=>({sku:i.s,product:i.p,qty:i.q,lineTotal:i.lt}))};
   });
 }
 
@@ -728,7 +734,7 @@ async function publishToTeam(){
     try{ const d0=await jsonp(); cur=normShared(d0 && d0.data); }catch(e){}
     // Slim payload for reliable transfer: drop heavy drill-down detail (line items,
     // per-format/credit breakdowns). Summary numbers, aging, discounts/credits, brand rollup all survive.
-    if(hasAR)  cur.ar  ={records:recordsToPayload(RAW).map(({it,...r})=>r),cleaning:CLEAN};
+    if(hasAR)  cur.ar  ={records:recordsToPayload(RAW),cleaning:CLEAN};   // keep line items (slim) so the team sees the per-invoice breakdown + link
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
@@ -820,13 +826,15 @@ function ingestFromFiles(){
   const recs=[];
 
   /* ---- Distru ---- */
-  const distruItemsBySO={};
+  const distruItemsBySO={}, distruOrderIdBySO={};
   if(FILES.distru_items){
     FILES.distru_items.data.forEach(r=>{
       const so=(r['Order Number']||'').trim(); if(!so) return;
+      const oid=(r['Order Id']||'').trim(); if(oid && !distruOrderIdBySO[so]) distruOrderIdBySO[so]=oid;
+      const qty=num(r['Quantity']), unit=num(r['Order Item Price']);   // Order Item Price is PER-UNIT
       (distruItemsBySO[so]=distruItemsBySO[so]||[]).push({
-        product:r['Product']||r['Product SKU']||'', qty:num(r['Quantity']),
-        price:num(r['Order Item Price'])
+        sku:(r['Product SKU']||'').trim(), product:(r['Product']||'').trim()||(r['Product SKU']||'').trim(),
+        qty, lineTotal:qty*unit
       });
     });
   }
@@ -859,6 +867,7 @@ function ingestFromFiles(){
         totalDiscounts:Math.abs(num(r['Total Discounts'])),
         discountLines, creditLines,
         creditTotal:creditLines.reduce((s,c)=>s+c.amt,0),
+        orderId: distruOrderIdBySO[so]||'',
         items: distruItemsBySO[so]||[]
       });
     });
@@ -881,8 +890,8 @@ function ingestFromFiles(){
         if(!excluded[on]){ excluded[on]=reason; CLEAN.excludedOrders++; }
       }
       (nabisItemsByOrder[on]=nabisItemsByOrder[on]||[]).push({
-        product:r['Strain']||r['Line Item SKU Code']||'', qty:num(r['Units']),
-        price:num(r['Line Item Subtotal'])
+        sku:(r['Line Item SKU Code']||'').trim(), product:(r['Strain']||'').trim()||(r['Line Item SKU Code']||'').trim(),
+        qty:num(r['Units']), lineTotal:num(r['Line Item Subtotal'])   // Nabis line subtotal is the LINE total
       });
       const nd=nabisDiscByOrder[on]||(nabisDiscByOrder[on]={discountLines:[],orderDisc:0,credit:0,creditNote:''});
       nd.orderDisc=num(r['Order Discount']);                 // order-level (constant per line)
@@ -1067,8 +1076,15 @@ function renderInvoices(){
   body.innerHTML=rows.map((x,i)=>{
     const hasItems=x.items&&x.items.length;
     const hasDC=(x.discountLines&&x.discountLines.length)||(x.creditLines&&x.creditLines.length);
-    const expandable=hasItems||hasDC;
-    const itemRows = hasItems ? x.items.map(it=>`<tr><td>${esc(it.product)}</td><td class="num">${it.qty||''}</td><td class="num money">${it.price?fmt$(it.price):''}</td></tr>`).join('') : '';
+    // Link to the order in its source system. Distru: /orders/{orderId} (UUID from the items
+    // file). Nabis: no order UUID in the exports, so we can only open the orders list.
+    let invLink='', invLinkLabel='';
+    if(x.source==='Distru' && x.orderId){ invLink='https://app.distru.com/orders/'+x.orderId; invLinkLabel='Open invoice in Distru ↗'; }
+    else if(x.source==='Nabis'){ invLink='https://app.nabis.com/Wizard-Trees/app/orders'; invLinkLabel='Open Nabis orders ↗'; }
+    const expandable=hasItems||hasDC||invLink;
+    const itemRows = hasItems ? x.items.map(it=>{ const u=it.qty?it.lineTotal/it.qty:0;
+      return `<tr><td>${esc(it.sku||'')}</td><td>${esc(it.product||'')}</td><td class="num">${it.qty||''}</td><td class="num money">${u?fmt$(u):''}</td><td class="num money">${it.lineTotal?fmt$(it.lineTotal):''}</td></tr>`; }).join('') : '';
+    const linkHtml = invLink ? `<a class="inv-link" href="${esc(invLink)}" target="_blank" rel="noopener">${invLinkLabel}</a>` : '';
     const td=x.totalDiscounts||0;
     return `<tr class="parent" data-i="${i}">
       <td>${expandable?'<span class="caret">▶</span>':''}</td>
@@ -1083,7 +1099,8 @@ function renderInvoices(){
       <td class="num money">${fmt$(x.outstanding)}</td>
       <td class="num money ${(td||x.creditTotal)?'disc-link':''}">${td?fmt$(td):'<span class="neg">—</span>'}${x.creditTotal?` <span class="rep" title="credits added">+${fmt$(x.creditTotal)} cr</span>`:''}</td>
     </tr>` + (expandable?`<tr class="detail hidden"><td colspan="15"><div class="detailbox">
-        ${hasItems?`<div class="ddhead">Line items</div><table class="ddtable"><thead><tr><th>Product</th><th class="num">Qty</th><th class="num">Line $</th></tr></thead><tbody>${itemRows}</tbody></table>`:''}
+        ${linkHtml?`<div class="inv-link-row">${linkHtml}</div>`:''}
+        ${hasItems?`<div class="ddhead">Line items</div><table class="ddtable"><thead><tr><th>SKU</th><th>Product</th><th class="num">Units</th><th class="num">Cost/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${itemRows}</tbody></table>`:''}
         ${discCreditDetail(x)}
       </div></td></tr>`:'');
   }).join('');
