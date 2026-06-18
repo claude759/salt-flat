@@ -181,6 +181,18 @@
   #sc-table th:first-child, #sc-table td:first-child{position:sticky;left:0;z-index:2;background:var(--bg)}
   #sc-table thead th:first-child{top:0;z-index:3;background:var(--panel2)}
   #sc-table tbody tr:hover td:first-child{background:#1b1f29}
+  /* AR by Invoice: freeze the row-identity columns (caret · Invoice/Order # · Dispensary) on horizontal scroll.
+     Left offsets for cols 2 & 3 are measured per-render into --inv-fz2/--inv-fz3 (freezeInvCols) so they align
+     exactly to the real column widths; the px fallbacks only apply before the first measure. Direct-child
+     selectors (>) keep this off the nested line-item tables inside expanded detail rows. */
+  #inv-table>thead>tr>th:nth-child(1), #inv-table>tbody>tr.parent>td:nth-child(1){position:sticky;left:0}
+  #inv-table>thead>tr>th:nth-child(2), #inv-table>tbody>tr.parent>td:nth-child(2){position:sticky;left:var(--inv-fz2,40px)}
+  #inv-table>thead>tr>th:nth-child(3), #inv-table>tbody>tr.parent>td:nth-child(3){position:sticky;left:var(--inv-fz3,170px)}
+  #inv-table>tbody>tr.parent>td:nth-child(-n+3){z-index:2;background:var(--bg)}
+  #inv-table>thead>tr>th:nth-child(-n+3){z-index:3}
+  #inv-table>tbody>tr.parent:hover>td:nth-child(-n+3){background:#1b1f29}
+  #inv-table>thead>tr>th:nth-child(3), #inv-table>tbody>tr.parent>td:nth-child(3){box-shadow:inset -1px 0 0 var(--line)}
+  #inv-table>tfoot>tr>td{z-index:3}
   .scm{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center}
   .scm.hidden{display:none}
   .scm-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(2px)}
@@ -326,6 +338,7 @@
               <th class="num">31–60</th>
               <th class="num">61–90</th>
               <th class="num">&gt;90</th>
+              <th data-sort="outstanding" class="num">Outstanding</th>
               <th data-sort="totalDiscounts" class="num">Total Discounts</th>
             </tr>
           </thead>
@@ -1190,9 +1203,19 @@ function invLinkUrl(x){
   if(x.source==='Nabis' && x.number) return 'https://app.nabis.com/Wizard-Trees/app/orders?number='+encodeURIComponent(x.number)+'&page=1&sample=ALL_ORDERS';
   return '';
 }
+// Measure the real widths of the caret + Invoice# columns and publish them as CSS vars so the
+// sticky Dispensary column lines up exactly (offsets can't be known in pure CSS with auto widths).
+// Uses the table DOM API (tHead.rows[0].cells) so nested detail-row tables are ignored.
+function freezeInvCols(){
+  const tbl=document.getElementById('inv-table');
+  if(!tbl||!tbl.tHead||!tbl.tHead.rows[0]) return;
+  const c=tbl.tHead.rows[0].cells; if(c.length<3) return;
+  const w1=c[0].offsetWidth, w2=c[1].offsetWidth;       // 0 when the tab is hidden → keep the px fallbacks
+  if(w1>0){ tbl.style.setProperty('--inv-fz2',w1+'px'); tbl.style.setProperty('--inv-fz3',(w1+w2)+'px'); }
+}
 function renderInvoices(){
   const rows=invFiltered(), body=$('#inv-body');
-  if(!rows.length){ body.innerHTML=`<tr><td colspan="12" class="empty">No invoices match.</td></tr>`; $('#inv-foot').innerHTML=''; return; }
+  if(!rows.length){ body.innerHTML=`<tr><td colspan="13" class="empty">No invoices match.</td></tr>`; $('#inv-foot').innerHTML=''; return; }
   body.innerHTML=rows.map((x,i)=>{
     const hasItems=x.items&&x.items.length;
     const hasDC=(x.discountLines&&x.discountLines.length)||(x.creditLines&&x.creditLines.length);
@@ -1219,8 +1242,9 @@ function renderInvoices(){
       <td>${fmtDate(x.dueDate)}</td>
       <td class="num ${x.dpd>0?'':'neg'}">${x.dpd>0?x.dpd:'—'}</td>
       ${bucketCells(x)}
+      <td class="num money">${fmt$(x.outstanding)}</td>
       <td class="num money ${(td||x.creditTotal)?'disc-link':''}">${td?fmt$(td):'<span class="neg">—</span>'}${x.creditTotal?` <span class="rep" title="credits added">+${fmt$(x.creditTotal)} cr</span>`:''}</td>
-    </tr>` + (expandable?`<tr class="detail hidden"><td colspan="12"><div class="detailbox">
+    </tr>` + (expandable?`<tr class="detail hidden"><td colspan="13"><div class="detailbox">
         ${linkHtml?`<div class="inv-link-row">${linkHtml}</div>`:''}
         ${hasItems?`<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Cost/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${itemRows}</tbody>${itemFoot}</table>`:''}
         ${discCreditDetail(x)}
@@ -1232,10 +1256,12 @@ function renderInvoices(){
   const t={'Current':0,'1–30':0,'31–60':0,'61–90':0,'>90':0}; let gt=0,gtd=0;
   rows.forEach(x=>{ t[x.bucket]+=x.outstanding; gt+=x.outstanding; gtd+=x.totalDiscounts||0; });
   $('#inv-foot').innerHTML=`<tr class="totals">
-    <td colspan="6">Totals · ${rows.length} invoice${rows.length!==1?'s':''} · ${fmt$(gt)} outstanding</td>
+    <td colspan="6">Totals · ${rows.length} invoice${rows.length!==1?'s':''}</td>
     ${BUCKETS.map(bk=>`<td class="num money" style="color:${t[bk]?BCOLOR[bk]:'var(--muted)'}">${t[bk]?fmt$(t[bk]):'—'}</td>`).join('')}
+    <td class="num money">${fmt$(gt)}</td>
     <td class="num money">${gtd?fmt$(gtd):'—'}</td>
   </tr>`;
+  freezeInvCols();
 }
 
 /* ============================ By Dispensary ============================ */
@@ -2687,6 +2713,7 @@ function activateTab(tab, fromHash){
   const t=document.querySelector('.tab[data-tab="'+tab+'"]'); if(!t) return false;
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
   $('#view-invoice').classList.toggle('hidden',tab!=='invoice');
+  if(tab==='invoice') freezeInvCols();   // measure column widths once the table is actually visible
   $('#view-dispensary').classList.toggle('hidden',tab!=='dispensary');
   $('#view-brand').classList.toggle('hidden',tab!=='brand');
   $('#view-cd-disp').classList.toggle('hidden',tab!=='cd-disp');
@@ -2701,6 +2728,7 @@ function activateTab(tab, fromHash){
   return true;
 }
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>activateTab(t.dataset.tab));
+window.addEventListener('resize',freezeInvCols);   // keep frozen-column offsets aligned on viewport changes
 // Deep-link support: a URL hash opens that tab directly, e.g.
 //   …/ar-reports.html#sku  #invoice  #dispensary  #cd-disp  #cd-brand
 function tabFromHash(){ const h=(location.hash||'').replace(/^#/,'').trim(); return document.querySelector('.tab[data-tab="'+h+'"]')?h:null; }
