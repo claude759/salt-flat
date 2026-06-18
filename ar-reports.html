@@ -54,6 +54,11 @@
   @keyframes pulse{0%{opacity:.35}50%{opacity:1}100%{opacity:.35}}
 
   /* Upload */
+  .upload-head{cursor:pointer;font-weight:700;font-size:14px;display:flex;align-items:center;gap:8px;user-select:none}
+  .upload-head .caret{font-size:12px}
+  .upload-head.open .caret{transform:rotate(90deg)}
+  .upload-head .upload-hint{font-weight:400;color:var(--muted);font-size:12.5px}
+  #uploadBody{margin-top:14px}
   .drop{border:2px dashed var(--line);border-radius:14px;padding:26px;text-align:center;background:var(--panel);transition:.15s;cursor:pointer}
   .drop.hot{border-color:var(--accent);background:#1b1830}
   .drop .big{font-size:15px;font-weight:600}
@@ -243,13 +248,16 @@
 
   <!-- UPLOAD -->
   <div class="card" id="uploadCard">
-    <div class="drop" id="drop">
-      <div class="big">Drop your CSV files here, or click to browse</div>
-      <div class="small">Distru invoice history · Distru sales-order items · Nabis aging report · Nabis detailed brand · Distru payments · Nabis brand summary (for clean discounts/credits) · Nabis inventory (for on-hand value) — order doesn't matter, files are auto-detected.</div>
-      <input type="file" id="fileInput" accept=".csv" multiple class="hidden" />
+    <div class="upload-head" id="uploadToggle"><span class="caret">▶</span> Upload CSV files <span class="upload-hint">— to build a report from your own files (the team report loads automatically)</span></div>
+    <div id="uploadBody" class="hidden">
+      <div class="drop" id="drop">
+        <div class="big">Drop your CSV files here, or click to browse</div>
+        <div class="small">Distru invoice history · Distru sales-order items · Nabis aging report · Nabis detailed brand · Distru payments · Nabis brand summary (for clean discounts/credits) · Nabis inventory (for on-hand value) — order doesn't matter, files are auto-detected.</div>
+        <input type="file" id="fileInput" accept=".csv" multiple class="hidden" />
+      </div>
+      <div class="filechips" id="chips"></div>
+      <div class="notes" id="notes"></div>
     </div>
-    <div class="filechips" id="chips"></div>
-    <div class="notes" id="notes"></div>
   </div>
 
   <!-- REPORTS -->
@@ -2538,6 +2546,88 @@ function timeBuckets(){
   const keys=Object.keys(buckets).map(Number).sort((a,b)=>a-b);
   return {arr:keys.map(k=>buckets[k]), blabel, gran};
 }
+// CONC-based buckets (carry customer→brand + discounts; SKU_EVENTS has no customer)
+function timeConcBuckets(){
+  const start=parseDate($('#time-start').value), end=parseDate($('#time-end').value);
+  if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,999);
+  const gran=$('#time-gran').value||'month';
+  const bkey=d=> gran==='week' ? (()=>{ const m=new Date(d); m.setHours(0,0,0,0); m.setDate(m.getDate()-((m.getDay()+6)%7)); return m.getTime(); })() : (d.getFullYear()*12+d.getMonth());
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const blabel=k=> gran==='week' ? (()=>{ const dt=new Date(k); return `${dt.getMonth()+1}/${dt.getDate()}`; })() : `${MON[k%12]} '${String(Math.floor(k/12)).slice(2)}`;
+  const buckets={};
+  (CONC_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!dt) return; if(start&&dt<start) return; if(end&&dt>end) return;
+    let billed=(e.otherBill||0); if(e.s==='Nabis') billed+=(e.pouchBill||0); CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c) billed+=c.bill||0; });
+    const disc=(e.invoiceDisc||0)+(e.creditMemos||0);
+    const k=bkey(dt), b=buckets[k]||(buckets[k]={k,brand:{},billed:0,disc:0});
+    if(billed>0.005){ const br=brandOf(e.c||'Unknown'); b.brand[br]=(b.brand[br]||0)+billed; b.billed+=billed; }
+    b.disc+=disc; });
+  const keys=Object.keys(buckets).map(Number).sort((a,b)=>a-b);
+  return {arr:keys.map(k=>buckets[k]), blabel, gran};
+}
+// Catmull-Rom → cubic-bezier smoothing (the "squiggly" line)
+function smoothPath(pts){
+  if(!pts.length) return '';
+  if(pts.length<3) return 'M'+pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' L');
+  let d='M'+pts[0][0].toFixed(1)+','+pts[0][1].toFixed(1);
+  for(let i=0;i<pts.length-1;i++){ const p0=pts[i-1]||pts[i],p1=pts[i],p2=pts[i+1],p3=pts[i+2]||pts[i+1];
+    const c1x=p1[0]+(p2[0]-p0[0])/6,c1y=p1[1]+(p2[1]-p0[1])/6,c2x=p2[0]-(p3[0]-p1[0])/6,c2y=p2[1]-(p3[1]-p1[1])/6;
+    d+=` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`; }
+  return d;
+}
+const niceMax=m=>{ const pow=Math.pow(10,Math.floor(Math.log10(m))); let nm=Math.ceil(m/pow)*pow; if(nm/m>1.9 && pow>=2) nm=Math.ceil(m/(pow/2))*(pow/2); return nm; };
+function multiLine(buckets, series){
+  const W=880,H=270,padL=58,padB=30,padT=12,padR=12;
+  const maxV=Math.max(1,...buckets.flatMap(b=>series.map(s=>b.vals[s.key]||0)));
+  const nm=niceMax(maxV), plotH=H-padT-padB, plotW=W-padL-padR, n=buckets.length;
+  const x=i=> padL+(n<=1?plotW/2:i*plotW/(n-1)), y=v=>padT+(1-v/nm)*plotH;
+  let svg='';
+  for(let g=0;g<=4;g++){ const v=nm*g/4, yy=y(v).toFixed(1); svg+=`<line class="gl" x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}"/><text class="gll" x="${padL-6}" y="${(+yy+3).toFixed(1)}" text-anchor="end">$${shortNum(v)}</text>`; }
+  const every=Math.ceil(n/15);
+  buckets.forEach((b,i)=>{ if(i%every===0) svg+=`<text class="ax" x="${x(i).toFixed(1)}" y="${H-padB+13}" text-anchor="middle">${esc(b.label)}</text>`; });
+  series.forEach(s=>{ const pts=buckets.map((b,i)=>[x(i),y(b.vals[s.key]||0)]);
+    svg+=`<path d="${smoothPath(pts)}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    pts.forEach((p,i)=>svg+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="${s.color}"><title>${esc(buckets[i].label)} · ${esc(s.label)}: ${fmt$(buckets[i].vals[s.key]||0)}</title></circle>`);
+  });
+  const legend=series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:300px">${svg}</svg><div class="chart-legend">${legend}</div>`;
+}
+function comboChart(buckets){   // sales bars (left $) + discounts/credits line (right $)
+  const W=880,H=270,padL=58,padB=30,padT=12,padR=58;
+  const nmS=niceMax(Math.max(1,...buckets.map(b=>b.sales))), nmD=niceMax(Math.max(1,...buckets.map(b=>b.disc)));
+  const plotH=H-padT-padB, plotW=W-padL-padR, n=buckets.length, bw=plotW/n;
+  const yS=v=>padT+(1-v/nmS)*plotH, yD=v=>padT+(1-v/nmD)*plotH, x=i=>padL+(n<=1?plotW/2:i*plotW/(n-1));
+  let svg='';
+  for(let g=0;g<=4;g++){ const yy=yS(nmS*g/4).toFixed(1); svg+=`<line class="gl" x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}"/><text class="gll" x="${padL-6}" y="${(+yy+3).toFixed(1)}" text-anchor="end">$${shortNum(nmS*g/4)}</text><text class="gll" x="${W-padR+6}" y="${(+yy+3).toFixed(1)}" text-anchor="start" style="fill:#e6c84f">$${shortNum(nmD*g/4)}</text>`; }
+  const every=Math.ceil(n/15);
+  buckets.forEach((b,i)=>{ const cx=x(i), w=Math.max(2,bw*0.5), y0=yS(b.sales);
+    svg+=`<rect class="barseg" x="${(cx-w/2).toFixed(1)}" y="${y0.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(0,(H-padB)-y0).toFixed(1)}" fill="#4ea1ff" opacity="0.5"><title>${esc(b.label)} · Sales: ${fmt$(b.sales)}</title></rect>`;
+    if(i%every===0) svg+=`<text class="ax" x="${cx.toFixed(1)}" y="${H-padB+13}" text-anchor="middle">${esc(b.label)}</text>`; });
+  const pts=buckets.map((b,i)=>[x(i),yD(b.disc)]);
+  svg+=`<path d="${smoothPath(pts)}" fill="none" stroke="#e6c84f" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>`;
+  pts.forEach((p,i)=>{ const b=buckets[i], rate=b.sales>0?(b.disc/b.sales*100):0;
+    svg+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.8" fill="#e6c84f"><title>${esc(b.label)} · Discounts/Credits: ${fmt$(b.disc)} (${rate.toFixed(1)}% of sales)</title></circle>`; });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:300px">${svg}</svg><div class="chart-legend"><span><i style="background:#4ea1ff"></i>Sales (left axis)</span><span><i style="background:#e6c84f"></i>Discounts/Credits (right axis)</span></div>`;
+}
+function brandTimeChart(){
+  const {arr, blabel}=timeConcBuckets();
+  if(!arr.length) return '';
+  const totals={}; arr.forEach(b=>{ for(const br in b.brand) totals[br]=(totals[br]||0)+b.brand[br]; });
+  const top=Object.keys(totals).sort((a,b)=>totals[b]-totals[a]).slice(0,6);
+  if(!top.length) return '';
+  const palette=['#7c5cff','#2fbf71','#ff8f5e','#4ea1ff','#e6c84f','#e36bae'];
+  const series=top.map((br,i)=>({key:br,label:br,color:palette[i%palette.length]}));
+  const hasOther=Object.keys(totals).length>top.length;
+  if(hasOther) series.push({key:'__other',label:'Other',color:'#5b6472'});
+  const buckets=arr.map(b=>{ const vals={}; top.forEach(br=>vals[br]=b.brand[br]||0);
+    if(hasOther){ let o=0; for(const br in b.brand) if(top.indexOf(br)<0) o+=b.brand[br]; vals.__other=o; }
+    return {label:blabel(b.k), vals}; });
+  return multiLine(buckets, series);
+}
+function discSalesChart(){
+  const {arr, blabel}=timeConcBuckets();
+  if(!arr.length || !arr.some(b=>b.disc>0.005||b.billed>0.005)) return '';
+  return comboChart(arr.map(b=>({label:blabel(b.k), sales:b.billed, disc:b.disc})));
+}
 function renderTimeSeries(){
   const wrap=$('#time-wrap'), note=$('#time-note'), sumEl=$('#time-summary');
   if(!wrap) return;
@@ -2555,10 +2645,15 @@ function renderTimeSeries(){
   const fmtSeries=['jar35','fivepk','pr15','vape','other'].filter(k=>arr.some(b=>b.fmt[k])).map(k=>({key:k,label:SKU_DISP[k]||'Other',color:TIME_FMT_COLORS[k]}));
   const forChart=which=>arr.map(b=>({label:blabel(b.k),parts:b[which],total:b.total}));
   const card=(t,s,svg)=>`<div class="chart-card"><h4>${esc(t)}</h4><div class="csub">${esc(s)}</div>${svg}</div>`;
-  wrap.innerHTML=
+  let html=
       card('Billed sales by channel', 'Distru · Nabis · QuickBooks (historical, pre-2026) — stacked; hover a segment for its value', stackedBars(forChart('src'), srcSeries))
     + card('Sales by product format', 'how the product mix shifts over time', stackedBars(forChart('fmt'), fmtSeries));
-  note.innerHTML=`Billed (actualized) sales, bucketed ${gran==='week'?'weekly':'monthly'}. Spans all sources including the QuickBooks historical channel (2023–2025). Hover any bar segment for its exact value.`;
+  if(CONC_EVENTS&&CONC_EVENTS.length){
+    const bt=brandTimeChart(); if(bt) html+=card('Sales by brand over time', 'top 6 retail chains by billed sales — hover any point for its value', bt);
+    const ds=discSalesChart(); if(ds) html+=card('Discounts & credits vs. sales', 'sales (bars, left axis) vs discounts/credits (line, right axis) — hover a point for the % of sales', ds);
+  }
+  wrap.innerHTML=html;
+  note.innerHTML=`Billed (actualized) sales, bucketed ${gran==='week'?'weekly':'monthly'}. Spans all sources including the QuickBooks historical channel (2023–2025). Hover any bar or point for its exact value.`;
 }
 $('#time-export').onclick=()=>{
   const {arr, blabel}=timeBuckets();
@@ -2569,6 +2664,7 @@ $('#time-export').onclick=()=>{
 };
 
 /* ============================ Wiring ============================ */
+$('#uploadToggle').onclick=()=>{ $('#uploadBody').classList.toggle('hidden'); $('#uploadToggle').classList.toggle('open'); };
 const drop=$('#drop'),fi=$('#fileInput');
 drop.onclick=()=>fi.click();
 fi.onchange=e=>handleFiles(e.target.files);
