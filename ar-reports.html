@@ -164,6 +164,13 @@
   svg .gll{fill:var(--muted);font-size:9.5px}
   svg rect.barseg{transition:opacity .1s}
   svg rect.barseg:hover{opacity:.78}
+  /* Interactive line-chart hover (squiggly graphs): tooltip follows the cursor, shows the series + value */
+  .linechart{position:relative}
+  .linechart svg{cursor:crosshair}
+  .lc-tip{position:absolute;pointer-events:none;display:none;z-index:6;background:var(--panel2);border:1px solid var(--line);
+    border-radius:8px;padding:5px 9px;font-size:12px;line-height:1.35;color:var(--text);white-space:nowrap;
+    transform:translate(-50%,calc(-100% - 12px));box-shadow:var(--shadow)}
+  .lc-tip .lc-k{color:var(--muted);font-size:11px}
   .detailbox .ddtable{margin-bottom:4px;width:auto;min-width:340px}
   td.disc-link{cursor:pointer;color:var(--accent2);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .detailbox th{position:static;background:transparent;border-bottom:1px solid var(--line)}
@@ -2536,6 +2543,11 @@ $('#sku-export').onclick=()=>{
 /* ============================ Sales Over Time ============================ */
 const TIME_SRC_COLORS={Nabis:'#ff8f5e',Distru:'#4ea1ff',QuickBooks:'#2fbf71'};
 const TIME_FMT_COLORS={jar35:'#7c5cff',fivepk:'#2fbf71',pr15:'#ff8f5e',vape:'#4ea1ff',other:'#9aa3b2'};
+// Flower grams per PAID unit, for the "revenue per pound" chart. Flower formats only —
+// 3.5g jar, .7g 5-pack (5×0.7=3.5g), 1.5g preroll. Vapes (concentrate), budtender pouches
+// and 'Other' are intentionally omitted so $/lb reflects realized flower price.
+const GRAMS_BY_FMT={jar35:3.5, fivepk:3.5, pr15:1.5};
+const LB_GRAMS=453.59237;
 const isoDay=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 function timeApplyPreset(p){
   const now=new Date(); let s=new Date(now), e=new Date(now);
@@ -2576,8 +2588,10 @@ function timeBuckets(){
   const buckets={};
   (SKU_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!dt) return; if(start&&dt<start) return; if(end&&dt>end) return;
     const rev=e.rev||0; if(Math.abs(rev)<0.005) return;
-    const k=bkey(dt), b=buckets[k]||(buckets[k]={k,src:{},fmt:{},total:0});
-    b.src[e.src]=(b.src[e.src]||0)+rev; const fk=fmtKeyOf(e.fmt); b.fmt[fk]=(b.fmt[fk]||0)+rev; b.total+=rev; });
+    const k=bkey(dt), b=buckets[k]||(buckets[k]={k,src:{},fmt:{},total:0,flRev:0,flG:0});
+    b.src[e.src]=(b.src[e.src]||0)+rev; const fk=fmtKeyOf(e.fmt); b.fmt[fk]=(b.fmt[fk]||0)+rev; b.total+=rev;
+    const g=GRAMS_BY_FMT[fk]; if(g){ b.flRev+=rev; b.flG+=(e.u||0)*g; }   // flower $ + grams, for the $/lb chart
+  });
   const keys=Object.keys(buckets).map(Number).sort((a,b)=>a-b);
   return {arr:keys.map(k=>buckets[k]), blabel, gran};
 }
@@ -2610,21 +2624,53 @@ function smoothPath(pts){
   return d;
 }
 const niceMax=m=>{ const pow=Math.pow(10,Math.floor(Math.log10(m))); let nm=Math.ceil(m/pow)*pow; if(nm/m>1.9 && pow>=2) nm=Math.ceil(m/(pow/2))*(pow/2); return nm; };
+const LC_VB_W=880, LC_VB_H=270;
 function multiLine(buckets, series){
-  const W=880,H=270,padL=58,padB=30,padT=12,padR=12;
-  const maxV=Math.max(1,...buckets.flatMap(b=>series.map(s=>b.vals[s.key]||0)));
+  const W=LC_VB_W,H=LC_VB_H,padL=58,padB=30,padT=12,padR=12;
+  // Y-axis scales only to series NOT flagged noMax, so a catch-all "Other" line can't squash the
+  // named ones. noMax series are clamped to the top edge (they ride the ceiling when off-scale) —
+  // their true value still shows on hover.
+  const maxV=Math.max(1,...buckets.flatMap(b=>series.filter(s=>!s.noMax).map(s=>b.vals[s.key]||0)));
   const nm=niceMax(maxV), plotH=H-padT-padB, plotW=W-padL-padR, n=buckets.length;
-  const x=i=> padL+(n<=1?plotW/2:i*plotW/(n-1)), y=v=>padT+(1-v/nm)*plotH;
+  const x=i=> padL+(n<=1?plotW/2:i*plotW/(n-1)), yRaw=v=>padT+(1-v/nm)*plotH, y=v=>Math.max(padT,yRaw(v));
   let svg='';
-  for(let g=0;g<=4;g++){ const v=nm*g/4, yy=y(v).toFixed(1); svg+=`<line class="gl" x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}"/><text class="gll" x="${padL-6}" y="${(+yy+3).toFixed(1)}" text-anchor="end">$${shortNum(v)}</text>`; }
+  for(let g=0;g<=4;g++){ const v=nm*g/4, yy=yRaw(v).toFixed(1); svg+=`<line class="gl" x1="${padL}" y1="${yy}" x2="${W-padR}" y2="${yy}"/><text class="gll" x="${padL-6}" y="${(+yy+3).toFixed(1)}" text-anchor="end">$${shortNum(v)}</text>`; }
   const every=Math.ceil(n/15);
   buckets.forEach((b,i)=>{ if(i%every===0) svg+=`<text class="ax" x="${x(i).toFixed(1)}" y="${H-padB+13}" text-anchor="middle">${esc(b.label)}</text>`; });
+  const meta={xs:buckets.map((b,i)=>+x(i).toFixed(1)), labels:buckets.map(b=>b.label), series:[]};
   series.forEach(s=>{ const pts=buckets.map((b,i)=>[x(i),y(b.vals[s.key]||0)]);
-    svg+=`<path d="${smoothPath(pts)}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`;
-    pts.forEach((p,i)=>svg+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.6" fill="${s.color}"><title>${esc(buckets[i].label)} · ${esc(s.label)}: ${fmt$(buckets[i].vals[s.key]||0)}</title></circle>`);
+    const dash = s.noMax? ' stroke-dasharray="5 4"':'';
+    svg+=`<path d="${smoothPath(pts)}" fill="none" stroke="${s.color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"${dash}/>`;
+    pts.forEach(p=>svg+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.4" fill="${s.color}"/>`);
+    meta.series.push({label:s.label,color:s.color,ys:pts.map(p=>+p[1].toFixed(1)),vals:buckets.map(b=>+(b.vals[s.key]||0))});
   });
-  const legend=series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:300px">${svg}</svg><div class="chart-legend">${legend}</div>`;
+  svg+=`<circle class="lc-hi" r="4.5" fill="none" stroke-width="2.2" style="display:none"/>`;
+  const legend=series.map(s=>`<span><i style="background:${s.color}${s.noMax?';opacity:.7':''}"></i>${esc(s.label)}</span>`).join('');
+  return `<div class="linechart" data-lc="${esc(JSON.stringify(meta))}"><svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;max-height:300px">${svg}</svg><div class="lc-tip"></div><div class="chart-legend">${legend}</div></div>`;
+}
+// Wire mouse hover on every multiLine chart: hovering near a line shows that series' name + the
+// value at the hovered position (nearest bucket), and highlights the point. Re-runnable (idempotent).
+function wireLineCharts(root){
+  (root||document).querySelectorAll('.linechart[data-lc]').forEach(box=>{
+    if(box._lcWired) return; box._lcWired=true;
+    let meta; try{ meta=JSON.parse(box.getAttribute('data-lc')); }catch(e){ return; }
+    const svg=box.querySelector('svg'), tip=box.querySelector('.lc-tip'), hi=box.querySelector('.lc-hi');
+    if(!svg||!tip||!meta.series.length) return;
+    const hide=()=>{ tip.style.display='none'; if(hi) hi.style.display='none'; };
+    svg.addEventListener('mousemove',ev=>{
+      const r=svg.getBoundingClientRect(); if(!r.width||!r.height) return;
+      const vx=(ev.clientX-r.left)/r.width*LC_VB_W, vy=(ev.clientY-r.top)/r.height*LC_VB_H;
+      let bi=0,bd=Infinity; meta.xs.forEach((xx,i)=>{ const d=Math.abs(xx-vx); if(d<bd){bd=d;bi=i;} });   // nearest bucket
+      let si=-1,sd=Infinity; meta.series.forEach((s,j)=>{ const d=Math.abs(s.ys[bi]-vy); if(d<sd){sd=d;si=j;} }); // nearest line
+      if(si<0||sd>26){ hide(); return; }   // only when the cursor is near a line (viewBox units)
+      const s=meta.series[si];
+      if(hi){ hi.setAttribute('cx',meta.xs[bi]); hi.setAttribute('cy',s.ys[bi]); hi.setAttribute('stroke',s.color); hi.style.display=''; }
+      const br=box.getBoundingClientRect();
+      tip.innerHTML=`<div class="lc-k">${esc(s.label)} · ${esc(meta.labels[bi])}</div><b>${fmt$(s.vals[bi])}</b>`;
+      tip.style.left=(ev.clientX-br.left)+'px'; tip.style.top=(ev.clientY-br.top)+'px'; tip.style.display='block';
+    });
+    svg.addEventListener('mouseleave',hide);
+  });
 }
 function comboChart(buckets){   // sales bars (left $) + discounts/credits line (right $)
   const W=880,H=270,padL=58,padB=30,padT=12,padR=58;
@@ -2649,24 +2695,33 @@ function brandTimeChart(){
   const totals={}; arr.forEach(b=>{ for(const br in b.brand) totals[br]=(totals[br]||0)+b.brand[br]; });
   const ranked=Object.keys(totals).sort((a,b)=>totals[b]-totals[a]);
   if(!ranked.length) return null;
-  const top=ranked.slice(0,10);   // 10 named brand lines (was 6)
-  // 10 distinct hues — every top brand gets its own colored line. We deliberately DROP the
-  // aggregate "Other" line: it summed the whole long tail into one series that towered over
-  // every real brand and drove the Y-axis, squashing the actual lines. Now the axis is scaled
-  // to the biggest single brand. The separate "Billed sales by channel" card still shows totals.
+  const top=ranked.slice(0,10);   // 10 named brand lines, each a distinct hue
   const palette=['#7c5cff','#2fbf71','#ff8f5e','#4ea1ff','#e6c84f','#e36bae','#ff6b6b','#3dd6c4','#b98cff','#9ccc4e'];
   const series=top.map((br,i)=>({key:br,label:br,color:palette[i%palette.length]}));
-  const buckets=arr.map(b=>{ const vals={}; top.forEach(br=>vals[br]=b.brand[br]||0); return {label:blabel(b.k), vals}; });
-  // Coverage note so dropping "Other" reads as a choice, not silent truncation.
+  const buckets=arr.map(b=>{ const vals={}; top.forEach(br=>vals[br]=b.brand[br]||0);
+    let o=0; for(const br in b.brand) if(top.indexOf(br)<0) o+=b.brand[br]; vals.__other=o;   // everything else
+    return {label:blabel(b.k), vals}; });
+  const excluded=ranked.length-top.length;
+  // "Other" = the rest of the sales (all brands beyond the top 10). Drawn dashed/grey and flagged
+  // noMax so it's visible but does NOT drive the Y-axis (keeps the named lines from being squashed).
+  if(excluded>0) series.push({key:'__other',label:`Other (${excluded} more)`,color:'#9aa3b2',noMax:true});
   const grand=ranked.reduce((s,br)=>s+totals[br],0), capt=top.reduce((s,br)=>s+totals[br],0);
-  const pct=grand>0?Math.round(capt/grand*100):100, excluded=ranked.length-top.length;
-  const sub=`top ${top.length} retail chains — ${pct}% of billed sales`+(excluded>0?` (${excluded} more not shown)`:'')+` · hover any point for its value`;
+  const pct=grand>0?Math.round(capt/grand*100):100;
+  const sub=`top ${top.length} retail chains (${pct}% of billed sales)`+(excluded>0?` + the rest as “Other”`:'')+` — hover a line for its value`;
   return {svg:multiLine(buckets, series), sub};
 }
 function discSalesChart(){
   const {arr, blabel}=timeConcBuckets();
   if(!arr.length || !arr.some(b=>b.disc>0.005||b.billed>0.005)) return '';
   return comboChart(arr.map(b=>({label:blabel(b.k), sales:b.billed, disc:b.disc})));
+}
+// Realized revenue per pound of flower over time = flower revenue ÷ pounds sold (paid units only).
+function revPerPoundChart(){
+  const {arr, blabel}=timeBuckets();
+  if(!arr.length || !arr.some(b=>(b.flG||0)>0)) return null;
+  const buckets=arr.map(b=>{ const lbs=(b.flG||0)/LB_GRAMS; return {label:blabel(b.k), vals:{rpl: lbs>0 ? b.flRev/lbs : 0}}; });
+  return {svg:multiLine(buckets, [{key:'rpl',label:'Revenue / lb (flower)',color:'#e6c84f'}]),
+    sub:'realized $ per pound of flower — 3.5g jars · .7g 5-packs · 1.5g prerolls (revenue ÷ pounds sold); excludes vapes & free samples'};
 }
 function renderTimeSeries(){
   const wrap=$('#time-wrap'), note=$('#time-note'), sumEl=$('#time-summary');
@@ -2692,11 +2747,13 @@ function renderTimeSeries(){
   html+=
       card('Billed sales by channel', 'Distru · Nabis · QuickBooks (historical, pre-2026) — stacked; hover a segment for its value', stackedBars(forChart('src'), srcSeries))
     + card('Sales by product format', 'how the product mix shifts over time', stackedBars(forChart('fmt'), fmtSeries));
+  const rp=revPerPoundChart(); if(rp) html+=card('Revenue per pound over time', rp.sub, rp.svg);
   if(CONC_EVENTS&&CONC_EVENTS.length){
     const ds=discSalesChart(); if(ds) html+=card('Discounts & credits vs. sales', 'sales (bars, left axis) vs discounts/credits (line, right axis) — hover a point for the % of sales', ds);
   }
   wrap.innerHTML=html;
-  note.innerHTML=`Billed (actualized) sales, bucketed ${gran==='week'?'weekly':'monthly'}. Spans all sources including the QuickBooks historical channel (2023–2025). Hover any bar or point for its exact value.`;
+  wireLineCharts(wrap);   // attach hover tooltips to the squiggly-line charts
+  note.innerHTML=`Billed (actualized) sales, bucketed ${gran==='week'?'weekly':'monthly'}. Spans all sources including the QuickBooks historical channel (2023–2025). Hover any bar or line for its exact value.`;
 }
 $('#time-export').onclick=()=>{
   const {arr, blabel}=timeBuckets();
