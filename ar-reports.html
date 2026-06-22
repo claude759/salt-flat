@@ -314,6 +314,7 @@
           <label>3.5G Jar <input type="number" step="0.01" id="a-jar35" value="27.50" /></label>
           <label>.7G 5PK <input type="number" step="0.01" id="a-fivepk" value="22.50" /></label>
           <label>1.5G PR <input type="number" step="0.01" id="a-pr15" value="12.00" /></label>
+          <label>1G PR <input type="number" step="0.01" id="a-pr1" value="10.00" /></label>
           <label>Vape / Live Resin <input type="number" step="0.01" id="a-vape" value="25.00" /></label>
           <label>Sample pouch <input type="number" step="0.01" id="a-pouch" value="24.00" /></label>
         </div>
@@ -814,7 +815,7 @@ async function loadShared(){
       { const r=conc12m(); if($('#conc-start')) $('#conc-start').value=r.s; if($('#conc-end')) $('#conc-end').value=r.e; if($('#conc-preset')) $('#conc-preset').value='12m'; }
       if(CONC_META){
         const A=CONC_META.assumptions||{};
-        [['jar35','a-jar35'],['fivepk','a-fivepk'],['pr15','a-pr15'],['vape','a-vape'],['pouch','a-pouch']].forEach(([k,id])=>{ if(A[k]!=null && $('#'+id)) $('#'+id).value=A[k]; });
+        [['jar35','a-jar35'],['fivepk','a-fivepk'],['pr15','a-pr15'],['pr1','a-pr1'],['vape','a-vape'],['pouch','a-pouch']].forEach(([k,id])=>{ if(A[k]!=null && $('#'+id)) $('#'+id).value=A[k]; });
       }
       if(data.conc.events && data.conc.events.length){ CONC_EVENTS=eventsFromWire(data.conc.events); aggregateConcessions(); }
       else { CONC=data.conc.rows; computeBrandRollup(); }   // legacy snapshot (fixed range)
@@ -1396,9 +1397,13 @@ let CONC=[];            // per-dispensary concession rows (for current range)
 let CONC_BRAND=[];      // rolled up by retail chain/brand
 let CONC_EVENTS=[];     // per-order date-stamped events (shareable; date range re-applied from these)
 // compact (de)serialization of events for the shared payload
-function eventsToWire(evs){ return (evs||[]).map(e=>{ const f=[]; CONC_FORMATS.forEach(x=>{const c=e.fmt[x.key]||{};f.push(c.paidU||0,c.bill||0,c.sampU||0);});
+// Wire (de)serialization packs format buckets POSITIONALLY (3 numbers per format), so the order
+// is load-bearing across already-published payloads. It's decoupled from CONC_FORMATS' display
+// order via CONC_WIRE_KEYS (defined with CONC_FORMATS below) which is APPEND-ONLY: a new format is
+// added at the end, so old 12-slot payloads still decode (the trailing format reads as 0).
+function eventsToWire(evs){ return (evs||[]).map(e=>{ const f=[]; CONC_WIRE_KEYS.forEach(k=>{const c=(e.fmt&&e.fmt[k])||{};f.push(c.paidU||0,c.bill||0,c.sampU||0);});
   return {c:e.c,s:e.s,d:e.d,f,p:e.pouchU||0,pb:e.pouchBill||0,sb:e.sampBill||0,ou:e.otherU||0,ob:e.otherBill||0,id:e.invoiceDisc||0,cr:e.creditMemos||0,n:e.ref||''}; }); }
-function eventsFromWire(arr){ return (arr||[]).map(w=>{ const fmt={}; CONC_FORMATS.forEach((x,i)=>fmt[x.key]={paidU:(w.f||[])[i*3]||0,bill:(w.f||[])[i*3+1]||0,sampU:(w.f||[])[i*3+2]||0});
+function eventsFromWire(arr){ return (arr||[]).map(w=>{ const fmt={}; CONC_WIRE_KEYS.forEach((k,i)=>fmt[k]={paidU:(w.f||[])[i*3]||0,bill:(w.f||[])[i*3+1]||0,sampU:(w.f||[])[i*3+2]||0});
   return {c:w.c,s:w.s,d:w.d,fmt,pouchU:w.p||0,pouchBill:w.pb||0,sampBill:w.sb||0,otherU:w.ou||0,otherBill:w.ob||0,invoiceDisc:w.id||0,creditMemos:w.cr||0,ref:w.n||''}; }); }
 let CONC_META=null;     // {start,end,assumptions,builtAt}
 let cdSort={key:'totalConc',dir:-1}, cbSort={key:'totalConc',dir:-1};
@@ -1406,17 +1411,22 @@ const CONC_FORMATS=[
   {key:'jar35',label:'3.5G Jar'},
   {key:'fivepk',label:'.7G 5PK'},
   {key:'pr15',label:'1.5G PR'},
+  {key:'pr1',label:'1G PR'},
   {key:'vape',label:'Vape / Live Resin'}
 ];
+// Positional wire order for eventsToWire/eventsFromWire — APPEND-ONLY (never reorder/remove).
+// New formats go on the END so previously-published shared payloads keep decoding correctly.
+const CONC_WIRE_KEYS=['jar35','fivepk','pr15','vape','pr1'];
 function concAssum(){
   const g=id=>{const el=$('#'+id);const v=el?parseFloat(el.value):NaN;return isNaN(v)?0:v;};
-  return { jar35:g('a-jar35'), fivepk:g('a-fivepk'), pr15:g('a-pr15'), vape:g('a-vape'), pouch:g('a-pouch') };
+  return { jar35:g('a-jar35'), fivepk:g('a-fivepk'), pr15:g('a-pr15'), pr1:g('a-pr1'), vape:g('a-vape'), pouch:g('a-pouch') };
 }
 // Distru Subcategory → format key
 function distruFmt(sub){
   sub=(sub||'').trim();
   if(sub==='3.5G Jar') return 'jar35';
   if(sub==='.7G 5PK') return 'fivepk';
+  if(sub==='1G Single'||sub==='1G Preroll'||sub==='1G PR') return 'pr1';   // 1g prerolls (new format; check before 1.5G)
   if(sub==='1.5G Single') return 'pr15';
   if(sub==='1.5G Budtender Sample Pouch') return 'pouch';
   return detectFmt(sub);
@@ -1428,7 +1438,9 @@ function detectFmt(txt){
   if(/live resin|vape|cart|disposable|\bpod\b/.test(s)) return 'vape';
   if(/5\s*-?\s*pk|5\s*-?\s*pack/.test(s)) return 'fivepk';
   if(/3\.5\s*g|eighth/.test(s)) return 'jar35';
-  if(/1\.5\s*g|pre[\s-]?roll/.test(s)) return 'pr15';
+  if(/1\.5\s*g/.test(s)) return 'pr15';                            // explicit 1.5g → 1.5g preroll (historical)
+  if(/(?:^|[^\d.])1\s*g\b/.test(s)) return 'pr1';                  // explicit 1g (not 1.5g/11g/21g) → 1g preroll (new). vape/jar/5pk/pouch already returned above, so reaching here = flower
+  if(/pre[\s-]?roll/.test(s)) return 'pr15';                       // bare "preroll" with no weight → legacy 1.5g default
   return null;
 }
 function concInRange(d,start,end){ if(!d) return false; if(start&&d<start) return false; if(end&&d>end) return false; return true; }
@@ -1586,7 +1598,7 @@ function brandOf(name){
   for(const c of CHAINS){ const cl=c.toLowerCase(); if(low===cl||low.startsWith(cl+' ')) return c; }
   return s||'Unknown';
 }
-const CONC_NUM=['grossList','billed','pu_jar35','pu_fivepk','pu_pr15','pu_vape','puTotal','samplesList','pouch','invoiceDisc','creditMemos','totalConc','otherU'];
+const CONC_NUM=['grossList','billed',...CONC_FORMATS.map(f=>'pu_'+f.key),'puTotal','samplesList','pouch','invoiceDisc','creditMemos','totalConc','otherU'];
 function computeBrandRollup(){
   const m={};
   CONC.forEach(r=>{ const b=brandOf(r.customer); const g=m[b]||(m[b]={customer:b,sources:new Set(),members:[]});
@@ -1660,7 +1672,8 @@ function renderConcGrid(allRows, ids, sortState, kind){
   body.innerHTML=rows.map((r,i)=>concRowHtml(r,i,kind)).join('');
   body.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;x.classList.toggle('hidden');tr.classList.toggle('open');});
   body.querySelectorAll('tr.memrow').forEach(tr=>tr.onclick=e=>{ e.stopPropagation(); const d=tr.nextElementSibling; if(d&&d.classList.contains('memdetail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } });
-  const T={grossList:0,billed:0,pu_jar35:0,pu_fivepk:0,pu_pr15:0,pu_vape:0,puTotal:0,samplesList:0,pouch:0,invoiceDisc:0,creditMemos:0,totalConc:0};
+  const T={grossList:0,billed:0,puTotal:0,samplesList:0,pouch:0,invoiceDisc:0,creditMemos:0,totalConc:0};
+  CONC_FORMATS.forEach(f=>T['pu_'+f.key]=0);
   rows.forEach(r=>Object.keys(T).forEach(k=>T[k]+=r[k]||0));
   foot.innerHTML=`<tr class="totals">
     <td colspan="3">Totals · ${rows.length}</td>
@@ -1684,7 +1697,7 @@ function renderConcessions(){ computeBrandRollup(); renderConcDisp(); renderConc
 
 /* ============================ Sales by Type ============================ */
 let SKU=[], SKU_EVENTS=[];
-const SKU_DISP={jar35:'3.5g Jars', fivepk:'.7g Prerolls', pr15:'1.5g Prerolls', vape:'Vapes', other:'Other'};
+const SKU_DISP={jar35:'3.5g Jars', fivepk:'.7g Prerolls', pr15:'1.5g Prerolls', pr1:'1g Prerolls', vape:'Vapes', other:'Other'};
 // "Other" = budtender give-away pouches. Value them at list (by size in the name) so the
 // give-away shows as a Unit Discount. Edit these two prices to taste. null = no list price.
 const POUCH_LIST={'3.5':24, '1.5':10};
@@ -1717,7 +1730,7 @@ const QBO_SKU_RAW=[[0,1,1685127600000,0.0,85.0,0.0,3],[1,1,1685127600000,0.0,85.
 const QBO_CONC_RAW=[[0,1685127600000,"1035",160.0,4400.0,0.0,0.0,0.0,50.0,0.0,0.0],[1,1685127600000,"1036",640.0,16640.0,0.0,0.0,0.0,175.0,0.0,0.0],[2,1685127600000,"1037",160.0,4160.0,0.0,0.0,0.0,200.0,0.0,0.0],[3,1724439600000,"1207",88.0,2420.0,11.0,0,0,0,0.0,0.0],[4,1748890800000,"1294",30.0,825.0,0.0,0,0,0,0.0,0.0],[5,1756839600000,"1309",64.0,1760.0,4.0,30.0,412.5,0.0,0.0,0.0],[0,1758567600000,"1319",384.0,10560.0,3.0,60.0,825.0,0.0,0.0,0.0],[6,1758913200000,"1321",8.0,220.0,1.0,0,0,0,0.0,0.0],[7,1759172400000,"1322",16.0,440.0,1.0,0,0,0,0.0,0.0],[0,1759258800000,"1323",101.0,2777.5,1.0,0,0,0,0.0,0.0],[5,1760641200000,"1326",64.0,1760.0,4.0,30.0,412.5,0.0,0.0,220.0],[7,1760641200000,"1327",80.0,2200.0,5.0,60.0,720.0,0.0,0.0,137.5],[0,1760641200000,"1330",320.0,8800.0,5.0,0,0,0,0.0,2001.48],[8,1760727600000,"1324",64.0,1760.0,4.0,40.0,480.0,0.0,0.0,110.0],[9,1760727600000,"1325",60.0,1650.0,2.0,75.0,1031.25,0.0,0.0,206.25],[10,1760727600000,"1328",80.0,2200.0,5.0,64.0,880.0,0.0,0.0,132.0],[11,1761159600000,"1329",30.0,825.0,5.0,5.0,68.75,0.0,0.0,113.97],[0,1763064000000,"1337",523.0,13075.0,5.0,100.0,1200.0,0.0,0.0,0.0],[7,1763150400000,"1338",75.0,1875.0,5.0,100.0,1200.0,0.0,0.0,0.0],[5,1763150400000,"1339",76.0,1900.0,4.0,0,0,0,0.0,0.0],[0,1765396800000,"1352",288.0,7200.0,0.0,0,0,0,0.0,3700.0],[7,1765396800000,"1353",80.0,2000.0,0.0,0,0,0,43.2,43.2],[12,1710788400000,"1145",96.0,2640.0,0.0,30.0,412.5,18.0,0.0,0.0],[0,1710788400000,"1146",80.0,2200.0,3.0,75.0,1031.25,21.0,0.0,0.0],[13,1710874800000,"1147",48.0,1320.0,2.0,30.0,412.5,14.0,0.0,0.0],[14,1710961200000,"1148",32.0,880.0,2.0,75.0,1031.25,14.0,0.0,0.0],[15,1711047600000,"1149",32.0,880.0,2.0,32.0,440.0,10.0,0.0,0.0],[16,1711479600000,"1151",64.0,1760.0,2.0,20.0,275.0,15.0,0.0,0.0],[17,1711566000000,"1153",40.0,1100.0,1.0,30.0,412.5,10.0,0.0,0.0],[18,1712170800000,"1156",239.0,6214.0,16.0,0.0,0.0,90.0,3823.46,0.0],[17,1714071600000,"1162",64.0,1760.0,4.0,50.0,600.0,0.0,0.0,0.0],[19,1714503600000,"1163",0.0,0.0,4.0,0,0,0,0.0,0.0],[19,1714503600000,"1164",128.0,3520.0,4.0,0,0,0,0.0,0.0],[13,1714503600000,"1165",32.0,880.0,2.0,15.0,206.25,0.0,0.0,0.0],[20,1714503600000,"1166",128.0,3520.0,4.0,25.0,343.75,0.0,0.0,0.0],[21,1714590000000,"1167",64.0,1760.0,4.0,0,0,0,0.0,0.0],[0,1714590000000,"1169",55.0,1512.5,2.0,0,0,0,0.0,0.0],[13,1716404400000,"1179",45.0,1237.5,2.0,15.0,206.25,0.0,0.0,0.0],[13,1717527600000,"1187",0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],[3,1718305200000,"1190",32.0,880.0,4.0,0,0,0,0.0,0.0],[22,1721847600000,"1204",0.0,0.0,2.0,0,0,0,0.0,0.0],[17,1726254000000,"1210",256.0,7040.0,0.0,0,0,0,3463.74,0.0],[23,1737748800000,"1253",0.0,0.0,4.0,0,0,0,0.0,0.0],[24,1738699200000,"1258",0.0,0.0,4.0,0,0,0,0.0,0.0],[25,1741978800000,"1264",48.0,1320.0,6.0,0,0,0,0.0,0.0],[4,1745002800000,"1272",30.0,825.0,0.0,0,0,0,0.0,0.0],[4,1746039600000,"1277",26.0,715.0,0.0,10.0,137.5,0.0,0.0,0.0],[26,1733256000000,"1237",80.0,2200.0,5.0,0,0,0,0.0,0.0],[14,1733256000000,"1238",30.0,825.0,3.0,0,0,0,0.0,0.0],[0,1733342400000,"1231",160.0,4400.0,5.0,0,0,0,0.0,0.0],[7,1733342400000,"1232",80.0,2200.0,5.0,0,0,0,0.0,0.0],[22,1733342400000,"1233",80.0,2200.0,5.0,0,0,0,0.0,0.0],[27,1733342400000,"1234",20.0,550.0,5.0,0,0,0,0.05,0.0],[5,1733342400000,"1236",64.0,1760.0,5.0,0,0,0,0.02,0.0],[28,1733342400000,"1241",40.0,1100.0,5.0,0,0,0,0.0,0.0],[29,1733515200000,"1243",24.0,660.0,3.0,0,0,0,0.0,0.0],[30,1733515200000,"1244",48.0,1320.0,3.0,0,0,0,0.0,0.0],[31,1733774400000,"1242",40.0,1100.0,5.0,0,0,0,0.0,0.0],[32,1733860800000,"1247",8.0,220.0,1.0,0,0,0,0.0,0.0],[33,1739476800000,"1259",0.0,0.0,4.0,0,0,0,0.0,0.0],[34,1746126000000,"1270",0.0,0.0,10.0,0,0,0,0.0,0.0],[35,1731700800000,"1228",48.0,1320.0,0.0,64.0,816.0,0.0,0.0,0.0],[8,1733342400000,"1239",96.0,2640.0,4.0,0,0,0,0.0,0.0],[11,1733342400000,"1240",15.0,412.5,3.0,0,0,0,0.0,0.0],[32,1733774400000,"1235",32.0,880.0,4.0,0,0,0,0.0,0.0],[36,1697828400000,"36",32.0,880.0,1.0,0.0,0.0,5.0,0.0,0.0],[18,1698087600000,"2",177.0,4602.0,10.0,0.0,0.0,10.0,0.1,0.0],[37,1698087600000,"28",128.0,3520.0,3.0,0.0,0.0,14.0,25.0,0.0],[37,1698087600000,"29",96.0,2640.0,6.0,0.0,0.0,8.0,0.0,0.0],[37,1698087600000,"30",96.0,2640.0,3.0,0.0,0.0,11.0,0.0,0.0],[37,1698087600000,"31",96.0,2640.0,3.0,0.0,0.0,10.0,0.0,0.0],[37,1698087600000,"32",64.0,1760.0,2.0,0.0,0.0,6.0,0.0,0.0],[37,1698087600000,"33",64.0,1760.0,2.0,0.0,0.0,6.0,0.0,0.0],[38,1698346800000,"8",32.0,880.0,1.0,0.0,0.0,4.0,0.0,0.0],[39,1698346800000,"9",32.0,880.0,1.0,0.0,0.0,8.0,0.0,0.0],[40,1698346800000,"10",64.0,1760.0,1.0,0.0,0.0,10.0,0.0,0.0],[7,1698951600000,"5",32.0,880.0,1.0,0.0,0.0,10.0,0.0,0.0],[41,1699646400000,"6",64.0,1760.0,2.0,0.0,0.0,20.0,0.0,0.0],[26,1699646400000,"14",64.0,1760.0,2.0,0.0,0.0,14.0,0.0,0.0],[18,1699905600000,"3",272.0,7072.0,0.0,0.0,0.0,20.0,0.0,0.0],[13,1699905600000,"16",32.0,880.0,2.0,0.0,0.0,14.0,0.0,0.0],[42,1699905600000,"17",64.0,1760.0,2.0,0.0,0.0,20.0,0.0,0.0],[43,1699905600000,"18",32.0,880.0,1.0,0.0,0.0,10.0,0.0,0.0],[16,1700251200000,"1099",64.0,1760.0,2.0,0.0,0.0,14.0,0.0,0.0],[44,1700510400000,"1103",128.0,3520.0,5.0,0.0,0.0,5.0,0.0,0.0],[45,1700510400000,"1104",64.0,1760.0,8.0,0,0,0,0.0,0.0],[46,1700596800000,"1105",32.0,880.0,6.0,0,0,0,0.0,0.0],[12,1700683200000,"1106",128.0,3520.0,5.0,0,0,0,0.0,0.0],[18,1701288000000,"1107",384.0,9984.0,16.0,0.0,0.0,15.0,0.0,0.0],[47,1701374400000,"1113",128.0,3520.0,2.0,0.0,0.0,16.0,0.0,0.0],[0,1701374400000,"1114",64.0,1760.0,2.0,0.0,0.0,14.0,0.0,0.0],[17,1701892800000,"1116",16.0,440.0,0.0,0,0,0,0.0,0.0],[48,1702065600000,"1117",71.0,1952.5,3.0,0.0,0.0,16.0,0.0,0.0],[13,1702497600000,"1118",32.0,880.0,2.0,0,0,0,0.0,0.0],[49,1702584000000,"1119",32.0,880.0,1.0,0.0,0.0,10.0,0.0,0.0],[46,1703016000000,"1121",32.0,880.0,2.0,0,0,0,0.0,0.0],[12,1705003200000,"1126",32.0,880.0,0.0,0.0,0.0,10.0,0.0,0.0],[13,1705521600000,"1137",64.0,1760.0,4.0,0.0,0.0,8.0,0.0,0.0],[14,1705608000000,"1138",32.0,880.0,4.0,0.0,0.0,18.0,0.0,0.0],[50,1706040000000,"1139",64.0,1760.0,4.0,0.0,0.0,20.0,0.0,0.0],[5,1706472000000,"1141",21.0,288.75,0.0,0,0,0,0.0,0.0],[1,1696878000000,"1",128.0,3328.0,8.0,0.0,0.0,8.0,0.0,0.0],[17,1696878000000,"1122",256.0,7040.0,0.0,0.0,0.0,6.0,0.0,0.0],[0,1696878000000,"1125",64.0,1760.0,2.0,0.0,0.0,14.0,0.0,0.0],[51,1696878000000,"21",64.0,1760.0,2.0,0.0,0.0,14.0,0.0,0.0],[26,1696878000000,"22",32.0,880.0,2.0,0.0,0.0,14.0,0.0,0.0],[52,1696964400000,"23",64.0,1760.0,2.0,0.0,0.0,12.0,0.0,0.0],[43,1697050800000,"24",64.0,1760.0,2.0,0.0,0.0,10.0,0.0,0.0],[53,1697050800000,"25",64.0,1760.0,2.0,0.0,0.0,8.0,0.0,0.0],[54,1697482800000,"26",64.0,1760.0,2.0,0.0,0.0,14.0,0.0,0.0],[51,1698865200000,"13",32.0,880.0,1.0,0.0,0.0,7.0,0.0,0.0],[38,1699905600000,"7",32.0,880.0,1.0,0.0,0.0,10.0,0.0,0.0],[0,1699905600000,"15",48.0,1320.0,2.0,0.0,0.0,14.0,0.0,0.0],[0,1705089600000,"1127",48.0,1320.0,3.0,0.0,0.0,14.0,0.0,0.0],[41,1701374400000,"1108",32.0,880.0,1.0,0.0,0.0,8.0,0.0,0.0],[39,1701374400000,"1109",32.0,880.0,1.0,0.0,0.0,8.0,0.0,0.0],[16,1701374400000,"1110",32.0,880.0,1.0,0.0,0.0,10.0,0.0,0.0],[40,1701374400000,"1111",32.0,880.0,1.0,0.0,0.0,8.0,0.0,0.0],[26,1701374400000,"1112",64.0,1760.0,1.0,0.0,0.0,8.0,0.0,0.0],[51,1701374400000,"1115",32.0,880.0,1.0,0.0,0.0,8.0,0.0,0.0],[40,1703188800000,"1123",32.0,880.0,1.0,0,0,0,0.0,0.0],[55,1678906800000,"1002",0.0,0.0,0.0,0,0,0,0.0,0.0],[56,1678906800000,"1003",0.0,0.0,0.0,0,0,0,0.0,0.0],[57,1678906800000,"1004",0.0,0.0,0.0,0,0,0,0.0,0.0],[58,1678906800000,"1005",0.0,0.0,0.0,0,0,0,0.0,0.0],[59,1678906800000,"1006",0.0,0.0,0.0,0,0,0,0.0,0.0],[60,1678906800000,"1007",0.0,0.0,0.0,0,0,0,0.0,0.0],[61,1678906800000,"1008",0.0,0.0,0.0,0,0,0,0.0,0.0],[62,1678906800000,"1009",0.0,0.0,0.0,0,0,0,0.0,0.0],[63,1678906800000,"1010",0.0,0.0,0.0,0,0,0,0.0,0.0],[51,1679252400000,"1011",0.0,0.0,0.0,0,0,0,0.0,0.0],[13,1679252400000,"1012",0.0,0.0,0.0,0,0,0,0.0,0.0],[0,1679252400000,"1013",0.0,0.0,0.0,0,0,0,0.0,0.0],[64,1679252400000,"1014",0.0,0.0,0.0,0,0,0,0.0,0.0],[65,1679598000000,"1015",0.0,0.0,0.0,0,0,0,0.0,0.0],[66,1679598000000,"1016",0.0,0.0,0.0,0,0,0,0.0,0.0],[67,1685127600000,"1038",160.0,4480.0,0.0,0,0,0,0.0,0.0],[17,1717614000000,"1189",16.0,440.0,1.0,50.0,600.0,0.0,0.0,0.0],[68,1697569200000,"27",64.0,1760.0,1.0,0.0,0.0,14.0,0.0,0.0],[69,1728932400000,"1218",0.0,0.0,1.0,0.0,0.0,11.0,0.0,0.0],[1,1690311600000,"1045",464.0,12064.0,0.0,0,0,0,0.0,0.0],[17,1690398000000,"1046",512.0,14336.0,0.0,0,0,0,0.0,0.0],[5,1693940400000,"1055",96.0,2640.0,5.0,0,0,0,0.0,0.0],[70,1693940400000,"1056",96.0,2640.0,5.0,0,0,0,0.0,0.0],[13,1693940400000,"1057",96.0,2640.0,5.0,0,0,0,0.0,0.0],[0,1693940400000,"1058",96.0,2640.0,5.0,0,0,0,0.0,0.0],[51,1693940400000,"1059",96.0,2640.0,5.0,0,0,0,0.0,0.0],[71,1694026800000,"1061",96.0,2640.0,3.0,0,0,0,0.0,0.0],[72,1694026800000,"1062",96.0,2640.0,5.0,0,0,0,0.0,0.0],[73,1694026800000,"1063",96.0,2640.0,5.0,0,0,0,0.0,0.0],[74,1694026800000,"1064",96.0,2640.0,5.0,0,0,0,0.0,0.0],[75,1694026800000,"1065",96.0,2640.0,5.0,0,0,0,0.0,0.0],[68,1694458800000,"1067",96.0,2640.0,9.0,0,0,0,0.0,0.0],[35,1736971200000,"1257",0.0,0.0,2.0,0,0,0,0.0,0.0],[1,1683572400000,"1027",256.0,6656.0,0.0,0,0,0,0.0,0.0],[0,1683572400000,"1028",126.0,3465.0,2.0,0,0,0,0.0,0.0],[51,1683572400000,"1029",64.0,1760.0,0.0,0,0,0,0.0,0.0],[13,1683572400000,"1030",62.0,1705.0,2.0,0,0,0,0.0,0.0],[76,1683831600000,"1032",64.0,1760.0,6.0,0,0,0,0.0,0.0],[77,1683918000000,"1033",64.0,1760.0,8.0,0,0,0,0.0,0.0],[67,1686855600000,"1040",256.0,7168.0,0.0,0,0,0,0.0,0.0],[78,1727204400000,"1211",0.0,0.0,1.0,0.0,0.0,10.0,0.0,0.0],[79,1687978800000,"1042",512.0,14336.0,0.0,0,0,0,0.0,0.0],[7,1681758000000,"1018",128.0,3520.0,6.0,0,0,0,0.0,0.0],[80,1681758000000,"1019",128.0,3520.0,6.0,0,0,0,0.0,0.0],[81,1681758000000,"1020",78.0,2145.0,6.0,0,0,0,0.0,0.0],[82,1681758000000,"1021",192.0,4992.0,4.0,0,0,0,0.0,0.0],[83,1681758000000,"1022",128.0,3328.0,4.0,0,0,0,0.0,0.0],[84,1681758000000,"1023",64.0,1664.0,4.0,0,0,0,0.0,0.0],[85,1681758000000,"1024",64.0,1664.0,4.0,0,0,0,0.0,0.0],[1,1681758000000,"1026",122.0,3172.0,6.0,0,0,0,0.0,0.0],[67,1687460400000,"1041",256.0,7168.0,0.0,0,0,0,0.0,0.0],[79,1689966000000,"1044",256.0,7168.0,0.0,0,0,0,0.0,0.0],[17,1692990000000,"1051",255.0,7140.0,0.0,0,0,0,0.0,0.0],[17,1694458800000,"1066",128.0,3520.0,0.0,0,0,0,0.0,0.0],[1,1694631600000,"1068",246.0,6396.0,0.0,0,0,0,0.0,0.0],[86,1715713200000,"1174",0.0,0.0,2.0,0,0,0,0.0,0.0],[87,1715713200000,"1175",0.0,0.0,0.0,0,0,0,0.0,0.0],[88,1747767600000,"1284",0,0,0,0.0,0.0,25.0,0.0,0.0],[89,1747854000000,"1282",0,0,0,0.0,0.0,35.0,0.0,0.0],[90,1747940400000,"1283",0,0,0,0.0,0.0,32.0,0.0,0.0],[91,1748026800000,"1285",0,0,0,0.0,0.0,26.0,0.0,0.0],[92,1748026800000,"1286",0,0,0,0.0,0.0,25.0,0.0,0.0],[93,1748631600000,"1290",0,0,0,0.0,0.0,22.0,0.0,0.0],[94,1753383600000,"1296",0,0,0,200.0,2750.0,0.0,0.0,0.0],[7,1753815600000,"1297",0,0,0,60.0,720.0,12.0,0.0,0.0],[8,1753815600000,"1298",0,0,0,50.0,600.0,8.0,0.0,0.0],[95,1754334000000,"1308",0,0,0,0.0,0.0,17.0,0.0,0.0],[22,1725562800000,"1209",0,0,0,0.0,0.0,20.0,0.0,0.0],[16,1712948400000,"1160",0,0,0,0.0,0.0,55.0,0.0,0.0],[96,1715713200000,"1173",0,0,0,0.0,0.0,20.0,0.0,0.0],[97,1715972400000,"1176",0,0,0,0.0,0.0,20.0,0.0,0.0],[69,1716231600000,"1177",0,0,0,0.0,0.0,9.0,0.0,0.0],[98,1716318000000,"1178",0,0,0,0.0,0.0,20.0,0.0,0.0],[99,1716577200000,"1180",0,0,0,0.0,0.0,16.0,0.0,0.0],[100,1716922800000,"1181",0,0,0,0.0,0.0,15.0,0.0,0.0],[101,1717182000000,"1184",0,0,0,0.0,0.0,43.0,0.0,0.0],[102,1717441200000,"1185",0,0,0,0.0,0.0,18.0,0.0,0.0],[103,1717527600000,"1188",0,0,0,0.0,0.0,8.0,0.0,0.0],[47,1719255600000,"1194",0,0,0,0.0,0.0,13.0,0.0,0.0],[104,1719255600000,"1197",0,0,0,0.0,0.0,23.0,0.0,0.0],[13,1720638000000,"1202",0,0,0,50.0,687.5,0.0,0.0,0.0],[105,1728414000000,"1216",0,0,0,0.0,0.0,5.0,0.0,0.0],[101,1730836800000,"1223",0,0,0,0.0,0.0,30.0,0.0,0.0],[106,1729882800000,"1221",0,0,0,0.0,0.0,22.0,0.0,0.0],[107,1719255600000,"1196",0,0,0,0.0,0.0,20.0,0.0,0.0],[108,1719255600000,"1193",0,0,0,0.0,0.0,20.0,0.0,0.0],[109,1719255600000,"1195",0,0,0,0.0,0.0,10.0,0.0,0.0],[110,1719255600000,"1198",0,0,0,0.0,0.0,14.0,0.0,0.0],[99,1730923200000,"1224",0,0,0,0.0,0.0,16.0,0.0,0.0],[111,1731700800000,"1225",0,0,0,0.0,0.0,12.0,0.0,0.0],[112,1731700800000,"1226",0,0,0,0.0,0.0,10.0,0.0,0.0],[42,1715022000000,"1170",0,0,0,0.0,0.0,20.0,0.0,0.0],[19,1715108400000,"1171",0,0,0,0.0,0.0,15.0,0.0,0.0],[113,1726858800000,"1213",0,0,0,0.0,0.0,12.0,0.0,0.0],[54,1703707200000,"1124",0.0,0.0,21.0,0,0,0,0.0,0.0],[114,1711738800000,"1152",0,0,0,0,0,0,7830.0,0.0]];
 const QBO_FMT2=['3.5G Jar','1.5G PR'];
 function qboSkuEvents(){ return QBO_ENABLED ? QBO_SKU_RAW.map(a=>({sku:QBO_SKUS[a[0]],src:'QuickBooks',fmt:QBO_FMT2[a[1]],d:a[2],u:a[3],su:a[4],rev:a[5],no:a[6]})) : []; }
-function qboConcEvents(){ return QBO_ENABLED ? QBO_CONC_RAW.map(a=>({c:QBO_CUSTS[a[0]],s:'QuickBooks',d:a[1],ref:String(a[2]),fmt:{jar35:{paidU:a[3],bill:a[4],sampU:a[5]},fivepk:{paidU:0,bill:0,sampU:0},pr15:{paidU:a[6],bill:a[7],sampU:a[8]},vape:{paidU:0,bill:0,sampU:0}},pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:a[9],creditMemos:a[10]})) : []; }
+function qboConcEvents(){ return QBO_ENABLED ? QBO_CONC_RAW.map(a=>({c:QBO_CUSTS[a[0]],s:'QuickBooks',d:a[1],ref:String(a[2]),fmt:{jar35:{paidU:a[3],bill:a[4],sampU:a[5]},fivepk:{paidU:0,bill:0,sampU:0},pr15:{paidU:a[6],bill:a[7],sampU:a[8]},pr1:{paidU:0,bill:0,sampU:0},vape:{paidU:0,bill:0,sampU:0}},pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:a[9],creditMemos:a[10]})) : []; }
 
 // One row per (SKU, source, date): units sold, sample units, revenue, distinct orders.
 function buildSkuEvents(){
@@ -1752,7 +1765,7 @@ function aggregateSku(){
   const start=parseDate($('#sku-start').value), end=parseDate($('#sku-end').value);
   if(start) start.setHours(0,0,0,0); if(end) end.setHours(23,59,59,0);
   const A=concAssum();                                   // editable list prices (Credits/Discounts tab)
-  const Lkey={'3.5G Jar':'jar35','.7G 5PK':'fivepk','1.5G PR':'pr15','Vape / Live Resin':'vape'};
+  const Lkey={'3.5G Jar':'jar35','.7G 5PK':'fivepk','1.5G PR':'pr15','1G PR':'pr1','Vape / Live Resin':'vape'};
   // per source → per format label → {units, actualized, skus}; plus an "Other" catch-all
   const SRCS=['Nabis','Distru','QuickBooks'];   // QuickBooks = baked-in historical (pre-2026-01-13)
   const acc={}, other={}; SRCS.forEach(s=>{ acc[s]={}; other[s]={units:0,actualized:0,skus:{}}; });
@@ -1789,7 +1802,7 @@ function aggregateSku(){
   const mkSkus=(map,L)=>Object.values(map).map(s=>Object.assign({sku:s.sku},mkRow(s.units,s.units*L,s.actualized)))
       .filter(s=>s.units||Math.abs(s.actualized)>0.005).sort((a,b)=>b.actualized-a.actualized);
   const build=src=>{
-    const rows=CONC_FORMATS.map(f=>{                       // always the 4 main formats, even at 0
+    const rows=CONC_FORMATS.map(f=>{                       // always the main formats, even at 0
       const g=acc[src][f.label]||{units:0,actualized:0,skus:{}}, L=A[f.key]||0;
       return Object.assign({key:f.key,label:f.label},mkRow(g.units,g.units*L,g.actualized),{skus:mkSkus(g.skus,L)});
     });
@@ -1891,7 +1904,7 @@ function renderSku(){
   wrap.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;if(x&&x.classList.contains('detail')){x.classList.toggle('hidden');tr.classList.toggle('open');}});
   wrap.querySelectorAll('th.sys').forEach(th=>th.onclick=()=>{const tbl=th.closest('table'), d=tbl&&tbl.querySelector('.invdetail'); if(d){ d.classList.toggle('hidden'); th.parentElement.classList.toggle('open'); }});
   const lp=(id,d)=>{const el=$('#'+id);return el&&el.value?el.value:d;};
-  note.innerHTML=`<b>Projected</b> = units × list price (3.5g $${esc(lp('a-jar35','27.50'))}, .7g $${esc(lp('a-fivepk','22.50'))}, 1.5g $${esc(lp('a-pr15','12'))}, vape $${esc(lp('a-vape','25'))} — editable on the Credits/Discounts tab; <b>Other</b> = budtender pouches valued at $${POUCH_LIST['1.5']} for 1.5g / $${POUCH_LIST['3.5']} for 3.5g). <b>Actualized</b> = actual billed. <b>Avg $/Unit</b> = Actualized ÷ Units (average actual sale price). <b>Unit Discounts</b> = Projected − Actualized. <b>Discounts/Credits</b> = order/invoice-level discounts + credit memos. <b>Actual Total</b> = Actualized − Discounts/Credits. <b>Total for week</b> = total Actualized − total Discounts/Credits. Click a product row to see its SKUs, or click a <b>Nabis</b>/<b>Distru</b> header to see the invoices that make up that table. Sample lines ($0.01 give-aways) are excluded.`;
+  note.innerHTML=`<b>Projected</b> = units × list price (3.5g $${esc(lp('a-jar35','27.50'))}, .7g $${esc(lp('a-fivepk','22.50'))}, 1.5g $${esc(lp('a-pr15','12'))}, 1g $${esc(lp('a-pr1','10'))}, vape $${esc(lp('a-vape','25'))} — editable on the Credits/Discounts tab; <b>Other</b> = budtender pouches valued at $${POUCH_LIST['1.5']} for 1.5g / $${POUCH_LIST['3.5']} for 3.5g). <b>Actualized</b> = actual billed. <b>Avg $/Unit</b> = Actualized ÷ Units (average actual sale price). <b>Unit Discounts</b> = Projected − Actualized. <b>Discounts/Credits</b> = order/invoice-level discounts + credit memos. <b>Actual Total</b> = Actualized − Discounts/Credits. <b>Total for week</b> = total Actualized − total Discounts/Credits. Click a product row to see its SKUs, or click a <b>Nabis</b>/<b>Distru</b> header to see the invoices that make up that table. Sample lines ($0.01 give-aways) are excluded.`;
 }
 function applySkuPreset(p){
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
@@ -2152,15 +2165,25 @@ function computeOnHandValue(){
 function projectedDetail(monday){
   const weekEnd=new Date(monday); weekEnd.setDate(monday.getDate()+6); weekEnd.setHours(23,59,59,999);
   let nabis=null, distru=null;
+  // Each order also collects its line items (aggregated by SKU) so the drill-down can expand an
+  // order to a Product/Units/Price/Line-Total table that sums back to the order's projected amount.
+  const addItem=(g,sku,product,qty,lineTotal)=>{ const k=(sku||product||'(item)');
+    const it=g.items[k]||(g.items[k]={sku:sku||'',product:product||sku||'',qty:0,lineTotal:0});
+    it.qty+=qty||0; it.lineTotal+=lineTotal||0; };
+  const finish=agg=>Object.values(agg).filter(x=>Math.abs(x.amount)>0.005)
+    .map(x=>({ref:x.ref,customer:x.customer,date:x.date,amount:x.amount,
+      items:Object.values(x.items).filter(it=>Math.abs(it.lineTotal)>0.005||it.qty).sort((a,b)=>b.lineTotal-a.lineTotal)}))
+    .sort((a,b)=>b.amount-a.amount);
   if(FILES.distru_items){ const agg={};
     FILES.distru_items.data.forEach(r=>{
       if(isNabisCust(r['Customer'])) return;   // all orders scheduled this week (delivered + pending)
       const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
       const ref=(r['Order Number']||r['Sales Order']||r['Invoice Number']||'').trim()||'(order)';
       const amt=num(r['Quantity'])*num(r['Order Item Price']);
-      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),amount:0}); g.amount+=amt;
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),amount:0,items:{}}); g.amount+=amt;
+      addItem(g, skuClean(r['Product SKU']||r['Product']), skuClean(r['Product']||r['Product SKU']), num(r['Quantity']), amt);
     });
-    distru=Object.values(agg).filter(x=>Math.abs(x.amount)>0.005).sort((a,b)=>b.amount-a.amount);
+    distru=finish(agg);
   }
   if(FILES.nabis_detail){ const agg={};
     FILES.nabis_detail.data.forEach(r=>{
@@ -2169,10 +2192,11 @@ function projectedDetail(monday){
       if(type==='PICKUP_FROM_BRAND'||status==='CANCELLED'||status==='REJECTED'||isOwnEntity(r['Site'])) return;   // delivered included (all scheduled this week)
       const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
       const ref=(r['Order Number']||'').trim()||'(order)';
-      const amt=num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);
-      const g=agg[ref]||(agg[ref]={ref,customer:(r['Site']||r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim(),date:dd.getTime(),amount:0}); g.amount+=amt;
+      const amt=num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);   // same basis as projN/projD so items reconcile to the cell
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Site']||r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim(),date:dd.getTime(),amount:0,items:{}}); g.amount+=amt;
+      addItem(g, (r['Line Item SKU Code']||'').trim(), skuClean(r['Strain']||r['Line Item SKU Code']), num(r['Units']), amt);
     });
-    nabis=Object.values(agg).filter(x=>Math.abs(x.amount)>0.005).sort((a,b)=>b.amount-a.amount);
+    nabis=finish(agg);
   }
   return {nabis, distru};
 }
@@ -2328,11 +2352,11 @@ function renderScorecard(){
     if(AR.has(c)) return isLive && hasInv;
     if(c==='onHand') return isLive && hasOnHand;
     if(c==='projN'||c==='projD'){
-      // Projected line-item detail exists for one week at a time: the live week when raw files are
-      // loaded, or (in the shared report) the week SC_DETAIL was captured for. Make THAT row's cell
-      // drillable — not strictly the live row, which right after a week rollover has no detail yet.
-      if(FILES.distru_items||FILES.nabis_detail) return isLive;
-      return !!(SC_DETAIL && SC_DETAIL.date && r[0]===SC_DETAIL.date);
+      // Current week → gross projected orders + SKU line items (from raw files, or the captured
+      // SC_DETAIL snapshot when it's still this week). Past weeks → the week's actual NET sales per
+      // order, reconstructed from CONC_EVENTS so the breakdown reconciles to the (net) cell value.
+      if(isLive) return (FILES.distru_items||FILES.nabis_detail) || !!(SC_DETAIL && SC_DETAIL.date===r[0]);
+      return hasEv;
     }
     return false; };
   const trs=rows.map((r,idx)=>{
@@ -2377,7 +2401,7 @@ function renderScorecard(){
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
-  note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> is filled only on the current row — all orders scheduled for delivery this week (Mon–Sun), delivered + pending; we don't have those point-in-time snapshots for past weeks. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
+  note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> on the current (live) row = all orders scheduled for delivery this week (Mon–Sun), delivered + pending; click it to see each order, then click an order for its line items. For past weeks the column shows that week's <b>actual net sales</b> (billed − discounts/credits), which reconciles to the Sales by Type page — click it to see the orders that make it up. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
 }
 
 $('#sc-export').onclick=()=>{
@@ -2395,9 +2419,13 @@ function buildScDetail(){
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   const inv=(onHandDetail()||[]).map(x=>({name:x.name,qty:x.qty,price:x.price}));
   const pd=projectedDetail(currentMon);
+  // Slim each projected order for the shared payload: short item keys (s/p/q/lt) keep the
+  // line-item drill-down available to team viewers without bloating the published JSON.
+  const slim=list=>(list||[]).map(o=>({ref:o.ref,customer:o.customer,date:o.date,amount:o.amount,
+    it:(o.items||[]).map(i=>({s:i.sku,p:i.product,q:i.qty,lt:i.lineTotal}))}));
   // date = the week this detail belongs to, so the drill-down stays clickable on the right row
   // even after the week rolls over and is no longer the "live" row.
-  return { date:isoD(currentMon), inv, pN:(pd.nabis||[]), pD:(pd.distru||[]) };
+  return { date:isoD(currentMon), inv, pN:slim(pd.nabis), pD:slim(pd.distru) };
 }
 
 // ── Scorecard drill-down: given a cell (week Monday + column), return the line items ────────
@@ -2470,15 +2498,50 @@ function scDrill(dateStr, col){
       rows:det.map(x=>[x.name, Math.round(x.qty).toLocaleString(), x.price, x.value]), totalLabel:'Total', total:det.reduce((s,x)=>s+x.value,0)};
   }
   if(col==='projN'||col==='projD'){
-    let list=null;
-    if(FILES.distru_items||FILES.nabis_detail){ const pd=projectedDetail(monday); list=col==='projN'?pd.nabis:pd.distru; }
-    else if(SC_DETAIL) list=col==='projN'?SC_DETAIL.pN:SC_DETAIL.pD;
-    if(!list) return {title:'Projected Sales', empty:'Projected line-item detail isn’t available in this view.'};
-    list=list.slice().sort((a,b)=>(a.date||Infinity)-(b.date||Infinity) || b.amount-a.amount);  // by delivery date, then $
+    const src=col==='projN'?'Nabis':'Distru';
     const label=col==='projN'?'Projected Sales (Nabis)':'Projected Sales (Distru)';
-    return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending) · ${list.length} orders`,
-      columns:[{l:'Order #'},{l:'Customer'},{l:'Date'},{l:'Amount',num:true,money:true}],
-      rows:list.map(x=>[x.ref||'—', x.customer||'—', x.date?fmtDt(new Date(x.date)):'—', x.amount]), totalLabel:'Total', total:list.reduce((s,x)=>s+x.amount,0)};
+    // Is this the current week? (scorecardRows reverses newest-first, but compare by date to be safe.)
+    const now=new Date(); now.setHours(0,0,0,0);
+    const curMon=new Date(now); curMon.setDate(now.getDate()-((now.getDay()+6)%7));
+    const isCurrentRow=monday.getTime()===curMon.getTime();
+    // CURRENT week → gross projected orders (scheduled this week, delivered+pending), each
+    // expandable to its SKU line items. Live mode carries x.items; shared mode the slim x.it.
+    if(isCurrentRow){
+      let list=null;
+      if(FILES.distru_items||FILES.nabis_detail){ const pd=projectedDetail(monday); list=col==='projN'?pd.nabis:pd.distru; }
+      else if(SC_DETAIL && SC_DETAIL.date===dateStr) list=col==='projN'?SC_DETAIL.pN:SC_DETAIL.pD;
+      if(list && list.length){
+        list=list.slice().sort((a,b)=>(a.date||Infinity)-(b.date||Infinity) || b.amount-a.amount);  // by delivery date, then $
+        const itemsOf=x=> x.items || (x.it? x.it.map(z=>({sku:z.s,product:z.p,qty:z.q,lineTotal:z.lt})) : []);
+        const itemsTable=items=>{
+          if(!items||!items.length) return '<div class="rep" style="padding:4px 0">No line-item detail recorded for this order.</div>';
+          const body=items.map(it=>{ const u=it.qty?it.lineTotal/it.qty:0; const nm=it.product||it.sku||'';
+            const sub=(it.sku&&it.sku!==it.product)?` <span class="rep">${esc(it.sku)}</span>`:'';
+            return `<tr><td>${esc(nm)}${sub}</td><td class="num">${it.qty?Math.round(it.qty).toLocaleString():''}</td><td class="num money">${u?fmt$(u):''}</td><td class="num money">${it.lineTotal?fmt$(it.lineTotal):''}</td></tr>`; }).join('');
+          const tu=items.reduce((s,it)=>s+(it.qty||0),0), tl=items.reduce((s,it)=>s+(it.lineTotal||0),0);
+          return `<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Price/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${body}</tbody><tfoot><tr class="totals"><td>Total · ${items.length} line${items.length!==1?'s':''}</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr></tfoot></table>`;
+        };
+        return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending) · ${list.length} orders · click an order for its line items`,
+          columns:[{l:'Order #'},{l:'Customer'},{l:'Date'},{l:'Amount',num:true,money:true}],
+          rows:list.map(x=>[x.ref||'—', x.customer||'—', x.date?fmtDt(new Date(x.date)):'—', x.amount]),
+          rowDetails:list.map(x=>itemsTable(itemsOf(x))),
+          totalLabel:'Total', total:list.reduce((s,x)=>s+x.amount,0)};
+      }
+    }
+    // PAST week → the week's actual NET sales per order, from CONC_EVENTS (billed − discounts/credits
+    // via eventBilling), so the breakdown reconciles to the net cell shown for past weeks.
+    const wkEnd=new Date(monday); wkEnd.setDate(monday.getDate()+6); wkEnd.setHours(23,59,59,999);
+    const byRef={};
+    (CONC_EVENTS||[]).forEach(e=>{ if(e.s!==src) return; const dt=e.d?new Date(e.d):null; if(!dt||dt<monday||dt>wkEnd) return;
+      const amt=eventBilling(e); if(Math.abs(amt)<0.005) return;
+      const ref=e.ref||'(order)'; const g=byRef[ref]||(byRef[ref]={ref,customer:e.c||'',date:e.d,amount:0});
+      g.amount+=amt; if(e.d&&(!g.date||e.d<g.date)) g.date=e.d; });
+    const net=Object.values(byRef).filter(x=>Math.abs(x.amount)>0.005).sort((a,b)=>(a.date||Infinity)-(b.date||Infinity) || b.amount-a.amount);
+    if(!net.length) return {title:label, empty:'Order-level detail isn’t available for this week in this view.'};
+    return {title:`${label} — week of ${wkLabel}`, sub:`Actual net sales this week (billed − discounts/credits) · ${net.length} orders`,
+      columns:[{l:'Order #'},{l:'Customer'},{l:'Date'},{l:'Net sales',num:true,money:true}],
+      rows:net.map(x=>[x.ref||'—', x.customer||'—', x.date?fmtDt(new Date(x.date)):'—', x.amount]),
+      totalLabel:'Total', total:net.reduce((s,x)=>s+x.amount,0)};
   }
   return null;
 }
@@ -2490,8 +2553,18 @@ function openScModal(spec){
   if(spec.empty){ body.innerHTML=`<div class="scm-empty">${esc(spec.empty)}</div>`; }
   else if(!spec.rows||!spec.rows.length){ body.innerHTML='<div class="scm-empty">No line items make up this figure.</div>'; }
   else {
+    // Optional per-row expandable detail (spec.rowDetails parallel to spec.rows). Rows without a
+    // detail render flat — keeps every other drill-down (AR, on-hand, sales) unchanged.
+    const hasDet=Array.isArray(spec.rowDetails);
     const thead=spec.columns.map(c=>`<th class="${c.num?'num':''}">${esc(c.l)}</th>`).join('');
-    const trs=spec.rows.map(r=>'<tr>'+r.map((v,j)=>{const c=spec.columns[j];return `<td class="${c.num?'num money':''}">${c.money?fmt$(+v||0):esc(String(v))}</td>`;}).join('')+'</tr>').join('');
+    const trs=spec.rows.map((r,ri)=>{
+      const det=hasDet?spec.rowDetails[ri]:null;
+      const cells=r.map((v,j)=>{const c=spec.columns[j]; const val=c.money?fmt$(+v||0):esc(String(v));
+        return `<td class="${c.num?'num money':''}">${(j===0&&det)?`<span class="caret">▶</span> ${val}`:val}</td>`;}).join('');
+      const parent=`<tr class="${det?'parent':''}">${cells}</tr>`;
+      const detail=det?`<tr class="detail hidden"><td colspan="${spec.columns.length}"><div class="detailbox invdetail">${det}</div></td></tr>`:'';
+      return parent+detail;
+    }).join('');
     const foot=spec.total!=null?`<tfoot><tr><td colspan="${spec.columns.length-1}">${esc(spec.totalLabel||'Total')}</td><td class="num money">${fmt$(spec.total)}</td></tr></tfoot>`:'';
     body.innerHTML=`<table><thead><tr>${thead}</tr></thead><tbody>${trs}</tbody>${foot}</table>`;
   }
@@ -2503,6 +2576,9 @@ $('#scm-close').onclick=closeScModal;
 $('#sc-modal .scm-backdrop').onclick=closeScModal;
 $('#sc-wrap').onclick=(ev)=>{ const td=ev.target.closest?ev.target.closest('td.drill'):null; if(!td) return;
   openScModal(scDrill(td.getAttribute('data-d'), td.getAttribute('data-c'))); };
+// Expand/collapse a projected order's line items inside the modal.
+$('#scm-body').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr) return;
+  const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeScModal(); });
 
 /* ============================ CSV export ============================ */
@@ -2533,11 +2609,13 @@ $('#brand-export').onclick=()=>{
   downloadCSV('ar-by-brand.csv',rows);
 };
 function concExport(rows,label,fname){
-  const hd=[label,'Source','Actual Billed','Gross @ List','Disc 3.5G','Disc 5PK','Disc 1.5G','Disc Vape','Per-Unit Total','Samples @ List','Pouches','Invoice Disc','Credit Memos','Total Concessions','% of Gross'];
-  const out=[hd]; const f2=v=>(+v||0).toFixed(2);
-  rows.forEach(r=>out.push([r.customer,r.source,f2(r.billed),f2(r.grossList),f2(r.pu_jar35),f2(r.pu_fivepk),f2(r.pu_pr15),f2(r.pu_vape),f2(r.puTotal),f2(r.samplesList),f2(r.pouch),f2(r.invoiceDisc),f2(r.creditMemos),f2(r.totalConc),(r.pctGross*100).toFixed(1)+'%']));
-  const T={}; ['grossList','billed','pu_jar35','pu_fivepk','pu_pr15','pu_vape','puTotal','samplesList','pouch','invoiceDisc','creditMemos','totalConc'].forEach(k=>T[k]=rows.reduce((s,r)=>s+(r[k]||0),0));
-  out.push(['TOTAL','',f2(T.billed),f2(T.grossList),f2(T.pu_jar35),f2(T.pu_fivepk),f2(T.pu_pr15),f2(T.pu_vape),f2(T.puTotal),f2(T.samplesList),f2(T.pouch),f2(T.invoiceDisc),f2(T.creditMemos),f2(T.totalConc),T.grossList?(T.totalConc/T.grossList*100).toFixed(1)+'%':'']);
+  const f2=v=>(+v||0).toFixed(2);
+  const puKeys=CONC_FORMATS.map(f=>'pu_'+f.key);   // per-unit discount column per format (derives 1g, etc.)
+  const hd=[label,'Source','Actual Billed','Gross @ List',...CONC_FORMATS.map(f=>'Disc '+f.label),'Per-Unit Total','Samples @ List','Pouches','Invoice Disc','Credit Memos','Total Concessions','% of Gross'];
+  const out=[hd];
+  rows.forEach(r=>out.push([r.customer,r.source,f2(r.billed),f2(r.grossList),...puKeys.map(k=>f2(r[k])),f2(r.puTotal),f2(r.samplesList),f2(r.pouch),f2(r.invoiceDisc),f2(r.creditMemos),f2(r.totalConc),(r.pctGross*100).toFixed(1)+'%']));
+  const T={}; ['grossList','billed',...puKeys,'puTotal','samplesList','pouch','invoiceDisc','creditMemos','totalConc'].forEach(k=>T[k]=rows.reduce((s,r)=>s+(r[k]||0),0));
+  out.push(['TOTAL','',f2(T.billed),f2(T.grossList),...puKeys.map(k=>f2(T[k])),f2(T.puTotal),f2(T.samplesList),f2(T.pouch),f2(T.invoiceDisc),f2(T.creditMemos),f2(T.totalConc),T.grossList?(T.totalConc/T.grossList*100).toFixed(1)+'%':'']);
   downloadCSV(fname,out);
 }
 $('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort),'Dispensary','credits-discounts-by-dispensary.csv');
@@ -2557,11 +2635,11 @@ $('#sku-export').onclick=()=>{
 
 /* ============================ Sales Over Time ============================ */
 const TIME_SRC_COLORS={Nabis:'#ff8f5e',Distru:'#4ea1ff',QuickBooks:'#2fbf71'};
-const TIME_FMT_COLORS={jar35:'#7c5cff',fivepk:'#2fbf71',pr15:'#ff8f5e',vape:'#4ea1ff',other:'#9aa3b2'};
+const TIME_FMT_COLORS={jar35:'#7c5cff',fivepk:'#2fbf71',pr15:'#ff8f5e',pr1:'#e6c84f',vape:'#4ea1ff',other:'#9aa3b2'};
 // Flower grams per PAID unit, for the "revenue per pound" chart. Flower formats only —
 // 3.5g jar, .7g 5-pack (5×0.7=3.5g), 1.5g preroll. Vapes (concentrate), budtender pouches
 // and 'Other' are intentionally omitted so $/lb reflects realized flower price.
-const GRAMS_BY_FMT={jar35:3.5, fivepk:3.5, pr15:1.5};
+const GRAMS_BY_FMT={jar35:3.5, fivepk:3.5, pr15:1.5, pr1:1.0};
 const LB_GRAMS=453.59237;
 const isoDay=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 function timeApplyPreset(p){
@@ -2736,7 +2814,7 @@ function revPerPoundChart(){
   if(!arr.length || !arr.some(b=>(b.flG||0)>0)) return null;
   const buckets=arr.map(b=>{ const lbs=(b.flG||0)/LB_GRAMS; return {label:blabel(b.k), vals:{rpl: lbs>0 ? b.flRev/lbs : 0}}; });
   return {svg:multiLine(buckets, [{key:'rpl',label:'Revenue / lb (flower)',color:'#e6c84f'}]),
-    sub:'realized $ per pound of flower — 3.5g jars · .7g 5-packs · 1.5g prerolls (revenue ÷ pounds sold); excludes vapes & free samples'};
+    sub:'realized $ per pound of flower — 3.5g jars · .7g 5-packs · 1.5g & 1g prerolls (revenue ÷ pounds sold); excludes vapes & free samples'};
 }
 function renderTimeSeries(){
   const wrap=$('#time-wrap'), note=$('#time-note'), sumEl=$('#time-summary');
@@ -2752,7 +2830,7 @@ function renderTimeSeries(){
     [per[0].toUpperCase()+per.slice(1)+'s',String(arr.length)]
   ].map(([l,v])=>`<div class="metric"><div class="ml">${l}</div><div class="mv">${v}</div></div>`).join('');
   const srcSeries=['Distru','Nabis','QuickBooks'].filter(s=>arr.some(b=>b.src[s])).map(s=>({key:s,label:s,color:TIME_SRC_COLORS[s]}));
-  const fmtSeries=['jar35','fivepk','pr15','vape','other'].filter(k=>arr.some(b=>b.fmt[k])).map(k=>({key:k,label:SKU_DISP[k]||'Other',color:TIME_FMT_COLORS[k]}));
+  const fmtSeries=['jar35','fivepk','pr15','pr1','vape','other'].filter(k=>arr.some(b=>b.fmt[k])).map(k=>({key:k,label:SKU_DISP[k]||'Other',color:TIME_FMT_COLORS[k]}));
   const forChart=which=>arr.map(b=>({label:blabel(b.k),parts:b[which],total:b.total}));
   const card=(t,s,svg)=>`<div class="chart-card"><h4>${esc(t)}</h4><div class="csub">${esc(s)}</div>${svg}</div>`;
   let html='';
@@ -2772,9 +2850,9 @@ function renderTimeSeries(){
 }
 $('#time-export').onclick=()=>{
   const {arr, blabel}=timeBuckets();
-  const rows=[['Period','Distru','Nabis','QuickBooks','3.5g Jars','.7g Prerolls','1.5g Prerolls','Vapes','Other','Total']];
+  const rows=[['Period','Distru','Nabis','QuickBooks','3.5g Jars','.7g Prerolls','1.5g Prerolls','1g Prerolls','Vapes','Other','Total']];
   arr.forEach(b=>rows.push([blabel(b.k),(b.src.Distru||0).toFixed(2),(b.src.Nabis||0).toFixed(2),(b.src.QuickBooks||0).toFixed(2),
-    (b.fmt.jar35||0).toFixed(2),(b.fmt.fivepk||0).toFixed(2),(b.fmt.pr15||0).toFixed(2),(b.fmt.vape||0).toFixed(2),(b.fmt.other||0).toFixed(2),b.total.toFixed(2)]));
+    (b.fmt.jar35||0).toFixed(2),(b.fmt.fivepk||0).toFixed(2),(b.fmt.pr15||0).toFixed(2),(b.fmt.pr1||0).toFixed(2),(b.fmt.vape||0).toFixed(2),(b.fmt.other||0).toFixed(2),b.total.toFixed(2)]));
   downloadCSV('sales-over-time.csv',rows);
 };
 
@@ -2816,9 +2894,9 @@ window.addEventListener('hashchange',()=>{ const t=tabFromHash(); if(t) activate
 ['brand-search','brand-source'].forEach(id=>$('#'+id).addEventListener('input',renderBrands));
 ['cd-search','cd-source'].forEach(id=>$('#'+id).addEventListener('input',renderConcDisp));
 $('#cb-search').addEventListener('input',renderConcBrand);
-['conc-start','conc-end','a-jar35','a-fivepk','a-pr15','a-vape','a-pouch'].forEach(id=>$('#'+id).addEventListener('change',buildConcessions));
+['conc-start','conc-end','a-jar35','a-fivepk','a-pr15','a-pr1','a-vape','a-pouch'].forEach(id=>$('#'+id).addEventListener('change',buildConcessions));
 // list-price edits also drive the Sales-by-Type "Projected" column
-['a-jar35','a-fivepk','a-pr15','a-vape'].forEach(id=>$('#'+id).addEventListener('change',buildSku));
+['a-jar35','a-fivepk','a-pr15','a-pr1','a-vape'].forEach(id=>$('#'+id).addEventListener('change',buildSku));
 // manual date edits switch the preset to "Custom"
 ['conc-start','conc-end'].forEach(id=>$('#'+id).addEventListener('change',()=>{ $('#conc-preset').value='custom'; }));
 // Rolling "last 12 months" window, relative to today (function decl → hoisted, callable from loadShared above)
