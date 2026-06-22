@@ -608,6 +608,7 @@ function classify(rows){
     // AFTER nabis_detail so the line-item file (which shares some cols) isn't caught here.
     if(has('Order Number','Price Reduction','Order Discount','Order Credit Amount')) return {type:'nabis_brand',hr:i};
     if(has('sku_code','sku_name','total_available','sku_price_per_unit')) return {type:'nabis_inventory',hr:i};
+    if(has('Available Quantity','Active Value (Price)'))  return {type:'distru_inventory',hr:i};   // Distru Inventory Valuation report
   }
   return {type:'unknown',hr:-1};
 }
@@ -639,7 +640,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
@@ -647,7 +648,8 @@ const LABELS = {
   nabis_detail:'Nabis detailed brand',
   distru_payments:'Distru payments',
   nabis_brand:'Nabis brand summary',
-  nabis_inventory:'Nabis inventory'
+  nabis_inventory:'Nabis inventory',
+  distru_inventory:'Distru inventory valuation'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -902,7 +904,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -1472,15 +1474,17 @@ function pacafiStore(nm){
 function buildConcEvents(){
   const ev=[]; const epoch=d=>d?d.getTime():null;
   const emptyFmt=()=>{const f={};CONC_FORMATS.forEach(x=>f[x.key]={paidU:0,bill:0,sampU:0});return f;};
-  // Accrual anchor: every Distru piece is dated by its invoice date (when it was billed),
-  // so an invoice's units, discount, and credit all land in the same period.
+  // Distru sales (items) are dated by DELIVERY date (when the sale happened) so weekly LW/
+  // Sales-by-Type numbers match the delivery week. Invoice-level discounts and credit memos
+  // keep their invoice/payment date (they're invoice-anchored, not per-delivery). These maps
+  // give the fallback invoice date when an item row has no Delivery Date.
   const invDateByNum={}, invDateBySO={};
   if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
     const d=parseDate(r['Invoice Date']);
     const n=(r['Invoice Number']||'').trim(), so=(r['Sales Order']||'').trim();
     if(n) invDateByNum[n]=d; if(so) invDateBySO[so]=d;
   });
-  /* Distru items → one event per sales order, dated by invoice date */
+  /* Distru items → one event per sales order, dated by DELIVERY date */
   if(FILES.distru_items){
     const byso={};
     FILES.distru_items.data.forEach(r=>{
@@ -1489,7 +1493,7 @@ function buildConcEvents(){
       if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
       const cust=(r['Customer']||'').trim()||'Unknown', so=(r['Order Number']||'').trim(), k=cust+'|'+so;
       const invNum=(r['Invoice Numbers']||'').trim();
-      const accrual = invDateByNum[invNum] || invDateBySO[so] || parseDate(r['Delivery Date']) || parseDate(r['Order Date']);
+      const accrual = parseDate(r['Delivery Date']) || invDateByNum[invNum] || invDateBySO[so] || parseDate(r['Order Date']);   // delivery date = when sold
       const e=byso[k]||(byso[k]={c:cust,s:'Distru',d:epoch(accrual),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0,ref:(invNum||so)});
       const qty=num(r['Quantity']), up=num(r['Order Item Price']), bill=up*qty, fk=distruFmt(r['Subcategory']);
       if(fk==='pouch'){ e.pouchU+=qty; e.pouchBill+=bill; return; }
@@ -1747,7 +1751,7 @@ function buildSkuEvents(){
     const status=(r['Status']||'').trim();
     if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
     const so=(r['Order Number']||'').trim(), invNum=(r['Invoice Numbers']||'').trim();
-    const d=invDateByNum[invNum]||invDateBySO[so]||parseDate(r['Delivery Date'])||parseDate(r['Order Date']);
+    const d=parseDate(r['Delivery Date'])||invDateByNum[invNum]||invDateBySO[so]||parseDate(r['Order Date']);   // bucket Distru sales by DELIVERY date (when sold), falling back to invoice/order date
     const qty=num(r['Quantity']), up=num(r['Order Item Price']);
     add(skuClean(r['Product']||r['Product SKU']),'Distru',fmtLabel(distruFmt(r['Subcategory'])),d,qty,up*qty,up<=0.02,invNum||so);
   });
@@ -2142,15 +2146,24 @@ function computeProjectedForCurrentWeek(monday){
 // Per-SKU on-hand detail from the Nabis inventory CSV (non-sample, non-archived, qty&price>0).
 // Returns [{name, batch, qty, price, value}] sorted by value desc, or null if no inventory file.
 function onHandDetail(){
-  if(!FILES.nabis_inventory) return null;
+  const hasN=!!FILES.nabis_inventory, hasD=!!FILES.distru_inventory;
+  if(!hasN && !hasD) return null;
   const out=[];
-  FILES.nabis_inventory.data.forEach(r=>{
+  if(hasN) FILES.nabis_inventory.data.forEach(r=>{
     if((r['sku_is_sample']||'').toLowerCase()==='yes') return;          // exclude penny samples
     if((r['sku_is_archived']||'').toLowerCase()==='yes') return;
     if((r['sku_batch_is_archived']||'').toLowerCase()==='yes') return;
     const qty=num(r['total_available']); const price=num(r['sku_price_per_unit']);
-    if(qty>0 && price>0) out.push({name:(r['sku_name']||r['sku_code']||'').trim(),
+    if(qty>0 && price>0) out.push({source:'Nabis', name:(r['sku_name']||r['sku_code']||'').trim(),
       batch:(r['batch_code']||'').trim(), qty, price, value:qty*price});
+  });
+  // Distru Inventory Valuation: value sellable on-hand at list price (Available Quantity ×
+  // Unit Price), mirroring Nabis's total_available basis. Unpriced bulk flower (Unit Price 0)
+  // and zero-qty rows drop out, same as Nabis excludes price/qty ≤ 0.
+  if(hasD) FILES.distru_inventory.data.forEach(r=>{
+    const qty=num(r['Available Quantity']); const price=num(r['Unit Price']);
+    if(qty>0 && price>0) out.push({source:'Distru', name:(r['Name']||r['SKU']||'').trim(),
+      batch:(r['Subcategory']||'').trim(), qty, price, value:qty*price});
   });
   return out.sort((a,b)=>b.value-a.value);
 }
@@ -2401,7 +2414,7 @@ function renderScorecard(){
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
-  note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> on the current (live) row = all orders scheduled for delivery this week (Mon–Sun), delivered + pending; click it to see each order, then click an order for its line items. For past weeks the column shows that week's <b>actual net sales</b> (billed − discounts/credits), which reconciles to the Sales by Type page — click it to see the orders that make it up. <b>Total On Hand Inventory</b> stays blank until a stock report is wired in.`;
+  note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> on the current (live) row = all orders scheduled for delivery this week (Mon–Sun), delivered + pending; click it to see each order, then click an order for its line items. For past weeks the column shows that week's <b>actual net sales</b> (billed − discounts/credits), which reconciles to the Sales by Type page — click it to see the orders that make it up. <b>Total On Hand Inventory</b> = sellable stock at list price (available units × unit price) from the Nabis inventory + Distru Inventory Valuation reports; click it to see Nabis vs Distru, each expandable to its SKUs.`;
 }
 
 $('#sc-export').onclick=()=>{
@@ -2417,7 +2430,7 @@ function buildScDetail(){
   const now=new Date(); now.setHours(0,0,0,0);
   const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-  const inv=(onHandDetail()||[]).map(x=>({name:x.name,qty:x.qty,price:x.price}));
+  const inv=(onHandDetail()||[]).map(x=>({source:x.source,name:x.name,qty:x.qty,price:x.price}));
   const pd=projectedDetail(currentMon);
   // Slim each projected order for the shared payload: short item keys (s/p/q/lt) keep the
   // line-item drill-down available to team viewers without bloating the published JSON.
@@ -2490,12 +2503,22 @@ function scDrill(dateStr, col){
   }
   if(col==='onHand'){
     let det=onHandDetail();
-    if(!det && SC_DETAIL && SC_DETAIL.inv) det=SC_DETAIL.inv.map(x=>({name:x.name,qty:x.qty,price:x.price,value:x.qty*x.price}));
+    // Shared payload: SC_DETAIL.inv carries the slim per-SKU rows. Older payloads have no source
+    // tag (Nabis-only era) → default to Nabis so they still group correctly.
+    if(!det && SC_DETAIL && SC_DETAIL.inv) det=SC_DETAIL.inv.map(x=>({source:x.source||'Nabis',name:x.name,qty:x.qty,price:x.price,value:x.qty*x.price}));
     if(!det) return {title:'Total On Hand Inventory', empty:'Inventory line-item detail isn’t available in this view.'};
     det=det.slice().sort((a,b)=>b.value-a.value);
-    return {title:'Total On Hand Inventory', sub:`${det.length} SKUs · available units × unit price (samples & archived excluded)`,
-      columns:[{l:'SKU'},{l:'Available',num:true},{l:'Unit price',num:true,money:true},{l:'Value',num:true,money:true}],
-      rows:det.map(x=>[x.name, Math.round(x.qty).toLocaleString(), x.price, x.value]), totalLabel:'Total', total:det.reduce((s,x)=>s+x.value,0)};
+    // Separate Nabis and Distru inventory: one expandable group per source, each → its SKUs.
+    const groups={}; det.forEach(x=>{ const s=x.source||'Nabis'; (groups[s]||(groups[s]=[])).push(x); });
+    const order=['Nabis','Distru'].filter(s=>groups[s]); Object.keys(groups).forEach(s=>{ if(!order.includes(s)) order.push(s); });
+    const skuTable=items=>`<div class="ddhead">SKUs</div><table class="ddtable invitems"><thead><tr><th>SKU</th><th class="num">Available</th><th class="num">Unit price</th><th class="num">Value</th></tr></thead><tbody>`+
+      items.map(x=>`<tr><td>${esc(x.name)}${x.batch?` <span class="rep">${esc(x.batch)}</span>`:''}</td><td class="num">${Math.round(x.qty).toLocaleString()}</td><td class="num money">${fmt$(x.price)}</td><td class="num money">${fmt$(x.value)}</td></tr>`).join('')+
+      `</tbody><tfoot><tr class="totals"><td>Total · ${items.length} SKU${items.length!==1?'s':''}</td><td></td><td></td><td class="num money">${fmt$(items.reduce((a,x)=>a+x.value,0))}</td></tr></tfoot></table>`;
+    return {title:'Total On Hand Inventory', sub:`available units × unit price (samples & archived excluded) · click a source for its SKUs`,
+      columns:[{l:'Source'},{l:'SKUs',num:true},{l:'Value',num:true,money:true}],
+      rows:order.map(s=>[`${s} inventory`, groups[s].length, groups[s].reduce((a,x)=>a+x.value,0)]),
+      rowDetails:order.map(s=>skuTable(groups[s])),
+      totalLabel:'Total', total:det.reduce((s,x)=>s+x.value,0)};
   }
   if(col==='projN'||col==='projD'){
     const src=col==='projN'?'Nabis':'Distru';
