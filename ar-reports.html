@@ -1474,15 +1474,23 @@ function pacafiStore(nm){
 function buildConcEvents(){
   const ev=[]; const epoch=d=>d?d.getTime():null;
   const emptyFmt=()=>{const f={};CONC_FORMATS.forEach(x=>f[x.key]={paidU:0,bill:0,sampU:0});return f;};
-  // Distru sales (items) are dated by DELIVERY date (when the sale happened) so weekly LW/
-  // Sales-by-Type numbers match the delivery week. Invoice-level discounts and credit memos
-  // keep their invoice/payment date (they're invoice-anchored, not per-delivery). These maps
-  // give the fallback invoice date when an item row has no Delivery Date.
+  // Distru sales (items), invoice-level discounts AND credit memos are all dated by DELIVERY
+  // date (when the sale happened) so a week's net = items delivered that week minus the
+  // concessions on those same orders. invDate* = invoice-date fallback; delivBy* maps an
+  // invoice #/sales order to its delivery date (from the items file, which is the only file
+  // carrying Delivery Date), so the discount/credit files can be re-dated to delivery too.
   const invDateByNum={}, invDateBySO={};
   if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
     const d=parseDate(r['Invoice Date']);
     const n=(r['Invoice Number']||'').trim(), so=(r['Sales Order']||'').trim();
     if(n) invDateByNum[n]=d; if(so) invDateBySO[so]=d;
+  });
+  const delivByInv={}, delivBySO={};
+  if(FILES.distru_items) FILES.distru_items.data.forEach(r=>{
+    const dd=parseDate(r['Delivery Date']); if(!dd) return;
+    const inv=(r['Invoice Numbers']||'').trim(), so=(r['Order Number']||'').trim();   // earliest delivery per invoice/SO
+    if(inv && (!delivByInv[inv] || dd<delivByInv[inv])) delivByInv[inv]=dd;
+    if(so  && (!delivBySO[so]  || dd<delivBySO[so]))   delivBySO[so]=dd;
   });
   /* Distru items → one event per sales order, dated by DELIVERY date */
   if(FILES.distru_items){
@@ -1502,19 +1510,21 @@ function buildConcEvents(){
     });
     Object.values(byso).forEach(e=>ev.push(e));
   }
-  /* Distru invoice discounts → one event per invoice (invoice date) */
+  /* Distru invoice discounts → one event per invoice, dated by the invoice's DELIVERY date */
   if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
     if(isNabisCust(r['Customer'])) return;
     const disc=Math.abs(num(r['Total Discounts'])); if(!disc) return;
-    ev.push({c:(r['Customer']||'').trim()||'Unknown',s:'Distru',d:epoch(parseDate(r['Invoice Date'])),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:disc,creditMemos:0,ref:(r['Invoice Number']||'').trim()});
+    const invNum=(r['Invoice Number']||'').trim(), so=(r['Sales Order']||'').trim();
+    const d=delivByInv[invNum]||delivBySO[so]||parseDate(r['Invoice Date']);   // delivery date when known
+    ev.push({c:(r['Customer']||'').trim()||'Unknown',s:'Distru',d:epoch(d),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:disc,creditMemos:0,ref:invNum});
   });
-  /* Distru credit memos → dated to the invoice they offset (falls back to payment date) */
+  /* Distru credit memos → dated by the DELIVERY date of the invoice they offset (falls back to invoice/payment date) */
   if(FILES.distru_payments) FILES.distru_payments.data.forEach(r=>{
     if(isNabisCust(r['Company'])) return;
     if((r['Payment Method']||'').trim()!=='Credit') return;
     const amt=num(r['Amount']); if(!amt) return;
     const ref=(r['Reference']||'').trim();
-    const d=invDateByNum[ref] || parseDate(r['Date']);
+    const d=delivByInv[ref] || delivBySO[ref] || invDateByNum[ref] || parseDate(r['Date']);
     ev.push({c:(r['Company']||'').trim()||'Unknown',s:'Distru',d:epoch(d),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:amt,ref:(ref||(r['Payment #']||'').trim())});
   });
   /* Nabis → one event per order (aggregate its detail lines; disc/credit from brand summary) */
