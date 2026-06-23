@@ -1486,19 +1486,24 @@ function buildConcEvents(){
     if(n) invDateByNum[n]=d; if(so) invDateBySO[so]=d;
   });
   const delivByInv={}, delivBySO={};
+  // Delivered/Completed invoices & sales orders — an order is a realized SALE (and its discounts
+  // & credits count) only once delivered; invoiced-but-Pending/Processing orders are excluded.
+  const deliveredInv=new Set(), deliveredSO=new Set();
   if(FILES.distru_items) FILES.distru_items.data.forEach(r=>{
+    const st=(r['Status']||'').trim(), inv=(r['Invoice Numbers']||'').trim(), so=(r['Order Number']||'').trim();
+    if(st==='Delivered' || st==='Completed'){ if(inv) deliveredInv.add(inv); if(so) deliveredSO.add(so); }
     const dd=parseDate(r['Delivery Date']); if(!dd) return;
-    const inv=(r['Invoice Numbers']||'').trim(), so=(r['Order Number']||'').trim();   // earliest delivery per invoice/SO
-    if(inv && (!delivByInv[inv] || dd<delivByInv[inv])) delivByInv[inv]=dd;
+    if(inv && (!delivByInv[inv] || dd<delivByInv[inv])) delivByInv[inv]=dd;   // earliest delivery per invoice/SO
     if(so  && (!delivBySO[so]  || dd<delivBySO[so]))   delivBySO[so]=dd;
   });
+  const isDelivered=(invNum,so)=>deliveredInv.has(invNum)||deliveredSO.has(so);
   /* Distru items → one event per sales order, dated by DELIVERY date */
   if(FILES.distru_items){
     const byso={};
     FILES.distru_items.data.forEach(r=>{
       if(isNabisCust(r['Customer'])) return;   // exclude Distru→Nabis transfer
       const status=(r['Status']||'').trim();
-      if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
+      if(status!=='Delivered' && status!=='Completed') return;   // realized (delivered) sales only
       const cust=(r['Customer']||'').trim()||'Unknown', so=(r['Order Number']||'').trim(), k=cust+'|'+so;
       const invNum=(r['Invoice Numbers']||'').trim();
       const accrual = parseDate(r['Delivery Date']) || invDateByNum[invNum] || invDateBySO[so] || parseDate(r['Order Date']);   // delivery date = when sold
@@ -1510,20 +1515,22 @@ function buildConcEvents(){
     });
     Object.values(byso).forEach(e=>ev.push(e));
   }
-  /* Distru invoice discounts → one event per invoice, dated by the invoice's DELIVERY date */
+  /* Distru invoice discounts → one event per DELIVERED invoice, dated by its DELIVERY date */
   if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
     if(isNabisCust(r['Customer'])) return;
     const disc=Math.abs(num(r['Total Discounts'])); if(!disc) return;
     const invNum=(r['Invoice Number']||'').trim(), so=(r['Sales Order']||'').trim();
+    if(!isDelivered(invNum,so)) return;   // skip concessions on not-yet-delivered orders
     const d=delivByInv[invNum]||delivBySO[so]||parseDate(r['Invoice Date']);   // delivery date when known
     ev.push({c:(r['Customer']||'').trim()||'Unknown',s:'Distru',d:epoch(d),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:disc,creditMemos:0,ref:invNum});
   });
-  /* Distru credit memos → dated by the DELIVERY date of the invoice they offset (falls back to invoice/payment date) */
+  /* Distru credit memos → dated by the DELIVERY date of the (delivered) invoice they offset */
   if(FILES.distru_payments) FILES.distru_payments.data.forEach(r=>{
     if(isNabisCust(r['Company'])) return;
     if((r['Payment Method']||'').trim()!=='Credit') return;
     const amt=num(r['Amount']); if(!amt) return;
     const ref=(r['Reference']||'').trim();
+    if(!isDelivered(ref,ref)) return;   // skip credits against not-yet-delivered orders
     const d=delivByInv[ref] || delivBySO[ref] || invDateByNum[ref] || parseDate(r['Date']);
     ev.push({c:(r['Company']||'').trim()||'Unknown',s:'Distru',d:epoch(d),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:amt,ref:(ref||(r['Payment #']||'').trim())});
   });
@@ -1759,7 +1766,7 @@ function buildSkuEvents(){
   if(FILES.distru_items) FILES.distru_items.data.forEach(r=>{
     if(isNabisCust(r['Customer'])) return;   // exclude Distru→Nabis transfer
     const status=(r['Status']||'').trim();
-    if(!((r['Invoice Numbers']||'').trim() || status==='Delivered' || status==='Completed')) return;
+    if(status!=='Delivered' && status!=='Completed') return;   // only realized (delivered) sales — invoiced-but-Pending/Processing orders aren't sold yet
     const so=(r['Order Number']||'').trim(), invNum=(r['Invoice Numbers']||'').trim();
     const d=parseDate(r['Delivery Date'])||invDateByNum[invNum]||invDateBySO[so]||parseDate(r['Order Date']);   // bucket Distru sales by DELIVERY date (when sold), falling back to invoice/order date
     const qty=num(r['Quantity']), up=num(r['Order Item Price']);
