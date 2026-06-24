@@ -137,6 +137,20 @@
   .b4{background:#4a1418;color:#ff9aa0}
   .money{font-variant-numeric:tabular-nums}
   .neg{color:var(--muted)}
+  /* Customer Tiers */
+  .tier-badge{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap}
+  .tier-badge.t1{background:#123524;color:#7ee2a8}
+  .tier-badge.t2{background:#3a3413;color:#f4d873}
+  .tier-badge.t3{background:#2a2f3a;color:#aab3c2}
+  .tier-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:2px 0 18px}
+  .tier-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;border-top:3px solid var(--line)}
+  .tier-card.t1{border-top-color:#2ea66f} .tier-card.t2{border-top-color:#caa53a} .tier-card.t3{border-top-color:#5a6472}
+  .tier-card .tc-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .tier-card .tc-name{font-weight:800;font-size:15px}
+  .tier-card .tc-count{font-size:23px;font-weight:700}
+  .tier-card .tc-meta{color:var(--muted);font-size:12px;margin-top:3px}
+  .tier-card .tc-blurb{font-size:12px;color:var(--text);margin-top:11px;line-height:1.55;opacity:.92}
+  .tier-card .tc-range{color:var(--muted);font-size:11.5px;margin-top:9px}
   tr.detail td{background:#0c0e12;padding:0}
   .detailbox{padding:12px 18px}
   .detailbox table{font-size:12px}
@@ -292,6 +306,7 @@
       <div class="tab" data-tab="sku">Sales by Type</div>
       <div class="tab" data-tab="time">Sales Over Time</div>
       <div class="tab" data-tab="scorecard">Sales Scorecard</div>
+      <div class="tab" data-tab="tiers">Customer Tiers</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -527,6 +542,32 @@
       </div>
       <div class="tablewrap" id="sc-wrap"></div>
       <div class="notes" id="sc-note"></div>
+    </div>
+
+    <!-- CUSTOMER TIERS -->
+    <div id="view-tiers" class="hidden">
+      <div class="toolbar">
+        <select id="tier-months" title="Revenue lookback window">
+          <option value="3">Last 3 months</option>
+          <option value="1">Last month</option>
+          <option value="6">Last 6 months</option>
+          <option value="12">Last 12 months</option>
+        </select>
+        <label class="dt">Tier 1 ≥ $<input type="number" step="500" id="tier-t1" value="15000" style="width:90px" /></label>
+        <label class="dt">Tier 2 ≥ $<input type="number" step="500" id="tier-t2" value="7000" style="width:90px" /></label>
+        <input type="text" id="tier-search" placeholder="Search account…" />
+        <select id="tier-filter" title="Show tier">
+          <option value="">All tiers</option>
+          <option value="1">Tier 1 only</option>
+          <option value="2">Tier 2 only</option>
+          <option value="3">Tier 3 only</option>
+        </select>
+        <div class="grow"></div>
+        <button class="btn" id="tier-export">⬇ Export CSV</button>
+      </div>
+      <div class="tier-cards" id="tier-cards"></div>
+      <div class="tablewrap" id="tier-wrap"></div>
+      <div class="notes" id="tier-note"></div>
     </div>
   </div>
 </div>
@@ -2623,6 +2664,99 @@ $('#scm-body').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.
   const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeScModal(); });
 
+/* ============================ Customer Tiers ============================ */
+// Tier each account by trailing net revenue. Treatment per tier (editable here) — the team
+// uses these to decide PADs / displays / educations / samples.
+const TIER_DEFS=[
+  {n:1,cls:'t1',name:'Tier 1',blurb:'Best pricing · PADs · educations · displays / vinyl-wrapped · budtender samples'},
+  {n:2,cls:'t2',name:'Tier 2',blurb:'1 PAD / month · 1 education / quarter · simple display'},
+  {n:3,cls:'t3',name:'Tier 3',blurb:'1 PAD / 2 months · education after onboard or new-product launch · no display until they move up'},
+];
+let tierSort={key:'rev',dir:-1};
+const tierNorm=s=>String(s||'').replace(/\s*\[[^\]]*\]\s*$/,'').replace(/[^a-z0-9]+/gi,' ').trim().toLowerCase();
+function tierData(){
+  const months=Math.max(1,+(($('#tier-months')||{}).value||3));
+  const end=new Date(); end.setHours(23,59,59,999);
+  const start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0);
+  const t1=Math.max(0,+(($('#tier-t1')||{}).value||15000)), t2=Math.max(0,+(($('#tier-t2')||{}).value||7000));
+  // net revenue per account from CONC_EVENTS within the window (QuickBooks history naturally
+  // falls outside a trailing-months window, so it's excluded without special-casing)
+  const acc={};
+  (CONC_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
+    const name=(e.c||'Unknown').trim()||'Unknown';
+    const g=acc[name]||(acc[name]={name,src:new Set(),rev:0,orders:new Set(),last:null});
+    g.rev+=eventBilling(e); g.src.add(e.s);
+    if(e.ref) g.orders.add(e.s+'|'+e.ref); if(!g.last||dt>g.last) g.last=dt; });
+  // AR (outstanding + overdue) by normalized account name — a best-effort payment signal
+  const ar={};
+  (INVOICES||[]).forEach(x=>{ if(!(x.outstanding>0.005)) return; const k=tierNorm(x.dispensary);
+    const a=ar[k]||(ar[k]={out:0,over:0}); a.out+=x.outstanding; if(x.dpd>0) a.over+=x.outstanding; });
+  const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
+    const tier=g.rev>=t1?1:g.rev>=t2?2:3, a=ar[tierNorm(g.name)]||{out:0,over:0};
+    return {name:g.name,source:[...g.src].sort().join(' + '),brand:brandOf(g.name),rev:g.rev,
+      orders:g.orders.size,last:g.last?g.last.getTime():null,arOut:a.out,arOver:a.over,tier}; });
+  return {rows,start,end,months,t1,t2};
+}
+function renderTiers(){
+  const wrap=$('#tier-wrap'), cards=$('#tier-cards'), note=$('#tier-note');
+  const {rows,start,end,months,t1,t2}=tierData();
+  if(!rows.length){ cards.innerHTML=''; note.innerHTML='';
+    wrap.innerHTML=`<div class="empty">No sales in the last ${months} month${months>1?'s':''} yet — upload sales files or wait for the team report to load.</div>`; return; }
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—';
+  cards.innerHTML=TIER_DEFS.map(d=>{ const tr=rows.filter(r=>r.tier===d.n), rev=tr.reduce((s,r)=>s+r.rev,0);
+    const range=d.n===1?`≥ ${fmt$(t1)}`:d.n===2?`${fmt$(t2)} – ${fmt$(t1)}`:`< ${fmt$(t2)}`;
+    return `<div class="tier-card ${d.cls}"><div class="tc-head"><span class="tc-name">${d.name}</span><span class="tc-count">${tr.length}</span></div>
+      <div class="tc-meta">${fmt$(rev)} over ${months} mo · ${range}</div>
+      <div class="tc-blurb">${esc(d.blurb)}</div></div>`; }).join('');
+  const q=(($('#tier-search')||{}).value||'').trim().toLowerCase(), tf=($('#tier-filter')||{}).value||'';
+  let view=rows.filter(r=>(!tf||r.tier===+tf)&&(!q||r.name.toLowerCase().includes(q)||(r.brand||'').toLowerCase().includes(q)));
+  const k=tierSort.key,dir=tierSort.dir;
+  view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
+  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['brand','Brand',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['last','Last order',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
+  const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
+  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}">
+    <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
+    <td>${esc(r.name)}</td>
+    <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
+    <td>${esc(r.brand||'—')}</td>
+    <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
+    <td class="num">${r.orders}</td>
+    <td class="num">${fmtD(r.last)}</td>
+    <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
+    <td class="num money">${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
+  </tr>`).join('');
+  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,orders:0,out:0,over:0});
+  wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="4">${view.length} account${view.length!==1?'s':''}</td>
+    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td><td></td>
+    <td class="num money">${fmt$(tot.out)}</td><td class="num money">${tot.over?fmt$(tot.over):'—'}</td></tr></tfoot></table>`;
+  wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
+    if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:(key==='name'||key==='brand'||key==='source')?1:-1}; renderTiers(); });
+  const isoD=dt=>`${dt.getMonth()+1}/${dt.getDate()}/${String(dt.getFullYear()).slice(2)}`;
+  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click an account's <b>Revenue</b> for the orders behind it. An account selling through both Nabis and Distru under different names will appear as two rows.`;
+}
+function tierDrill(name){
+  const {start,end}=tierData();
+  const byRef={};
+  (CONC_EVENTS||[]).forEach(e=>{ if(((e.c||'Unknown').trim()||'Unknown')!==name) return; const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
+    const amt=eventBilling(e); if(Math.abs(amt)<0.005) return; const key=e.s+'|'+(e.ref||'(order)');
+    const g=byRef[key]||(byRef[key]={ref:e.ref||'(order)',src:e.s,date:e.d,amt:0}); g.amt+=amt; if(e.d&&(!g.date||e.d<g.date))g.date=e.d; });
+  const list=Object.values(byRef).filter(x=>Math.abs(x.amt)>0.005).sort((a,b)=>(a.date||0)-(b.date||0));
+  const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  openScModal({title:`${name} — orders`, sub:`Net sales in the tiering window · ${list.length} orders`,
+    columns:[{l:'Order / Inv #'},{l:'Source'},{l:'Date'},{l:'Net',num:true,money:true}],
+    rows:list.map(x=>[x.ref,x.src,fmtDt(x.date),x.amt]), totalLabel:'Total', total:list.reduce((s,x)=>s+x.amt,0)});
+}
+$('#tier-wrap').onclick=(ev)=>{ const td=ev.target.closest?ev.target.closest('td.disc-link'):null; if(!td) return;
+  const tr=td.closest('tr.parent'); if(tr) tierDrill(tr.getAttribute('data-name')); };
+['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
+$('#tier-export').onclick=()=>{
+  const {rows,months}=tierData();
+  const out=[['Tier','Account','Source','Brand',`Revenue (${months}mo)`,'Orders','Last order','AR Outstanding','Overdue']];
+  rows.slice().sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.brand,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'',r.arOut.toFixed(2),r.arOver.toFixed(2)]));
+  downloadCSV('customer-tiers.csv',out);
+};
+
 /* ============================ CSV export ============================ */
 function downloadCSV(name,rows){
   const csv=rows.map(r=>r.map(c=>{ c=c==null?'':String(c); return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c; }).join(',')).join('\r\n');
@@ -2921,6 +3055,8 @@ function activateTab(tab, fromHash){
   if(tab==='scorecard') renderScorecard();
   $('#view-time').classList.toggle('hidden',tab!=='time');
   if(tab==='time') renderTimeSeries();
+  $('#view-tiers').classList.toggle('hidden',tab!=='tiers');
+  if(tab==='tiers') renderTiers();
   $('#conc-controls').classList.toggle('hidden', tab!=='cd-disp' && tab!=='cd-brand');
   if(!fromHash){ try{ history.replaceState(null,'','#'+tab); }catch(e){ location.hash=tab; } }
   return true;
