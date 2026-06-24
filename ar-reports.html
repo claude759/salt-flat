@@ -125,7 +125,7 @@
   th.num,td.num{text-align:right}
   tbody tr:hover{background:#1b1f29}
   tr.parent{cursor:pointer}
-  td .src{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px}
+  td .src{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px;background:var(--panel2);color:var(--muted)}
   td .src.Distru{background:#15324f;color:#9cc8ff}
   td .src.Nabis{background:#4a2c18;color:#ffbf9c}
   td .src.QuickBooks{background:#173a2b;color:#7fe0b0}
@@ -2678,15 +2678,15 @@ function tierData(){
   const months=Math.max(1,+(($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
   const start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0);
-  const t1=Math.max(0,+(($('#tier-t1')||{}).value||15000)), t2=Math.max(0,+(($('#tier-t2')||{}).value||7000));
-  // net revenue per account from CONC_EVENTS within the window (QuickBooks history naturally
-  // falls outside a trailing-months window, so it's excluded without special-casing)
+  const t1=Math.max(0,+(($('#tier-t1')||{}).value||15000)), t2=Math.min(t1,Math.max(0,+(($('#tier-t2')||{}).value||7000)));   // clamp t2 ≤ t1 so Tier 2 stays reachable
+  // net revenue per account from current Distru/Nabis sales in the window. QuickBooks history is
+  // excluded — tiers reflect current selling behavior (and QBO overlaps the live data pre-2026).
   const acc={};
-  (CONC_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
     const name=(e.c||'Unknown').trim()||'Unknown';
-    const g=acc[name]||(acc[name]={name,src:new Set(),rev:0,orders:new Set(),last:null});
-    g.rev+=eventBilling(e); g.src.add(e.s);
-    if(e.ref) g.orders.add(e.s+'|'+e.ref); if(!g.last||dt>g.last) g.last=dt; });
+    const g=acc[name]||(acc[name]={name,src:new Set(),rev:0,orders:{},last:null});
+    const amt=eventBilling(e); g.rev+=amt; g.src.add(e.s);
+    if(e.ref){ const rk=e.s+'|'+e.ref; g.orders[rk]=(g.orders[rk]||0)+amt; } if(!g.last||dt>g.last) g.last=dt; });
   // AR (outstanding + overdue) by normalized account name — a best-effort payment signal
   const ar={};
   (INVOICES||[]).forEach(x=>{ if(!(x.outstanding>0.005)) return; const k=tierNorm(x.dispensary);
@@ -2694,8 +2694,13 @@ function tierData(){
   const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
     const tier=g.rev>=t1?1:g.rev>=t2?2:3, a=ar[tierNorm(g.name)]||{out:0,over:0};
     return {name:g.name,source:[...g.src].sort().join(' + '),brand:brandOf(g.name),rev:g.rev,
-      orders:g.orders.size,last:g.last?g.last.getTime():null,arOut:a.out,arOver:a.over,tier}; });
+      orders:Object.values(g.orders).filter(v=>Math.abs(v)>0.005).length,last:g.last?g.last.getTime():null,arOut:a.out,arOver:a.over,tier}; });
   return {rows,start,end,months,t1,t2};
+}
+// Search + tier-filter predicate, shared by the table render and the CSV export (WYSIWYG).
+function tierFilter(rows){
+  const q=(($('#tier-search')||{}).value||'').trim().toLowerCase(), tf=($('#tier-filter')||{}).value||'';
+  return rows.filter(r=>(!tf||r.tier===+tf)&&(!q||r.name.toLowerCase().includes(q)||(r.brand||'').toLowerCase().includes(q)));
 }
 function renderTiers(){
   const wrap=$('#tier-wrap'), cards=$('#tier-cards'), note=$('#tier-note');
@@ -2708,8 +2713,7 @@ function renderTiers(){
     return `<div class="tier-card ${d.cls}"><div class="tc-head"><span class="tc-name">${d.name}</span><span class="tc-count">${tr.length}</span></div>
       <div class="tc-meta">${fmt$(rev)} over ${months} mo · ${range}</div>
       <div class="tc-blurb">${esc(d.blurb)}</div></div>`; }).join('');
-  const q=(($('#tier-search')||{}).value||'').trim().toLowerCase(), tf=($('#tier-filter')||{}).value||'';
-  let view=rows.filter(r=>(!tf||r.tier===+tf)&&(!q||r.name.toLowerCase().includes(q)||(r.brand||'').toLowerCase().includes(q)));
+  let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
   const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['brand','Brand',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['last','Last order',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
@@ -2738,7 +2742,7 @@ function renderTiers(){
 function tierDrill(name){
   const {start,end}=tierData();
   const byRef={};
-  (CONC_EVENTS||[]).forEach(e=>{ if(((e.c||'Unknown').trim()||'Unknown')!==name) return; const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; if(((e.c||'Unknown').trim()||'Unknown')!==name) return; const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
     const amt=eventBilling(e); if(Math.abs(amt)<0.005) return; const key=e.s+'|'+(e.ref||'(order)');
     const g=byRef[key]||(byRef[key]={ref:e.ref||'(order)',src:e.s,date:e.d,amt:0}); g.amt+=amt; if(e.d&&(!g.date||e.d<g.date))g.date=e.d; });
   const list=Object.values(byRef).filter(x=>Math.abs(x.amt)>0.005).sort((a,b)=>(a.date||0)-(b.date||0));
@@ -2747,13 +2751,13 @@ function tierDrill(name){
     columns:[{l:'Order / Inv #'},{l:'Source'},{l:'Date'},{l:'Net',num:true,money:true}],
     rows:list.map(x=>[x.ref,x.src,fmtDt(x.date),x.amt]), totalLabel:'Total', total:list.reduce((s,x)=>s+x.amt,0)});
 }
-$('#tier-wrap').onclick=(ev)=>{ const td=ev.target.closest?ev.target.closest('td.disc-link'):null; if(!td) return;
-  const tr=td.closest('tr.parent'); if(tr) tierDrill(tr.getAttribute('data-name')); };
+$('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#tier-wrap').contains(tr)) return;
+  tierDrill(tr.getAttribute('data-name')); };   // whole row opens the account's orders (matches the pointer cursor)
 ['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
 $('#tier-export').onclick=()=>{
   const {rows,months}=tierData();
   const out=[['Tier','Account','Source','Brand',`Revenue (${months}mo)`,'Orders','Last order','AR Outstanding','Overdue']];
-  rows.slice().sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.brand,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'',r.arOut.toFixed(2),r.arOver.toFixed(2)]));
+  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.brand,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'',r.arOut.toFixed(2),r.arOver.toFixed(2)]));
   downloadCSV('customer-tiers.csv',out);
 };
 
