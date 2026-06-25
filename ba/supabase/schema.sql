@@ -14,6 +14,7 @@ create extension if not exists pgcrypto;
 create table if not exists public.profiles (
   id                   uuid primary key references auth.users(id) on delete cascade,
   role                 text not null default 'ba' check (role in ('ba','admin')),
+  region               text check (region in ('CA','FL','NY')),  -- BA's state; null for admins
   full_name            text,
   email                text,
   phone                text,
@@ -33,7 +34,7 @@ create table if not exists public.app_settings (
   id                int primary key default 1 check (id = 1),
   mileage_rate      numeric(6,3) not null default 0.725,   -- 2026 IRS business rate
   period_length_days int not null default 14,              -- bi-weekly
-  period_anchor     date not null default date '2026-01-05', -- a Monday: period boundaries derive from this
+  period_anchor     date not null default date '2026-06-20', -- pay-period start; windows derive from this
   updated_at        timestamptz not null default now()
 );
 insert into public.app_settings (id) values (1) on conflict (id) do nothing;

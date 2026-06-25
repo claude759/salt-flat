@@ -17,6 +17,7 @@ Deno.serve(async (req) => {
     const password = String(b.password ?? "");
     const full_name = (b.full_name ?? "").trim();
     const role = b.role === "admin" ? "admin" : "ba";
+    const region = ["CA", "FL", "NY"].includes(b.region) ? b.region : null;
     if (!email || password.length < 8) {
       return json({ ok: false, error: "bad_input", message: "Email and an 8+ char temp password are required." }, 400);
     }
@@ -40,6 +41,7 @@ Deno.serve(async (req) => {
       email,
       full_name: full_name || email,
       role,
+      region,
       phone: b.phone ?? null,
       base_address: b.base_address ?? null,
       must_change_password: true,

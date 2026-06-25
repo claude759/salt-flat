@@ -161,8 +161,9 @@ if (CONFIGURED) {
 const state = {
   session: null, profile: null, settings: null, loadError: null,
   period: null, periods: [], dispensaries: [],
-  baTab: 'home', adminTab: 'dash',
+  baTab: 'home', adminTab: 'dash', adminRegion: 'all',
 };
+const REGIONS = ['CA','FL','NY'];
 
 /* ─────────────────────────── helpers ─────────────────────────── */
 const $ = (s, r=document) => r.querySelector(s);
@@ -716,11 +717,17 @@ async function adminDash(m){
   T.forEach(x=>{ if(byBa[x.ba_id]) byBa[x.ba_id].mile+=Number(x.amount||0); });
   E.forEach(x=>{ if(byBa[x.ba_id]) byBa[x.ba_id].exp +=Number(x.amount||0); });
   S.forEach(s=>{ if(byBa[s.ba_id]) byBa[s.ba_id].status=s.status; });
-  const rows=Object.values(byBa);
+  let rows=Object.values(byBa);
+  if(state.adminRegion!=='all') rows=rows.filter(r=>r.p.region===state.adminRegion);
   const grand=rows.reduce((a,r)=>a+r.mile+r.exp,0);
   m.innerHTML=`
     <div class="card">
       <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>adminDash(m))}</div>
+      <div class="row" style="margin-top:8px"><div class="small muted grow">Region</div>
+        <select id="regSel">
+          <option value="all" ${state.adminRegion==='all'?'selected':''}>All states</option>
+          ${REGIONS.map(r=>`<option value="${r}" ${state.adminRegion===r?'selected':''}>${r}</option>`).join('')}
+        </select></div>
       <div class="totbar" style="margin-top:12px">
         <div class="tot"><div class="k">BAs</div><div class="v">${rows.length}</div></div>
         <div class="tot"><div class="k">Submitted</div><div class="v">${rows.filter(r=>r.status==='submitted').length}</div></div>
@@ -735,10 +742,12 @@ async function adminDash(m){
           <div class="grow"><div class="t">${esc(r.p.full_name||r.p.email)}</div>
             <div class="s">${money(r.mile)} mileage · ${money(r.exp)} expenses</div></div>
           <div class="amt">${money(r.mile+r.exp)}</div>
+          ${r.p.region?`<span class="pill">${r.p.region}</span>`:''}
           <span class="badge ${r.status}">${r.status}</span>
-        </div>`).join(''):'<p class="muted small">No BAs yet — add them in Settings.</p>'}
+        </div>`).join(''):`<p class="muted small">No BAs${state.adminRegion!=='all'?' in '+state.adminRegion:''} yet — add them in Settings.</p>`}
     </div>`;
   m.querySelectorAll('[data-ba]').forEach(el=>el.onclick=()=>adminBaDetail(el.dataset.ba));
+  const rs=$('#regSel'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminDash(m); };
 }
 
 async function adminBaDetail(baId){
@@ -879,7 +888,7 @@ async function adminSettings(m){
       <div class="row"><h3 class="grow">Brand ambassadors</h3><button class="btn sm primary" id="addBa">+ Add</button></div>
       ${(bas||[]).map(b=>`<div class="item">
         <div class="ic">${(b.full_name||'?').slice(0,1).toUpperCase()}</div>
-        <div class="grow"><div class="t">${esc(b.full_name||b.email)} ${b.role==='admin'?'<span class="pill admin">admin</span>':''}</div>
+        <div class="grow"><div class="t">${esc(b.full_name||b.email)} ${b.role==='admin'?'<span class="pill admin">admin</span>':(b.region?`<span class="pill">${esc(b.region)} BA</span>`:'')}</div>
           <div class="s">${esc(b.email)}${b.active?'':' · inactive'}</div></div>
         ${b.id!==state.session.user.id?`<button class="btn sm ghost" data-toggle="${b.id}" data-active="${b.active}">${b.active?'Deactivate':'Activate'}</button>`:''}
       </div>`).join('')}
@@ -916,16 +925,23 @@ function addBaSheet(){
     <label class="fl">Phone (optional)</label><input id="nPhone" inputmode="tel">
     <label class="fl">Home / base address (optional)</label><textarea id="nAddr"></textarea>
     <label class="fl">Temporary password (8+)</label><input id="nPw" value="${'wt-'+Math.random().toString(36).slice(2,8)}">
-    <label class="fl">Role</label><select id="nRole"><option value="ba">Brand ambassador</option><option value="admin">Admin</option></select>
+    <label class="fl">Role</label><select id="nRole">
+      <option value="ba|CA">CA Brand Ambassador</option>
+      <option value="ba|FL">FL Brand Ambassador</option>
+      <option value="ba|NY">NY Brand Ambassador</option>
+      <option value="admin|">Admin</option>
+    </select>
     <button class="btn primary block" id="nSave" style="margin-top:14px">Create account</button>
     <button class="btn ghost block" id="nCancel" style="margin-top:8px">Cancel</button>`);
   $('#nCancel').onclick=closeSheet;
   $('#nSave').onclick=async ()=>{
     const email=$('#nEmail').value.trim(), password=$('#nPw').value;
     if(!email||password.length<8) return toast('Email + 8-char password required','err');
+    const [role, region] = $('#nRole').value.split('|');
     const btn=$('#nSave'); busy(btn,true);
     try{
-      await callFn('admin-create-ba',{email,password,full_name:$('#nName').value,phone:$('#nPhone').value,base_address:$('#nAddr').value,role:$('#nRole').value});
+      const res=await callFn('admin-create-ba',{email,password,full_name:$('#nName').value,phone:$('#nPhone').value,base_address:$('#nAddr').value,role,region:region||null});
+      if(region && res?.user_id){ await supabase.from('profiles').update({region}).eq('id',res.user_id); }
       toast('Account created','ok'); closeSheet();
       openSheet(`<h3>Account created ✓</h3><p class="small">Give them these credentials — they’ll set their own password on first sign-in:</p>
         <div class="card"><div class="small">Email</div><b>${esc(email)}</b><div class="small" style="margin-top:8px">Temp password</div><b>${esc(password)}</b></div>
