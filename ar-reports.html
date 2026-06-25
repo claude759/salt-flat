@@ -3167,11 +3167,16 @@ function momData(){
     const mk=dt.getFullYear()*12+dt.getMonth(); if(mk<minK||mk>maxK) return;
     const fk=fmtKeyOf(e.fmt), fm=acc[e.src][fk]||(acc[e.src][fk]={}), cell=fm[mk]||(fm[mk]={sales:0,units:0});
     cell.sales+=e.rev||0; cell.units+=(e.u||0)+(e.su||0); });   // units incl. free samples (matches Sales by Type)
-  return {months, acc, SRCS};
+  // Order/invoice-level discounts + credit memos per source per month (subtracted to get net sales).
+  const dc={}; SRCS.forEach(s=>dc[s]={});
+  (CONC_EVENTS||[]).forEach(e=>{ if(dc[e.s]===undefined) return; const dt=e.d?new Date(e.d):null; if(!dt) return;
+    const mk=dt.getFullYear()*12+dt.getMonth(); if(mk<minK||mk>maxK) return;
+    dc[e.s][mk]=(dc[e.s][mk]||0)+(e.invoiceDisc||0)+(e.creditMemos||0); });
+  return {months, acc, dc, SRCS};
 }
 function renderMom(){
   const wrap=$('#mom-wrap'), note=$('#mom-note');
-  const {months, acc, SRCS}=momData();
+  const {months, acc, dc, SRCS}=momData();
   const isSales=momMetric==='sales';
   const val=c=> c? (isSales?c.sales:c.units) : 0;
   const fmtCell=v=> v ? (isSales?fmt$(v):Math.round(v).toLocaleString()) : '<span class="neg">—</span>';
@@ -3181,25 +3186,32 @@ function renderMom(){
     const fmts=MOM_FMT_ORDER.filter(fk=>acc[src][fk] && months.some(m=>val(acc[src][fk][m.key])>0.0001));
     if(!fmts.length) return;
     body+=`<tr class="mom-grp"><td>${esc(src)}</td>${months.map(()=>'<td></td>').join('')}<td></td></tr>`;
-    const srcTot=months.map(()=>0); let srcGrand=0;
+    const srcTot=months.map(()=>0);   // running net subtotal (gross format sales − discounts/credits, for $)
     fmts.forEach(fk=>{
       const cells=months.map(m=>val(acc[src][fk][m.key])); const rowMax=Math.max(0.0001,...cells);
-      const rt=cells.reduce((a,b)=>a+b,0); cells.forEach((v,i)=>srcTot[i]+=v); srcGrand+=rt;
+      const rt=cells.reduce((a,b)=>a+b,0); cells.forEach((v,i)=>srcTot[i]+=v);
       const tds=cells.map(v=>{ const bg=v>0?` style="background:rgba(124,92,255,${(0.05+0.25*(v/rowMax)).toFixed(3)})"`:''; return `<td class="num money"${bg}>${fmtCell(v)}</td>`; }).join('');
       body+=`<tr><td class="mom-prod">${esc(SKU_DISP[fk]||fk)}</td>${tds}<td class="num money"><b>${fmtCell(rt)}</b></td></tr>`;
     });
+    // Discounts/credits row ($ only) → makes the subtotal NET (matches Sales by Type's "Actual Total")
+    if(isSales){ const dcells=months.map(m=>(dc[src]||{})[m.key]||0);
+      if(dcells.some(v=>Math.abs(v)>0.005)){ const dt=dcells.reduce((a,b)=>a+b,0);
+        body+=`<tr><td class="mom-prod">Discounts / credits</td>${dcells.map(v=>`<td class="num money neg">${v?('-'+fmt$(v)):'—'}</td>`).join('')}<td class="num money neg"><b>${dt?('-'+fmt$(dt)):'—'}</b></td></tr>`;
+        months.forEach((m,i)=>srcTot[i]-=dcells[i]); }
+    }
+    const srcGrand=srcTot.reduce((a,b)=>a+b,0);
     months.forEach((m,i)=>colTot[i]+=srcTot[i]); grand+=srcGrand;
-    body+=`<tr class="mom-sub"><td>${esc(src)} total</td>${srcTot.map(v=>`<td class="num money">${fmtCell(v)}</td>`).join('')}<td class="num money">${fmtCell(srcGrand)}</td></tr>`;
+    body+=`<tr class="mom-sub"><td>${esc(src)} ${isSales?'net total':'total'}</td>${srcTot.map(v=>`<td class="num money">${fmtCell(v)}</td>`).join('')}<td class="num money">${fmtCell(srcGrand)}</td></tr>`;
   });
   const thead=`<tr><th>Product</th>${months.map(m=>`<th class="num">${esc(m.label)}</th>`).join('')}<th class="num">${months.length}-mo total</th></tr>`;
-  const foot=`<tr class="totals"><td>Total ${isSales?'sales':'units'}</td>${colTot.map(v=>`<td class="num money">${fmtCell(v)}</td>`).join('')}<td class="num money"><b>${fmtCell(grand)}</b></td></tr>`;
+  const foot=`<tr class="totals"><td>Total ${isSales?'net sales':'units'}</td>${colTot.map(v=>`<td class="num money">${fmtCell(v)}</td>`).join('')}<td class="num money"><b>${fmtCell(grand)}</b></td></tr>`;
   wrap.innerHTML=`<table id="mom-table"><thead>${thead}</thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`;
-  note.innerHTML=`Each column is a calendar month; rows are product types grouped by channel. <b>${isSales?'Sales $':'Units'}</b> = ${isSales?'actualized (billed) revenue':'units sold, including free-sample units'}. Cell shading is relative to each row's peak month. Toggle the metric above; change the window at left. The current month is partial.`;
+  note.innerHTML=`Each column is a calendar month; rows are product types grouped by channel. <b>${isSales?'Sales $':'Units'}</b> = ${isSales?'actualized (billed) revenue; the per-channel total is NET (less order discounts + credit memos), matching the Sales by Type "Total for week"':'units sold, including free-sample units'}. Cell shading is relative to each row's peak month. Toggle the metric above; change the window at left. The current month is partial.`;
 }
 function setMomMetric(m){ momMetric=m; document.querySelectorAll('#mom-toggle button').forEach(b=>b.classList.toggle('on',b.dataset.mom===m)); renderMom(); }
 document.querySelectorAll('#mom-toggle button').forEach(b=>b.onclick=()=>setMomMetric(b.dataset.mom));
 $('#mom-months').addEventListener('change',renderMom);
-$('#mom-export').onclick=()=>{ const {months,acc,SRCS}=momData(); const isSales=momMetric==='sales';
+$('#mom-export').onclick=()=>{ const {months,acc,dc,SRCS}=momData(); const isSales=momMetric==='sales';
   const fnum=v=>isSales?(+v).toFixed(2):String(Math.round(v));
   const valOf=c=>c?(isSales?c.sales:c.units):0;
   const out=[['Channel','Product',...months.map(m=>m.label),`${months.length}-mo total`]];
@@ -3207,14 +3219,17 @@ $('#mom-export').onclick=()=>{ const {months,acc,SRCS}=momData(); const isSales=
   SRCS.forEach(src=>{
     const fmts=MOM_FMT_ORDER.filter(fk=>acc[src][fk] && months.some(m=>valOf(acc[src][fk][m.key])>0.0001));
     if(!fmts.length) return;
-    const sub=months.map(()=>0); let subTot=0;
+    const sub=months.map(()=>0);
     fmts.forEach(fk=>{ const cells=months.map(m=>valOf(acc[src][fk][m.key])); const tot=cells.reduce((a,b)=>a+b,0);
-      cells.forEach((v,i)=>sub[i]+=v); subTot+=tot;
+      cells.forEach((v,i)=>sub[i]+=v);
       out.push([src, SKU_DISP[fk]||fk, ...cells.map(fnum), fnum(tot)]); });
-    out.push([src, src+' total', ...sub.map(fnum), fnum(subTot)]);
+    if(isSales){ const dcells=months.map(m=>(dc[src]||{})[m.key]||0);
+      if(dcells.some(v=>Math.abs(v)>0.005)){ out.push([src,'Discounts/Credits',...dcells.map(v=>(-v).toFixed(2)),(-dcells.reduce((a,b)=>a+b,0)).toFixed(2)]); months.forEach((m,i)=>sub[i]-=dcells[i]); } }
+    const subTot=sub.reduce((a,b)=>a+b,0);
+    out.push([src, src+(isSales?' net total':' total'), ...sub.map(fnum), fnum(subTot)]);
     months.forEach((m,i)=>grand[i]+=sub[i]); grandTot+=subTot;
   });
-  out.push(['','Total '+(isSales?'sales':'units'), ...grand.map(fnum), fnum(grandTot)]);
+  out.push(['','Total '+(isSales?'net sales':'units'), ...grand.map(fnum), fnum(grandTot)]);
   downloadCSV('month-over-month.csv',out); };
 
 /* ============================ Wiring ============================ */
