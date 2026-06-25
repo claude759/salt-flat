@@ -1471,9 +1471,10 @@ let CONC_EVENTS=[];     // per-order date-stamped events (shareable; date range 
 function eventsToWire(evs){ return (evs||[]).map(e=>{ const f=[]; CONC_WIRE_KEYS.forEach(k=>{const c=(e.fmt&&e.fmt[k])||{};f.push(c.paidU||0,c.bill||0,c.sampU||0);});
   const o={c:e.c,s:e.s,d:e.d,f,p:e.pouchU||0,pb:e.pouchBill||0,sb:e.sampBill||0,ou:e.otherU||0,ob:e.otherBill||0,id:e.invoiceDisc||0,cr:e.creditMemos||0,n:e.ref||''};
   if(e.paidLate!=null) o.pl=e.paidLate;   // days late paid (omitted when unpaid / unknown)
+  if(e.iv!=null) o.iv=e.iv;                // invoice date (Distru), for the drill-downs
   return o; }); }
 function eventsFromWire(arr){ return (arr||[]).map(w=>{ const fmt={}; CONC_WIRE_KEYS.forEach((k,i)=>fmt[k]={paidU:(w.f||[])[i*3]||0,bill:(w.f||[])[i*3+1]||0,sampU:(w.f||[])[i*3+2]||0});
-  return {c:w.c,s:w.s,d:w.d,fmt,pouchU:w.p||0,pouchBill:w.pb||0,sampBill:w.sb||0,otherU:w.ou||0,otherBill:w.ob||0,invoiceDisc:w.id||0,creditMemos:w.cr||0,ref:w.n||'',paidLate:(w.pl==null?null:w.pl)}; }); }
+  return {c:w.c,s:w.s,d:w.d,fmt,pouchU:w.p||0,pouchBill:w.pb||0,sampBill:w.sb||0,otherU:w.ou||0,otherBill:w.ob||0,invoiceDisc:w.id||0,creditMemos:w.cr||0,ref:w.n||'',paidLate:(w.pl==null?null:w.pl),iv:(w.iv==null?null:w.iv)}; }); }
 let CONC_META=null;     // {start,end,assumptions,builtAt}
 let cdSort={key:'totalConc',dir:-1}, cbSort={key:'totalConc',dir:-1};
 const CONC_FORMATS=[
@@ -1594,7 +1595,7 @@ function buildConcEvents(){
       const cust=(r['Customer']||'').trim()||'Unknown', so=(r['Order Number']||'').trim(), k=cust+'|'+so;
       const invNum=(r['Invoice Numbers']||'').trim();
       const accrual = parseDate(r['Delivery Date']) || invDateByNum[invNum] || invDateBySO[so] || parseDate(r['Order Date']);   // delivery date = when sold
-      const e=byso[k]||(byso[k]={c:cust,s:'Distru',d:epoch(accrual),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0,ref:(invNum||so),paidLate:daysLatePaid(distruPaidByInv[invNum],distruDueByInv[invNum])});
+      const e=byso[k]||(byso[k]={c:cust,s:'Distru',d:epoch(accrual),fmt:emptyFmt(),pouchU:0,pouchBill:0,sampBill:0,otherU:0,otherBill:0,invoiceDisc:0,creditMemos:0,ref:(invNum||so),paidLate:daysLatePaid(distruPaidByInv[invNum],distruDueByInv[invNum]),iv:epoch(invDateByNum[invNum]||invDateBySO[so])});
       const qty=num(r['Quantity']), up=num(r['Order Item Price']), bill=up*qty, fk=distruFmt(r['Subcategory']);
       if(fk==='pouch'){ e.pouchU+=qty; e.pouchBill+=bill; return; }
       if(!fk){ e.otherU+=qty; e.otherBill+=bill; return; }
@@ -2284,22 +2285,27 @@ function computeOnHandValue(){
 function projectedDetail(monday){
   const weekEnd=new Date(monday); weekEnd.setDate(monday.getDate()+6); weekEnd.setHours(23,59,59,999);
   let nabis=null, distru=null;
+  // Distru invoice-date lookup (invoice #/sales order → invoice date) so the drill can show it.
+  const invDateByNum={}, invDateBySO={};
+  if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{ const d=parseDate(r['Invoice Date']);
+    const n=(r['Invoice Number']||'').trim(), so=(r['Sales Order']||'').trim(); if(n&&d) invDateByNum[n]=d.getTime(); if(so&&d) invDateBySO[so]=d.getTime(); });
   // Each order also collects its line items (aggregated by SKU) so the drill-down can expand an
   // order to a Product/Units/Price/Line-Total table that sums back to the order's projected amount.
   const addItem=(g,sku,product,qty,lineTotal)=>{ const k=(sku||product||'(item)');
     const it=g.items[k]||(g.items[k]={sku:sku||'',product:product||sku||'',qty:0,lineTotal:0});
     it.qty+=qty||0; it.lineTotal+=lineTotal||0; };
   const finish=agg=>Object.values(agg).filter(x=>Math.abs(x.amount)>0.005)
-    .map(x=>({ref:x.ref,customer:x.customer,date:x.date,amount:x.amount,
+    .map(x=>({ref:x.ref,customer:x.customer,date:x.date,invDate:(x.invDate!=null?x.invDate:null),amount:x.amount,
       items:Object.values(x.items).filter(it=>Math.abs(it.lineTotal)>0.005||it.qty).sort((a,b)=>b.lineTotal-a.lineTotal)}))
-    .sort((a,b)=>b.amount-a.amount);
+    .sort((a,b)=>(a.date||Infinity)-(b.date||Infinity) || b.amount-a.amount);   // by delivery date, then $
   if(FILES.distru_items){ const agg={};
     FILES.distru_items.data.forEach(r=>{
       if(isNabisCust(r['Customer'])) return;   // all orders scheduled this week (delivered + pending)
       const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      const invNum=(r['Invoice Numbers']||'').trim(), so=(r['Order Number']||'').trim();
       const ref=(r['Order Number']||r['Sales Order']||r['Invoice Number']||'').trim()||'(order)';
       const amt=num(r['Quantity'])*num(r['Order Item Price']);
-      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),amount:0,items:{}}); g.amount+=amt;
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),invDate:(invDateByNum[invNum]||invDateBySO[so]||null),amount:0,items:{}}); g.amount+=amt;
       addItem(g, skuClean(r['Product SKU']||r['Product']), skuClean(r['Product']||r['Product SKU']), num(r['Quantity']), amt);
     });
     distru=finish(agg);
@@ -2540,7 +2546,7 @@ function buildScDetail(){
   const pd=projectedDetail(currentMon);
   // Slim each projected order for the shared payload: short item keys (s/p/q/lt) keep the
   // line-item drill-down available to team viewers without bloating the published JSON.
-  const slim=list=>(list||[]).map(o=>({ref:o.ref,customer:o.customer,date:o.date,amount:o.amount,
+  const slim=list=>(list||[]).map(o=>({ref:o.ref,customer:o.customer,date:o.date,iv:(o.invDate!=null?o.invDate:null),amount:o.amount,
     it:(o.items||[]).map(i=>({s:i.sku,p:i.product,q:i.qty,lt:i.lineTotal}))}));
   // date = the week this detail belongs to, so the drill-down stays clickable on the right row
   // even after the week rolls over and is no longer the "live" row.
@@ -2559,10 +2565,10 @@ function scDrill(dateStr, col){
   const events=(a,b,src)=>{ const out=[];
     (CONC_EVENTS||[]).forEach(e=>{ const dt=e.d?new Date(e.d):null; if(!dt||dt<a||dt>b) return;
       if(src && e.s!==src) return; const amt=eventBilling(e); if(Math.abs(amt)<0.005) return;
-      out.push({dt, s:e.s, c:(e.c||'').trim()||'—', ref:(e.ref||'').trim()||'—', amt}); });
-    return out.sort((x,z)=>z.amt-x.amt); };
-  const oCols=[{l:'Date'},{l:'Source'},{l:'Customer'},{l:'Order / Inv #'},{l:'Billed',num:true,money:true}];
-  const oRows=evs=>evs.map(e=>[fmtDt(e.dt), e.s, e.c, e.ref, e.amt]);
+      out.push({dt, iv:e.iv?new Date(e.iv):null, s:e.s, c:(e.c||'').trim()||'—', ref:(e.ref||'').trim()||'—', amt}); });
+    return out.sort((x,z)=> (x.dt-z.dt) || (z.amt-x.amt)); };   // by delivery date, then $
+  const oCols=[{l:'Delivery date'},{l:'Invoice date'},{l:'Source'},{l:'Customer'},{l:'Order / Inv #'},{l:'Billed',num:true,money:true}];
+  const oRows=evs=>evs.map(e=>[fmtDt(e.dt), e.iv?fmtDt(e.iv):'—', e.s, e.c, e.ref, e.amt]);
 
   if(col==='lwN'||col==='lwD'||col==='lwT'){
     const src=col==='lwN'?'Nabis':col==='lwD'?'Distru':null;
@@ -2650,9 +2656,13 @@ function scDrill(dateStr, col){
           const tu=items.reduce((s,it)=>s+(it.qty||0),0), tl=items.reduce((s,it)=>s+(it.lineTotal||0),0);
           return `<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Price/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${body}</tbody><tfoot><tr class="totals"><td>Total · ${items.length} line${items.length!==1?'s':''}</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr></tfoot></table>`;
         };
-        return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending) · ${list.length} orders · click an order for its line items`,
-          columns:[{l:'Order #'},{l:'Customer'},{l:'Date'},{l:'Amount',num:true,money:true}],
-          rows:list.map(x=>[x.ref||'—', x.customer||'—', x.date?fmtDt(new Date(x.date)):'—', x.amount]),
+        const isD=col==='projD';   // Distru orders carry an invoice date; Nabis orders don't
+        const invOf=x=> (x.invDate!=null?x.invDate:(x.iv!=null?x.iv:null));
+        const dCol=x=>x.date?fmtDt(new Date(x.date)):'—', iCol=x=>{const v=invOf(x);return v?fmtDt(new Date(v)):'—';};
+        return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending), by delivery date · ${list.length} orders · click an order for its line items`,
+          columns: isD ? [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Invoice date'},{l:'Amount',num:true,money:true}]
+                       : [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Amount',num:true,money:true}],
+          rows:list.map(x=> isD ? [x.ref||'—', x.customer||'—', dCol(x), iCol(x), x.amount] : [x.ref||'—', x.customer||'—', dCol(x), x.amount]),
           rowDetails:list.map(x=>itemsTable(itemsOf(x))),
           totalLabel:'Total', total:list.reduce((s,x)=>s+x.amount,0)};
       }
@@ -2663,13 +2673,15 @@ function scDrill(dateStr, col){
     const byRef={};
     (CONC_EVENTS||[]).forEach(e=>{ if(e.s!==src) return; const dt=e.d?new Date(e.d):null; if(!dt||dt<monday||dt>wkEnd) return;
       const amt=eventBilling(e); if(Math.abs(amt)<0.005) return;
-      const ref=e.ref||'(order)'; const g=byRef[ref]||(byRef[ref]={ref,customer:e.c||'',date:e.d,amount:0});
-      g.amount+=amt; if(e.d&&(!g.date||e.d<g.date)) g.date=e.d; });
+      const ref=e.ref||'(order)'; const g=byRef[ref]||(byRef[ref]={ref,customer:e.c||'',date:e.d,iv:e.iv||null,amount:0});
+      g.amount+=amt; if(e.d&&(!g.date||e.d<g.date)) g.date=e.d; if(e.iv&&!g.iv) g.iv=e.iv; });
     const net=Object.values(byRef).filter(x=>Math.abs(x.amount)>0.005).sort((a,b)=>(a.date||Infinity)-(b.date||Infinity) || b.amount-a.amount);
     if(!net.length) return {title:label, empty:'Order-level detail isn’t available for this week in this view.'};
-    return {title:`${label} — week of ${wkLabel}`, sub:`Actual net sales this week (billed − discounts/credits) · ${net.length} orders`,
-      columns:[{l:'Order #'},{l:'Customer'},{l:'Date'},{l:'Net sales',num:true,money:true}],
-      rows:net.map(x=>[x.ref||'—', x.customer||'—', x.date?fmtDt(new Date(x.date)):'—', x.amount]),
+    const isD=col==='projD';
+    return {title:`${label} — week of ${wkLabel}`, sub:`Actual net sales this week (billed − discounts/credits), by delivery date · ${net.length} orders`,
+      columns: isD ? [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Invoice date'},{l:'Net sales',num:true,money:true}]
+                   : [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Net sales',num:true,money:true}],
+      rows:net.map(x=> isD ? [x.ref||'—', x.customer||'—', x.date?fmtDt(new Date(x.date)):'—', x.iv?fmtDt(new Date(x.iv)):'—', x.amount] : [x.ref||'—', x.customer||'—', x.date?fmtDt(new Date(x.date)):'—', x.amount]),
       totalLabel:'Total', total:net.reduce((s,x)=>s+x.amount,0)};
   }
   return null;
