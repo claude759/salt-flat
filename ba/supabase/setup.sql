@@ -52,6 +52,7 @@ create table if not exists public.dispensaries (
   id          uuid primary key default gen_random_uuid(),
   name        text not null,
   address     text,
+  state       text check (state in ('CA','FL','NY')),  -- only BAs in this region see it
   lat         double precision,
   lng         double precision,
   license     text,
