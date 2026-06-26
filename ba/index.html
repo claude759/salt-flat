@@ -152,6 +152,13 @@
   .rthumb{width:30px;height:30px;border-radius:5px;object-fit:cover;border:1px solid var(--line);cursor:pointer;flex:none}
   .rrepl{cursor:pointer;color:var(--muted);font-size:14px}
 
+  /* starting-location typeahead */
+  .tsug{border:1px solid var(--line);border-radius:10px;margin-top:6px;overflow:hidden;background:var(--panel2);max-height:240px;overflow-y:auto}
+  .tsug .sg{display:flex;flex-direction:column;gap:1px;padding:9px 12px;cursor:pointer;border-top:1px solid var(--line)}
+  .tsug .sg:first-child{border-top:0}
+  .tsug .sg:hover{background:var(--panel)}
+  .tsug .sg b{font-size:13px;font-weight:600} .tsug .sg span{font-size:11px;color:var(--muted)}
+
   .auth-wrap{min-height:100%;display:flex;flex-direction:column;justify-content:center;padding:24px 18px;gap:16px;max-width:420px;margin:0 auto}
   .hero{text-align:center} .hero .logo{width:56px;height:56px;border-radius:15px;margin:0 auto 12px;font-size:28px}
   @media print{ body *{visibility:hidden} #printarea,#printarea *{visibility:visible}
@@ -187,7 +194,7 @@ if (CONFIGURED) {
 const state = {
   session: null, profile: null, settings: null, loadError: null,
   period: null, periods: [], dispensaries: [],
-  baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles',
+  baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Fuel','Supplies','Other'];
@@ -265,6 +272,10 @@ async function loadMe(){
     state.period = state.periods.find(p=>p.start_date<=todayISO() && p.end_date>=todayISO()) || state.periods[0] || null;
     const { data: disp } = await supabase.from('dispensaries').select('*').eq('active',true).order('name');
     state.dispensaries = disp||[];
+    // recent start/destination labels for the trip autocomplete
+    const { data: rt } = await supabase.from('trips').select('start_label,dest_label').eq('ba_id',state.session.user.id).order('created_at',{ascending:false}).limit(60);
+    const places=new Set(); (rt||[]).forEach(t=>{ if(t.start_label)places.add(t.start_label); if(t.dest_label)places.add(t.dest_label); });
+    state.recentPlaces=[...places].filter(p=>p&&p!=='📍 Current location').slice(0,30);
   }catch(e){ state.loadError = String(e?.message||e); state.profile=null; }
 }
 // after saving an item, make sure the selected period covers that item's date so
@@ -651,16 +662,17 @@ async function saveGrid(mode){
 /* ── Log trip sheet ── */
 function tripSheet(){
   if(state.period && state.period.status==='closed') return toast('That period is closed','err');
-  let method='distance', startPath=null, endPath=null, startOdo=null, endOdo=null, miles=null, milesSrc=null, startCoords=null;
+  let method='distance', startPath=null, endPath=null, startOdo=null, endOdo=null, miles=null, milesSrc=null, startCoords=null, startAddr=state.profile.base_address||'';
   const dispOpts = baDispensaries().map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
   openSheet(`
     <h3>Log a trip</h3>
     <label class="fl">Date</label><input id="tDate" type="date" value="${todayISO()}">
     <label class="fl">Starting location</label>
     <div class="row" style="gap:8px">
-      <input id="tStartLoc" class="grow" placeholder="home / base address" value="${esc(state.profile.base_address||'')}">
+      <input id="tStartLoc" class="grow" placeholder="home, dispensary, or address" value="${esc(state.profile.base_address||'')}" autocomplete="off">
       <button class="btn sm" id="tGps" type="button" style="white-space:nowrap">📍 Current</button>
     </div>
+    <div id="tSug" class="tsug hide"></div>
     <div class="small muted" id="tStartHint" style="margin-top:4px"></div>
     <label class="fl">Dispensary (destination)</label>
     <select id="tDisp"><option value="">Select…</option>${dispOpts}</select>
@@ -700,17 +712,41 @@ function tripSheet(){
     $('#tStartHint').textContent='Getting your location…';
     navigator.geolocation.getCurrentPosition(p=>{
       startCoords={lat:p.coords.latitude,lng:p.coords.longitude};
-      $('#tStartLoc').value='📍 Current location';
+      $('#tStartLoc').value='📍 Current location'; startAddr='';
+      $('#tSug').classList.add('hide');
       $('#tStartHint').textContent=`Using GPS (${startCoords.lat.toFixed(4)}, ${startCoords.lng.toFixed(4)})`;
     }, ()=>{ toast('Couldn’t get location — allow access or type an address','err'); $('#tStartHint').textContent=''; },
       {enableHighAccuracy:true,timeout:10000,maximumAge:60000});
   };
-  $('#tStartLoc').oninput=()=>{ startCoords=null; $('#tStartHint').textContent=''; };
+  // Starting-location autocomplete: Home + your dispensaries + recent places
+  function tsugItems(q){
+    q=(q||'').trim().toLowerCase(); const out=[]; const base=state.profile.base_address;
+    if(base && (q===''||'home'.includes(q)||'base'.includes(q)||base.toLowerCase().includes(q)))
+      out.push({display:base, addr:base, label:'🏠 Home', sub:base});
+    baDispensaries().filter(d=>d.name.toLowerCase().includes(q)||(d.address||'').toLowerCase().includes(q)).slice(0,6)
+      .forEach(d=>out.push({display:d.name, addr:d.address||d.name, label:'🏬 '+d.name, sub:d.address||''}));
+    (state.recentPlaces||[]).filter(p=>p.toLowerCase().includes(q)).slice(0,4)
+      .forEach(p=>out.push({display:p, addr:p, label:'🕘 '+p, sub:'recent'}));
+    const seen=new Set();
+    return out.filter(o=>{const k=o.display.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true;}).slice(0,8);
+  }
+  function tsugRender(){
+    const box=$('#tSug'); const items=tsugItems($('#tStartLoc').value);
+    if(!items.length){ box.classList.add('hide'); box.innerHTML=''; return; }
+    box.innerHTML=items.map((it,i)=>`<div class="sg" data-i="${i}"><b>${esc(it.label)}</b>${it.sub?`<span>${esc(it.sub)}</span>`:''}</div>`).join('');
+    box.classList.remove('hide');
+    box.querySelectorAll('.sg').forEach(el=>el.onmousedown=ev=>{ ev.preventDefault();
+      const it=items[+el.dataset.i]; $('#tStartLoc').value=it.display; startAddr=it.addr; startCoords=null;
+      box.classList.add('hide'); $('#tStartHint').textContent=''; });
+  }
+  $('#tStartLoc').oninput=()=>{ startCoords=null; startAddr=$('#tStartLoc').value; $('#tStartHint').textContent=''; tsugRender(); };
+  $('#tStartLoc').onfocus=tsugRender;
+  $('#tStartLoc').onblur=()=>setTimeout(()=>$('#tSug').classList.add('hide'),150);
   $('#tCalc').onclick=async ()=>{
     const disp=$('#tDisp').value; if(!disp) return toast('Pick a destination dispensary first','err');
     const body={dispensary_id:disp, roundtrip:$('#tRound').checked};
     if(startCoords){ body.start_lat=startCoords.lat; body.start_lng=startCoords.lng; }
-    else { const a=$('#tStartLoc').value.trim(); if(a && a!=='📍 Current location') body.start_address=a; }
+    else { const a=(startAddr||$('#tStartLoc').value).trim(); if(a && a!=='📍 Current location') body.start_address=a; }
     const btn=$('#tCalc'); busy(btn,true);
     try{
       const r=await callFn('calc-distance', body);
