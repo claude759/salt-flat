@@ -50,14 +50,29 @@ create policy app_settings_update on public.app_settings
 -- ---------------------------------------------------------------------------
 -- dispensaries  (any signed-in user can read; admins manage)
 -- ---------------------------------------------------------------------------
+-- Locations: admins see all; a BA sees shared locations in their state + their own
+-- (incl. private "Home"). BAs add in their state; shared ones are collaboratively
+-- editable by any BA in that state; private ones only by their owner.
 drop policy if exists dispensaries_select on public.dispensaries;
-create policy dispensaries_select on public.dispensaries
-  for select to authenticated using (true);
+create policy dispensaries_select on public.dispensaries for select to authenticated
+  using ( public.is_admin()
+       or (private = false and state = public.my_region())
+       or (created_by = auth.uid()) );
 
-drop policy if exists dispensaries_write on public.dispensaries;
-create policy dispensaries_write on public.dispensaries
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+drop policy if exists dispensaries_write  on public.dispensaries;
+drop policy if exists dispensaries_insert on public.dispensaries;
+create policy dispensaries_insert on public.dispensaries for insert to authenticated
+  with check ( public.is_admin()
+            or (created_by = auth.uid() and state = public.my_region()) );
+
+drop policy if exists dispensaries_update on public.dispensaries;
+create policy dispensaries_update on public.dispensaries for update to authenticated
+  using      ( public.is_admin() or (private = false and state = public.my_region()) or created_by = auth.uid() )
+  with check ( public.is_admin() or state = public.my_region() or created_by = auth.uid() );
+
+drop policy if exists dispensaries_delete on public.dispensaries;
+create policy dispensaries_delete on public.dispensaries for delete to authenticated
+  using      ( public.is_admin() or (private = false and state = public.my_region()) or created_by = auth.uid() );
 
 -- ---------------------------------------------------------------------------
 -- pay_periods  (read all; admins manage)

@@ -947,7 +947,7 @@ function expenseSheet(){
       <div class="grow"><label class="fl">Date</label><input id="eDate" type="date" value="${todayISO()}"></div>
     </div>
     <label class="fl">Category</label><select id="eCat">${cats.map(c=>`<option>${c}</option>`).join('')}</select>
-    <label class="fl">Dispensary</label><select id="eDisp"><option value="">Select…</option>${dispOpts}</select>
+    <label class="fl">Location</label><select id="eDisp"><option value="">Select…</option>${dispOpts}</select>
     ${dispOpts?'':'<div class="small muted" style="margin-top:4px">No dispensaries in your state yet — ask your admin to add one.</div>'}
     <label class="fl">Note (optional)</label><input id="eNote">
     <button class="btn primary block" id="eSave" style="margin-top:14px">Save expense</button>
@@ -1001,6 +1001,15 @@ function drawMe(m){
       <button class="btn primary block" id="mSave" style="margin-top:12px">Save</button>
     </div>
     <div class="card">
+      <div class="row"><h3 class="grow">My locations <span class="muted small">${p.region?'· '+p.region:''}</span></h3><button class="btn sm primary" id="mAddLoc">+ Add</button></div>
+      <div id="mLocList">${(state.dispensaries||[]).map(d=>`<div class="item">
+        <div class="ic">${d.private?'🏠':'📍'}</div>
+        <div class="grow"><div class="t">${esc(d.name)} ${d.private?'<span class="pill">private</span>':'<span class="pill">shared</span>'}</div><div class="s">${esc(d.address||'no address')}</div></div>
+        <button class="btn sm ghost" data-eloc="${d.id}">Edit</button>
+      </div>`).join('')||'<p class="muted small">No locations yet — add the places you visit.</p>'}</div>
+      <p class="small muted" style="margin-top:6px">Shared locations are visible to all ${p.region||''} ambassadors; Private (Home) ones stay yours.</p>
+    </div>
+    <div class="card">
       <h3>Sign-in</h3>
       <button class="btn block" id="mPw">Change password</button>
       ${hasPasskey()?`<button class="btn block ghost" id="mPk" style="margin-top:8px">🔓 Enable Face ID / fingerprint on this device</button>`:''}
@@ -1016,6 +1025,8 @@ function drawMe(m){
     Object.assign(state.profile,patch); toast('Saved','ok');
   };
   $('#mPw').onclick=()=>renderChangePw(false);
+  $('#mAddLoc').onclick=()=>dispSheet(null,{onSaved:()=>drawMe(m)});
+  m.querySelectorAll('[data-eloc]').forEach(b=>b.onclick=()=>dispSheet((state.dispensaries||[]).find(d=>d.id===b.dataset.eloc),{onSaved:()=>drawMe(m)}));
   const pk=$('#mPk'); if(pk) pk.onclick=async ()=>{ const b=pk;busy(b,true);
     try{ const {error}=await supabase.auth.registerPasskey(); if(error)throw error; toast('Enabled','ok'); }
     catch(e){ console.warn('passkey enroll', e); toast('Could not enable','err'); } busy(b,false); };
@@ -1238,7 +1249,7 @@ async function adminSettings(m){
       </div>`).join('')}
     </div>
     <div class="card">
-      <div class="row"><h3 class="grow">Dispensaries</h3><button class="btn sm primary" id="addDisp">+ Add</button></div>
+      <div class="row"><h3 class="grow">Locations</h3><button class="btn sm primary" id="addDisp">+ Add</button></div>
       ${(()=>{
         const by={}; (disp||[]).forEach(d=>{ const k=d.state||''; (by[k]=by[k]||[]).push(d); });
         const item=d=>`<div class="item">
@@ -1338,33 +1349,39 @@ function editBaSheet(b){
     toast('Saved','ok'); closeSheet(); adminSettings($('#main'));
   };
 }
-function dispSheet(d){
-  const edit=!!d;
-  openSheet(`<h3>${edit?'Edit':'Add'} dispensary</h3>
-    <label class="fl">Name <span class="muted">(DBA / storefront)</span></label><input id="dName" value="${esc(d?.name||'')}">
+function reloadDispensaries(){
+  return supabase.from('dispensaries').select('*').eq('active',true).order('name').then(({data})=>{ state.dispensaries=data||[]; });
+}
+function dispSheet(d, opts={}){
+  const edit=!!d, isAdmin=state.profile.role==='admin', myRegion=state.profile.region;
+  const stateField = isAdmin
+    ? `<label class="fl">State</label><select id="dState"><option value="">Select state…</option>${REGIONS.map(r=>`<option value="${r}" ${d?.state===r?'selected':''}>${r}</option>`).join('')}</select>`
+    : `<input id="dState" type="hidden" value="${esc(d?.state||myRegion||'')}">`;
+  openSheet(`<h3>${edit?'Edit':'Add'} location</h3>
+    <label class="fl">Name</label><input id="dName" value="${esc(d?.name||'')}">
+    <label class="fl">Address</label><textarea id="dAddr" placeholder="full street address">${esc(d?.address||'')}</textarea>
+    ${stateField}
+    <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="dPrivate" ${d?.private?'checked':''} style="width:auto;min-height:auto"> Private — my Home (only I can see it)</label>
     <label class="fl">Legal name <span class="muted">(optional)</span></label><input id="dLegal" value="${esc(d?.legal_name||'')}">
-    <label class="fl">State <span class="muted">(only this state's BAs will see it)</span></label>
-    <select id="dState"><option value="">Select state…</option>
-      ${REGIONS.map(r=>`<option value="${r}" ${d?.state===r?'selected':''}>${r}</option>`).join('')}
-    </select>
-    <label class="fl">Address</label><textarea id="dAddr" placeholder="full street address for auto-mileage">${esc(d?.address||'')}</textarea>
-    <label class="fl">License # (optional)</label><input id="dLic" value="${esc(d?.license||'')}">
-    ${edit?`<label class="fl">Active</label><select id="dActive"><option value="true" ${d.active?'selected':''}>Active</option><option value="false" ${!d.active?'selected':''}>Inactive</option></select>`:''}
+    <label class="fl">License # <span class="muted">(optional)</span></label><input id="dLic" value="${esc(d?.license||'')}">
+    ${edit&&isAdmin?`<label class="fl">Active</label><select id="dActive"><option value="true" ${d.active?'selected':''}>Active</option><option value="false" ${!d.active?'selected':''}>Inactive</option></select>`:''}
     <button class="btn primary block" id="dSave" style="margin-top:14px">${edit?'Save':'Add'}</button>
     <button class="btn ghost block" id="dCancel" style="margin-top:8px">Cancel</button>`);
   $('#dCancel').onclick=closeSheet;
   $('#dSave').onclick=async ()=>{
     const name=$('#dName').value.trim(); if(!name) return toast('Name required','err');
-    const st=$('#dState').value; if(!st) return toast('Pick a state','err');
+    const st=isAdmin?$('#dState').value:(myRegion||$('#dState').value);
+    if(!st) return toast(isAdmin?'Pick a state':'Your profile has no state set — ask an admin','err');
     const addrChanged = !edit || ($('#dAddr').value||'')!==(d.address||'');
-    const patch={ name, legal_name:$('#dLegal').value||null, state:st, address:$('#dAddr').value||null, license:$('#dLic').value||null };
-    if(edit) patch.active = $('#dActive').value==='true';
-    if(addrChanged){ patch.lat=null; patch.lng=null; } // re-geocode on next distance calc
+    const patch={ name, legal_name:$('#dLegal').value||null, state:st, private:$('#dPrivate').checked,
+      address:$('#dAddr').value||null, license:$('#dLic').value||null };
+    if(edit&&isAdmin) patch.active = $('#dActive').value==='true';
+    if(addrChanged){ patch.lat=null; patch.lng=null; }
     let error;
     if(edit) ({error}=await supabase.from('dispensaries').update(patch).eq('id',d.id));
     else     ({error}=await supabase.from('dispensaries').insert({...patch,created_by:state.session.user.id}));
     if(error) return toast(error.message,'err');
-    toast('Saved','ok'); closeSheet(); adminSettings($('#main'));
+    toast('Saved','ok'); closeSheet(); await reloadDispensaries(); (opts.onSaved||(()=>adminSettings($('#main'))))();
   };
 }
 

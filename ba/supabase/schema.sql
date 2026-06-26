@@ -48,6 +48,7 @@ create table if not exists public.dispensaries (
   legal_name  text,                                     -- legal entity (optional)
   address     text,
   state       text check (state in ('CA','FL','NY')),  -- only BAs in this region see it
+  private     boolean not null default false,          -- true = personal (Home), visible to owner only
   lat         double precision,
   lng         double precision,
   license     text,
@@ -308,6 +309,12 @@ drop trigger if exists profiles_guard on public.profiles;
 create trigger profiles_guard
   before update on public.profiles
   for each row execute function public.trg_profile_guard();
+
+-- the caller's region (CA/FL/NY) — used by the locations RLS
+create or replace function public.my_region()
+returns text language sql stable security definer set search_path = public as $$
+  select region from public.profiles where id = auth.uid();
+$$;
 
 -- new auth user -> ensure a profile row exists (admin-create-ba also does this,
 -- but this covers any auth-side signup and keeps id in sync).

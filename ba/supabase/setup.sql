@@ -54,6 +54,7 @@ create table if not exists public.dispensaries (
   legal_name  text,                                     -- legal entity (optional)
   address     text,
   state       text check (state in ('CA','FL','NY')),  -- only BAs in this region see it
+  private     boolean not null default false,          -- true = personal (Home), visible to owner only
   lat         double precision,
   lng         double precision,
   license     text,
@@ -315,6 +316,12 @@ create trigger profiles_guard
   before update on public.profiles
   for each row execute function public.trg_profile_guard();
 
+-- the caller's region (CA/FL/NY) — used by the locations RLS
+create or replace function public.my_region()
+returns text language sql stable security definer set search_path = public as $$
+  select region from public.profiles where id = auth.uid();
+$$;
+
 -- new auth user -> ensure a profile row exists (admin-create-ba also does this,
 -- but this covers any auth-side signup and keeps id in sync).
 -- role is ALWAYS 'ba' here — never trust client signup metadata for it; only
@@ -457,14 +464,29 @@ create policy app_settings_update on public.app_settings
 -- ---------------------------------------------------------------------------
 -- dispensaries  (any signed-in user can read; admins manage)
 -- ---------------------------------------------------------------------------
+-- Locations: admins see all; a BA sees shared locations in their state + their own
+-- (incl. private "Home"). BAs add in their state; shared ones are collaboratively
+-- editable by any BA in that state; private ones only by their owner.
 drop policy if exists dispensaries_select on public.dispensaries;
-create policy dispensaries_select on public.dispensaries
-  for select to authenticated using (true);
+create policy dispensaries_select on public.dispensaries for select to authenticated
+  using ( public.is_admin()
+       or (private = false and state = public.my_region())
+       or (created_by = auth.uid()) );
 
-drop policy if exists dispensaries_write on public.dispensaries;
-create policy dispensaries_write on public.dispensaries
-  for all to authenticated
-  using (public.is_admin()) with check (public.is_admin());
+drop policy if exists dispensaries_write  on public.dispensaries;
+drop policy if exists dispensaries_insert on public.dispensaries;
+create policy dispensaries_insert on public.dispensaries for insert to authenticated
+  with check ( public.is_admin()
+            or (created_by = auth.uid() and state = public.my_region()) );
+
+drop policy if exists dispensaries_update on public.dispensaries;
+create policy dispensaries_update on public.dispensaries for update to authenticated
+  using      ( public.is_admin() or (private = false and state = public.my_region()) or created_by = auth.uid() )
+  with check ( public.is_admin() or state = public.my_region() or created_by = auth.uid() );
+
+drop policy if exists dispensaries_delete on public.dispensaries;
+create policy dispensaries_delete on public.dispensaries for delete to authenticated
+  using      ( public.is_admin() or (private = false and state = public.my_region()) or created_by = auth.uid() );
 
 -- ---------------------------------------------------------------------------
 -- pay_periods  (read all; admins manage)
