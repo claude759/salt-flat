@@ -203,7 +203,9 @@ const state = {
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
 const REGIONS = ['CA','FL','NY'];
-const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Fuel','Supplies','Other'];
+const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
+const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
+function expSplit(E){ let reimb=0, card=0; (E||[]).forEach(x=>{ if(x.payment==='company') card+=Number(x.amount||0); else reimb+=Number(x.amount||0); }); return {reimb, card}; }
 
 /* ─────────────────────────── helpers ─────────────────────────── */
 const $ = (s, r=document) => r.querySelector(s);
@@ -492,8 +494,6 @@ async function drawBA(){
   ]);
   const T=trips.data||[], E=exps.data||[], S=sub?.data||null;
   state._T=T; state._E=E;
-  const mileT=T.reduce((a,x)=>a+Number(x.amount||0),0);
-  const expT =E.reduce((a,x)=>a+Number(x.amount||0),0);
   const locked = S && (S.status==='submitted'||S.status==='approved');
   const items=[...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'}))]
     .sort((a,b)=>(b.trip_date||b.expense_date).localeCompare(a.trip_date||a.expense_date));
@@ -501,11 +501,8 @@ async function drawBA(){
   m.innerHTML = `
     <div class="card">
       <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(drawBA)}</div>
-      <div class="totbar" id="totbar" style="margin-top:12px">
-        <div class="tot"><div class="k">Mileage</div><div class="v">${money(mileT)}</div></div>
-        <div class="tot"><div class="k">Expenses</div><div class="v">${money(expT)}</div></div>
-        <div class="tot sum"><div class="k">Total</div><div class="v">${money(mileT+expT)}</div></div>
-      </div>
+      <div class="totbar" id="totbar" style="margin-top:12px">${totbarTiles()}</div>
+      <div id="cardline">${cardLineHtml()}</div>
       ${S?`<div class="small ${S.status==='approved'?'':'muted'}" style="margin-top:10px">
         Status: <span class="badge ${S.status}">${S.status}</span></div>`:''}
     </div>
@@ -538,19 +535,23 @@ function refreshItems(){
   el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
   const h=$('#itemsHead'); if(h) h.textContent=`This period · ${items.length} item${items.length===1?'':'s'}`;
 }
-function refreshTotals(){
-  const el=$('#totbar'); if(!el) return;
+function totbarTiles(){
   const mileT=(state._T||[]).reduce((a,x)=>a+Number(x.amount||0),0);
-  const expT=(state._E||[]).reduce((a,x)=>a+Number(x.amount||0),0);
-  el.innerHTML=`<div class="tot"><div class="k">Mileage</div><div class="v">${money(mileT)}</div></div>
-    <div class="tot"><div class="k">Expenses</div><div class="v">${money(expT)}</div></div>
-    <div class="tot sum"><div class="k">Total</div><div class="v">${money(mileT+expT)}</div></div>`;
+  const {reimb}=expSplit(state._E);
+  return `<div class="tot"><div class="k">Mileage</div><div class="v">${money(mileT)}</div></div>
+    <div class="tot"><div class="k">Expenses</div><div class="v">${money(reimb)}</div></div>
+    <div class="tot sum"><div class="k">Reimburse</div><div class="v">${money(mileT+reimb)}</div></div>`;
+}
+function cardLineHtml(){ const {card}=expSplit(state._E); return card>0?`<div class="small muted" style="margin-top:8px">💳 Company card (not reimbursed): <b>${money(card)}</b></div>`:''; }
+function refreshTotals(){
+  const t=$('#totbar'); if(t) t.innerHTML=totbarTiles();
+  const c=$('#cardline'); if(c) c.innerHTML=cardLineHtml();
 }
 function baItemRow(x){
   const trip = x._k==='trip';
   const date = trip?x.trip_date:x.expense_date;
   const title = trip ? (x.dest_label || dispName(x.dispensary_id)) : (x.vendor||'Expense');
-  const sub = trip ? `${x.miles??'—'} mi · ${x.method}` : `${x.category||''} · ${dispName(x.dispensary_id)}`;
+  const sub = trip ? `${x.miles??'—'} mi · ${x.method}` : `${x.category||''}${x.payment==='company'?' · 💳 company card':''}`;
   const canDel = x.status==='draft' || x.status==='rejected';
   return `<div class="item">
     <div class="ic">${trip?'🚗':'🧾'}</div>
@@ -574,11 +575,11 @@ async function submitPeriod(){
   const submittable = x => x.status==='draft' || x.status==='rejected';
   const ids=T.filter(submittable).map(x=>x.id), eids=E.filter(submittable).map(x=>x.id);
   if(!ids.length && !eids.length) return toast('Nothing to submit','err');
-  const mile=T.reduce((a,x)=>a+Number(x.amount||0),0), exp=E.reduce((a,x)=>a+Number(x.amount||0),0);
+  const mile=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb,card}=expSplit(E);
   // record the submission FIRST so items are never locked without a workflow row
   const { error:se } = await supabase.from('submissions').upsert({
     ba_id:state.session.user.id, period_id:state.period.id, status:'submitted',
-    submitted_at:new Date().toISOString(), totals:{mileage:mile, expenses:exp, total:mile+exp}
+    submitted_at:new Date().toISOString(), totals:{mileage:mile, expenses:reimb, company_card:card, total:mile+reimb}
   },{onConflict:'ba_id,period_id'});
   if(se) return toast('Submit failed: '+se.message,'err');
   if(ids.length){ const {error}=await supabase.from('trips').update({status:'submitted',reject_note:null}).in('id',ids);
@@ -605,6 +606,7 @@ function gridRowHtml(mode, it, today){
       <td><input class="gnum g-mi" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"></td></tr>`;
   }
   const cats=EXPENSE_CATEGORIES.map(c=>`<option ${it&&it.category===c?'selected':''}>${c}</option>`).join('');
+  const pays=PAYMENTS.map(([v,l])=>`<option value="${v}" ${(it?it.payment:'reimbursement')===v?'selected':''}>${l}</option>`).join('');
   const rcell = it&&it.receipt_path
     ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span><label class="rrepl" title="replace">✎<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`
     : `<div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`;
@@ -613,6 +615,7 @@ function gridRowHtml(mode, it, today){
     <td>${rcell}</td>
     <td><input class="g-desc" placeholder="description" value="${it?esc(it.vendor||''):''}"></td>
     <td><select class="g-cat">${cats}</select></td>
+    <td><select class="g-pay">${pays}</select></td>
     <td><input class="gnum g-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${it&&it.amount!=null?it.amount:''}"></td></tr>`;
 }
 async function gridReceiptRow(e, tr, mode){
@@ -637,7 +640,7 @@ function renderGrid(){
     <button class="${mode==='expenses'?'on':''}" data-g="expenses">🧾 Expenses</button></div>`;
   const head=mode==='miles'
     ? `<tr><th></th><th>Date</th><th>Starting location</th><th>Destination</th><th>Notes</th><th>Odo start</th><th>Odo end</th><th>Miles</th></tr>`
-    : `<tr><th></th><th>Date</th><th>Receipt</th><th>Description</th><th>Category</th><th>Amount</th></tr>`;
+    : `<tr><th></th><th>Date</th><th>Receipt</th><th>Description</th><th>Category</th><th>Paid by</th><th>Amount</th></tr>`;
   const body=gridDrafts(mode).map(it=>gridRowHtml(mode,it,today)).join('')+gridRowHtml(mode,null,today);
   host.innerHTML=`<div class="card">
     <h3>Quick entry <span class="muted small">— autosaves as you type</span></h3>${seg}
@@ -664,10 +667,12 @@ function wireGridRow(tr, mode){
   });
   if(mode==='miles'){
     const os=tr.querySelector('.g-os'),oe=tr.querySelector('.g-oe'),mi=tr.querySelector('.g-mi');
-    const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s){ mi.value=Math.round((e-s)*10)/10; gridTotal(); } };
+    const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s){ mi.value=Math.round((e-s)*10)/10; tr._autoMi=false; gridTotal(); } };
     os.addEventListener('input',c); oe.addEventListener('input',c);
+    mi.addEventListener('input',()=>{ tr._autoMi=false; });
     attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); });
     attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r;  scheduleAutosave(tr,mode); });
+    ['.g-start','.g-dest'].forEach(sel=>{ const el=tr.querySelector(sel); if(el) el.addEventListener('blur', ()=>setTimeout(()=>maybeCalcDistance(tr),250)); });
   } else {
     const ri=tr.querySelector('.g-receipt'); if(ri) ri.onchange=e=>gridReceiptRow(e,tr,mode);
     const v=tr.querySelector('[data-view]'); if(v) v.onclick=async()=>{ const p=tr.dataset.rpath; if(p){ const u=await signedUrl('receipts',p); if(u) window.open(u,'_blank'); } };
@@ -695,9 +700,10 @@ async function gridAutosave(tr, mode){
   } else {
     const date=tr.querySelector('.g-date').value, desc=tr.querySelector('.g-desc').value.trim();
     const cat=tr.querySelector('.g-cat').value, amt=Number(tr.querySelector('.g-amt').value);
+    const pay=tr.querySelector('.g-pay')?.value||'reimbursement';
     if(isNew && !(date && amt>0)){ savedIndicator('All changes saved'); return; }
     payload={ expense_date:date||todayISO(), vendor:desc||'Expense', amount:amt>0?amt:0, category:cat||'Other',
-      receipt_path:tr.dataset.rpath||null, note:desc||null };
+      payment:pay, receipt_path:tr.dataset.rpath||null, note:desc||null };
     table='expenses';
   }
   tr._saving=true;
@@ -732,9 +738,23 @@ function gridTotal(){
   const mode=state.gridMode||'miles', rate=gridRate(); let total=0;
   $('#gBody')?.querySelectorAll('tr').forEach(tr=>{
     if(mode==='miles'){ total += (Number(tr.querySelector('.g-mi')?.value)||0)*rate; }
-    else { total += Number(tr.querySelector('.g-amt')?.value)||0; }
+    else if(tr.querySelector('.g-pay')?.value!=='company'){ total += Number(tr.querySelector('.g-amt')?.value)||0; }
   });
   el.textContent=money(total);
+}
+// auto-compute grid mileage from start+destination (one-way) when no odometer entered
+function maybeCalcDistance(tr){
+  const os=tr.querySelector('.g-os')?.value, oe=tr.querySelector('.g-oe')?.value;
+  if(os && oe) return;                                            // odometer wins
+  const start=(tr.querySelector('.g-start')?.value||'').trim(), dest=(tr.querySelector('.g-dest')?.value||'').trim();
+  if(!start || !dest) return;
+  const mi=tr.querySelector('.g-mi'); if(mi.value!=='' && !tr._autoMi) return;  // never clobber a hand-entered value
+  const key=start+'|'+dest; if(tr._distKey===key) return; tr._distKey=key;
+  const body={ roundtrip:false }, sR=tr._startResolved, dR=tr._destResolved;
+  body.start_address=(sR&&sR.addr)||start;
+  if(dR&&dR.dispId) body.dispensary_id=dR.dispId; else body.dest_address=(dR&&dR.addr)||dest;
+  mi.placeholder='…';
+  callFn('calc-distance', body).then(r=>{ mi.placeholder='mi'; if(r&&r.ok){ mi.value=r.miles; tr._autoMi=true; gridTotal(); scheduleAutosave(tr,'miles'); } }).catch(()=>{ mi.placeholder='mi'; });
 }
 // floating typeahead for grid Start/Destination cells (shared overlay box)
 let _gridSug=null;
@@ -947,6 +967,7 @@ function expenseSheet(){
       <div class="grow"><label class="fl">Date</label><input id="eDate" type="date" value="${todayISO()}"></div>
     </div>
     <label class="fl">Category</label><select id="eCat">${cats.map(c=>`<option>${c}</option>`).join('')}</select>
+    <label class="fl">Paid with</label><select id="ePay">${PAYMENTS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select>
     <label class="fl">Location</label><select id="eDisp"><option value="">Select…</option>${dispOpts}</select>
     ${dispOpts?'':'<div class="small muted" style="margin-top:4px">No dispensaries in your state yet — ask your admin to add one.</div>'}
     <label class="fl">Note (optional)</label><input id="eNote">
@@ -978,7 +999,7 @@ function expenseSheet(){
     const btn=$('#eSave'); busy(btn,true);
     const { error }=await supabase.from('expenses').insert({
       ba_id:state.session.user.id, expense_date:ed, dispensary_id:$('#eDisp').value||null,
-      vendor:$('#eVendor').value||null, amount:amt, category:$('#eCat').value, receipt_path:receiptPath,
+      vendor:$('#eVendor').value||null, amount:amt, category:$('#eCat').value, payment:$('#ePay').value||'reimbursement', receipt_path:receiptPath,
       ocr_raw:ocr, note:$('#eNote').value||null, status:'draft'
     });
     busy(btn,false);
@@ -1061,14 +1082,14 @@ async function adminDash(m){
   const [{data:bas}, trips, exps, subs] = await Promise.all([
     supabase.from('profiles').select('*').eq('role','ba').order('full_name'),
     per?supabase.from('trips').select('ba_id,amount,status').eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('ba_id,amount,status').eq('period_id',per.id):{data:[]},
+    per?supabase.from('expenses').select('ba_id,amount,status,payment').eq('period_id',per.id):{data:[]},
     per?supabase.from('submissions').select('*').eq('period_id',per.id):{data:[]},
   ]);
   const T=trips.data||[],E=exps.data||[],S=subs.data||[];
   const byBa={};
-  (bas||[]).forEach(b=>byBa[b.id]={p:b,mile:0,exp:0,status:'open'});
+  (bas||[]).forEach(b=>byBa[b.id]={p:b,mile:0,exp:0,card:0,status:'open'});
   T.forEach(x=>{ if(byBa[x.ba_id]) byBa[x.ba_id].mile+=Number(x.amount||0); });
-  E.forEach(x=>{ if(byBa[x.ba_id]) byBa[x.ba_id].exp +=Number(x.amount||0); });
+  E.forEach(x=>{ if(byBa[x.ba_id]){ if(x.payment==='company') byBa[x.ba_id].card+=Number(x.amount||0); else byBa[x.ba_id].exp+=Number(x.amount||0); } });
   S.forEach(s=>{ if(byBa[s.ba_id]) byBa[s.ba_id].status=s.status; });
   let rows=Object.values(byBa);
   if(state.adminRegion!=='all') rows=rows.filter(r=>r.p.region===state.adminRegion);
@@ -1093,7 +1114,7 @@ async function adminDash(m){
         <div class="item" data-ba="${r.p.id}" style="cursor:pointer">
           <div class="ic">${(r.p.full_name||'?').slice(0,1).toUpperCase()}</div>
           <div class="grow"><div class="t">${esc(r.p.full_name||r.p.email)}</div>
-            <div class="s">${money(r.mile)} mileage · ${money(r.exp)} expenses</div></div>
+            <div class="s">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div></div>
           <div class="amt">${money(r.mile+r.exp)}</div>
           ${r.p.region?`<span class="pill">${r.p.region}</span>`:''}
           <span class="badge ${r.status}">${r.status}</span>
@@ -1112,7 +1133,8 @@ async function adminBaDetail(baId){
     supabase.from('expenses').select('*').eq('ba_id',baId).eq('period_id',per.id).order('expense_date'),
     supabase.from('submissions').select('*').eq('ba_id',baId).eq('period_id',per.id).maybeSingle(),
   ]);
-  const mile=(T||[]).reduce((a,x)=>a+ +x.amount,0), exp=(E||[]).reduce((a,x)=>a+ +x.amount,0);
+  const mile=(T||[]).reduce((a,x)=>a+ +x.amount,0);
+  const {reimb,card}=expSplit(E);
   const S=sub||{status:'open'};
   const tripRows=(T||[]).map(x=>`<tr><td>${fmtDate(x.trip_date)}</td>
      <td>${esc(x.dest_label || dispName(x.dispensary_id))}${x.start_label?`<div class="small muted">from ${esc(x.start_label)}</div>`:''}</td>
@@ -1122,7 +1144,7 @@ async function adminBaDetail(baId){
   const expRows=await Promise.all((E||[]).map(async x=>{
     const url=await signedUrl('receipts',x.receipt_path);
     return `<tr><td>${fmtDate(x.expense_date)}</td><td>${esc(x.vendor||'')}<div class="small muted">${esc(dispName(x.dispensary_id))}</div></td>
-     <td>${esc(x.category||'')}</td><td>${url?`<a href="${url}" target="_blank">view</a>`:'—'}</td>
+     <td>${esc(x.category||'')}</td><td>${x.payment==='company'?'💳 Card':'💵 Reimb'}</td><td>${url?`<a href="${url}" target="_blank">view</a>`:'—'}</td>
      <td class="num">${money(x.amount)}</td><td><span class="badge ${x.status}">${x.status}</span></td>
      <td>${x.status!=='approved'?`<button class="btn sm ghost" data-rej="expenses" data-id="${x.id}">Reject</button>`:''}</td></tr>`;
   }));
@@ -1131,11 +1153,12 @@ async function adminBaDetail(baId){
     <div class="small muted">${esc(per.label)} · <span class="badge ${S.status}">${S.status}</span></div>
     <div class="totbar" style="margin:12px 0">
       <div class="tot"><div class="k">Mileage</div><div class="v">${money(mile)}</div></div>
-      <div class="tot"><div class="k">Expenses</div><div class="v">${money(exp)}</div></div>
-      <div class="tot sum"><div class="k">Total</div><div class="v">${money(mile+exp)}</div></div>
+      <div class="tot"><div class="k">Expenses</div><div class="v">${money(reimb)}</div></div>
+      <div class="tot sum"><div class="k">Reimburse</div><div class="v">${money(mile+reimb)}</div></div>
     </div>
+    ${card>0?`<div class="small muted" style="margin:-4px 0 8px">💳 Company card (not reimbursed): <b>${money(card)}</b></div>`:''}
     ${T?.length?`<h3 style="margin-top:8px">Trips</h3><table><tr><th>Date</th><th>Dispensary</th><th>Method</th><th class="num">Miles</th><th class="num">$</th><th>Status</th><th></th></tr>${tripRows}</table>`:''}
-    ${E?.length?`<h3 style="margin-top:14px">Expenses</h3><table><tr><th>Date</th><th>Vendor</th><th>Cat</th><th>Receipt</th><th class="num">$</th><th>Status</th><th></th></tr>${expRows.join('')}</table>`:''}
+    ${E?.length?`<h3 style="margin-top:14px">Expenses</h3><table><tr><th>Date</th><th>Vendor</th><th>Cat</th><th>Paid</th><th>Receipt</th><th class="num">$</th><th>Status</th><th></th></tr>${expRows.join('')}</table>`:''}
     ${!T?.length&&!E?.length?'<p class="muted small">Nothing logged this period.</p>':''}
     <div class="row wrap" style="margin-top:16px">
       ${S.status==='submitted'?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
@@ -1146,7 +1169,7 @@ async function adminBaDetail(baId){
   `);
   $('#closeBtn').onclick=closeSheet;
   $('#csvBtn').onclick=()=>exportCSV(prof,per,T||[],E||[]);
-  $('#pdfBtn').onclick=()=>exportPDF(prof,per,T||[],E||[],mile,exp);
+  $('#pdfBtn').onclick=()=>exportPDF(prof,per,T||[],E||[]);
   $('#approveBtn')&&($('#approveBtn').onclick=()=>approveSubmission(baId,per.id,T,E));
   document.querySelectorAll('[data-rej]').forEach(b=>b.onclick=()=>rejectItem(b.dataset.rej,b.dataset.id,baId));
 }
@@ -1154,13 +1177,13 @@ async function approveSubmission(baId,periodId,T,E){
   if(!confirm('Approve all submitted items for this BA this period?')) return;
   // approve ONLY submitted items (never sweep in un-submitted drafts or rejected)
   const subMile=(T||[]).filter(x=>x.status==='submitted').reduce((a,x)=>a+ +x.amount,0);
-  const subExp =(E||[]).filter(x=>x.status==='submitted').reduce((a,x)=>a+ +x.amount,0);
+  const {reimb:subExp, card:subCard}=expSplit((E||[]).filter(x=>x.status==='submitted'));
   const { error:e1 }=await supabase.from('trips').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','submitted');
   if(e1) return toast('Approve failed: '+e1.message,'err');
   const { error:e2 }=await supabase.from('expenses').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','submitted');
   if(e2) return toast('Approve failed: '+e2.message,'err');
   const { error:e3 }=await supabase.from('submissions').update({status:'approved',approved_by:state.session.user.id,approved_at:new Date().toISOString(),
-    totals:{mileage:subMile,expenses:subExp,total:subMile+subExp}}).eq('ba_id',baId).eq('period_id',periodId);
+    totals:{mileage:subMile,expenses:subExp,company_card:subCard,total:subMile+subExp}}).eq('ba_id',baId).eq('period_id',periodId);
   if(e3) return toast('Approve failed: '+e3.message,'err');
   toast('Approved','ok'); closeSheet(); drawAdmin();
 }
@@ -1172,29 +1195,33 @@ async function rejectItem(kind,id,baId){
 
 /* ── exports ── */
 function exportCSV(prof,per,T,E){
-  const rows=[['Type','Date','Dispensary','Detail','Miles','Rate','Amount','Status','Note']];
-  T.forEach(x=>rows.push(['Mileage',x.trip_date,dispName(x.dispensary_id),x.method,x.miles??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
-  E.forEach(x=>rows.push(['Expense',x.expense_date,dispName(x.dispensary_id),`${x.vendor||''} (${x.category||''})`,'','',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
-  const mile=T.reduce((a,x)=>a+ +x.amount,0),exp=E.reduce((a,x)=>a+ +x.amount,0);
-  rows.push([]); rows.push(['','','','','','Mileage',mile.toFixed(2)]);
-  rows.push(['','','','','','Expenses',exp.toFixed(2)]); rows.push(['','','','','','TOTAL',(mile+exp).toFixed(2)]);
+  const rows=[['Type','Date','Dispensary','Detail','Paid','Miles','Rate','Amount','Status','Note']];
+  T.forEach(x=>rows.push(['Mileage',x.trip_date,dispName(x.dispensary_id),x.method,'',x.miles??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
+  E.forEach(x=>rows.push(['Expense',x.expense_date,dispName(x.dispensary_id),`${x.vendor||''} (${x.category||''})`,x.payment==='company'?'Company card':'Reimburse',' ','',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
+  const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
+  rows.push([]); rows.push(['','','','','','','','Mileage',mile.toFixed(2)]);
+  rows.push(['','','','','','','','Expenses (reimburse)',reimb.toFixed(2)]);
+  rows.push(['','','','','','','','REIMBURSE TOTAL',(mile+reimb).toFixed(2)]);
+  if(card>0) rows.push(['','','','','','','','Company card (not reimbursed)',card.toFixed(2)]);
   const csv=rows.map(r=>r.map(c=>{let s=String(c??'');
     if(/^[=+\-@\t\r]/.test(s)) s="'"+s;                       // neutralize spreadsheet formula injection
     return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
   const name=`reimbursement_${(prof.full_name||prof.email).replace(/\W+/g,'_')}_${per.start_date}.csv`;
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=name; a.click();
 }
-function exportPDF(prof,per,T,E,mile,exp){
+function exportPDF(prof,per,T,E){
+  const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
   const tr=T.map(x=>`<tr><td>${fmtDate(x.trip_date)}</td><td>${esc(dispName(x.dispensary_id))}</td><td>${x.method}</td><td style="text-align:right">${x.miles??''}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
-  const er=E.map(x=>`<tr><td>${fmtDate(x.expense_date)}</td><td>${esc(x.vendor||'')} — ${esc(x.category||'')}</td><td>${esc(dispName(x.dispensary_id))}</td><td></td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
+  const er=E.map(x=>`<tr><td>${fmtDate(x.expense_date)}</td><td>${esc(x.vendor||'')} — ${esc(x.category||'')}</td><td>${esc(dispName(x.dispensary_id))}</td><td>${x.payment==='company'?'Company card':'Reimburse'}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
   $('#printarea').innerHTML=`
     <h2 style="margin:0">Wizard Trees — Reimbursement</h2>
     <p style="margin:4px 0 0">${esc(prof.full_name||prof.email)} &nbsp;·&nbsp; ${esc(per.label)}</p>
     <h3>Mileage — ${money(mile)}</h3>
     <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Dispensary</th><th>Method</th><th>Miles</th><th>Amount</th></tr>${tr||'<tr><td colspan=5>none</td></tr>'}</table>
-    <h3>Expenses — ${money(exp)}</h3>
-    <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Vendor</th><th>Dispensary</th><th></th><th>Amount</th></tr>${er||'<tr><td colspan=5>none</td></tr>'}</table>
-    <h2 style="text-align:right;margin-top:16px">Total: ${money(mile+exp)}</h2>
+    <h3>Expenses (reimbursable) — ${money(reimb)}</h3>
+    <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Vendor</th><th>Dispensary</th><th>Paid with</th><th>Amount</th></tr>${er||'<tr><td colspan=5>none</td></tr>'}</table>
+    <h2 style="text-align:right;margin-top:16px">Reimburse total: ${money(mile+reimb)}</h2>
+    ${card>0?`<p style="text-align:right;color:#666;margin:0">Company card (not reimbursed): ${money(card)}</p>`:''}
     <p style="color:#666;font-size:12px">Receipt images are stored in the app; open each expense to view.</p>`;
   window.print();
 }

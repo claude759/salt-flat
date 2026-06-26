@@ -121,6 +121,7 @@ create table if not exists public.expenses (
   vendor        text,
   amount        numeric(10,2) not null,
   category      text,
+  payment       text not null default 'reimbursement' check (payment in ('reimbursement','company')),
   receipt_path  text,                  -- storage path in 'receipts' bucket
   ocr_raw       jsonb,                 -- raw model extraction for audit
   period_id     uuid references public.pay_periods(id),
