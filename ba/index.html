@@ -1008,7 +1008,7 @@ function expenseSheet(){
   openSheet(`
     <h3>Add an expense</h3>
     <label class="btn primary block" style="margin-top:4px">📷 Snap receipt<input id="eFile" type="file" accept="image/*" capture="environment" hidden></label>
-    <div class="small muted center" style="margin-top:4px">Snap and it saves automatically — finish any red fields on the next screen.</div>
+    <div class="small muted center" style="margin-top:4px">Snap it and you're back home instantly — the receipt details fill in on their own; finish any red fields on the worksheet.</div>
     <div id="eThumbWrap" class="hide" style="margin-top:10px;text-align:center"><img id="eThumb" class="thumb" style="width:120px;height:120px"></div>
     <div id="eOcr" class="small muted" style="margin-top:6px"></div>
     <label class="fl">Vendor</label><input id="eVendor" placeholder="e.g. Chevron">
@@ -1027,45 +1027,64 @@ function expenseSheet(){
   `);
   $('#eCancel').onclick=closeSheet;
   ['#eAmt','#eVendor','#eDate'].forEach(sel=>{ const el=$(sel); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#eMsg').textContent=''; }); });
-  // Save the draft (no blocking) and drop the BA on the Expenses worksheet, where
-  // any still-empty required cells are highlighted red to finish inline.
+  // Insert the draft (no blocking) and drop the BA on the Expenses worksheet.
   async function saveExpenseDraft(){
     const today=todayISO(), edv=$('#eDate').value;
     const ed = (edv && edv<=today) ? edv : today;     // empty / OCR-misread future date → today
-    const amt = Number($('#eAmt').value)||0;          // 0 if not filled yet — finish it on the grid
+    const amt = Number($('#eAmt').value)||0;
     const vendor = $('#eVendor').value.trim();
-    if(!receiptPath && !(amt>0) && !vendor){ $('#eMsg').textContent='Snap a receipt or enter an amount first.'; return false; }
-    const { error }=await supabase.from('expenses').insert({
+    if(!receiptPath && !(amt>0) && !vendor){ $('#eMsg').textContent='Snap a receipt or enter an amount first.'; return null; }
+    const { data, error }=await supabase.from('expenses').insert({
       ba_id:state.session.user.id, expense_date:ed, dispensary_id:$('#eDisp').value||null,
       vendor:vendor||null, amount:amt, category:$('#eCat').value, payment:$('#ePay').value||'reimbursement', receipt_path:receiptPath,
       ocr_raw:ocr, note:$('#eNote').value||null, status:'draft'
-    });
-    if(error){ $('#eMsg').textContent='Couldn’t save: '+error.message; return false; }   // surface the real reason inline
+    }).select('*').single();
+    if(error){ $('#eMsg').textContent='Couldn’t save: '+error.message; return null; }   // surface the real reason inline
     closeSheet();
-    toast(amt>0 && vendor ? 'Expense saved' : 'Saved — finish the red fields below','ok');
+    toast(amt>0 && vendor ? 'Expense saved' : 'Saved — reading the receipt…','ok');
     state.gridMode='expenses'; state.baTab='home';
     await ensurePeriodForDate(ed); await drawBA();
-    return true;
+    return data;
   }
+  // Snap → upload → save instantly → home. OCR then fills the row in the background.
   $('#eFile').onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
     $('#eThumbWrap').classList.remove('hide'); $('#eThumb').src=URL.createObjectURL(f);
-    $('#eOcr').innerHTML='<span class="spin"></span> Reading receipt…';
-    try{
-      receiptPath=await uploadPhoto('receipts',f);
-      const r=await callFn('extract-receipt',{path:receiptPath});
-      ocr=r.raw||r;
-      if(r.ok){
-        if(r.vendor)$('#eVendor').value=r.vendor;
-        if(r.total!=null)$('#eAmt').value=r.total;
-        if(r.date && r.date<=todayISO())$('#eDate').value=r.date;   // ignore an OCR-misread future date
-        if(r.category)$('#eCat').value=r.category;
-      }
-      $('#eOcr').innerHTML='<span class="spin"></span> Saving…';
-      await saveExpenseDraft();          // auto-save + go straight to the Expenses grid (no "Save" tap)
-    }catch(err){ $('#eOcr').textContent='Upload/read failed — fill the fields, then tap ✓ Save.'; }
+    $('#eOcr').innerHTML='<span class="spin"></span> Uploading…';
+    try{ receiptPath=await uploadPhoto('receipts',f); }
+    catch(err){ $('#eOcr').textContent='Upload failed — try again, or enter it manually below.'; return; }
+    const saved = await saveExpenseDraft();
+    if(saved) ocrFillInBackground(receiptPath, saved.id);
   };
-  $('#eSave').onclick=async ()=>{ const b=$('#eSave'); busy(b,true); const ok=await saveExpenseDraft(); if(!ok) busy(b,false); };  // fallback for manual (no-photo) entry
+  $('#eSave').onclick=async ()=>{ const b=$('#eSave'); busy(b,true); const ok=await saveExpenseDraft(); if(!ok) busy(b,false); };  // manual (no-photo) entry
+}
+// After a snapped receipt is saved instantly, the OCR runs here and fills the
+// still-empty fields in place when it returns — the popup never waits on it.
+async function ocrFillInBackground(path, id){
+  try{
+    const r=await callFn('extract-receipt',{path});
+    if(!r) return;
+    const row=(state._E||[]).find(x=>x.id===id)||{};
+    const patch={ ocr_raw:r.raw||r };
+    if(r.ok){
+      if(r.total!=null && !(Number(row.amount)>0)) patch.amount=r.total;
+      if(r.vendor && !((row.vendor||'').trim())) patch.vendor=r.vendor;
+      if(r.category && (!row.category || row.category===EXPENSE_CATEGORIES[0])) patch.category=r.category;
+    }
+    const { data, error }=await supabase.from('expenses').update(patch).eq('id',id).eq('status','draft').select('*').single();
+    if(error||!data) return;
+    const i=(state._E||[]).findIndex(x=>x.id===id); if(i>=0) state._E[i]=data;
+    refreshItems(); refreshTotals(); fillGridRowFromOcr(id, data); gridTotal();
+  }catch{}
+}
+// fill a draft's grid cells without rebuilding the grid (won't clobber in-progress edits)
+function fillGridRowFromOcr(id, data){
+  const body=$('#gBody'); if(!body) return;
+  const tr=body.querySelector(`tr[data-id="${CSS.escape(id)}"]`); if(!tr) return;
+  const amt=tr.querySelector('.g-amt'), desc=tr.querySelector('.g-desc'), cat=tr.querySelector('.g-cat');
+  if(amt && document.activeElement!==amt && !amt.value && Number(data.amount)>0){ amt.value=data.amount; amt.classList.remove('needs'); }
+  if(desc && document.activeElement!==desc && !desc.value && (data.vendor||'').trim()){ desc.value=data.vendor; desc.classList.remove('needs'); }
+  if(cat && data.category) cat.value=data.category;
 }
 
 /* ── BA profile ── */
@@ -1149,19 +1168,20 @@ function drawAdmin(){
 async function adminDash(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   const per=state.period;
-  const [{data:bas}, trips, exps, subs] = await Promise.all([
-    supabase.from('profiles').select('*').eq('role','ba').order('full_name'),
+  const [{data:profs}, trips, exps, subs] = await Promise.all([
+    supabase.from('profiles').select('*').order('full_name'),
     per?supabase.from('trips').select('ba_id,amount,status').eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('ba_id,amount,status,payment').eq('period_id',per.id):{data:[]},
+    per?supabase.from('expenses').select('ba_id,amount,status,payment,receipt_path').eq('period_id',per.id):{data:[]},
     per?supabase.from('submissions').select('*').eq('period_id',per.id):{data:[]},
   ]);
   const T=trips.data||[],E=exps.data||[],S=subs.data||[];
   const byBa={};
-  (bas||[]).forEach(b=>byBa[b.id]={p:b,mile:0,exp:0,card:0,status:'open'});
-  T.forEach(x=>{ if(byBa[x.ba_id]) byBa[x.ba_id].mile+=Number(x.amount||0); });
-  E.forEach(x=>{ if(byBa[x.ba_id]){ if(x.payment==='company') byBa[x.ba_id].card+=Number(x.amount||0); else byBa[x.ba_id].exp+=Number(x.amount||0); } });
+  (profs||[]).forEach(b=>byBa[b.id]={p:b,mile:0,exp:0,card:0,items:0,receipts:0,status:'open'});
+  T.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ b.mile+=Number(x.amount||0); b.items++; } });
+  E.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ if(x.payment==='company') b.card+=Number(x.amount||0); else b.exp+=Number(x.amount||0); b.items++; if(x.receipt_path) b.receipts++; } });
   S.forEach(s=>{ if(byBa[s.ba_id]) byBa[s.ba_id].status=s.status; });
-  let rows=Object.values(byBa);
+  // every BA, plus anyone else (incl. you) who has logged something this period
+  let rows=Object.values(byBa).filter(r=> r.p.role==='ba' || r.items>0 );
   if(state.adminRegion!=='all') rows=rows.filter(r=>r.p.region===state.adminRegion);
   const grand=rows.reduce((a,r)=>a+r.mile+r.exp,0);
   m.innerHTML=`
@@ -1173,22 +1193,22 @@ async function adminDash(m){
           ${REGIONS.map(r=>`<option value="${r}" ${state.adminRegion===r?'selected':''}>${r}</option>`).join('')}
         </select></div>
       <div class="totbar" style="margin-top:12px">
-        <div class="tot"><div class="k">BAs</div><div class="v">${rows.length}</div></div>
+        <div class="tot"><div class="k">People</div><div class="v">${rows.length}</div></div>
         <div class="tot"><div class="k">Submitted</div><div class="v">${rows.filter(r=>r.status==='submitted').length}</div></div>
         <div class="tot sum"><div class="k">Period total</div><div class="v">${money(grand)}</div></div>
       </div>
     </div>
     <div class="card">
-      <h3>Brand ambassadors</h3>
+      <h3>Team activity <span class="muted small">— tap to see uploads</span></h3>
       ${rows.length?rows.map(r=>`
         <div class="item" data-ba="${r.p.id}" style="cursor:pointer">
           <div class="ic">${(r.p.full_name||'?').slice(0,1).toUpperCase()}</div>
-          <div class="grow"><div class="t">${esc(r.p.full_name||r.p.email)}</div>
-            <div class="s">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div></div>
+          <div class="grow"><div class="t">${esc(r.p.full_name||r.p.email)}${r.p.id===state.session.user.id?' <span class="pill">you</span>':''}</div>
+            <div class="s">${r.items?`${r.items} item${r.items===1?'':'s'}${r.receipts?` · ${r.receipts} 🧾`:''} · ${money(r.mile)} mi · ${money(r.exp)} exp${r.card>0?` · 💳 ${money(r.card)}`:''}`:'nothing logged yet'}</div></div>
           <div class="amt">${money(r.mile+r.exp)}</div>
           ${r.p.region?`<span class="pill">${r.p.region}</span>`:''}
-          <span class="badge ${r.status}">${r.status}</span>
-        </div>`).join(''):`<p class="muted small">No BAs${state.adminRegion!=='all'?' in '+state.adminRegion:''} yet — add them in Settings.</p>`}
+          <span class="badge ${r.status}">${r.status==='open'?'in progress':r.status}</span>
+        </div>`).join(''):`<p class="muted small">No people${state.adminRegion!=='all'?' in '+state.adminRegion:''} yet — add them in Settings.</p>`}
     </div>`;
   m.querySelectorAll('[data-ba]').forEach(el=>el.onclick=()=>adminBaDetail(el.dataset.ba));
   const rs=$('#regSel'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminDash(m); };
