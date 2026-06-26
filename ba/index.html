@@ -507,6 +507,8 @@ async function drawBA(){
     state.period = state.periods.find(p=>p.start_date<=_t&&p.end_date>=_t)
       || state.periods.find(p=>p.end_date<_t) || state.period;
   }
+  await flushGrid();                                  // commit pending grid edits before reading
+  const seq = state._drawSeq = (state._drawSeq||0)+1; // latest render wins
   m.innerHTML = `<div class="loading"><span class="spin"></span></div>`;
   const per = state.period;
   const [trips, exps, sub] = await Promise.all([
@@ -514,6 +516,7 @@ async function drawBA(){
     per ? supabase.from('expenses').select('*').eq('ba_id',state.session.user.id).eq('period_id',per.id).order('expense_date',{ascending:false}) : {data:[]},
     per ? supabase.from('submissions').select('*').eq('ba_id',state.session.user.id).eq('period_id',per.id).maybeSingle() : {data:null},
   ]);
+  if(seq !== state._drawSeq) return;                  // a newer drawBA superseded this fetch — don't clobber
   const T=trips.data||[], E=exps.data||[], S=sub?.data||null;
   state._T=T; state._E=E;
   const submittedLock = S && (S.status==='submitted'||S.status==='approved');
@@ -597,8 +600,9 @@ async function delItem(kind,id){
   toast('Deleted'); refreshItems(); refreshTotals(); renderGrid();
 }
 async function submitPeriod(){
-  const T=state._T||[], E=state._E||[];
   if(!confirm('Submit all items in this period? You won’t be able to edit them after.')) return;
+  await flushGrid();                          // commit any pending grid edits before snapshotting state
+  const T=state._T||[], E=state._E||[];
   const submittable = x => x.status==='draft' || x.status==='rejected';
   const ids=T.filter(submittable).map(x=>x.id), eids=E.filter(submittable).map(x=>x.id);
   if(!ids.length && !eids.length) return toast('Nothing to submit','err');
@@ -707,6 +711,16 @@ function wireGridRow(tr, mode){
 }
 function savedIndicator(t){ const el=$('#gSaved'); if(el) el.textContent=t; }
 function scheduleAutosave(tr, mode){ clearTimeout(tr._t); savedIndicator('Saving…'); tr._t=setTimeout(()=>gridAutosave(tr,mode),700); }
+// Commit any debounced / in-flight grid edits before a full re-render or submit,
+// so the incremental autosave can never race drawBA's fetch (which caused saved
+// items to flicker / vanish). Bounded wait (~1s) for quiescence.
+async function flushGrid(){
+  const body=$('#gBody'); if(!body) return;
+  const mode=state.gridMode||'miles';
+  const rows=()=>[...body.querySelectorAll('tr')];
+  rows().forEach(tr=>{ if(tr._t){ clearTimeout(tr._t); tr._t=null; gridAutosave(tr,mode); } });
+  for(let i=0;i<25 && rows().some(tr=>tr._saving||tr._t); i++) await new Promise(r=>setTimeout(r,40));
+}
 async function gridAutosave(tr, mode){
   if(tr._saving){ scheduleAutosave(tr,mode); return; }
   const isNew=!tr.dataset.id; let payload, table;
@@ -740,7 +754,7 @@ async function gridAutosave(tr, mode){
       if(error) throw error;
       tr.dataset.id=data.id;
       const dc=tr.querySelector('.gdel'); if(dc && !dc.querySelector('.gx')){ dc.innerHTML='<button class="gx" title="delete row">✕</button>'; dc.querySelector('.gx').onclick=()=>gridDelete(tr,mode); }
-      if(!state.period || data.period_id===state.period.id) (mode==='miles'?state._T:state._E).unshift(data);
+      if(!state.period || data.period_id===state.period.id){ const a=(mode==='miles'?state._T:state._E); if(!a.some(x=>x.id===data.id)) a.unshift(data); }
       const t=document.createElement('template'); t.innerHTML=gridRowHtml(mode,null,todayISO()); const ntr=t.content.firstElementChild; $('#gBody').appendChild(ntr); wireGridRow(ntr,mode);
     } else {
       const {data,error}=await supabase.from(table).update(payload).eq('id',tr.dataset.id).select('*').single();
