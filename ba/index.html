@@ -647,13 +647,15 @@ function gridRowHtml(mode, it, today){
   const rcell = it&&it.receipt_path
     ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span><label class="rrepl" title="replace">✎<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`
     : `<div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`;
+  const needDesc = it && !((it.vendor||'').trim()) ? ' needs' : '';   // incomplete capture-fast drafts get red cells
+  const needAmt  = it && !(Number(it.amount)>0)     ? ' needs' : '';
   return `<tr data-id="${id}" data-rpath="${it&&it.receipt_path?esc(it.receipt_path):''}">${del}
     <td><input type="date" class="gdate g-date" value="${it?it.expense_date:today}"></td>
     <td>${rcell}</td>
-    <td><input class="g-desc" placeholder="description" value="${it?esc(it.vendor||''):''}"></td>
+    <td><input class="g-desc${needDesc}" placeholder="description" value="${it?esc(it.vendor||''):''}"></td>
     <td><select class="g-cat">${cats}</select></td>
     <td><select class="g-pay">${pays}</select></td>
-    <td><input class="gnum g-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${it&&it.amount!=null?it.amount:''}"></td></tr>`;
+    <td><input class="gnum g-amt${needAmt}" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${it&&Number(it.amount)>0?it.amount:''}"></td></tr>`;
 }
 async function gridReceiptRow(e, tr, mode){
   const f=e.target.files[0]; if(!f) return;
@@ -699,7 +701,7 @@ function wireGridRow(tr, mode){
   const x=tr.querySelector('.gx'); if(x) x.onclick=()=>gridDelete(tr,mode);
   tr.querySelectorAll('input,select').forEach(el=>{
     if(el.classList.contains('g-receipt')) return;
-    el.addEventListener('input', ()=>{ gridTotal(); scheduleAutosave(tr,mode); });
+    el.addEventListener('input', ()=>{ el.classList.remove('needs'); gridTotal(); scheduleAutosave(tr,mode); });
     el.addEventListener('change', ()=>{ gridTotal(); scheduleAutosave(tr,mode); });
   });
   if(mode==='miles'){
@@ -1043,29 +1045,24 @@ function expenseSheet(){
     }catch(err){ $('#eOcr').textContent='Upload/read failed — fill in manually.'; }
   };
   $('#eSave').onclick=async ()=>{
-    // validate required fields; flag the bad ones in red (not a fleeting toast)
+    // Capture-fast: save the draft immediately (no blocking) and drop the BA on the
+    // Expenses worksheet, where any still-empty required cells are highlighted red.
     const today=todayISO(), edv=$('#eDate').value;
-    const futureDate = !!edv && edv>today;   // a receipt can't be dated in the future (OCR often misreads)
-    const checks=[ ['#eAmt', el=>Number(el.value)>0], ['#eVendor', el=>el.value.trim()!==''], ['#eDate', el=>!!el.value && el.value<=today] ];
-    const missing=[];
-    checks.forEach(([sel,ok])=>{ const el=$(sel); const good=ok(el); el.classList.toggle('needs',!good); if(!good) missing.push(el); });
-    if(missing.length){
-      $('#eMsg').textContent = futureDate
-        ? 'That date is in the future — receipts can’t be future-dated. Fix the date.'
-        : 'Fill the highlighted field'+(missing.length>1?'s':'')+' to save.';
-      missing[0].focus(); return;
-    }
-    $('#eMsg').textContent='';
-    const ed=edv, amt=Number($('#eAmt').value);
+    const ed = (edv && edv<=today) ? edv : today;     // empty / OCR-misread future date → today
+    const amt = Number($('#eAmt').value)||0;          // 0 if not filled yet — finish it on the grid
+    const vendor = $('#eVendor').value.trim();
+    if(!receiptPath && !(amt>0) && !vendor){ $('#eMsg').textContent='Snap a receipt or enter an amount first.'; return; }
     const btn=$('#eSave'); busy(btn,true);
     const { error }=await supabase.from('expenses').insert({
       ba_id:state.session.user.id, expense_date:ed, dispensary_id:$('#eDisp').value||null,
-      vendor:$('#eVendor').value||null, amount:amt, category:$('#eCat').value, payment:$('#ePay').value||'reimbursement', receipt_path:receiptPath,
+      vendor:vendor||null, amount:amt, category:$('#eCat').value, payment:$('#ePay').value||'reimbursement', receipt_path:receiptPath,
       ocr_raw:ocr, note:$('#eNote').value||null, status:'draft'
     });
     busy(btn,false);
     if(error){ $('#eMsg').textContent='Couldn’t save: '+error.message; return; }   // surface the real reason inline
-    toast('Expense saved','ok'); closeSheet(); state.baTab='home';
+    closeSheet();
+    toast(amt>0 && vendor ? 'Expense saved' : 'Saved — finish the red fields below','ok');
+    state.gridMode='expenses'; state.baTab='home';
     await ensurePeriodForDate(ed); drawBA();
   };
 }
