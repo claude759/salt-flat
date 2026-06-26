@@ -1007,7 +1007,8 @@ function expenseSheet(){
   const cats=EXPENSE_CATEGORIES;
   openSheet(`
     <h3>Add an expense</h3>
-    <label class="btn block" style="margin-top:4px">📷 Snap / upload receipt<input id="eFile" type="file" accept="image/*" capture="environment" hidden></label>
+    <label class="btn primary block" style="margin-top:4px">📷 Snap receipt<input id="eFile" type="file" accept="image/*" capture="environment" hidden></label>
+    <div class="small muted center" style="margin-top:4px">Snap and it saves automatically — finish any red fields on the next screen.</div>
     <div id="eThumbWrap" class="hide" style="margin-top:10px;text-align:center"><img id="eThumb" class="thumb" style="width:120px;height:120px"></div>
     <div id="eOcr" class="small muted" style="margin-top:6px"></div>
     <label class="fl">Vendor</label><input id="eVendor" placeholder="e.g. Chevron">
@@ -1021,12 +1022,31 @@ function expenseSheet(){
     ${dispOpts?'':'<div class="small muted" style="margin-top:4px">No dispensaries in your state yet — ask your admin to add one.</div>'}
     <label class="fl">Note (optional)</label><input id="eNote">
     <div id="eMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
-    <button class="btn primary block" id="eSave" style="margin-top:6px;font-size:16px">✓ Save expense</button>
+    <button class="btn block" id="eSave" style="margin-top:6px">Save without a photo</button>
     <button class="btn ghost block" id="eCancel" style="margin-top:8px">Cancel</button>
   `);
   $('#eCancel').onclick=closeSheet;
-  // clear the red flag + message as soon as a flagged field is edited
   ['#eAmt','#eVendor','#eDate'].forEach(sel=>{ const el=$(sel); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#eMsg').textContent=''; }); });
+  // Save the draft (no blocking) and drop the BA on the Expenses worksheet, where
+  // any still-empty required cells are highlighted red to finish inline.
+  async function saveExpenseDraft(){
+    const today=todayISO(), edv=$('#eDate').value;
+    const ed = (edv && edv<=today) ? edv : today;     // empty / OCR-misread future date → today
+    const amt = Number($('#eAmt').value)||0;          // 0 if not filled yet — finish it on the grid
+    const vendor = $('#eVendor').value.trim();
+    if(!receiptPath && !(amt>0) && !vendor){ $('#eMsg').textContent='Snap a receipt or enter an amount first.'; return false; }
+    const { error }=await supabase.from('expenses').insert({
+      ba_id:state.session.user.id, expense_date:ed, dispensary_id:$('#eDisp').value||null,
+      vendor:vendor||null, amount:amt, category:$('#eCat').value, payment:$('#ePay').value||'reimbursement', receipt_path:receiptPath,
+      ocr_raw:ocr, note:$('#eNote').value||null, status:'draft'
+    });
+    if(error){ $('#eMsg').textContent='Couldn’t save: '+error.message; return false; }   // surface the real reason inline
+    closeSheet();
+    toast(amt>0 && vendor ? 'Expense saved' : 'Saved — finish the red fields below','ok');
+    state.gridMode='expenses'; state.baTab='home';
+    await ensurePeriodForDate(ed); await drawBA();
+    return true;
+  }
   $('#eFile').onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
     $('#eThumbWrap').classList.remove('hide'); $('#eThumb').src=URL.createObjectURL(f);
@@ -1036,35 +1056,16 @@ function expenseSheet(){
       const r=await callFn('extract-receipt',{path:receiptPath});
       ocr=r.raw||r;
       if(r.ok){
-        if(r.vendor){$('#eVendor').value=r.vendor; $('#eVendor').classList.remove('needs');}
-        if(r.total!=null){$('#eAmt').value=r.total; $('#eAmt').classList.remove('needs');}
-        if(r.date && r.date<=todayISO()){$('#eDate').value=r.date; $('#eDate').classList.remove('needs');}  // ignore an OCR-misread future date
+        if(r.vendor)$('#eVendor').value=r.vendor;
+        if(r.total!=null)$('#eAmt').value=r.total;
+        if(r.date && r.date<=todayISO())$('#eDate').value=r.date;   // ignore an OCR-misread future date
         if(r.category)$('#eCat').value=r.category;
-        $('#eOcr').innerHTML='✓ Auto-filled — check the numbers, then tap ✓ Save.';
-      } else $('#eOcr').textContent='Couldn’t read it — fill in the fields, then tap ✓ Save.';
-    }catch(err){ $('#eOcr').textContent='Upload/read failed — fill in manually.'; }
+      }
+      $('#eOcr').innerHTML='<span class="spin"></span> Saving…';
+      await saveExpenseDraft();          // auto-save + go straight to the Expenses grid (no "Save" tap)
+    }catch(err){ $('#eOcr').textContent='Upload/read failed — fill the fields, then tap ✓ Save.'; }
   };
-  $('#eSave').onclick=async ()=>{
-    // Capture-fast: save the draft immediately (no blocking) and drop the BA on the
-    // Expenses worksheet, where any still-empty required cells are highlighted red.
-    const today=todayISO(), edv=$('#eDate').value;
-    const ed = (edv && edv<=today) ? edv : today;     // empty / OCR-misread future date → today
-    const amt = Number($('#eAmt').value)||0;          // 0 if not filled yet — finish it on the grid
-    const vendor = $('#eVendor').value.trim();
-    if(!receiptPath && !(amt>0) && !vendor){ $('#eMsg').textContent='Snap a receipt or enter an amount first.'; return; }
-    const btn=$('#eSave'); busy(btn,true);
-    const { error }=await supabase.from('expenses').insert({
-      ba_id:state.session.user.id, expense_date:ed, dispensary_id:$('#eDisp').value||null,
-      vendor:vendor||null, amount:amt, category:$('#eCat').value, payment:$('#ePay').value||'reimbursement', receipt_path:receiptPath,
-      ocr_raw:ocr, note:$('#eNote').value||null, status:'draft'
-    });
-    busy(btn,false);
-    if(error){ $('#eMsg').textContent='Couldn’t save: '+error.message; return; }   // surface the real reason inline
-    closeSheet();
-    toast(amt>0 && vendor ? 'Expense saved' : 'Saved — finish the red fields below','ok');
-    state.gridMode='expenses'; state.baTab='home';
-    await ensurePeriodForDate(ed); drawBA();
-  };
+  $('#eSave').onclick=async ()=>{ const b=$('#eSave'); busy(b,true); const ok=await saveExpenseDraft(); if(!ok) busy(b,false); };  // fallback for manual (no-photo) entry
 }
 
 /* ── BA profile ── */
