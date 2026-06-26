@@ -84,8 +84,13 @@ create table if not exists public.trips (
   id            uuid primary key default gen_random_uuid(),
   ba_id         uuid not null references public.profiles(id) on delete cascade,
   trip_date     date not null,
-  dispensary_id uuid references public.dispensaries(id),
-  method        text not null check (method in ('distance','odometer')),
+  dispensary_id uuid references public.dispensaries(id),     -- optional; destination may be free text
+  start_label   text,                                        -- starting location (free text or "Current location")
+  dest_label    text,                                        -- destination (free text or dispensary name)
+  start_lat     double precision,                            -- GPS start (auto-distance)
+  start_lng     double precision,
+  roundtrip     boolean not null default true,
+  method        text not null check (method in ('distance','odometer','manual')),
   start_odo     numeric(9,1),
   end_odo       numeric(9,1),
   start_photo   text,                  -- storage path in 'odometer' bucket
@@ -217,28 +222,18 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  cached numeric;
 begin
   if tg_op = 'UPDATE' and new.status in ('submitted','approved') then
-    -- locked: preserve the values computed while it was still editable
-    new.miles        := old.miles;
-    new.miles_source := old.miles_source;
-    new.rate         := old.rate;
-    new.amount       := old.amount;
+    -- locked once submitted: freeze everything that drives the reimbursement $
+    new.miles := old.miles; new.miles_source := old.miles_source;
+    new.rate := old.rate;   new.amount := old.amount;
+    new.start_label := old.start_label; new.dest_label := old.dest_label;
+    new.start_lat := old.start_lat;     new.start_lng := old.start_lng;
+    new.roundtrip := old.roundtrip;
   else
-    -- editable (insert / draft / rejected): recompute authoritatively
-    if new.method = 'distance' then
-      select miles_round into cached
-        from public.distance_cache
-       where ba_id = new.ba_id and dispensary_id = new.dispensary_id;
-      if cached is not null then
-        new.miles := cached;                 -- trust the server-computed route
-        new.miles_source := 'maps_cache';
-      else
-        new.miles_source := 'manual';        -- no cached route (e.g. no maps key)
-      end if;
-    end if;
+    -- editable (insert / draft / rejected): rate is server-owned, amount derived.
+    -- miles come from the client (calc-distance result, odometer delta, or typed);
+    -- the start GPS/labels are stored for the admin to audit.
     new.rate   := public.effective_rate(new.ba_id);
     new.amount := round(coalesce(new.miles, 0) * new.rate, 2);
   end if;

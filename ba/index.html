@@ -135,6 +135,17 @@
   /* admin view switcher */
   .vswitch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 14px;border-bottom:1px solid var(--line)}
 
+  /* spreadsheet-style quick-entry grid */
+  .gridwrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:10px}
+  table.grid{border-collapse:collapse;min-width:560px;width:100%}
+  table.grid th{background:var(--panel2);color:var(--muted);font-size:9.5px;text-transform:uppercase;letter-spacing:.3px;
+    font-weight:700;padding:6px 7px;white-space:nowrap;text-align:left;border-bottom:1px solid var(--line)}
+  table.grid td{padding:0;border-bottom:1px solid var(--line);border-right:1px solid var(--line)}
+  table.grid td:last-child{border-right:0}
+  table.grid input{border:0;border-radius:0;background:transparent;padding:8px 7px;font:inherit;font-size:13px;min-height:38px}
+  table.grid input:focus{background:var(--panel2);box-shadow:inset 0 0 0 1.5px var(--accent)}
+  table.grid input.gnum{width:78px;text-align:right} table.grid input.gdate{width:124px}
+
   .auth-wrap{min-height:100%;display:flex;flex-direction:column;justify-content:center;padding:24px 18px;gap:16px;max-width:420px;margin:0 auto}
   .hero{text-align:center} .hero .logo{width:56px;height:56px;border-radius:15px;margin:0 auto 12px;font-size:28px}
   @media print{ body *{visibility:hidden} #printarea,#printarea *{visibility:visible}
@@ -170,7 +181,7 @@ if (CONFIGURED) {
 const state = {
   session: null, profile: null, settings: null, loadError: null,
   period: null, periods: [], dispensaries: [],
-  baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null,
+  baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles',
 };
 const REGIONS = ['CA','FL','NY'];
 
@@ -477,6 +488,7 @@ async function drawBA(){
       <button class="bigbtn" id="ab-trip" ${locked?'disabled':''}><span class="ic">🚗</span><b>Log trip</b><span class="small muted">mileage</span></button>
       <button class="bigbtn" id="ab-exp" ${locked?'disabled':''}><span class="ic">🧾</span><b>Add expense</b><span class="small muted">snap a receipt</span></button>
     </div>
+    ${locked?'':'<div id="gridcard"></div>'}
     <div class="card">
       <h3>This period · ${items.length} item${items.length===1?'':'s'}</h3>
       <div id="items">${items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>'}</div>
@@ -488,6 +500,7 @@ async function drawBA(){
   $('#ab-exp') &&($('#ab-exp').onclick =()=>expenseSheet());
   $('#submitBtn')&&($('#submitBtn').onclick=()=>submitPeriod(T,E));
   m.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
+  renderGrid();
 }
 function baItemRow(x){
   const trip = x._k==='trip';
@@ -527,6 +540,84 @@ async function submitPeriod(T,E){
   if(eids.length){ const {error}=await supabase.from('expenses').update({status:'submitted',reject_note:null}).in('id',eids);
     if(error) return toast('Submit failed: '+error.message,'err'); }
   toast('Submitted — thank you!','ok'); drawBA();
+}
+
+/* ── Quick-entry spreadsheet grid (mirrors the team's Miles/Reimbursements sheets) ── */
+function renderGrid(){
+  const host=$('#gridcard'); if(!host) return;
+  const mode=state.gridMode||'miles', today=todayISO();
+  const seg=`<div class="seg" id="gMode" style="margin-bottom:10px">
+    <button class="${mode==='miles'?'on':''}" data-g="miles">🚗 Mileage</button>
+    <button class="${mode==='expenses'?'on':''}" data-g="expenses">🧾 Expenses</button></div>`;
+  const milesRow=()=>`<tr>
+    <td><input type="date" class="gdate g-date" value="${today}"></td>
+    <td><input class="g-start" placeholder="start"></td>
+    <td><input class="g-dest" placeholder="destination"></td>
+    <td><input class="g-note" placeholder="notes"></td>
+    <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="0"></td>
+    <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="0"></td>
+    <td><input class="gnum g-mi" type="number" inputmode="decimal" placeholder="mi"></td></tr>`;
+  const expRow=()=>`<tr>
+    <td><input type="date" class="gdate g-date" value="${today}"></td>
+    <td><input class="g-reason" placeholder="e.g. Parking for Sofa Club"></td>
+    <td><input class="gnum g-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00"></td></tr>`;
+  const row=mode==='miles'?milesRow:expRow;
+  const head=mode==='miles'
+    ? `<tr><th>Date</th><th>Starting location</th><th>Destination</th><th>Notes</th><th>Odo start</th><th>Odo end</th><th>Miles</th></tr>`
+    : `<tr><th>Date</th><th>Reason for reimbursement</th><th>Amount</th></tr>`;
+  host.innerHTML=`<div class="card">
+    <h3>Quick entry <span class="muted small">— like your sheet</span></h3>${seg}
+    <div class="gridwrap"><table class="grid"><thead>${head}</thead><tbody id="gBody">${Array.from({length:3},row).join('')}</tbody></table></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn ghost sm" id="gAdd">＋ row</button>
+      <button class="btn primary sm right" id="gSave">Save rows</button>
+    </div>
+    <div class="small muted" style="margin-top:6px">Type a few rows like your sheet, then Save — they join this period as drafts.</div>
+  </div>`;
+  const wire=tr=>{ if(mode!=='miles')return; const os=tr.querySelector('.g-os'),oe=tr.querySelector('.g-oe'),mi=tr.querySelector('.g-mi');
+    const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s) mi.value=Math.round((e-s)*10)/10; }; os.oninput=c; oe.oninput=c; };
+  $('#gBody').querySelectorAll('tr').forEach(wire);
+  $('#gMode').querySelectorAll('button').forEach(b=>b.onclick=()=>{ state.gridMode=b.dataset.g; renderGrid(); });
+  $('#gAdd').onclick=()=>{ const t=document.createElement('template'); t.innerHTML=row(); const tr=t.content.firstElementChild; $('#gBody').appendChild(tr); wire(tr); };
+  $('#gSave').onclick=()=>saveGrid(mode);
+}
+async function saveGrid(mode){
+  const rows=[...document.querySelectorAll('#gBody tr')], recs=[]; let firstDate=null;
+  if(mode==='miles'){
+    for(const tr of rows){
+      const date=tr.querySelector('.g-date').value;
+      const start=tr.querySelector('.g-start').value.trim(), dest=tr.querySelector('.g-dest').value.trim();
+      const note=tr.querySelector('.g-note').value.trim();
+      const os=tr.querySelector('.g-os').value, oe=tr.querySelector('.g-oe').value;
+      let miles=Number(tr.querySelector('.g-mi').value);
+      if(!date) continue;
+      if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
+      if(!(miles>0)) continue;
+      const hasOdo=os!==''&&oe!=='';
+      const disp=baDispensaries().find(d=>dest&&d.name.toLowerCase()===dest.toLowerCase());
+      firstDate=firstDate||date;
+      recs.push({ ba_id:state.session.user.id, trip_date:date, dispensary_id:disp?disp.id:null,
+        method:hasOdo?'odometer':'manual', start_odo:os?Number(os):null, end_odo:oe?Number(oe):null,
+        miles, miles_source:hasOdo?'odometer':'manual', start_label:start||null, dest_label:dest||null,
+        roundtrip:false, note:note||null, status:'draft' });
+    }
+    if(!recs.length) return toast('Add a date + miles (or odometer) to a row','err');
+    const {error}=await supabase.from('trips').insert(recs); if(error) return toast(error.message,'err');
+  } else {
+    for(const tr of rows){
+      const date=tr.querySelector('.g-date').value, reason=tr.querySelector('.g-reason').value.trim();
+      const amt=Number(tr.querySelector('.g-amt').value);
+      if(!date||!(amt>0)) continue;
+      firstDate=firstDate||date;
+      recs.push({ ba_id:state.session.user.id, expense_date:date, vendor:reason||'Reimbursement',
+        amount:amt, category:'Other', note:reason||null, status:'draft' });
+    }
+    if(!recs.length) return toast('Add a date + amount to a row','err');
+    const {error}=await supabase.from('expenses').insert(recs); if(error) return toast(error.message,'err');
+  }
+  toast(`Saved ${recs.length} row${recs.length===1?'':'s'}`,'ok');
+  if(firstDate) await ensurePeriodForDate(firstDate);
+  drawBA();
 }
 
 /* ── Log trip sheet ── */
@@ -627,9 +718,15 @@ function tripSheet(){
     if(!disp) return toast('Pick a dispensary','err');
     if(miles==null||!(miles>0)) return toast('Need the miles for this trip','err');
     const btn=$('#tSave'); busy(btn,true);
+    const dname=(state.dispensaries.find(d=>d.id===disp)||{}).name||null;
     const row={ ba_id:state.session.user.id, trip_date:$('#tDate').value, dispensary_id:disp, method,
-      miles, miles_source:milesSrc, note:$('#tNote').value||null, status:'draft' };
+      miles, miles_source:milesSrc, dest_label:dname, note:$('#tNote').value||null, status:'draft' };
     if(method==='odometer'){ row.start_odo=startOdo; row.end_odo=endOdo; row.start_photo=startPath; row.end_photo=endPath; }
+    if(method==='distance'){
+      row.roundtrip=$('#tRound').checked;
+      row.start_label=startCoords?'📍 Current location':($('#tStart').value||null);
+      if(startCoords){ row.start_lat=startCoords.lat; row.start_lng=startCoords.lng; }
+    }
     const { error }=await supabase.from('trips').insert(row);
     busy(btn,false);
     if(error) return toast(error.message,'err');
@@ -811,7 +908,8 @@ async function adminBaDetail(baId){
   ]);
   const mile=(T||[]).reduce((a,x)=>a+ +x.amount,0), exp=(E||[]).reduce((a,x)=>a+ +x.amount,0);
   const S=sub||{status:'open'};
-  const tripRows=(T||[]).map(x=>`<tr><td>${fmtDate(x.trip_date)}</td><td>${esc(dispName(x.dispensary_id))}</td>
+  const tripRows=(T||[]).map(x=>`<tr><td>${fmtDate(x.trip_date)}</td>
+     <td>${esc(x.dest_label || dispName(x.dispensary_id))}${x.start_label?`<div class="small muted">from ${esc(x.start_label)}</div>`:''}</td>
      <td>${x.method}</td><td class="num">${x.miles??''} mi</td><td class="num">${money(x.amount)}</td>
      <td><span class="badge ${x.status}">${x.status}</span></td>
      <td>${x.status!=='approved'?`<button class="btn sm ghost" data-rej="trips" data-id="${x.id}">Reject</button>`:''}</td></tr>`).join('');
