@@ -49,7 +49,6 @@ Deno.serve(async (req) => {
 
     const body = await req.json();
     const dispensary_id = body.dispensary_id;
-    if (!dispensary_id) return json({ ok: false, error: "dispensary_id required" }, 400);
     if (!ORS_KEY) return manual("Auto-distance isn’t set up yet — enter miles manually.", "no_provider");
 
     const db = admin();
@@ -71,15 +70,26 @@ Deno.serve(async (req) => {
       if (sLat == null || sLng == null) return manual("Set your base address in Profile, tap Current location, or type a start.", "no_start");
     }
 
-    // ── resolve DESTINATION dispensary (geocode + cache its coords) ──
-    const { data: disp } = await db.from("dispensaries").select("*").eq("id", dispensary_id).single();
-    if (!disp) return json({ ok: false, error: "dispensary_not_found" }, 404);
-    let dLat = disp.lat, dLng = disp.lng;
-    if ((dLat == null || dLng == null) && disp.address) {
-      const g = await geocode(disp.address);
-      if (g) { dLat = g.lat; dLng = g.lng; await db.from("dispensaries").update({ lat: dLat, lng: dLng }).eq("id", dispensary_id); }
+    // ── resolve DESTINATION: a dispensary (by id) OR a free address / coords ──
+    let dLat: number | null = null, dLng: number | null = null;
+    if (dispensary_id) {
+      const { data: disp } = await db.from("dispensaries").select("*").eq("id", dispensary_id).single();
+      if (disp) {
+        dLat = disp.lat; dLng = disp.lng;
+        if ((dLat == null || dLng == null) && disp.address) {
+          const g = await geocode(disp.address);
+          if (g) { dLat = g.lat; dLng = g.lng; await db.from("dispensaries").update({ lat: dLat, lng: dLng }).eq("id", dispensary_id); }
+        }
+      }
+    } else if (body.dest_lat != null && body.dest_lng != null) {
+      dLat = body.dest_lat; dLng = body.dest_lng;
+    } else if (body.dest_address) {
+      const g = await geocode(String(body.dest_address));
+      if (g) { dLat = g.lat; dLng = g.lng; }
+    } else {
+      return json({ ok: false, error: "destination required" }, 400);
     }
-    if (dLat == null || dLng == null) return manual("Dispensary address can’t be located — enter miles manually.", "no_dest");
+    if (dLat == null || dLng == null) return manual("Destination can’t be located — enter miles manually.", "no_dest");
 
     // ── route ──
     const meters = await drivingMeters({ lat: sLat, lng: sLng }, { lat: dLat, lng: dLng });
