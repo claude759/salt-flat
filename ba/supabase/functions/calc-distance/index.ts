@@ -1,40 +1,39 @@
-// calc-distance: round-trip driving miles from a BA's saved base to a dispensary.
-// Always computed from the caller's OWN profile base (so the cached value the trips
-// trigger trusts can't be spoofed by a client-supplied base). Geocodes base +
-// dispensary lazily, caches per (ba_id, dispensary), and only calls Google on a
-// cache miss. Every Google failure returns a graceful 200 {ok:false} — never a 500
-// echoing provider internals — so the client falls back to manual miles.
+// calc-distance: driving miles from a starting location to a dispensary, via
+// OpenRouteService (free, no credit card). Start can be GPS coords (start_lat/
+// start_lng), a typed address (start_address), or — if neither — the caller's
+// saved base address. Round-trip by default. Geocoded coords are cached onto the
+// profile/dispensary rows so we only geocode once. Any failure returns a graceful
+// 200 {ok:false} so the BA just types miles instead.
 import { admin, caller, json, preflight } from "../_shared/util.ts";
 
-const MAPS_KEY = Deno.env.get("GOOGLE_MAPS_KEY");
+const ORS_KEY = Deno.env.get("ORS_KEY");
 
 async function geocode(address: string) {
-  if (!MAPS_KEY) return null;
+  if (!ORS_KEY) return null;
   try {
-    const u = new URL("https://maps.googleapis.com/maps/api/geocode/json");
-    u.searchParams.set("address", address);
-    u.searchParams.set("key", MAPS_KEY);
+    const u = new URL("https://api.openrouteservice.org/geocode/search");
+    u.searchParams.set("api_key", ORS_KEY);
+    u.searchParams.set("text", address);
+    u.searchParams.set("boundary.country", "US");
+    u.searchParams.set("size", "1");
     const r = await fetch(u).then((x) => x.json());
-    const loc = r?.results?.[0]?.geometry?.location;
-    return loc ? { lat: loc.lat, lng: loc.lng } : null;
+    const c = r?.features?.[0]?.geometry?.coordinates; // [lon, lat]
+    return Array.isArray(c) ? { lat: c[1], lng: c[0] } : null;
   } catch {
     return null;
   }
 }
 
-// one-way driving meters, or null on any failure (bad key, no route, quota, network)
-async function drivingMetersOneWay(o: { lat: number; lng: number }, d: { lat: number; lng: number }) {
+// one-way driving meters, or null on any failure
+async function drivingMeters(o: { lat: number; lng: number }, d: { lat: number; lng: number }) {
   try {
-    const u = new URL("https://maps.googleapis.com/maps/api/distancematrix/json");
-    u.searchParams.set("origins", `${o.lat},${o.lng}`);
-    u.searchParams.set("destinations", `${d.lat},${d.lng}`);
-    u.searchParams.set("mode", "driving");
-    u.searchParams.set("units", "imperial");
-    u.searchParams.set("key", MAPS_KEY!);
+    const u = new URL("https://api.openrouteservice.org/v2/directions/driving-car");
+    u.searchParams.set("api_key", ORS_KEY!);
+    u.searchParams.set("start", `${o.lng},${o.lat}`);
+    u.searchParams.set("end", `${d.lng},${d.lat}`);
     const r = await fetch(u).then((x) => x.json());
-    const el = r?.rows?.[0]?.elements?.[0];
-    if (el?.status !== "OK") return null;
-    return el.distance.value as number;
+    const m = r?.features?.[0]?.properties?.summary?.distance;
+    return typeof m === "number" ? m : null;
   } catch {
     return null;
   }
@@ -48,56 +47,48 @@ Deno.serve(async (req) => {
     const who = await caller(req);
     if (!who) return json({ ok: false, error: "unauthorized" }, 401);
 
-    const { dispensary_id } = await req.json();
+    const body = await req.json();
+    const dispensary_id = body.dispensary_id;
     if (!dispensary_id) return json({ ok: false, error: "dispensary_id required" }, 400);
-    if (!MAPS_KEY) return manual("Auto-distance unavailable — enter miles manually.", "no_maps_key");
+    if (!ORS_KEY) return manual("Auto-distance isn’t set up yet — enter miles manually.", "no_provider");
 
     const db = admin();
 
-    // base = the caller's OWN saved base; geocode the address lazily. If we have to
-    // (re)geocode, the base may have moved, so drop this BA's cached distances.
-    let baseLat = who.profile?.base_lat;
-    let baseLng = who.profile?.base_lng;
-    if ((baseLat == null || baseLng == null) && who.profile?.base_address) {
-      const g = await geocode(who.profile.base_address);
-      if (g) {
-        baseLat = g.lat; baseLng = g.lng;
-        await db.from("profiles").update({ base_lat: baseLat, base_lng: baseLng }).eq("id", who.user.id);
-        await db.from("distance_cache").delete().eq("ba_id", who.user.id); // stale vs new base
+    // ── resolve START: GPS coords > typed address > saved base ──
+    let sLat = body.start_lat, sLng = body.start_lng, sLabel: string | null = null;
+    if (sLat != null && sLng != null) {
+      sLabel = "Current location";
+    } else if (body.start_address) {
+      const g = await geocode(String(body.start_address));
+      if (!g) return manual("Couldn’t find that starting address — enter miles manually.", "geocode_start");
+      sLat = g.lat; sLng = g.lng; sLabel = String(body.start_address);
+    } else {
+      sLat = who.profile?.base_lat; sLng = who.profile?.base_lng; sLabel = who.profile?.base_address ?? "Base";
+      if ((sLat == null || sLng == null) && who.profile?.base_address) {
+        const g = await geocode(who.profile.base_address);
+        if (g) { sLat = g.lat; sLng = g.lng; await db.from("profiles").update({ base_lat: sLat, base_lng: sLng }).eq("id", who.user.id); }
       }
-    }
-    if (baseLat == null || baseLng == null) {
-      return manual("Set your home/base address in Profile first.", "no_base");
+      if (sLat == null || sLng == null) return manual("Set your base address in Profile, tap Current location, or type a start.", "no_start");
     }
 
+    // ── resolve DESTINATION dispensary (geocode + cache its coords) ──
     const { data: disp } = await db.from("dispensaries").select("*").eq("id", dispensary_id).single();
     if (!disp) return json({ ok: false, error: "dispensary_not_found" }, 404);
-
-    // cache hit (per BA + dispensary)?
-    const { data: cached } = await db.from("distance_cache")
-      .select("miles_round").eq("ba_id", who.user.id).eq("dispensary_id", dispensary_id).maybeSingle();
-    if (cached) return json({ ok: true, miles: Number(cached.miles_round), source: "maps_cache" });
-
-    // geocode dispensary lazily
     let dLat = disp.lat, dLng = disp.lng;
     if ((dLat == null || dLng == null) && disp.address) {
       const g = await geocode(disp.address);
       if (g) { dLat = g.lat; dLng = g.lng; await db.from("dispensaries").update({ lat: dLat, lng: dLng }).eq("id", dispensary_id); }
     }
-    if (dLat == null || dLng == null) {
-      return manual("Dispensary address missing/uncodable — enter miles manually.", "no_dispensary_location");
-    }
+    if (dLat == null || dLng == null) return manual("Dispensary address can’t be located — enter miles manually.", "no_dest");
 
-    const meters = await drivingMetersOneWay({ lat: baseLat, lng: baseLng }, { lat: dLat, lng: dLng });
+    // ── route ──
+    const meters = await drivingMeters({ lat: sLat, lng: sLng }, { lat: dLat, lng: dLng });
     if (meters == null) return manual("Couldn’t compute the route — enter miles manually.", "route_unavailable");
+    const roundtrip = body.roundtrip !== false; // default true
+    const miles = Math.round((meters / 1609.344) * (roundtrip ? 2 : 1) * 100) / 100;
 
-    const milesRound = Math.round((meters / 1609.344) * 2 * 100) / 100; // round trip, 2dp
-    await db.from("distance_cache").upsert(
-      { ba_id: who.user.id, dispensary_id, miles_round: milesRound },
-      { onConflict: "ba_id,dispensary_id" },
-    );
-    return json({ ok: true, miles: milesRound, source: "maps_live" });
+    return json({ ok: true, miles, source: "ors", roundtrip, start_label: sLabel, start_lat: sLat, start_lng: sLng });
   } catch (e) {
-    return json({ ok: false, error: "internal_error" }, 500); // never echo internals
+    return json({ ok: false, error: "internal_error" }, 500);
   }
 });

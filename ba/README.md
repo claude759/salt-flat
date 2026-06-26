@@ -37,7 +37,7 @@ supabase link --project-ref <your-project-ref>
 
 # secrets (server-side only — never shipped to the browser)
 supabase secrets set ANTHROPIC_API_KEY=sk-ant-...      # receipt + odometer vision (Claude)
-supabase secrets set GOOGLE_MAPS_KEY=AIza...           # auto-distance + geocoding (optional)
+supabase secrets set ORS_KEY=...                       # auto-distance + geocoding (OpenRouteService, optional)
 # optional: OCR_MODEL=claude-sonnet-4-6  (default; use claude-haiku-4-5 to cut cost)
 
 supabase functions deploy admin-create-ba
@@ -47,8 +47,9 @@ supabase functions deploy calc-distance
 ```
 `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` are injected automatically.
 
-The **Google Maps key** needs *Distance Matrix API* + *Geocoding API* enabled. Without it,
-auto-distance simply asks the BA to type miles (odometer + manual still work).
+The **ORS_KEY** is a free OpenRouteService token (openrouteservice.org → sign up → API key; no
+credit card). It powers geocoding + driving distance for the trip "Starting location → dispensary"
+flow. Without it, auto-distance simply asks the BA to type miles (odometer + manual still work).
 
 ### 4. Point the app at your project
 Either edit the `CONFIG` block near the top of `index.html`:
