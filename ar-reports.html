@@ -2265,7 +2265,7 @@ function computeProjectedForCurrentWeek(monday){
   if(FILES.distru_items){ projD=0;
     FILES.distru_items.data.forEach(r=>{
       if(isNabisCust(r['Customer'])) return;   // all orders scheduled this week (delivered + pending)
-      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      const dd=parseDate(r['Delivery Date'])||parseDate(r['Order Date']); if(!dd||dd<monday||dd>weekEnd) return;   // no delivery date yet → fall back to order date so freshly-placed orders aren't invisible
       projD += num(r['Quantity']) * num(r['Order Item Price']);
     });
   }
@@ -2274,7 +2274,7 @@ function computeProjectedForCurrentWeek(monday){
       const type=(r['Order Type']||'').trim().toUpperCase();
       const status=(r['Order Status']||'').trim().toUpperCase();
       if(type==='PICKUP_FROM_BRAND'||status==='CANCELLED'||status==='REJECTED'||isOwnEntity(r['Site'])) return;   // delivered included (all scheduled this week)
-      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      const dd=parseDate(r['Delivery Date'])||parseDate(r['Created Date']); if(!dd||dd<monday||dd>weekEnd) return;   // no delivery date yet → fall back to created (order) date
       projN += num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);
     });
   }
@@ -2313,8 +2313,9 @@ function computeOnHandValue(){
   return d ? d.reduce((s,x)=>s+x.value,0) : null;
 }
 // Per-order projected-sales detail for `monday`'s week (all orders scheduled that week —
-// delivered + pending; excludes cancelled/rejected and Nabis pickup-from-brand).
-// Returns {nabis:[{ref,customer,amount}], distru:[...]} or null arrays if the file is absent.
+// delivered + pending; excludes cancelled/rejected and Nabis pickup-from-brand). Orders with no
+// delivery date yet are bucketed by their order/created date (delivDate kept null) so freshly-placed
+// pipeline isn't invisible. Returns {nabis:[{ref,customer,amount}], distru:[...]} or null arrays.
 function projectedDetail(monday){
   const weekEnd=new Date(monday); weekEnd.setDate(monday.getDate()+6); weekEnd.setHours(23,59,59,999);
   let nabis=null, distru=null;
@@ -2328,17 +2329,17 @@ function projectedDetail(monday){
     const it=g.items[k]||(g.items[k]={sku:sku||'',product:product||sku||'',qty:0,lineTotal:0});
     it.qty+=qty||0; it.lineTotal+=lineTotal||0; };
   const finish=agg=>Object.values(agg).filter(x=>Math.abs(x.amount)>0.005)
-    .map(x=>({ref:x.ref,customer:x.customer,date:x.date,invDate:(x.invDate!=null?x.invDate:null),amount:x.amount,
+    .map(x=>({ref:x.ref,customer:x.customer,date:x.date,delivDate:(x.delivDate!=null?x.delivDate:null),invDate:(x.invDate!=null?x.invDate:null),amount:x.amount,
       items:Object.values(x.items).filter(it=>Math.abs(it.lineTotal)>0.005||it.qty).sort((a,b)=>b.lineTotal-a.lineTotal)}))
     .sort((a,b)=>(a.date||Infinity)-(b.date||Infinity) || b.amount-a.amount);   // by delivery date, then $
   if(FILES.distru_items){ const agg={};
     FILES.distru_items.data.forEach(r=>{
       if(isNabisCust(r['Customer'])) return;   // all orders scheduled this week (delivered + pending)
-      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      const realDeliv=parseDate(r['Delivery Date']); const dd=realDeliv||parseDate(r['Order Date']); if(!dd||dd<monday||dd>weekEnd) return;   // no delivery date yet → bucket by order date
       const invNum=(r['Invoice Numbers']||'').trim(), so=(r['Order Number']||'').trim();
       const ref=(r['Order Number']||r['Sales Order']||r['Invoice Number']||'').trim()||'(order)';
       const amt=num(r['Quantity'])*num(r['Order Item Price']);
-      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),invDate:(invDateByNum[invNum]||invDateBySO[so]||null),amount:0,items:{}}); g.amount+=amt;
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),delivDate:(realDeliv?realDeliv.getTime():null),invDate:(invDateByNum[invNum]||invDateBySO[so]||null),amount:0,items:{}}); if(realDeliv&&g.delivDate==null)g.delivDate=realDeliv.getTime(); g.amount+=amt;
       addItem(g, skuClean(r['Product SKU']||r['Product']), skuClean(r['Product']||r['Product SKU']), num(r['Quantity']), amt);
     });
     distru=finish(agg);
@@ -2348,10 +2349,10 @@ function projectedDetail(monday){
       const type=(r['Order Type']||'').trim().toUpperCase();
       const status=(r['Order Status']||'').trim().toUpperCase();
       if(type==='PICKUP_FROM_BRAND'||status==='CANCELLED'||status==='REJECTED'||isOwnEntity(r['Site'])) return;   // delivered included (all scheduled this week)
-      const dd=parseDate(r['Delivery Date']); if(!dd||dd<monday||dd>weekEnd) return;
+      const realDeliv=parseDate(r['Delivery Date']); const dd=realDeliv||parseDate(r['Created Date']); if(!dd||dd<monday||dd>weekEnd) return;   // no delivery date yet → bucket by created (order) date
       const ref=(r['Order Number']||'').trim()||'(order)';
       const amt=num(r['Discounted Line Item Total'])||num(r['Line Item Subtotal']);   // same basis as projN/projD so items reconcile to the cell
-      const g=agg[ref]||(agg[ref]={ref,customer:(r['Site']||r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim(),date:dd.getTime(),amount:0,items:{}}); g.amount+=amt;
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Site']||r['Order Name']||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim(),date:dd.getTime(),delivDate:(realDeliv?realDeliv.getTime():null),amount:0,items:{}}); if(realDeliv&&g.delivDate==null)g.delivDate=realDeliv.getTime(); g.amount+=amt;
       addItem(g, (r['Line Item SKU Code']||'').trim(), skuClean(r['Strain']||r['Line Item SKU Code']), num(r['Units']), amt);
     });
     nabis=finish(agg);
@@ -2579,7 +2580,7 @@ function buildScDetail(){
   const pd=projectedDetail(currentMon);
   // Slim each projected order for the shared payload: short item keys (s/p/q/lt) keep the
   // line-item drill-down available to team viewers without bloating the published JSON.
-  const slim=list=>(list||[]).map(o=>({ref:o.ref,customer:o.customer,date:o.date,iv:(o.invDate!=null?o.invDate:null),amount:o.amount,
+  const slim=list=>(list||[]).map(o=>({ref:o.ref,customer:o.customer,date:o.date,dd:(o.delivDate!=null?o.delivDate:null),iv:(o.invDate!=null?o.invDate:null),amount:o.amount,
     it:(o.items||[]).map(i=>({s:i.sku,p:i.product,q:i.qty,lt:i.lineTotal}))}));
   // date = the week this detail belongs to, so the drill-down stays clickable on the right row
   // even after the week rolls over and is no longer the "live" row.
@@ -2691,8 +2692,16 @@ function scDrill(dateStr, col){
         };
         const isD=col==='projD';   // Distru orders carry an invoice date; Nabis orders don't
         const invOf=x=> (x.invDate!=null?x.invDate:(x.iv!=null?x.iv:null));
-        const dCol=x=>x.date?fmtDt(new Date(x.date)):'—', iCol=x=>{const v=invOf(x);return v?fmtDt(new Date(v)):'—';};
-        return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending), by delivery date · ${list.length} orders · click an order for its line items`,
+        // Real delivery date: live orders carry delivDate, shared orders carry dd (null ⇒ no delivery
+        // date yet, bucketed by order/created date). Legacy payloads have neither ⇒ date IS delivery.
+        const hasDeliv=x=> ('delivDate' in x)||('dd' in x);
+        const delivOf=x=> (x.delivDate!=null?x.delivDate:(x.dd!=null?x.dd:null));
+        const dCol=x=>{ if(!hasDeliv(x)) return x.date?fmtDt(new Date(x.date)):'—';
+          const dv=delivOf(x); if(dv!=null) return fmtDt(new Date(dv));
+          return x.date?`${fmtDt(new Date(x.date))} (order date)`:'—'; };   // no delivery date yet → show the order date it's bucketed by
+        const iCol=x=>{const v=invOf(x);return v?fmtDt(new Date(v)):'—';};
+        const anyFb=list.some(x=>hasDeliv(x)&&delivOf(x)==null);
+        return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending)${anyFb?', plus orders placed this week with no delivery date yet (shown by order date)':''} · ${list.length} orders · click an order for its line items`,
           columns: isD ? [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Invoice date'},{l:'Amount',num:true,money:true}]
                        : [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Amount',num:true,money:true}],
           rows:list.map(x=> isD ? [x.ref||'—', x.customer||'—', dCol(x), iCol(x), x.amount] : [x.ref||'—', x.customer||'—', dCol(x), x.amount]),
