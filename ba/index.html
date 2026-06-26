@@ -277,7 +277,10 @@ async function loadMe(){
     await supabase.rpc('ensure_period');
     const { data: per } = await supabase.from('pay_periods').select('*').order('start_date',{ascending:false});
     state.periods = per||[];
-    state.period = state.periods.find(p=>p.start_date<=todayISO() && p.end_date>=todayISO()) || state.periods[0] || null;
+    const _t = todayISO();
+    state.period = state.periods.find(p=>p.start_date<=_t && p.end_date>=_t)   // current
+      || state.periods.find(p=>p.end_date<_t)                                  // else most recent past (never default to a future period)
+      || state.periods[0] || null;
     const { data: disp } = await supabase.from('dispensaries').select('*').eq('active',true).order('name');
     state.dispensaries = disp||[];
     // recent start/destination labels for the trip autocomplete
@@ -455,10 +458,23 @@ function wireSwitcher(){
   });
 }
 
-function periodPicker(onChange){
-  const opts = state.periods.map(p=>`<option value="${p.id}" ${state.period?.id===p.id?'selected':''}>${esc(p.label)}${p.status==='closed'?' (closed)':''}</option>`).join('');
+// Pay-period phase relative to today, and who may edit it.
+function actingAsBA(){ return !!state.preview || state.profile?.role!=='admin'; }
+function periodPhase(p){ if(!p) return 'none'; const t=todayISO(); if(p.start_date>t) return 'future'; if(p.end_date<t) return 'past'; return 'current'; }
+// In the BA surface only the current, open period is editable; upcoming/past are view-only
+// (admins manage those from the admin tools). A real admin outside preview always passes.
+function canEditPeriod(p){ if(!actingAsBA()) return true; return periodPhase(p)==='current' && p?.status!=='closed'; }
+
+function periodPicker(onChange, opts={}){
+  let list = state.periods;
+  if(opts.hideFuture) list = list.filter(p=>periodPhase(p)!=='future');   // BAs can't pick a not-yet-started period
+  if(!list.length) list = state.periods;                                  // never render an empty picker
+  const html = list.map(p=>{
+    const tag = p.status==='closed' ? ' (closed)' : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : '');
+    return `<option value="${p.id}" ${state.period?.id===p.id?'selected':''}>${esc(p.label)}${tag}</option>`;
+  }).join('');
   setTimeout(()=>{ const s=$('#perSel'); if(s) s.onchange=()=>{ state.period = state.periods.find(p=>p.id===s.value); onChange(); }; },0);
-  return `<select id="perSel">${opts||'<option>No periods</option>'}</select>`;
+  return `<select id="perSel">${html||'<option>No periods</option>'}</select>`;
 }
 
 /* ═══════════════════════════ BA SURFACE ═══════════════════════════ */
@@ -485,6 +501,12 @@ async function drawBA(){
   $(`#tab-${state.baTab==='me'?'me':'home'}`)?.classList.add('on');
   const m=$('#main');
   if(state.baTab==='me') return drawMe(m);
+  // The BA surface never operates on a not-yet-started period
+  if(actingAsBA() && periodPhase(state.period)==='future'){
+    const _t=todayISO();
+    state.period = state.periods.find(p=>p.start_date<=_t&&p.end_date>=_t)
+      || state.periods.find(p=>p.end_date<_t) || state.period;
+  }
   m.innerHTML = `<div class="loading"><span class="spin"></span></div>`;
   const per = state.period;
   const [trips, exps, sub] = await Promise.all([
@@ -494,29 +516,34 @@ async function drawBA(){
   ]);
   const T=trips.data||[], E=exps.data||[], S=sub?.data||null;
   state._T=T; state._E=E;
-  const locked = S && (S.status==='submitted'||S.status==='approved');
+  const submittedLock = S && (S.status==='submitted'||S.status==='approved');
+  const canEdit = canEditPeriod(per) && !submittedLock;
+  const readOnly = !canEdit, phase = periodPhase(per);
   const items=[...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'}))]
     .sort((a,b)=>(b.trip_date||b.expense_date).localeCompare(a.trip_date||a.expense_date));
 
   m.innerHTML = `
     <div class="card">
-      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(drawBA)}</div>
+      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(drawBA,{hideFuture:actingAsBA()})}</div>
       <div class="totbar" id="totbar" style="margin-top:12px">${totbarTiles()}</div>
       <div id="cardline">${cardLineHtml()}</div>
       ${S?`<div class="small ${S.status==='approved'?'':'muted'}" style="margin-top:10px">
         Status: <span class="badge ${S.status}">${S.status}</span></div>`:''}
     </div>
     <div class="actions">
-      <button class="bigbtn" id="ab-trip" ${locked?'disabled':''}><span class="ic">🚗</span><b>Log trip</b><span class="small muted">mileage</span></button>
-      <button class="bigbtn" id="ab-exp" ${locked?'disabled':''}><span class="ic">🧾</span><b>Add expense</b><span class="small muted">snap a receipt</span></button>
+      <button class="bigbtn" id="ab-trip" ${readOnly?'disabled':''}><span class="ic">🚗</span><b>Log trip</b><span class="small muted">mileage</span></button>
+      <button class="bigbtn" id="ab-exp" ${readOnly?'disabled':''}><span class="ic">🧾</span><b>Add expense</b><span class="small muted">snap a receipt</span></button>
     </div>
-    ${locked?'':'<div id="gridcard"></div>'}
+    ${readOnly?'':'<div id="gridcard"></div>'}
     <div class="card">
       <h3 id="itemsHead">This period · ${items.length} item${items.length===1?'':'s'}</h3>
       <div id="items">${items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>'}</div>
     </div>
-    ${!locked ? `<button class="btn ok block" id="submitBtn">Submit period for reimbursement</button>`:''}
-    ${locked ? `<p class="small muted center">Submitted ${S.submitted_at?('· '+new Date(S.submitted_at).toLocaleDateString()):''}. Locked from edits.</p>`:''}
+    ${canEdit ? `<button class="btn ok block" id="submitBtn">Submit period for reimbursement</button>`:''}
+    ${submittedLock ? `<p class="small muted center">Submitted ${S.submitted_at?('· '+new Date(S.submitted_at).toLocaleDateString()):''}. Locked from edits.</p>`
+      : (readOnly && phase==='past')   ? `<p class="small muted center">📅 Past pay period — view only. Ask an admin to make changes.</p>`
+      : (readOnly && phase==='future') ? `<p class="small muted center">📅 This pay period hasn’t started yet.</p>`
+      : ''}
   `;
   $('#ab-trip')&&($('#ab-trip').onclick=()=>tripSheet());
   $('#ab-exp') &&($('#ab-exp').onclick =()=>expenseSheet());
@@ -835,7 +862,7 @@ function placeDatalist(){
 
 /* ── Log trip sheet ── */
 function tripSheet(){
-  if(state.period && state.period.status==='closed') return toast('That period is closed','err');
+  if(!canEditPeriod(state.period)) return toast('This pay period is view-only — ask an admin to make changes.','err');
   let method='distance', startPath=null, endPath=null, startOdo=null, endOdo=null, miles=null, milesSrc=null, startCoords=null, startAddr=state.profile.base_address||'', destAddr='', destDispId=null;
   openSheet(`
     <h3>Log a trip</h3>
@@ -952,7 +979,7 @@ function tripSheet(){
 
 /* ── Add expense sheet ── */
 function expenseSheet(){
-  if(state.period && state.period.status==='closed') return toast('That period is closed','err');
+  if(!canEditPeriod(state.period)) return toast('This pay period is view-only — ask an admin to make changes.','err');
   let receiptPath=null, ocr=null;
   const dispOpts = baDispensaries().map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
   const cats=EXPENSE_CATEGORIES;
