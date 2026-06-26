@@ -532,19 +532,26 @@ async function submitPeriod(T,E){
 /* ── Log trip sheet ── */
 function tripSheet(){
   if(state.period && state.period.status==='closed') return toast('That period is closed','err');
-  let method='distance', startPath=null, endPath=null, startOdo=null, endOdo=null, miles=null, milesSrc=null;
+  let method='distance', startPath=null, endPath=null, startOdo=null, endOdo=null, miles=null, milesSrc=null, startCoords=null;
   const dispOpts = baDispensaries().map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
   openSheet(`
     <h3>Log a trip</h3>
-    <label class="fl">Dispensary</label>
+    <label class="fl">Dispensary (destination)</label>
     <select id="tDisp"><option value="">Select…</option>${dispOpts}</select>
     ${dispOpts?'':'<div class="small muted" style="margin-top:4px">No dispensaries in your state yet — ask your admin to add one.</div>'}
     <label class="fl">Date</label><input id="tDate" type="date" value="${todayISO()}">
     <label class="fl">How are we measuring?</label>
     <div class="seg" id="tSeg"><button class="on" data-m="distance">📍 Auto distance</button><button data-m="odometer">📷 Odometer photos</button></div>
     <div id="tDistance" style="margin-top:12px">
-      <button class="btn block" id="tCalc">Calculate round-trip miles</button>
-      <label class="fl">Miles (round trip)</label><input id="tMiles" type="number" inputmode="decimal" step="0.1" placeholder="auto or enter manually">
+      <label class="fl">Starting location</label>
+      <div class="row" style="gap:8px">
+        <input id="tStart" class="grow" placeholder="home / base address" value="${esc(state.profile.base_address||'')}">
+        <button class="btn sm" id="tGps" type="button" style="white-space:nowrap">📍 Current</button>
+      </div>
+      <div class="small muted" id="tStartHint" style="margin-top:4px"></div>
+      <label class="row" style="margin-top:10px;gap:8px;font-size:13px"><input type="checkbox" id="tRound" checked style="width:auto;min-height:auto"> Round trip (there &amp; back)</label>
+      <button class="btn block" id="tCalc" style="margin-top:10px">Calculate miles</button>
+      <label class="fl">Miles</label><input id="tMiles" type="number" inputmode="decimal" step="0.1" placeholder="calculated, or enter manually">
     </div>
     <div id="tOdo" class="hide" style="margin-top:12px">
       <div class="row">
@@ -569,11 +576,25 @@ function tripSheet(){
     method=b.dataset.m; $('#tDistance').classList.toggle('hide',method!=='distance'); $('#tOdo').classList.toggle('hide',method!=='odometer');
   });
   $('#tMiles').oninput=e=>{ miles=e.target.value?Number(e.target.value):null; milesSrc='manual'; showCost(); };
+  $('#tGps').onclick=()=>{
+    if(!navigator.geolocation) return toast('GPS not available on this device','err');
+    $('#tStartHint').textContent='Getting your location…';
+    navigator.geolocation.getCurrentPosition(p=>{
+      startCoords={lat:p.coords.latitude,lng:p.coords.longitude};
+      $('#tStart').value='📍 Current location';
+      $('#tStartHint').textContent=`Using GPS (${startCoords.lat.toFixed(4)}, ${startCoords.lng.toFixed(4)})`;
+    }, ()=>{ toast('Couldn’t get location — allow access or type an address','err'); $('#tStartHint').textContent=''; },
+      {enableHighAccuracy:true,timeout:10000,maximumAge:60000});
+  };
+  $('#tStart').oninput=()=>{ startCoords=null; $('#tStartHint').textContent=''; };
   $('#tCalc').onclick=async ()=>{
-    const disp=$('#tDisp').value; if(!disp) return toast('Pick a dispensary first','err');
+    const disp=$('#tDisp').value; if(!disp) return toast('Pick a destination dispensary first','err');
+    const body={dispensary_id:disp, roundtrip:$('#tRound').checked};
+    if(startCoords){ body.start_lat=startCoords.lat; body.start_lng=startCoords.lng; }
+    else { const a=$('#tStart').value.trim(); if(a && a!=='📍 Current location') body.start_address=a; }
     const btn=$('#tCalc'); busy(btn,true);
     try{
-      const r=await callFn('calc-distance',{dispensary_id:disp});
+      const r=await callFn('calc-distance', body);
       if(r.ok){ miles=r.miles; milesSrc=r.source; $('#tMiles').value=miles; showCost(); toast('Distance computed','ok'); }
       else toast(r.message||'Enter miles manually','err');
     }catch(e){ toast(e.message,'err'); }
