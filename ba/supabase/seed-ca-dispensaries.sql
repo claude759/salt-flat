@@ -1,5 +1,7 @@
 -- CA dispensaries imported from distru (name+legal+address) + transfer report (license).
--- Idempotent: a unique (lower(name),state) index + ON CONFLICT means re-running won't dupe.
+-- Self-contained + idempotent: adds the columns it needs and a unique (lower(name),state)
+-- index, so re-running won't duplicate and it works regardless of earlier migrations.
+alter table public.dispensaries add column if not exists state      text check (state in ('CA','FL','NY'));
 alter table public.dispensaries add column if not exists legal_name text;
 create unique index if not exists dispensaries_name_state_uniq on public.dispensaries (lower(name), state);
 
