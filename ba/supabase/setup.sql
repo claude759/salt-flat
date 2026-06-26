@@ -50,7 +50,8 @@ insert into public.app_settings (id) values (1) on conflict (id) do nothing;
 -- ---------------------------------------------------------------------------
 create table if not exists public.dispensaries (
   id          uuid primary key default gen_random_uuid(),
-  name        text not null,
+  name        text not null,                            -- DBA / storefront name
+  legal_name  text,                                     -- legal entity (optional)
   address     text,
   state       text check (state in ('CA','FL','NY')),  -- only BAs in this region see it
   lat         double precision,
