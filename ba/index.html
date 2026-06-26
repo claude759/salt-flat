@@ -151,6 +151,10 @@
   .rchip{cursor:pointer;color:var(--accent2);font-size:12px;white-space:nowrap}
   .rthumb{width:30px;height:30px;border-radius:5px;object-fit:cover;border:1px solid var(--line);cursor:pointer;flex:none}
   .rrepl{cursor:pointer;color:var(--muted);font-size:14px}
+  .floatsug{position:fixed;z-index:120;box-shadow:var(--shadow);max-width:340px}
+  table.grid th:first-child,table.grid td.gdel{width:26px;padding:0;text-align:center}
+  .gx{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;padding:8px 3px;line-height:1}
+  .gx:hover{color:var(--red)}
 
   /* starting-location typeahead */
   .tsug{border:1px solid var(--line);border-radius:10px;margin-top:6px;overflow:hidden;background:var(--panel2);max-height:240px;overflow-y:auto}
@@ -487,6 +491,7 @@ async function drawBA(){
     per ? supabase.from('submissions').select('*').eq('ba_id',state.session.user.id).eq('period_id',per.id).maybeSingle() : {data:null},
   ]);
   const T=trips.data||[], E=exps.data||[], S=sub?.data||null;
+  state._T=T; state._E=E;
   const mileT=T.reduce((a,x)=>a+Number(x.amount||0),0);
   const expT =E.reduce((a,x)=>a+Number(x.amount||0),0);
   const locked = S && (S.status==='submitted'||S.status==='approved');
@@ -496,7 +501,7 @@ async function drawBA(){
   m.innerHTML = `
     <div class="card">
       <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(drawBA)}</div>
-      <div class="totbar" style="margin-top:12px">
+      <div class="totbar" id="totbar" style="margin-top:12px">
         <div class="tot"><div class="k">Mileage</div><div class="v">${money(mileT)}</div></div>
         <div class="tot"><div class="k">Expenses</div><div class="v">${money(expT)}</div></div>
         <div class="tot sum"><div class="k">Total</div><div class="v">${money(mileT+expT)}</div></div>
@@ -510,22 +515,41 @@ async function drawBA(){
     </div>
     ${locked?'':'<div id="gridcard"></div>'}
     <div class="card">
-      <h3>This period · ${items.length} item${items.length===1?'':'s'}</h3>
+      <h3 id="itemsHead">This period · ${items.length} item${items.length===1?'':'s'}</h3>
       <div id="items">${items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>'}</div>
     </div>
-    ${items.length && !locked ? `<button class="btn ok block" id="submitBtn">Submit period for reimbursement</button>`:''}
+    ${!locked ? `<button class="btn ok block" id="submitBtn">Submit period for reimbursement</button>`:''}
     ${locked ? `<p class="small muted center">Submitted ${S.submitted_at?('· '+new Date(S.submitted_at).toLocaleDateString()):''}. Locked from edits.</p>`:''}
   `;
   $('#ab-trip')&&($('#ab-trip').onclick=()=>tripSheet());
   $('#ab-exp') &&($('#ab-exp').onclick =()=>expenseSheet());
-  $('#submitBtn')&&($('#submitBtn').onclick=()=>submitPeriod(T,E));
+  $('#submitBtn')&&($('#submitBtn').onclick=()=>submitPeriod());
   m.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
   renderGrid();
+}
+function periodItems(){
+  return [...(state._T||[]).map(x=>({...x,_k:'trip'})),...(state._E||[]).map(x=>({...x,_k:'exp'}))]
+    .sort((a,b)=>(b.trip_date||b.expense_date).localeCompare(a.trip_date||a.expense_date));
+}
+function refreshItems(){
+  const el=$('#items'); if(!el) return;
+  const items=periodItems();
+  el.innerHTML=items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>';
+  el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
+  const h=$('#itemsHead'); if(h) h.textContent=`This period · ${items.length} item${items.length===1?'':'s'}`;
+}
+function refreshTotals(){
+  const el=$('#totbar'); if(!el) return;
+  const mileT=(state._T||[]).reduce((a,x)=>a+Number(x.amount||0),0);
+  const expT=(state._E||[]).reduce((a,x)=>a+Number(x.amount||0),0);
+  el.innerHTML=`<div class="tot"><div class="k">Mileage</div><div class="v">${money(mileT)}</div></div>
+    <div class="tot"><div class="k">Expenses</div><div class="v">${money(expT)}</div></div>
+    <div class="tot sum"><div class="k">Total</div><div class="v">${money(mileT+expT)}</div></div>`;
 }
 function baItemRow(x){
   const trip = x._k==='trip';
   const date = trip?x.trip_date:x.expense_date;
-  const title = trip ? dispName(x.dispensary_id) : (x.vendor||'Expense');
+  const title = trip ? (x.dest_label || dispName(x.dispensary_id)) : (x.vendor||'Expense');
   const sub = trip ? `${x.miles??'—'} mi · ${x.method}` : `${x.category||''} · ${dispName(x.dispensary_id)}`;
   const canDel = x.status==='draft' || x.status==='rejected';
   return `<div class="item">
@@ -541,9 +565,11 @@ async function delItem(kind,id){
   if(!confirm('Delete this item?')) return;
   const { error } = await supabase.from(kind).delete().eq('id',id);
   if(error) return toast(error.message,'err');
-  toast('Deleted'); drawBA();
+  const arr = kind==='trips'?state._T:state._E; const i=arr.findIndex(x=>x.id===id); if(i>=0) arr.splice(i,1);
+  toast('Deleted'); refreshItems(); refreshTotals(); renderGrid();
 }
-async function submitPeriod(T,E){
+async function submitPeriod(){
+  const T=state._T||[], E=state._E||[];
   if(!confirm('Submit all items in this period? You won’t be able to edit them after.')) return;
   const submittable = x => x.status==='draft' || x.status==='rejected';
   const ids=T.filter(submittable).map(x=>x.id), eids=E.filter(submittable).map(x=>x.id);
@@ -562,21 +588,46 @@ async function submitPeriod(T,E){
   toast('Submitted — thank you!','ok'); drawBA();
 }
 
-/* ── Quick-entry spreadsheet grid (mirrors the team's Miles/Reimbursements sheets) ── */
-// per-row receipt attach/view/replace for the expenses grid
-async function gridReceipt(e, tr){
+/* ── Quick-entry spreadsheet grid: live (autosaves), delete, $ total, autocomplete ── */
+function gridDrafts(mode){ return ((mode==='miles'?state._T:state._E)||[]).filter(x=>x.status==='draft'); }
+function gridRate(){ return Number(state.profile.rate_override ?? state.settings?.mileage_rate ?? 0.725); }
+function gridRowHtml(mode, it, today){
+  const id = it ? it.id : '';
+  const del = `<td class="gdel">${id?'<button class="gx" title="delete row">✕</button>':''}</td>`;
+  if(mode==='miles'){
+    return `<tr data-id="${id}">${del}
+      <td><input type="date" class="gdate g-date" value="${it?it.trip_date:today}"></td>
+      <td><input class="g-start" placeholder="start" value="${it?esc(it.start_label||''):''}" autocomplete="off"></td>
+      <td><input class="g-dest" placeholder="destination" value="${it?esc(it.dest_label||''):''}" autocomplete="off"></td>
+      <td><input class="g-note" placeholder="notes" value="${it?esc(it.note||''):''}"></td>
+      <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="0" value="${it&&it.start_odo!=null?it.start_odo:''}"></td>
+      <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="0" value="${it&&it.end_odo!=null?it.end_odo:''}"></td>
+      <td><input class="gnum g-mi" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"></td></tr>`;
+  }
+  const cats=EXPENSE_CATEGORIES.map(c=>`<option ${it&&it.category===c?'selected':''}>${c}</option>`).join('');
+  const rcell = it&&it.receipt_path
+    ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span><label class="rrepl" title="replace">✎<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`
+    : `<div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`;
+  return `<tr data-id="${id}" data-rpath="${it&&it.receipt_path?esc(it.receipt_path):''}">${del}
+    <td><input type="date" class="gdate g-date" value="${it?it.expense_date:today}"></td>
+    <td>${rcell}</td>
+    <td><input class="g-desc" placeholder="description" value="${it?esc(it.vendor||''):''}"></td>
+    <td><select class="g-cat">${cats}</select></td>
+    <td><input class="gnum g-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${it&&it.amount!=null?it.amount:''}"></td></tr>`;
+}
+async function gridReceiptRow(e, tr, mode){
   const f=e.target.files[0]; if(!f) return;
   const cell=tr.querySelector('.rcell'), prev=cell.innerHTML;
   cell.innerHTML='<span class="spin"></span>';
   try{
-    const path=await uploadPhoto('receipts', f);
-    tr.dataset.receipt=path;
+    const path=await uploadPhoto('receipts', f); tr.dataset.rpath=path;
     const url=URL.createObjectURL(f);
     cell.innerHTML=`<img class="rthumb" title="view"><label class="rrepl" title="replace">✎<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label>`;
     const img=cell.querySelector('.rthumb'); img.src=url; img.onclick=()=>window.open(url,'_blank');
-    cell.querySelector('.g-receipt').onchange=ev=>gridReceipt(ev,tr);
+    cell.querySelector('.g-receipt').onchange=ev=>gridReceiptRow(ev,tr,mode);
+    scheduleAutosave(tr, mode);
   }catch(err){ toast('Receipt upload failed','err'); cell.innerHTML=prev;
-    const ri=cell.querySelector('.g-receipt'); if(ri) ri.onchange=ev=>gridReceipt(ev,tr); }
+    const ri=cell.querySelector('.g-receipt'); if(ri) ri.onchange=ev=>gridReceiptRow(ev,tr,mode); }
 }
 function renderGrid(){
   const host=$('#gridcard'); if(!host) return;
@@ -584,82 +635,132 @@ function renderGrid(){
   const seg=`<div class="seg" id="gMode" style="margin-bottom:10px">
     <button class="${mode==='miles'?'on':''}" data-g="miles">🚗 Mileage</button>
     <button class="${mode==='expenses'?'on':''}" data-g="expenses">🧾 Expenses</button></div>`;
-  const milesRow=()=>`<tr>
-    <td><input type="date" class="gdate g-date" value="${today}"></td>
-    <td><input class="g-start" placeholder="start" list="placeList"></td>
-    <td><input class="g-dest" placeholder="destination" list="placeList"></td>
-    <td><input class="g-note" placeholder="notes"></td>
-    <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="0"></td>
-    <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="0"></td>
-    <td><input class="gnum g-mi" type="number" inputmode="decimal" placeholder="mi"></td></tr>`;
-  const expRow=()=>`<tr>
-    <td><input type="date" class="gdate g-date" value="${today}"></td>
-    <td><div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div></td>
-    <td><input class="g-desc" placeholder="e.g. Parking for Sofa Club"></td>
-    <td><select class="g-cat">${EXPENSE_CATEGORIES.map(c=>`<option>${c}</option>`).join('')}</select></td>
-    <td><input class="gnum g-amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00"></td></tr>`;
-  const row=mode==='miles'?milesRow:expRow;
   const head=mode==='miles'
-    ? `<tr><th>Date</th><th>Starting location</th><th>Destination</th><th>Notes</th><th>Odo start</th><th>Odo end</th><th>Miles</th></tr>`
-    : `<tr><th>Date</th><th>Receipt</th><th>Description</th><th>Category</th><th>Amount</th></tr>`;
+    ? `<tr><th></th><th>Date</th><th>Starting location</th><th>Destination</th><th>Notes</th><th>Odo start</th><th>Odo end</th><th>Miles</th></tr>`
+    : `<tr><th></th><th>Date</th><th>Receipt</th><th>Description</th><th>Category</th><th>Amount</th></tr>`;
+  const body=gridDrafts(mode).map(it=>gridRowHtml(mode,it,today)).join('')+gridRowHtml(mode,null,today);
   host.innerHTML=`<div class="card">
-    ${mode==='miles'?placeDatalist():''}
-    <h3>Quick entry <span class="muted small">— like your sheet</span></h3>${seg}
-    <div class="gridwrap"><table class="grid"><thead>${head}</thead><tbody id="gBody">${Array.from({length:3},row).join('')}</tbody></table></div>
-    <div class="row" style="margin-top:10px">
+    <h3>Quick entry <span class="muted small">— autosaves as you type</span></h3>${seg}
+    <div class="gridwrap"><table class="grid"><thead>${head}</thead><tbody id="gBody">${body}</tbody></table></div>
+    <div class="row" style="margin-top:10px;align-items:flex-end">
       <button class="btn ghost sm" id="gAdd">＋ row</button>
-      <button class="btn primary sm right" id="gSave">Save rows</button>
+      <div class="right" style="text-align:right">
+        <div class="small muted" id="gSaved">All changes saved</div>
+        <div style="font-size:15px;font-weight:750;margin-top:2px">Reimbursement: <span style="color:var(--accent2)" id="gTotal">$0.00</span></div>
+      </div>
     </div>
-    <div class="small muted" style="margin-top:6px">Type a few rows like your sheet, then Save — they join this period as drafts.</div>
   </div>`;
-  const wire=tr=>{
-    if(mode==='miles'){ const os=tr.querySelector('.g-os'),oe=tr.querySelector('.g-oe'),mi=tr.querySelector('.g-mi');
-      const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s) mi.value=Math.round((e-s)*10)/10; }; os.oninput=c; oe.oninput=c; }
-    else { const ri=tr.querySelector('.g-receipt'); if(ri) ri.onchange=e=>gridReceipt(e,tr); }
-  };
-  $('#gBody').querySelectorAll('tr').forEach(wire);
+  $('#gBody').querySelectorAll('tr').forEach(tr=>wireGridRow(tr,mode));
   $('#gMode').querySelectorAll('button').forEach(b=>b.onclick=()=>{ state.gridMode=b.dataset.g; renderGrid(); });
-  $('#gAdd').onclick=()=>{ const t=document.createElement('template'); t.innerHTML=row(); const tr=t.content.firstElementChild; $('#gBody').appendChild(tr); wire(tr); };
-  $('#gSave').onclick=()=>saveGrid(mode);
+  $('#gAdd').onclick=()=>{ const t=document.createElement('template'); t.innerHTML=gridRowHtml(mode,null,todayISO()); const tr=t.content.firstElementChild; $('#gBody').appendChild(tr); wireGridRow(tr,mode); };
+  gridTotal();
 }
-async function saveGrid(mode){
-  const rows=[...document.querySelectorAll('#gBody tr')], recs=[]; let firstDate=null;
+function wireGridRow(tr, mode){
+  const x=tr.querySelector('.gx'); if(x) x.onclick=()=>gridDelete(tr,mode);
+  tr.querySelectorAll('input,select').forEach(el=>{
+    if(el.classList.contains('g-receipt')) return;
+    el.addEventListener('input', ()=>{ gridTotal(); scheduleAutosave(tr,mode); });
+    el.addEventListener('change', ()=>{ gridTotal(); scheduleAutosave(tr,mode); });
+  });
   if(mode==='miles'){
-    for(const tr of rows){
-      const date=tr.querySelector('.g-date').value;
-      const start=tr.querySelector('.g-start').value.trim(), dest=tr.querySelector('.g-dest').value.trim();
-      const note=tr.querySelector('.g-note').value.trim();
-      const os=tr.querySelector('.g-os').value, oe=tr.querySelector('.g-oe').value;
-      let miles=Number(tr.querySelector('.g-mi').value);
-      if(!date) continue;
-      if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
-      if(!(miles>0)) continue;
-      const hasOdo=os!==''&&oe!=='';
-      const disp=baDispensaries().find(d=>dest&&d.name.toLowerCase()===dest.toLowerCase());
-      firstDate=firstDate||date;
-      recs.push({ ba_id:state.session.user.id, trip_date:date, dispensary_id:disp?disp.id:null,
-        method:hasOdo?'odometer':'manual', start_odo:os?Number(os):null, end_odo:oe?Number(oe):null,
-        miles, miles_source:hasOdo?'odometer':'manual', start_label:start||null, dest_label:dest||null,
-        roundtrip:false, note:note||null, status:'draft' });
-    }
-    if(!recs.length) return toast('Add a date + miles (or odometer) to a row','err');
-    const {error}=await supabase.from('trips').insert(recs); if(error) return toast(error.message,'err');
+    const os=tr.querySelector('.g-os'),oe=tr.querySelector('.g-oe'),mi=tr.querySelector('.g-mi');
+    const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s){ mi.value=Math.round((e-s)*10)/10; gridTotal(); } };
+    os.addEventListener('input',c); oe.addEventListener('input',c);
+    attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); });
+    attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r;  scheduleAutosave(tr,mode); });
   } else {
-    for(const tr of rows){
-      const date=tr.querySelector('.g-date').value, desc=tr.querySelector('.g-desc').value.trim();
-      const cat=tr.querySelector('.g-cat').value, amt=Number(tr.querySelector('.g-amt').value);
-      const receipt=tr.dataset.receipt||null;
-      if(!date||!(amt>0)) continue;
-      firstDate=firstDate||date;
-      recs.push({ ba_id:state.session.user.id, expense_date:date, vendor:desc||'Expense',
-        amount:amt, category:cat||'Other', receipt_path:receipt, note:desc||null, status:'draft' });
-    }
-    if(!recs.length) return toast('Add a date + amount to a row','err');
-    const {error}=await supabase.from('expenses').insert(recs); if(error) return toast(error.message,'err');
+    const ri=tr.querySelector('.g-receipt'); if(ri) ri.onchange=e=>gridReceiptRow(e,tr,mode);
+    const v=tr.querySelector('[data-view]'); if(v) v.onclick=async()=>{ const p=tr.dataset.rpath; if(p){ const u=await signedUrl('receipts',p); if(u) window.open(u,'_blank'); } };
   }
-  toast(`Saved ${recs.length} row${recs.length===1?'':'s'}`,'ok');
-  if(firstDate) await ensurePeriodForDate(firstDate);
-  drawBA();
+}
+function savedIndicator(t){ const el=$('#gSaved'); if(el) el.textContent=t; }
+function scheduleAutosave(tr, mode){ clearTimeout(tr._t); savedIndicator('Saving…'); tr._t=setTimeout(()=>gridAutosave(tr,mode),700); }
+async function gridAutosave(tr, mode){
+  if(tr._saving){ scheduleAutosave(tr,mode); return; }
+  const isNew=!tr.dataset.id; let payload, table;
+  if(mode==='miles'){
+    const date=tr.querySelector('.g-date').value;
+    const start=tr.querySelector('.g-start').value.trim(), dest=tr.querySelector('.g-dest').value.trim();
+    const note=tr.querySelector('.g-note').value.trim();
+    const os=tr.querySelector('.g-os').value, oe=tr.querySelector('.g-oe').value;
+    let miles=Number(tr.querySelector('.g-mi').value);
+    if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
+    if(isNew && !(date && miles>0)){ savedIndicator('All changes saved'); return; }
+    const hasOdo=os!==''&&oe!=='';
+    const dispId = tr._destResolved?.dispId || (baDispensaries().find(d=>dest&&d.name.toLowerCase()===dest.toLowerCase())||{}).id || null;
+    payload={ trip_date:date||todayISO(), dispensary_id:dispId, method:hasOdo?'odometer':'manual',
+      start_odo:os?Number(os):null, end_odo:oe?Number(oe):null, miles:miles>0?miles:null, miles_source:hasOdo?'odometer':'manual',
+      start_label:start||null, dest_label:dest||null, roundtrip:false, note:note||null };
+    table='trips';
+  } else {
+    const date=tr.querySelector('.g-date').value, desc=tr.querySelector('.g-desc').value.trim();
+    const cat=tr.querySelector('.g-cat').value, amt=Number(tr.querySelector('.g-amt').value);
+    if(isNew && !(date && amt>0)){ savedIndicator('All changes saved'); return; }
+    payload={ expense_date:date||todayISO(), vendor:desc||'Expense', amount:amt>0?amt:0, category:cat||'Other',
+      receipt_path:tr.dataset.rpath||null, note:desc||null };
+    table='expenses';
+  }
+  tr._saving=true;
+  try{
+    if(isNew){
+      const {data,error}=await supabase.from(table).insert({...payload, ba_id:state.session.user.id, status:'draft'}).select('*').single();
+      if(error) throw error;
+      tr.dataset.id=data.id;
+      const dc=tr.querySelector('.gdel'); if(dc && !dc.querySelector('.gx')){ dc.innerHTML='<button class="gx" title="delete row">✕</button>'; dc.querySelector('.gx').onclick=()=>gridDelete(tr,mode); }
+      if(!state.period || data.period_id===state.period.id) (mode==='miles'?state._T:state._E).unshift(data);
+      const t=document.createElement('template'); t.innerHTML=gridRowHtml(mode,null,todayISO()); const ntr=t.content.firstElementChild; $('#gBody').appendChild(ntr); wireGridRow(ntr,mode);
+    } else {
+      const {data,error}=await supabase.from(table).update(payload).eq('id',tr.dataset.id).select('*').single();
+      if(error) throw error;
+      const arr=(mode==='miles'?state._T:state._E); const i=arr.findIndex(x=>x.id===tr.dataset.id); if(i>=0) arr[i]=data;
+    }
+    savedIndicator('All changes saved'); refreshTotals(); refreshItems(); gridTotal();
+  }catch(e){ savedIndicator('Save failed — retry'); toast(e.message||'Save failed','err'); }
+  finally{ tr._saving=false; }
+}
+async function gridDelete(tr, mode){
+  const id=tr.dataset.id;
+  if(id){ const {error}=await supabase.from(mode==='miles'?'trips':'expenses').delete().eq('id',id);
+    if(error) return toast(error.message,'err');
+    const arr=(mode==='miles'?state._T:state._E); const i=arr.findIndex(x=>x.id===id); if(i>=0) arr.splice(i,1);
+    refreshTotals(); refreshItems();
+  }
+  tr.remove(); gridTotal();
+}
+function gridTotal(){
+  const el=$('#gTotal'); if(!el) return;
+  const mode=state.gridMode||'miles', rate=gridRate(); let total=0;
+  $('#gBody')?.querySelectorAll('tr').forEach(tr=>{
+    if(mode==='miles'){ total += (Number(tr.querySelector('.g-mi')?.value)||0)*rate; }
+    else { total += Number(tr.querySelector('.g-amt')?.value)||0; }
+  });
+  el.textContent=money(total);
+}
+// floating typeahead for grid Start/Destination cells (shared overlay box)
+let _gridSug=null;
+function gridSug(){ if(!_gridSug){ _gridSug=document.createElement('div'); _gridSug.className='tsug floatsug hide'; document.body.appendChild(_gridSug); } return _gridSug; }
+function attachGridTypeahead(input, onResolve){
+  if(!input) return; let local=[], timer=null; const box=gridSug();
+  const pos=()=>{ const r=input.getBoundingClientRect(); box.style.left=r.left+'px'; box.style.top=(r.bottom+2)+'px'; box.style.minWidth=Math.max(r.width,180)+'px'; };
+  const paint=(items,searching)=>{
+    if(box._owner!==input) return;
+    if(!items.length&&!searching){ box.classList.add('hide'); box.innerHTML=''; return; }
+    let html=items.map((it,i)=>`<div class="sg" data-i="${i}"><b>${esc(it.label)}</b>${it.sub?`<span>${esc(it.sub)}</span>`:''}</div>`).join('');
+    if(searching) html+=`<div class="sg searching"><span class="spin"></span>Searching addresses…</div>`;
+    box.innerHTML=html; pos(); box.classList.remove('hide');
+    box.querySelectorAll('.sg[data-i]').forEach(el=>el.onmousedown=ev=>{ ev.preventDefault();
+      const it=items[+el.dataset.i]; input.value=it.display; box.classList.add('hide'); onResolve({display:it.display,addr:it.addr,dispId:it.dispId}); });
+  };
+  const render=()=>{ box._owner=input; const q=input.value; local=placeItems(q); clearTimeout(timer);
+    const wantRemote=!!(q&&q.trim().length>=3); paint(local,wantRemote);
+    if(wantRemote) timer=setTimeout(async()=>{ let r; try{ r=await callFn('geocode-suggest',{text:q}); }catch{ if(input.value===q&&box._owner===input)paint(local,false); return; }
+      if(input.value!==q||box._owner!==input) return; const have=new Set(local.map(x=>x.display.toLowerCase()));
+      const addr=(r?.suggestions||[]).filter(s=>!have.has(s.label.toLowerCase())).slice(0,5).map(s=>({display:s.label,addr:s.label,dispId:null,label:'📍 '+s.label,sub:'address'}));
+      paint([...local,...addr],false); },250);
+  };
+  input.addEventListener('focus', render);
+  input.addEventListener('input', ()=>{ onResolve({display:input.value,addr:input.value,dispId:null}); render(); });
+  input.addEventListener('blur', ()=>setTimeout(()=>{ if(box._owner===input) box.classList.add('hide'); },150));
 }
 
 /* ── reusable place typeahead: Home + dispensaries + recent + live ORS address ── */
