@@ -203,7 +203,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.1';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.2';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -1240,22 +1240,31 @@ async function adminReport(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   await reloadPeriods();
   const per=state.period;
-  const [{data:bas},{data:disps},trips,exps]=await Promise.all([
-    supabase.from('profiles').select('id,region').eq('role','ba'),
-    supabase.from('dispensaries').select('id,name,state'),
-    per?supabase.from('trips').select('ba_id,dispensary_id,amount').eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('ba_id,dispensary_id,amount,payment').eq('period_id',per.id):{data:[]},
+  const [{data:profs},{data:disps},trips,exps]=await Promise.all([
+    supabase.from('profiles').select('id,full_name,region'),
+    supabase.from('dispensaries').select('id,name'),
+    per?supabase.from('trips').select('ba_id,dispensary_id,amount,trip_date,miles,dest_label').eq('period_id',per.id):{data:[]},
+    per?supabase.from('expenses').select('ba_id,dispensary_id,amount,payment,expense_date,vendor,receipt_path').eq('period_id',per.id):{data:[]},
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
+  const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
   const region=state.adminRegion;
-  const inRegion=ba_id=>{ if(region==='all') return true; const b=(bas||[]).find(x=>x.id===ba_id); return b&&b.region===region; };
-  const agg={};   // dispensary_id|'none' -> {mile,exp,card}
-  const bump=(did,key,amt)=>{ const k=did||'none'; (agg[k]=agg[k]||{mile:0,exp:0,card:0}); agg[k][key]+=Number(amt||0); };
-  (trips.data||[]).forEach(t=>{ if(inRegion(t.ba_id)) bump(t.dispensary_id,'mile',t.amount); });
-  (exps.data||[]).forEach(x=>{ if(inRegion(x.ba_id)) bump(x.dispensary_id, x.payment==='company'?'card':'exp', x.amount); });
+  const inRegion=ba_id=>region==='all' || (pById[ba_id]&&pById[ba_id].region===region);
+  const baName=ba_id=>(pById[ba_id]&&pById[ba_id].full_name)||'BA';
+  const agg={}, items={};   // dispensary_id|'none' -> totals / item list
+  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0}; items[k]=items[k]||[]; };
+  (trips.data||[]).forEach(t=>{ if(!inRegion(t.ba_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
+    items[k].push({kind:'trip',date:t.trip_date,ba:baName(t.ba_id),label:t.dest_label||'',miles:t.miles,amount:Number(t.amount||0)}); });
+  (exps.data||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const k=x.dispensary_id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=Number(x.amount||0);
+    items[k].push({kind:'exp',date:x.expense_date,ba:baName(x.ba_id),vendor:x.vendor||'',payment:x.payment,receipt:x.receipt_path||'',amount:Number(x.amount||0)}); });
+  Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card, ...v }))
     .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
+  const detailRows=k=>(items[k]||[]).map(it=> it.kind==='trip'
+    ? `<div class="item"><div class="ic">🚗</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)}${it.miles!=null?` · ${it.miles} mi`:''}</div><div class="s">${fmtDate(it.date)}${it.label?' · '+esc(it.label):''}</div></div><div class="amt">${money(it.amount)}</div></div>`
+    : `<div class="item"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)} · ${esc(it.vendor)}</div><div class="s">${fmtDate(it.date)} · ${it.payment==='company'?'💳 card':'💵 reimb'} · ${it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:'<span class="muted">no receipt</span>'}</div></div><div class="amt">${money(it.amount)}</div></div>`
+  ).join('');
   m.innerHTML=`
     <div class="card">
       <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>adminReport(m))}</div>
@@ -1267,18 +1276,22 @@ async function adminReport(m){
       </div>
     </div>
     <div class="card">
-      <h3>Spend by dispensary <span class="muted small">${per?'· '+esc(per.label):''}</span></h3>
+      <h3>Spend by dispensary <span class="muted small">${per?'· '+esc(per.label):''} · tap to expand</span></h3>
       ${rows.length?rows.map(r=>`
-        <div style="padding:9px 0;border-top:1px solid var(--line)">
+        <div class="repdrow" data-disp="${r.id}" style="padding:9px 0;border-top:1px solid var(--line);cursor:pointer">
           <div class="row" style="justify-content:space-between;align-items:baseline">
-            <div class="t" style="font-weight:600${r.id==='none'?';color:var(--yellow)':''}">${esc(r.name)}</div>
+            <div class="t" style="font-weight:600${r.id==='none'?';color:var(--yellow)':''}"><span class="caret" style="display:inline-block;width:12px;color:var(--muted)">▸</span>${esc(r.name)}</div>
             <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
           </div>
           <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
           <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div>
-        </div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this period${region!=='all'?' in '+region:''} yet.</p>`}
+        </div>
+        <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this period${region!=='all'?' in '+region:''} yet.</p>`}
     </div>`;
   const rs=$('#regSelRp'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminReport(m); };
+  m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
+    d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
+  m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
 }
 
 async function adminDash(m){
