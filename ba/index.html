@@ -290,6 +290,11 @@ async function loadMe(){
     state.recentPlaces=[...places].filter(p=>p&&p!=='📍 Current location').slice(0,30);
   }catch(e){ state.loadError = String(e?.message||e); state.profile=null; }
 }
+// refresh the cached pay-period list (e.g. periods added since the app loaded)
+async function reloadPeriods(){
+  const { data } = await supabase.from('pay_periods').select('*').order('start_date',{ascending:false});
+  if(data && data.length) state.periods=data;
+}
 // after saving an item, make sure the selected period covers that item's date so
 // it's actually visible (a back/forward-dated item lands in a different period).
 async function ensurePeriodForDate(date){
@@ -647,8 +652,8 @@ function gridRowHtml(mode, it, today, pay){
       <td><input class="g-dest" placeholder="destination" value="${it?esc(it.dest_label||''):''}" autocomplete="off"></td>
       <td><select class="g-disp">${dispOpts}</select></td>
       <td><input class="g-note" placeholder="notes" value="${it?esc(it.note||''):''}"></td>
-      <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="0" value="${it&&it.start_odo!=null?it.start_odo:''}"></td>
-      <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="0" value="${it&&it.end_odo!=null?it.end_odo:''}"></td>
+      <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.start_odo!=null?it.start_odo:''}" readonly style="cursor:pointer"></td>
+      <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.end_odo!=null?it.end_odo:''}" readonly style="cursor:pointer"></td>
       <td><input class="gnum g-mi${needMi}" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"></td></tr>`;
   }
   // expenses: payment is implied by which table the row lives in (no "Paid by" column)
@@ -728,8 +733,9 @@ function wireGridRow(tr, mode){
   });
   if(mode==='miles'){
     const os=tr.querySelector('.g-os'),oe=tr.querySelector('.g-oe'),mi=tr.querySelector('.g-mi');
-    const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s){ mi.value=Math.round((e-s)*10)/10; tr._autoMi=false; gridTotal(); } };
+    const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s){ mi.value=Math.round((e-s)*10)/10; mi.classList.remove('needs'); tr._autoMi=false; gridTotal(); } };
     os.addEventListener('input',c); oe.addEventListener('input',c);
+    os.addEventListener('click',()=>odoSheet(tr,'os')); oe.addEventListener('click',()=>odoSheet(tr,'oe'));
     mi.addEventListener('input',()=>{ tr._autoMi=false; });
     attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true});
     attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r; if(r.dispId){ const sel=tr.querySelector('.g-disp'); if(sel && sel.value!==r.dispId) sel.value=r.dispId; } scheduleAutosave(tr,mode); });
@@ -768,6 +774,7 @@ async function gridAutosave(tr, mode){
       start_odo:os?Number(os):null, end_odo:oe?Number(oe):null, miles:miles>0?miles:null, miles_source:hasOdo?'odometer':'manual',
       start_label:start||null, dest_label:dest||null, roundtrip:false, note:note||null };
     const sC=tr._startResolved?.coords; if(sC){ payload.start_lat=sC.lat; payload.start_lng=sC.lng; }   // GPS start
+    if(tr._osPhoto) payload.start_photo=tr._osPhoto; if(tr._oePhoto) payload.end_photo=tr._oePhoto;     // odometer photos
     table='trips';
   } else {
     const date=tr.querySelector('.g-date').value, desc=tr.querySelector('.g-desc').value.trim();
@@ -806,6 +813,29 @@ async function gridDelete(tr, mode){
   tr.remove(); gridTotal();
 }
 function gridTotal(){ /* the reimburse total now lives on the items-list header, refreshed via refreshTotals() */ }
+// tapping a grid odometer cell: snap a photo (OCR via read-odometer) or type the reading
+function odoSheet(tr, which){
+  const input=tr.querySelector('.g-'+which);
+  openSheet(`<h3>Odometer ${which==='os'?'start':'end'}</h3>
+    <label class="btn primary block" style="margin-top:4px">📷 Snap a photo of the odometer<input id="odoFile" type="file" accept="image/*" capture="environment" hidden></label>
+    <div id="odoMsg" class="small muted center" style="margin-top:8px">…or type the reading below</div>
+    <label class="fl">Odometer reading</label><input id="odoVal" type="number" inputmode="decimal" value="${input.value||''}" placeholder="e.g. 48210">
+    <button class="btn primary block" id="odoSave" style="margin-top:14px">Save</button>
+    <button class="btn ghost block" id="odoCancel" style="margin-top:8px">Cancel</button>`);
+  $('#odoCancel').onclick=closeSheet;
+  $('#odoFile').onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    $('#odoMsg').innerHTML='<span class="spin"></span> Reading odometer…';
+    try{
+      const path=await uploadPhoto('odometer', f);
+      tr['_'+which+'Photo']=path;                       // saved with the trip on autosave
+      const r=await callFn('read-odometer',{path});
+      if(r&&r.ok && r.reading!=null){ $('#odoVal').value=r.reading; $('#odoMsg').textContent='✓ Read '+r.reading+' — check it, then Save.'; }
+      else $('#odoMsg').textContent=(r&&r.message)||'Couldn’t read it — type the number.';
+    }catch(err){ $('#odoMsg').textContent='Upload/read failed — type the number.'; }
+  };
+  $('#odoSave').onclick=()=>{ input.value=$('#odoVal').value; closeSheet(); input.dispatchEvent(new Event('input',{bubbles:true})); };
+}
 // auto-compute grid mileage from start+destination (one-way) when no odometer entered
 function maybeCalcDistance(tr){
   const os=tr.querySelector('.g-os')?.value, oe=tr.querySelector('.g-oe')?.value;
@@ -1196,6 +1226,7 @@ function drawAdmin(){
 
 async function adminDash(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
+  await reloadPeriods();
   const per=state.period;
   const [{data:profs}, trips, exps, subs] = await Promise.all([
     supabase.from('profiles').select('*').order('full_name'),
@@ -1368,6 +1399,7 @@ function exportPDF(prof,per,T,E){
 /* ── Admin: review queue ── */
 async function adminReview(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
+  await reloadPeriods();
   const per=state.period;
   const [{data:bas}, subs, trips, exps] = await Promise.all([
     supabase.from('profiles').select('*').eq('role','ba').order('full_name'),
