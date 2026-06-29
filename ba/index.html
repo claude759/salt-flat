@@ -203,7 +203,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.3';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.4';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -550,6 +550,7 @@ async function drawBA(){
       <button class="bigbtn" id="ab-trip" ${readOnly?'disabled':''}><span class="ic">🚗</span><b>Log trip</b><span class="small muted">mileage</span></button>
       <button class="bigbtn" id="ab-exp" ${readOnly?'disabled':''}><span class="ic">🧾</span><b>Add expense</b><span class="small muted">snap a receipt</span></button>
     </div>
+    <div id="todobar">${todoCard(items,true)}</div>
     ${readOnly?'':'<div id="gridcard"></div>'}
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px">
@@ -581,6 +582,7 @@ function refreshItems(){
   el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
   const h=$('#itemsHead'); if(h) h.textContent=`This period · ${items.length} item${items.length===1?'':'s'}`;
   const ir=$('#itemsReimb'); if(ir) ir.textContent=money(reimburseTotal());
+  const tb=$('#todobar'); if(tb) tb.innerHTML=todoCard(items,true);
 }
 function totbarTiles(){
   const mileT=(state._T||[]).reduce((a,x)=>a+Number(x.amount||0),0);
@@ -609,6 +611,35 @@ function baItemRow(x){
     <div class="amt">${money(x.amount)}</div>
     <span class="badge ${x.status}">${x.status}</span>
     ${canDel?`<button class="btn ghost sm" data-del="${x.id}" data-kind="${trip?'trips':'expenses'}" title="Delete">✕</button>`:''}
+  </div>`;
+}
+// what's missing on a trip/expense — drives the BA + admin to-do list
+function itemIssues(x){
+  const trip = x._k==='trip';
+  const out=[];
+  if(!x.dispensary_id) out.push('a dispensary');
+  if(trip){
+    if(!(Number(x.miles)>0)){
+      const so=x.start_odo!=null, eo=x.end_odo!=null, hs=!!x.start_label, hd=!!x.dest_label;
+      if(so!==eo) out.push('the 2nd odometer reading');
+      else if(hs!==hd) out.push('a start + destination');
+      else out.push('the miles');
+    }
+  } else {
+    if(!(Number(x.amount)>0)) out.push('an amount');
+    if(!x.receipt_path) out.push('a receipt');
+  }
+  return out;
+}
+// to-do card listing incomplete items. onlyEditable=true → just drafts/rejected (BA can fix)
+function todoCard(items, onlyEditable){
+  const todos=(items||[]).filter(x=> !onlyEditable || x.status==='draft' || x.status==='rejected')
+    .map(x=>({x, iss:itemIssues(x)})).filter(t=>t.iss.length);
+  if(!todos.length) return '';
+  return `<div class="card" style="border-color:var(--yellow)">
+    <h3 style="margin:0 0 6px">⚠ To-do <span class="muted small">· ${todos.length} to finish</span></h3>
+    ${todos.map(t=>{ const trip=t.x._k==='trip'; const title=trip?(t.x.dest_label||dispName(t.x.dispensary_id)||'Trip'):(t.x.vendor||'Expense'); const date=trip?t.x.trip_date:t.x.expense_date;
+      return `<div class="item"><div class="ic">${trip?'🚗':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${esc(title)}</div><div class="s" style="color:var(--yellow)">${fmtDate(date)} · needs ${t.iss.join(', ')}</div></div></div>`; }).join('')}
   </div>`;
 }
 async function delItem(kind,id){
@@ -1373,7 +1404,7 @@ async function adminBaDetail(baId){
     const sub=trip?`${x.miles??'—'} mi · ${x.method}`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
     const disp=dispName(x.dispensary_id);
     const rec=trip?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
-    return `<div class="item">
+    return `<div class="item" data-kind="${trip?'trip':'exp'}">
       <div class="ic">${trip?'🚗':'🧾'}</div>
       <div class="grow" style="min-width:0"><div class="t">${esc(title)}</div>
         <div class="s">${fmtDate(date)} · ${esc(sub)}${disp&&disp!=='—'?` · 🏬 ${esc(disp)}`:''}${rec}</div>
@@ -1407,7 +1438,10 @@ async function adminBaDetail(baId){
         ${catRows}
       </div>`:''}
     </div>
-    ${items.length?`<div class="card"><h3 style="margin:0 0 4px">This period · ${items.length} item${items.length===1?'':'s'} <span class="muted small">— the view ${esc((prof.full_name||'they').split(' ')[0])} sees</span></h3>${itemRows}</div>`:'<p class="muted small">Nothing logged this period.</p>'}
+    ${todoCard(items,false)}
+    ${items.length?`<div class="card"><h3 style="margin:0 0 4px">This period · ${items.length} item${items.length===1?'':'s'} <span class="muted small">— the view ${esc((prof.full_name||'they').split(' ')[0])} sees</span></h3>
+      <div class="seg" id="dFilter" style="margin:8px 0"><button class="on" data-f="all">All</button><button data-f="trip">🚗 Mileage</button><button data-f="exp">🧾 Expenses</button></div>
+      ${itemRows}</div>`:'<p class="muted small">Nothing logged this period.</p>'}
     <div class="row wrap" style="margin-top:16px">
       ${S.status==='submitted'?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
@@ -1421,6 +1455,9 @@ async function adminBaDetail(baId){
   $('#approveBtn')&&($('#approveBtn').onclick=()=>approveSubmission(baId,per.id,T,E));
   document.querySelectorAll('[data-rej]').forEach(b=>b.onclick=()=>rejectItem(b.dataset.rej,b.dataset.id,baId));
   document.querySelectorAll('.recFile').forEach(inp=>inp.onchange=e=>adminAttachReceipt(e,baId));
+  const df=$('#dFilter'); if(df) df.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    df.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b)); const f=b.dataset.f;
+    df.parentElement.querySelectorAll('.item[data-kind]').forEach(it=>{ it.style.display=(f==='all'||it.dataset.kind===f)?'':'none'; }); });
 }
 // admin attaches/replaces a receipt image on an expense (e.g. for back-filled data).
 // Uploaded under the admin's own storage prefix (which RLS already permits); admins can view any receipt.
