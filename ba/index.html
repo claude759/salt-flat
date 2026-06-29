@@ -85,6 +85,8 @@
     justify-content:center;font-size:17px;flex:none}
   .item .t{font-weight:600} .item .s{font-size:12px;color:var(--muted)}
   .item .amt{margin-left:auto;font-weight:700;white-space:nowrap}
+  .item.todo-fix{cursor:pointer;border-radius:10px;margin:0 -6px;padding-left:6px;padding-right:6px}
+  .item.todo-fix:active{background:var(--panel2)}
   .badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
   .badge.draft{color:var(--muted)} .badge.submitted{color:var(--yellow);border-color:var(--yellow)}
   .badge.approved{color:var(--green);border-color:var(--green)}
@@ -203,7 +205,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.4';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.6';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -550,7 +552,7 @@ async function drawBA(){
       <button class="bigbtn" id="ab-trip" ${readOnly?'disabled':''}><span class="ic">🚗</span><b>Log trip</b><span class="small muted">mileage</span></button>
       <button class="bigbtn" id="ab-exp" ${readOnly?'disabled':''}><span class="ic">🧾</span><b>Add expense</b><span class="small muted">snap a receipt</span></button>
     </div>
-    <div id="todobar">${todoCard(items,true)}</div>
+    <div id="todobar">${todoCard(items,true,true)}</div>
     ${readOnly?'':'<div id="gridcard"></div>'}
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px">
@@ -559,7 +561,7 @@ async function drawBA(){
       </div>
       <div id="items">${items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>'}</div>
     </div>
-    ${canEdit ? `<button class="btn ok block" id="submitBtn">Submit period for reimbursement</button>`:''}
+    ${canEdit ? `<div id="submitWrap">${submitAreaHtml()}</div>`:''}
     ${submittedLock ? `<p class="small muted center">Submitted ${S.submitted_at?('· '+new Date(S.submitted_at).toLocaleDateString()):''}. Locked from edits.</p>`
       : (readOnly && phase==='past')   ? `<p class="small muted center">📅 Past pay period — view only. Ask an admin to make changes.</p>`
       : (readOnly && phase==='future') ? `<p class="small muted center">📅 This pay period hasn’t started yet.</p>`
@@ -567,8 +569,10 @@ async function drawBA(){
   `;
   $('#ab-trip')&&($('#ab-trip').onclick=()=>tripSheet());
   $('#ab-exp') &&($('#ab-exp').onclick =()=>expenseSheet());
-  $('#submitBtn')&&($('#submitBtn').onclick=()=>submitPeriod());
+  wireSubmit();
   m.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
+  // delegated so it survives refreshItems() re-rendering #todobar's innards
+  const tbEl=$('#todobar'); if(tbEl) tbEl.onclick=e=>{ const row=e.target.closest('[data-fix-id]'); if(row) fixItemSheet(row.dataset.fixKind, row.dataset.fixId); };
   renderGrid();
 }
 function periodItems(){
@@ -582,7 +586,8 @@ function refreshItems(){
   el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
   const h=$('#itemsHead'); if(h) h.textContent=`This period · ${items.length} item${items.length===1?'':'s'}`;
   const ir=$('#itemsReimb'); if(ir) ir.textContent=money(reimburseTotal());
-  const tb=$('#todobar'); if(tb) tb.innerHTML=todoCard(items,true);
+  const tb=$('#todobar'); if(tb) tb.innerHTML=todoCard(items,true,true);
+  const sw=$('#submitWrap'); if(sw){ sw.innerHTML=submitAreaHtml(); wireSubmit(); }
 }
 function totbarTiles(){
   const mileT=(state._T||[]).reduce((a,x)=>a+Number(x.amount||0),0);
@@ -632,16 +637,170 @@ function itemIssues(x){
   return out;
 }
 // to-do card listing incomplete items. onlyEditable=true → just drafts/rejected (BA can fix)
-function todoCard(items, onlyEditable){
+// clickable=true → each row opens fixItemSheet so the owner can fill the missing info
+function todoCard(items, onlyEditable, clickable){
   const todos=(items||[]).filter(x=> !onlyEditable || x.status==='draft' || x.status==='rejected')
     .map(x=>({x, iss:itemIssues(x)})).filter(t=>t.iss.length);
   if(!todos.length) return '';
   return `<div class="card" style="border-color:var(--yellow)">
-    <h3 style="margin:0 0 6px">⚠ To-do <span class="muted small">· ${todos.length} to finish</span></h3>
+    <h3 style="margin:0 0 2px">⚠ To-do <span class="muted small">· ${todos.length} to finish</span></h3>
+    ${clickable?`<div class="small muted" style="margin:0 0 6px">Tap an item to fill in what's missing.</div>`:'<div style="height:4px"></div>'}
     ${todos.map(t=>{ const trip=t.x._k==='trip'; const title=trip?(t.x.dest_label||dispName(t.x.dispensary_id)||'Trip'):(t.x.vendor||'Expense'); const date=trip?t.x.trip_date:t.x.expense_date;
-      return `<div class="item"><div class="ic">${trip?'🚗':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${esc(title)}</div><div class="s" style="color:var(--yellow)">${fmtDate(date)} · needs ${t.iss.join(', ')}</div></div></div>`; }).join('')}
+      return `<div class="item${clickable?' todo-fix':''}"${clickable?` data-fix-id="${t.x.id}" data-fix-kind="${trip?'trip':'exp'}"`:''}><div class="ic">${trip?'🚗':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${esc(title)}</div><div class="s" style="color:var(--yellow)">${fmtDate(date)} · needs ${t.iss.join(', ')}</div></div>${clickable?'<div class="muted" style="font-size:20px;flex:none">›</div>':''}</div>`; }).join('')}
   </div>`;
 }
+// Tap a to-do row → focused popup to fill exactly what's missing, then save in place.
+function fixItemSheet(kind, id){
+  const trip = kind==='trip';
+  const arr = trip ? (state._T||[]) : (state._E||[]);
+  const x = arr.find(o=>String(o.id)===String(id));
+  if(!x){ toast('Item not found — pull down to refresh','err'); return; }
+  if(!(x.status==='draft' || x.status==='rejected')){ toast('This item is locked (already submitted).','err'); return; }
+  trip ? fixTripSheet(x) : fixExpenseSheet(x);
+}
+function fixTripSheet(x){
+  const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  const iss = itemIssues({...x,_k:'trip'});
+  const needDisp = !x.dispensary_id, needMiles = !(Number(x.miles)>0);
+  openSheet(`
+    <h3>Finish this trip</h3>
+    <div class="small muted" style="margin-top:2px">${fmtDate(x.trip_date)} · still needs ${iss.join(', ')}.</div>
+    <label class="fl">Dispensary <span class="muted">(required)</span></label>
+    <select id="fDisp" class="${needDisp?'needs':''}">${dispOpts}</select>
+    <label class="fl">Starting location</label>
+    <input id="fStart" placeholder="start typing, or pick 📍 Current location" value="${esc(x.start_label||'')}" autocomplete="off" class="${needMiles&&!x.start_label?'needs':''}">
+    <label class="fl">Destination</label>
+    <input id="fDest" placeholder="dispensary or address" value="${esc(x.dest_label||'')}" autocomplete="off" class="${needMiles&&!x.dest_label?'needs':''}">
+    <div class="row">
+      <div class="grow"><label class="fl">Odometer start</label>
+        <div class="row" style="gap:6px"><input id="fOs" type="number" inputmode="decimal" placeholder="reading" value="${x.start_odo!=null?x.start_odo:''}" style="flex:1">
+          <label class="btn ghost sm" style="flex:none" title="snap odometer">📷<input id="fOsFile" type="file" accept="image/*" capture="environment" hidden></label></div></div>
+      <div class="grow"><label class="fl">Odometer end</label>
+        <div class="row" style="gap:6px"><input id="fOe" type="number" inputmode="decimal" placeholder="reading" value="${x.end_odo!=null?x.end_odo:''}" style="flex:1">
+          <label class="btn ghost sm" style="flex:none" title="snap odometer">📷<input id="fOeFile" type="file" accept="image/*" capture="environment" hidden></label></div></div>
+    </div>
+    <label class="fl">Miles <span class="muted">(auto-fills from odometer or address)</span></label>
+    <input id="fMiles" type="number" inputmode="decimal" placeholder="miles" value="${x.miles!=null?x.miles:''}" class="${needMiles?'needs':''}">
+    <div id="fMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
+    <button class="btn primary block" id="fSave" style="margin-top:8px">Save</button>
+    <button class="btn ghost block" id="fCancel" style="margin-top:8px">Cancel</button>
+  `);
+  $('#fCancel').onclick=closeSheet;
+  const startEl=$('#fStart'), destEl=$('#fDest'), milesEl=$('#fMiles'), dispEl=$('#fDisp'), osEl=$('#fOs'), oeEl=$('#fOe');
+  let startRes=null, destRes=null;
+  const recalcFromOdo=()=>{ const s=Number(osEl.value),e=Number(oeEl.value); if(s&&e&&e>=s){ milesEl.value=Math.round((e-s)*10)/10; milesEl.classList.remove('needs'); } };
+  attachGridTypeahead(startEl, r=>{ startRes=r; }, {gps:true});
+  attachGridTypeahead(destEl,  r=>{ destRes=r; if(r.dispId && dispEl.value!==r.dispId) dispEl.value=r.dispId; });
+  // inline odometer snap → read-odometer fills the number (no nested popup)
+  const wireOdo=(fileEl, inp)=>{ if(!fileEl) return; fileEl.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
+    const ph=inp.placeholder; inp.placeholder='reading…';
+    try{ const path=await uploadPhoto('odometer',f); inp._photo=path; const r=await callFn('read-odometer',{path});
+      if(r&&r.ok&&r.reading!=null){ inp.value=r.reading; toast('Read '+r.reading+' — check it','ok'); }
+      else toast((r&&r.message)||'Couldn’t read it — type the number','err');
+    }catch(err){ toast('Upload/read failed — type the number','err'); }
+    inp.placeholder=ph; recalcFromOdo(); }; };
+  wireOdo($('#fOsFile'), osEl); wireOdo($('#fOeFile'), oeEl);
+  osEl.addEventListener('input',recalcFromOdo); oeEl.addEventListener('input',recalcFromOdo);
+  [dispEl,milesEl].forEach(el=>el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }));
+  $('#fSave').onclick=async()=>{
+    const btn=$('#fSave');
+    const start=startEl.value.trim(), dest=destEl.value.trim();
+    const os=osEl.value, oe=oeEl.value;
+    let miles=Number(milesEl.value);
+    if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
+    // no miles yet but both endpoints known → ask ORS once
+    if(!(miles>0) && start && dest){
+      busy(btn,true); $('#fMsg').style.color='var(--muted)'; $('#fMsg').textContent='Calculating distance…';
+      try{ const body={roundtrip:!!x.roundtrip};   // match the trip's own round-trip setting
+        if(startRes&&startRes.coords){ body.start_lat=startRes.coords.lat; body.start_lng=startRes.coords.lng; } else body.start_address=(startRes&&startRes.addr)||start;
+        if(destRes&&destRes.dispId){ body.dispensary_id=destRes.dispId; } else body.dest_address=(destRes&&destRes.addr)||dest;
+        const r=await callFn('calc-distance',body); if(r&&r.ok) miles=r.miles;
+      }catch(err){}
+      busy(btn,false); $('#fMsg').textContent='';
+    }
+    const hasOdo=os!==''&&oe!=='';
+    const patch={ dispensary_id:dispEl.value||null, start_label:start||null, dest_label:dest||null,
+      start_odo:os!==''?Number(os):null, end_odo:oe!==''?Number(oe):null,
+      miles:miles>0?miles:(x.miles||null), roundtrip:!!x.roundtrip,   // never blank out an existing distance / round-trip flag
+      method:hasOdo?'odometer':'manual', miles_source:hasOdo?'odometer':'manual' };
+    if(startRes&&startRes.coords){ patch.start_lat=startRes.coords.lat; patch.start_lng=startRes.coords.lng; }
+    if(osEl._photo) patch.start_photo=osEl._photo; if(oeEl._photo) patch.end_photo=oeEl._photo;
+    const left=itemIssues({...x, ...patch, _k:'trip'});
+    if(left.length){ $('#fMsg').style.color='var(--red)'; $('#fMsg').textContent='Still needs '+left.join(', ')+'.'; return; }
+    busy(btn,true);
+    const {data,error}=await supabase.from('trips').update(patch).eq('id',x.id).select('*').single();
+    busy(btn,false);
+    if(error){ $('#fMsg').style.color='var(--red)'; $('#fMsg').textContent='Couldn’t save: '+error.message; return; }
+    const i=(state._T||[]).findIndex(o=>o.id===x.id); if(i>=0) state._T[i]=data;
+    closeSheet(); toast('Trip updated ✓','ok'); refreshItems(); refreshTotals(); renderGrid();
+  };
+}
+function fixExpenseSheet(x){
+  const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  const cats = EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
+  const iss = itemIssues({...x,_k:'exp'});
+  const needDisp=!x.dispensary_id, needAmt=!(Number(x.amount)>0), needRec=!x.receipt_path;
+  openSheet(`
+    <h3>Finish this expense</h3>
+    <div class="small muted" style="margin-top:2px">${fmtDate(x.expense_date)} · still needs ${iss.join(', ')}.</div>
+    <label class="btn ${needRec?'primary':'ghost'} block" style="margin-top:6px">📷 ${x.receipt_path?'Replace receipt':'Snap receipt'}<input id="fRec" type="file" accept="image/*" capture="environment" hidden></label>
+    <div id="fThumbWrap" class="${x.receipt_path?'':'hide'}" style="margin-top:8px;text-align:center"><img id="fThumb" class="thumb" style="width:110px;height:110px"></div>
+    <div id="fOcr" class="small muted" style="margin-top:4px"></div>
+    <label class="fl">Vendor</label><input id="fVendor" placeholder="e.g. Chevron" value="${esc(x.vendor||'')}">
+    <div class="row">
+      <div class="grow"><label class="fl">Amount</label><input id="fAmt" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${Number(x.amount)>0?x.amount:''}" class="${needAmt?'needs':''}"></div>
+      <div class="grow"><label class="fl">Category</label><select id="fCat">${cats}</select></div>
+    </div>
+    <label class="fl">Dispensary <span class="muted">(required)</span></label>
+    <select id="fDisp" class="${needDisp?'needs':''}">${dispOpts}</select>
+    <div id="fMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
+    <button class="btn primary block" id="fSave" style="margin-top:8px">Save</button>
+    <button class="btn ghost block" id="fCancel" style="margin-top:8px">Cancel</button>
+  `);
+  $('#fCancel').onclick=closeSheet;
+  let receiptPath=x.receipt_path||null, ocr=x.ocr_raw||null, recChanged=false;
+  if(x.receipt_path) signedUrl('receipts',x.receipt_path).then(u=>{ if(u){ const t=$('#fThumb'); if(t) t.src=u; } });
+  ['#fAmt','#fDisp'].forEach(s=>{ const el=$(s); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }); });
+  const fRec=$('#fRec'); if(fRec) fRec.onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    $('#fThumbWrap').classList.remove('hide'); $('#fThumb').src=URL.createObjectURL(f);
+    $('#fOcr').innerHTML='<span class="spin"></span> Uploading…';
+    try{ receiptPath=await uploadPhoto('receipts',f); recChanged=true; ocr=null; }   // new image → any prior OCR no longer describes it
+    catch(err){ $('#fOcr').textContent='Upload failed — try again.'; return; }
+    $('#fOcr').innerHTML='<span class="spin"></span> Reading the receipt…';
+    try{ const r=await callFn('extract-receipt',{path:receiptPath}); ocr=(r&&(r.raw||r))||null;
+      if(r&&r.ok){ if(r.total!=null && !(Number($('#fAmt').value)>0)){ $('#fAmt').value=r.total; $('#fAmt').classList.remove('needs'); }
+        if(r.vendor && !$('#fVendor').value.trim()) $('#fVendor').value=r.vendor;
+        if(r.category) $('#fCat').value=r.category; }
+      $('#fOcr').textContent='✓ Receipt attached'+(r&&r.ok?' — check the details.':'.');
+    }catch(err){ $('#fOcr').textContent='✓ Receipt attached (couldn’t auto-read — fill it in).'; }
+  };
+  $('#fSave').onclick=async()=>{
+    const btn=$('#fSave');
+    const patch={ receipt_path:receiptPath||null, vendor:$('#fVendor').value.trim()||x.vendor||null,
+      amount:Number($('#fAmt').value)||0, category:$('#fCat').value, dispensary_id:$('#fDisp').value||null };
+    if(recChanged) patch.ocr_raw=ocr;   // only rewrite OCR metadata when the receipt itself changed (new value or null)
+    const left=itemIssues({...x, ...patch, _k:'exp'});
+    if(left.length){ $('#fMsg').textContent='Still needs '+left.join(', ')+'.'; return; }
+    busy(btn,true);
+    const {data,error}=await supabase.from('expenses').update(patch).eq('id',x.id).select('*').single();
+    busy(btn,false);
+    if(error){ $('#fMsg').textContent='Couldn’t save: '+error.message; return; }
+    const i=(state._E||[]).findIndex(o=>o.id===x.id); if(i>=0) state._E[i]=data;
+    closeSheet(); toast('Expense updated ✓','ok'); refreshItems(); refreshTotals(); renderGrid();
+  };
+}
+// how many of this period's still-editable items are incomplete (drives submit gating)
+function pendingTodos(){
+  return periodItems().filter(x=>(x.status==='draft'||x.status==='rejected') && itemIssues(x).length).length;
+}
+function submitAreaHtml(){
+  const pend=pendingTodos();
+  if(pend) return `<button class="btn ok block" id="submitBtn" disabled style="opacity:.5;cursor:not-allowed">Submit period for reimbursement</button>
+    <p class="small center" style="color:var(--yellow);margin-top:6px">Clear the ${pend} to-do item${pend>1?'s':''} above to submit.</p>`;
+  return `<button class="btn ok block" id="submitBtn">Submit period for reimbursement</button>`;
+}
+function wireSubmit(){ const b=$('#submitBtn'); if(b) b.onclick=()=>submitPeriod(); }
 async function delItem(kind,id){
   if(!confirm('Delete this item?')) return;
   const { error } = await supabase.from(kind).delete().eq('id',id);
@@ -650,15 +809,16 @@ async function delItem(kind,id){
   toast('Deleted'); refreshItems(); refreshTotals(); renderGrid();
 }
 async function submitPeriod(){
-  if(!confirm('Submit all items in this period? You won’t be able to edit them after.')) return;
   await flushGrid();                          // commit any pending grid edits before snapshotting state
   const T=state._T||[], E=state._E||[];
   const submittable = x => x.status==='draft' || x.status==='rejected';
   const ids=T.filter(submittable).map(x=>x.id), eids=E.filter(submittable).map(x=>x.id);
   if(!ids.length && !eids.length) return toast('Nothing to submit','err');
-  // rule: everything should be linked to a dispensary (so spend can be tracked per dispensary)
-  const noDisp=[...T.filter(submittable),...E.filter(submittable)].filter(x=>!x.dispensary_id).length;
-  if(noDisp && !confirm(`${noDisp} item${noDisp>1?'s aren’t':' isn’t'} linked to a dispensary (highlighted red on the worksheet). Un-linked items won’t show in the per-dispensary report. Submit anyway?`)) return;
+  // hard rule: every item must be complete (dispensary linked, miles/odometer set, amount + receipt) before submitting
+  const incomplete=[...T.filter(submittable).map(x=>({...x,_k:'trip'})),...E.filter(submittable).map(x=>({...x,_k:'exp'}))]
+    .filter(x=>itemIssues(x).length).length;
+  if(incomplete) return toast(`Finish the ${incomplete} to-do item${incomplete>1?'s':''} above first — tap each one to fill it in.`,'err');
+  if(!confirm('Submit all items in this period? You won’t be able to edit them after.')) return;
   const mile=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb,card}=expSplit(E);
   // record the submission FIRST so items are never locked without a workflow row
   const { error:se } = await supabase.from('submissions').upsert({
@@ -1274,8 +1434,8 @@ async function adminReport(m){
   const [{data:profs},{data:disps},trips,exps]=await Promise.all([
     supabase.from('profiles').select('id,full_name,region'),
     supabase.from('dispensaries').select('id,name'),
-    per?supabase.from('trips').select('ba_id,dispensary_id,amount,trip_date,miles,dest_label').eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('ba_id,dispensary_id,amount,payment,expense_date,vendor,receipt_path').eq('period_id',per.id):{data:[]},
+    per?supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('period_id',per.id):{data:[]},
+    per?supabase.from('expenses').select('id,ba_id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('period_id',per.id):{data:[]},
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
@@ -1285,17 +1445,21 @@ async function adminReport(m){
   const agg={}, items={};   // dispensary_id|'none' -> totals / item list
   const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0}; items[k]=items[k]||[]; };
   (trips.data||[]).forEach(t=>{ if(!inRegion(t.ba_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
-    items[k].push({kind:'trip',date:t.trip_date,ba:baName(t.ba_id),label:t.dest_label||'',miles:t.miles,amount:Number(t.amount||0)}); });
+    items[k].push({kind:'trip',id:t.id,date:t.trip_date,ba:baName(t.ba_id),disp:(dById[k]&&dById[k].name)||'',
+      start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,
+      start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
   (exps.data||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const k=x.dispensary_id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=Number(x.amount||0);
-    items[k].push({kind:'exp',date:x.expense_date,ba:baName(x.ba_id),vendor:x.vendor||'',payment:x.payment,receipt:x.receipt_path||'',amount:Number(x.amount||0)}); });
+    items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:baName(x.ba_id),disp:(dById[k]&&dById[k].name)||'',
+      vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:Number(x.amount||0)}); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
+  const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));   // flat lookup for the detail popup
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card, ...v }))
     .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
-  const detailRows=k=>(items[k]||[]).map(it=> it.kind==='trip'
-    ? `<div class="item"><div class="ic">🚗</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)}${it.miles!=null?` · ${it.miles} mi`:''}</div><div class="s">${fmtDate(it.date)}${it.label?' · '+esc(it.label):''}</div></div><div class="amt">${money(it.amount)}</div></div>`
-    : `<div class="item"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)} · ${esc(it.vendor)}</div><div class="s">${fmtDate(it.date)} · ${it.payment==='company'?'💳 card':'💵 reimb'} · ${it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:'<span class="muted">no receipt</span>'}</div></div><div class="amt">${money(it.amount)}</div></div>`
-  ).join('');
+  const detailRows=k=>(items[k]||[]).map(it=>{ const note=it.note?' · 🗒':''; return it.kind==='trip'
+    ? `<div class="item repitem" data-item="trip:${it.id}" style="cursor:pointer"><div class="ic">🚗</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)}${it.miles!=null?` · ${it.miles} mi`:''}</div><div class="s">${fmtDate(it.date)}${it.label?' · '+esc(it.label):''}${note}</div></div><div class="amt">${money(it.amount)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`
+    : `<div class="item repitem" data-item="exp:${it.id}" style="cursor:pointer"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)} · ${esc(it.vendor)}</div><div class="s">${fmtDate(it.date)} · ${it.payment==='company'?'💳 card':'💵 reimb'} · ${it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:'<span class="muted">no receipt</span>'}${note}</div></div><div class="amt">${money(it.amount)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`;
+  }).join('');
   m.innerHTML=`
     <div class="card">
       <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>adminReport(m))}</div>
@@ -1322,7 +1486,44 @@ async function adminReport(m){
   const rs=$('#regSelRp'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminReport(m); };
   m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
     d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
+  m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
   m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
+}
+// admin: tap a line item in the Spend-by-dispensary report → full detail (note, category, route, odometer, receipt)
+function reportItemSheet(it){
+  if(!it){ toast('Item unavailable — reopen the report','err'); return; }
+  const trip=it.kind==='trip';
+  const kv=(k,v)=> (v==null||v==='')?'':`<div class="row" style="justify-content:space-between;gap:14px;padding:7px 0;border-top:1px solid var(--line)"><div class="small muted" style="flex:none">${k}</div><div style="text-align:right;font-weight:600;min-width:0;word-break:break-word">${v}</div></div>`;
+  const title=trip?(it.dest_label||it.disp||'Trip'):(it.vendor||'Expense');
+  let body='';
+  body+=kv('BA', esc(it.ba||''));
+  body+=kv('Date', fmtDate(it.date));
+  body+=kv('Dispensary', it.disp?esc(it.disp):'<span style="color:var(--yellow)">⚠ Not linked</span>');
+  if(trip){
+    body+=kv('Route', (it.start_label||it.dest_label)?`${esc(it.start_label||'—')} → ${esc(it.dest_label||'—')}`:'');
+    body+=kv('Miles', it.miles!=null?`${it.miles} mi${it.method?' · '+esc(it.method):''}`:'');
+    body+=kv('Odometer', (it.start_odo!=null||it.end_odo!=null)?`${it.start_odo??'—'} → ${it.end_odo??'—'}`:'');
+    body+=kv('Mileage reimbursement', money(it.amount));
+  } else {
+    body+=kv('Category', it.category?esc(it.category):'');
+    body+=kv('Paid with', it.payment==='company'?'💳 Company card (not reimbursed)':'💵 Reimburse the BA');
+    body+=kv('Amount', money(it.amount));
+  }
+  body+=kv('Status', it.status?`<span class="badge ${it.status}">${it.status}</span>`:'');
+  const noteBlock=it.note
+    ? `<label class="fl">Note</label><div class="card" style="margin:2px 0 0;padding:10px;background:var(--panel2);white-space:pre-wrap">${esc(it.note)}</div>`
+    : `<div class="small muted" style="margin-top:12px">No note added.</div>`;
+  const recBtn=(!trip && it.receipt)?`<button class="btn block" id="riRec" style="margin-top:12px">📄 View receipt</button>`:'';
+  openSheet(`
+    <h3 style="margin-bottom:2px">${trip?'🚗':'🧾'} ${esc(title)}</h3>
+    <div class="small muted">${money(it.amount)}</div>
+    <div style="margin-top:10px">${body}</div>
+    ${noteBlock}
+    ${recBtn}
+    <button class="btn ghost block" id="riClose" style="margin-top:12px">Close</button>
+  `);
+  $('#riClose').onclick=closeSheet;
+  const rec=$('#riRec'); if(rec) rec.onclick=async()=>{ const u=await signedUrl('receipts',it.receipt); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); };
 }
 
 async function adminDash(m){
