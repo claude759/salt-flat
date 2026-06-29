@@ -209,7 +209,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.12';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.13';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -2145,6 +2145,11 @@ async function adminSettings(m){
       <button class="btn sm block" id="genPer" style="margin-top:10px">Ensure current + next period exist</button>
     </div>
     <div class="card">
+      <h3>Labor hours</h3>
+      <p class="small muted">Import Brand Ambassador hours from a Gusto time-tracking CSV (Sales etc. ignored). Each BA's hourly rate — set on their profile below — turns hours into labor cost per dispensary in the reports.</p>
+      <button class="btn sm primary" id="impHours">⏱ Import from Gusto CSV</button>
+    </div>
+    <div class="card">
       <div class="row"><h3 class="grow">Brand ambassadors</h3><button class="btn sm primary" id="addBa">+ Add</button></div>
       ${(bas||[]).map(b=>`<div class="item">
         <div class="ic">${(b.full_name||'?').slice(0,1).toUpperCase()}</div>
@@ -2183,9 +2188,80 @@ async function adminSettings(m){
     await loadMe(); toast('Periods ready','ok'); drawAdmin(); };
   $('#addBa').onclick=addBaSheet;
   $('#addDisp').onclick=()=>dispSheet(null);
+  $('#impHours').onclick=()=>importHoursSheet(bas||[]);
   m.querySelectorAll('[data-dg]').forEach(el=>el.onclick=()=>{ const k=el.dataset.dg; state.dispOpen[k]=!state.dispOpen[k]; adminSettings(m); });
   m.querySelectorAll('[data-disp]').forEach(b=>b.onclick=()=>dispSheet((disp||[]).find(d=>d.id===b.dataset.disp)));
   m.querySelectorAll('[data-edit]').forEach(el=>el.onclick=()=>editBaSheet((bas||[]).find(x=>x.id===el.dataset.edit)));
+}
+// minimal RFC-4180 CSV parser (handles quoted fields with embedded commas + newlines)
+function parseCSV(text){
+  const rows=[]; let row=[], field='', inQ=false;
+  for(let i=0;i<text.length;i++){ const c=text[i];
+    if(inQ){ if(c==='"'){ if(text[i+1]==='"'){ field+='"'; i++; } else inQ=false; } else field+=c; }
+    else if(c==='"') inQ=true;
+    else if(c===','){ row.push(field); field=''; }
+    else if(c==='\n'){ row.push(field); rows.push(row); row=[]; field=''; }
+    else if(c!=='\r') field+=c;
+  }
+  if(field!==''||row.length){ row.push(field); rows.push(row); }
+  return rows;
+}
+// pull per-day Brand Ambassador hours out of a Gusto "time tracking hours" export
+function gustoBaHours(text){
+  const rows=parseCSV(text);
+  const hi=rows.findIndex(r=>r.some(c=>/^date$/i.test(c.trim())) && r.some(c=>/job 1 title/i.test(c)));
+  if(hi<0) return {error:'Couldn’t find the daily table (needs Date / Job 1 title / Job 1 hours columns).'};
+  const head=rows[hi].map(c=>c.trim().toLowerCase());
+  const dCol=head.indexOf('date'), j1t=head.indexOf('job 1 title'), j1h=head.indexOf('job 1 hours'),
+        j2t=head.indexOf('job 2 title'), j2h=head.indexOf('job 2 hours');
+  if(dCol<0||j1t<0||j1h<0) return {error:'Missing required columns in the Gusto file.'};
+  const isBA=t=>/brand ambassador/i.test((t||'').trim());
+  const out=[];
+  for(let i=hi+1;i<rows.length;i++){ const r=rows[i];
+    const m=((r[dCol]||'').trim()).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); if(!m) continue;
+    const yy=m[3].length===2?('20'+m[3]):m[3];
+    const date=`${yy}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+    let h=0; if(isBA(r[j1t])) h+=Number(r[j1h]||0); if(j2t>=0&&isBA(r[j2t])) h+=Number(r[j2h]||0);
+    if(h>0) out.push({date, hours:Math.round(h*1000)/1000});
+  }
+  return {rows:out, total:Math.round(out.reduce((a,x)=>a+x.hours,0)*1000)/1000};
+}
+function importHoursSheet(bas){
+  const list=(bas||[]).filter(b=>b.role==='ba');
+  if(!list.length) return toast('Add a brand ambassador first','err');
+  openSheet(`<h3>Import hours from Gusto</h3>
+    <div class="small muted">Upload a Gusto “time tracking hours” CSV. Only Brand Ambassador hours are imported (Sales etc. ignored), matched to each work date.</div>
+    <label class="fl">Brand ambassador</label>
+    <select id="ihBa">${list.map(b=>`<option value="${b.id}" data-rate="${b.hourly_rate??''}">${esc(b.full_name||b.email)}${b.hourly_rate!=null?` · $${Number(b.hourly_rate).toFixed(2)}/hr`:' · ⚠ no rate set'}</option>`).join('')}</select>
+    <label class="btn primary block" style="margin-top:12px">📄 Choose Gusto CSV<input id="ihFile" type="file" accept=".csv,text/csv" hidden></label>
+    <div id="ihMsg" class="small" style="margin-top:10px"></div>
+    <button class="btn primary block hide" id="ihImport" style="margin-top:10px">Import</button>
+    <button class="btn ghost block" id="ihCancel" style="margin-top:8px">Cancel</button>`);
+  $('#ihCancel').onclick=closeSheet;
+  let parsed=null;
+  $('#ihFile').onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    let res; try{ res=gustoBaHours(await f.text()); }catch(err){ res={error:'Couldn’t read that file.'}; }
+    if(res.error){ $('#ihMsg').innerHTML=`<span style="color:var(--red)">${esc(res.error)}</span>`; $('#ihImport').classList.add('hide'); parsed=null; return; }
+    if(!res.rows.length){ $('#ihMsg').textContent='No Brand Ambassador hours found in this file.'; $('#ihImport').classList.add('hide'); parsed=null; return; }
+    parsed=res.rows;
+    const rate=$('#ihBa').selectedOptions[0]?.dataset.rate;
+    $('#ihMsg').innerHTML=`<div class="card" style="padding:10px"><b>${parsed.length} day${parsed.length>1?'s':''} · ${res.total} BA hours</b>${rate?` · ≈ ${money(res.total*Number(rate))} wages`:' · set this BA’s rate to compute wages'}
+      <div style="margin-top:6px">${parsed.map(p=>`<div class="row" style="justify-content:space-between;padding:1px 0"><span class="muted small">${fmtDate(p.date)}</span><span class="small">${p.hours} hrs</span></div>`).join('')}</div>
+      <div class="small muted" style="margin-top:6px">Imported as approved labor, unlinked to a dispensary (link later by editing each row). Re-importing the same days replaces them.</div></div>`;
+    $('#ihImport').classList.remove('hide');
+  };
+  $('#ihImport').onclick=async ()=>{
+    if(!parsed||!parsed.length) return;
+    const baId=$('#ihBa').value, btn=$('#ihImport'); busy(btn,true);
+    try{
+      const dates=parsed.map(p=>p.date);
+      await supabase.from('hours').delete().eq('ba_id',baId).eq('source','gusto').in('work_date',dates);   // idempotent re-import
+      const { error }=await supabase.from('hours').insert(parsed.map(p=>({ba_id:baId, work_date:p.date, hours:p.hours, job:'Brand Ambassador', source:'gusto', status:'approved', note:'Gusto import'})));
+      if(error) throw error;
+      busy(btn,false); closeSheet(); toast(`Imported ${parsed.length} day(s) of hours`,'ok'); drawAdmin();
+    }catch(err){ busy(btn,false); toast(err.message||'Import failed','err'); }
+  };
 }
 function addBaSheet(){
   openSheet(`<h3>Add a brand ambassador</h3>
