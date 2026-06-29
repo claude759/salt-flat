@@ -623,6 +623,9 @@ async function submitPeriod(){
   const submittable = x => x.status==='draft' || x.status==='rejected';
   const ids=T.filter(submittable).map(x=>x.id), eids=E.filter(submittable).map(x=>x.id);
   if(!ids.length && !eids.length) return toast('Nothing to submit','err');
+  // rule: everything should be linked to a dispensary (so spend can be tracked per dispensary)
+  const noDisp=[...T.filter(submittable),...E.filter(submittable)].filter(x=>!x.dispensary_id).length;
+  if(noDisp && !confirm(`${noDisp} item${noDisp>1?'s aren’t':' isn’t'} linked to a dispensary (highlighted red on the worksheet). Un-linked items won’t show in the per-dispensary report. Submit anyway?`)) return;
   const mile=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb,card}=expSplit(E);
   // record the submission FIRST so items are never locked without a workflow row
   const { error:se } = await supabase.from('submissions').upsert({
@@ -644,13 +647,14 @@ function gridRowHtml(mode, it, today, pay){
   const id = it ? it.id : '';
   const del = `<td class="gdel">${id?'<button class="gx" title="delete row">✕</button>':''}</td>`;
   if(mode==='miles'){
-    const dispOpts = `<option value="">— none —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+    const dispOpts = `<option value="">— pick —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
     const needMi = it && !(Number(it.miles)>0) ? ' needs' : '';   // incomplete trip — finish destination / miles later
+    const needDispM = it && !it.dispensary_id ? ' needs' : '';    // every trip must link to a dispensary
     return `<tr data-id="${id}">${del}
       <td><input type="date" class="gdate g-date" value="${it?it.trip_date:today}"></td>
       <td><input class="g-start" placeholder="start" value="${it?esc(it.start_label||''):''}" autocomplete="off"></td>
       <td><input class="g-dest" placeholder="destination" value="${it?esc(it.dest_label||''):''}" autocomplete="off"></td>
-      <td><select class="g-disp">${dispOpts}</select></td>
+      <td><select class="g-disp${needDispM}">${dispOpts}</select></td>
       <td><input class="g-note" placeholder="notes" value="${it?esc(it.note||''):''}"></td>
       <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.start_odo!=null?it.start_odo:''}" readonly style="cursor:pointer"></td>
       <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.end_odo!=null?it.end_odo:''}" readonly style="cursor:pointer"></td>
@@ -664,11 +668,14 @@ function gridRowHtml(mode, it, today, pay){
     : `<div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`;
   const needDesc = it && !((it.vendor||'').trim()) ? ' needs' : '';   // incomplete capture-fast drafts get red cells
   const needAmt  = it && !(Number(it.amount)>0)     ? ' needs' : '';
+  const dispOptsE = `<option value="">— pick —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  const needDispE = it && !it.dispensary_id ? ' needs' : '';          // every expense must link to a dispensary
   return `<tr data-id="${id}" data-pay="${rowPay}" data-rpath="${it&&it.receipt_path?esc(it.receipt_path):''}">${del}
     <td><input type="date" class="gdate g-date" value="${it?it.expense_date:today}"></td>
     <td>${rcell}</td>
     <td><input class="g-desc${needDesc}" placeholder="description" value="${it?esc(it.vendor||''):''}"></td>
     <td><select class="g-cat">${cats}</select></td>
+    <td><select class="g-edisp${needDispE}">${dispOptsE}</select></td>
     <td><input class="gnum g-amt${needAmt}" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${it&&Number(it.amount)>0?it.amount:''}"></td></tr>`;
 }
 async function gridReceiptRow(e, tr, mode){
@@ -698,7 +705,7 @@ function renderGrid(){
     inner=`<div class="gridwrap"><table class="grid"><thead>${head}</thead><tbody class="g-body" data-pay="">${body}</tbody></table></div>
       <button class="btn ghost sm g-add" data-pay="" style="margin-top:8px">＋ row</button>`;
   } else {
-    const head=`<tr><th></th><th>Date</th><th>Receipt</th><th>Description</th><th>Category</th><th>Amount</th></tr>`;
+    const head=`<tr><th></th><th>Date</th><th>Receipt</th><th>Description</th><th>Category</th><th>Dispensary</th><th>Amount</th></tr>`;
     const drafts=gridDrafts('expenses');
     const tableFor=(pay)=>{
       const body=drafts.filter(x=>(x.payment||'reimbursement')===pay).map(it=>gridRowHtml('expenses',it,today,pay)).join('')+gridRowHtml('expenses',null,today,pay);
@@ -782,7 +789,7 @@ async function gridAutosave(tr, mode){
     const pay=tr.dataset.pay||'reimbursement';
     if(isNew && !(date && amt>0)){ savedIndicator('All changes saved'); return; }
     payload={ expense_date:date||todayISO(), vendor:desc||'Expense', amount:amt>0?amt:0, category:cat||'Other',
-      payment:pay, receipt_path:tr.dataset.rpath||null, note:desc||null };
+      payment:pay, dispensary_id:tr.querySelector('.g-edisp')?.value||null, receipt_path:tr.dataset.rpath||null, note:desc||null };
     table='expenses';
   }
   tr._saving=true;
@@ -1208,6 +1215,7 @@ function renderAdmin(){
       <div class="seg grow" id="aNav">
         <button data-t="dash" class="${state.adminTab==='dash'?'on':''}">Dashboard</button>
         <button data-t="review" class="${state.adminTab==='review'?'on':''}">Review</button>
+        <button data-t="report" class="${state.adminTab==='report'?'on':''}">Report</button>
         <button data-t="settings" class="${state.adminTab==='settings'?'on':''}">Settings</button>
       </div>
     </div>
@@ -1221,7 +1229,54 @@ function drawAdmin(){
   const m=$('#main');
   if(state.adminTab==='dash') return adminDash(m);
   if(state.adminTab==='review') return adminReview(m);
+  if(state.adminTab==='report') return adminReport(m);
   return adminSettings(m);
+}
+// Spend per dispensary — the app's core metric. Aggregates trips ($ mileage) +
+// expenses (reimbursable + company card) by dispensary for the selected period.
+async function adminReport(m){
+  m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
+  await reloadPeriods();
+  const per=state.period;
+  const [{data:bas},{data:disps},trips,exps]=await Promise.all([
+    supabase.from('profiles').select('id,region').eq('role','ba'),
+    supabase.from('dispensaries').select('id,name,state'),
+    per?supabase.from('trips').select('ba_id,dispensary_id,amount').eq('period_id',per.id):{data:[]},
+    per?supabase.from('expenses').select('ba_id,dispensary_id,amount,payment').eq('period_id',per.id):{data:[]},
+  ]);
+  const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
+  const region=state.adminRegion;
+  const inRegion=ba_id=>{ if(region==='all') return true; const b=(bas||[]).find(x=>x.id===ba_id); return b&&b.region===region; };
+  const agg={};   // dispensary_id|'none' -> {mile,exp,card}
+  const bump=(did,key,amt)=>{ const k=did||'none'; (agg[k]=agg[k]||{mile:0,exp:0,card:0}); agg[k][key]+=Number(amt||0); };
+  (trips.data||[]).forEach(t=>{ if(inRegion(t.ba_id)) bump(t.dispensary_id,'mile',t.amount); });
+  (exps.data||[]).forEach(x=>{ if(inRegion(x.ba_id)) bump(x.dispensary_id, x.payment==='company'?'card':'exp', x.amount); });
+  let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card, ...v }))
+    .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
+  const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
+  m.innerHTML=`
+    <div class="card">
+      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>adminReport(m))}</div>
+      <div class="row" style="margin-top:8px"><div class="small muted grow">Region</div>
+        <select id="regSelRp"><option value="all" ${region==='all'?'selected':''}>All states</option>${REGIONS.map(r=>`<option value="${r}" ${region===r?'selected':''}>${r}</option>`).join('')}</select></div>
+      <div class="totbar" style="margin-top:12px">
+        <div class="tot"><div class="k">Dispensaries</div><div class="v">${rows.filter(r=>r.id!=='none').length}</div></div>
+        <div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Spend by dispensary <span class="muted small">${per?'· '+esc(per.label):''}</span></h3>
+      ${rows.length?rows.map(r=>`
+        <div style="padding:9px 0;border-top:1px solid var(--line)">
+          <div class="row" style="justify-content:space-between;align-items:baseline">
+            <div class="t" style="font-weight:600${r.id==='none'?';color:var(--yellow)':''}">${esc(r.name)}</div>
+            <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
+          </div>
+          <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div>
+        </div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this period${region!=='all'?' in '+region:''} yet.</p>`}
+    </div>`;
+  const rs=$('#regSelRp'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminReport(m); };
 }
 
 async function adminDash(m){
