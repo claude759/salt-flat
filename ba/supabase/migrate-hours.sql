@@ -18,6 +18,8 @@ create table if not exists public.hours (
 );
 create index if not exists hours_ba_period_idx on public.hours(ba_id, period_id);
 create index if not exists hours_status_idx on public.hours(status);
+-- one row per (BA, work day, source) so a re-import upserts atomically instead of delete+insert
+create unique index if not exists hours_ba_date_source_ux on public.hours(ba_id, work_date, source);
 
 -- per-BA hourly pay rate (null = fall back to the global default)
 alter table public.profiles     add column if not exists hourly_rate numeric(8,2);
@@ -55,19 +57,19 @@ drop trigger if exists hours_before on public.hours;
 create trigger hours_before before insert or update on public.hours for each row execute function public.trg_hours_before();
 
 -- RLS (mirror trips/expenses; admin may also INSERT on a BA's behalf for the Gusto import)
+-- hours are admin/payroll-managed (imported from Gusto); a BA may VIEW their own but never write them
 alter table public.hours enable row level security;
 drop policy if exists hours_select on public.hours;
 create policy hours_select on public.hours for select to authenticated
   using (ba_id = auth.uid() or public.is_admin());
 drop policy if exists hours_insert on public.hours;
 create policy hours_insert on public.hours for insert to authenticated
-  with check ((ba_id = auth.uid() and status = 'draft') or public.is_admin());
+  with check (public.is_admin());
 drop policy if exists hours_update on public.hours;
 create policy hours_update on public.hours for update to authenticated
-  using ((ba_id = auth.uid() and status in ('draft','rejected')) or public.is_admin())
-  with check ((ba_id = auth.uid() and status in ('draft','submitted')) or public.is_admin());
+  using (public.is_admin()) with check (public.is_admin());
 drop policy if exists hours_delete on public.hours;
 create policy hours_delete on public.hours for delete to authenticated
-  using ((ba_id = auth.uid() and status in ('draft','rejected')) or public.is_admin());
+  using (public.is_admin());
 
 select 'hours table + rate + trigger + RLS created' as result;
