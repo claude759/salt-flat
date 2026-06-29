@@ -203,7 +203,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.2';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.3';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -1361,18 +1361,28 @@ async function adminBaDetail(baId){
   const catRows=Object.entries(byCat).sort((a,b)=>(b[1].reimb+b[1].card)-(a[1].reimb+a[1].card))
     .map(([c,v])=>`<div class="row" style="justify-content:space-between;padding:2px 0"><span class="small">${esc(c)}${v.card>0?' <span class="muted">💳</span>':''}</span><span class="small" style="font-weight:600">${money(v.reimb+v.card)}</span></div>`).join('');
   const S=sub||{status:'open'};
-  const tripRows=(T||[]).map(x=>`<tr><td>${fmtDate(x.trip_date)}</td>
-     <td>${esc(x.dest_label || dispName(x.dispensary_id))}${x.start_label?`<div class="small muted">from ${esc(x.start_label)}</div>`:''}</td>
-     <td>${x.method}</td><td class="num">${x.miles??''} mi</td><td class="num">${money(x.amount)}</td>
-     <td><span class="badge ${x.status}">${x.status}</span></td>
-     <td>${x.status!=='approved'?`<button class="btn sm ghost" data-rej="trips" data-id="${x.id}">Reject</button>`:''}</td></tr>`).join('');
-  const expRows=await Promise.all((E||[]).map(async x=>{
-    const url=await signedUrl('receipts',x.receipt_path);
-    return `<tr><td>${fmtDate(x.expense_date)}</td><td>${esc(x.vendor||'')}<div class="small muted">${esc(dispName(x.dispensary_id))}</div></td>
-     <td>${esc(x.category||'')}</td><td>${x.payment==='company'?'💳 Card':'💵 Reimb'}</td><td>${url?`<a href="${url}" target="_blank">view</a> <label title="replace receipt" style="cursor:pointer">✎<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`:`<label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`}</td>
-     <td class="num">${money(x.amount)}</td><td><span class="badge ${x.status}">${x.status}</span></td>
-     <td>${x.status!=='approved'?`<button class="btn sm ghost" data-rej="expenses" data-id="${x.id}">Reject</button>`:''}</td></tr>`;
-  }));
+  // Mirror the BA's own "This period" list so the admin sees what the employee sees,
+  // with the admin's extra controls (receipt view/attach, reject) inline.
+  const recUrls={};
+  await Promise.all((E||[]).map(async x=>{ recUrls[x.id]=x.receipt_path?await signedUrl('receipts',x.receipt_path):null; }));
+  const items=[...(T||[]).map(x=>({...x,_k:'trip'})),...(E||[]).map(x=>({...x,_k:'exp'}))]
+    .sort((a,b)=>((b.trip_date||b.expense_date)||'').localeCompare((a.trip_date||a.expense_date)||''));
+  const itemRows=items.map(x=>{
+    const trip=x._k==='trip', date=trip?x.trip_date:x.expense_date;
+    const title=trip?(x.dest_label||dispName(x.dispensary_id)):(x.vendor||'Expense');
+    const sub=trip?`${x.miles??'—'} mi · ${x.method}`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
+    const disp=dispName(x.dispensary_id);
+    const rec=trip?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
+    return `<div class="item">
+      <div class="ic">${trip?'🚗':'🧾'}</div>
+      <div class="grow" style="min-width:0"><div class="t">${esc(title)}</div>
+        <div class="s">${fmtDate(date)} · ${esc(sub)}${disp&&disp!=='—'?` · 🏬 ${esc(disp)}`:''}${rec}</div>
+        ${x.status==='rejected'&&x.reject_note?`<div class="s" style="color:var(--red)">Rejected: ${esc(x.reject_note)}</div>`:''}</div>
+      <div style="text-align:right;flex:none;margin-left:8px"><div class="amt">${money(x.amount)}</div>
+        <div style="margin-top:2px"><span class="badge ${x.status}">${x.status}</span></div></div>
+      ${x.status!=='approved'?`<button class="btn ghost sm" data-rej="${trip?'trips':'expenses'}" data-id="${x.id}" style="margin-left:6px;flex:none">Reject</button>`:''}
+    </div>`;
+  }).join('');
   openSheet(`
     <h3>${esc(prof.full_name||prof.email)}</h3>
     <div class="small muted">${esc(per.label)} · <span class="badge ${S.status}">${S.status}</span></div>
@@ -1397,9 +1407,7 @@ async function adminBaDetail(baId){
         ${catRows}
       </div>`:''}
     </div>
-    ${T?.length?`<h3 style="margin-top:8px">Trips</h3><table><tr><th>Date</th><th>Dispensary</th><th>Method</th><th class="num">Miles</th><th class="num">$</th><th>Status</th><th></th></tr>${tripRows}</table>`:''}
-    ${E?.length?`<h3 style="margin-top:14px">Expenses</h3><table><tr><th>Date</th><th>Vendor</th><th>Cat</th><th>Paid</th><th>Receipt</th><th class="num">$</th><th>Status</th><th></th></tr>${expRows.join('')}</table>`:''}
-    ${!T?.length&&!E?.length?'<p class="muted small">Nothing logged this period.</p>':''}
+    ${items.length?`<div class="card"><h3 style="margin:0 0 4px">This period · ${items.length} item${items.length===1?'':'s'} <span class="muted small">— the view ${esc((prof.full_name||'they').split(' ')[0])} sees</span></h3>${itemRows}</div>`:'<p class="muted small">Nothing logged this period.</p>'}
     <div class="row wrap" style="margin-top:16px">
       ${S.status==='submitted'?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
