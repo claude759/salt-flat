@@ -209,7 +209,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.11';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.12';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -725,26 +725,26 @@ async function baReport(m){
   await reloadPeriods();
   const {start,end}=ensureRepRange();
   const uid=state.session.user.id;
-  const [trips,exps]=await Promise.all([
+  const [trips,exps,hrs]=await Promise.all([
     supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end),
+    supabase.from('hours').select('id,dispensary_id,amount,work_date,hours,rate,job,note,status').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
   ]);
   const dn=id=>{ const n=dispName(id); return n==='—'?'':n; };
   const agg={}, items={};
-  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0}; items[k]=items[k]||[]; };
+  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0}; items[k]=items[k]||[]; };
   (trips.data||[]).forEach(t=>{ const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,date:t.trip_date,ba:'',disp:dn(t.dispensary_id),start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
   (exps.data||[]).forEach(x=>{ const k=x.dispensary_id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=Number(x.amount||0);
     items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:'',disp:dn(x.dispensary_id),vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:Number(x.amount||0)}); });
+  (hrs.data||[]).forEach(h=>{ const k=h.dispensary_id||'none'; ensure(k); agg[k].labor+=Number(h.amount||0);
+    items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:'',disp:dn(h.dispensary_id),hours:h.hours,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:Number(h.amount||0)}); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));
-  let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':dispName(k), total:v.mile+v.exp+v.card, ...v }))
+  let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':dispName(k), total:v.mile+v.exp+v.card+v.labor, ...v }))
     .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
-  const detailRows=k=>(items[k]||[]).map(it=>{ const note=it.note?' · 🗒':''; const trip=it.kind==='trip'; const title=trip?(it.label||'Trip'):(it.vendor||'Expense');
-    const meta=trip?(it.miles!=null?` · ${it.miles} mi`:''):` · ${it.payment==='company'?'💳 card':'💵 reimb'}${it.receipt?` · <a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:''}`;
-    return `<div class="item repitem" data-item="${it.kind}:${it.id}" style="cursor:pointer"><div class="ic">${trip?'🚗':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${esc(title)}</div><div class="s">${fmtDate(it.date)}${meta}${note}</div></div><div class="amt">${money(it.amount)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`;
-  }).join('');
+  const detailRows=k=>(items[k]||[]).map(it=>repDetailRow(it)).join('');
   m.innerHTML=`
     <div class="card">
       ${rangeControlsHtml()}
@@ -762,7 +762,7 @@ async function baReport(m){
             <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
           </div>
           <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
-          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor`:''}</div>
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this range yet.</p>`}
     </div>`;
@@ -820,6 +820,7 @@ function baItemRow(x){
 }
 // what's missing on a trip/expense — drives the BA + admin to-do list
 function itemIssues(x){
+  if(x._k==='hours') return [];   // hours are admin/payroll-managed; never a BA to-do
   const trip = x._k==='trip';
   const out=[];
   if(!x.dispensary_id) out.push('a dispensary');
@@ -1631,11 +1632,12 @@ async function adminReport(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   await reloadPeriods();
   const {start,end}=ensureRepRange();
-  const [{data:profs},{data:disps},trips,exps]=await Promise.all([
+  const [{data:profs},{data:disps},trips,exps,hrs]=await Promise.all([
     supabase.from('profiles').select('id,full_name,region'),
     supabase.from('dispensaries').select('id,name'),
     supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,ba_id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
+    supabase.from('hours').select('id,ba_id,dispensary_id,amount,work_date,hours,rate,job,note,status').gte('work_date',start).lte('work_date',end),
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
@@ -1643,7 +1645,7 @@ async function adminReport(m){
   const inRegion=ba_id=>region==='all' || (pById[ba_id]&&pById[ba_id].region===region);
   const baName=ba_id=>(pById[ba_id]&&pById[ba_id].full_name)||'BA';
   const agg={}, items={};   // dispensary_id|'none' -> totals / item list
-  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0}; items[k]=items[k]||[]; };
+  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0}; items[k]=items[k]||[]; };
   (trips.data||[]).forEach(t=>{ if(!inRegion(t.ba_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,date:t.trip_date,ba:baName(t.ba_id),disp:(dById[k]&&dById[k].name)||'',
       start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,
@@ -1651,15 +1653,15 @@ async function adminReport(m){
   (exps.data||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const k=x.dispensary_id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=Number(x.amount||0);
     items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:baName(x.ba_id),disp:(dById[k]&&dById[k].name)||'',
       vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:Number(x.amount||0)}); });
+  (hrs.data||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const k=h.dispensary_id||'none'; ensure(k); agg[k].labor+=Number(h.amount||0);
+    items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:baName(h.ba_id),disp:(dById[k]&&dById[k].name)||'',
+      hours:h.hours,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:Number(h.amount||0)}); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));   // flat lookup for the detail popup
-  let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card, ...v }))
+  let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card+v.labor, ...v }))
     .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
-  const detailRows=k=>(items[k]||[]).map(it=>{ const note=it.note?' · 🗒':''; return it.kind==='trip'
-    ? `<div class="item repitem" data-item="trip:${it.id}" style="cursor:pointer"><div class="ic">🚗</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)}${it.miles!=null?` · ${it.miles} mi`:''}</div><div class="s">${fmtDate(it.date)}${it.label?' · '+esc(it.label):''}${note}</div></div><div class="amt">${money(it.amount)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`
-    : `<div class="item repitem" data-item="exp:${it.id}" style="cursor:pointer"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${esc(it.ba)} · ${esc(it.vendor)}</div><div class="s">${fmtDate(it.date)} · ${it.payment==='company'?'💳 card':'💵 reimb'} · ${it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:'<span class="muted">no receipt</span>'}${note}</div></div><div class="amt">${money(it.amount)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`;
-  }).join('');
+  const detailRows=k=>(items[k]||[]).map(it=>repDetailRow(it)).join('');
   m.innerHTML=`
     <div class="card">
       ${rangeControlsHtml()}
@@ -1679,7 +1681,7 @@ async function adminReport(m){
             <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
           </div>
           <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
-          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor`:''}</div>
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this range${region!=='all'?' in '+region:''} yet.</p>`}
     </div>`;
@@ -1690,12 +1692,30 @@ async function adminReport(m){
   m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
   m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
 }
+// one tappable line in a report's expanded dispensary (shared by admin + employee reports).
+// it.ba is non-empty in the admin report (shows the BA name) and '' in the employee report.
+function repDetailRow(it){
+  const note=it.note?' · 🗒':'', baP=it.ba?esc(it.ba):'';
+  const chev=`<div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div>`;
+  if(it.kind==='trip'){
+    const title=baP?`${baP}${it.miles!=null?` · ${it.miles} mi`:''}`:(esc(it.label)||'Trip');
+    return `<div class="item repitem" data-item="trip:${it.id}" style="cursor:pointer"><div class="ic">🚗</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)}${baP&&it.label?' · '+esc(it.label):''}${note}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
+  }
+  if(it.kind==='hours'){
+    const title=baP?`${baP} · ${it.hours} hrs`:`${it.hours} hrs${it.job?' · '+esc(it.job):''}`;
+    return `<div class="item repitem" data-item="hours:${it.id}" style="cursor:pointer"><div class="ic">⏱</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · $${Number(it.rate).toFixed(2)}/hr${note}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
+  }
+  const title=baP?`${baP} · ${esc(it.vendor||'Expense')}`:esc(it.vendor||'Expense');
+  const rec=it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:'<span class="muted">no receipt</span>';
+  return `<div class="item repitem" data-item="exp:${it.id}" style="cursor:pointer"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · ${it.payment==='company'?'💳 card':'💵 reimb'} · ${rec}${note}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
+}
 // admin: tap a line item in the Spend-by-dispensary report → full detail (note, category, route, odometer, receipt)
 function reportItemSheet(it){
   if(!it){ toast('Item unavailable — reopen the report','err'); return; }
-  const trip=it.kind==='trip';
+  const trip=it.kind==='trip', hours=it.kind==='hours';
   const kv=(k,v)=> (v==null||v==='')?'':`<div class="row" style="justify-content:space-between;gap:14px;padding:7px 0;border-top:1px solid var(--line)"><div class="small muted" style="flex:none">${k}</div><div style="text-align:right;font-weight:600;min-width:0;word-break:break-word">${v}</div></div>`;
-  const title=trip?(it.dest_label||it.disp||'Trip'):(it.vendor||'Expense');
+  const icon=trip?'🚗':hours?'⏱':'🧾';
+  const title=trip?(it.dest_label||it.disp||'Trip'):hours?(`${it.hours} hours`+(it.job?` · ${it.job}`:'')):(it.vendor||'Expense');
   let body='';
   body+=kv('BA', esc(it.ba||''));
   body+=kv('Date', fmtDate(it.date));
@@ -1705,6 +1725,10 @@ function reportItemSheet(it){
     body+=kv('Miles', it.miles!=null?`${it.miles} mi${it.method?' · '+esc(it.method):''}`:'');
     body+=kv('Odometer', (it.start_odo!=null||it.end_odo!=null)?`${it.start_odo??'—'} → ${it.end_odo??'—'}`:'');
     body+=kv('Mileage reimbursement', money(it.amount));
+  } else if(hours){
+    body+=kv('Hours', `${it.hours}`);
+    body+=kv('Pay rate', `$${Number(it.rate).toFixed(2)}/hr`);
+    body+=kv('Labor cost', money(it.amount));
   } else {
     body+=kv('Category', it.category?esc(it.category):'');
     body+=kv('Paid with', it.payment==='company'?'💳 Company card (not reimbursed)':'💵 Reimburse the BA');
@@ -1714,9 +1738,9 @@ function reportItemSheet(it){
   const noteBlock=it.note
     ? `<label class="fl">Note</label><div class="card" style="margin:2px 0 0;padding:10px;background:var(--panel2);white-space:pre-wrap">${esc(it.note)}</div>`
     : `<div class="small muted" style="margin-top:12px">No note added.</div>`;
-  const recBtn=(!trip && it.receipt)?`<button class="btn block" id="riRec" style="margin-top:12px">📄 View receipt</button>`:'';
+  const recBtn=(!trip && !hours && it.receipt)?`<button class="btn block" id="riRec" style="margin-top:12px">📄 View receipt</button>`:'';
   openSheet(`
-    <h3 style="margin-bottom:2px">${trip?'🚗':'🧾'} ${esc(title)}</h3>
+    <h3 style="margin-bottom:2px">${icon} ${esc(title)}</h3>
     <div class="small muted">${money(it.amount)}</div>
     <div style="margin-top:10px">${body}</div>
     ${noteBlock}
@@ -1730,7 +1754,7 @@ function reportItemSheet(it){
 }
 // Admin: edit any single trip/expense in any period (incl. past/approved). onSaved re-renders the caller.
 async function adminEditItem(kind, id, onSaved){
-  const table = kind==='trip' ? 'trips' : 'expenses';
+  const table = kind==='trip' ? 'trips' : kind==='hours' ? 'hours' : 'expenses';
   const { data:x, error } = await supabase.from(table).select('*').eq('id',id).single();
   if(error || !x){ toast('Could not load item — try again','err'); return; }
   const allDisp = [...(state.dispensaries||[])].sort((a,b)=>a.name.localeCompare(b.name));
@@ -1763,6 +1787,32 @@ async function adminEditItem(kind, id, onSaved){
       busy(btn,false);
       if(error){ $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
       closeSheet(); toast('Trip updated ✓','ok'); onSaved&&onSaved(data);
+    };
+  } else if(kind==='hours'){
+    openSheet(`
+      <h3>Edit hours <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
+      <label class="fl">Date</label><input id="aDate" type="date" value="${x.work_date||''}">
+      <label class="fl">Dispensary <span class="muted">(link this shift to a store)</span></label><select id="aDisp">${dispOpts}</select>
+      <div class="row">
+        <div class="grow"><label class="fl">Hours</label><input id="aHours" type="number" inputmode="decimal" step="0.001" value="${x.hours!=null?x.hours:''}"></div>
+        <div class="grow"><label class="fl">Pay rate</label><input value="$${Number(x.rate).toFixed(2)}/hr" disabled style="opacity:.65"></div>
+      </div>
+      <div class="small muted" style="margin-top:4px">Labor cost = hours × rate (auto). Change the rate on the BA's profile in Settings.</div>
+      <label class="fl">Note</label><textarea id="aNote" rows="2">${esc(x.note||'')}</textarea>
+      <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
+      <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
+      <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+    `);
+    $('#aCancel').onclick=closeSheet;
+    $('#aSave').onclick=async()=>{
+      const btn=$('#aSave');
+      const patch={ work_date:$('#aDate').value||x.work_date, dispensary_id:$('#aDisp').value||null,
+        hours:Number($('#aHours').value)||0, note:$('#aNote').value.trim()||null };
+      busy(btn,true);
+      const {data,error}=await supabase.from('hours').update(patch).eq('id',id).select('*').single();
+      busy(btn,false);
+      if(error){ $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
+      closeSheet(); toast('Hours updated ✓','ok'); onSaved&&onSaved(data);
     };
   } else {
     const cats=EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
@@ -1859,14 +1909,17 @@ async function adminDash(m){
 async function adminBaDetail(baId){
   const per=state.period;
   openSheet(`<div class="loading"><span class="spin"></span></div>`);
-  const [{data:prof},{data:T},{data:E},{data:sub}]=await Promise.all([
+  const [{data:prof},{data:T},{data:E},{data:H},{data:sub}]=await Promise.all([
     supabase.from('profiles').select('*').eq('id',baId).single(),
     supabase.from('trips').select('*').eq('ba_id',baId).eq('period_id',per.id).order('trip_date'),
     supabase.from('expenses').select('*').eq('ba_id',baId).eq('period_id',per.id).order('expense_date'),
+    supabase.from('hours').select('*').eq('ba_id',baId).eq('period_id',per.id).order('work_date'),
     supabase.from('submissions').select('*').eq('ba_id',baId).eq('period_id',per.id).maybeSingle(),
   ]);
   const mile=(T||[]).reduce((a,x)=>a+ +x.amount,0);
   const {reimb,card}=expSplit(E);
+  const labor=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
+  const totHours=(H||[]).reduce((a,x)=>a+Number(x.hours||0),0);
   const byCat={};
   (E||[]).forEach(x=>{ const c=x.category||'Other'; const v=(byCat[c]=byCat[c]||{reimb:0,card:0}); if(x.payment==='company') v.card+=Number(x.amount||0); else v.reimb+=Number(x.amount||0); });
   const catRows=Object.entries(byCat).sort((a,b)=>(b[1].reimb+b[1].card)-(a[1].reimb+a[1].card))
@@ -1876,22 +1929,24 @@ async function adminBaDetail(baId){
   // with the admin's extra controls (receipt view/attach, reject) inline.
   const recUrls={};
   await Promise.all((E||[]).map(async x=>{ recUrls[x.id]=x.receipt_path?await signedUrl('receipts',x.receipt_path):null; }));
-  const items=[...(T||[]).map(x=>({...x,_k:'trip'})),...(E||[]).map(x=>({...x,_k:'exp'}))]
-    .sort((a,b)=>((b.trip_date||b.expense_date)||'').localeCompare((a.trip_date||a.expense_date)||''));
+  const items=[...(T||[]).map(x=>({...x,_k:'trip'})),...(E||[]).map(x=>({...x,_k:'exp'})),...(H||[]).map(x=>({...x,_k:'hours'}))]
+    .sort((a,b)=>((b.trip_date||b.expense_date||b.work_date)||'').localeCompare((a.trip_date||a.expense_date||a.work_date)||''));
   const itemRows=items.map(x=>{
-    const trip=x._k==='trip', date=trip?x.trip_date:x.expense_date;
-    const title=trip?(x.dest_label||dispName(x.dispensary_id)):(x.vendor||'Expense');
-    const sub=trip?`${x.miles??'—'} mi · ${x.method}`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
+    const trip=x._k==='trip', hours=x._k==='hours';
+    const kind=trip?'trip':hours?'hours':'exp', table=trip?'trips':hours?'hours':'expenses';
+    const date=trip?x.trip_date:hours?x.work_date:x.expense_date;
+    const title=trip?esc(x.dest_label||dispName(x.dispensary_id)):hours?(`${x.hours} hrs${x.job?' · '+esc(x.job):''}`):esc(x.vendor||'Expense');
+    const sub=trip?`${x.miles??'—'} mi · ${x.method}`:hours?`$${Number(x.rate).toFixed(2)}/hr`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
     const disp=dispName(x.dispensary_id);
-    const rec=trip?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
-    return `<div class="item adminedit" data-kind="${trip?'trip':'exp'}" data-edit-kind="${trip?'trip':'exp'}" data-edit-id="${x.id}" style="cursor:pointer">
-      <div class="ic">${trip?'🚗':'🧾'}</div>
-      <div class="grow" style="min-width:0"><div class="t">${esc(title)}</div>
+    const rec=(trip||hours)?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
+    return `<div class="item adminedit" data-kind="${kind}" data-edit-kind="${kind}" data-edit-id="${x.id}" style="cursor:pointer">
+      <div class="ic">${trip?'🚗':hours?'⏱':'🧾'}</div>
+      <div class="grow" style="min-width:0"><div class="t">${title}</div>
         <div class="s">${fmtDate(date)} · ${esc(sub)}${disp&&disp!=='—'?` · 🏬 ${esc(disp)}`:''}${rec}</div>
         ${x.status==='rejected'&&x.reject_note?`<div class="s" style="color:var(--red)">Rejected: ${esc(x.reject_note)}</div>`:''}</div>
       <div style="text-align:right;flex:none;margin-left:8px"><div class="amt">${money(x.amount)}</div>
         <div style="margin-top:2px"><span class="badge ${x.status}">${x.status}</span></div></div>
-      ${x.status!=='approved'?`<button class="btn ghost sm" data-rej="${trip?'trips':'expenses'}" data-id="${x.id}" style="margin-left:6px;flex:none">Reject</button>`:''}
+      ${x.status!=='approved'?`<button class="btn ghost sm" data-rej="${table}" data-id="${x.id}" style="margin-left:6px;flex:none">Reject</button>`:''}
       <div class="muted" style="font-size:18px;flex:none;margin-left:4px">›</div>
     </div>`;
   }).join('');
@@ -1914,6 +1969,10 @@ async function adminBaDetail(baId){
         <div style="font-size:16px;font-weight:700">${money(reimb)}</div>
       </div>
       ${card>0?`<div class="small muted center" style="margin-top:8px">💳 Company card (not reimbursed): <b>${money(card)}</b></div>`:''}
+      ${(H&&H.length)?`<div style="text-align:center;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
+        <div class="k" style="font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700">Total Labor · ${totHours.toFixed(2)} hrs</div>
+        <div style="font-size:16px;font-weight:700">${money(labor)}</div>
+        <div class="small muted" style="margin-top:2px">paid through payroll — not part of reimbursement</div></div>`:''}
       ${catRows?`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">
         <div class="small muted center" style="text-transform:uppercase;letter-spacing:.3px;font-weight:700;margin-bottom:4px">Expenses by category ${card>0?`<span style="text-transform:none;font-weight:400">· 💳 = on company card</span>`:''}</div>
         ${catRows}
@@ -1921,7 +1980,7 @@ async function adminBaDetail(baId){
     </div>
     ${todoCard(items,false,true)}
     ${items.length?`<div class="card"><h3 style="margin:0 0 4px">This period · ${items.length} item${items.length===1?'':'s'} <span class="muted small">— the view ${esc((prof.full_name||'they').split(' ')[0])} sees</span></h3>
-      <div class="seg" id="dFilter" style="margin:8px 0"><button class="on" data-f="all">All</button><button data-f="trip">🚗 Mileage</button><button data-f="exp">🧾 Expenses</button></div>
+      <div class="seg" id="dFilter" style="margin:8px 0"><button class="on" data-f="all">All</button><button data-f="trip">🚗 Mileage</button><button data-f="exp">🧾 Expenses</button>${H&&H.length?'<button data-f="hours">⏱ Hours</button>':''}</div>
       ${itemRows}</div>`:'<p class="muted small">Nothing logged this period.</p>'}
     <div class="row wrap" style="margin-top:16px">
       ${S.status==='submitted'?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
@@ -2178,6 +2237,8 @@ function editBaSheet(b){
     </select>
     <label class="fl">Status</label>
     <select id="euActive"><option value="true" ${b.active?'selected':''}>Active</option><option value="false" ${!b.active?'selected':''}>Inactive</option></select>
+    <label class="fl">BA hourly rate <span class="muted">($/hr — turns logged hours into labor cost)</span></label>
+    <input id="euHourly" type="number" inputmode="decimal" step="0.01" value="${b.hourly_rate!=null?b.hourly_rate:''}" placeholder="e.g. 25.00" style="max-width:160px">
     ${isSelf?'<div class="small muted" style="margin-top:8px">This is your own account — you can’t remove your own admin access or deactivate yourself here.</div>':''}
     <label class="fl" style="margin-top:14px">Password</label>
     <button class="btn block" id="euReset" type="button">🔑 Reset password</button>
@@ -2202,7 +2263,8 @@ function editBaSheet(b){
     const [role,region]=$('#euRole').value.split('|');
     if(isSelf && (role!=='admin' || $('#euActive').value!=='true')) return toast('You can’t demote or deactivate your own account','err');
     const addr=$('#euAddr').value;
-    const patch={ full_name:$('#euName').value, base_address:addr||null, role, region:region||null, active:$('#euActive').value==='true' };
+    const hr=$('#euHourly').value;
+    const patch={ full_name:$('#euName').value, base_address:addr||null, role, region:region||null, active:$('#euActive').value==='true', hourly_rate:hr!==''?Number(hr):null };
     if((addr||'')!==(b.base_address||'')){ patch.base_lat=null; patch.base_lng=null; } // re-geocode on next auto-distance
     const btn=$('#euSave'); busy(btn,true);
     const { error }=await supabase.from('profiles').update(patch).eq('id',b.id);
