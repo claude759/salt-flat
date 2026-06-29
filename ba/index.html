@@ -205,7 +205,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.8';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.9';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -492,6 +492,66 @@ function periodPicker(onChange, opts={}){
   return `<select id="perSel">${html||'<option>No periods</option>'}</select>`;
 }
 
+/* ── Report date range: presets + custom start/end. Reports query by trip_date / expense_date,
+   so a range can span any set of days (not tied to a single pay period). ── */
+const REPORT_PRESETS = [
+  ['this_period','This pay period'],
+  ['last_period','Last pay period'],
+  ['this_month','This month'],
+  ['last_month','Last month'],
+  ['last_6_months','Last 6 months'],
+  ['custom','Custom range'],
+];
+function isoLocal(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${da}`; }
+// the period covering today (or most recent past), plus the one right before it
+function periodPair(){
+  const t=todayISO(); const ps=[...(state.periods||[])].sort((a,b)=>b.start_date.localeCompare(a.start_date));
+  let i=ps.findIndex(p=>p.start_date<=t&&p.end_date>=t);
+  if(i<0) i=ps.findIndex(p=>p.end_date<t);
+  if(i<0) i=0;
+  return { thisP:ps[i]||null, lastP:ps[i+1]||null };
+}
+function computeRange(mode){
+  const t=todayISO(), now=new Date(t+'T00:00:00');
+  if(mode==='this_period'){ const {thisP}=periodPair(); return thisP?{start:thisP.start_date,end:thisP.end_date}:null; }
+  if(mode==='last_period'){ const {lastP}=periodPair(); return lastP?{start:lastP.start_date,end:lastP.end_date}:null; }
+  if(mode==='this_month'){ const s=new Date(now.getFullYear(),now.getMonth(),1), e=new Date(now.getFullYear(),now.getMonth()+1,0); return {start:isoLocal(s),end:isoLocal(e)}; }
+  if(mode==='last_month'){ const s=new Date(now.getFullYear(),now.getMonth()-1,1), e=new Date(now.getFullYear(),now.getMonth(),0); return {start:isoLocal(s),end:isoLocal(e)}; }
+  if(mode==='last_6_months'){ const s=new Date(now.getFullYear(),now.getMonth()-5,1); return {start:isoLocal(s),end:isoLocal(now)}; }
+  return null;   // custom: keep whatever start/end are set
+}
+function ensureRepRange(){
+  if(state.repRange && state.repRange.start && state.repRange.end) return state.repRange;
+  const r=computeRange('this_period');
+  if(r) state.repRange={mode:'this_period', ...r};
+  else { const mr=computeRange('this_month'); state.repRange={mode:'this_month', ...mr}; }
+  return state.repRange;
+}
+function setRepPreset(mode){
+  if(mode==='custom'){ state.repRange={...ensureRepRange(), mode:'custom'}; return; }
+  const r=computeRange(mode);
+  if(r) state.repRange={mode, ...r};
+  else toast('No matching pay period yet','err');
+}
+function rangeControlsHtml(){
+  const r=ensureRepRange();
+  return `<div class="row"><div class="small muted grow">Date range</div>
+      <select id="rpPreset">${REPORT_PRESETS.map(([v,l])=>`<option value="${v}" ${r.mode===v?'selected':''}>${l}</option>`).join('')}</select></div>
+    <div class="row" style="margin-top:8px;gap:8px">
+      <input type="date" id="rpStart" class="grow" value="${r.start}">
+      <span class="muted small">to</span>
+      <input type="date" id="rpEnd" class="grow" value="${r.end}"></div>`;
+}
+function wireRangeControls(rerender){
+  const ps=$('#rpPreset'); if(ps) ps.onchange=()=>{ setRepPreset(ps.value); rerender(); };
+  const s=$('#rpStart'), e=$('#rpEnd');
+  const onDate=()=>{ const a=s.value||state.repRange.start, b=e.value||state.repRange.end;
+    if(a>b) toast('Swapped so the start date comes first','');
+    state.repRange={mode:'custom', start:a<=b?a:b, end:a<=b?b:a}; rerender(); };   // keep start ≤ end
+  if(s) s.onchange=onDate; if(e) e.onchange=onDate;
+}
+function rangeLabel(){ const r=ensureRepRange(); return `${fmtDate(r.start)} – ${fmtDate(r.end)}`; }
+
 /* ═══════════════════════════ BA SURFACE ═══════════════════════════ */
 function renderBA(){
   app.innerHTML = topbar() + viewSwitcher() + `<main id="main"></main>` + baTabs();
@@ -658,14 +718,11 @@ async function togglePeriod(pid){
 async function baReport(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   await reloadPeriods();
-  if(!state.period || periodPhase(state.period)==='future'){
-    const _t=todayISO();
-    state.period = state.periods.find(p=>p.start_date<=_t&&p.end_date>=_t) || state.periods.find(p=>p.end_date<_t) || state.periods[0] || null;
-  }
-  const per=state.period, uid=state.session.user.id;
+  const {start,end}=ensureRepRange();
+  const uid=state.session.user.id;
   const [trips,exps]=await Promise.all([
-    per?supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).eq('period_id',per.id):{data:[]},
+    supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
+    supabase.from('expenses').select('id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end),
   ]);
   const dn=id=>{ const n=dispName(id); return n==='—'?'':n; };
   const agg={}, items={};
@@ -685,14 +742,14 @@ async function baReport(m){
   }).join('');
   m.innerHTML=`
     <div class="card">
-      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>baReport(m),{hideFuture:true})}</div>
+      ${rangeControlsHtml()}
       <div class="totbar" style="margin-top:12px">
         <div class="tot"><div class="k">Dispensaries</div><div class="v">${rows.filter(r=>r.id!=='none').length}</div></div>
         <div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>
       </div>
     </div>
     <div class="card">
-      <h3>Your spend by dispensary <span class="muted small">${per?'· '+esc(per.label):''} · tap to expand</span></h3>
+      <h3>Your spend by dispensary <span class="muted small">· ${rangeLabel()} · tap to expand</span></h3>
       ${rows.length?rows.map(r=>`
         <div class="repdrow" data-disp="${r.id}" style="padding:9px 0;border-top:1px solid var(--line);cursor:pointer">
           <div class="row" style="justify-content:space-between;align-items:baseline">
@@ -702,8 +759,9 @@ async function baReport(m){
           <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
           <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div>
         </div>
-        <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this period yet.</p>`}
+        <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this range yet.</p>`}
     </div>`;
+  wireRangeControls(()=>baReport(m));
   m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
     d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
   m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
@@ -1567,12 +1625,12 @@ function drawAdmin(){
 async function adminReport(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   await reloadPeriods();
-  const per=state.period;
+  const {start,end}=ensureRepRange();
   const [{data:profs},{data:disps},trips,exps]=await Promise.all([
     supabase.from('profiles').select('id,full_name,region'),
     supabase.from('dispensaries').select('id,name'),
-    per?supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('id,ba_id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('period_id',per.id):{data:[]},
+    supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
+    supabase.from('expenses').select('id,ba_id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
@@ -1599,7 +1657,7 @@ async function adminReport(m){
   }).join('');
   m.innerHTML=`
     <div class="card">
-      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>adminReport(m))}</div>
+      ${rangeControlsHtml()}
       <div class="row" style="margin-top:8px"><div class="small muted grow">Region</div>
         <select id="regSelRp"><option value="all" ${region==='all'?'selected':''}>All states</option>${REGIONS.map(r=>`<option value="${r}" ${region===r?'selected':''}>${r}</option>`).join('')}</select></div>
       <div class="totbar" style="margin-top:12px">
@@ -1608,7 +1666,7 @@ async function adminReport(m){
       </div>
     </div>
     <div class="card">
-      <h3>Spend by dispensary <span class="muted small">${per?'· '+esc(per.label):''} · tap to expand</span></h3>
+      <h3>Spend by dispensary <span class="muted small">· ${rangeLabel()} · tap to expand</span></h3>
       ${rows.length?rows.map(r=>`
         <div class="repdrow" data-disp="${r.id}" style="padding:9px 0;border-top:1px solid var(--line);cursor:pointer">
           <div class="row" style="justify-content:space-between;align-items:baseline">
@@ -1618,8 +1676,9 @@ async function adminReport(m){
           <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
           <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div>
         </div>
-        <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this period${region!=='all'?' in '+region:''} yet.</p>`}
+        <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this range${region!=='all'?' in '+region:''} yet.</p>`}
     </div>`;
+  wireRangeControls(()=>adminReport(m));
   const rs=$('#regSelRp'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminReport(m); };
   m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
     d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
