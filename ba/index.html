@@ -639,14 +639,17 @@ function gridRowHtml(mode, it, today, pay){
   const id = it ? it.id : '';
   const del = `<td class="gdel">${id?'<button class="gx" title="delete row">✕</button>':''}</td>`;
   if(mode==='miles'){
+    const dispOpts = `<option value="">— none —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+    const needMi = it && !(Number(it.miles)>0) ? ' needs' : '';   // incomplete trip — finish destination / miles later
     return `<tr data-id="${id}">${del}
       <td><input type="date" class="gdate g-date" value="${it?it.trip_date:today}"></td>
       <td><input class="g-start" placeholder="start" value="${it?esc(it.start_label||''):''}" autocomplete="off"></td>
       <td><input class="g-dest" placeholder="destination" value="${it?esc(it.dest_label||''):''}" autocomplete="off"></td>
+      <td><select class="g-disp">${dispOpts}</select></td>
       <td><input class="g-note" placeholder="notes" value="${it?esc(it.note||''):''}"></td>
       <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="0" value="${it&&it.start_odo!=null?it.start_odo:''}"></td>
       <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="0" value="${it&&it.end_odo!=null?it.end_odo:''}"></td>
-      <td><input class="gnum g-mi" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"></td></tr>`;
+      <td><input class="gnum g-mi${needMi}" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"></td></tr>`;
   }
   // expenses: payment is implied by which table the row lives in (no "Paid by" column)
   const rowPay = it ? (it.payment||'reimbursement') : (pay||'reimbursement');
@@ -685,7 +688,7 @@ function renderGrid(){
     <button class="${mode==='expenses'?'on':''}" data-g="expenses">🧾 Expenses</button></div>`;
   let inner;
   if(mode==='miles'){
-    const head=`<tr><th></th><th>Date</th><th>Starting location</th><th>Destination</th><th>Notes</th><th>Odo start</th><th>Odo end</th><th>Miles</th></tr>`;
+    const head=`<tr><th></th><th>Date</th><th>Starting location</th><th>Destination</th><th>Dispensary</th><th>Notes</th><th>Odo start</th><th>Odo end</th><th>Miles</th></tr>`;
     const body=gridDrafts('miles').map(it=>gridRowHtml('miles',it,today)).join('')+gridRowHtml('miles',null,today);
     inner=`<div class="gridwrap"><table class="grid"><thead>${head}</thead><tbody class="g-body" data-pay="">${body}</tbody></table></div>
       <button class="btn ghost sm g-add" data-pay="" style="margin-top:8px">＋ row</button>`;
@@ -728,8 +731,8 @@ function wireGridRow(tr, mode){
     const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s){ mi.value=Math.round((e-s)*10)/10; tr._autoMi=false; gridTotal(); } };
     os.addEventListener('input',c); oe.addEventListener('input',c);
     mi.addEventListener('input',()=>{ tr._autoMi=false; });
-    attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); });
-    attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r;  scheduleAutosave(tr,mode); });
+    attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true});
+    attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r; if(r.dispId){ const sel=tr.querySelector('.g-disp'); if(sel && sel.value!==r.dispId) sel.value=r.dispId; } scheduleAutosave(tr,mode); });
     ['.g-start','.g-dest'].forEach(sel=>{ const el=tr.querySelector(sel); if(el) el.addEventListener('blur', ()=>setTimeout(()=>maybeCalcDistance(tr),250)); });
   } else {
     const ri=tr.querySelector('.g-receipt'); if(ri) ri.onchange=e=>gridReceiptRow(e,tr,mode);
@@ -758,12 +761,13 @@ async function gridAutosave(tr, mode){
     const os=tr.querySelector('.g-os').value, oe=tr.querySelector('.g-oe').value;
     let miles=Number(tr.querySelector('.g-mi').value);
     if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
-    if(isNew && !(date && miles>0)){ savedIndicator('All changes saved'); return; }
+    if(isNew && !(date && (miles>0 || start || dest))){ savedIndicator('All changes saved'); return; }  // save in-progress trips; finish later
     const hasOdo=os!==''&&oe!=='';
-    const dispId = tr._destResolved?.dispId || (baDispensaries().find(d=>dest&&d.name.toLowerCase()===dest.toLowerCase())||{}).id || null;
+    const dispId = tr.querySelector('.g-disp')?.value || null;   // tagged dispensary (auto-filled from a dispensary destination, or chosen)
     payload={ trip_date:date||todayISO(), dispensary_id:dispId, method:hasOdo?'odometer':'manual',
       start_odo:os?Number(os):null, end_odo:oe?Number(oe):null, miles:miles>0?miles:null, miles_source:hasOdo?'odometer':'manual',
       start_label:start||null, dest_label:dest||null, roundtrip:false, note:note||null };
+    const sC=tr._startResolved?.coords; if(sC){ payload.start_lat=sC.lat; payload.start_lng=sC.lng; }   // GPS start
     table='trips';
   } else {
     const date=tr.querySelector('.g-date').value, desc=tr.querySelector('.g-desc').value.trim();
@@ -811,15 +815,25 @@ function maybeCalcDistance(tr){
   const mi=tr.querySelector('.g-mi'); if(mi.value!=='' && !tr._autoMi) return;  // never clobber a hand-entered value
   const key=start+'|'+dest; if(tr._distKey===key) return; tr._distKey=key;
   const body={ roundtrip:false }, sR=tr._startResolved, dR=tr._destResolved;
-  body.start_address=(sR&&sR.addr)||start;
+  if(sR&&sR.coords){ body.start_lat=sR.coords.lat; body.start_lng=sR.coords.lng; }   // GPS "Current location"
+  else body.start_address=(sR&&sR.addr)||start;
   if(dR&&dR.dispId) body.dispensary_id=dR.dispId; else body.dest_address=(dR&&dR.addr)||dest;
   mi.placeholder='…';
-  callFn('calc-distance', body).then(r=>{ mi.placeholder='mi'; if(r&&r.ok){ mi.value=r.miles; tr._autoMi=true; gridTotal(); scheduleAutosave(tr,'miles'); } }).catch(()=>{ mi.placeholder='mi'; });
+  callFn('calc-distance', body).then(r=>{ mi.placeholder='mi'; if(r&&r.ok){ mi.value=r.miles; mi.classList.remove('needs'); tr._autoMi=true; gridTotal(); scheduleAutosave(tr,'miles'); } }).catch(()=>{ mi.placeholder='mi'; });
 }
 // floating typeahead for grid Start/Destination cells (shared overlay box)
 let _gridSug=null;
 function gridSug(){ if(!_gridSug){ _gridSug=document.createElement('div'); _gridSug.className='tsug floatsug hide'; document.body.appendChild(_gridSug); } return _gridSug; }
-function attachGridTypeahead(input, onResolve){
+function getGridGps(input, onResolve){
+  if(!navigator.geolocation){ toast('GPS not available on this device','err'); return; }
+  const prev=input.value; input.value='📍 locating…';
+  navigator.geolocation.getCurrentPosition(p=>{
+    input.value='📍 Current location';
+    onResolve({display:'📍 Current location', addr:'', dispId:null, coords:{lat:p.coords.latitude,lng:p.coords.longitude}});
+  }, ()=>{ if(input.value==='📍 locating…') input.value=prev; toast('Couldn’t get location — allow access or type an address','err'); },
+  {enableHighAccuracy:true,timeout:10000,maximumAge:60000});
+}
+function attachGridTypeahead(input, onResolve, opts={}){
   if(!input) return; let local=[], timer=null; const box=gridSug();
   const pos=()=>{ const r=input.getBoundingClientRect(); box.style.left=r.left+'px'; box.style.top=(r.bottom+2)+'px'; box.style.minWidth=Math.max(r.width,180)+'px'; };
   const paint=(items,searching)=>{
@@ -829,9 +843,13 @@ function attachGridTypeahead(input, onResolve){
     if(searching) html+=`<div class="sg searching"><span class="spin"></span>Searching addresses…</div>`;
     box.innerHTML=html; pos(); box.classList.remove('hide');
     box.querySelectorAll('.sg[data-i]').forEach(el=>el.onmousedown=ev=>{ ev.preventDefault();
-      const it=items[+el.dataset.i]; input.value=it.display; box.classList.add('hide'); onResolve({display:it.display,addr:it.addr,dispId:it.dispId}); });
+      const it=items[+el.dataset.i];
+      if(it._gps){ box.classList.add('hide'); getGridGps(input,onResolve); return; }
+      input.value=it.display; box.classList.add('hide'); onResolve({display:it.display,addr:it.addr,dispId:it.dispId}); });
   };
-  const render=()=>{ box._owner=input; const q=input.value; local=placeItems(q); clearTimeout(timer);
+  const render=()=>{ box._owner=input; const q=input.value; local=placeItems(q);
+    if(opts.gps) local=[{display:'📍 Current location', addr:'', dispId:null, label:'📍 Current location', sub:'use your GPS', _gps:true}, ...local];
+    clearTimeout(timer);
     const wantRemote=!!(q&&q.trim().length>=3); paint(local,wantRemote);
     if(wantRemote) timer=setTimeout(async()=>{ let r; try{ r=await callFn('geocode-suggest',{text:q}); }catch{ if(input.value===q&&box._owner===input)paint(local,false); return; }
       if(input.value!==q||box._owner!==input) return; const have=new Set(local.map(x=>x.display.toLowerCase()));
