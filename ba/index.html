@@ -205,7 +205,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.7';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.8';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -499,6 +499,7 @@ function renderBA(){
   $('#tab-home').onclick=()=>{state.baTab='home';drawBA();};
   $('#tab-trip').onclick=()=>tripSheet();
   $('#tab-exp').onclick =()=>expenseSheet();
+  $('#tab-report').onclick=()=>{state.baTab='report';drawBA();};
   $('#tab-loc').onclick =()=>{state.baTab='loc';drawBA();};
   drawBA();
 }
@@ -508,52 +509,90 @@ function baTabs(){
     <button id="tab-home" class="${on('home')}"><span class="ic">🏠</span>Home</button>
     <button id="tab-trip"><span class="ic">🚗</span>Trip</button>
     <button id="tab-exp"><span class="ic">🧾</span>Expense</button>
+    <button id="tab-report" class="${on('report')}"><span class="ic">📊</span>Report</button>
     <button id="tab-loc" class="${on('loc')}"><span class="ic">📍</span>Locations</button>
   </div>`;
 }
 async function drawBA(){
   document.querySelectorAll('.tabbar button').forEach(b=>b.classList.remove('on'));
-  $(`#tab-${state.baTab==='loc'?'loc':'home'}`)?.classList.add('on');
+  const activeTab = ['home','loc','report'].includes(state.baTab) ? state.baTab : 'home';
+  $(`#tab-${activeTab}`)?.classList.add('on');
   const m=$('#main');
   if(state.baTab==='loc') return drawLocations(m);
-  // The BA surface never operates on a not-yet-started period
-  if(actingAsBA() && periodPhase(state.period)==='future'){
-    const _t=todayISO();
-    state.period = state.periods.find(p=>p.start_date<=_t&&p.end_date>=_t)
-      || state.periods.find(p=>p.end_date<_t) || state.period;
-  }
+  if(state.baTab==='report') return baReport(m);
   await flushGrid();                                  // commit pending grid edits before reading
   const seq = state._drawSeq = (state._drawSeq||0)+1; // latest render wins
   m.innerHTML = `<div class="loading"><span class="spin"></span></div>`;
-  const per = state.period;
-  const [trips, exps, sub] = await Promise.all([
-    per ? supabase.from('trips').select('*').eq('ba_id',state.session.user.id).eq('period_id',per.id).order('trip_date',{ascending:false}) : {data:[]},
-    per ? supabase.from('expenses').select('*').eq('ba_id',state.session.user.id).eq('period_id',per.id).order('expense_date',{ascending:false}) : {data:[]},
-    per ? supabase.from('submissions').select('*').eq('ba_id',state.session.user.id).eq('period_id',per.id).maybeSingle() : {data:null},
-  ]);
-  if(seq !== state._drawSeq) return;                  // a newer drawBA superseded this fetch — don't clobber
-  const T=trips.data||[], E=exps.data||[], S=sub?.data||null;
+
+  // Periods the BA may see: current + past. A not-yet-started period stays hidden
+  // until local midnight (12am) of its first day — periodPhase uses todayISO().
+  const visible = state.periods.filter(p=>periodPhase(p)!=='future');
+  const current = visible.find(p=>periodPhase(p)==='current') || null;
+  const active  = current || visible[0] || null;      // pre-expanded period: the current one, else most recent
+  state.period = active; state._activePid = active ? active.id : null;
+
+  // one query for every period's submission → header status + stored totals (cheap, no per-period item loads)
+  const { data:subs } = await supabase.from('submissions').select('*').eq('ba_id',state.session.user.id);
+  if(seq !== state._drawSeq) return;
+  const subByPid={}; (subs||[]).forEach(s=>subByPid[s.period_id]=s);
+
+  // load only the active (expanded) period's items; past periods load lazily on expand
+  let T=[],E=[],S=null;
+  if(active){
+    const [tr,ex] = await Promise.all([
+      supabase.from('trips').select('*').eq('ba_id',state.session.user.id).eq('period_id',active.id).order('trip_date',{ascending:false}),
+      supabase.from('expenses').select('*').eq('ba_id',state.session.user.id).eq('period_id',active.id).order('expense_date',{ascending:false}),
+    ]);
+    if(seq !== state._drawSeq) return;
+    T=tr.data||[]; E=ex.data||[]; S=subByPid[active.id]||null;
+  }
   state._T=T; state._E=E;
   const submittedLock = S && (S.status==='submitted'||S.status==='approved');
-  const canEdit = canEditPeriod(per) && !submittedLock;
-  const readOnly = !canEdit, phase = periodPhase(per);
-  const items=[...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'}))]
-    .sort((a,b)=>(b.trip_date||b.expense_date).localeCompare(a.trip_date||a.expense_date));
+  const canEdit = active && canEditPeriod(active) && !submittedLock;
 
-  m.innerHTML = `
-    <div class="card">
-      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(drawBA,{hideFuture:actingAsBA()})}</div>
-      <div class="totbar" id="totbar" style="margin-top:12px">${totbarTiles()}</div>
+  if(!visible.length){ m.innerHTML='<div class="card"><p class="muted small">No pay periods yet.</p></div>'; return; }
+
+  m.innerHTML = visible.map(p=>{
+    const open=active && p.id===active.id;
+    const sub=subByPid[p.id];
+    const headTotal = open ? reimburseTotal() : (sub&&sub.totals? Number(sub.totals.total||0) : null);
+    const badge = sub ? `<span class="badge ${sub.status}">${sub.status}</span>` : '';
+    return `<div class="peracc" data-pid="${p.id}" style="margin-bottom:12px">
+      ${periodHeadHtml(p, open, headTotal, badge)}
+      <div class="perbody ${open?'':'hide'}" data-body="${p.id}">${open ? (canEdit ? editableBodyHtml(S) : readOnlyBodyHtml(p,T,E)) : ''}</div>
+    </div>`;
+  }).join('');
+
+  if(active && canEdit) wireEditableBody();
+  m.querySelectorAll('.perhead').forEach(h=>h.onclick=()=>togglePeriod(h.dataset.pid));
+}
+// the expandable header bar for one pay period
+function periodHeadHtml(p, open, total, badge){
+  const tag = periodPhase(p)==='current'
+    ? '<span class="badge" style="color:var(--accent2);border-color:var(--accent2)">current</span>'
+    : '<span class="muted small">view only</span>';
+  return `<div class="card perhead" data-pid="${p.id}" style="cursor:pointer;padding:13px 15px">
+    <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+      <div style="min-width:0;display:flex;align-items:center;gap:8px"><span class="caret" style="width:11px;color:var(--muted)">${open?'▾':'▸'}</span><b>${esc(p.label)}</b>${tag}</div>
+      <div style="text-align:right;white-space:nowrap"><b class="pertot" style="color:var(--accent2)">${total!=null?money(total):'<span class="muted small" style="font-weight:400">—</span>'}</b> ${badge}</div>
+    </div>
+  </div>`;
+}
+// full editable surface for the current period (reads state._T/_E + the live grid)
+function editableBodyHtml(S){
+  const items=periodItems();
+  return `
+    <div class="card" style="margin-top:10px">
+      <div class="totbar" id="totbar">${totbarTiles()}</div>
       <div id="cardline">${cardLineHtml()}</div>
-      ${S?`<div class="small ${S.status==='approved'?'':'muted'}" style="margin-top:10px">
-        Status: <span class="badge ${S.status}">${S.status}</span></div>`:''}
+      ${S?`<div class="small ${S.status==='approved'?'':'muted'}" style="margin-top:10px">Status: <span class="badge ${S.status}">${S.status}</span></div>`:''}
     </div>
     <div class="actions">
-      <button class="bigbtn" id="ab-trip" ${readOnly?'disabled':''}><span class="ic">🚗</span><b>Log trip</b><span class="small muted">mileage</span></button>
-      <button class="bigbtn" id="ab-exp" ${readOnly?'disabled':''}><span class="ic">🧾</span><b>Add expense</b><span class="small muted">snap a receipt</span></button>
+      <button class="bigbtn" id="ab-trip"><span class="ic">🚗</span><b>Log trip</b><span class="small muted">mileage</span></button>
+      <button class="bigbtn" id="ab-exp"><span class="ic">🧾</span><b>Add expense</b><span class="small muted">snap a receipt</span></button>
     </div>
     <div id="todobar">${todoCard(items,true,true)}</div>
-    ${readOnly?'':'<div id="gridcard"></div>'}
+    <div id="gridcard"></div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px">
         <h3 id="itemsHead" style="margin:0">This period · ${items.length} item${items.length===1?'':'s'}</h3>
@@ -561,19 +600,114 @@ async function drawBA(){
       </div>
       <div id="items">${items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>'}</div>
     </div>
-    ${canEdit ? `<div id="submitWrap">${submitAreaHtml()}</div>`:''}
-    ${submittedLock ? `<p class="small muted center">Submitted ${S.submitted_at?('· '+new Date(S.submitted_at).toLocaleDateString()):''}. Locked from edits.</p>`
-      : (readOnly && phase==='past')   ? `<p class="small muted center">📅 Past pay period — view only. Ask an admin to make changes.</p>`
-      : (readOnly && phase==='future') ? `<p class="small muted center">📅 This pay period hasn’t started yet.</p>`
-      : ''}
-  `;
+    <div id="submitWrap">${submitAreaHtml()}</div>`;
+}
+function wireEditableBody(){
   $('#ab-trip')&&($('#ab-trip').onclick=()=>tripSheet());
   $('#ab-exp') &&($('#ab-exp').onclick =()=>expenseSheet());
   wireSubmit();
-  m.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
-  // delegated so it survives refreshItems() re-rendering #todobar's innards
+  document.querySelectorAll('#items [data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
   const tbEl=$('#todobar'); if(tbEl) tbEl.onclick=e=>{ const row=e.target.closest('[data-fix-id]'); if(row) fixItemSheet(row.dataset.fixKind, row.dataset.fixId); };
   renderGrid();
+}
+// read-only summary for a past/locked period (no editing controls)
+function roItemRow(x){
+  const trip=x._k==='trip', date=trip?x.trip_date:x.expense_date;
+  const title=trip?(x.dest_label||dispName(x.dispensary_id)):(x.vendor||'Expense');
+  const sub=trip?`${x.miles??'—'} mi · ${x.method}`:`${x.category||''}${x.payment==='company'?' · 💳 company card':''}`;
+  return `<div class="item"><div class="ic">${trip?'🚗':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${esc(title)}</div><div class="s">${fmtDate(date)} · ${esc(sub)}</div></div><div class="amt">${money(x.amount)}</div><span class="badge ${x.status}">${x.status}</span></div>`;
+}
+function readOnlyBodyHtml(p, T, E){
+  const items=[...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'}))]
+    .sort((a,b)=>((b.trip_date||b.expense_date)||'').localeCompare((a.trip_date||a.expense_date)||''));
+  const mileT=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb}=expSplit(E);
+  return `
+    <div class="card" style="margin-top:10px">
+      <div class="totbar">${totTiles(T,E)}</div>
+      ${cardLineFor(E)}
+    </div>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px">
+        <h3 style="margin:0">${items.length} item${items.length===1?'':'s'}</h3>
+        <div style="font-weight:750;white-space:nowrap">Total Reimburse: <span style="color:var(--accent2)">${money(mileT+reimb)}</span></div>
+      </div>
+      <div>${items.length?items.map(roItemRow).join(''):'<p class="muted small">Nothing logged this period.</p>'}</div>
+    </div>
+    <p class="small muted center" style="margin-bottom:2px">📅 ${periodPhase(p)==='past'?'Past pay period — view only. Ask an admin to make changes.':'Locked from edits.'}</p>`;
+}
+// expand/collapse a period; past periods lazy-load their items on first open
+async function togglePeriod(pid){
+  const card=document.querySelector(`.peracc[data-pid="${pid}"]`); if(!card) return;
+  const body=card.querySelector('.perbody'), caret=card.querySelector('.caret');
+  const willOpen=body.classList.contains('hide');
+  body.classList.toggle('hide'); if(caret) caret.textContent=willOpen?'▾':'▸';
+  if(!willOpen || pid===state._activePid || body.dataset.loaded) return;   // active body already rendered; collapsing needs nothing
+  body.dataset.loaded='1';
+  body.innerHTML='<div class="loading"><span class="spin"></span></div>';
+  const p=state.periods.find(x=>x.id===pid);
+  const [tr,ex]=await Promise.all([
+    supabase.from('trips').select('*').eq('ba_id',state.session.user.id).eq('period_id',pid).order('trip_date',{ascending:false}),
+    supabase.from('expenses').select('*').eq('ba_id',state.session.user.id).eq('period_id',pid).order('expense_date',{ascending:false}),
+  ]);
+  if(!body.isConnected) return;                       // drawBA re-rendered while we fetched — node is detached, drop it
+  const T=tr.data||[], E=ex.data||[];
+  body.innerHTML=readOnlyBodyHtml(p, T, E);
+  const tot=card.querySelector('.pertot'); if(tot){ const mileT=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb}=expSplit(E); tot.innerHTML=money(mileT+reimb); }
+}
+// Employee report: the admin "Spend by dispensary" view, scoped to just this BA's own data.
+async function baReport(m){
+  m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
+  await reloadPeriods();
+  if(!state.period || periodPhase(state.period)==='future'){
+    const _t=todayISO();
+    state.period = state.periods.find(p=>p.start_date<=_t&&p.end_date>=_t) || state.periods.find(p=>p.end_date<_t) || state.periods[0] || null;
+  }
+  const per=state.period, uid=state.session.user.id;
+  const [trips,exps]=await Promise.all([
+    per?supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).eq('period_id',per.id):{data:[]},
+    per?supabase.from('expenses').select('id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).eq('period_id',per.id):{data:[]},
+  ]);
+  const dn=id=>{ const n=dispName(id); return n==='—'?'':n; };
+  const agg={}, items={};
+  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0}; items[k]=items[k]||[]; };
+  (trips.data||[]).forEach(t=>{ const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
+    items[k].push({kind:'trip',id:t.id,date:t.trip_date,ba:'',disp:dn(t.dispensary_id),start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
+  (exps.data||[]).forEach(x=>{ const k=x.dispensary_id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=Number(x.amount||0);
+    items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:'',disp:dn(x.dispensary_id),vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:Number(x.amount||0)}); });
+  Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
+  const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));
+  let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':dispName(k), total:v.mile+v.exp+v.card, ...v }))
+    .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
+  const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
+  const detailRows=k=>(items[k]||[]).map(it=>{ const note=it.note?' · 🗒':''; const trip=it.kind==='trip'; const title=trip?(it.label||'Trip'):(it.vendor||'Expense');
+    const meta=trip?(it.miles!=null?` · ${it.miles} mi`:''):` · ${it.payment==='company'?'💳 card':'💵 reimb'}${it.receipt?` · <a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:''}`;
+    return `<div class="item repitem" data-item="${it.kind}:${it.id}" style="cursor:pointer"><div class="ic">${trip?'🚗':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${esc(title)}</div><div class="s">${fmtDate(it.date)}${meta}${note}</div></div><div class="amt">${money(it.amount)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`;
+  }).join('');
+  m.innerHTML=`
+    <div class="card">
+      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>baReport(m),{hideFuture:true})}</div>
+      <div class="totbar" style="margin-top:12px">
+        <div class="tot"><div class="k">Dispensaries</div><div class="v">${rows.filter(r=>r.id!=='none').length}</div></div>
+        <div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Your spend by dispensary <span class="muted small">${per?'· '+esc(per.label):''} · tap to expand</span></h3>
+      ${rows.length?rows.map(r=>`
+        <div class="repdrow" data-disp="${r.id}" style="padding:9px 0;border-top:1px solid var(--line);cursor:pointer">
+          <div class="row" style="justify-content:space-between;align-items:baseline">
+            <div class="t" style="font-weight:600${r.id==='none'?';color:var(--yellow)':''}"><span class="caret" style="display:inline-block;width:12px;color:var(--muted)">▸</span>${esc(r.name)}</div>
+            <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
+          </div>
+          <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}</div>
+        </div>
+        <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this period yet.</p>`}
+    </div>`;
+  m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
+    d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
+  m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
+  m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
 }
 function periodItems(){
   return [...(state._T||[]).map(x=>({...x,_k:'trip'})),...(state._E||[]).map(x=>({...x,_k:'exp'}))]
@@ -589,19 +723,22 @@ function refreshItems(){
   const tb=$('#todobar'); if(tb) tb.innerHTML=todoCard(items,true,true);
   const sw=$('#submitWrap'); if(sw){ sw.innerHTML=submitAreaHtml(); wireSubmit(); }
 }
-function totbarTiles(){
-  const mileT=(state._T||[]).reduce((a,x)=>a+Number(x.amount||0),0);
-  const {reimb}=expSplit(state._E);
+function totTiles(T,E){
+  const mileT=(T||[]).reduce((a,x)=>a+Number(x.amount||0),0);
+  const {reimb}=expSplit(E);
   return `<div class="tot"><div class="k">Mileage</div><div class="v">${money(mileT)}</div></div>
     <div class="tot"><div class="k">Expenses</div><div class="v">${money(reimb)}</div></div>
     <div class="tot sum"><div class="k">Reimburse</div><div class="v">${money(mileT+reimb)}</div></div>`;
 }
-function cardLineHtml(){ const {card}=expSplit(state._E); return card>0?`<div class="small muted" style="margin-top:8px">💳 Company card (not reimbursed): <b>${money(card)}</b></div>`:''; }
+function totbarTiles(){ return totTiles(state._T, state._E); }
+function cardLineFor(E){ const {card}=expSplit(E); return card>0?`<div class="small muted" style="margin-top:8px">💳 Company card (not reimbursed): <b>${money(card)}</b></div>`:''; }
+function cardLineHtml(){ return cardLineFor(state._E); }
 function reimburseTotal(){ const mileT=(state._T||[]).reduce((a,x)=>a+Number(x.amount||0),0); return mileT+expSplit(state._E).reimb; }
 function refreshTotals(){
   const t=$('#totbar'); if(t) t.innerHTML=totbarTiles();
   const c=$('#cardline'); if(c) c.innerHTML=cardLineHtml();
   const ir=$('#itemsReimb'); if(ir) ir.textContent=money(reimburseTotal());
+  const ph=state._activePid&&document.querySelector(`.peracc[data-pid="${state._activePid}"] .pertot`); if(ph) ph.innerHTML=money(reimburseTotal());
 }
 function baItemRow(x){
   const trip = x._k==='trip';
@@ -1520,11 +1657,11 @@ function reportItemSheet(it){
     <div style="margin-top:10px">${body}</div>
     ${noteBlock}
     ${recBtn}
-    <button class="btn primary block" id="riEdit" style="margin-top:12px">✎ Edit</button>
+    ${!actingAsBA()?`<button class="btn primary block" id="riEdit" style="margin-top:12px">✎ Edit</button>`:''}
     <button class="btn ghost block" id="riClose" style="margin-top:8px">Close</button>
   `);
   $('#riClose').onclick=closeSheet;
-  $('#riEdit').onclick=()=>adminEditItem(it.kind, it.id, ()=>drawAdmin());   // re-render the report after a save
+  const riE=$('#riEdit'); if(riE) riE.onclick=()=>adminEditItem(it.kind, it.id, ()=>drawAdmin());   // admin-only: re-render the report after a save
   const rec=$('#riRec'); if(rec) rec.onclick=async()=>{ const u=await signedUrl('receipts',it.receipt); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); };
 }
 // Admin: edit any single trip/expense in any period (incl. past/approved). onSaved re-renders the caller.
