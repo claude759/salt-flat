@@ -224,9 +224,14 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare v_pid uuid;
 begin
-  if tg_op = 'UPDATE' and new.status in ('submitted','approved') then
-    -- locked once submitted: freeze everything that drives the reimbursement $
+  if tg_op = 'UPDATE' and new.status in ('submitted','approved') and public.is_admin() then
+    -- admin correcting a past/locked period: keep the locked-in rate, recompute $ from the (possibly edited) miles
+    new.rate   := old.rate;
+    new.amount := round(coalesce(new.miles,0) * coalesce(old.rate, public.effective_rate(new.ba_id)), 2);
+  elsif tg_op = 'UPDATE' and new.status in ('submitted','approved') then
+    -- locked once submitted: a BA cannot alter anything that drives the reimbursement $
     new.miles := old.miles; new.miles_source := old.miles_source;
     new.rate := old.rate;   new.amount := old.amount;
     new.start_label := old.start_label; new.dest_label := old.dest_label;
@@ -239,13 +244,13 @@ begin
     new.rate   := public.effective_rate(new.ba_id);
     new.amount := round(coalesce(new.miles, 0) * new.rate, 2);
   end if;
-  if new.period_id is null then
-    select id into new.period_id
-      from public.pay_periods
-     where new.trip_date between start_date and end_date
-     order by start_date desc
-     limit 1;
-  end if;
+  -- keep the row in the pay period that matches its (possibly edited) date
+  select id into v_pid
+    from public.pay_periods
+   where new.trip_date between start_date and end_date
+   order by start_date desc
+   limit 1;
+  if v_pid is not null then new.period_id := v_pid; end if;
   new.updated_at := now();
   return new;
 end;
@@ -262,14 +267,15 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare v_pid uuid;
 begin
-  if new.period_id is null then
-    select id into new.period_id
-      from public.pay_periods
-     where new.expense_date between start_date and end_date
-     order by start_date desc
-     limit 1;
-  end if;
+  -- keep the row in the pay period that matches its (possibly edited) date
+  select id into v_pid
+    from public.pay_periods
+   where new.expense_date between start_date and end_date
+   order by start_date desc
+   limit 1;
+  if v_pid is not null then new.period_id := v_pid; end if;
   new.updated_at := now();
   return new;
 end;

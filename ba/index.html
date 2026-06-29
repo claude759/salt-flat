@@ -205,7 +205,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-29.6';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-29.7';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -1520,10 +1520,88 @@ function reportItemSheet(it){
     <div style="margin-top:10px">${body}</div>
     ${noteBlock}
     ${recBtn}
-    <button class="btn ghost block" id="riClose" style="margin-top:12px">Close</button>
+    <button class="btn primary block" id="riEdit" style="margin-top:12px">✎ Edit</button>
+    <button class="btn ghost block" id="riClose" style="margin-top:8px">Close</button>
   `);
   $('#riClose').onclick=closeSheet;
+  $('#riEdit').onclick=()=>adminEditItem(it.kind, it.id, ()=>drawAdmin());   // re-render the report after a save
   const rec=$('#riRec'); if(rec) rec.onclick=async()=>{ const u=await signedUrl('receipts',it.receipt); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); };
+}
+// Admin: edit any single trip/expense in any period (incl. past/approved). onSaved re-renders the caller.
+async function adminEditItem(kind, id, onSaved){
+  const table = kind==='trip' ? 'trips' : 'expenses';
+  const { data:x, error } = await supabase.from(table).select('*').eq('id',id).single();
+  if(error || !x){ toast('Could not load item — try again','err'); return; }
+  const allDisp = [...(state.dispensaries||[])].sort((a,b)=>a.name.localeCompare(b.name));
+  const dispOpts = `<option value="">— none —</option>`+allDisp.map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  if(kind==='trip'){
+    openSheet(`
+      <h3>Edit trip <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
+      <label class="fl">Date</label><input id="aDate" type="date" value="${x.trip_date||''}">
+      <label class="fl">Dispensary</label><select id="aDisp">${dispOpts}</select>
+      <label class="fl">Starting location</label><input id="aStart" value="${esc(x.start_label||'')}" autocomplete="off">
+      <label class="fl">Destination</label><input id="aDest" value="${esc(x.dest_label||'')}" autocomplete="off">
+      <div class="row">
+        <div class="grow"><label class="fl">Miles</label><input id="aMiles" type="number" inputmode="decimal" value="${x.miles!=null?x.miles:''}"></div>
+        <div class="grow"><label class="fl">Method</label><select id="aMethod"><option value="manual" ${x.method==='manual'?'selected':''}>manual</option><option value="odometer" ${x.method==='odometer'?'selected':''}>odometer</option></select></div>
+      </div>
+      <label class="fl">Note</label><textarea id="aNote" rows="2">${esc(x.note||'')}</textarea>
+      <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
+      <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
+      <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+    `);
+    $('#aCancel').onclick=closeSheet;
+    $('#aSave').onclick=async()=>{
+      const btn=$('#aSave');
+      const patch={ trip_date:$('#aDate').value||x.trip_date, dispensary_id:$('#aDisp').value||null,
+        start_label:$('#aStart').value.trim()||null, dest_label:$('#aDest').value.trim()||null,
+        miles:Number($('#aMiles').value)||null, method:$('#aMethod').value, miles_source:$('#aMethod').value,
+        note:$('#aNote').value.trim()||null };
+      busy(btn,true);
+      const {data,error}=await supabase.from('trips').update(patch).eq('id',id).select('*').single();
+      busy(btn,false);
+      if(error){ $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
+      closeSheet(); toast('Trip updated ✓','ok'); onSaved&&onSaved(data);
+    };
+  } else {
+    const cats=EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
+    const recUrl=x.receipt_path?await signedUrl('receipts',x.receipt_path):null;
+    openSheet(`
+      <h3>Edit expense <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
+      <label class="fl">Date</label><input id="aDate" type="date" value="${x.expense_date||''}">
+      <label class="fl">Vendor</label><input id="aVendor" value="${esc(x.vendor||'')}">
+      <div class="row">
+        <div class="grow"><label class="fl">Amount</label><input id="aAmt" type="number" inputmode="decimal" step="0.01" value="${x.amount!=null?x.amount:''}"></div>
+        <div class="grow"><label class="fl">Category</label><select id="aCat">${cats}</select></div>
+      </div>
+      <label class="fl">Paid with</label><select id="aPay">${PAYMENTS.map(([v,l])=>`<option value="${v}" ${x.payment===v?'selected':''}>${l}</option>`).join('')}</select>
+      <label class="fl">Dispensary</label><select id="aDisp">${dispOpts}</select>
+      <label class="fl">Note</label><textarea id="aNote" rows="2">${esc(x.note||'')}</textarea>
+      <div style="margin-top:10px">${recUrl?`<a class="btn block" href="${recUrl}" target="_blank">📄 View receipt</a>`:'<div class="small muted">No receipt attached.</div>'}
+        <label class="btn ghost block" style="margin-top:6px;cursor:pointer">📎 ${x.receipt_path?'Replace':'Attach'} receipt<input id="aRec" type="file" accept="image/*" hidden></label></div>
+      <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
+      <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
+      <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+    `);
+    $('#aCancel').onclick=closeSheet;
+    let receiptPath=x.receipt_path||null, recChanged=false;
+    const aRec=$('#aRec'); if(aRec) aRec.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
+      toast('Uploading receipt…');
+      try{ receiptPath=await uploadPhoto('receipts',f); recChanged=true; toast('Receipt attached','ok'); }
+      catch(err){ toast('Upload failed — try again','err'); } };
+    $('#aSave').onclick=async()=>{
+      const btn=$('#aSave');
+      const patch={ expense_date:$('#aDate').value||x.expense_date, vendor:$('#aVendor').value.trim()||null,
+        amount:Number($('#aAmt').value)||0, category:$('#aCat').value, payment:$('#aPay').value,
+        dispensary_id:$('#aDisp').value||null, note:$('#aNote').value.trim()||null };
+      if(recChanged){ patch.receipt_path=receiptPath; patch.ocr_raw=null; }   // new image → stale OCR no longer applies
+      busy(btn,true);
+      const {data,error}=await supabase.from('expenses').update(patch).eq('id',id).select('*').single();
+      busy(btn,false);
+      if(error){ $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
+      closeSheet(); toast('Expense updated ✓','ok'); onSaved&&onSaved(data);
+    };
+  }
 }
 
 async function adminDash(m){
@@ -1605,7 +1683,7 @@ async function adminBaDetail(baId){
     const sub=trip?`${x.miles??'—'} mi · ${x.method}`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
     const disp=dispName(x.dispensary_id);
     const rec=trip?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
-    return `<div class="item" data-kind="${trip?'trip':'exp'}">
+    return `<div class="item adminedit" data-kind="${trip?'trip':'exp'}" data-edit-kind="${trip?'trip':'exp'}" data-edit-id="${x.id}" style="cursor:pointer">
       <div class="ic">${trip?'🚗':'🧾'}</div>
       <div class="grow" style="min-width:0"><div class="t">${esc(title)}</div>
         <div class="s">${fmtDate(date)} · ${esc(sub)}${disp&&disp!=='—'?` · 🏬 ${esc(disp)}`:''}${rec}</div>
@@ -1613,6 +1691,7 @@ async function adminBaDetail(baId){
       <div style="text-align:right;flex:none;margin-left:8px"><div class="amt">${money(x.amount)}</div>
         <div style="margin-top:2px"><span class="badge ${x.status}">${x.status}</span></div></div>
       ${x.status!=='approved'?`<button class="btn ghost sm" data-rej="${trip?'trips':'expenses'}" data-id="${x.id}" style="margin-left:6px;flex:none">Reject</button>`:''}
+      <div class="muted" style="font-size:18px;flex:none;margin-left:4px">›</div>
     </div>`;
   }).join('');
   openSheet(`
@@ -1656,6 +1735,9 @@ async function adminBaDetail(baId){
   $('#approveBtn')&&($('#approveBtn').onclick=()=>approveSubmission(baId,per.id,T,E));
   document.querySelectorAll('[data-rej]').forEach(b=>b.onclick=()=>rejectItem(b.dataset.rej,b.dataset.id,baId));
   document.querySelectorAll('.recFile').forEach(inp=>inp.onchange=e=>adminAttachReceipt(e,baId));
+  document.querySelectorAll('.item.adminedit').forEach(el=>el.onclick=ev=>{
+    if(ev.target.closest('[data-rej],label,a,input,select,button')) return;   // let the inline reject/attach/receipt controls do their thing
+    adminEditItem(el.dataset.editKind, el.dataset.editId, ()=>adminBaDetail(baId)); });
   const df=$('#dFilter'); if(df) df.querySelectorAll('button').forEach(b=>b.onclick=()=>{
     df.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b)); const f=b.dataset.f;
     df.parentElement.querySelectorAll('.item[data-kind]').forEach(it=>{ it.style.display=(f==='all'||it.dataset.kind===f)?'':'none'; }); });
