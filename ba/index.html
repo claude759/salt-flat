@@ -1350,19 +1350,53 @@ function exportPDF(prof,per,T,E){
 /* ── Admin: review queue ── */
 async function adminReview(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
-  const {data:subs}=await supabase.from('submissions').select('*, profiles!submissions_ba_id_fkey(full_name,email), pay_periods(label,start_date)').eq('status','submitted').order('submitted_at');
-  const list=subs||[];
-  m.innerHTML=`<div class="card"><h3>Awaiting approval · ${list.length}</h3>
-    ${list.length?list.map(s=>`<div class="item" data-ba="${s.ba_id}" data-per="${s.period_id}" style="cursor:pointer">
-      <div class="ic">⏳</div>
-      <div class="grow"><div class="t">${esc(s.profiles?.full_name||s.profiles?.email||'BA')}</div>
-        <div class="s">${esc(s.pay_periods?.label||'')} · submitted ${s.submitted_at?new Date(s.submitted_at).toLocaleDateString():''}</div></div>
-      <div class="amt">${money(s.totals?.total||0)}</div></div>`).join('')
-      :'<p class="muted small">Nothing awaiting approval. 🎉</p>'}</div>`;
-  m.querySelectorAll('[data-ba]').forEach(el=>el.onclick=()=>{
-    state.period = state.periods.find(p=>p.id===el.dataset.per) || state.period;
-    adminBaDetail(el.dataset.ba);
-  });
+  const per=state.period;
+  const [{data:bas}, subs, trips, exps] = await Promise.all([
+    supabase.from('profiles').select('*').eq('role','ba').order('full_name'),
+    per?supabase.from('submissions').select('*').eq('period_id',per.id):{data:[]},
+    per?supabase.from('trips').select('ba_id').eq('period_id',per.id):{data:[]},
+    per?supabase.from('expenses').select('ba_id').eq('period_id',per.id):{data:[]},
+  ]);
+  const subBy={}; (subs.data||[]).forEach(s=>subBy[s.ba_id]=s);
+  const cnt={}; (trips.data||[]).concat(exps.data||[]).forEach(x=>cnt[x.ba_id]=(cnt[x.ba_id]||0)+1);
+  let rows=(bas||[]);
+  if(state.adminRegion!=='all') rows=rows.filter(b=>b.region===state.adminRegion);
+  const turnedIn=b=>['submitted','approved'].includes(subBy[b.id]?.status);
+  // order: awaiting your approval → not submitted → approved
+  const rank=b=>{ const s=subBy[b.id]?.status; return s==='submitted'?0 : s==='approved'?2 : 1; };
+  rows=rows.slice().sort((a,b)=>rank(a)-rank(b)||(a.full_name||'').localeCompare(b.full_name||''));
+  const inCount=rows.filter(turnedIn).length;
+  const awaiting=rows.filter(b=>subBy[b.id]?.status==='submitted').length;
+  m.innerHTML=`
+    <div class="card">
+      <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>adminReview(m))}</div>
+      <div class="row" style="margin-top:8px"><div class="small muted grow">Region</div>
+        <select id="regSelR"><option value="all" ${state.adminRegion==='all'?'selected':''}>All states</option>${REGIONS.map(r=>`<option value="${r}" ${state.adminRegion===r?'selected':''}>${r}</option>`).join('')}</select></div>
+      <div class="totbar" style="margin-top:12px">
+        <div class="tot"><div class="k">To review</div><div class="v">${awaiting}</div></div>
+        <div class="tot"><div class="k">Not in yet</div><div class="v">${rows.length-inCount}</div></div>
+        <div class="tot sum"><div class="k">Submitted</div><div class="v">${inCount}/${rows.length}</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>BA submissions ${per?`<span class="muted small">· ${esc(per.label)}</span>`:''}</h3>
+      ${rows.length?rows.map(b=>{
+        const st=subBy[b.id]?.status||'none', items=cnt[b.id]||0;
+        let badge, cls, sub;
+        if(st==='submitted'){ badge='✓ submitted'; cls='submitted'; sub=`Awaiting approval${subBy[b.id]?.submitted_at?' · '+new Date(subBy[b.id].submitted_at).toLocaleDateString():''}`; }
+        else if(st==='approved'){ badge='✓ approved'; cls='approved'; sub='Approved & reimbursed'; }
+        else if(st==='rejected'){ badge='rejected'; cls='rejected'; sub='Sent back — awaiting resubmit'; }
+        else { badge='not submitted'; cls='draft'; sub=items?`${items} item${items===1?'':'s'} in progress`:'Nothing logged yet'; }
+        return `<div class="item" data-ba="${b.id}" style="cursor:pointer">
+          <div class="ic">${(b.full_name||'?').slice(0,1).toUpperCase()}</div>
+          <div class="grow" style="min-width:0"><div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(b.full_name||b.email)}${b.region?` <span class="pill">${esc(b.region)}</span>`:''}</div>
+            <div class="s">${sub}</div></div>
+          <span class="badge ${cls}" style="flex:none;margin-left:8px">${badge}</span>
+        </div>`;
+      }).join(''):`<p class="muted small">No BAs${state.adminRegion!=='all'?' in '+state.adminRegion:''} yet — add them in Settings.</p>`}
+    </div>`;
+  m.querySelectorAll('[data-ba]').forEach(el=>el.onclick=()=>adminBaDetail(el.dataset.ba));
+  const rs=$('#regSelR'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminReview(m); };
 }
 
 /* ── Admin: settings ── */
