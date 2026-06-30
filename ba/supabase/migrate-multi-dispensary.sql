@@ -14,8 +14,13 @@ create or replace function public.trg_expense_before()
 as $function$
 declare v_pid uuid;
 begin
-  -- normalize dispensary link(s): dispensary_ids is canonical; dispensary_id = first element
-  if new.dispensary_ids is not null and array_length(new.dispensary_ids,1) > 0 then
+  -- normalize dispensary link(s). a single-select write (only dispensary_id changed, e.g. the
+  -- quick-entry grid) rebuilds the array from it; a multi-select write (dispensary_ids provided)
+  -- is canonical and mirrors its first element to dispensary_id; empty/none → both null.
+  if tg_op='UPDATE' and new.dispensary_id is distinct from old.dispensary_id
+     and new.dispensary_ids is not distinct from old.dispensary_ids then
+    new.dispensary_ids := case when new.dispensary_id is null then null else array[new.dispensary_id] end;
+  elsif coalesce(array_length(new.dispensary_ids,1),0) > 0 then
     new.dispensary_id := new.dispensary_ids[1];
   elsif new.dispensary_id is not null then
     new.dispensary_ids := array[new.dispensary_id];
