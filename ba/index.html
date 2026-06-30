@@ -63,12 +63,19 @@
   .seg button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-weight:650;
     padding:9px;border-radius:8px;cursor:pointer}
   .seg button.on{background:var(--accent);color:#fff}
-  /* multi-select dispensary chips */
-  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:6px}
-  .chips .chip{border:1px solid var(--line);background:var(--panel2);color:var(--text);font:inherit;font-size:13px;
-    font-weight:600;padding:7px 12px;border-radius:999px;cursor:pointer;display:flex;align-items:center;gap:5px}
-  .chips .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
-  .chips .chip.on::before{content:'✓';font-size:11px}
+  /* multi-select dispensary dropdown (checkbox list) */
+  .msel{position:relative;margin-top:6px}
+  .msel-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);
+    font:inherit;padding:11px 12px;cursor:pointer;text-align:left}
+  .msel-toggle .msel-sum{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .msel-caret{color:var(--muted);flex:none}
+  .msel.open .msel-caret{transform:rotate(180deg)}
+  .msel-menu{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:10;background:var(--panel2);
+    border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);max-height:264px;overflow-y:auto;padding:4px}
+  .msel-opt{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:14px}
+  .msel-opt:hover{background:var(--panel)}
+  .msel-opt input{width:17px;height:17px;flex:none;accent-color:var(--accent);margin:0}
 
   /* big action buttons (BA home) */
   .actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -215,7 +222,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-30.3';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-30.4';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -248,17 +255,35 @@ function dispSplit(x, value){
 }
 // dispensaries a BA can pick: only those in their region (admins/region-less see all)
 function baDispensaries(){ const r = state.preview || state.profile?.region; return state.dispensaries.filter(d => !r || d.state === r); }
-// ── reusable multi-select dispensary chips ──
+// ── reusable multi-select dispensary dropdown (collapsed button + scrollable checkbox list) ──
+function mselSummary(root){
+  const names=[...root.querySelectorAll('.msel-opt input:checked')].map(c=>c.dataset.name);
+  if(!names.length) return '<span class="muted">Select stores…</span>';
+  return names.length<=2 ? esc(names.join(', ')) : `${esc(names[0])} <span class="muted">+${names.length-1} more</span>`;
+}
 function dispChipsHtml(selectedIds, opts={}){
   const all = (opts.all ? (state.dispensaries||[]).filter(d=>d.active!==false) : baDispensaries()).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const sel = new Set((selectedIds||[]).filter(Boolean));
   const id = opts.id || 'dchips';
   if(!all.length) return `<div class="small muted" style="margin-top:6px">No dispensaries yet.</div>`;
-  return `<div class="chips" id="${id}">${all.map(d=>`<button type="button" class="chip${sel.has(d.id)?' on':''}" data-id="${d.id}">${esc(d.name)}</button>`).join('')}</div>`;
+  const selNames=all.filter(d=>sel.has(d.id)).map(d=>d.name);
+  const sum = !selNames.length ? '<span class="muted">Select stores…</span>'
+    : (selNames.length<=2 ? esc(selNames.join(', ')) : `${esc(selNames[0])} <span class="muted">+${selNames.length-1} more</span>`);
+  return `<div class="msel" id="${id}">
+    <button type="button" class="msel-toggle"><span class="msel-sum">${sum}</span><span class="msel-caret">▾</span></button>
+    <div class="msel-menu hide">
+      ${all.map(d=>`<label class="msel-opt"><input type="checkbox" data-id="${d.id}" data-name="${esc(d.name)}" ${sel.has(d.id)?'checked':''}><span>${esc(d.name)}</span></label>`).join('')}
+    </div>
+  </div>`;
 }
-function wireDispChips(id){ const c=$('#'+(id||'dchips')); if(c) c.querySelectorAll('.chip').forEach(b=>b.onclick=()=>b.classList.toggle('on')); }
-function readDispChips(id){ const c=$('#'+(id||'dchips')); return c?[...c.querySelectorAll('.chip.on')].map(b=>b.dataset.id):[]; }
-// build the {dispensary_ids, dispensary_id} patch fields from a chip group
+function wireDispChips(id){
+  const root=$('#'+(id||'dchips')); if(!root) return;
+  const tog=root.querySelector('.msel-toggle'), menu=root.querySelector('.msel-menu'), sum=root.querySelector('.msel-sum');
+  if(tog) tog.onclick=()=>{ menu.classList.toggle('hide'); root.classList.toggle('open',!menu.classList.contains('hide')); };
+  root.querySelectorAll('.msel-opt input').forEach(cb=>cb.onchange=()=>{ if(sum) sum.innerHTML=mselSummary(root); });
+}
+function readDispChips(id){ const root=$('#'+(id||'dchips')); return root?[...root.querySelectorAll('.msel-opt input:checked')].map(c=>c.dataset.id):[]; }
+// build the {dispensary_ids, dispensary_id} patch fields from a dropdown group
 function dispPatch(id){ const ids=readDispChips(id); return { dispensary_ids: ids.length?ids:null, dispensary_id: ids.length?ids[0]:null }; }
 function busy(btn, on){ if(!btn) return; btn.disabled=on; btn.dataset._txt ??= btn.innerHTML;
   btn.innerHTML = on ? '<span class="spin"></span>' : btn.dataset._txt; }
