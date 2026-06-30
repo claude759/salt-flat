@@ -63,6 +63,12 @@
   .seg button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-weight:650;
     padding:9px;border-radius:8px;cursor:pointer}
   .seg button.on{background:var(--accent);color:#fff}
+  /* multi-select dispensary chips */
+  .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:6px}
+  .chips .chip{border:1px solid var(--line);background:var(--panel2);color:var(--text);font:inherit;font-size:13px;
+    font-weight:600;padding:7px 12px;border-radius:999px;cursor:pointer;display:flex;align-items:center;gap:5px}
+  .chips .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .chips .chip.on::before{content:'✓';font-size:11px}
 
   /* big action buttons (BA home) */
   .actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -209,7 +215,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-30.1';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-06-30.2';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -228,8 +234,32 @@ function toast(msg, kind='') {
   clearTimeout(toast._t); toast._t = setTimeout(()=>{ t.className=''; }, 2600);
 }
 function dispName(id){ const d = state.dispensaries.find(x=>x.id===id); return d? d.name : '—'; }
+// the dispensaries linked to a trip/expense/hours row, as a display string (handles multi)
+function dispIds(x){ return (x.dispensary_ids && x.dispensary_ids.length) ? x.dispensary_ids : (x.dispensary_id ? [x.dispensary_id] : []); }
+function dispLabel(x){
+  const names = dispIds(x).map(dispName).filter(n=>n && n!=='—');
+  return names.join(', ');
+}
+// split a value evenly across an item's dispensaries → [{id, share, n}] (id null = unlinked, n=1)
+function dispSplit(x, value){
+  const ids = dispIds(x); const list = ids.length ? ids : [null];
+  const n = list.length, share = value / n;
+  return list.map(id=>({id, share, n}));
+}
 // dispensaries a BA can pick: only those in their region (admins/region-less see all)
 function baDispensaries(){ const r = state.preview || state.profile?.region; return state.dispensaries.filter(d => !r || d.state === r); }
+// ── reusable multi-select dispensary chips ──
+function dispChipsHtml(selectedIds, opts={}){
+  const all = (opts.all ? (state.dispensaries||[]).filter(d=>d.active!==false) : baDispensaries()).slice().sort((a,b)=>a.name.localeCompare(b.name));
+  const sel = new Set((selectedIds||[]).filter(Boolean));
+  const id = opts.id || 'dchips';
+  if(!all.length) return `<div class="small muted" style="margin-top:6px">No dispensaries yet.</div>`;
+  return `<div class="chips" id="${id}">${all.map(d=>`<button type="button" class="chip${sel.has(d.id)?' on':''}" data-id="${d.id}">${esc(d.name)}</button>`).join('')}</div>`;
+}
+function wireDispChips(id){ const c=$('#'+(id||'dchips')); if(c) c.querySelectorAll('.chip').forEach(b=>b.onclick=()=>b.classList.toggle('on')); }
+function readDispChips(id){ const c=$('#'+(id||'dchips')); return c?[...c.querySelectorAll('.chip.on')].map(b=>b.dataset.id):[]; }
+// build the {dispensary_ids, dispensary_id} patch fields from a chip group
+function dispPatch(id){ const ids=readDispChips(id); return { dispensary_ids: ids.length?ids:null, dispensary_id: ids.length?ids[0]:null }; }
 function busy(btn, on){ if(!btn) return; btn.disabled=on; btn.dataset._txt ??= btn.innerHTML;
   btn.innerHTML = on ? '<span class="spin"></span>' : btn.dataset._txt; }
 
@@ -727,18 +757,20 @@ async function baReport(m){
   const uid=state.session.user.id;
   const [trips,exps,hrs]=await Promise.all([
     supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
-    supabase.from('expenses').select('id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end),
-    supabase.from('hours').select('id,dispensary_id,amount,work_date,hours,rate,job,note,status').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
+    supabase.from('expenses').select('id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end),
+    supabase.from('hours').select('id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,note,status').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
   ]);
   const dn=id=>{ const n=dispName(id); return n==='—'?'':n; };
   const agg={}, items={};
   const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0}; items[k]=items[k]||[]; };
   (trips.data||[]).forEach(t=>{ const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,date:t.trip_date,ba:'',disp:dn(t.dispensary_id),start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
-  (exps.data||[]).forEach(x=>{ const k=x.dispensary_id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=Number(x.amount||0);
-    items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:'',disp:dn(x.dispensary_id),vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:Number(x.amount||0)}); });
-  (hrs.data||[]).forEach(h=>{ const k=h.dispensary_id||'none'; ensure(k); agg[k].labor+=Number(h.amount||0);
-    items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:'',disp:dn(h.dispensary_id),hours:h.hours,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:Number(h.amount||0)}); });
+  (exps.data||[]).forEach(x=>{ const A=Number(x.amount||0), names=dispIds(x).map(dn).filter(Boolean);
+    dispSplit(x,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=share;
+      items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:'',disp:dn(id),dispNames:names,splitN:n,vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
+  (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dn).filter(Boolean);
+    dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share;
+      items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:'',disp:dn(id),dispNames:names,splitN:n,hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':dispName(k), total:v.mile+v.exp+v.card+v.labor, ...v }))
@@ -955,16 +987,16 @@ function fixExpenseSheet(x){
       <div class="grow"><label class="fl">Amount</label><input id="fAmt" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${Number(x.amount)>0?x.amount:''}" class="${needAmt?'needs':''}"></div>
       <div class="grow"><label class="fl">Category</label><select id="fCat">${cats}</select></div>
     </div>
-    <label class="fl">Dispensary <span class="muted">(required)</span></label>
-    <select id="fDisp" class="${needDisp?'needs':''}">${dispOpts}</select>
+    <label class="fl">Dispensaries <span class="muted">(required — tap all stores; cost splits evenly)</span></label>
+    ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {id:'fDispChips'})}
     <div id="fMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
     <button class="btn primary block" id="fSave" style="margin-top:8px">Save</button>
     <button class="btn ghost block" id="fCancel" style="margin-top:8px">Cancel</button>
   `);
-  $('#fCancel').onclick=closeSheet;
+  $('#fCancel').onclick=closeSheet; wireDispChips('fDispChips');
   let receiptPath=x.receipt_path||null, ocr=x.ocr_raw||null, recChanged=false;
   if(x.receipt_path) signedUrl('receipts',x.receipt_path).then(u=>{ if(u){ const t=$('#fThumb'); if(t) t.src=u; } });
-  ['#fAmt','#fDisp'].forEach(s=>{ const el=$(s); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }); });
+  { const el=$('#fAmt'); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }); }
   const fRec=$('#fRec'); if(fRec) fRec.onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
     $('#fThumbWrap').classList.remove('hide'); $('#fThumb').src=URL.createObjectURL(f);
@@ -982,7 +1014,7 @@ function fixExpenseSheet(x){
   $('#fSave').onclick=async()=>{
     const btn=$('#fSave');
     const patch={ receipt_path:receiptPath||null, vendor:$('#fVendor').value.trim()||x.vendor||null,
-      amount:Number($('#fAmt').value)||0, category:$('#fCat').value, dispensary_id:$('#fDisp').value||null };
+      amount:Number($('#fAmt').value)||0, category:$('#fCat').value, ...dispPatch('fDispChips') };
     if(recChanged) patch.ocr_raw=ocr;   // only rewrite OCR metadata when the receipt itself changed (new value or null)
     const left=itemIssues({...x, ...patch, _k:'exp'});
     if(left.length){ $('#fMsg').textContent='Still needs '+left.join(', ')+'.'; return; }
@@ -1481,14 +1513,14 @@ function expenseSheet(){
     </div>
     <label class="fl">Category</label><select id="eCat">${cats.map(c=>`<option>${c}</option>`).join('')}</select>
     <label class="fl">Paid with</label><select id="ePay">${PAYMENTS.map(([v,l])=>`<option value="${v}">${l}</option>`).join('')}</select>
-    <label class="fl">Location</label><select id="eDisp"><option value="">Select…</option>${dispOpts}</select>
-    ${dispOpts?'':'<div class="small muted" style="margin-top:4px">No dispensaries in your state yet — ask your admin to add one.</div>'}
+    <label class="fl">Location <span class="muted">(tap all stores; cost splits evenly)</span></label>
+    ${dispChipsHtml([], {id:'eDispChips'})}
     <label class="fl">Note (optional)</label><input id="eNote">
     <div id="eMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
     <button class="btn block" id="eSave" style="margin-top:6px">Save without a photo</button>
     <button class="btn ghost block" id="eCancel" style="margin-top:8px">Cancel</button>
   `);
-  $('#eCancel').onclick=closeSheet;
+  $('#eCancel').onclick=closeSheet; wireDispChips('eDispChips');
   ['#eAmt','#eVendor','#eDate'].forEach(sel=>{ const el=$(sel); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#eMsg').textContent=''; }); });
   // Insert the draft (no blocking) and drop the BA on the Expenses worksheet.
   async function saveExpenseDraft(){
@@ -1498,7 +1530,7 @@ function expenseSheet(){
     const vendor = $('#eVendor').value.trim();
     if(!receiptPath && !(amt>0) && !vendor){ $('#eMsg').textContent='Snap a receipt or enter an amount first.'; return null; }
     const { data, error }=await supabase.from('expenses').insert({
-      ba_id:state.session.user.id, expense_date:ed, dispensary_id:$('#eDisp').value||null,
+      ba_id:state.session.user.id, expense_date:ed, ...dispPatch('eDispChips'),
       vendor:vendor||null, amount:amt, category:$('#eCat').value, payment:$('#ePay').value||'reimbursement', receipt_path:receiptPath,
       ocr_raw:ocr, note:$('#eNote').value||null, status:'draft'
     }).select('*').single();
@@ -1639,8 +1671,8 @@ async function adminReport(m){
     supabase.from('profiles').select('id,full_name,region'),
     supabase.from('dispensaries').select('id,name'),
     supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
-    supabase.from('expenses').select('id,ba_id,dispensary_id,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
-    supabase.from('hours').select('id,ba_id,dispensary_id,amount,work_date,hours,rate,job,note,status').gte('work_date',start).lte('work_date',end),
+    supabase.from('expenses').select('id,ba_id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
+    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,note,status').gte('work_date',start).lte('work_date',end),
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
@@ -1653,12 +1685,15 @@ async function adminReport(m){
     items[k].push({kind:'trip',id:t.id,date:t.trip_date,ba:baName(t.ba_id),disp:(dById[k]&&dById[k].name)||'',
       start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,
       start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
-  (exps.data||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const k=x.dispensary_id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=Number(x.amount||0);
-    items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:baName(x.ba_id),disp:(dById[k]&&dById[k].name)||'',
-      vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:Number(x.amount||0)}); });
-  (hrs.data||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const k=h.dispensary_id||'none'; ensure(k); agg[k].labor+=Number(h.amount||0);
-    items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:baName(h.ba_id),disp:(dById[k]&&dById[k].name)||'',
-      hours:h.hours,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:Number(h.amount||0)}); });
+  const dnm=id=>(id&&dById[id])?dById[id].name:'';
+  (exps.data||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const A=Number(x.amount||0), names=dispIds(x).map(dnm).filter(Boolean);
+    dispSplit(x,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=share;
+      items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:baName(x.ba_id),disp:dnm(id),dispNames:names,splitN:n,
+        vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
+  (hrs.data||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dnm).filter(Boolean);
+    dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share;
+      items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:baName(h.ba_id),disp:dnm(id),dispNames:names,splitN:n,
+        hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));   // flat lookup for the detail popup
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card+v.labor, ...v }))
@@ -1699,6 +1734,7 @@ async function adminReport(m){
 // it.ba is non-empty in the admin report (shows the BA name) and '' in the employee report.
 function repDetailRow(it){
   const note=it.note?' · 🗒':'', baP=it.ba?esc(it.ba):'';
+  const split=it.splitN>1?` · <span style="color:var(--accent2)">split ${it.splitN} · ${money(it.fullAmount)} total</span>`:'';
   const chev=`<div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div>`;
   if(it.kind==='trip'){
     const title=baP?`${baP}${it.miles!=null?` · ${it.miles} mi`:''}`:(esc(it.label)||'Trip');
@@ -1706,11 +1742,11 @@ function repDetailRow(it){
   }
   if(it.kind==='hours'){
     const title=baP?`${baP} · ${it.hours} hrs`:`${it.hours} hrs${it.job?' · '+esc(it.job):''}`;
-    return `<div class="item repitem" data-item="hours:${it.id}" style="cursor:pointer"><div class="ic">⏱</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · $${Number(it.rate).toFixed(2)}/hr${note}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
+    return `<div class="item repitem" data-item="hours:${it.id}" style="cursor:pointer"><div class="ic">⏱</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · $${Number(it.rate).toFixed(2)}/hr${note}${split}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
   }
   const title=baP?`${baP} · ${esc(it.vendor||'Expense')}`:esc(it.vendor||'Expense');
   const rec=it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:'<span class="muted">no receipt</span>';
-  return `<div class="item repitem" data-item="exp:${it.id}" style="cursor:pointer"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · ${it.payment==='company'?'💳 card':'💵 reimb'} · ${rec}${note}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
+  return `<div class="item repitem" data-item="exp:${it.id}" style="cursor:pointer"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · ${it.payment==='company'?'💳 card':'💵 reimb'} · ${rec}${note}${split}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
 }
 // admin: tap a line item in the Spend-by-dispensary report → full detail (note, category, route, odometer, receipt)
 function reportItemSheet(it){
@@ -1718,24 +1754,28 @@ function reportItemSheet(it){
   const trip=it.kind==='trip', hours=it.kind==='hours';
   const kv=(k,v)=> (v==null||v==='')?'':`<div class="row" style="justify-content:space-between;gap:14px;padding:7px 0;border-top:1px solid var(--line)"><div class="small muted" style="flex:none">${k}</div><div style="text-align:right;font-weight:600;min-width:0;word-break:break-word">${v}</div></div>`;
   const icon=trip?'🚗':hours?'⏱':'🧾';
-  const title=trip?(it.dest_label||it.disp||'Trip'):hours?(`${it.hours} hours`+(it.job?` · ${it.job}`:'')):(it.vendor||'Expense');
+  const isSplit=it.splitN>1;
+  const fullHours = hours ? (it.fullHours!=null?it.fullHours:it.hours) : null;
+  const title=trip?(it.dest_label||it.disp||'Trip'):hours?(`${fullHours} hours`+(it.job?` · ${it.job}`:'')):(it.vendor||'Expense');
   let body='';
   body+=kv('BA', esc(it.ba||''));
   body+=kv('Date', fmtDate(it.date));
-  body+=kv('Dispensary', it.disp?esc(it.disp):'<span style="color:var(--yellow)">⚠ Not linked</span>');
+  body+=kv(isSplit?'Dispensaries':'Dispensary',
+    isSplit ? `${(it.dispNames||[]).map(esc).join(', ')} <span class="muted">(split ${it.splitN} ways)</span>`
+            : (it.disp?esc(it.disp):'<span style="color:var(--yellow)">⚠ Not linked</span>'));
   if(trip){
     body+=kv('Route', (it.start_label||it.dest_label)?`${esc(it.start_label||'—')} → ${esc(it.dest_label||'—')}`:'');
     body+=kv('Miles', it.miles!=null?`${it.miles} mi${it.method?' · '+esc(it.method):''}`:'');
     body+=kv('Odometer', (it.start_odo!=null||it.end_odo!=null)?`${it.start_odo??'—'} → ${it.end_odo??'—'}`:'');
     body+=kv('Mileage reimbursement', money(it.amount));
   } else if(hours){
-    body+=kv('Hours', `${it.hours}`);
+    body+=kv('Hours', isSplit?`${fullHours} total · ${it.hours} to this store`:`${fullHours}`);
     body+=kv('Pay rate', `$${Number(it.rate).toFixed(2)}/hr`);
-    body+=kv('Labor cost', money(it.amount));
+    body+=kv('Labor cost', isSplit?`${money(it.fullAmount)} total · ${money(it.amount)} here`:money(it.amount));
   } else {
     body+=kv('Category', it.category?esc(it.category):'');
     body+=kv('Paid with', it.payment==='company'?'💳 Company card (not reimbursed)':'💵 Reimburse the BA');
-    body+=kv('Amount', money(it.amount));
+    body+=kv('Amount', isSplit?`${money(it.fullAmount)} total · ${money(it.amount)} here`:money(it.amount));
   }
   body+=kv('Status', it.status?`<span class="badge ${it.status}">${it.status}</span>`:'');
   const noteBlock=it.note
@@ -1744,7 +1784,7 @@ function reportItemSheet(it){
   const recBtn=(!trip && !hours && it.receipt)?`<button class="btn block" id="riRec" style="margin-top:12px">📄 View receipt</button>`:'';
   openSheet(`
     <h3 style="margin-bottom:2px">${icon} ${esc(title)}</h3>
-    <div class="small muted">${money(it.amount)}</div>
+    <div class="small muted">${money(it.fullAmount!=null?it.fullAmount:it.amount)}</div>
     <div style="margin-top:10px">${body}</div>
     ${noteBlock}
     ${recBtn}
@@ -1795,8 +1835,9 @@ async function adminEditItem(kind, id, onSaved){
     openSheet(`
       <h3>Edit hours <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.work_date||''}">
-      <label class="fl">Dispensary <span class="muted">(link this shift to a store)</span></label><select id="aDisp">${dispOpts}</select>
-      <div class="row">
+      <label class="fl">Dispensaries <span class="muted">(tap all stores this shift covered — cost splits evenly)</span></label>
+      ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips'})}
+      <div class="row" style="margin-top:10px">
         <div class="grow"><label class="fl">Hours</label><input id="aHours" type="number" inputmode="decimal" step="0.001" value="${x.hours!=null?x.hours:''}"></div>
         <div class="grow"><label class="fl">Pay rate</label><input value="$${Number(x.rate).toFixed(2)}/hr" disabled style="opacity:.65"></div>
       </div>
@@ -1806,10 +1847,10 @@ async function adminEditItem(kind, id, onSaved){
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
-    $('#aCancel').onclick=closeSheet;
+    $('#aCancel').onclick=closeSheet; wireDispChips('aDispChips');
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
-      const patch={ work_date:$('#aDate').value||x.work_date, dispensary_id:$('#aDisp').value||null,
+      const patch={ work_date:$('#aDate').value||x.work_date, ...dispPatch('aDispChips'),
         hours:Number($('#aHours').value)||0, note:$('#aNote').value.trim()||null };
       busy(btn,true);
       const {data,error}=await supabase.from('hours').update(patch).eq('id',id).select('*').single();
@@ -1829,7 +1870,8 @@ async function adminEditItem(kind, id, onSaved){
         <div class="grow"><label class="fl">Category</label><select id="aCat">${cats}</select></div>
       </div>
       <label class="fl">Paid with</label><select id="aPay">${PAYMENTS.map(([v,l])=>`<option value="${v}" ${x.payment===v?'selected':''}>${l}</option>`).join('')}</select>
-      <label class="fl">Dispensary</label><select id="aDisp">${dispOpts}</select>
+      <label class="fl">Dispensaries <span class="muted">(tap all stores — cost splits evenly)</span></label>
+      ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips'})}
       <label class="fl">Note</label><textarea id="aNote" rows="2">${esc(x.note||'')}</textarea>
       <div style="margin-top:10px">${recUrl?`<a class="btn block" href="${recUrl}" target="_blank">📄 View receipt</a>`:'<div class="small muted">No receipt attached.</div>'}
         <label class="btn ghost block" style="margin-top:6px;cursor:pointer">📎 ${x.receipt_path?'Replace':'Attach'} receipt<input id="aRec" type="file" accept="image/*" hidden></label></div>
@@ -1837,7 +1879,7 @@ async function adminEditItem(kind, id, onSaved){
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
-    $('#aCancel').onclick=closeSheet;
+    $('#aCancel').onclick=closeSheet; wireDispChips('aDispChips');
     let receiptPath=x.receipt_path||null, recChanged=false;
     const aRec=$('#aRec'); if(aRec) aRec.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
       toast('Uploading receipt…');
@@ -1847,7 +1889,7 @@ async function adminEditItem(kind, id, onSaved){
       const btn=$('#aSave');
       const patch={ expense_date:$('#aDate').value||x.expense_date, vendor:$('#aVendor').value.trim()||null,
         amount:Number($('#aAmt').value)||0, category:$('#aCat').value, payment:$('#aPay').value,
-        dispensary_id:$('#aDisp').value||null, note:$('#aNote').value.trim()||null };
+        ...dispPatch('aDispChips'), note:$('#aNote').value.trim()||null };
       if(recChanged){ patch.receipt_path=receiptPath; patch.ocr_raw=null; }   // new image → stale OCR no longer applies
       busy(btn,true);
       const {data,error}=await supabase.from('expenses').update(patch).eq('id',id).select('*').single();
@@ -1940,12 +1982,12 @@ async function adminBaDetail(baId){
     const date=trip?x.trip_date:hours?x.work_date:x.expense_date;
     const title=trip?esc(x.dest_label||dispName(x.dispensary_id)):hours?(`${x.hours} hrs${x.job?' · '+esc(x.job):''}`):esc(x.vendor||'Expense');
     const sub=trip?`${x.miles??'—'} mi · ${x.method}`:hours?`$${Number(x.rate).toFixed(2)}/hr`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
-    const disp=dispName(x.dispensary_id);
+    const disp=dispLabel(x);
     const rec=(trip||hours)?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
     return `<div class="item adminedit" data-kind="${kind}" data-edit-kind="${kind}" data-edit-id="${x.id}" style="cursor:pointer">
       <div class="ic">${trip?'🚗':hours?'⏱':'🧾'}</div>
       <div class="grow" style="min-width:0"><div class="t">${title}</div>
-        <div class="s">${fmtDate(date)} · ${esc(sub)}${disp&&disp!=='—'?` · 🏬 ${esc(disp)}`:''}${rec}</div>
+        <div class="s">${fmtDate(date)} · ${esc(sub)}${disp?` · 🏬 ${esc(disp)}`:''}${rec}</div>
         ${x.status==='rejected'&&x.reject_note?`<div class="s" style="color:var(--red)">Rejected: ${esc(x.reject_note)}</div>`:''}</div>
       <div style="text-align:right;flex:none;margin-left:8px"><div class="amt">${money(x.amount)}</div>
         <div style="margin-top:2px"><span class="badge ${x.status}">${x.status}</span></div></div>
