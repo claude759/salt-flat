@@ -2826,12 +2826,19 @@ function tierData(){
   const ar={};
   (INVOICES||[]).forEach(x=>{ if(!(x.outstanding>0.005)) return; const k=tierNorm(x.dispensary);
     const a=ar[k]||(ar[k]={out:0,over:0}); a.out+=x.outstanding; if(x.dpd>0) a.over+=x.outstanding; });
+  // PAD/EDU visits (the Reports tab's schedule data) in the SAME window, joined by normalized
+  // name — same best-effort match as AR (schedule names are hand-typed).
+  const vis={};
+  (VISIT_EVENTS||[]).forEach(v=>{ if(!v.d||v.d<start.getTime()||v.d>end.getTime()) return;
+    const k=tierNorm(v.c); if(k) (vis[k]||(vis[k]=[])).push(v); });
   // avgPaidLate = TRUE mean days late the account actually PAID, from real payment dates (Nabis
   // detailed report's Paid At; Distru payments file) over the paid orders in the window.
   const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
-    const tier=g.rev>=t1?1:g.rev>=t2?2:3, a=ar[tierNorm(g.name)]||{out:0,over:0};
+    const nk=tierNorm(g.name);
+    const tier=g.rev>=t1?1:g.rev>=t2?2:3, a=ar[nk]||{out:0,over:0};
     return {name:g.name,source:[...g.src].sort().join(' + '),brand:brandOf(g.name),rev:g.rev,
       orders:Object.values(g.orders).filter(v=>Math.abs(v)>0.005).length,last:g.last?g.last.getTime():null,
+      visits:(vis[nk]||[]).length,
       arOut:a.out,arOver:a.over,avgPaidLate:g.plCnt?g.plSum/g.plCnt:null,paidOrders:g.plCnt,tier}; });
   return {rows,start,end,months,t1,t2};
 }
@@ -2856,7 +2863,7 @@ function renderTiers(){
   let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
-  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['last','Last order',1],['arOut','AR Outstanding',1],['arOver','Overdue',1],['avgPaidLate','Avg Days Late',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['last','Last order',1],['visits','Visits',1],['arOut','AR Outstanding',1],['arOver','Overdue',1],['avgPaidLate','Avg Days Late',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
@@ -2865,19 +2872,20 @@ function renderTiers(){
     <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
     <td class="num">${r.orders}</td>
     <td class="num">${fmtD(r.last)}</td>
+    <td class="num${r.visits?' visit-link':''}"${r.visits?' title="Click to see this account’s PAD/EDU visits"':''}>${r.visits?`<span style="color:var(--green)">${r.visits}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
     <td class="num"${r.paidOrders?` title="avg across ${r.paidOrders} paid order${r.paidOrders!==1?'s':''}"`:''}>${fmtLate(r.avgPaidLate)}</td>
   </tr>`).join('');
-  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,orders:0,out:0,over:0});
+  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,visits:a.visits+r.visits,out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,orders:0,visits:0,out:0,over:0});
   wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="3">${view.length} account${view.length!==1?'s':''}</td>
-    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td><td></td>
+    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td><td></td><td class="num">${tot.visits||'—'}</td>
     <td class="num money">${fmt$(tot.out)}</td><td class="num money">${tot.over?fmt$(tot.over):'—'}</td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:(key==='name'||key==='brand'||key==='source')?1:-1}; renderTiers(); });
   const isoD=dt=>`${dt.getMonth()+1}/${dt.getDate()}/${String(dt.getFullYear()).slice(2)}`;
-  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, or click its <b>Overdue</b> amount to see the past-due invoices and how many days late each is. <b>Avg Days Late</b> = the account's <b>actual</b> average days late paid, from real payment dates (Nabis detailed report's Paid At vs. delivery + terms; Distru payment dates vs. invoice due date), averaged over its paid orders in the window (on-time/early = 0; not-yet-paid orders are excluded). Shows "—" for accounts with no paid orders in range. An account selling through both Nabis and Distru under different names will appear as two rows.`;
+  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, or its <b>Visits</b> count for the PAD/EDU visit dates + notes (from the field-schedule sheet, same window; matched by name — best-effort). <b>Avg Days Late</b> = the account's <b>actual</b> average days late paid, from real payment dates (Nabis detailed report's Paid At vs. delivery + terms; Distru payment dates vs. invoice due date), averaged over its paid orders in the window (on-time/early = 0; not-yet-paid orders are excluded). Shows "—" for accounts with no paid orders in range. An account selling through both Nabis and Distru under different names will appear as two rows.`;
 }
 function tierDrill(name){
   const {start,end}=tierData();
@@ -2904,15 +2912,28 @@ function tierOverdueDrill(name){
     rows:list.map(x=>[x.number||'—', x.source, x.dueDate?fmtDt(x.dueDate):'—', x.dpd, x.outstanding]),
     totalLabel:'Total overdue', total:list.reduce((s,x)=>s+x.outstanding,0)});
 }
+// Visits cell → the account's PAD/EDU visits (dates + type + schedule note) in the tier window.
+function tierVisitsDrill(name){
+  const {start,end,months}=tierData();
+  const key=tierNorm(name);
+  const list=(VISIT_EVENTS||[]).filter(v=>v.d&&v.d>=start.getTime()&&v.d<=end.getTime()&&tierNorm(v.c)===key).sort((a,b)=>b.d-a.d);
+  if(!list.length) return;
+  const pads=list.filter(v=>v.pad).length, edus=list.filter(v=>v.edu).length;
+  const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+  openScModal({title:`${name} — PAD / EDU visits`, sub:`${pads} PAD · ${edus} EDU in the last ${months} month${months>1?'s':''} · newest first`,
+    columns:[{l:'Date'},{l:'Type'},{l:'Schedule note'}],
+    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', e.note||'—'])});
+}
 $('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#tier-wrap').contains(tr)) return;
   const name=tr.getAttribute('data-name');
-  if(ev.target.closest && ev.target.closest('td.over-link')) tierOverdueDrill(name);   // Overdue cell → past-due invoices
-  else tierDrill(name); };                                                             // rest of the row → the account's orders
+  if(ev.target.closest && ev.target.closest('td.over-link')) tierOverdueDrill(name);        // Overdue cell → past-due invoices
+  else if(ev.target.closest && ev.target.closest('td.visit-link')) tierVisitsDrill(name);   // Visits cell → PAD/EDU visit detail
+  else tierDrill(name); };                                                                  // rest of the row → the account's orders
 ['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
 $('#tier-export').onclick=()=>{
   const {rows,months}=tierData();
-  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Orders','Last order','AR Outstanding','Overdue','Avg Days Late']];
-  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'',r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
+  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Orders','Last order','Visits','AR Outstanding','Overdue','Avg Days Late']];
+  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'',r.visits||0,r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
   downloadCSV('customer-tiers.csv',out);
 };
 
