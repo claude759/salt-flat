@@ -2827,10 +2827,11 @@ function tierData(){
   (INVOICES||[]).forEach(x=>{ if(!(x.outstanding>0.005)) return; const k=tierNorm(x.dispensary);
     const a=ar[k]||(ar[k]={out:0,over:0}); a.out+=x.outstanding; if(x.dpd>0) a.over+=x.outstanding; });
   // PAD/EDU visits (the Reports tab's schedule data) in the SAME window, joined by normalized
-  // name — same best-effort match as AR (schedule names are hand-typed).
+  // name — same best-effort match as AR (schedule names are hand-typed). Stiiizy-branded
+  // stores roll up to "STIIIZY" (visitGroupKey), matching the corporate Distru account.
   const vis={};
   (VISIT_EVENTS||[]).forEach(v=>{ if(!v.d||v.d<start.getTime()||v.d>end.getTime()) return;
-    const k=tierNorm(v.c); if(k) (vis[k]||(vis[k]=[])).push(v); });
+    const k=visitGroupKey(v.c); if(k) (vis[k]||(vis[k]=[])).push(v); });
   // avgPaidLate = TRUE mean days late the account actually PAID, from real payment dates (Nabis
   // detailed report's Paid At; Distru payments file) over the paid orders in the window.
   const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
@@ -2916,13 +2917,13 @@ function tierOverdueDrill(name){
 function tierVisitsDrill(name){
   const {start,end,months}=tierData();
   const key=tierNorm(name);
-  const list=(VISIT_EVENTS||[]).filter(v=>v.d&&v.d>=start.getTime()&&v.d<=end.getTime()&&tierNorm(v.c)===key).sort((a,b)=>b.d-a.d);
+  const list=(VISIT_EVENTS||[]).filter(v=>v.d&&v.d>=start.getTime()&&v.d<=end.getTime()&&visitGroupKey(v.c)===key).sort((a,b)=>b.d-a.d);
   if(!list.length) return;
   const pads=list.filter(v=>v.pad).length, edus=list.filter(v=>v.edu).length;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
   openScModal({title:`${name} — PAD / EDU visits`, sub:`${pads} PAD · ${edus} EDU in the last ${months} month${months>1?'s':''} · newest first`,
     columns:[{l:'Date'},{l:'Type'},{l:'Schedule note'}],
-    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', e.note||'—'])});
+    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', visitNote(e)])});
 }
 $('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#tier-wrap').contains(tr)) return;
   const name=tr.getAttribute('data-name');
@@ -2963,6 +2964,15 @@ function buildVisitEvents(){
 function visitsToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, (e.pad?1:0)|(e.edu?2:0), e.note||'']); }
 function visitsFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), pad:!!(a[2]&1), edu:!!(a[2]&2), note:String(a[3]||'')})); }
 function buildVisits(){ if(FILES.visits) VISIT_EVENTS=buildVisitEvents(); renderReports(); }
+// Stiiizy rollup (user request Jul 2 2026): all Stiiizy-branded stores count under ONE
+// account "STIIIZY" — matches any name containing sti(i…)zy (incl. the sheet's "Stiizy"
+// typo), the Airfield San Jose store, and Authentic 209 (Stiiizy Modesto). The raw store
+// name stays on each event and is shown in the drill-down rows.
+const VISIT_STIIIZY_RE=/sti+zy|^airfield\b|authentic\s*209/i;
+function visitCanon(c){ return VISIT_STIIIZY_RE.test(String(c||''))?'STIIIZY':null; }
+const visitGroupKey=c=>{ const cn=visitCanon(c); return tierNorm(cn||c); };
+// Drill helper: prefix the store name when it rolled up to a different display account.
+const visitNote=e=>{ const cn=visitCanon(e.c); const pre=(cn&&tierNorm(e.c)!==tierNorm(cn))?`${e.c} — `:''; return pre+(e.note||'—'); };
 let repSort={key:'total',dir:-1};
 function repData(){
   const months=+(($('#rep-months')||{}).value||0);
@@ -2972,9 +2982,9 @@ function repData(){
   const by={};
   (VISIT_EVENTS||[]).forEach(e=>{
     if(!e.d||(start&&(e.d<start.getTime()||e.d>end.getTime()))) return;
-    const k=tierNorm(e.c); if(!k) return;
+    const k=visitGroupKey(e.c); if(!k) return;
     const g=by[k]||(by[k]={names:{},pad:0,edu:0,last:null,visits:[]});
-    g.names[e.c]=(g.names[e.c]||0)+1;
+    g.names[visitCanon(e.c)||e.c]=(g.names[visitCanon(e.c)||e.c]||0)+1;
     if(e.pad) g.pad++; if(e.edu) g.edu++;
     if(g.last==null||e.d>g.last) g.last=e.d;
     g.visits.push(e);
@@ -3009,7 +3019,7 @@ function renderReports(){
     <td class="num">${tot.pad}</td><td class="num">${tot.edu}</td><td class="num">${tot.total}</td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(repSort.key===key) repSort.dir*=-1; else repSort={key,dir:key==='name'?1:-1}; renderReports(); });
-  note.innerHTML=`<b>PAD &amp; EDU visits</b> mined from the team's field-schedule sheet (tabs with “Schedule” in the name): a scheduled row counts when its <b>Sales Order Notes / Distro Team Notes</b> mention <b>PAD</b>, <b>EDU</b>, or <b>education</b>. A visit mentioning both counts in both columns (once in Visits). Click a row for the visit-by-visit detail. Window: ${months?`last ${months} month${months>1?'s':''}`:'all time'} — updated hourly with the schedule sheet.`;
+  note.innerHTML=`<b>PAD &amp; EDU visits</b> mined from the team's field-schedule sheet (tabs with “Schedule” in the name): a scheduled row counts when its <b>Sales Order Notes / Distro Team Notes</b> mention <b>PAD</b>, <b>EDU</b>, or <b>education</b>. A visit mentioning both counts in both columns (once in Visits). All Stiiizy-branded stores (incl. Airfield SJ + Authentic 209 Modesto) roll up to <b>STIIIZY</b> — the drill shows which store each visit was. Click a row for the visit-by-visit detail. Window: ${months?`last ${months} month${months>1?'s':''}`:'all time'} — updated hourly with the schedule sheet.`;
 }
 function repDrill(name){
   const {rows}=repData();
@@ -3018,7 +3028,7 @@ function repDrill(name){
   const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}):'—';
   openScModal({title:`${name} — PAD / EDU visits`, sub:`${r.pad} PAD · ${r.edu} EDU · ${r.total} visit${r.total!==1?'s':''} · newest first`,
     columns:[{l:'Date'},{l:'Type'},{l:'Schedule note'}],
-    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', e.note||'—'])});
+    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', visitNote(e)])});
 }
 $('#rep-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#rep-wrap').contains(tr)) return; repDrill(tr.getAttribute('data-name')); };
 // The Reports tab hosts several reports, picked by the #rep-toggle seg:
