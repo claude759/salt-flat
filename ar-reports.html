@@ -591,6 +591,7 @@
           <button data-rep="customers">Customers</button>
           <button data-rep="newcust">New Customers</button>
           <button data-rep="sales">Sales</button>
+          <button data-rep="bydisp">By Dispensary</button>
           <button data-rep="payments">Payments</button>
           <button data-rep="mom">Month over Month</button>
           <button data-rep="time">Sales Over Time</button>
@@ -660,6 +661,28 @@
         </div>
         <div class="tablewrap" id="nc-wrap"></div>
         <div class="notes" id="nc-note"></div>
+      </div>
+
+      <!-- SALES BY DISPENSARY (pick one dispensary → its detailed invoice activity) -->
+      <div id="rep-bydisp" class="hidden">
+        <div class="toolbar">
+          <select id="bd-disp" title="Dispensary"><option value="">Select a dispensary…</option></select>
+          <select id="bd-preset" title="Quick date range">
+            <option value="all">All time</option>
+            <option value="12m">Last 12 months</option>
+            <option value="6m">Last 6 months</option>
+            <option value="3m">Last 3 months</option>
+            <option value="ytd">Year to date</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <label class="dt">From <input type="date" id="bd-start" /></label>
+          <label class="dt">To <input type="date" id="bd-end" /></label>
+          <div class="grow"></div>
+          <button class="btn" id="bd-export">⬇ Export CSV</button>
+        </div>
+        <div class="tier-cards" id="bd-cards"></div>
+        <div class="tablewrap" id="bd-wrap"></div>
+        <div class="notes" id="bd-note"></div>
       </div>
 
       <!-- SALES (by delivery date) -->
@@ -3203,14 +3226,15 @@ $('#repv-date-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closes
 // The Reports tab hosts several reports, picked by the #rep-toggle seg:
 // visits (PAD/EDU) · mom (Month over Month) · time (Sales Over Time).
 let repMode='visits';
-const REP_MODES=['visits','customers','newcust','sales','payments','mom','time'];
-function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,payments:renderPaymentsReport,mom:renderMom,time:renderTimeSeries}[repMode]||renderReports)(); }
+const REP_MODES=['visits','customers','newcust','sales','bydisp','payments','mom','time'];
+function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bydisp:renderBydisp,payments:renderPaymentsReport,mom:renderMom,time:renderTimeSeries}[repMode]||renderReports)(); }
 function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'visits';
   document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.rep===repMode));
   $('#rep-visits').classList.toggle('hidden', repMode!=='visits');
   $('#rep-customers').classList.toggle('hidden', repMode!=='customers');
   $('#rep-newcust').classList.toggle('hidden', repMode!=='newcust');
   $('#rep-sales').classList.toggle('hidden', repMode!=='sales');
+  $('#rep-bydisp').classList.toggle('hidden', repMode!=='bydisp');
   $('#rep-payments').classList.toggle('hidden', repMode!=='payments');
   $('#view-mom').classList.toggle('hidden', repMode!=='mom');
   $('#view-time').classList.toggle('hidden', repMode!=='time');
@@ -3486,6 +3510,62 @@ $('#cust-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr
 $('#nc-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#nc-wrap').contains(tr))return; const r=repRange('nc'); customerOrdersDrill(tr.getAttribute('data-name'),r.start,r.end); };
 $('#sales-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#sales-wrap').contains(tr))return; orderDrill(tr.getAttribute('data-k')); };
 $('#pay-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#pay-wrap').contains(tr))return; orderDrill(tr.getAttribute('data-k')); };
+
+// ----- Sales by Dispensary: pick one dispensary → its detailed invoice activity -----
+// Per-invoice rows (delivery/invoice/payment dates, disc+credits, net), each expandable to
+// contents + an invoice link. Same per-order model; billing names (no Stiiizy visit-rollup here).
+function allDispensaries(){
+  const names={};
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks')return; const k=tierNorm(e.c); if(!k)return;
+    (names[k]||(names[k]={}))[e.c]=(names[k][e.c]||0)+Math.abs(eventBilling(e)); });
+  return Object.entries(names).map(([k,ns])=>({key:k,name:Object.entries(ns).sort((a,b)=>b[1]-a[1])[0][0]}))
+    .sort((a,b)=>a.name.toLowerCase()<b.name.toLowerCase()?-1:1);
+}
+function fillDispOptions(){ const sel=$('#bd-disp'); if(!sel) return; const cur=sel.value; const list=allDispensaries();
+  sel.innerHTML='<option value="">Select a dispensary…</option>'+list.map(d=>`<option value="${esc(d.key)}">${esc(d.name)}</option>`).join('');
+  if(cur && list.some(d=>d.key===cur)) sel.value=cur; }
+function bydispData(key,start,end){
+  const byRef={};
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks')return; if(tierNorm(e.c)!==key)return; if(e.d==null||e.d<start||e.d>end)return;
+    const k=orderKey(e); const g=byRef[k]||(byRef[k]={s:e.s,ref:e.ref||'(no #)',d:null,iv:null,pd:null,disc:0,credit:0,evs:[]});
+    g.evs.push(e); if(e.d!=null&&(g.d==null||e.d<g.d))g.d=e.d; if(e.iv!=null&&g.iv==null)g.iv=e.iv; if(e.pd!=null&&(g.pd==null||e.pd>g.pd))g.pd=e.pd;
+    g.disc+=e.invoiceDisc||0; g.credit+=e.creditMemos||0; });
+  return Object.values(byRef).map(g=>{ const fl=orderFmtLines(g.evs); return {...g,gross:fl.gross,net:fl.net}; })
+    .filter(o=>Math.abs(o.net)>0.005||Math.abs(o.disc+o.credit)>0.005).sort((a,b)=>(b.d||0)-(a.d||0));
+}
+function renderBydisp(){
+  fillDispOptions();
+  const wrap=$('#bd-wrap'), note=$('#bd-note'), cards=$('#bd-cards'); if(!wrap) return;
+  const key=($('#bd-disp')||{}).value||'';
+  if(!key){ cards.innerHTML=''; note.innerHTML=''; wrap.innerHTML='<div class="empty">Select a dispensary above to see its sales activity.</div>'; return; }
+  const name=(allDispensaries().find(d=>d.key===key)||{}).name||key;
+  const {start,end}=repRange('bd'); const orders=bydispData(key,start,end);
+  if(!orders.length){ cards.innerHTML=''; note.innerHTML=''; wrap.innerHTML=`<div class="empty">No sales for ${esc(name)} in ${fmtRangeLabel(start,end)}.</div>`; return; }
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const tot=orders.reduce((a,o)=>({gross:a.gross+o.gross,dc:a.dc+o.disc+o.credit,net:a.net+o.net,paid:a.paid+(o.pd!=null?1:0)}),{gross:0,dc:0,net:0,paid:0});
+  const srcs=[...new Set(orders.map(o=>o.s))].join(' + ');
+  cards.innerHTML=[['Net sales',fmt$(tot.net)],['Orders',String(orders.length)],['Discounts / credits',tot.dc?('-'+fmt$(tot.dc)):'$0.00'],['Paid',`${tot.paid} / ${orders.length}`]]
+    .map(([l,v])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:19px;color:var(--text);font-weight:700">${v}</div></div>`).join('');
+  const contents=o=>{ const {rows,net}=contentsRows(o.evs); const link=orderLinkFor(o.s,o.ref);
+    const bd=rows.map(r=>`<tr><td>${esc(r[0])}</td><td class="num">${esc(r[1])}</td><td class="num money">${fmt$(r[2])}</td></tr>`).join('');
+    return `${link?`<div style="padding:2px 0 8px"><a class="scm-link" href="${esc(link)}" target="_blank" rel="noopener">Open the full invoice in ${o.s} ↗</a></div>`:''}<div class="ddhead">Contents</div><table class="ddtable"><thead><tr><th>Item</th><th class="num">Units</th><th class="num">Billed</th></tr></thead><tbody>${bd}</tbody><tfoot><tr class="totals"><td>Net</td><td></td><td class="num money">${fmt$(net)}</td></tr></tfoot></table>`; };
+  const body=orders.map(o=>`<tr class="parent"><td><span class="caret">▶</span> ${fmtD(o.d)}</td><td>${esc(o.ref)}</td><td class="num">${fmtD(o.iv)}</td><td class="num">${o.pd!=null?fmtD(o.pd):'<span class="neg">unpaid</span>'}</td><td><span class="src ${esc(o.s)}">${esc(o.s)}</span></td><td class="num money">${(o.disc+o.credit)>0.005?('-'+fmt$(o.disc+o.credit)):'<span class="neg">—</span>'}</td><td class="num money">${fmt$(o.net)}</td></tr>
+    <tr class="detail hidden"><td colspan="7"><div class="detailbox">${contents(o)}</div></td></tr>`).join('');
+  wrap.innerHTML=`<table id="bd-table"><thead><tr><th>Delivery date</th><th>Invoice / Order #</th><th class="num">Invoice date</th><th class="num">Payment date</th><th>Source</th><th class="num">Disc + Credits</th><th class="num">Net</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="5">${orders.length} order${orders.length!==1?'s':''}</td><td class="num money">${tot.dc?('-'+fmt$(tot.dc)):'—'}</td><td class="num money">${fmt$(tot.net)}</td></tr></tfoot></table>`;
+  note.innerHTML=`<b>${esc(name)}</b> — all sales activity (${srcs}) in <b>${fmtRangeLabel(start,end)}</b>. Click an invoice to expand its contents. <b>Disc + Credits</b> = invoice discounts + credit memos; <b>Net</b> = billed − those. Unpaid orders are shown with a blank payment date. QuickBooks history excluded; billing names are not rolled up.`;
+}
+$('#bd-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#bd-wrap').contains(tr))return;
+  const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } };
+$('#bd-disp').addEventListener('change',renderBydisp);
+$('#bd-export').onclick=()=>{ const key=($('#bd-disp')||{}).value||''; if(!key) return;
+  const {start,end}=repRange('bd'); const orders=bydispData(key,start,end);
+  const name=(allDispensaries().find(d=>d.key===key)||{}).name||key;
+  const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
+  const out=[['Delivery date','Invoice / Order #','Invoice date','Payment date','Source','Discounts','Credits','Net']];
+  orders.forEach(o=>out.push([iso(o.d),o.ref,iso(o.iv),iso(o.pd),o.s,o.disc.toFixed(2),o.credit.toFixed(2),o.net.toFixed(2)]));
+  downloadCSV(`sales-${name.replace(/[^a-z0-9]+/gi,'-').toLowerCase()}.csv`,out); };
+wireRepRange('bd', renderBydisp, 'all');
 
 /* ============================ CSV export ============================ */
 function downloadCSV(name,rows){
