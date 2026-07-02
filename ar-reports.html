@@ -320,6 +320,7 @@
       <div class="tab" data-tab="mom">Month over Month</div>
       <div class="tab" data-tab="scorecard">Sales Scorecard</div>
       <div class="tab" data-tab="tiers">Customer Tiers</div>
+      <div class="tab" data-tab="reports">Reports</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -622,6 +623,24 @@
       <div class="tablewrap" id="tier-wrap"></div>
       <div class="notes" id="tier-note"></div>
     </div>
+
+    <!-- REPORTS (field reports from the team schedule sheet; first: PAD / EDU visits) -->
+    <div id="view-reports" class="hidden">
+      <div class="toolbar">
+        <select id="rep-months" title="Visit lookback window">
+          <option value="0">All time</option>
+          <option value="1">Last month</option>
+          <option value="3">Last 3 months</option>
+          <option value="6">Last 6 months</option>
+          <option value="12">Last 12 months</option>
+        </select>
+        <input type="text" id="rep-search" placeholder="Search dispensary…" />
+        <div class="grow"></div>
+        <button class="btn" id="rep-export">⬇ Export CSV</button>
+      </div>
+      <div class="tablewrap" id="rep-wrap"></div>
+      <div class="notes" id="rep-note"></div>
+    </div>
   </div>
 </div>
 
@@ -703,6 +722,7 @@ function classify(rows){
     if(has('Order Number','Price Reduction','Order Discount','Order Credit Amount')) return {type:'nabis_brand',hr:i};
     if(has('sku_code','sku_name','total_available','sku_price_per_unit')) return {type:'nabis_inventory',hr:i};
     if(has('Available Quantity','Active Value (Price)'))  return {type:'distru_inventory',hr:i};   // Distru Inventory Valuation report
+    if(has('Schedule Date','Account Name','Sales Order Notes')) return {type:'visits',hr:i};   // field-schedule flatten (lib/schedule.mjs) — feeds the Reports tab
   }
   return {type:'unknown',hr:-1};
 }
@@ -734,7 +754,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, visits:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
@@ -743,7 +763,8 @@ const LABELS = {
   distru_payments:'Distru payments',
   nabis_brand:'Nabis brand summary',
   nabis_inventory:'Nabis inventory',
-  distru_inventory:'Distru inventory valuation'
+  distru_inventory:'Distru inventory valuation',
+  visits:'Field schedule (PAD/EDU)'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -921,6 +942,7 @@ async function loadShared(){
       SKU_EVENTS=skuFromWire(data.sku); aggregateSku();
       $('#reports').classList.remove('hidden'); renderSku(); any=true;
     }
+    if(data.visits && data.visits.length){ VISIT_EVENTS=visitsFromWire(data.visits); any=true; }
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
@@ -931,6 +953,7 @@ async function loadShared(){
     if(any) renderTimeSeries();
     if(any) renderMom();
     if(any) renderTiers();   // re-render after the team report arrives (fixes blank Tiers tab on a cold refresh)
+    if(any) renderReports();
     renderShareBar();
   }catch(e){ renderShareBar('error'); }
 }
@@ -949,6 +972,7 @@ async function publishToTeam(){
     if(hasAR)  cur.ar  ={records:recordsToPayload(RAW),cleaning:CLEAN};   // keep line items (slim) so the team sees the per-invoice breakdown + link
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
+    if(VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
     // latest values for the current week; past weeks are never overwritten.
@@ -987,20 +1011,20 @@ function handleFiles(fileList){
         const rows=parseCSV(e.target.result);
         const {type,hr}=classify(rows);
         if(type==='unknown'){
-          alert(`Couldn't recognize "${f.name}" as one of the 4 expected reports. Skipped.`);
+          alert(`Couldn't recognize "${f.name}" as one of the expected reports. Skipped.`);
         }else{
           const {rows:objs}=toObjects(rows,hr);
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); }
+      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); }
     };
     reader.readAsText(f);
   });
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','visits'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -1008,7 +1032,7 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); });
 }
 
 /* ============================ Build model ============================ */
@@ -2882,6 +2906,98 @@ $('#tier-export').onclick=()=>{
   downloadCSV('customer-tiers.csv',out);
 };
 
+/* ============================ Reports: PAD / EDU visits ============================ */
+// First report on the Reports tab: PAD (patient appreciation day) + EDU (staff education)
+// visits per dispensary, mined from the team's field-schedule Google Sheet. The hourly job
+// downloads the sheet as .xlsx, flattens every "…SCHEDULE…" tab's daily tables into
+// field-schedule.csv (lib/schedule.mjs), and the app keeps only rows whose Sales Order
+// Notes / Distro Team Notes mention PAD, EDU, or education.
+let VISIT_EVENTS=[];   // {d:ms, c:account, pad:bool, edu:bool, note} — keyword-matched rows only
+const VISIT_PAD_RE=/\bPADs?\b/i;                 // PAD / PADs / pad — word-bounded (won't catch "padded")
+const VISIT_EDU_RE=/\bEDUs?\b|educat/i;          // EDU / edu / education / educate / educations
+function buildVisitEvents(){
+  if(!FILES.visits) return [];
+  const out=[];
+  FILES.visits.data.forEach(r=>{
+    const c=(r['Account Name']||'').trim(); if(!c) return;
+    const d=parseDate(r['Schedule Date']); if(!d) return;
+    const note=[(r['Sales Order Notes']||'').trim(),(r['Distro Team Notes']||'').trim()].filter(Boolean).join(' · ');
+    const pad=VISIT_PAD_RE.test(note), edu=VISIT_EDU_RE.test(note);
+    if(!pad&&!edu) return;   // only PAD/EDU visits ride the report + shared payload
+    out.push({d:d.getTime(), c, pad, edu, note:note.slice(0,220)});
+  });
+  return out.sort((a,b)=>a.d-b.d);
+}
+// Shared-payload wire: [d, account, flags(1=PAD|2=EDU), note] per visit (additive payload key).
+function visitsToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, (e.pad?1:0)|(e.edu?2:0), e.note||'']); }
+function visitsFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), pad:!!(a[2]&1), edu:!!(a[2]&2), note:String(a[3]||'')})); }
+function buildVisits(){ if(FILES.visits) VISIT_EVENTS=buildVisitEvents(); renderReports(); }
+let repSort={key:'total',dir:-1};
+function repData(){
+  const months=+(($('#rep-months')||{}).value||0);
+  const end=new Date(); end.setHours(23,59,59,999);
+  let start=null;
+  if(months){ start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0); }
+  const by={};
+  (VISIT_EVENTS||[]).forEach(e=>{
+    if(!e.d||(start&&(e.d<start.getTime()||e.d>end.getTime()))) return;
+    const k=tierNorm(e.c); if(!k) return;
+    const g=by[k]||(by[k]={names:{},pad:0,edu:0,last:null,visits:[]});
+    g.names[e.c]=(g.names[e.c]||0)+1;
+    if(e.pad) g.pad++; if(e.edu) g.edu++;
+    if(g.last==null||e.d>g.last) g.last=e.d;
+    g.visits.push(e);
+  });
+  const rows=Object.values(by).map(g=>({
+    name:Object.entries(g.names).sort((a,b)=>b[1]-a[1])[0][0],   // display the most-used spelling
+    pad:g.pad, edu:g.edu, total:g.visits.length, last:g.last, visits:g.visits }));
+  return {rows, months, start, end};
+}
+function renderReports(){
+  const wrap=$('#rep-wrap'), note=$('#rep-note'); if(!wrap) return;
+  const {rows,months}=repData();
+  if(!rows.length){ note.innerHTML='';
+    wrap.innerHTML=`<div class="empty">No PAD / EDU visits found${months?` in the last ${months} month${months>1?'s':''}`:''} — the field schedule publishes with the hourly refresh.</div>`; return; }
+  const q=(($('#rep-search')||{}).value||'').trim().toLowerCase();
+  let view=q?rows.filter(r=>r.name.toLowerCase().includes(q)):rows.slice();
+  const k=repSort.key, dir=repSort.dir;
+  view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.total-a.total); });
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const cols=[['name','Dispensary',0],['pad','PAD',1],['edu','EDU',1],['total','Visits',1],['last','Last visit',1]];
+  const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
+  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click to see this dispensary's visits">
+    <td>${esc(r.name)}</td>
+    <td class="num">${r.pad||'<span class="neg">—</span>'}</td>
+    <td class="num">${r.edu||'<span class="neg">—</span>'}</td>
+    <td class="num"><b>${r.total}</b></td>
+    <td class="num">${fmtD(r.last)}</td>
+  </tr>`).join('');
+  const tot=view.reduce((a,r)=>({pad:a.pad+r.pad,edu:a.edu+r.edu,total:a.total+r.total}),{pad:0,edu:0,total:0});
+  wrap.innerHTML=`<table id="rep-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td>${view.length} dispensar${view.length!==1?'ies':'y'}</td>
+    <td class="num">${tot.pad}</td><td class="num">${tot.edu}</td><td class="num">${tot.total}</td><td></td></tr></tfoot></table>`;
+  wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
+    if(repSort.key===key) repSort.dir*=-1; else repSort={key,dir:key==='name'?1:-1}; renderReports(); });
+  note.innerHTML=`<b>PAD &amp; EDU visits</b> mined from the team's field-schedule sheet (tabs with “Schedule” in the name): a scheduled row counts when its <b>Sales Order Notes / Distro Team Notes</b> mention <b>PAD</b>, <b>EDU</b>, or <b>education</b>. A visit mentioning both counts in both columns (once in Visits). Click a row for the visit-by-visit detail. Window: ${months?`last ${months} month${months>1?'s':''}`:'all time'} — updated hourly with the schedule sheet.`;
+}
+function repDrill(name){
+  const {rows}=repData();
+  const r=rows.find(x=>x.name===name); if(!r) return;
+  const list=r.visits.slice().sort((a,b)=>b.d-a.d);
+  const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}):'—';
+  openScModal({title:`${name} — PAD / EDU visits`, sub:`${r.pad} PAD · ${r.edu} EDU · ${r.total} visit${r.total!==1?'s':''} · newest first`,
+    columns:[{l:'Date'},{l:'Type'},{l:'Schedule note'}],
+    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', e.note||'—'])});
+}
+$('#rep-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#rep-wrap').contains(tr)) return; repDrill(tr.getAttribute('data-name')); };
+['rep-months','rep-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderReports); });
+$('#rep-export').onclick=()=>{
+  const {rows,months}=repData();
+  const out=[['Dispensary','PAD Visits','EDU Visits','Total Visits','Last Visit']];
+  rows.sort((a,b)=>b.total-a.total).forEach(r=>out.push([r.name,r.pad,r.edu,r.total,r.last?new Date(r.last).toISOString().slice(0,10):'']));
+  downloadCSV(months?`pad-edu-visits-${months}mo.csv`:'pad-edu-visits.csv',out);
+};
+
 /* ============================ CSV export ============================ */
 function downloadCSV(name,rows){
   const csv=rows.map(r=>r.map(c=>{ c=c==null?'':String(c); return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c; }).join(',')).join('\r\n');
@@ -3266,6 +3382,8 @@ function activateTab(tab, fromHash){
   if(tab==='mom') renderMom();
   $('#view-tiers').classList.toggle('hidden',tab!=='tiers');
   if(tab==='tiers') renderTiers();
+  $('#view-reports').classList.toggle('hidden',tab!=='reports');
+  if(tab==='reports') renderReports();
   $('#conc-controls').classList.toggle('hidden', tab!=='cd');
   if(!fromHash){ try{ history.replaceState(null,'','#'+tab); }catch(e){ location.hash=tab; } }
   return true;
