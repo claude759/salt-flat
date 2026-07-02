@@ -806,9 +806,18 @@ function jsonp(){
     s=document.createElement('script');
     s.src=REPORTS_SCRIPT_URL+(REPORTS_SCRIPT_URL.includes('?')?'&':'?')+'callback='+cb+'&t='+Date.now();
     s.onerror=()=>{ rej(new Error('network')); done(); };
+    // Apps Script intermittently serves an HTML error page with HTTP 200 — the script "loads"
+    // but the callback never runs. Detect that on load and fail fast (instead of the 15s timeout).
+    s.onload=()=>{ if(window[cb]){ rej(new Error('bad response')); done(); } };
     document.body.appendChild(s);
     setTimeout(()=>{ if(window[cb]){ rej(new Error('timeout')); done(); } },15000);
   });
+}
+// Apps Script flakes a few % of the time (HTML error page / transient 5xx) — retry before
+// giving up so a single bad response doesn't strand the app on "offline".
+async function jsonpRetry(tries){ tries=tries||3; let last;
+  for(let i=0;i<tries;i++){ try{ return await jsonp(); }catch(e){ last=e; await new Promise(r=>setTimeout(r,1200)); } }
+  throw last;
 }
 
 function relTime(iso){
@@ -924,7 +933,7 @@ async function loadShared(){
   if(isPlaceholder()){ renderShareBar(); return; }
   renderShareBar('loading');
   try{
-    const d=await jsonp();
+    const d=await jsonpRetry(3);
     const data=normShared(d && d.data);
     let any=false;
     if(data.ar && data.ar.records && data.ar.records.length){
@@ -976,7 +985,7 @@ async function publishToTeam(){
   const btn=$('#sb-publish'), old=btn.textContent; btn.disabled=true; btn.textContent='Publishing…';
   try{
     let cur={};
-    try{ const d0=await jsonp(); cur=normShared(d0 && d0.data); }catch(e){}
+    try{ const d0=await jsonpRetry(3); cur=normShared(d0 && d0.data); }catch(e){}   // merge base — retried so a flake can't drop additive keys (visits/scorecard)
     // Slim payload for reliable transfer: drop heavy drill-down detail (line items,
     // per-format/credit breakdowns). Summary numbers, aging, discounts/credits, brand rollup all survive.
     if(hasAR)  cur.ar  ={records:recordsToPayload(RAW),cleaning:CLEAN};   // keep line items (slim) so the team sees the per-invoice breakdown + link
