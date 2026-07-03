@@ -470,7 +470,7 @@
     <div id="view-cd-disp">
       <div class="toolbar">
         <input type="text" id="cd-search" placeholder="Search dispensary…" />
-        <select id="cd-source"><option value="">Distru + Nabis</option><option>Distru</option><option>Nabis</option></select>
+        <select id="cd-source"><option value="">All sources</option><option>Distru</option><option>Nabis</option><option>QuickBooks</option></select>
         <div class="grow"></div>
         <button class="btn" id="cd-export">⬇ Export CSV</button>
       </div>
@@ -1931,10 +1931,46 @@ function computeBrandRollup(){
     g.detail={members:g.members}; return g; });
 }
 
-function concFilterSort(rows, searchId, sourceId, sortState){
+// Merge per-source dispensary rows that are really the SAME dispensary (normalized name):
+// "Goat Global Westwood" (Distru) + "Goat Global - Westwood" (QuickBooks) + a Nabis variant
+// → one row, sources joined, numbers + drill detail summed. Runs AFTER the source filter, so
+// picking "Distru" in the dropdown still shows that system's numbers alone.
+function mergeConcRows(rows){
+  const m={}; const emptyDet=()=>({formats:[],pouchU:0,pouchVal:0,pouchList:0,orders:[],invoiceLines:[],creditLines:[],otherU:0,otherBill:0});
+  rows.forEach(r=>{
+    const key=tierNorm(r.customer)||String(r.customer);
+    const det=r.detail||emptyDet();
+    let g=m[key];
+    if(!g){ g=m[key]={...r,_names:{},_srcs:new Set(),detail:{...det,
+        formats:(det.formats||[]).map(f=>({...f})), orders:(det.orders||[]).slice(),
+        invoiceLines:(det.invoiceLines||[]).slice(), creditLines:(det.creditLines||[]).slice()}};
+      g._names[r.customer]=Math.abs(r.totalConc||0)+Math.abs(r.billed||0)+1; g._srcs.add(r.source); return; }
+    CONC_NUM.forEach(kk=>g[kk]=(g[kk]||0)+(r[kk]||0));
+    g._names[r.customer]=(g._names[r.customer]||0)+Math.abs(r.totalConc||0)+Math.abs(r.billed||0)+1;
+    g._srcs.add(r.source);
+    (det.formats||[]).forEach((f,i)=>{ const t=g.detail.formats[i]; if(t){ t.paidU+=f.paidU||0; t.bill+=f.bill||0; t.sampU+=f.sampU||0; t.disc+=f.disc||0; } else g.detail.formats[i]={...f}; });
+    g.detail.pouchU=(g.detail.pouchU||0)+(det.pouchU||0); g.detail.pouchVal=(g.detail.pouchVal||0)+(det.pouchVal||0);
+    g.detail.orders=g.detail.orders.concat(det.orders||[]);
+    g.detail.invoiceLines=g.detail.invoiceLines.concat(det.invoiceLines||[]);
+    g.detail.creditLines=g.detail.creditLines.concat(det.creditLines||[]);
+    g.detail.otherU=(g.detail.otherU||0)+(det.otherU||0); g.detail.otherBill=(g.detail.otherBill||0)+(det.otherBill||0);
+  });
+  return Object.values(m).map(g=>{
+    g.customer=Object.entries(g._names).sort((a,b)=>b[1]-a[1])[0][0];   // display the biggest-billing spelling
+    g.source=[...g._srcs].sort().join(' + ');
+    delete g._names; delete g._srcs;
+    g.pctGross=g.grossList?g.totalConc/g.grossList:0;
+    g.detail.orders.sort((a,b)=>b.conc-a.conc);
+    if(g.detail.invoiceLines.length>1) g.detail.invoiceLines=[{ref:'Order/invoice discounts',date:null,amt:g.detail.invoiceLines.reduce((s,x)=>s+(x.amt||0),0),note:''}];
+    if(g.detail.creditLines.length>1)  g.detail.creditLines =[{ref:'Credits',date:null,amt:g.detail.creditLines.reduce((s,x)=>s+(x.amt||0),0),note:''}];
+    return g;
+  });
+}
+function concFilterSort(rows, searchId, sourceId, sortState, mergeByName){
   const sEl=$('#'+searchId), q=(sEl?sEl.value:'').trim().toLowerCase();
   const srcEl=sourceId?$('#'+sourceId):null, src=srcEl?srcEl.value:'';
   let out=rows.filter(r=>{ if(src&&r.source!==src) return false; if(q&&!String(r.customer).toLowerCase().includes(q)) return false; return true; });
+  if(mergeByName) out=mergeConcRows(out);
   const k=sortState.key,d=sortState.dir;
   out.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-d:av>bv?d:0; });
   return out;
@@ -1990,7 +2026,7 @@ function renderConcGrid(allRows, ids, sortState, kind){
     body.innerHTML=`<tr><td colspan="10" class="empty">Upload the <b>Distru sales-order items</b> and/or <b>Nabis detailed brand</b> file (plus Distru invoice &amp; payments for the discount/credit columns) to build this report.</td></tr>`;
     foot.innerHTML=''; if(note) note.innerHTML=''; return;
   }
-  const rows=concFilterSort(allRows, ids.search, ids.source, sortState);
+  const rows=concFilterSort(allRows, ids.search, ids.source, sortState, kind==='disp');   // dispensary view: merge same-name rows across Distru/Nabis/QuickBooks
   body.innerHTML=rows.map((r,i)=>concRowHtml(r,i,kind)).join('');
   body.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{const x=tr.nextElementSibling;x.classList.toggle('hidden');tr.classList.toggle('open');});
   body.querySelectorAll('tr.memrow').forEach(tr=>tr.onclick=e=>{ e.stopPropagation(); const d=tr.nextElementSibling; if(d&&d.classList.contains('memdetail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } });
@@ -3604,7 +3640,7 @@ function concExport(rows,label,fname){
   out.push(['TOTAL','',f2(T.billed),f2(T.grossList),...puKeys.map(k=>f2(T[k])),f2(T.puTotal),f2(T.samplesList),f2(T.pouch),f2(T.invoiceDisc),f2(T.creditMemos),f2(T.totalConc),T.grossList?(T.totalConc/T.grossList*100).toFixed(1)+'%':'']);
   downloadCSV(fname,out);
 }
-$('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort),'Dispensary','credits-discounts-by-dispensary.csv');
+$('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort,true),'Dispensary','credits-discounts-by-dispensary.csv');
 $('#cb-export').onclick=()=>concExport(concFilterSort(CONC_BRAND,'cb-search',null,cbSort),'Brand','credits-discounts-by-brand.csv');
 $('#sku-export').onclick=()=>{
   const rows=[['System','Product','Units','Projected','Actualized','Unit Discounts','Avg $/Unit','Discounts/Credits','Actual Total']];
