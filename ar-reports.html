@@ -935,16 +935,22 @@ const isPlaceholder = () => !REPORTS_SCRIPT_URL || REPORTS_SCRIPT_URL.indexOf('Y
 function jsonp(){
   return new Promise((res,rej)=>{
     const cb='__arcb'+Math.floor(Date.now()+Math.random()*1e6);
-    let s; const done=()=>{ try{delete window[cb];}catch(e){} if(s&&s.parentNode)s.remove(); };
-    window[cb]=d=>{ res(d); done(); };
+    let s, settled=false;
+    // On give-up, DO NOT delete the callback — the slow response may still arrive and call it
+    // (a deleted name throws an uncaught "__arcb… is not defined", which broke the automated
+    // publish Jul 3 2026). Leave a swallow-it stub, clean up minutes later.
+    const done=()=>{ settled=true; window[cb]=function(){}; setTimeout(()=>{ try{delete window[cb];}catch(e){} },300000); if(s&&s.parentNode)s.remove(); };
+    window[cb]=d=>{ if(settled) return; res(d); done(); };
     s=document.createElement('script');
     s.src=REPORTS_SCRIPT_URL+(REPORTS_SCRIPT_URL.includes('?')?'&':'?')+'callback='+cb+'&t='+Date.now();
-    s.onerror=()=>{ rej(new Error('network')); done(); };
+    s.onerror=()=>{ if(!settled){ rej(new Error('network')); done(); } };
     // Apps Script intermittently serves an HTML error page with HTTP 200 — the script "loads"
-    // but the callback never runs. Detect that on load and fail fast (instead of the 15s timeout).
-    s.onload=()=>{ if(window[cb]){ rej(new Error('bad response')); done(); } };
+    // but the callback never runs. Detect that on load and fail fast (instead of the timeout).
+    s.onload=()=>{ if(!settled){ rej(new Error('bad response')); done(); } };
     document.body.appendChild(s);
-    setTimeout(()=>{ if(window[cb]){ rej(new Error('timeout')); done(); } },15000);
+    // 25s: Apps Script has been observed taking 14-21s to serve the ~700KB payload on bad days —
+    // a shorter timeout kills valid-but-slow responses and wastes every retry.
+    setTimeout(()=>{ if(!settled){ rej(new Error('timeout')); done(); } },25000);
   });
 }
 // Apps Script flakes a few % of the time (HTML error page / transient 5xx) — retry before
