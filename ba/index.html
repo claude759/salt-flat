@@ -222,7 +222,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-06-30.4';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-03.1';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -255,6 +255,9 @@ function dispSplit(x, value){
 }
 // dispensaries a BA can pick: only those in their region (admins/region-less see all)
 function baDispensaries(){ const r = state.preview || state.profile?.region; return state.dispensaries.filter(d => !r || d.state === r); }
+// the selectable labor kinds (admin-editable in Settings; safe defaults pre-migration)
+const DEFAULT_LABOR_KINDS = ['Store visit','Education talk','Demo / PAD','Brand event','Travel','Admin'];
+function laborKindNames(){ const lk=(state.laborKinds||[]).filter(k=>k.active!==false).map(k=>k.name); return lk.length?lk:DEFAULT_LABOR_KINDS; }
 // ── reusable multi-select dispensary dropdown (collapsed button + scrollable checkbox list) ──
 function mselSummary(root){
   const names=[...root.querySelectorAll('.msel-opt input:checked')].map(c=>c.dataset.name);
@@ -346,6 +349,8 @@ async function loadMe(){
       || state.periods[0] || null;
     const { data: disp } = await supabase.from('dispensaries').select('*').eq('active',true).order('name');
     state.dispensaries = disp||[];
+    // labor kinds (admin-editable list); fall back to the defaults if the table isn't reachable
+    try{ const { data: lk } = await supabase.from('labor_kinds').select('*').order('sort'); if(lk&&lk.length) state.laborKinds=lk; }catch{}
     // recent start/destination labels for the trip autocomplete
     const { data: rt } = await supabase.from('trips').select('start_label,dest_label').eq('ba_id',state.session.user.id).order('created_at',{ascending:false}).limit(60);
     const places=new Set(); (rt||[]).forEach(t=>{ if(t.start_label)places.add(t.start_label); if(t.dest_label)places.add(t.dest_label); });
@@ -657,16 +662,17 @@ async function drawBA(){
   const subByPid={}; (subs||[]).forEach(s=>subByPid[s.period_id]=s);
 
   // load only the active (expanded) period's items; past periods load lazily on expand
-  let T=[],E=[],S=null;
+  let T=[],E=[],H=[],S=null;
   if(active){
-    const [tr,ex] = await Promise.all([
+    const [tr,ex,hr] = await Promise.all([
       supabase.from('trips').select('*').eq('ba_id',state.session.user.id).eq('period_id',active.id).order('trip_date',{ascending:false}),
       supabase.from('expenses').select('*').eq('ba_id',state.session.user.id).eq('period_id',active.id).order('expense_date',{ascending:false}),
+      supabase.from('hours').select('*').eq('ba_id',state.session.user.id).eq('period_id',active.id).order('work_date',{ascending:false}),
     ]);
     if(seq !== state._drawSeq) return;
-    T=tr.data||[]; E=ex.data||[]; S=subByPid[active.id]||null;
+    T=tr.data||[]; E=ex.data||[]; H=hr.data||[]; S=subByPid[active.id]||null;
   }
-  state._T=T; state._E=E;
+  state._T=T; state._E=E; state._H=H;
   const submittedLock = S && (S.status==='submitted'||S.status==='approved');
   const canEdit = active && canEditPeriod(active) && !submittedLock;
 
@@ -679,7 +685,7 @@ async function drawBA(){
     const badge = sub ? `<span class="badge ${sub.status}">${sub.status}</span>` : '';
     return `<div class="peracc" data-pid="${p.id}" style="margin-bottom:12px">
       ${periodHeadHtml(p, open, headTotal, badge)}
-      <div class="perbody ${open?'':'hide'}" data-body="${p.id}">${open ? (canEdit ? editableBodyHtml(S) : readOnlyBodyHtml(p,T,E)) : ''}</div>
+      <div class="perbody ${open?'':'hide'}" data-body="${p.id}">${open ? (canEdit ? editableBodyHtml(S) : readOnlyBodyHtml(p,T,E,H)) : ''}</div>
     </div>`;
   }).join('');
 
@@ -705,6 +711,7 @@ function editableBodyHtml(S){
     <div class="card" style="margin-top:10px">
       <div class="totbar" id="totbar">${totbarTiles()}</div>
       <div id="cardline">${cardLineHtml()}</div>
+      <div id="laborline">${laborLineFor(state._H)}</div>
       ${S?`<div class="small ${S.status==='approved'?'':'muted'}" style="margin-top:10px">Status: <span class="badge ${S.status}">${S.status}</span></div>`:''}
     </div>
     <div class="actions">
@@ -732,19 +739,29 @@ function wireEditableBody(){
 }
 // read-only summary for a past/locked period (no editing controls)
 function roItemRow(x){
-  const trip=x._k==='trip', date=trip?x.trip_date:x.expense_date;
-  const title=trip?(x.dest_label||dispName(x.dispensary_id)):(x.vendor||'Expense');
-  const sub=trip?`${x.miles??'—'} mi · ${x.method}`:`${x.category||''}${x.payment==='company'?' · 💳 company card':''}`;
-  return `<div class="item"><div class="ic">${trip?'🚗':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${esc(title)}</div><div class="s">${fmtDate(date)} · ${esc(sub)}</div></div><div class="amt">${money(x.amount)}</div><span class="badge ${x.status}">${x.status}</span></div>`;
+  const trip=x._k==='trip', hours=x._k==='hours';
+  const date=trip?x.trip_date:hours?x.work_date:x.expense_date;
+  const title=trip?esc(x.dest_label||dispName(x.dispensary_id)):hours?`${x.hours} hrs${x.kind?' · '+esc(x.kind):''}`:esc(x.vendor||'Expense');
+  const sub=trip?`${x.miles??'—'} mi · ${x.method}`:hours?`$${Number(x.rate).toFixed(2)}/hr · payroll`:`${x.category||''}${x.payment==='company'?' · 💳 company card':''}`;
+  return `<div class="item"><div class="ic">${trip?'🚗':hours?'⏱':'🧾'}</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(date)} · ${esc(sub)}</div></div><div class="amt">${money(x.amount)}</div><span class="badge ${x.status}">${x.status}</span></div>`;
 }
-function readOnlyBodyHtml(p, T, E){
-  const items=[...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'}))]
-    .sort((a,b)=>((b.trip_date||b.expense_date)||'').localeCompare((a.trip_date||a.expense_date)||''));
+// the "labor isn't part of reimburse" info line under a period's totals
+function laborLineFor(H){
+  const hrs=(H||[]).reduce((a,x)=>a+Number(x.hours||0),0);
+  if(!(hrs>0)) return '';
+  const amt=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
+  return `<div class="small muted" style="margin-top:8px">⏱ Hours worked: <b>${Math.round(hrs*100)/100} hrs · ${money(amt)}</b> — paid through payroll, not reimbursement</div>`;
+}
+function readOnlyBodyHtml(p, T, E, H){
+  H=H||[];
+  const items=[...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'})),...H.map(x=>({...x,_k:'hours'}))]
+    .sort((a,b)=>((b.trip_date||b.expense_date||b.work_date)||'').localeCompare((a.trip_date||a.expense_date||a.work_date)||''));
   const mileT=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb}=expSplit(E);
   return `
     <div class="card" style="margin-top:10px">
       <div class="totbar">${totTiles(T,E)}</div>
       ${cardLineFor(E)}
+      ${laborLineFor(H)}
     </div>
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px">
@@ -765,13 +782,14 @@ async function togglePeriod(pid){
   body.dataset.loaded='1';
   body.innerHTML='<div class="loading"><span class="spin"></span></div>';
   const p=state.periods.find(x=>x.id===pid);
-  const [tr,ex]=await Promise.all([
+  const [tr,ex,hr]=await Promise.all([
     supabase.from('trips').select('*').eq('ba_id',state.session.user.id).eq('period_id',pid).order('trip_date',{ascending:false}),
     supabase.from('expenses').select('*').eq('ba_id',state.session.user.id).eq('period_id',pid).order('expense_date',{ascending:false}),
+    supabase.from('hours').select('*').eq('ba_id',state.session.user.id).eq('period_id',pid).order('work_date',{ascending:false}),
   ]);
   if(!body.isConnected) return;                       // drawBA re-rendered while we fetched — node is detached, drop it
-  const T=tr.data||[], E=ex.data||[];
-  body.innerHTML=readOnlyBodyHtml(p, T, E);
+  const T=tr.data||[], E=ex.data||[], H=hr.data||[];
+  body.innerHTML=readOnlyBodyHtml(p, T, E, H);
   const tot=card.querySelector('.pertot'); if(tot){ const mileT=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb}=expSplit(E); tot.innerHTML=money(mileT+reimb); }
 }
 // Employee report: the admin "Spend by dispensary" view, scoped to just this BA's own data.
@@ -783,7 +801,7 @@ async function baReport(m){
   const [trips,exps,hrs]=await Promise.all([
     supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end),
-    supabase.from('hours').select('id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,note,status').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
+    supabase.from('hours').select('id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,kind,note,status').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
   ]);
   const dn=id=>{ const n=dispName(id); return n==='—'?'':n; };
   const agg={}, items={};
@@ -795,7 +813,7 @@ async function baReport(m){
       items[k].push({kind:'exp',id:x.id,date:x.expense_date,ba:'',disp:dn(id),dispNames:names,splitN:n,vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
   (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dn).filter(Boolean);
     dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share;
-      items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:'',disp:dn(id),dispNames:names,splitN:n,hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
+      items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:'',disp:dn(id),dispNames:names,splitN:n,hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,kind:h.kind,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':dispName(k), total:v.mile+v.exp+v.card+v.labor, ...v }))
@@ -830,8 +848,8 @@ async function baReport(m){
   m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
 }
 function periodItems(){
-  return [...(state._T||[]).map(x=>({...x,_k:'trip'})),...(state._E||[]).map(x=>({...x,_k:'exp'}))]
-    .sort((a,b)=>(b.trip_date||b.expense_date).localeCompare(a.trip_date||a.expense_date));
+  return [...(state._T||[]).map(x=>({...x,_k:'trip'})),...(state._E||[]).map(x=>({...x,_k:'exp'})),...(state._H||[]).map(x=>({...x,_k:'hours'}))]
+    .sort((a,b)=>((b.trip_date||b.expense_date||b.work_date)||'').localeCompare((a.trip_date||a.expense_date||a.work_date)||''));
 }
 function refreshItems(){
   const el=$('#items'); if(!el) return;
@@ -857,18 +875,19 @@ function reimburseTotal(){ const mileT=(state._T||[]).reduce((a,x)=>a+Number(x.a
 function refreshTotals(){
   const t=$('#totbar'); if(t) t.innerHTML=totbarTiles();
   const c=$('#cardline'); if(c) c.innerHTML=cardLineHtml();
+  const ll=$('#laborline'); if(ll) ll.innerHTML=laborLineFor(state._H);
   const ir=$('#itemsReimb'); if(ir) ir.textContent=money(reimburseTotal());
   const ph=state._activePid&&document.querySelector(`.peracc[data-pid="${state._activePid}"] .pertot`); if(ph) ph.innerHTML=money(reimburseTotal());
 }
 function baItemRow(x){
-  const trip = x._k==='trip';
-  const date = trip?x.trip_date:x.expense_date;
-  const title = trip ? (x.dest_label || dispName(x.dispensary_id)) : (x.vendor||'Expense');
-  const sub = trip ? `${x.miles??'—'} mi · ${x.method}` : `${x.category||''}${x.payment==='company'?' · 💳 company card':''}`;
-  const canDel = x.status==='draft' || x.status==='rejected';
+  const trip = x._k==='trip', hours = x._k==='hours';
+  const date = trip?x.trip_date:hours?x.work_date:x.expense_date;
+  const title = trip ? esc(x.dest_label || dispName(x.dispensary_id)) : hours ? `${x.hours} hrs${x.kind?' · '+esc(x.kind):''}` : esc(x.vendor||'Expense');
+  const sub = trip ? `${x.miles??'—'} mi · ${x.method}` : hours ? `$${Number(x.rate).toFixed(2)}/hr · payroll` : `${x.category||''}${x.payment==='company'?' · 💳 company card':''}`;
+  const canDel = !hours && (x.status==='draft' || x.status==='rejected');   // hours are payroll-managed — no BA delete
   return `<div class="item">
-    <div class="ic">${trip?'🚗':'🧾'}</div>
-    <div class="grow"><div class="t">${esc(title)}</div><div class="s">${fmtDate(date)} · ${esc(sub)}</div>
+    <div class="ic">${trip?'🚗':hours?'⏱':'🧾'}</div>
+    <div class="grow"><div class="t">${title}</div><div class="s">${fmtDate(date)} · ${esc(sub)}</div>
       ${x.status==='rejected'&&x.reject_note?`<div class="s" style="color:var(--red)">Rejected: ${esc(x.reject_note)} — fix &amp; resubmit, or delete.</div>`:''}</div>
     <div class="amt">${money(x.amount)}</div>
     <span class="badge ${x.status}">${x.status}</span>
@@ -1064,6 +1083,7 @@ function submitAreaHtml(){
 }
 function wireSubmit(){ const b=$('#submitBtn'); if(b) b.onclick=()=>submitPeriod(); }
 async function delItem(kind,id){
+  if(kind==='hours') return;                        // payroll-managed — BAs can never delete hours
   if(!confirm('Delete this item?')) return;
   const { error } = await supabase.from(kind).delete().eq('id',id);
   if(error) return toast(error.message,'err');
@@ -1082,10 +1102,11 @@ async function submitPeriod(){
   if(incomplete) return toast(`Finish the ${incomplete} to-do item${incomplete>1?'s':''} above first — tap each one to fill it in.`,'err');
   if(!confirm('Submit all items in this period? You won’t be able to edit them after.')) return;
   const mile=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb,card}=expSplit(E);
+  const labor=(state._H||[]).reduce((a,x)=>a+Number(x.amount||0),0);   // recorded for reporting; NOT part of reimburse
   // record the submission FIRST so items are never locked without a workflow row
   const { error:se } = await supabase.from('submissions').upsert({
     ba_id:state.session.user.id, period_id:state.period.id, status:'submitted',
-    submitted_at:new Date().toISOString(), totals:{mileage:mile, expenses:reimb, company_card:card, total:mile+reimb}
+    submitted_at:new Date().toISOString(), totals:{mileage:mile, expenses:reimb, company_card:card, labor, total:mile+reimb}
   },{onConflict:'ba_id,period_id'});
   if(se) return toast('Submit failed: '+se.message,'err');
   if(ids.length){ const {error}=await supabase.from('trips').update({status:'submitted',reject_note:null}).in('id',ids);
@@ -1698,7 +1719,7 @@ async function adminReport(m){
     supabase.from('dispensaries').select('id,name'),
     supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,ba_id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
-    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,note,status').gte('work_date',start).lte('work_date',end),
+    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,kind,note,status').gte('work_date',start).lte('work_date',end),
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
@@ -1719,7 +1740,7 @@ async function adminReport(m){
   (hrs.data||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dnm).filter(Boolean);
     dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share;
       items[k].push({kind:'hours',id:h.id,date:h.work_date,ba:baName(h.ba_id),disp:dnm(id),dispNames:names,splitN:n,
-        hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
+        hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,kind:h.kind,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));   // flat lookup for the detail popup
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card+v.labor, ...v }))
@@ -1767,7 +1788,7 @@ function repDetailRow(it){
     return `<div class="item repitem" data-item="trip:${it.id}" style="cursor:pointer"><div class="ic">🚗</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)}${baP&&it.label?' · '+esc(it.label):''}${note}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
   }
   if(it.kind==='hours'){
-    const title=baP?`${baP} · ${it.hours} hrs`:`${it.hours} hrs${it.job?' · '+esc(it.job):''}`;
+    const title=baP?`${baP} · ${it.hours} hrs${it.kind?' · '+esc(it.kind):''}`:`${it.hours} hrs${(it.kind||it.job)?' · '+esc(it.kind||it.job):''}`;
     return `<div class="item repitem" data-item="hours:${it.id}" style="cursor:pointer"><div class="ic">⏱</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · $${Number(it.rate).toFixed(2)}/hr${note}${split}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
   }
   const title=baP?`${baP} · ${esc(it.vendor||'Expense')}`:esc(it.vendor||'Expense');
@@ -1782,7 +1803,7 @@ function reportItemSheet(it){
   const icon=trip?'🚗':hours?'⏱':'🧾';
   const isSplit=it.splitN>1;
   const fullHours = hours ? (it.fullHours!=null?it.fullHours:it.hours) : null;
-  const title=trip?(it.dest_label||it.disp||'Trip'):hours?(`${fullHours} hours`+(it.job?` · ${it.job}`:'')):(it.vendor||'Expense');
+  const title=trip?(it.dest_label||it.disp||'Trip'):hours?(`${fullHours} hours`+((it.kind||it.job)?` · ${it.kind||it.job}`:'')):(it.vendor||'Expense');
   let body='';
   body+=kv('BA', esc(it.ba||''));
   body+=kv('Date', fmtDate(it.date));
@@ -1795,6 +1816,7 @@ function reportItemSheet(it){
     body+=kv('Odometer', (it.start_odo!=null||it.end_odo!=null)?`${it.start_odo??'—'} → ${it.end_odo??'—'}`:'');
     body+=kv('Mileage reimbursement', money(it.amount));
   } else if(hours){
+    body+=kv('Kind', it.kind?esc(it.kind):(it.job?esc(it.job):''));
     body+=kv('Hours', isSplit?`${fullHours} total · ${it.hours} to this store`:`${fullHours}`);
     body+=kv('Pay rate', `$${Number(it.rate).toFixed(2)}/hr`);
     body+=kv('Labor cost', isSplit?`${money(it.fullAmount)} total · ${money(it.amount)} here`:money(it.amount));
@@ -1861,6 +1883,8 @@ async function adminEditItem(kind, id, onSaved){
     openSheet(`
       <h3>Edit hours <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.work_date||''}">
+      <label class="fl">Kind of work</label>
+      <select id="aKind">${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
       <label class="fl">Dispensaries <span class="muted">(tap all stores this shift covered — cost splits evenly)</span></label>
       ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips'})}
       <div class="row" style="margin-top:10px">
@@ -1876,7 +1900,7 @@ async function adminEditItem(kind, id, onSaved){
     $('#aCancel').onclick=closeSheet; wireDispChips('aDispChips');
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
-      const patch={ work_date:$('#aDate').value||x.work_date, ...dispPatch('aDispChips'),
+      const patch={ work_date:$('#aDate').value||x.work_date, kind:$('#aKind').value, ...dispPatch('aDispChips'),
         hours:Number($('#aHours').value)||0, note:$('#aNote').value.trim()||null };
       busy(btn,true);
       const {data,error}=await supabase.from('hours').update(patch).eq('id',id).select('*').single();
@@ -2006,7 +2030,7 @@ async function adminBaDetail(baId){
     const trip=x._k==='trip', hours=x._k==='hours';
     const kind=trip?'trip':hours?'hours':'exp', table=trip?'trips':hours?'hours':'expenses';
     const date=trip?x.trip_date:hours?x.work_date:x.expense_date;
-    const title=trip?esc(x.dest_label||dispName(x.dispensary_id)):hours?(`${x.hours} hrs${x.job?' · '+esc(x.job):''}`):esc(x.vendor||'Expense');
+    const title=trip?esc(x.dest_label||dispName(x.dispensary_id)):hours?(`${x.hours} hrs${(x.kind||x.job)?' · '+esc(x.kind||x.job):''}`):esc(x.vendor||'Expense');
     const sub=trip?`${x.miles??'—'} mi · ${x.method}`:hours?`$${Number(x.rate).toFixed(2)}/hr`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
     const disp=dispLabel(x);
     const rec=(trip||hours)?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
@@ -2053,6 +2077,7 @@ async function adminBaDetail(baId){
     ${items.length?`<div class="card"><h3 style="margin:0 0 4px">This period · ${items.length} item${items.length===1?'':'s'} <span class="muted small">— the view ${esc((prof.full_name||'they').split(' ')[0])} sees</span></h3>
       <div class="seg" id="dFilter" style="margin:8px 0"><button class="on" data-f="all">All</button><button data-f="trip">🚗 Mileage</button><button data-f="exp">🧾 Expenses</button>${H&&H.length?'<button data-f="hours">⏱ Hours</button>':''}</div>
       ${itemRows}</div>`:'<p class="muted small">Nothing logged this period.</p>'}
+    ${(H||[]).some(x=>!x.dispensary_id)?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
     <div class="row wrap" style="margin-top:16px">
       ${S.status==='submitted'?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
@@ -2061,9 +2086,10 @@ async function adminBaDetail(baId){
     <button class="btn ghost block" id="closeBtn" style="margin-top:8px">Close</button>
   `);
   $('#closeBtn').onclick=closeSheet;
-  $('#csvBtn').onclick=()=>exportCSV(prof,per,T||[],E||[]);
-  $('#pdfBtn').onclick=()=>exportPDF(prof,per,T||[],E||[]);
-  $('#approveBtn')&&($('#approveBtn').onclick=()=>approveSubmission(baId,per.id,T,E));
+  $('#csvBtn').onclick=()=>exportCSV(prof,per,T||[],E||[],H||[]);
+  $('#pdfBtn').onclick=()=>exportPDF(prof,per,T||[],E||[],H||[]);
+  $('#approveBtn')&&($('#approveBtn').onclick=()=>approveSubmission(baId,per.id,T,E,H));
+  $('#autolinkBtn')&&($('#autolinkBtn').onclick=()=>autoLinkHours(baId,per.id,H||[]));
   document.querySelectorAll('[data-rej]').forEach(b=>b.onclick=()=>rejectItem(b.dataset.rej,b.dataset.id,baId));
   document.querySelectorAll('.recFile').forEach(inp=>inp.onchange=e=>adminAttachReceipt(e,baId));
   document.querySelectorAll('.item.adminedit').forEach(el=>el.onclick=ev=>{
@@ -2088,17 +2114,21 @@ async function adminAttachReceipt(e, baId){
     toast('Receipt attached','ok'); adminBaDetail(baId);
   }catch(err){ toast(err.message||'Upload failed','err'); }
 }
-async function approveSubmission(baId,periodId,T,E){
+async function approveSubmission(baId,periodId,T,E,H){
   if(!confirm('Approve all submitted items for this BA this period?')) return;
   // approve ONLY submitted items (never sweep in un-submitted drafts or rejected)
   const subMile=(T||[]).filter(x=>x.status==='submitted').reduce((a,x)=>a+ +x.amount,0);
   const {reimb:subExp, card:subCard}=expSplit((E||[]).filter(x=>x.status==='submitted'));
+  // labor snapshot covers ALL the period's hours (they're payroll-managed, usually already approved on import)
+  const subLabor=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
   const { error:e1 }=await supabase.from('trips').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','submitted');
   if(e1) return toast('Approve failed: '+e1.message,'err');
   const { error:e2 }=await supabase.from('expenses').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','submitted');
   if(e2) return toast('Approve failed: '+e2.message,'err');
+  const { error:eH }=await supabase.from('hours').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).in('status',['draft','submitted']);
+  if(eH) return toast('Approve failed: '+eH.message,'err');
   const { error:e3 }=await supabase.from('submissions').update({status:'approved',approved_by:state.session.user.id,approved_at:new Date().toISOString(),
-    totals:{mileage:subMile,expenses:subExp,company_card:subCard,total:subMile+subExp}}).eq('ba_id',baId).eq('period_id',periodId);
+    totals:{mileage:subMile,expenses:subExp,company_card:subCard,labor:subLabor,total:subMile+subExp}}).eq('ba_id',baId).eq('period_id',periodId);
   if(e3) return toast('Approve failed: '+e3.message,'err');
   toast('Approved','ok'); closeSheet(); drawAdmin();
 }
@@ -2107,27 +2137,57 @@ async function rejectItem(kind,id,baId){
   await supabase.from(kind).update({status:'rejected',reject_note:note}).eq('id',id);
   toast('Item rejected'); adminBaDetail(baId);
 }
+// Link each unlinked hours entry to the dispensaries of that day's trips (else expenses).
+async function autoLinkHours(baId, periodId, H){
+  const un=(H||[]).filter(x=>!x.dispensary_id && !(x.dispensary_ids&&x.dispensary_ids.length));
+  if(!un.length) return toast('All hours are already linked','ok');
+  const dates=un.map(x=>x.work_date);
+  const [{data:T},{data:E}]=await Promise.all([
+    supabase.from('trips').select('trip_date,dispensary_id,dispensary_ids').eq('ba_id',baId).in('trip_date',dates),
+    supabase.from('expenses').select('expense_date,dispensary_id,dispensary_ids').eq('ba_id',baId).in('expense_date',dates),
+  ]);
+  const idsOn=(rows,dateField,d)=>{ const s=new Set();
+    (rows||[]).filter(r=>r[dateField]===d).forEach(r=>dispIds(r).forEach(id=>s.add(id))); return [...s]; };
+  let linked=0, skipped=0;
+  for(const h of un){
+    const ids = idsOn(T,'trip_date',h.work_date);
+    const eIds = ids.length?ids:idsOn(E,'expense_date',h.work_date);
+    if(!eIds.length){ skipped++; continue; }
+    const { error }=await supabase.from('hours').update({dispensary_ids:eIds, dispensary_id:eIds[0]}).eq('id',h.id);
+    if(error){ toast(error.message,'err'); return; }
+    linked++;
+  }
+  toast(linked?`Linked ${linked} shift${linked>1?'s':''}${skipped?` · ${skipped} had no same-day activity`:''}`:'No same-day trips/expenses to match','ok');
+  if(linked) adminBaDetail(baId);
+}
 
 /* ── exports ── */
-function exportCSV(prof,per,T,E){
-  const rows=[['Type','Date','Dispensary','Detail','Paid','Miles','Rate','Amount','Status','Note']];
+function exportCSV(prof,per,T,E,H){
+  H=H||[];
+  const rows=[['Type','Date','Dispensary','Detail','Paid','Miles/Hrs','Rate','Amount','Status','Note']];
   T.forEach(x=>rows.push(['Mileage',x.trip_date,dispName(x.dispensary_id),x.method,'',x.miles??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
   E.forEach(x=>rows.push(['Expense',x.expense_date,dispName(x.dispensary_id),`${x.vendor||''} (${x.category||''})`,x.payment==='company'?'Company card':'Reimburse',' ','',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
+  H.forEach(x=>rows.push(['Labor',x.work_date,dispLabel(x)||dispName(x.dispensary_id),x.kind||x.job||'',`Payroll`,x.hours??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
   const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
+  const labor=H.reduce((a,x)=>a+Number(x.amount||0),0), laborHrs=H.reduce((a,x)=>a+Number(x.hours||0),0);
   rows.push([]); rows.push(['','','','','','','','Mileage',mile.toFixed(2)]);
   rows.push(['','','','','','','','Expenses (reimburse)',reimb.toFixed(2)]);
   rows.push(['','','','','','','','REIMBURSE TOTAL',(mile+reimb).toFixed(2)]);
   if(card>0) rows.push(['','','','','','','','Company card (not reimbursed)',card.toFixed(2)]);
+  if(labor>0) rows.push(['','','','','',laborHrs.toFixed(3),'','Labor (payroll, not reimbursed)',labor.toFixed(2)]);
   const csv=rows.map(r=>r.map(c=>{let s=String(c??'');
     if(/^[=+\-@\t\r]/.test(s)) s="'"+s;                       // neutralize spreadsheet formula injection
     return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\n');
   const name=`reimbursement_${(prof.full_name||prof.email).replace(/\W+/g,'_')}_${per.start_date}.csv`;
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=name; a.click();
 }
-function exportPDF(prof,per,T,E){
+function exportPDF(prof,per,T,E,H){
+  H=H||[];
   const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
+  const labor=H.reduce((a,x)=>a+Number(x.amount||0),0), laborHrs=H.reduce((a,x)=>a+Number(x.hours||0),0);
   const tr=T.map(x=>`<tr><td>${fmtDate(x.trip_date)}</td><td>${esc(dispName(x.dispensary_id))}</td><td>${x.method}</td><td style="text-align:right">${x.miles??''}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
   const er=E.map(x=>`<tr><td>${fmtDate(x.expense_date)}</td><td>${esc(x.vendor||'')} — ${esc(x.category||'')}</td><td>${esc(dispName(x.dispensary_id))}</td><td>${x.payment==='company'?'Company card':'Reimburse'}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
+  const hr=H.map(x=>`<tr><td>${fmtDate(x.work_date)}</td><td>${esc(x.kind||x.job||'')}</td><td>${esc(dispLabel(x)||dispName(x.dispensary_id))}</td><td style="text-align:right">${x.hours??''}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
   $('#printarea').innerHTML=`
     <h2 style="margin:0">Wizard Trees — Reimbursement</h2>
     <p style="margin:4px 0 0">${esc(prof.full_name||prof.email)} &nbsp;·&nbsp; ${esc(per.label)}</p>
@@ -2135,6 +2195,8 @@ function exportPDF(prof,per,T,E){
     <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Dispensary</th><th>Method</th><th>Miles</th><th>Amount</th></tr>${tr||'<tr><td colspan=5>none</td></tr>'}</table>
     <h3>Expenses (reimbursable) — ${money(reimb)}</h3>
     <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Vendor</th><th>Dispensary</th><th>Paid with</th><th>Amount</th></tr>${er||'<tr><td colspan=5>none</td></tr>'}</table>
+    ${H.length?`<h3>Labor — ${laborHrs.toFixed(2)} hrs · ${money(labor)} <span style="font-weight:400;color:#666">(paid via payroll — not part of the reimburse total)</span></h3>
+    <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Kind</th><th>Dispensary</th><th>Hours</th><th>Labor cost</th></tr>${hr}</table>`:''}
     <h2 style="text-align:right;margin-top:16px">Reimburse total: ${money(mile+reimb)}</h2>
     ${card>0?`<p style="text-align:right;color:#666;margin:0">Company card (not reimbursed): ${money(card)}</p>`:''}
     <p style="color:#666;font-size:12px">Receipt images are stored in the app; open each expense to view.</p>`;
@@ -2220,8 +2282,17 @@ async function adminSettings(m){
     </div>
     <div class="card">
       <h3>Labor hours</h3>
-      <p class="small muted">Import Brand Ambassador hours from a Gusto time-tracking CSV (Sales etc. ignored). Each BA's hourly rate — set on their profile below — turns hours into labor cost per dispensary in the reports.</p>
-      <button class="btn sm primary" id="impHours">⏱ Import from Gusto CSV</button>
+      <p class="small muted">Import Brand Ambassador hours from Gusto (Sales etc. ignored). Each BA's hourly rate — set on their profile below — turns hours into labor cost per dispensary in the reports.</p>
+      <div class="row wrap">
+        <button class="btn sm primary" id="pullGusto">⬇ Pull from Gusto now</button>
+        <button class="btn sm" id="impHours">⏱ Import a CSV manually</button>
+      </div>
+      <div id="gustoStatus" class="small muted" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <div class="row"><h3 class="grow">Labor kinds</h3><button class="btn sm primary" id="addKind">+ Add</button></div>
+      <p class="small muted" style="margin-top:0">The kinds of work hours can be tagged as (store visits, education talks, brand events…). Used in the per-dispensary reports.</p>
+      <div class="row wrap" id="kindList">${laborKindNames().map(k=>`<span class="pill" style="display:inline-flex;align-items:center;gap:6px">${esc(k)}<a href="#" data-delkind="${esc(k)}" title="Remove" style="color:var(--muted);text-decoration:none">✕</a></span>`).join(' ')}</div>
     </div>
     <div class="card">
       <div class="row"><h3 class="grow">Brand ambassadors</h3><button class="btn sm primary" id="addBa">+ Add</button></div>
@@ -2263,6 +2334,25 @@ async function adminSettings(m){
   $('#addBa').onclick=addBaSheet;
   $('#addDisp').onclick=()=>dispSheet(null);
   $('#impHours').onclick=()=>importHoursSheet(bas||[]);
+  // labor kinds: add / remove (deactivate) — list is shared via the labor_kinds table
+  $('#addKind').onclick=async ()=>{
+    const name=(prompt('New labor kind (e.g. "New store opening"):')||'').trim(); if(!name) return;
+    const { error }=await supabase.from('labor_kinds').upsert({name, active:true},{onConflict:'name'});
+    if(error) return toast(error.message,'err');
+    const { data: lk }=await supabase.from('labor_kinds').select('*').order('sort'); state.laborKinds=lk||state.laborKinds;
+    toast('Kind added','ok'); adminSettings(m);
+  };
+  m.querySelectorAll('[data-delkind]').forEach(a=>a.onclick=async e=>{
+    e.preventDefault(); const name=a.dataset.delkind;
+    if(!confirm(`Remove "${name}" from the list? Hours already tagged with it keep the tag.`)) return;
+    const { error }=await supabase.from('labor_kinds').update({active:false}).eq('name',name);
+    if(error) return toast(error.message,'err');
+    const { data: lk }=await supabase.from('labor_kinds').select('*').order('sort'); state.laborKinds=lk||state.laborKinds;
+    toast('Removed','ok'); adminSettings(m);
+  });
+  // on-demand Gusto pull: queue a request; the local gusto-sync daemon on Gianni's Mac picks it
+  // up (within ~1 min), downloads the CSV from Gusto, imports the hours, and marks it done.
+  wireGustoPull(m);
   m.querySelectorAll('[data-dg]').forEach(el=>el.onclick=()=>{ const k=el.dataset.dg; state.dispOpen[k]=!state.dispOpen[k]; adminSettings(m); });
   m.querySelectorAll('[data-disp]').forEach(b=>b.onclick=()=>dispSheet((disp||[]).find(d=>d.id===b.dataset.disp)));
   m.querySelectorAll('[data-edit]').forEach(el=>el.onclick=()=>editBaSheet((bas||[]).find(x=>x.id===el.dataset.edit)));
@@ -2307,6 +2397,8 @@ function importHoursSheet(bas){
     <div class="small muted">Upload a Gusto “time tracking hours” CSV. Only Brand Ambassador hours are imported (Sales etc. ignored), matched to each work date.</div>
     <label class="fl">Brand ambassador</label>
     <select id="ihBa">${list.map(b=>`<option value="${b.id}" data-rate="${b.hourly_rate??''}">${esc(b.full_name||b.email)}${b.hourly_rate!=null?` · $${Number(b.hourly_rate).toFixed(2)}/hr`:' · ⚠ no rate set'}</option>`).join('')}</select>
+    <label class="fl">Kind of work <span class="muted">(applied to these hours; tweak per day after import)</span></label>
+    <select id="ihKind">${laborKindNames().map(k=>`<option>${esc(k)}</option>`).join('')}</select>
     <label class="btn primary block" style="margin-top:12px">📄 Choose Gusto CSV<input id="ihFile" type="file" accept=".csv,text/csv" hidden></label>
     <div id="ihMsg" class="small" style="margin-top:10px"></div>
     <button class="btn primary block hide" id="ihImport" style="margin-top:10px">Import</button>
@@ -2333,11 +2425,47 @@ function importHoursSheet(bas){
     try{
       // upsert on (ba_id, work_date, source): atomic, idempotent re-import (no destructive delete)
       const { error }=await supabase.from('hours').upsert(
-        parsed.map(p=>({ba_id:baId, work_date:p.date, hours:p.hours, job:'Brand Ambassador', source:'gusto', status:'approved', note:'Gusto import'})),
+        parsed.map(p=>({ba_id:baId, work_date:p.date, hours:p.hours, job:'Brand Ambassador', kind:$('#ihKind')?.value||'Store visit', source:'gusto', status:'approved', note:'Gusto import'})),
         { onConflict:'ba_id,work_date,source' });
       if(error) throw error;
       busy(btn,false); closeSheet(); toast(`Imported ${parsed.length} day(s) of hours`,'ok'); drawAdmin();
     }catch(err){ busy(btn,false); toast(err.message||'Import failed','err'); }
+  };
+}
+// "Pull from Gusto now": inserts a request row that the local gusto-sync daemon polls for.
+// The button then live-polls the request until the daemon finishes (or 5 min pass).
+function wireGustoPull(m){
+  const btn=$('#pullGusto'), status=$('#gustoStatus'); if(!btn) return;
+  const showLast=async ()=>{
+    const { data, error }=await supabase.from('gusto_pull_requests').select('*').order('requested_at',{ascending:false}).limit(1);
+    if(error){ if(status) status.textContent='Gusto sync isn’t set up yet (ask Claude to apply the migration).'; return null; }
+    const r=data&&data[0]; if(!r||!status) return;
+    const when=new Date(r.requested_at).toLocaleString([],{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+    status.innerHTML = r.status==='done' ? `Last pull: ✅ ${when}${r.detail?' · '+esc(r.detail):''}`
+      : r.status==='error' ? `Last pull: ⚠️ ${when} · <span style="color:var(--red)">${esc(r.detail||'failed')}</span>`
+      : `Last pull: ⏳ ${r.status} (${when})…`;
+    return r;
+  };
+  showLast();
+  btn.onclick=async ()=>{
+    busy(btn,true);
+    const { data, error }=await supabase.from('gusto_pull_requests')
+      .insert({requested_by:state.session.user.id}).select('*').single();
+    if(error){ busy(btn,false); return toast(error.message,'err'); }
+    toast('Pull requested — your Mac will grab it within a minute','ok');
+    if(status) status.textContent='⏳ Waiting for the sync daemon to pick this up…';
+    const t0=Date.now();
+    const poll=setInterval(async ()=>{
+      const { data:r }=await supabase.from('gusto_pull_requests').select('*').eq('id',data.id).single();
+      if(!r) return;
+      if(r.status==='running' && status) status.textContent='⏳ Pulling from Gusto…';
+      if(r.status==='done'||r.status==='error'||Date.now()-t0>5*60*1000){
+        clearInterval(poll); busy(btn,false); showLast();
+        if(r.status==='done'){ toast('Gusto hours imported ✓','ok'); }
+        else if(r.status==='error'){ toast('Gusto pull failed — '+(r.detail||'see status'),'err'); }
+        else if(status){ status.innerHTML='⚠️ No response from the sync daemon — is the Mac on and gusto-sync set up? <span class="muted">(falling back: Import a CSV manually)</span>'; busy(btn,false); }
+      }
+    }, 5000);
   };
 }
 function addBaSheet(){
@@ -2392,6 +2520,8 @@ function editBaSheet(b){
     <select id="euActive"><option value="true" ${b.active?'selected':''}>Active</option><option value="false" ${!b.active?'selected':''}>Inactive</option></select>
     <label class="fl">BA hourly rate <span class="muted">($/hr — turns logged hours into labor cost)</span></label>
     <input id="euHourly" type="number" inputmode="decimal" step="0.01" value="${b.hourly_rate!=null?b.hourly_rate:''}" placeholder="e.g. 25.00" style="max-width:160px">
+    <label class="fl">Name in Gusto <span class="muted">(only if it differs from the full name — used by the auto-import to match hours)</span></label>
+    <input id="euGusto" value="${esc(b.gusto_name||'')}" placeholder="${esc(b.full_name||'e.g. Joanna Ayala')}">
     ${isSelf?'<div class="small muted" style="margin-top:8px">This is your own account — you can’t remove your own admin access or deactivate yourself here.</div>':''}
     <label class="fl" style="margin-top:14px">Password</label>
     <button class="btn block" id="euReset" type="button">🔑 Reset password</button>
@@ -2417,7 +2547,7 @@ function editBaSheet(b){
     if(isSelf && (role!=='admin' || $('#euActive').value!=='true')) return toast('You can’t demote or deactivate your own account','err');
     const addr=$('#euAddr').value;
     const hr=$('#euHourly').value;
-    const patch={ full_name:$('#euName').value, base_address:addr||null, role, region:region||null, active:$('#euActive').value==='true', hourly_rate:hr!==''?Number(hr):null };
+    const patch={ full_name:$('#euName').value, base_address:addr||null, role, region:region||null, active:$('#euActive').value==='true', hourly_rate:hr!==''?Number(hr):null, gusto_name:$('#euGusto').value.trim()||null };
     if((addr||'')!==(b.base_address||'')){ patch.base_lat=null; patch.base_lng=null; } // re-geocode on next auto-distance
     const btn=$('#euSave'); busy(btn,true);
     const { error }=await supabase.from('profiles').update(patch).eq('id',b.id);
