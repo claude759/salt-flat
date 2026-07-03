@@ -2999,13 +2999,17 @@ function tierData(){
   const t1=Math.max(0,+(($('#tier-t1')||{}).value||15000)), t2=Math.min(t1,Math.max(0,+(($('#tier-t2')||{}).value||7000)));   // clamp t2 ≤ t1 so Tier 2 stays reachable
   // net revenue per account from current Distru/Nabis sales in the window. QuickBooks history is
   // excluded — tiers reflect current selling behavior (and QBO overlaps the live data pre-2026).
+  const A=concAssum();   // list-price assumptions — same ones the Credits/Discounts page uses
   const acc={};
   (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
     const name=(e.c||'Unknown').trim()||'Unknown';
-    const g=acc[name]||(acc[name]={name,src:new Set(),rev:0,orders:{},last:null,plSum:0,plCnt:0});
+    const g=acc[name]||(acc[name]={name,src:new Set(),rev:0,orders:{},last:null,plSum:0,plCnt:0,fmt:{},otherBill:0,sampBill:0,pouchU:0,pouchBill:0,invD:0,cred:0});
     const amt=eventBilling(e); g.rev+=amt; g.src.add(e.s);
     if(e.ref){ const rk=e.s+'|'+e.ref; g.orders[rk]=(g.orders[rk]||0)+amt; } if(!g.last||dt>g.last) g.last=dt;
-    if(e.paidLate!=null){ g.plSum+=e.paidLate; g.plCnt++; } });   // true paid-timeliness from actual payment dates
+    if(e.paidLate!=null){ g.plSum+=e.paidLate; g.plCnt++; }   // true paid-timeliness from actual payment dates
+    // accumulate the all-in concessions inputs (same model as aggregateConcessions) for % Disc+Credits
+    CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c){ const t=g.fmt[f.key]||(g.fmt[f.key]={paidU:0,bill:0,sampU:0}); t.paidU+=c.paidU||0; t.bill+=c.bill||0; t.sampU+=c.sampU||0; } });
+    g.otherBill+=e.otherBill||0; g.sampBill+=e.sampBill||0; g.pouchU+=e.pouchU||0; g.pouchBill+=e.pouchBill||0; g.invD+=e.invoiceDisc||0; g.cred+=e.creditMemos||0; });
   // AR (outstanding + overdue) by normalized account name — best-effort name match.
   const ar={};
   (INVOICES||[]).forEach(x=>{ if(!(x.outstanding>0.005)) return; const k=tierNorm(x.dispensary);
@@ -3021,9 +3025,13 @@ function tierData(){
   const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
     const nk=tierNorm(g.name);
     const tier=g.rev>=t1?1:g.rev>=t2?2:3, a=ar[nk]||{out:0,over:0};
+    // % Disc+Credits = total concessions ÷ gross-at-list, the Credits/Discounts page's "% of Gross"
+    // (per-unit disc + samples@list + pouches + invoice disc + credits), over this window's live events.
+    let grossList=g.otherBill, totalConc=g.invD+g.cred+(g.pouchU*A.pouch-g.pouchBill)-g.sampBill;
+    CONC_FORMATS.forEach(f=>{ const c=g.fmt[f.key]; if(c){ const L=A[f.key]; grossList+=(c.paidU+c.sampU)*L; totalConc+=(c.paidU*L-c.bill)+(c.sampU*L); } });
     return {name:g.name,source:[...g.src].sort().join(' + '),brand:brandOf(g.name),rev:g.rev,
       orders:Object.values(g.orders).filter(v=>Math.abs(v)>0.005).length,last:g.last?g.last.getTime():null,
-      visits:(vis[nk]||[]).length,
+      visits:(vis[nk]||[]).length, grossList, totalConc, pctDC:grossList>0.005?totalConc/grossList:null,
       arOut:a.out,arOver:a.over,avgPaidLate:g.plCnt?g.plSum/g.plCnt:null,paidOrders:g.plCnt,tier}; });
   return {rows,start,end,months,t1,t2};
 }
@@ -3048,29 +3056,29 @@ function renderTiers(){
   let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
-  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['last','Last order',1],['visits','Visits',1],['arOut','AR Outstanding',1],['arOver','Overdue',1],['avgPaidLate','Avg Days Late',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['pctDC','% Disc+Credits',1],['last','Last order',1],['visits','Visits',1],['arOut','AR Outstanding',1],['arOver','Overdue',1],['avgPaidLate','Avg Days Late',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
     <td>${esc(r.name)}</td>
     <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
     <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
-    <td class="num">${r.orders}</td>
+    <td class="num">${r.pctDC==null?'<span class="neg">—</span>':((r.pctDC*100).toFixed(1)+'%')}</td>
     <td class="num">${fmtD(r.last)}</td>
     <td class="num${r.visits?' visit-link':''}"${r.visits?' title="Click to see this account’s PAD/EDU visits"':''}>${r.visits?`<span style="color:var(--green)">${r.visits}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
     <td class="num"${r.paidOrders?` title="avg across ${r.paidOrders} paid order${r.paidOrders!==1?'s':''}"`:''}>${fmtLate(r.avgPaidLate)}</td>
   </tr>`).join('');
-  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,visits:a.visits+r.visits,out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,orders:0,visits:0,out:0,over:0});
+  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,gross:a.gross+(r.grossList||0),conc:a.conc+(r.totalConc||0),visits:a.visits+r.visits,out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,gross:0,conc:0,visits:0,out:0,over:0});
   wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="3">${view.length} account${view.length!==1?'s':''}</td>
-    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td><td></td><td class="num">${tot.visits||'—'}</td>
+    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.gross>0.005?((tot.conc/tot.gross*100).toFixed(1)+'%'):'—'}</td><td></td><td class="num">${tot.visits||'—'}</td>
     <td class="num money">${fmt$(tot.out)}</td><td class="num money">${tot.over?fmt$(tot.over):'—'}</td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:(key==='name'||key==='brand'||key==='source')?1:-1}; renderTiers(); });
   const isoD=dt=>`${dt.getMonth()+1}/${dt.getDate()}/${String(dt.getFullYear()).slice(2)}`;
-  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, or its <b>Visits</b> count for the PAD/EDU visit dates + notes (from the field-schedule sheet, same window; matched by name — best-effort). <b>Avg Days Late</b> = the account's <b>actual</b> average days late paid, from real payment dates (Nabis detailed report's Paid At vs. delivery + terms; Distru payment dates vs. invoice due date), averaged over its paid orders in the window (on-time/early = 0; not-yet-paid orders are excluded). Shows "—" for accounts with no paid orders in range. An account selling through both Nabis and Distru under different names will appear as two rows.`;
+  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, or its <b>Visits</b> count for the PAD/EDU visit dates + notes (from the field-schedule sheet, same window; matched by name — best-effort). <b>% Disc+Credits</b> = the account's total concessions ÷ gross-at-list over the same window — the Credits/Discounts page's "% of Gross" (per-unit discounts + samples at list + pouches + invoice discounts + credit memos), from live Nabis/Distru data. <b>Avg Days Late</b> = the account's <b>actual</b> average days late paid, from real payment dates (Nabis detailed report's Paid At vs. delivery + terms; Distru payment dates vs. invoice due date), averaged over its paid orders in the window (on-time/early = 0; not-yet-paid orders are excluded). Shows "—" for accounts with no paid orders in range. An account selling through both Nabis and Distru under different names will appear as two rows.`;
 }
 function tierDrill(name){
   const {start,end}=tierData();
@@ -3117,8 +3125,8 @@ $('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr
 ['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
 $('#tier-export').onclick=()=>{
   const {rows,months}=tierData();
-  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Orders','Last order','Visits','AR Outstanding','Overdue','Avg Days Late']];
-  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'',r.visits||0,r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
+  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'% Disc+Credits','Last order','Visits','AR Outstanding','Overdue','Avg Days Late']];
+  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'',r.visits||0,r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
   downloadCSV('customer-tiers.csv',out);
 };
 
