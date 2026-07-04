@@ -225,7 +225,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-04.1';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-04.2';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Food for retailer','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -267,6 +267,59 @@ function mselSummary(root){
   if(!names.length) return '<span class="muted">Select stores…</span>';
   return names.length<=2 ? esc(names.join(', ')) : `${esc(names[0])} <span class="muted">+${names.length-1} more</span>`;
 }
+const NEW_RETAILER='* New retailer';
+// Picking "* New retailer" anywhere opens this mini-form on a second layer, creates the
+// store, and hands the new row back to the caller (which selects it in place).
+function quickAddRetailerSheet(onSaved){
+  document.getElementById('sheet2')?.remove();
+  const b=document.createElement('div'); b.className='backdrop'; b.id='sheet2'; b.style.zIndex='70';
+  b.innerHTML=`<div class="sheet" style="max-width:480px">
+    <button class="sheetx" aria-label="Close">✕</button>
+    <h3>Add the new retailer</h3>
+    <div class="small muted">Creates the store so this and future entries can be tagged to it.</div>
+    <label class="fl">Store name</label><input id="qrName" placeholder="e.g. Green Door SF">
+    <label class="fl">Address <span class="muted">(optional — helps auto-mileage)</span></label>
+    <input id="qrAddr" placeholder="street, city" autocomplete="off">
+    <div id="qrMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
+    <button class="btn primary block" id="qrSave" style="margin-top:10px">Add store</button>
+    <button class="btn ghost block" id="qrCancel" style="margin-top:8px">Cancel</button>
+  </div>`;
+  b.addEventListener('click',e=>{ if(e.target===b) b.remove(); });
+  document.body.appendChild(b);
+  b.querySelector('.sheetx').onclick=()=>b.remove();
+  b.querySelector('#qrCancel').onclick=()=>b.remove();
+  setTimeout(()=>b.querySelector('#qrName').focus(),60);
+  b.querySelector('#qrSave').onclick=async ()=>{
+    const name=b.querySelector('#qrName').value.trim();
+    if(!name){ b.querySelector('#qrMsg').textContent='Give the store a name.'; return; }
+    const st=state.preview || state.profile?.region || 'CA';
+    const btn=b.querySelector('#qrSave'); busy(btn,true);
+    const { data, error }=await supabase.from('dispensaries')
+      .insert({name, state:st, private:false, active:true, address:b.querySelector('#qrAddr').value.trim()||null, created_by:state.session.user.id})
+      .select('*').single();
+    busy(btn,false);
+    if(error){ b.querySelector('#qrMsg').textContent=error.message; return; }
+    await reloadDispensaries();
+    b.remove(); toast(`Added ${name} ✓`,'ok');
+    onSaved&&onSaved(data);
+  };
+}
+// plain <select>: picking "* New retailer" opens the mini-form and selects the created store
+function wireNewRetailerSelect(sel, onCreated){
+  if(!sel) return;
+  let prev=sel.value;
+  sel.addEventListener('change',()=>{
+    const t=sel.selectedOptions[0]?.textContent?.trim();
+    if(t!==NEW_RETAILER){ prev=sel.value; return; }
+    sel.value=prev;                                            // undo the placeholder pick
+    quickAddRetailerSheet(d=>{
+      if(![...sel.options].some(o=>o.value===d.id)){ const o=document.createElement('option'); o.value=d.id; o.textContent=d.name; sel.appendChild(o); }
+      sel.value=d.id; prev=d.id;
+      sel.dispatchEvent(new Event('change',{bubbles:true}));
+      onCreated&&onCreated(d);
+    });
+  });
+}
 function dispChipsHtml(selectedIds, opts={}){
   const all = (opts.all ? (state.dispensaries||[]).filter(d=>d.active!==false) : baDispensaries()).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const sel = new Set((selectedIds||[]).filter(Boolean));
@@ -275,7 +328,7 @@ function dispChipsHtml(selectedIds, opts={}){
   const selNames=all.filter(d=>sel.has(d.id)).map(d=>d.name);
   const sum = !selNames.length ? '<span class="muted">Select stores…</span>'
     : (selNames.length<=2 ? esc(selNames.join(', ')) : `${esc(selNames[0])} <span class="muted">+${selNames.length-1} more</span>`);
-  return `<div class="msel" id="${id}">
+  return `<div class="msel" id="${id}" data-all="${opts.all?'1':''}">
     <button type="button" class="msel-toggle"><span class="msel-sum">${sum}</span><span class="msel-caret">▾</span></button>
     <div class="msel-menu hide">
       <input class="msel-search" type="text" placeholder="🔍 Type to search stores…" autocomplete="off">
@@ -302,7 +355,21 @@ function wireDispChips(id){
     if(!menu.classList.contains('hide') && search){ search.value=''; applyFilter(); setTimeout(()=>search.focus(),50); }
   };
   if(search) search.addEventListener('input', applyFilter);
-  root.querySelectorAll('.msel-opt input').forEach(cb=>cb.onchange=()=>{ if(sum) sum.innerHTML=mselSummary(root); });
+  root.querySelectorAll('.msel-opt input').forEach(cb=>cb.onchange=()=>{
+    if(cb.checked && cb.dataset.name===NEW_RETAILER){
+      cb.checked=false;
+      quickAddRetailerSheet(d=>{
+        const selected=[...root.querySelectorAll('.msel-opt input:checked')].map(c=>c.dataset.id);
+        selected.push(d.id);
+        const holder=document.createElement('div');
+        holder.innerHTML=dispChipsHtml(selected,{all:root.dataset.all==='1', id:root.id});
+        root.replaceWith(holder.firstElementChild);
+        wireDispChips(root.id);
+      });
+      return;
+    }
+    if(sum) sum.innerHTML=mselSummary(root);
+  });
 }
 function readDispChips(id){ const root=$('#'+(id||'dchips')); return root?[...root.querySelectorAll('.msel-opt input:checked')].map(c=>c.dataset.id):[]; }
 // build the {dispensary_ids, dispensary_id} patch fields from a dropdown group
@@ -987,13 +1054,17 @@ function fixTripSheet(x){
           <label class="btn ghost sm" style="flex:none" title="snap odometer">📷<input id="fOeFile" type="file" accept="image/*" capture="environment" hidden></label></div></div>
     </div>
     <label class="fl">Miles <span class="muted">(auto-fills from odometer or address)</span></label>
-    <input id="fMiles" type="number" inputmode="decimal" placeholder="miles" value="${x.miles!=null?x.miles:''}" class="${needMiles?'needs':''}">
+    <div class="row" style="gap:6px">
+      <input id="fMiles" type="number" inputmode="decimal" placeholder="miles" value="${x.miles!=null?x.miles:''}" class="${needMiles?'needs':''}" style="flex:1">
+      <label class="btn ghost sm" style="flex:none" title="upload a route screenshot — reads the miles">🗺<input id="fRoute" type="file" accept="image/*" hidden></label>
+    </div>
     <div id="fMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
     <button class="btn primary block" id="fSave" style="margin-top:8px">Save</button>
     <button class="btn ghost block" id="fCancel" style="margin-top:8px">Cancel</button>
   `);
   $('#fCancel').onclick=closeSheet;
   const startEl=$('#fStart'), destEl=$('#fDest'), milesEl=$('#fMiles'), dispEl=$('#fDisp'), osEl=$('#fOs'), oeEl=$('#fOe');
+  wireNewRetailerSelect(dispEl);
   let startRes=null, destRes=null;
   const recalcFromOdo=()=>{ const s=Number(osEl.value),e=Number(oeEl.value); if(s&&e&&e>=s){ milesEl.value=Math.round((e-s)*10)/10; milesEl.classList.remove('needs'); } };
   attachGridTypeahead(startEl, r=>{ startRes=r; }, {gps:true});
@@ -1007,6 +1078,17 @@ function fixTripSheet(x){
     }catch(err){ toast('Upload/read failed — type the number','err'); }
     inp.placeholder=ph; recalcFromOdo(); }; };
   wireOdo($('#fOsFile'), osEl); wireOdo($('#fOeFile'), oeEl);
+  let fRoutePath=null;
+  const fR=$('#fRoute'); if(fR) fR.onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    toast('Reading your route…');
+    try{
+      fRoutePath=await uploadPhoto('odometer',f);
+      const r=await callFn('read-route',{path:fRoutePath});
+      if(r&&r.ok&&r.miles!=null){ milesEl.value=r.miles; milesEl.classList.remove('needs'); toast(`Route read: ${r.miles} mi — double-check it`,'ok'); }
+      else toast((r&&r.message)||'Couldn’t read the route — type the miles (screenshot saved)','err');
+    }catch(err){ toast('Route reader unavailable — screenshot saved, type the miles','err'); }
+  };
   osEl.addEventListener('input',recalcFromOdo); oeEl.addEventListener('input',recalcFromOdo);
   [dispEl,milesEl].forEach(el=>el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }));
   $('#fSave').onclick=async()=>{
@@ -1032,6 +1114,7 @@ function fixTripSheet(x){
       method:hasOdo?'odometer':'manual', miles_source:hasOdo?'odometer':'manual' };
     if(startRes&&startRes.coords){ patch.start_lat=startRes.coords.lat; patch.start_lng=startRes.coords.lng; }
     if(osEl._photo) patch.start_photo=osEl._photo; if(oeEl._photo) patch.end_photo=oeEl._photo;
+    if(fRoutePath && !osEl._photo) patch.start_photo=fRoutePath;   // route screenshot as evidence (odometer photo wins)
     const left=itemIssues({...x, ...patch, _k:'trip'});
     if(left.length){ $('#fMsg').style.color='var(--red)'; $('#fMsg').textContent='Still needs '+left.join(', ')+'.'; return; }
     busy(btn,true);
@@ -1244,6 +1327,8 @@ function renderGrid(){
 }
 function wireGridRow(tr, mode){
   const x=tr.querySelector('.gx'); if(x) x.onclick=()=>gridDelete(tr,mode);
+  wireNewRetailerSelect(tr.querySelector('.g-disp'));
+  wireNewRetailerSelect(tr.querySelector('.g-edisp'));
   tr.querySelectorAll('input,select').forEach(el=>{
     if(el.classList.contains('g-receipt')) return;
     el.addEventListener('input', ()=>{ el.classList.remove('needs'); gridTotal(); scheduleAutosave(tr,mode); });
@@ -1471,7 +1556,7 @@ function placeDatalist(){
 /* ── Log trip sheet ── */
 function tripSheet(){
   if(!canEditPeriod(state.period)) return toast('This pay period is view-only — ask an admin to make changes.','err');
-  let method='distance', startPath=null, endPath=null, startOdo=null, endOdo=null, miles=null, milesSrc=null, startCoords=null, startAddr=state.profile.base_address||'', destAddr='', destDispId=null;
+  let method='distance', startPath=null, endPath=null, startOdo=null, endOdo=null, miles=null, milesSrc=null, startCoords=null, startAddr=state.profile.base_address||'', destAddr='', destDispId=null, routePath=null;
   openSheet(`
     <h3>Log a trip</h3>
     <label class="fl">Date</label><input id="tDate" type="date" value="${todayISO()}">
@@ -1490,6 +1575,7 @@ function tripSheet(){
     <div id="tDistance" style="margin-top:12px">
       <label class="row" style="gap:8px;font-size:13px"><input type="checkbox" id="tRound" style="width:auto;min-height:auto"> Round trip (there &amp; back)</label>
       <button class="btn block" id="tCalc" style="margin-top:10px">Calculate miles</button>
+      <label class="btn block ghost" style="margin-top:8px">🗺 Upload route screenshot <span class="muted small">— reads the miles from your maps app</span><input id="tRoute" type="file" accept="image/*" hidden></label>
       <label class="fl">Miles</label><input id="tMiles" type="number" inputmode="decimal" step="0.1" placeholder="calculated, or enter manually">
     </div>
     <div id="tOdo" class="hide" style="margin-top:12px">
@@ -1561,6 +1647,17 @@ function tripSheet(){
   }
   $('#tStart').oninput=()=>{startOdo=Number($('#tStart').value);recalcOdo();};
   $('#tEnd').oninput  =()=>{endOdo=Number($('#tEnd').value);recalcOdo();};
+  $('#tRoute').onchange=async e=>{
+    const f=e.target.files[0]; if(!f) return;
+    toast('Reading your route…');
+    try{
+      routePath=await uploadPhoto('odometer',f);
+      const r=await callFn('read-route',{path:routePath});
+      if(r&&r.ok&&r.miles!=null){ miles=r.miles; milesSrc='route'; $('#tMiles').value=miles; showCost();
+        toast(`Route read: ${r.miles} mi${r.destination?' → '+r.destination:''} — double-check it`,'ok'); }
+      else toast((r&&r.message)||'Couldn’t read the route — enter the miles manually (screenshot saved)','err');
+    }catch(err){ toast('Route reader unavailable — screenshot saved, enter the miles manually','err'); }
+  };
   $('#tStartPhoto').onchange=e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'start');} };
   $('#tEndPhoto').onchange  =e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'end');} };
 
@@ -1576,6 +1673,7 @@ function tripSheet(){
     if(method==='distance'){
       row.roundtrip=$('#tRound').checked;
       if(startCoords){ row.start_lat=startCoords.lat; row.start_lng=startCoords.lng; }
+      if(routePath) row.start_photo=routePath;               // route screenshot as the distance evidence
     }
     const { error }=await supabase.from('trips').insert(row);
     busy(btn,false);
@@ -1911,7 +2009,7 @@ async function adminEditItem(kind, id, onSaved){
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
-    $('#aCancel').onclick=closeSheet;
+    $('#aCancel').onclick=closeSheet; wireNewRetailerSelect($('#aDisp'));
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
       const patch={ trip_date:$('#aDate').value||x.trip_date, dispensary_id:$('#aDisp').value||null,
