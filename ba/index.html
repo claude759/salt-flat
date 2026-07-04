@@ -225,9 +225,9 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-03.2';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-04.1';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
-const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Flights','Lodging','Displays','Supplies','Other'];
+const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Food for retailer','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
 function expSplit(E){ let reimb=0, card=0; (E||[]).forEach(x=>{ if(x.payment==='company') card+=Number(x.amount||0); else reimb+=Number(x.amount||0); }); return {reimb, card}; }
 
@@ -257,7 +257,7 @@ function dispSplit(x, value){
   return list.map(id=>({id, share, n}));
 }
 // dispensaries a BA can pick: only those in their region (admins/region-less see all)
-function baDispensaries(){ const r = state.preview || state.profile?.region; return state.dispensaries.filter(d => !r || d.state === r); }
+function baDispensaries(){ const r = state.preview || state.profile?.region; return state.dispensaries.filter(d => !r || !d.state || d.state === r); }
 // the selectable labor kinds (admin-editable in Settings; safe defaults pre-migration)
 const DEFAULT_LABOR_KINDS = ['Store visit','Education talk','Demo / PAD','Brand event','Travel','Admin'];
 function laborKindNames(){ const lk=(state.laborKinds||[]).filter(k=>k.active!==false).map(k=>k.name); return lk.length?lk:DEFAULT_LABOR_KINDS; }
@@ -754,6 +754,11 @@ function wireEditableBody(){
   wireSubmit();
   document.querySelectorAll('#items [data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
   const tbEl=$('#todobar'); if(tbEl) tbEl.onclick=e=>{ const row=e.target.closest('[data-fix-id]'); if(row) fixItemSheet(row.dataset.fixKind, row.dataset.fixId); };
+  // tap a draft/rejected item in the list → edit popup (date, store, amounts…)
+  const itEl=$('#items'); if(itEl) itEl.onclick=e=>{
+    if(e.target.closest('[data-del]')) return;                 // the ✕ still deletes
+    const row=e.target.closest('[data-fix-id]'); if(row) fixItemSheet(row.dataset.fixKind, row.dataset.fixId);
+  };
   renderGrid();
 }
 // read-only summary for a past/locked period (no editing controls)
@@ -904,7 +909,8 @@ function baItemRow(x){
   const title = trip ? esc(x.dest_label || dispName(x.dispensary_id)) : hours ? `${x.hours} hrs${x.kind?' · '+esc(x.kind):''}` : esc(x.vendor||'Expense');
   const sub = trip ? `${x.miles??'—'} mi · ${x.method}` : hours ? `$${Number(x.rate).toFixed(2)}/hr · payroll` : `${x.category||''}${x.payment==='company'?' · 💳 company card':''}`;
   const canDel = !hours && (x.status==='draft' || x.status==='rejected');   // hours are payroll-managed — no BA delete
-  return `<div class="item">
+  const canTap = canDel;                                                    // same rows are editable via tap
+  return `<div class="item${canTap?' todo-fix':''}"${canTap?` data-fix-id="${x.id}" data-fix-kind="${trip?'trip':'exp'}"`:''}>
     <div class="ic">${trip?'🚗':hours?'⏱':'🧾'}</div>
     <div class="grow"><div class="t">${title}</div><div class="s">${fmtDate(date)} · ${esc(sub)}</div>
       ${x.status==='rejected'&&x.reject_note?`<div class="s" style="color:var(--red)">Rejected: ${esc(x.reject_note)} — fix &amp; resubmit, or delete.</div>`:''}</div>
@@ -919,7 +925,7 @@ function itemIssues(x){
   if(x._k==='hours') return hasDisp ? [] : ['a dispensary'];   // hours only ever need a dispensary link
   const trip = x._k==='trip';
   const out=[];
-  if(!hasDisp) out.push('a dispensary');
+  if(!hasDisp && !trip) out.push('a dispensary');   // expenses need a store (use the * placeholders if unsure); trips it's optional
   if(trip){
     if(!(Number(x.miles)>0)){
       const so=x.start_odo!=null, eo=x.end_odo!=null, hs=!!x.start_label, hd=!!x.dest_label;
@@ -963,9 +969,10 @@ function fixTripSheet(x){
   const iss = itemIssues({...x,_k:'trip'});
   const needDisp = !x.dispensary_id, needMiles = !(Number(x.miles)>0);
   openSheet(`
-    <h3>Finish this trip</h3>
-    <div class="small muted" style="margin-top:2px">${fmtDate(x.trip_date)} · still needs ${iss.join(', ')}.</div>
-    <label class="fl">Dispensary <span class="muted">(required)</span></label>
+    <h3>Edit this trip</h3>
+    <div class="small muted" style="margin-top:2px">${iss.length?`Still needs ${iss.join(', ')}.`:'Change anything below.'}</div>
+    <label class="fl">Date</label><input id="fTDate" type="date" value="${x.trip_date||''}">
+    <label class="fl">Dispensary <span class="muted">(optional — helps the per-store report)</span></label>
     <select id="fDisp" class="${needDisp?'needs':''}">${dispOpts}</select>
     <label class="fl">Starting location</label>
     <input id="fStart" placeholder="start typing, or pick 📍 Current location" value="${esc(x.start_label||'')}" autocomplete="off" class="${needMiles&&!x.start_label?'needs':''}">
@@ -1019,7 +1026,7 @@ function fixTripSheet(x){
       busy(btn,false); $('#fMsg').textContent='';
     }
     const hasOdo=os!==''&&oe!=='';
-    const patch={ dispensary_id:dispEl.value||null, start_label:start||null, dest_label:dest||null,
+    const patch={ trip_date:$('#fTDate').value||x.trip_date, dispensary_id:dispEl.value||null, start_label:start||null, dest_label:dest||null,
       start_odo:os!==''?Number(os):null, end_odo:oe!==''?Number(oe):null,
       miles:miles>0?miles:(x.miles||null), roundtrip:!!x.roundtrip,   // never blank out an existing distance / round-trip flag
       method:hasOdo?'odometer':'manual', miles_source:hasOdo?'odometer':'manual' };
@@ -1031,8 +1038,12 @@ function fixTripSheet(x){
     const {data,error}=await supabase.from('trips').update(patch).eq('id',x.id).select('*').single();
     busy(btn,false);
     if(error){ $('#fMsg').style.color='var(--red)'; $('#fMsg').textContent='Couldn’t save: '+error.message; return; }
-    const i=(state._T||[]).findIndex(o=>o.id===x.id); if(i>=0) state._T[i]=data;
-    closeSheet(); toast('Trip updated ✓','ok'); refreshItems(); refreshTotals(); renderGrid();
+    const i=(state._T||[]).findIndex(o=>o.id===x.id);
+    if(data.period_id && state.period && data.period_id!==state.period.id){
+      if(i>=0) state._T.splice(i,1);
+      toast(`Trip moved to the pay period covering ${fmtDate(data.trip_date)}`,'ok');
+    } else { if(i>=0) state._T[i]=data; toast('Trip updated ✓','ok'); }
+    closeSheet(); refreshItems(); refreshTotals(); renderGrid();
   };
 }
 function fixExpenseSheet(x){
@@ -1041,9 +1052,10 @@ function fixExpenseSheet(x){
   const iss = itemIssues({...x,_k:'exp'});
   const needDisp=!x.dispensary_id, needAmt=!(Number(x.amount)>0), needRec=!x.receipt_path;
   openSheet(`
-    <h3>Finish this expense</h3>
-    <div class="small muted" style="margin-top:2px">${fmtDate(x.expense_date)} · still needs ${iss.join(', ')}.</div>
-    <label class="btn ${needRec?'primary':'ghost'} block" style="margin-top:6px">📷 ${x.receipt_path?'Replace receipt':'Snap receipt'}<input id="fRec" type="file" accept="image/*" capture="environment" hidden></label>
+    <h3>Edit this expense</h3>
+    <div class="small muted" style="margin-top:2px">${iss.length?`Still needs ${iss.join(', ')}.`:'Change anything below.'}</div>
+    <label class="fl">Date</label><input id="fEDate" type="date" value="${x.expense_date||''}">
+    <label class="btn ${needRec?'primary':'ghost'} block" style="margin-top:6px">📷 ${x.receipt_path?'Replace receipt':'Snap or upload receipt'}<input id="fRec" type="file" accept="image/*" hidden></label>
     <div id="fThumbWrap" class="${x.receipt_path?'':'hide'}" style="margin-top:8px;text-align:center"><img id="fThumb" class="thumb" style="width:110px;height:110px"></div>
     <div id="fOcr" class="small muted" style="margin-top:4px"></div>
     <label class="fl">Vendor</label><input id="fVendor" placeholder="e.g. Chevron" value="${esc(x.vendor||'')}">
@@ -1077,7 +1089,7 @@ function fixExpenseSheet(x){
   };
   $('#fSave').onclick=async()=>{
     const btn=$('#fSave');
-    const patch={ receipt_path:receiptPath||null, vendor:$('#fVendor').value.trim()||x.vendor||null,
+    const patch={ expense_date:$('#fEDate').value||x.expense_date, receipt_path:receiptPath||null, vendor:$('#fVendor').value.trim()||x.vendor||null,
       amount:Number($('#fAmt').value)||0, category:$('#fCat').value, ...dispPatch('fDispChips') };
     if(recChanged) patch.ocr_raw=ocr;   // only rewrite OCR metadata when the receipt itself changed (new value or null)
     const left=itemIssues({...x, ...patch, _k:'exp'});
@@ -1086,8 +1098,12 @@ function fixExpenseSheet(x){
     const {data,error}=await supabase.from('expenses').update(patch).eq('id',x.id).select('*').single();
     busy(btn,false);
     if(error){ $('#fMsg').textContent='Couldn’t save: '+error.message; return; }
-    const i=(state._E||[]).findIndex(o=>o.id===x.id); if(i>=0) state._E[i]=data;
-    closeSheet(); toast('Expense updated ✓','ok'); refreshItems(); refreshTotals(); renderGrid();
+    const i=(state._E||[]).findIndex(o=>o.id===x.id);
+    if(data.period_id && state.period && data.period_id!==state.period.id){
+      if(i>=0) state._E.splice(i,1);
+      toast(`Expense moved to the pay period covering ${fmtDate(data.expense_date)}`,'ok');
+    } else { if(i>=0) state._E[i]=data; toast('Expense updated ✓','ok'); }
+    closeSheet(); refreshItems(); refreshTotals(); renderGrid();
   };
 }
 // how many of this period's still-editable items are incomplete (drives submit gating)
@@ -1144,7 +1160,7 @@ function gridRowHtml(mode, it, today, pay){
   if(mode==='miles'){
     const dispOpts = `<option value="">— pick —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
     const needMi = it && !(Number(it.miles)>0) ? ' needs' : '';   // incomplete trip — finish destination / miles later
-    const needDispM = it && !it.dispensary_id ? ' needs' : '';    // every trip must link to a dispensary
+    const needDispM = '';                                          // trip dispensary is optional (was a red required cell)
     return `<tr data-id="${id}">${del}
       <td><input type="date" class="gdate g-date" value="${it?it.trip_date:today}"></td>
       <td><input class="g-start" placeholder="start" value="${it?esc(it.start_label||''):''}" autocomplete="off"></td>
@@ -1159,8 +1175,8 @@ function gridRowHtml(mode, it, today, pay){
   const rowPay = it ? (it.payment||'reimbursement') : (pay||'reimbursement');
   const cats=EXPENSE_CATEGORIES.map(c=>`<option ${it&&it.category===c?'selected':''}>${c}</option>`).join('');
   const rcell = it&&it.receipt_path
-    ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span><label class="rrepl" title="replace">✎<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`
-    : `<div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label></div>`;
+    ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span><label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-receipt" hidden></label></div>`
+    : `<div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" class="g-receipt" hidden></label></div>`;
   const needDesc = it && !((it.vendor||'').trim()) ? ' needs' : '';   // incomplete capture-fast drafts get red cells
   const needAmt  = it && !(Number(it.amount)>0)     ? ' needs' : '';
   const dispOptsE = `<option value="">— pick —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
@@ -1180,7 +1196,7 @@ async function gridReceiptRow(e, tr, mode){
   try{
     const path=await uploadPhoto('receipts', f); tr.dataset.rpath=path;
     const url=URL.createObjectURL(f);
-    cell.innerHTML=`<img class="rthumb" title="view"><label class="rrepl" title="replace">✎<input type="file" accept="image/*" capture="environment" class="g-receipt" hidden></label>`;
+    cell.innerHTML=`<img class="rthumb" title="view"><label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-receipt" hidden></label>`;
     const img=cell.querySelector('.rthumb'); img.src=url; img.onclick=()=>window.open(url,'_blank');
     cell.querySelector('.g-receipt').onchange=ev=>gridReceiptRow(ev,tr,mode);
     scheduleAutosave(tr, mode);
@@ -1301,6 +1317,7 @@ async function gridAutosave(tr, mode){
       if(error) throw error;
       const arr=(mode==='miles'?state._T:state._E); const i=arr.findIndex(x=>x.id===tr.dataset.id); if(i>=0) arr[i]=data;
     }
+    if(mode==='miles') rememberPlaces(payload.start_label, payload.dest_label);
     savedIndicator('All changes saved'); refreshTotals(); refreshItems(); gridTotal();
   }catch(e){ savedIndicator('Save failed — retry'); toast(e.message||'Save failed','err'); }
   finally{ tr._saving=false; }
@@ -1394,11 +1411,19 @@ function attachGridTypeahead(input, onResolve, opts={}){
 }
 
 /* ── reusable place typeahead: Home + dispensaries + recent + live ORS address ── */
+function rememberPlaces(...labels){
+  const cur=state.recentPlaces||[];
+  for(const l of labels){ const v=(l||'').trim(); if(!v||v==='📍 Current location') continue;
+    const i=cur.findIndex(p=>p.toLowerCase()===v.toLowerCase()); if(i>=0) cur.splice(i,1); cur.unshift(v); }
+  state.recentPlaces=cur.slice(0,30);
+}
 function placeItems(q){
   q=(q||'').trim().toLowerCase(); const out=[]; const base=state.profile.base_address;
   if(base && (q===''||'home'.includes(q)||'base'.includes(q)||base.toLowerCase().includes(q)))
     out.push({display:base, addr:base, dispId:null, label:'🏠 Home', sub:base});
-  baDispensaries().filter(d=>d.name.toLowerCase().includes(q)||(d.address||'').toLowerCase().includes(q)).slice(0,6)
+  const qTokens=q.split(/\s+/).filter(Boolean);
+  const hitD=(d)=>{ const hay=(d.name+' '+(d.address||'')).toLowerCase(); return qTokens.every(t=>hay.includes(t)); };
+  baDispensaries().filter(d=>!q||hitD(d)).slice(0,6)
     .forEach(d=>out.push({display:d.name, addr:d.address||d.name, dispId:d.id, label:'🏬 '+d.name, sub:d.address||''}));
   (state.recentPlaces||[]).filter(p=>p.toLowerCase().includes(q)).slice(0,4)
     .forEach(p=>out.push({display:p, addr:p, dispId:null, label:'🕘 '+p, sub:'recent'}));
@@ -1463,7 +1488,7 @@ function tripSheet(){
     <label class="fl">How are we measuring?</label>
     <div class="seg" id="tSeg"><button class="on" data-m="distance">📍 Auto distance</button><button data-m="odometer">📷 Odometer photos</button></div>
     <div id="tDistance" style="margin-top:12px">
-      <label class="row" style="gap:8px;font-size:13px"><input type="checkbox" id="tRound" checked style="width:auto;min-height:auto"> Round trip (there &amp; back)</label>
+      <label class="row" style="gap:8px;font-size:13px"><input type="checkbox" id="tRound" style="width:auto;min-height:auto"> Round trip (there &amp; back)</label>
       <button class="btn block" id="tCalc" style="margin-top:10px">Calculate miles</button>
       <label class="fl">Miles</label><input id="tMiles" type="number" inputmode="decimal" step="0.1" placeholder="calculated, or enter manually">
     </div>
@@ -1555,6 +1580,7 @@ function tripSheet(){
     const { error }=await supabase.from('trips').insert(row);
     busy(btn,false);
     if(error) return toast(error.message,'err');
+    rememberPlaces(row.start_label, row.dest_label);
     toast('Trip saved','ok'); closeSheet(); state.baTab='home';
     await ensurePeriodForDate(row.trip_date); drawBA();
   };
@@ -1568,7 +1594,7 @@ function expenseSheet(){
   const cats=EXPENSE_CATEGORIES;
   openSheet(`
     <h3>Add an expense</h3>
-    <label class="btn primary block" style="margin-top:4px">📷 Snap receipt<input id="eFile" type="file" accept="image/*" capture="environment" hidden></label>
+    <label class="btn primary block" style="margin-top:4px">📷 Snap or upload receipt<input id="eFile" type="file" accept="image/*" hidden></label>
     <div class="small muted center" style="margin-top:4px">Snap it and you're back home instantly — the receipt details fill in on their own; finish any red fields on the worksheet.</div>
     <div id="eThumbWrap" class="hide" style="margin-top:10px;text-align:center"><img id="eThumb" class="thumb" style="width:120px;height:120px"></div>
     <div id="eOcr" class="small muted" style="margin-top:6px"></div>
