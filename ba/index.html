@@ -71,6 +71,11 @@
   .mtiles button b{font-size:12.5px;color:var(--text);font-weight:650}
   .mtiles button small{font-size:10px;line-height:1.25;text-align:center;padding:0 2px}
   .mtiles button.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,var(--panel2))}
+  /* "new version available" refresh bar */
+  #updbar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:200;max-width:92%;
+    background:var(--accent);color:#fff;border:0;border-radius:999px;font:inherit;font-weight:650;
+    padding:11px 18px;box-shadow:0 6px 24px rgba(0,0,0,.4);cursor:pointer;animation:updpop .25s ease}
+  @keyframes updpop{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}
   /* multi-select dispensary dropdown (checkbox list) */
   .msel{position:relative;margin-top:6px}
   .msel-toggle{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
@@ -233,7 +238,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-05.2';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-05.3';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Food for retailer','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -2026,10 +2031,10 @@ function reportItemSheet(it){
   const rec=$('#riRec'); if(rec) rec.onclick=async()=>{ const u=await signedUrl('receipts',it.receipt); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); };
 }
 // Admin: edit any single trip/expense in any period (incl. past/approved). onSaved re-renders the caller.
-async function adminEditItem(kind, id, onSaved){
+async function adminEditItem(kind, id, onSaved, preloaded){
   const table = kind==='trip' ? 'trips' : kind==='hours' ? 'hours' : 'expenses';
-  const { data:x, error } = await supabase.from(table).select('*').eq('id',id).single();
-  if(error || !x){ toast('Could not load item — try again','err'); return; }
+  const x = preloaded || (await supabase.from(table).select('*').eq('id',id).single()).data;
+  if(!x){ toast('Could not load item — try again','err'); return; }
   const allDisp = [...(state.dispensaries||[])].sort(dispSort);
   const dispOpts = `<option value="">— none —</option>`+allDisp.map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   if(kind==='trip'){
@@ -2781,12 +2786,35 @@ function dispSheet(d, opts={}){
   };
 }
 
+/* ── auto-update: a PWA tab can keep running an old build forever (the shell stays
+   in memory even though the SW is network-first). Poll the live build's APP_VERSION
+   and, when it's newer, offer a one-tap refresh. Never force-reloads mid-form. ── */
+async function checkForUpdate(){
+  try{
+    // cache-bust the query so the SW's stale-while-revalidate can't answer from cache
+    const html = await (await fetch(`./index.html?v=${Date.now()}`,{cache:'no-store'})).text();
+    const m = html.match(/APP_VERSION\s*=\s*'([^']+)'/);
+    if(m && m[1] && m[1] !== APP_VERSION) showUpdateBar(m[1]);
+  }catch{}
+}
+function showUpdateBar(v){
+  if(document.getElementById('updbar')) return;
+  const b=document.createElement('button');
+  b.id='updbar'; b.textContent=`🔄 New version — tap to update`;
+  b.title=`v${v}`;
+  b.onclick=()=>{ b.textContent='Updating…'; location.reload(); };
+  document.body.appendChild(b);
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) checkForUpdate(); });
+setInterval(()=>{ if(!document.hidden) checkForUpdate(); }, 5*60*1000);
+setTimeout(checkForUpdate, 15000);   // also shortly after open
+
 /* ─────────────────────────── go ─────────────────────────── */
 boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar };
 </script>
 </body>
 </html>
