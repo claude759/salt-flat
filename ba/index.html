@@ -191,6 +191,19 @@
   table.grid th:first-child,table.grid td.gdel{width:26px;padding:0;text-align:center}
   .gx{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;padding:8px 3px;line-height:1}
   .gx:hover{color:var(--red)}
+  table.grid td.gstat{width:70px;text-align:center;padding:0 4px} table.grid th.gstat{width:70px}
+  table.grid tr[data-ro] input,table.grid tr[data-ro] select{color:var(--muted);opacity:.85}
+  table.grid input:disabled,table.grid select:disabled{background:transparent;cursor:default}
+  /* day-grouped review/edit grid */
+  .dayblk{border:1px solid var(--line);border-radius:11px;margin-top:12px;overflow:hidden}
+  .dayblk.empty{opacity:.55}
+  .dayhd{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 12px;background:var(--panel2)}
+  .dayhd .dw{color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin-right:7px}
+  .dayhd .dd{font-weight:750;font-size:14px}
+  .dayhd .dsum{color:var(--muted);font-size:11.5px;white-space:nowrap;text-align:right}
+  .daysec{padding:0} .daysec+.daysec{border-top:1px solid var(--line)}
+  .daylbl{display:flex;align-items:center;justify-content:space-between;font-size:9.5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:700;padding:7px 12px 3px}
+  .dayadd{display:flex;gap:6px;flex-wrap:wrap;padding:9px 12px}
 
   /* starting-location typeahead */
   .tsug{border:1px solid var(--line);border-radius:10px;margin-top:6px;overflow:hidden;background:var(--panel2);max-height:240px;overflow-y:auto}
@@ -238,7 +251,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-05.3';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-05.4';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Food for retailer','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -778,6 +791,9 @@ async function drawBA(){
   state._T=T; state._E=E; state._H=H;
   const submittedLock = S && (S.status==='submitted'||S.status==='approved');
   const canEdit = active && canEditPeriod(active) && !submittedLock;
+  // grid context for the shared day-grid (BA editing own current period)
+  state.grid = canEdit ? { baId: state.session.user.id, isAdmin:false, per: active, T, E, H, canAdd:true,
+    onChange(){ dgRefreshSummary(); refreshTotals(); refreshItems(); } } : null;
 
   if(!visible.length){ m.innerHTML='<div class="card"><p class="muted small">No pay periods yet.</p></div>'; return; }
 
@@ -823,13 +839,6 @@ function editableBodyHtml(S){
     </div>
     <div id="todobar">${todoCard(items,true,true)}</div>
     <div id="gridcard"></div>
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:2px 10px">
-        <h3 id="itemsHead" style="margin:0">This period · ${items.length} item${items.length===1?'':'s'}</h3>
-        <div style="font-weight:750;white-space:nowrap">Total Reimburse: <span style="color:var(--accent2)" id="itemsReimb">${money(reimburseTotal())}</span></div>
-      </div>
-      <div id="items">${items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>'}</div>
-    </div>
     <div id="submitWrap">${submitAreaHtml()}</div>`;
 }
 function wireEditableBody(){
@@ -960,12 +969,14 @@ function periodItems(){
     .sort((a,b)=>((b.trip_date||b.expense_date||b.work_date)||'').localeCompare((a.trip_date||a.expense_date||a.work_date)||''));
 }
 function refreshItems(){
-  const el=$('#items'); if(!el) return;
   const items=periodItems();
-  el.innerHTML=items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>';
-  el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
-  const h=$('#itemsHead'); if(h) h.textContent=`This period · ${items.length} item${items.length===1?'':'s'}`;
-  const ir=$('#itemsReimb'); if(ir) ir.textContent=money(reimburseTotal());
+  const el=$('#items');
+  if(el){
+    el.innerHTML=items.length?items.map(baItemRow).join(''):'<p class="muted small">Nothing logged yet. Tap “Log trip” or “Add expense”.</p>';
+    el.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
+    const h=$('#itemsHead'); if(h) h.textContent=`This period · ${items.length} item${items.length===1?'':'s'}`;
+    const ir=$('#itemsReimb'); if(ir) ir.textContent=money(reimburseTotal());
+  }
   const tb=$('#todobar'); if(tb) tb.innerHTML=todoCard(items,true,true);
   const sw=$('#submitWrap'); if(sw){ sw.innerHTML=submitAreaHtml(); wireSubmit(); }
 }
@@ -1258,40 +1269,55 @@ async function submitPeriod(){
 /* ── Quick-entry spreadsheet grid: live (autosaves), delete, $ total, autocomplete ── */
 function gridDrafts(mode){ return ((mode==='miles'?state._T:state._E)||[]).filter(x=>x.status==='draft'); }
 function gridRate(){ return Number(state.profile.rate_override ?? state.settings?.mileage_rate ?? 0.725); }
-function gridRowHtml(mode, it, today, pay){
+function gridRowHtml(mode, it, today, pay, opts={}){
+  const ro = !!opts.readonly;                  // locked row (submitted/approved to a non-admin, or hours to a BA)
+  const dis = ro ? ' disabled' : '';
+  const noDate = !!opts.noDate;                 // day-grouped view already knows the date
   const id = it ? it.id : '';
-  const del = `<td class="gdel">${id?'<button class="gx" title="delete row">✕</button>':''}</td>`;
+  const del = `<td class="gdel">${(id && !ro)?'<button class="gx" title="delete row">✕</button>':''}</td>`;
+  const dateFor = it ? (mode==='miles'?it.trip_date:mode==='hours'?it.work_date:it.expense_date) : today;
+  const dateCell = noDate ? '' : `<td><input type="date" class="gdate g-date" value="${dateFor}"${dis}></td>`;
+  const statCell = opts.showStatus ? `<td class="gstat">${it&&it.status&&it.status!=='draft'?`<span class="badge ${it.status}">${it.status}</span>`:''}</td>` : '';
   if(mode==='miles'){
     const dispOpts = `<option value="">— pick —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
-    const needMi = it && !(Number(it.miles)>0) ? ' needs' : '';   // incomplete trip — finish destination / miles later
-    const needDispM = '';                                          // trip dispensary is optional (was a red required cell)
-    return `<tr data-id="${id}">${del}
-      <td><input type="date" class="gdate g-date" value="${it?it.trip_date:today}"></td>
-      <td><input class="g-start" placeholder="start" value="${it?esc(it.start_label||''):''}" autocomplete="off"></td>
-      <td><input class="g-dest" placeholder="destination" value="${it?esc(it.dest_label||''):''}" autocomplete="off"></td>
-      <td><select class="g-disp${needDispM}">${dispOpts}</select></td>
-      <td><input class="g-note" placeholder="notes" value="${it?esc(it.note||''):''}"></td>
+    const needMi = (!ro && it && !(Number(it.miles)>0)) ? ' needs' : '';   // incomplete trip — finish destination / miles later
+    return `<tr data-id="${id}"${ro?' data-ro="1"':''}>${del}${dateCell}
+      <td><input class="g-start" placeholder="start" value="${it?esc(it.start_label||''):''}" autocomplete="off"${dis}></td>
+      <td><input class="g-dest" placeholder="destination" value="${it?esc(it.dest_label||''):''}" autocomplete="off"${dis}></td>
+      <td><select class="g-disp"${dis}>${dispOpts}</select></td>
+      <td><input class="g-note" placeholder="notes" value="${it?esc(it.note||''):''}"${dis}></td>
       <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.start_odo!=null?it.start_odo:''}" readonly style="cursor:pointer"></td>
       <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.end_odo!=null?it.end_odo:''}" readonly style="cursor:pointer"></td>
-      <td><input class="gnum g-mi${needMi}" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"></td></tr>`;
+      <td><input class="gnum g-mi${needMi}" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"${dis}></td>${statCell}</tr>`;
+  }
+  if(mode==='hours'){
+    const kinds = laborKindNames();
+    const cur = it&&it.kind ? it.kind : (kinds[0]||'Store visit');
+    const kOpts = kinds.map(k=>`<option ${cur===k?'selected':''}>${esc(k)}</option>`).join('')+(it&&it.kind&&!kinds.includes(it.kind)?`<option selected>${esc(it.kind)}</option>`:'');
+    const dispOptsH = `<option value="">— pick —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+    const needHrs = (!ro && it && !(Number(it.hours)>0)) ? ' needs' : '';
+    return `<tr data-id="${id}"${ro?' data-ro="1"':''}>${del}${dateCell}
+      <td><select class="g-kind"${dis}>${kOpts}</select></td>
+      <td><select class="g-hdisp"${dis}>${dispOptsH}</select></td>
+      <td><input class="gnum g-hrs${needHrs}" type="number" inputmode="decimal" step="0.001" placeholder="hrs" value="${it&&it.hours!=null?it.hours:''}"${dis}></td>${statCell}</tr>`;
   }
   // expenses: payment is implied by which table the row lives in (no "Paid by" column)
   const rowPay = it ? (it.payment||'reimbursement') : (pay||'reimbursement');
   const cats=EXPENSE_CATEGORIES.map(c=>`<option ${it&&it.category===c?'selected':''}>${c}</option>`).join('');
   const rcell = it&&it.receipt_path
-    ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span><label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-receipt" hidden></label></div>`
-    : `<div class="rcell"><label class="rchip">📎 add<input type="file" accept="image/*" class="g-receipt" hidden></label></div>`;
-  const needDesc = it && !((it.vendor||'').trim()) ? ' needs' : '';   // incomplete capture-fast drafts get red cells
-  const needAmt  = it && !(Number(it.amount)>0)     ? ' needs' : '';
+    ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span>${ro?'':`<label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-receipt" hidden></label>`}</div>`
+    : `<div class="rcell">${ro?'<span class="muted small">—</span>':`<label class="rchip">📎 add<input type="file" accept="image/*" class="g-receipt" hidden></label>`}</div>`;
+  const needDesc = (!ro && it && !((it.vendor||'').trim())) ? ' needs' : '';   // incomplete capture-fast drafts get red cells
+  const needAmt  = (!ro && it && !(Number(it.amount)>0))     ? ' needs' : '';
   const dispOptsE = `<option value="">— pick —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${it&&it.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
-  const needDispE = it && !it.dispensary_id ? ' needs' : '';          // every expense must link to a dispensary
-  return `<tr data-id="${id}" data-pay="${rowPay}" data-rpath="${it&&it.receipt_path?esc(it.receipt_path):''}">${del}
-    <td><input type="date" class="gdate g-date" value="${it?it.expense_date:today}"></td>
+  const needDispE = (!ro && it && !it.dispensary_id) ? ' needs' : '';          // every expense must link to a dispensary
+  return `<tr data-id="${id}" data-pay="${rowPay}" data-rpath="${it&&it.receipt_path?esc(it.receipt_path):''}"${ro?' data-ro="1"':''}>${del}${dateCell}
     <td>${rcell}</td>
-    <td><input class="g-desc${needDesc}" placeholder="description" value="${it?esc(it.vendor||''):''}"></td>
-    <td><select class="g-cat">${cats}</select></td>
-    <td><select class="g-edisp${needDispE}">${dispOptsE}</select></td>
-    <td><input class="gnum g-amt${needAmt}" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${it&&Number(it.amount)>0?it.amount:''}"></td></tr>`;
+    <td><input class="g-desc${needDesc}" placeholder="description" value="${it?esc(it.vendor||''):''}"${dis}></td>
+    <td><select class="g-cat"${dis}>${cats}</select></td>
+    <td><select class="g-edisp${needDispE}"${dis}>${dispOptsE}</select></td>
+    <td><select class="g-pay"${dis}><option value="reimbursement" ${rowPay!=='company'?'selected':''}>💵 Reimburse</option><option value="company" ${rowPay==='company'?'selected':''}>💳 Company</option></select></td>
+    <td><input class="gnum g-amt${needAmt}" type="number" inputmode="decimal" step="0.01" placeholder="0.00" value="${it&&Number(it.amount)>0?it.amount:''}"${dis}></td>${statCell}</tr>`;
 }
 async function gridReceiptRow(e, tr, mode){
   const f=e.target.files[0]; if(!f) return;
@@ -1307,49 +1333,99 @@ async function gridReceiptRow(e, tr, mode){
   }catch(err){ toast('Receipt upload failed','err'); cell.innerHTML=prev;
     const ri=cell.querySelector('.g-receipt'); if(ri) ri.onchange=ev=>gridReceiptRow(ev,tr,mode); }
 }
-function renderGrid(){
-  const host=$('#gridcard'); if(!host) return;
-  const mode=state.gridMode||'miles', today=todayISO();
-  const seg=`<div class="seg" id="gMode" style="margin-bottom:10px">
-    <button class="${mode==='miles'?'on':''}" data-g="miles">🚗 Mileage</button>
-    <button class="${mode==='expenses'?'on':''}" data-g="expenses">🧾 Expenses</button></div>`;
-  let inner;
-  if(mode==='miles'){
-    const head=`<tr><th></th><th>Date</th><th>Starting location</th><th>Destination</th><th>Dispensary</th><th>Notes</th><th>Odo start</th><th>Odo end</th><th>Miles</th></tr>`;
-    const body=gridDrafts('miles').map(it=>gridRowHtml('miles',it,today)).join('')+gridRowHtml('miles',null,today);
-    inner=`<div class="gridwrap"><table class="grid"><thead>${head}</thead><tbody class="g-body" data-pay="">${body}</tbody></table></div>
-      <button class="btn ghost sm g-add" data-pay="" style="margin-top:8px">＋ row</button>`;
-  } else {
-    const head=`<tr><th></th><th>Date</th><th>Receipt</th><th>Description</th><th>Category</th><th>Dispensary</th><th>Amount</th></tr>`;
-    const drafts=gridDrafts('expenses');
-    const tableFor=(pay)=>{
-      const body=drafts.filter(x=>(x.payment||'reimbursement')===pay).map(it=>gridRowHtml('expenses',it,today,pay)).join('')+gridRowHtml('expenses',null,today,pay);
-      return `<div class="gridwrap"><table class="grid"><thead>${head}</thead><tbody class="g-body" data-pay="${pay}">${body}</tbody></table></div>
-        <button class="btn ghost sm g-add" data-pay="${pay}" style="margin-top:6px">＋ row</button>`;
-    };
-    inner=`
-      <div style="font-weight:700;margin:2px 0 5px">💵 Reimburse me <span class="muted small" style="font-weight:400">— paid back to you</span></div>
-      ${tableFor('reimbursement')}
-      <div style="font-weight:700;margin:18px 0 5px">💳 Company card <span class="muted small" style="font-weight:400">— tracked, not reimbursed</span></div>
-      ${tableFor('company')}`;
-  }
-  host.innerHTML=`<div class="card">
-    <div class="row" style="align-items:baseline"><h3 class="grow" style="margin:0">Quick entry <span class="muted small">— autosaves as you type</span></h3><span class="small muted" id="gSaved">All changes saved</span></div>
-    ${seg}
-    ${inner}
-  </div>`;
-  host.querySelectorAll('.g-body tr').forEach(tr=>wireGridRow(tr,mode));
-  $('#gMode').querySelectorAll('button').forEach(b=>b.onclick=()=>{ state.gridMode=b.dataset.g; renderGrid(); });
-  host.querySelectorAll('.g-add').forEach(btn=>btn.onclick=()=>{
-    const tb=host.querySelector(`.g-body[data-pay="${btn.dataset.pay}"]`);
-    const t=document.createElement('template'); t.innerHTML=gridRowHtml(mode,null,todayISO(),btn.dataset.pay);
-    const tr=t.content.firstElementChild; tb.appendChild(tr); wireGridRow(tr,mode);
-  });
+// ── Day-grouped, inline-editable grid — shared by the BA home and admin review. ──
+// Every day of the pay period is a block; a day's trips/expenses/hours show in
+// spreadsheet rows. Locked rows (submitted/approved for a BA, or hours for a BA)
+// render read-only. Permissions mirror RLS: BAs edit/add their own draft trips &
+// expenses; admins edit anything + add hours (RLS blocks admins inserting trips/
+// expenses on a BA's behalf, so those add-rows are hidden for admins).
+function periodDays(start,end){ const out=[]; if(!start||!end) return out;
+  let d=new Date(start+'T12:00:00Z'); const e=new Date(end+'T12:00:00Z'); let g=0;
+  while(d<=e && g++<400){ out.push(d.toISOString().slice(0,10)); d.setUTCDate(d.getUTCDate()+1); } return out; }
+function dgWeekday(iso){ return new Date(iso+'T12:00:00Z').toLocaleDateString('en-US',{weekday:'short',timeZone:'UTC'}); }
+function dgDateLbl(iso){ return new Date(iso+'T12:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'}); }
+function dgCanEdit(ctx, kind, it){ if(kind==='hours') return !!ctx.isAdmin;
+  return !!ctx.isAdmin || (it && (it.status==='draft'||it.status==='rejected')); }
+function dgCanAdd(ctx, kind){ if(kind==='hours') return !!ctx.isAdmin;
+  return ctx.isAdmin ? false : !!ctx.canAdd; }   // admins can't insert trips/expenses for a BA (RLS)
+function dgHead(mode){
+  if(mode==='miles') return `<tr><th></th><th>Start</th><th>Destination</th><th>Dispensary</th><th>Notes</th><th>Odo st</th><th>Odo end</th><th>Miles</th><th class="gstat">Status</th></tr>`;
+  if(mode==='hours') return `<tr><th></th><th>Kind</th><th>Dispensary</th><th>Hours</th><th class="gstat">Status</th></tr>`;
+  return `<tr><th></th><th>Receipt</th><th>Description</th><th>Category</th><th>Dispensary</th><th>Paid</th><th>Amount</th><th class="gstat">Status</th></tr>`;
 }
+function dgKind(mode){ return mode==='miles'?'trip':mode==='hours'?'hours':'exp'; }
+function dgSection(ctx, mode, day, rows, forceAdd){
+  const kind=dgKind(mode), canAdd=dgCanAdd(ctx, kind);
+  if(!rows.length && !(forceAdd && canAdd)) return '';   // no rows → the day's ＋ buttons handle a new one
+  const label = mode==='miles'?'🚗 Mileage':mode==='hours'?'⏱ Hours':'🧾 Expenses';
+  const showAdd = canAdd && (rows.length>0 || forceAdd);
+  const body = rows.map(it=>gridRowHtml(mode,it,day,it.payment,{noDate:true,showStatus:true,readonly:!dgCanEdit(ctx,kind,it)})).join('')
+    + (showAdd?gridRowHtml(mode,null,day,'reimbursement',{noDate:true,showStatus:true}):'');
+  return `<div class="daysec" data-kind="${kind}"><div class="daylbl"><span>${label}</span></div>
+    <div class="gridwrap" style="border:0;border-radius:0"><table class="grid"><thead>${dgHead(mode)}</thead>
+    <tbody class="g-body" data-mode="${mode}" data-day="${day}" data-pay="reimbursement" data-stat="1">${body}</tbody></table></div></div>`;
+}
+function dgSummaryLine(ctx){
+  const T=ctx.T||[],E=ctx.E||[],H=ctx.H||[];
+  const mile=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb,card}=expSplit(E);
+  const hrs=H.reduce((a,x)=>a+Number(x.hours||0),0), lab=H.reduce((a,x)=>a+Number(x.amount||0),0);
+  return `Mileage <b>${money(mile)}</b> · Expenses <b>${money(reimb)}</b>${card>0?` · 💳 <b>${money(card)}</b>`:''}${hrs>0?` · Hours <b>${Math.round(hrs*100)/100}h</b> (${money(lab)})`:''} · Reimburse total <b style="color:var(--accent2)">${money(mile+reimb)}</b>`;
+}
+function dgRefreshSummary(){ const el=$('#dgSummary'); if(el) el.innerHTML=dgSummaryLine(gridCtx()); }
+function renderDayGrid(host){
+  host = host || $('#gridcard'); if(!host) return;
+  const ctx=gridCtx(); const per=ctx.per||state.period;
+  const days = per ? periodDays(per.start_date, per.end_date) : [];
+  const T=ctx.T||[], E=ctx.E||[], H=ctx.H||[];
+  const bucket=(arr,f)=>{ const m={}; (arr||[]).forEach(x=>{ (m[x[f]]=m[x[f]]||[]).push(x); }); return m; };
+  const tD=bucket(T,'trip_date'), eD=bucket(E,'expense_date'), hD=bucket(H,'work_date');
+  const addable=['miles','expenses','hours'].filter(m=>dgCanAdd(ctx,dgKind(m)));
+  const blocks = days.map(day=>{
+    const trips=tD[day]||[], exps=eD[day]||[], hrs=hD[day]||[];
+    const dm=trips.reduce((a,x)=>a+Number(x.amount||0),0), de=exps.reduce((a,x)=>a+Number(x.amount||0),0), dh=hrs.reduce((a,x)=>a+Number(x.hours||0),0);
+    const secs=dgSection(ctx,'miles',day,trips)+dgSection(ctx,'expenses',day,exps)+dgSection(ctx,'hours',day,hrs);
+    const parts=[]; if(dm)parts.push('🚗 '+money(dm)); if(de)parts.push('🧾 '+money(de)); if(dh)parts.push('⏱ '+(Math.round(dh*100)/100)+'h');
+    const head=`<div class="dayhd"><div><span class="dw">${dgWeekday(day)}</span><span class="dd">${dgDateLbl(day)}</span></div><div class="dsum">${parts.join(' · ')||'—'}</div></div>`;
+    const present={trip:trips.length>0,exp:exps.length>0,hours:hrs.length>0};
+    // ＋ buttons only for addable types this day doesn't already have a section for
+    const addBtns=addable.filter(m=>!present[dgKind(m)]).map(m=>`<button class="btn ghost sm dg-add" data-mode="${m}" data-day="${day}">＋ ${m==='miles'?'Mileage':m==='hours'?'Hours':'Expense'}</button>`);
+    const addbar = addBtns.length ? `<div class="dayadd">${addBtns.join('')}</div>` : '';
+    if(!secs && !addbar) return `<div class="dayblk empty">${head}</div>`;
+    return `<div class="dayblk" data-day="${day}">${head}${secs}${addbar}</div>`;
+  }).join('');
+  host.innerHTML=`<div class="card">
+    <div class="row" style="align-items:baseline"><h3 class="grow" style="margin:0">${ctx.isAdmin?'Days this period':'Log by day'} <span class="muted small">— tap a cell to edit, autosaves</span></h3><span class="small muted" id="gSaved">All changes saved</span></div>
+    <div id="dgSummary" class="small muted" style="margin:2px 0 8px">${dgSummaryLine(ctx)}</div>
+    ${blocks||'<p class="muted small">No days in this period.</p>'}
+  </div>`;
+  host.querySelectorAll('.g-body tr').forEach(tr=>{ const tb=tr.closest('.g-body'); wireGridRow(tr, tb.dataset.mode); });
+  host.querySelectorAll('.dg-add').forEach(b=>b.onclick=()=>dgAddDay(host,b.dataset.mode,b.dataset.day));
+}
+function dgAddDay(host, mode, day){
+  const blk=host.querySelector(`.dayblk[data-day="${day}"]`)||host.querySelector('.dayblk.empty'); if(!blk) return;
+  blk.classList.remove('empty');
+  const kind=dgKind(mode); let sec=blk.querySelector(`.daysec[data-kind="${kind}"]`);
+  if(!sec){ const t=document.createElement('template'); t.innerHTML=dgSection(gridCtx(),mode,day,[],true).trim();
+    sec=t.content.firstElementChild; if(!sec) return; const addbar=blk.querySelector('.dayadd'); blk.insertBefore(sec, addbar||null);
+    const btn=blk.querySelector(`.dg-add[data-mode="${mode}"]`); if(btn) btn.remove();   // that type now has a section
+    sec.querySelectorAll('.g-body tr').forEach(tr=>wireGridRow(tr,mode));
+  } else { const tb=sec.querySelector('.g-body'); const t=document.createElement('template');
+    t.innerHTML=gridRowHtml(mode,null,day,'reimbursement',{noDate:true,showStatus:true});
+    const tr=t.content.firstElementChild; tb.appendChild(tr); wireGridRow(tr,mode); }
+  const last=sec.querySelector('.g-body tr:last-child');
+  const inp=last&&last.querySelector('input:not([readonly]):not([disabled]),select:not([disabled])'); if(inp) inp.focus();
+}
+// back-comat name: the BA home + save/close paths call renderGrid(); it now paints the day grid
+function renderGrid(){ renderDayGrid($('#gridcard')); }
 function wireGridRow(tr, mode){
+  if(tr.dataset.ro){   // locked row: only the receipt-view link is live, nothing editable
+    const v=tr.querySelector('[data-view]'); if(v) v.onclick=async()=>{ const p=tr.dataset.rpath; if(p){ const u=await signedUrl('receipts',p); if(u) window.open(u,'_blank'); } };
+    return;
+  }
   const x=tr.querySelector('.gx'); if(x) x.onclick=()=>gridDelete(tr,mode);
   wireNewRetailerSelect(tr.querySelector('.g-disp'));
   wireNewRetailerSelect(tr.querySelector('.g-edisp'));
+  wireNewRetailerSelect(tr.querySelector('.g-hdisp'));
   tr.querySelectorAll('input,select').forEach(el=>{
     if(el.classList.contains('g-receipt')) return;
     el.addEventListener('input', ()=>{ el.classList.remove('needs'); gridTotal(); scheduleAutosave(tr,mode); });
@@ -1364,7 +1440,7 @@ function wireGridRow(tr, mode){
     attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true});
     attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r; if(r.dispId){ const sel=tr.querySelector('.g-disp'); if(sel && sel.value!==r.dispId) sel.value=r.dispId; } scheduleAutosave(tr,mode); });
     ['.g-start','.g-dest'].forEach(sel=>{ const el=tr.querySelector(sel); if(el) el.addEventListener('blur', ()=>setTimeout(()=>maybeCalcDistance(tr),250)); });
-  } else {
+  } else if(mode==='expenses'){
     const ri=tr.querySelector('.g-receipt'); if(ri) ri.onchange=e=>gridReceiptRow(e,tr,mode);
     const v=tr.querySelector('[data-view]'); if(v) v.onclick=async()=>{ const p=tr.dataset.rpath; if(p){ const u=await signedUrl('receipts',p); if(u) window.open(u,'_blank'); } };
   }
@@ -1374,18 +1450,30 @@ function scheduleAutosave(tr, mode){ clearTimeout(tr._t); savedIndicator('Saving
 // Commit any debounced / in-flight grid edits before a full re-render or submit,
 // so the incremental autosave can never race drawBA's fetch (which caused saved
 // items to flicker / vanish). Bounded wait (~1s) for quiescence.
-async function flushGrid(){
-  const host=$('#gridcard'); if(!host) return;
-  const mode=state.gridMode||'miles';
+async function flushGrid(host){
+  host = host || $('#gridcard'); if(!host) return;
+  const rowMode=tr=>{ const tb=tr.closest('.g-body'); return (tb&&tb.dataset.mode) || state.gridMode || 'miles'; };
   const rows=()=>[...host.querySelectorAll('.g-body tr')];
-  rows().forEach(tr=>{ if(tr._t){ clearTimeout(tr._t); tr._t=null; gridAutosave(tr,mode); } });
+  rows().forEach(tr=>{ if(tr._t){ clearTimeout(tr._t); tr._t=null; gridAutosave(tr,rowMode(tr)); } });
   for(let i=0;i<25 && rows().some(tr=>tr._saving||tr._t); i++) await new Promise(r=>setTimeout(r,40));
 }
+// ── grid context: which BA's data the grid edits + how to refresh after a write ──
+// Home sets state.grid={baId:self,…}; adminBaDetail sets it to the viewed BA. Falls
+// back to the signed-in user's own arrays so nothing breaks if it's ever unset.
+function gridTable(mode){ return mode==='miles'?'trips':mode==='hours'?'hours':'expenses'; }
+function gridCtx(){
+  return state.grid || { baId: state.session?.user?.id, isAdmin:false, per: state.period,
+    get T(){return state._T||[]}, get E(){return state._E||[]}, get H(){return state._H||[]},
+    onChange(){ if(typeof refreshTotals==='function') refreshTotals(); if(typeof refreshItems==='function') refreshItems(); } };
+}
+function gridArr(mode){ const c=gridCtx(); return mode==='miles'?c.T:mode==='hours'?c.H:c.E; }
+function gridRowDate(tr){ const tb=tr.closest('.g-body'); return (tb&&tb.dataset.day) || tr.querySelector('.g-date')?.value || todayISO(); }
 async function gridAutosave(tr, mode){
+  if(tr.dataset.ro) return;                                  // locked row — never write
   if(tr._saving){ scheduleAutosave(tr,mode); return; }
-  const isNew=!tr.dataset.id; let payload, table;
+  const isNew=!tr.dataset.id; let payload; const table=gridTable(mode);
+  const date=gridRowDate(tr);
   if(mode==='miles'){
-    const date=tr.querySelector('.g-date').value;
     const start=tr.querySelector('.g-start').value.trim(), dest=tr.querySelector('.g-dest').value.trim();
     const note=tr.querySelector('.g-note').value.trim();
     const os=tr.querySelector('.g-os').value, oe=tr.querySelector('.g-oe').value;
@@ -1393,47 +1481,56 @@ async function gridAutosave(tr, mode){
     if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
     if(isNew && !(date && (miles>0 || start || dest))){ savedIndicator('All changes saved'); return; }  // save in-progress trips; finish later
     const hasOdo=os!==''&&oe!=='';
-    const dispId = tr.querySelector('.g-disp')?.value || null;   // tagged dispensary (auto-filled from a dispensary destination, or chosen)
-    payload={ trip_date:date||todayISO(), dispensary_id:dispId, method:hasOdo?'odometer':'manual',
+    const dispId = tr.querySelector('.g-disp')?.value || null;
+    payload={ trip_date:date, dispensary_id:dispId, method:hasOdo?'odometer':'manual',
       start_odo:os?Number(os):null, end_odo:oe?Number(oe):null, miles:miles>0?miles:null, miles_source:hasOdo?'odometer':'manual',
-      start_label:start||null, dest_label:dest||null, roundtrip:false, note:note||null };
-    const sC=tr._startResolved?.coords; if(sC){ payload.start_lat=sC.lat; payload.start_lng=sC.lng; }   // GPS start
-    if(tr._osPhoto) payload.start_photo=tr._osPhoto; if(tr._oePhoto) payload.end_photo=tr._oePhoto;     // odometer photos
-    table='trips';
+      start_label:start||null, dest_label:dest||null, note:note||null };   // roundtrip left alone (only set on insert; grid miles are already final)
+    const sC=tr._startResolved?.coords; if(sC){ payload.start_lat=sC.lat; payload.start_lng=sC.lng; }
+    if(tr._osPhoto) payload.start_photo=tr._osPhoto; if(tr._oePhoto) payload.end_photo=tr._oePhoto;
+  } else if(mode==='hours'){
+    const kind=tr.querySelector('.g-kind')?.value||null;
+    const hrs=Number(tr.querySelector('.g-hrs').value);
+    const dispId=tr.querySelector('.g-hdisp')?.value||null;
+    if(isNew && !(date && hrs>0)){ savedIndicator('All changes saved'); return; }
+    payload={ work_date:date, kind, hours:hrs>0?hrs:0, dispensary_id:dispId, source:'manual' };
   } else {
-    const date=tr.querySelector('.g-date').value, desc=tr.querySelector('.g-desc').value.trim();
+    const desc=tr.querySelector('.g-desc').value.trim();
     const cat=tr.querySelector('.g-cat').value, amt=Number(tr.querySelector('.g-amt').value);
-    const pay=tr.dataset.pay||'reimbursement';
+    const pay=tr.querySelector('.g-pay')?.value || tr.dataset.pay || 'reimbursement';
     if(isNew && !(date && amt>0)){ savedIndicator('All changes saved'); return; }
-    payload={ expense_date:date||todayISO(), vendor:desc||'Expense', amount:amt>0?amt:0, category:cat||'Other',
+    payload={ expense_date:date, vendor:desc||'Expense', amount:amt>0?amt:0, category:cat||'Other',
       payment:pay, dispensary_id:tr.querySelector('.g-edisp')?.value||null, receipt_path:tr.dataset.rpath||null, note:desc||null };
-    table='expenses';
   }
   tr._saving=true;
   try{
     if(isNew){
-      const {data,error}=await supabase.from(table).insert({...payload, ba_id:state.session.user.id, status:'draft'}).select('*').single();
+      const {data,error}=await supabase.from(table).insert({...payload, ba_id:gridCtx().baId, status:'draft', ...(mode==='miles'?{roundtrip:false}:{})}).select('*').single();
       if(error) throw error;
       tr.dataset.id=data.id;
       const dc=tr.querySelector('.gdel'); if(dc && !dc.querySelector('.gx')){ dc.innerHTML='<button class="gx" title="delete row">✕</button>'; dc.querySelector('.gx').onclick=()=>gridDelete(tr,mode); }
-      if(!state.period || data.period_id===state.period.id){ const a=(mode==='miles'?state._T:state._E); if(!a.some(x=>x.id===data.id)) a.unshift(data); }
-      const tb=tr.parentElement; const t=document.createElement('template'); t.innerHTML=gridRowHtml(mode,null,todayISO(),tb&&tb.dataset.pay); const ntr=t.content.firstElementChild; tb.appendChild(ntr); wireGridRow(ntr,mode);
+      const per=gridCtx().per||state.period;
+      if(!per || data.period_id===per.id){ const a=gridArr(mode); if(a && !a.some(x=>x.id===data.id)) a.unshift(data); }
+      // append a fresh empty add-row, carrying this row's day/pay context
+      const tb=tr.closest('.g-body'); if(tb){ const t=document.createElement('template');
+        t.innerHTML=gridRowHtml(mode,null,tb.dataset.day||todayISO(),tb.dataset.pay,{noDate:!!tb.dataset.day, showStatus:tb.dataset.stat==='1'});
+        const ntr=t.content.firstElementChild; tb.appendChild(ntr); wireGridRow(ntr,mode); }
     } else {
       const {data,error}=await supabase.from(table).update(payload).eq('id',tr.dataset.id).select('*').single();
       if(error) throw error;
-      const arr=(mode==='miles'?state._T:state._E); const i=arr.findIndex(x=>x.id===tr.dataset.id); if(i>=0) arr[i]=data;
+      const arr=gridArr(mode); if(arr){ const i=arr.findIndex(x=>x.id===tr.dataset.id); if(i>=0) arr[i]=data; }
     }
     if(mode==='miles') rememberPlaces(payload.start_label, payload.dest_label);
-    savedIndicator('All changes saved'); refreshTotals(); refreshItems(); gridTotal();
+    savedIndicator('All changes saved'); const oc=gridCtx().onChange; if(oc) oc(); gridTotal();
   }catch(e){ savedIndicator('Save failed — retry'); toast(e.message||'Save failed','err'); }
   finally{ tr._saving=false; }
 }
 async function gridDelete(tr, mode){
   const id=tr.dataset.id;
-  if(id){ const {error}=await supabase.from(mode==='miles'?'trips':'expenses').delete().eq('id',id);
+  if(id){ if(!confirm('Delete this row?')) return;
+    const {error}=await supabase.from(gridTable(mode)).delete().eq('id',id);
     if(error) return toast(error.message,'err');
-    const arr=(mode==='miles'?state._T:state._E); const i=arr.findIndex(x=>x.id===id); if(i>=0) arr.splice(i,1);
-    refreshTotals(); refreshItems();
+    const arr=gridArr(mode); if(arr){ const i=arr.findIndex(x=>x.id===id); if(i>=0) arr.splice(i,1); }
+    const oc=gridCtx().onChange; if(oc) oc();
   }
   tr.remove(); gridTotal();
 }
@@ -2192,6 +2289,16 @@ async function adminDash(m){
   const rs=$('#regSel'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminDash(m); };
 }
 
+// live-refresh the admin review header + day-grid summary after an inline edit
+function admRefreshTotals(){
+  const c=gridCtx(); const T=c.T||[],E=c.E||[],H=c.H||[];
+  const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
+  const lab=H.reduce((a,x)=>a+Number(x.amount||0),0), th=H.reduce((a,x)=>a+Number(x.hours||0),0);
+  const set=(id,v)=>{ const e=document.getElementById(id); if(e) e.textContent=v; };
+  set('admMile',money(mile)); set('admReimb',money(mile+reimb)); set('admExp',money(reimb)); set('admLabor',money(lab)); set('admHrs',th.toFixed(2));
+  dgRefreshSummary();
+  const tb=document.getElementById('admTodo'); if(tb) tb.innerHTML=todoCard([...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'})),...H.map(x=>({...x,_k:'hours'}))],false,true);
+}
 async function adminBaDetail(baId){
   const per=state.period;
   openSheet(`<div class="loading"><span class="spin"></span></div>`);
@@ -2211,63 +2318,31 @@ async function adminBaDetail(baId){
   const catRows=Object.entries(byCat).sort((a,b)=>(b[1].reimb+b[1].card)-(a[1].reimb+a[1].card))
     .map(([c,v])=>`<div class="row" style="justify-content:space-between;padding:2px 0"><span class="small">${esc(c)}${v.card>0?' <span class="muted">💳</span>':''}</span><span class="small" style="font-weight:600">${money(v.reimb+v.card)}</span></div>`).join('');
   const S=sub||{status:'open'};
-  // Mirror the BA's own "This period" list so the admin sees what the employee sees,
-  // with the admin's extra controls (receipt view/attach, reject) inline.
-  const recUrls={};
-  await Promise.all((E||[]).map(async x=>{ recUrls[x.id]=x.receipt_path?await signedUrl('receipts',x.receipt_path):null; }));
-  const items=[...(T||[]).map(x=>({...x,_k:'trip'})),...(E||[]).map(x=>({...x,_k:'exp'})),...(H||[]).map(x=>({...x,_k:'hours'}))]
-    .sort((a,b)=>((b.trip_date||b.expense_date||b.work_date)||'').localeCompare((a.trip_date||a.expense_date||a.work_date)||''));
-  const itemRows=items.map(x=>{
-    const trip=x._k==='trip', hours=x._k==='hours';
-    const kind=trip?'trip':hours?'hours':'exp', table=trip?'trips':hours?'hours':'expenses';
-    const date=trip?x.trip_date:hours?x.work_date:x.expense_date;
-    const title=trip?esc(x.dest_label||dispName(x.dispensary_id)):hours?(`${x.hours} hrs${(x.kind||x.job)?' · '+esc(x.kind||x.job):''}`):esc(x.vendor||'Expense');
-    const sub=trip?`${x.miles??'—'} mi · ${x.method}`:hours?`$${Number(x.rate).toFixed(2)}/hr`:`${x.category||''} · ${x.payment==='company'?'💳 card':'💵 reimb'}`;
-    const disp=dispLabel(x);
-    const rec=(trip||hours)?'':(recUrls[x.id]?` · <a href="${recUrls[x.id]}" target="_blank">📄 receipt</a>`:` · <label style="cursor:pointer;color:var(--accent2)">📎 attach<input type="file" accept="image/*" class="recFile" data-eid="${x.id}" hidden></label>`);
-    return `<div class="item adminedit" data-kind="${kind}" data-edit-kind="${kind}" data-edit-id="${x.id}" style="cursor:pointer">
-      <div class="ic">${trip?'🚗':hours?'⏱':'🧾'}</div>
-      <div class="grow" style="min-width:0"><div class="t">${title}</div>
-        <div class="s">${fmtDate(date)} · ${esc(sub)}${disp?` · 🏬 ${esc(disp)}`:''}${rec}</div>
-        ${x.status==='rejected'&&x.reject_note?`<div class="s" style="color:var(--red)">Rejected: ${esc(x.reject_note)}</div>`:''}</div>
-      <div style="text-align:right;flex:none;margin-left:8px"><div class="amt">${money(x.amount)}</div>
-        <div style="margin-top:2px"><span class="badge ${x.status}">${x.status}</span></div></div>
-      ${x.status!=='approved'?`<button class="btn ghost sm" data-rej="${table}" data-id="${x.id}" style="margin-left:6px;flex:none">Reject</button>`:''}
-      <div class="muted" style="font-size:18px;flex:none;margin-left:4px">›</div>
-    </div>`;
-  }).join('');
+  const kst='font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700';
+  const items=[...(T||[]).map(x=>({...x,_k:'trip'})),...(E||[]).map(x=>({...x,_k:'exp'})),...(H||[]).map(x=>({...x,_k:'hours'}))];
+  // shared day-grid context: the admin edits THIS BA's data inline (RLS lets admins
+  // edit any row + add hours; adding trips/expenses on a BA's behalf stays disabled).
+  state.grid={ baId, isAdmin:true, per, T:T||[], E:E||[], H:H||[], canAdd:false, onChange:admRefreshTotals };
   openSheet(`
     <h3>${esc(prof.full_name||prof.email)}</h3>
     <div class="small muted">${esc(per.label)} · <span class="badge ${S.status}">${S.status}</span></div>
     <div class="card" style="margin:12px 0">
       <div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap">
-        <div>
-          <div class="k" style="font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700">Total Mileage</div>
-          <div style="font-size:20px;font-weight:750">${money(mile)}</div>
-        </div>
-        <div style="text-align:right">
-          <div class="k" style="font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700">Total Reimburse</div>
-          <div style="font-size:22px;font-weight:800;color:var(--accent2)">${money(mile+reimb)}</div>
-        </div>
+        <div><div class="k" style="${kst}">Total Mileage</div><div style="font-size:20px;font-weight:750" id="admMile">${money(mile)}</div></div>
+        <div style="text-align:right"><div class="k" style="${kst}">Total Reimburse</div><div style="font-size:22px;font-weight:800;color:var(--accent2)" id="admReimb">${money(mile+reimb)}</div></div>
       </div>
-      <div style="text-align:center;margin-top:10px">
-        <div class="k" style="font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700">Total Expenses</div>
-        <div style="font-size:16px;font-weight:700">${money(reimb)}</div>
-      </div>
+      <div style="text-align:center;margin-top:10px"><div class="k" style="${kst}">Total Expenses</div><div style="font-size:16px;font-weight:700" id="admExp">${money(reimb)}</div></div>
       ${card>0?`<div class="small muted center" style="margin-top:8px">💳 Company card (not reimbursed): <b>${money(card)}</b></div>`:''}
-      ${(H&&H.length)?`<div style="text-align:center;margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
-        <div class="k" style="font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700">Total Labor · ${totHours.toFixed(2)} hrs</div>
-        <div style="font-size:16px;font-weight:700">${money(labor)}</div>
-        <div class="small muted" style="margin-top:2px">paid through payroll — not part of reimbursement</div></div>`:''}
+      <div style="text-align:center;margin-top:10px;border-top:1px solid var(--line);padding-top:10px${(H&&H.length)?'':';display:none'}" id="admLaborWrap">
+        <div class="k" style="${kst}">Total Labor · <span id="admHrs">${totHours.toFixed(2)}</span> hrs</div>
+        <div style="font-size:16px;font-weight:700" id="admLabor">${money(labor)}</div>
+        <div class="small muted" style="margin-top:2px">paid through payroll — not part of reimbursement</div></div>
       ${catRows?`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">
         <div class="small muted center" style="text-transform:uppercase;letter-spacing:.3px;font-weight:700;margin-bottom:4px">Expenses by category ${card>0?`<span style="text-transform:none;font-weight:400">· 💳 = on company card</span>`:''}</div>
-        ${catRows}
-      </div>`:''}
+        ${catRows}</div>`:''}
     </div>
-    ${todoCard(items,false,true)}
-    ${items.length?`<div class="card"><h3 style="margin:0 0 4px">This period · ${items.length} item${items.length===1?'':'s'} <span class="muted small">— the view ${esc((prof.full_name||'they').split(' ')[0])} sees</span></h3>
-      <div class="seg" id="dFilter" style="margin:8px 0"><button class="on" data-f="all">All</button><button data-f="trip">🚗 Mileage</button><button data-f="exp">🧾 Expenses</button>${H&&H.length?'<button data-f="hours">⏱ Hours</button>':''}</div>
-      ${itemRows}</div>`:'<p class="muted small">Nothing logged this period.</p>'}
+    <div id="admTodo">${todoCard(items,false,true)}</div>
+    <div id="admGrid"></div>
     ${(H||[]).some(x=>!x.dispensary_id)?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
     <div class="row wrap" style="margin-top:16px">
       ${S.status==='submitted'?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
@@ -2276,21 +2351,14 @@ async function adminBaDetail(baId){
     </div>
     <button class="btn ghost block" id="closeBtn" style="margin-top:8px">Close</button>
   `);
-  $('#closeBtn').onclick=closeSheet;
-  $('#csvBtn').onclick=()=>exportCSV(prof,per,T||[],E||[],H||[]);
-  $('#pdfBtn').onclick=()=>exportPDF(prof,per,T||[],E||[],H||[]);
-  $('#approveBtn')&&($('#approveBtn').onclick=()=>approveSubmission(baId,per.id,T,E,H));
-  $('#autolinkBtn')&&($('#autolinkBtn').onclick=()=>autoLinkHours(baId,per.id,H||[]));
-  document.querySelectorAll('[data-rej]').forEach(b=>b.onclick=()=>rejectItem(b.dataset.rej,b.dataset.id,baId));
-  document.querySelectorAll('.recFile').forEach(inp=>inp.onchange=e=>adminAttachReceipt(e,baId));
-  document.querySelectorAll('.item.adminedit').forEach(el=>el.onclick=ev=>{
-    if(ev.target.closest('[data-rej],label,a,input,select,button')) return;   // let the inline reject/attach/receipt controls do their thing
-    adminEditItem(el.dataset.editKind, el.dataset.editId, ()=>adminBaDetail(baId)); });
-  // the to-do card rows open the same admin editor (fill the missing receipt/dispensary/etc. for the BA)
-  document.querySelectorAll('#sheet .item.todo-fix').forEach(el=>el.onclick=()=>adminEditItem(el.dataset.fixKind, el.dataset.fixId, ()=>adminBaDetail(baId)));
-  const df=$('#dFilter'); if(df) df.querySelectorAll('button').forEach(b=>b.onclick=()=>{
-    df.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b)); const f=b.dataset.f;
-    df.parentElement.querySelectorAll('.item[data-kind]').forEach(it=>{ it.style.display=(f==='all'||it.dataset.kind===f)?'':'none'; }); });
+  renderDayGrid($('#admGrid'));
+  $('#closeBtn').onclick=()=>{ flushGrid($('#admGrid')); closeSheet(); };
+  $('#csvBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); exportCSV(prof,per,c.T||[],c.E||[],c.H||[]); };
+  $('#pdfBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); exportPDF(prof,per,c.T||[],c.E||[],c.H||[]); };
+  $('#approveBtn')&&($('#approveBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); approveSubmission(baId,per.id,c.T,c.E,c.H); });
+  $('#autolinkBtn')&&($('#autolinkBtn').onclick=async()=>{ await flushGrid($('#admGrid')); autoLinkHours(baId,per.id,gridCtx().H||[]); });
+  // to-do rows (delegated so they survive live re-renders) open the field-fix popup editor
+  const at=$('#admTodo'); if(at) at.onclick=e=>{ const row=e.target.closest('.todo-fix'); if(row) adminEditItem(row.dataset.fixKind, row.dataset.fixId, ()=>adminBaDetail(baId)); };
 }
 // admin attaches/replaces a receipt image on an expense (e.g. for back-filled data).
 // Uploaded under the admin's own storage prefix (which RLS already permits); admins can view any receipt.
@@ -2814,7 +2882,7 @@ boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx };
 </script>
 </body>
 </html>
