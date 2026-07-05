@@ -233,7 +233,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-04.3';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-05.1';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Food for retailer','Flights','Lodging','Displays','Supplies','Other'];
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
@@ -1070,6 +1070,7 @@ function fixTripSheet(x){
       <input id="fMiles" type="number" inputmode="decimal" placeholder="miles" value="${x.miles!=null?x.miles:''}" class="${needMiles?'needs':''}" style="flex:1">
       <label class="btn ghost sm" style="flex:none" title="upload a route screenshot — reads the miles">🗺<input id="fRoute" type="file" accept="image/*" hidden></label>
     </div>
+    <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="fRound" ${x.roundtrip?'checked':''} style="width:auto;min-height:auto"> Round trip (there &amp; back)</label>
     <div id="fMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
     <button class="btn primary block" id="fSave" style="margin-top:8px">Save</button>
     <button class="btn ghost block" id="fCancel" style="margin-top:8px">Cancel</button>
@@ -1102,6 +1103,9 @@ function fixTripSheet(x){
     }catch(err){ toast('Route reader unavailable — screenshot saved, type the miles','err'); }
   };
   osEl.addEventListener('input',recalcFromOdo); oeEl.addEventListener('input',recalcFromOdo);
+  // flipping round-trip doubles/halves the miles in place (visible before saving)
+  $('#fRound').onchange=()=>{ const m=Number(milesEl.value);
+    if(m>0) milesEl.value=Math.round(m*($('#fRound').checked?2:0.5)*100)/100; };
   [dispEl,milesEl].forEach(el=>el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }));
   $('#fSave').onclick=async()=>{
     const btn=$('#fSave');
@@ -1112,7 +1116,7 @@ function fixTripSheet(x){
     // no miles yet but both endpoints known → ask ORS once
     if(!(miles>0) && start && dest){
       busy(btn,true); $('#fMsg').style.color='var(--muted)'; $('#fMsg').textContent='Calculating distance…';
-      try{ const body={roundtrip:!!x.roundtrip};   // match the trip's own round-trip setting
+      try{ const body={roundtrip:$('#fRound').checked};   // match the (possibly just-toggled) round-trip setting
         if(startRes&&startRes.coords){ body.start_lat=startRes.coords.lat; body.start_lng=startRes.coords.lng; } else body.start_address=(startRes&&startRes.addr)||start;
         if(destRes&&destRes.dispId){ body.dispensary_id=destRes.dispId; } else body.dest_address=(destRes&&destRes.addr)||dest;
         const r=await callFn('calc-distance',body); if(r&&r.ok) miles=r.miles;
@@ -1122,7 +1126,7 @@ function fixTripSheet(x){
     const hasOdo=os!==''&&oe!=='';
     const patch={ trip_date:$('#fTDate').value||x.trip_date, dispensary_id:dispEl.value||null, start_label:start||null, dest_label:dest||null,
       start_odo:os!==''?Number(os):null, end_odo:oe!==''?Number(oe):null,
-      miles:miles>0?miles:(x.miles||null), roundtrip:!!x.roundtrip,   // never blank out an existing distance / round-trip flag
+      miles:miles>0?miles:(x.miles||null), roundtrip:$('#fRound').checked,   // never blank out an existing distance
       method:hasOdo?'odometer':'manual', miles_source:hasOdo?'odometer':'manual' };
     if(startRes&&startRes.coords){ patch.start_lat=startRes.coords.lat; patch.start_lng=startRes.coords.lng; }
     if(osEl._photo) patch.start_photo=osEl._photo; if(oeEl._photo) patch.end_photo=oeEl._photo;
@@ -2020,7 +2024,7 @@ async function adminEditItem(kind, id, onSaved){
   const table = kind==='trip' ? 'trips' : kind==='hours' ? 'hours' : 'expenses';
   const { data:x, error } = await supabase.from(table).select('*').eq('id',id).single();
   if(error || !x){ toast('Could not load item — try again','err'); return; }
-  const allDisp = [...(state.dispensaries||[])].sort((a,b)=>a.name.localeCompare(b.name));
+  const allDisp = [...(state.dispensaries||[])].sort(dispSort);
   const dispOpts = `<option value="">— none —</option>`+allDisp.map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   if(kind==='trip'){
     openSheet(`
@@ -2033,18 +2037,22 @@ async function adminEditItem(kind, id, onSaved){
         <div class="grow"><label class="fl">Miles</label><input id="aMiles" type="number" inputmode="decimal" value="${x.miles!=null?x.miles:''}"></div>
         <div class="grow"><label class="fl">Method</label><select id="aMethod"><option value="manual" ${x.method==='manual'?'selected':''}>manual</option><option value="odometer" ${x.method==='odometer'?'selected':''}>odometer</option></select></div>
       </div>
+      <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="aRound" ${x.roundtrip?'checked':''} style="width:auto;min-height:auto"> Round trip (there &amp; back) <span class="muted">— toggling adjusts the miles</span></label>
       <label class="fl">Note</label><textarea id="aNote" rows="2">${esc(x.note||'')}</textarea>
       <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
     $('#aCancel').onclick=closeSheet; wireNewRetailerSelect($('#aDisp'));
+    // flipping round-trip doubles/halves the miles in place — admin sees (and can correct) the result before saving
+    $('#aRound').onchange=()=>{ const m=Number($('#aMiles').value);
+      if(m>0) $('#aMiles').value=Math.round(m*($('#aRound').checked?2:0.5)*100)/100; };
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
       const patch={ trip_date:$('#aDate').value||x.trip_date, dispensary_id:$('#aDisp').value||null,
         start_label:$('#aStart').value.trim()||null, dest_label:$('#aDest').value.trim()||null,
         miles:Number($('#aMiles').value)||null, method:$('#aMethod').value, miles_source:$('#aMethod').value,
-        note:$('#aNote').value.trim()||null };
+        roundtrip:$('#aRound').checked, note:$('#aNote').value.trim()||null };
       busy(btn,true);
       const {data,error}=await supabase.from('trips').update(patch).eq('id',id).select('*').single();
       busy(btn,false);
@@ -2772,7 +2780,7 @@ boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet };
 </script>
 </body>
 </html>
