@@ -257,7 +257,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-06.6';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-06.7';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -2181,7 +2181,7 @@ async function adminReport(m){
     supabase.from('dispensaries').select('id,name'),
     supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,ba_id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
-    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,kind,note,status').gte('work_date',start).lte('work_date',end),
+    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,kind,note,status,source').gte('work_date',start).lte('work_date',end),
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
@@ -2209,16 +2209,7 @@ async function adminReport(m){
     .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
   const detailRows=k=>(items[k]||[]).map(it=>repDetailRow(it)).join('');
-  m.innerHTML=`
-    <div class="card">
-      ${rangeControlsHtml()}
-      <div class="row" style="margin-top:8px"><div class="small muted grow">Region</div>
-        ${adminRegionPicker('regSelRp')}</div>
-      <div class="totbar" style="margin-top:12px">
-        <div class="tot"><div class="k">Dispensaries</div><div class="v">${rows.filter(r=>r.id!=='none').length}</div></div>
-        <div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>
-      </div>
-    </div>
+  const spendBody=`
     <div class="card">
       <h3>Spend by dispensary <span class="muted small">· ${rangeLabel()} · tap to expand</span></h3>
       ${rows.length?rows.map(r=>`
@@ -2232,12 +2223,145 @@ async function adminReport(m){
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this range${region!=='all'?' in '+region:''} yet.</p>`}
     </div>`;
+
+  // Visits: the SAME data reorganized as discrete (BA, store, day) visits — each with
+  // its round-trip mileage$, that day's labor$ share, and any expense$ rolled together.
+  const visits=buildVisits(trips.data,exps.data,hrs.data,{inRegion,baName,dnm});
+  const noStoreTrips=(trips.data||[]).filter(t=>inRegion(t.ba_id) && !t.dispensary_id).length;
+  state._visitLookup={}; visits.forEach(v=>{ state._visitLookup[v.key]=v; });
+  const visitsBody=visitsCardsHtml(visits, noStoreTrips);
+
+  const view=state.repView==='visits'?'visits':'spend';
+  const spendCount=rows.filter(r=>r.id!=='none').length;
+  m.innerHTML=`
+    <div class="card">
+      ${rangeControlsHtml()}
+      <div class="row" style="margin-top:8px"><div class="small muted grow">Region</div>
+        ${adminRegionPicker('regSelRp')}</div>
+      <div class="seg" id="repViewSeg" style="margin-top:12px">
+        <button data-v="spend" class="${view==='spend'?'on':''}">Spend by dispensary</button>
+        <button data-v="visits" class="${view==='visits'?'on':''}">Visits</button>
+      </div>
+      <div class="totbar" style="margin-top:12px">${view==='spend'
+        ? `<div class="tot"><div class="k">Dispensaries</div><div class="v">${spendCount}</div></div><div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>`
+        : visitsTotbar(visits)}</div>
+    </div>
+    ${view==='spend'?spendBody:visitsBody}`;
   wireRangeControls(()=>adminReport(m));
   const rs=$('#regSelRp'); if(rs) rs.onchange=()=>{ state.adminRegion=rs.value; adminReport(m); };
+  const seg=$('#repViewSeg'); if(seg) seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ state.repView=b.dataset.v; adminReport(m); });
+  // dispensary-group expand/collapse is shared by both views (data-disp ↔ data-for)
   m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
     d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
-  m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
-  m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
+  if(view==='spend'){
+    m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
+    m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
+  } else {
+    m.querySelectorAll('.visitrow').forEach(el=>el.onclick=()=>visitSheet(state._visitLookup[el.dataset.visit]));
+    const vc=$('#visitsCsv'); if(vc) vc.onclick=()=>exportVisitsCSV(visits);
+  }
+}
+// ── Visits: derive discrete (BA × dispensary × day) visits from trips/hours/expenses ──
+// A visit = one BA at one real store on one day. Mileage is the round-trip trip amount
+// (miles already doubled); labor & expenses are the SAME even-split used by the spend
+// report (a row linked to N stores contributes amount/N to each). Rows with no store
+// don't form a visit (surfaced as a "complete these" nudge instead).
+const isPlaceholderName=n=>/^\*\s/.test(n||'');
+function buildVisits(trips, exps, hrs, ctx){
+  const {inRegion,baName,dnm}=ctx; const V={};
+  const ens=(b,d,dt)=>{ const k=`${b}|${d}|${dt}`;
+    if(!V[k]) V[k]={key:k,ba_id:b,disp_id:d,date:dt,ba:baName(b),disp:dnm(d)||'(deleted location)',
+      mile:0,labor:0,exp:0,card:0,miles:0,laborHrs:0,trips:[],hours:[],expenses:[]};
+    return V[k]; };
+  (trips||[]).forEach(t=>{ if(!inRegion(t.ba_id)||!t.dispensary_id) return;
+    const v=ens(t.ba_id,t.dispensary_id,t.trip_date); v.mile+=Number(t.amount||0); v.miles+=Number(t.miles||0); v.trips.push(t); });
+  (hrs||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const A=Number(h.amount||0), H=Number(h.hours||0);
+    dispSplit(h,A).forEach(({id,share,n})=>{ if(!id) return; const v=ens(h.ba_id,id,h.work_date); v.labor+=share; v.laborHrs+=H/n; v.hours.push({row:h,share,n}); }); });
+  (exps||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const A=Number(x.amount||0);
+    dispSplit(x,A).forEach(({id,share,n})=>{ if(!id) return; const v=ens(x.ba_id,id,x.expense_date);
+      if(x.payment==='company') v.card+=share; else v.exp+=share; v.expenses.push({row:x,share,n}); }); });
+  return Object.values(V).map(v=>({...v,total:v.mile+v.labor+v.exp+v.card})).filter(v=>v.total>0);
+}
+function visitsTotbar(visits){
+  const real=visits.filter(v=>!isPlaceholderName(v.disp));
+  const stores=new Set(real.map(v=>v.disp_id)).size, tot=real.reduce((a,v)=>a+v.total,0);
+  return `<div class="tot"><div class="k">Stores visited</div><div class="v">${stores}</div></div>
+    <div class="tot"><div class="k">Visits</div><div class="v">${real.length}</div></div>
+    <div class="tot sum"><div class="k">Visit cost</div><div class="v">${money(tot)}</div></div>`;
+}
+function visitsGroupBy(list){
+  const g={}; list.forEach(v=>{ const k=v.disp_id; (g[k]=g[k]||{id:k,name:v.disp,visits:[],total:0,mile:0,labor:0,exp:0,card:0});
+    const x=g[k]; x.visits.push(v); x.total+=v.total; x.mile+=v.mile; x.labor+=v.labor; x.exp+=v.exp; x.card+=v.card; });
+  return Object.values(g).map(x=>({...x, visits:x.visits.sort((a,b)=>(b.date||'').localeCompare(a.date||''))}))
+    .sort((a,b)=>b.total-a.total);
+}
+function visitsCardsHtml(visits, noStoreTrips){
+  const groups=visitsGroupBy(visits.filter(v=>!isPlaceholderName(v.disp)));
+  const overhead=visitsGroupBy(visits.filter(v=>isPlaceholderName(v.disp)));
+  const max=groups.reduce((a,g)=>Math.max(a,g.total),0)||1;
+  const visitRow=v=>`<div class="item visitrow" data-visit="${v.key}" style="cursor:pointer">
+    <div class="ic">🚗</div>
+    <div class="grow" style="min-width:0"><div class="t">${fmtDate(v.date)} · ${esc(v.ba)}</div>
+      <div class="s">🚗 ${money(v.mile)} · ⏱ ${money(v.labor)}${v.exp>0?` · 🧾 ${money(v.exp)}`:''}${v.card>0?` · 💳 ${money(v.card)}`:''}</div></div>
+    <div class="amt">${money(v.total)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`;
+  const groupHtml=g=>`
+    <div class="repdrow" data-disp="${g.id}" style="padding:9px 0;border-top:1px solid var(--line);cursor:pointer">
+      <div class="row" style="justify-content:space-between;align-items:baseline">
+        <div class="t" style="font-weight:600"><span class="caret" style="display:inline-block;width:12px;color:var(--muted)">▸</span>${esc(g.name)}</div>
+        <div style="font-weight:750;white-space:nowrap">${money(g.total)}</div></div>
+      <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(g.total/max*100))}%;background:var(--accent)"></div></div>
+      <div class="small muted">${g.visits.length} visit${g.visits.length>1?'s':''} · avg ${money(g.total/g.visits.length)}/visit · ${money(g.mile)} mileage · ${money(g.labor)} labor${(g.exp+g.card)>0?` · ${money(g.exp+g.card)} expenses`:''}</div>
+    </div>
+    <div class="repdetail hide" data-for="${g.id}" style="padding-left:6px">${g.visits.map(visitRow).join('')}</div>`;
+  const overHtml = overhead.length ? `<div class="card">
+      <h3>Non-store labor <span class="muted small">· General / Non-BA activity — not counted as store visits</span></h3>
+      ${overhead.map(g=>`<div class="row" style="justify-content:space-between;padding:7px 0;border-top:1px solid var(--line)"><div>${esc(g.name)} <span class="muted small">· ${g.visits.length} day${g.visits.length>1?'s':''}</span></div><div style="font-weight:700">${money(g.total)}</div></div>`).join('')}
+    </div>` : '';
+  const nudge = noStoreTrips>0 ? `<div class="small" style="color:var(--yellow);margin-top:10px">⚠ ${noStoreTrips} trip${noStoreTrips>1?'s':''} in this range ${noStoreTrips>1?'have':'has'} no dispensary linked, so ${noStoreTrips>1?"they can't":"it can't"} count as a visit — pick a store on ${noStoreTrips>1?'them':'it'} to complete the visit.</div>` : '';
+  return `<div class="card">
+    <div class="row" style="align-items:baseline"><h3 class="grow" style="margin:0">Visits <span class="muted small">· ${rangeLabel()} · tap a store, then a visit</span></h3>${groups.length?`<button class="btn ghost sm" id="visitsCsv">⬇ CSV</button>`:''}</div>
+    ${groups.length?groups.map(groupHtml).join(''):`<p class="muted small" style="margin-top:8px">No store visits logged for this range yet.</p>`}
+    ${nudge}
+  </div>${overHtml}`;
+}
+// one visit's full breakdown — the trip(s), that day's labor share, and any expenses
+function visitSheet(v){
+  if(!v){ toast('Visit unavailable — reopen the report','err'); return; }
+  const kst='font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700';
+  const line=(ic,lbl,val,sub)=>`<div class="row" style="justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line)"><div><span style="margin-right:7px">${ic}</span>${lbl}${sub?` <span class="muted small">${sub}</span>`:''}</div><div style="font-weight:700;white-space:nowrap">${val}</div></div>`;
+  const tripLines=v.trips.map(t=>`<div class="s" style="padding:3px 0">🚗 ${t.miles!=null?`${t.miles} mi`:''}${t.method?` · ${esc(t.method)}`:''}${t.dest_label?` · ${esc(t.dest_label)}`:''} — <b>${money(t.amount)}</b></div>`).join('');
+  const hourLines=v.hours.map(h=>`<div class="s" style="padding:3px 0">⏱ ${Math.round((Number(h.row.hours||0)/h.n)*100)/100} hrs${h.row.kind?` · ${esc(h.row.kind)}`:''}${h.n>1?` · split ${h.n} stores`:''}${h.row.source==='salary'?' · salaried':''} — <b>${money(h.share)}</b></div>`).join('');
+  const expLines=v.expenses.map(x=>`<div class="s" style="padding:3px 0">🧾 ${esc(x.row.vendor||'Expense')}${x.row.payment==='company'?' · 💳 card':' · 💵 reimburse'}${x.n>1?` · split ${x.n}`:''} — <b>${money(x.share)}</b></div>`).join('');
+  openSheet(`
+    <h3 style="margin-bottom:2px">${esc(v.disp)}</h3>
+    <div class="small muted">${fmtDate(v.date)} · ${esc(v.ba)}</div>
+    <div class="card" style="margin:12px 0">
+      <div style="text-align:center;margin-bottom:4px"><div class="k" style="${kst}">Total visit cost</div>
+        <div style="font-size:24px;font-weight:800;color:var(--accent2)">${money(v.total)}</div></div>
+      ${line('🚗','Mileage <span class="muted small">up &amp; back</span>',money(v.mile), v.miles?`${Math.round(v.miles*10)/10} mi`:'')}
+      ${line('⏱','Labor',money(v.labor), v.laborHrs?`${Math.round(v.laborHrs*100)/100} hrs that day`:'')}
+      ${v.exp>0?line('🧾','Expenses',money(v.exp)):''}
+      ${v.card>0?line('💳','Company card',money(v.card),'not reimbursed'):''}
+    </div>
+    ${(tripLines||hourLines||expLines)?`<div class="card"><div class="small muted" style="font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">What made up this visit</div>${tripLines}${hourLines}${expLines}</div>`:''}
+    <button class="btn ghost block" id="vClose" style="margin-top:12px">Close</button>
+  `);
+  $('#vClose').onclick=closeSheet;
+}
+function exportVisitsCSV(visits){
+  const real=visits.filter(v=>!isPlaceholderName(v.disp))
+    .sort((a,b)=>(a.disp||'').localeCompare(b.disp) || (a.date||'').localeCompare(b.date));
+  const rows=[['Date','BA','Dispensary','Miles','Mileage $','Labor $','Expense $','Card $','Visit total $']];
+  real.forEach(v=>rows.push([v.date,v.ba,v.disp,Math.round(v.miles*10)/10,v.mile.toFixed(2),v.labor.toFixed(2),v.exp.toFixed(2),v.card.toFixed(2),v.total.toFixed(2)]));
+  const byD={}; real.forEach(v=>{ const g=byD[v.disp]=byD[v.disp]||{mile:0,labor:0,exp:0,card:0,total:0,n:0};
+    g.mile+=v.mile; g.labor+=v.labor; g.exp+=v.exp; g.card+=v.card; g.total+=v.total; g.n++; });
+  rows.push([]); rows.push(['— Per dispensary (BA spend to port) —']);
+  Object.entries(byD).sort((a,b)=>b[1].total-a[1].total).forEach(([d,g])=>
+    rows.push(['',`${g.n} visit${g.n>1?'s':''}`,d,'',g.mile.toFixed(2),g.labor.toFixed(2),g.exp.toFixed(2),g.card.toFixed(2),g.total.toFixed(2)]));
+  const csv=rows.map(r=>r.map(c=>{ let s=String(c??''); if(/^[=+\-@\t\r]/.test(s)) s="'"+s;
+    return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(',')).join('\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download=`visits_${rangeLabel().replace(/\W+/g,'_')}.csv`; a.click();
 }
 // one tappable line in a report's expanded dispensary (shared by admin + employee reports).
 // it.ba is non-empty in the admin report (shows the BA name) and '' in the employee report.
