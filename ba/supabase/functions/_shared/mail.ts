@@ -39,6 +39,27 @@ export function mailShell(title: string, body: string) {
 export function btn(href: string, label: string) {
   return `<a href="${esc(href)}" style="background:#6c5ce7;color:#fff;text-decoration:none;padding:11px 20px;border-radius:999px;font-weight:700;display:inline-block">${esc(label)}</a>`;
 }
+// The new-user invite. The "Open the app" link + plain URL sit ABOVE the (unique)
+// credentials box so Gmail can't fold them into its "trimmed repeated content" (…),
+// which was hiding the link when several identical invites went out together.
+export function inviteEmail(fullName: string, email: string, password: string) {
+  const html = mailShell("You're set up on the Wizard Trees field app", `
+    <p style="margin:0 0 14px">Hi ${esc(fullName || "there")}, an admin just set you up on the Wizard Trees brand-ambassador app.</p>
+    <p style="margin:0 0 6px">${btn(APP_URL, "Open the app →")}</p>
+    <p style="margin:0 0 16px;font-size:13px;color:#555">or paste this into your browser: <a href="${esc(APP_URL)}">${esc(APP_URL)}</a></p>
+    ${credBox([["Your login", email], ["Temporary password", password]])}
+    <p style="margin:0 0 14px;color:#777;font-size:13px">You'll choose your own password the first time you sign in.</p>
+    <p style="margin:0 0 6px;font-weight:700">What you can do in seconds:</p>
+    <ul style="margin:0 0 14px;padding-left:18px;line-height:1.7">
+      <li>🚗 <b>Log mileage</b> — by address, a navigation screenshot, or odometer photos</li>
+      <li>🧾 <b>Add expenses</b> — snap a receipt and it fills in the vendor &amp; amount</li>
+      <li>📅 <b>Submit each pay period</b> to get reimbursed</li>
+      <li>🔐 Turn on <b>Face ID / fingerprint</b> for quick sign-in</li>
+    </ul>
+    <p style="margin:0;color:#888;font-size:12px">Tip: open this on your phone and "Add to Home Screen" so it feels like a real app.</p>`);
+  const text = `Hi ${fullName || "there"}, you've been set up on the Wizard Trees field app.\n\nOpen the app: ${APP_URL}\n\nLogin: ${email}\nTemporary password: ${password} (you'll set your own on first sign-in)\n\nWhat you can do: log mileage (by address, a nav screenshot, or odometer photos), add expenses by snapping a receipt, and submit each pay period for reimbursement.`;
+  return { subject: "Welcome to the Wizard Trees field app", html, text };
+}
 export function credBox(rows: [string, string][]) {
   return `<div style="background:#f5f4ff;border-radius:10px;padding:12px 14px;margin:12px 0">` +
     rows.map(([k, v]) => `<div style="font-size:12px;color:#555;margin-top:6px">${esc(k)}</div><b style="font-size:15px">${esc(v)}</b>`).join("") +
