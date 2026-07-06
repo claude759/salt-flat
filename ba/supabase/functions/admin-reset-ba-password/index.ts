@@ -44,7 +44,7 @@ Deno.serve(async (req) => {
     // best-effort reset email to the user, CC'ing the admin team
     let emailed = false;
     try {
-      const cc = await adminCcList(db, target.email);
+      const cc = await adminCcList(db, target.email, target.region);
       const html = mailShell("Your app password was reset", `
         <p style="margin:0 0 12px">Hi ${esc(target.full_name || "there")}, an admin reset your password for the Wizard Trees field app.</p>
         ${credBox([["New temporary password", password]])}

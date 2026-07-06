@@ -45,14 +45,18 @@ export function credBox(rows: [string, string][]) {
     `</div>`;
 }
 
-// the list of admin emails to CC on account notifications: active admins, minus the
-// recipient and minus the gusto-sync service account (automation@… has no real mailbox,
-// so CC'ing it just bounces).
-export async function adminCcList(db: { from: (t: string) => any }, exclude?: string) {
-  const { data } = await db.from("profiles").select("email").eq("role", "admin").eq("active", true).not("email", "is", null);
+// Admins to CC on an account notification about a user in `region`:
+//   • Universal Admins (no region) → CC'd on everything.
+//   • Regional Admins → CC'd only when the affected user is in their own region.
+// Always excludes the recipient and the gusto-sync service account (automation@… has
+// no real mailbox, so CC'ing it just bounces).
+export async function adminCcList(db: { from: (t: string) => any }, exclude?: string, region?: string | null) {
+  const { data } = await db.from("profiles").select("email,region").eq("role", "admin").eq("active", true).not("email", "is", null);
   const ex = (exclude || "").toLowerCase();
   return [...new Set(
-    (data || []).map((a: { email: string }) => a.email)
+    (data || [])
+      .filter((a: { region: string | null }) => a.region == null || a.region === region)
+      .map((a: { email: string }) => a.email)
       .filter((e: string) => e && e.toLowerCase() !== ex && !/^automation@/i.test(e)),
   )];
 }

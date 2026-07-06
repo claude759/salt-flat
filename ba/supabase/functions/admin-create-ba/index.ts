@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
     // best-effort invite email (never fails the account creation), CC'ing the admin team
     let emailed = false;
     try {
-      const cc = await adminCcList(db, email);
+      const cc = await adminCcList(db, email, region);
       const html = mailShell("You're set up on the Wizard Trees field app", `
         <p style="margin:0 0 12px">Hi ${esc(full_name || "there")}, an admin just set you up on the Wizard Trees brand-ambassador app.</p>
         ${credBox([["Your login", email], ["Temporary password", password]])}
