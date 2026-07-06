@@ -257,7 +257,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-06.8';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-06.9';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -308,6 +308,21 @@ function dispSplit(x, value){
 }
 // dispensaries a BA can pick: only those in their region (admins/region-less see all)
 function baDispensaries(){ const r = state.preview || state.profile?.region; return state.dispensaries.filter(d => !r || !d.state || d.state === r); }
+// Best-effort: does a typed destination clearly name one known store? Returns its id ONLY
+// on a confident, UNIQUE match (never guesses between two candidates), so a real store
+// visit links itself even when the BA didn't tap the suggestion chip. Placeholder
+// ('* ...') stores never auto-match — those are chosen deliberately.
+function matchDispByText(text){
+  const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const tn=norm(text); if(tn.length<4) return null;
+  const list=baDispensaries().filter(d=>d.active!==false && !/^\*/.test(d.name||''));
+  const uniq=arr=>arr.length===1?arr[0].id:null;
+  let c=list.filter(d=>norm(d.name)===tn); if(c.length) return uniq(c);          // exact name
+  c=list.filter(d=>{ const n=norm(d.name); return n.length>=6 &&                  // dest contains the whole store name
+    (tn===n || tn.startsWith(n+' ') || tn.endsWith(' '+n) || tn.includes(' '+n+' ')); }); if(c.length) return uniq(c);
+  c=list.filter(d=>{ const n=norm(d.name); return tn.length>=5 && n.startsWith(tn+' '); }); if(c.length) return uniq(c);  // typed a strong prefix
+  return null;
+}
 // the selectable labor kinds (admin-editable in Settings; safe defaults pre-migration)
 const DEFAULT_LABOR_KINDS = ['Store visit','Education talk','Demo / PAD','Brand event','Travel','Admin'];
 function laborKindNames(){ const lk=(state.laborKinds||[]).filter(k=>k.active!==false).map(k=>k.name); return lk.length?lk:DEFAULT_LABOR_KINDS; }
@@ -985,14 +1000,7 @@ async function baReport(m){
     .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
   const detailRows=k=>(items[k]||[]).map(it=>repDetailRow(it)).join('');
-  m.innerHTML=`
-    <div class="card">
-      ${rangeControlsHtml()}
-      <div class="totbar" style="margin-top:12px">
-        <div class="tot"><div class="k">Dispensaries</div><div class="v">${rows.filter(r=>r.id!=='none').length}</div></div>
-        <div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>
-      </div>
-    </div>
+  const spendBody=`
     <div class="card">
       <h3>Your spend by dispensary <span class="muted small">· ${rangeLabel()} · tap to expand</span></h3>
       ${rows.length?rows.map(r=>`
@@ -1006,11 +1014,39 @@ async function baReport(m){
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this range yet.</p>`}
     </div>`;
+  // Your visits — same data as discrete (store, day) visits (own data, so no BA name)
+  const visits=buildVisits(trips.data,exps.data,hrs.data,{inRegion:()=>true, baName:()=>'', dnm:dn});
+  const nvTrips=(trips.data||[]).filter(t=>!t.dispensary_id);
+  const nvExps=(exps.data||[]).filter(x=>dispIds(x).length===0);
+  const nonVisit={ tripCount:nvTrips.length, tripAmt:nvTrips.reduce((a,t)=>a+Number(t.amount||0),0),
+    expCount:nvExps.length, expReimb:nvExps.filter(x=>x.payment!=='company').reduce((a,x)=>a+Number(x.amount||0),0),
+    expCard:nvExps.filter(x=>x.payment==='company').reduce((a,x)=>a+Number(x.amount||0),0) };
+  state._visitLookup={}; visits.forEach(v=>{ state._visitLookup[v.key]=v; });
+  const visitsBody=visitsCardsHtml(visits, nonVisit);
+  const view=state.repView==='visits'?'visits':'spend';
+  m.innerHTML=`
+    <div class="card">
+      ${rangeControlsHtml()}
+      <div class="seg" id="repViewSeg" style="margin-top:12px">
+        <button data-v="spend" class="${view==='spend'?'on':''}">Spend by dispensary</button>
+        <button data-v="visits" class="${view==='visits'?'on':''}">Visits</button>
+      </div>
+      <div class="totbar" style="margin-top:12px">${view==='spend'
+        ? `<div class="tot"><div class="k">Dispensaries</div><div class="v">${rows.filter(r=>r.id!=='none').length}</div></div><div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>`
+        : visitsTotbar(visits)}</div>
+    </div>
+    ${view==='spend'?spendBody:visitsBody}`;
   wireRangeControls(()=>baReport(m));
+  const seg=$('#repViewSeg'); if(seg) seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ state.repView=b.dataset.v; baReport(m); });
   m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
     d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
-  m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
-  m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
+  if(view==='spend'){
+    m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return; reportItemSheet(allItems[el.dataset.item]); });
+    m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
+  } else {
+    m.querySelectorAll('.visitrow').forEach(el=>el.onclick=()=>visitSheet(state._visitLookup[el.dataset.visit]));
+    const vc=$('#visitsCsv'); if(vc) vc.onclick=()=>exportVisitsCSV(visits);
+  }
 }
 function periodItems(){
   return [...(state._T||[]).map(x=>({...x,_k:'trip'})),...(state._E||[]).map(x=>({...x,_k:'exp'})),...(state._H||[]).map(x=>({...x,_k:'hours'}))]
@@ -1547,6 +1583,15 @@ function wireGridRow(tr, mode){
     attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true});
     attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r; if(r.dispId){ const btn=tr.querySelector('.g-disp'); if(btn && btn.dataset.ids!==r.dispId){ btn.dataset.ids=r.dispId; const l=dispCellLabelText([r.dispId]); btn.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; } } scheduleAutosave(tr,mode); });
     ['.g-start','.g-dest'].forEach(sel=>{ const el=tr.querySelector(sel); if(el) el.addEventListener('blur', ()=>setTimeout(()=>maybeCalcDistance(tr),250)); });
+    // if they typed a destination that clearly is a known store but didn't pick the chip,
+    // link it for them (visible) so the trip counts as a visit — only on a confident match
+    const gd=tr.querySelector('.g-dest'), gdb=tr.querySelector('.g-disp');
+    if(gd && gdb) gd.addEventListener('blur', ()=>{
+      if((gdb.dataset.ids||'').split(',').filter(Boolean).length) return;   // already linked — leave it
+      const id=matchDispByText(gd.value); if(!id) return;
+      gdb.dataset.ids=id; const l=dispCellLabelText([id]); gdb.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; gdb.classList.remove('needs');
+      toast('Linked to '+dispName(id),'ok'); scheduleAutosave(tr,mode);
+    });
   } else if(mode==='expenses'){
     const ri=tr.querySelector('.g-receipt'); if(ri) ri.onchange=e=>gridReceiptRow(e,tr,mode);
     const v=tr.querySelector('[data-view]'); if(v) v.onclick=async()=>{ const p=tr.dataset.rpath; if(p){ const u=await signedUrl('receipts',p); if(u) window.open(u,'_blank'); } };
@@ -1979,7 +2024,7 @@ function tripSheet(){
     const btn=$('#tSave'); busy(btn,true);
     const startLoc = startCoords ? '📍 Current location' : ($('#tStartLoc').value||null);
     // 'route' is a UI mode: stored as method 'distance' + miles_source 'route' + the screenshot as evidence
-    const row={ ba_id:state.session.user.id, trip_date:$('#tDate').value, dispensary_id:destDispId||null,
+    const row={ ba_id:state.session.user.id, trip_date:$('#tDate').value, dispensary_id:destDispId||matchDispByText(destText)||null,
       method:(method==='route'?'distance':method),
       miles, miles_source:milesSrc, dest_label:destText, start_label:startLoc, note:$('#tNote').value||null, status:'draft' };
     if(method==='odometer'){ row.start_odo=startOdo; row.end_odo=endOdo; row.start_photo=startPath; row.end_photo=endPath; }
@@ -2307,7 +2352,7 @@ function visitsCardsHtml(visits, nonVisit){
   const max=groups.reduce((a,g)=>Math.max(a,g.total),0)||1;
   const visitRow=v=>`<div class="item visitrow" data-visit="${v.key}" style="cursor:pointer">
     <div class="ic">🚗</div>
-    <div class="grow" style="min-width:0"><div class="t">${fmtDate(v.date)} · ${esc(v.ba)}</div>
+    <div class="grow" style="min-width:0"><div class="t">${fmtDate(v.date)}${v.ba?` · ${esc(v.ba)}`:''}</div>
       <div class="s">🚗 ${money(v.mile)} · ⏱ ${money(v.labor)}${v.exp>0?` · 🧾 ${money(v.exp)}`:''}${v.card>0?` · 💳 ${money(v.card)}`:''}</div></div>
     <div class="amt">${money(v.total)}</div><div class="muted" style="font-size:18px;flex:none;margin-left:6px">›</div></div>`;
   const groupHtml=g=>`
@@ -2346,7 +2391,7 @@ function visitSheet(v){
   const expLines=v.expenses.map(x=>`<div class="s" style="padding:3px 0">🧾 ${esc(x.row.vendor||'Expense')}${x.row.payment==='company'?' · 💳 card':' · 💵 reimburse'}${x.n>1?` · split ${x.n}`:''} — <b>${money(x.share)}</b></div>`).join('');
   openSheet(`
     <h3 style="margin-bottom:2px">${esc(v.disp)}</h3>
-    <div class="small muted">${fmtDate(v.date)} · ${esc(v.ba)}</div>
+    <div class="small muted">${fmtDate(v.date)}${v.ba?` · ${esc(v.ba)}`:''}</div>
     <div class="card" style="margin:12px 0">
       <div style="text-align:center;margin-bottom:4px"><div class="k" style="${kst}">Total visit cost</div>
         <div style="font-size:24px;font-weight:800;color:var(--accent2)">${money(v.total)}</div></div>
