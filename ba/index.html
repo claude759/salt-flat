@@ -257,7 +257,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-06.5';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-06.6';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -821,6 +821,10 @@ async function drawBA(){
   // load only the active (expanded) period's items; past periods load lazily on expand
   let T=[],E=[],H=[],S=null;
   if(active){
+    // salaried users: ensure this period's even-split daily labor exists before reading
+    if(Number(state.profile?.salary_per_period)>0){
+      try{ await supabase.rpc('generate_salary_labor',{p_ba:state.session.user.id, p_period:active.id}); }catch(_){}
+    }
     const [tr,ex,hr] = await Promise.all([
       supabase.from('trips').select('*').eq('ba_id',state.session.user.id).eq('period_id',active.id).order('trip_date',{ascending:false}),
       supabase.from('expenses').select('*').eq('ba_id',state.session.user.id).eq('period_id',active.id).order('expense_date',{ascending:false}),
@@ -905,10 +909,13 @@ function roItemRow(x){
 }
 // the "labor isn't part of reimburse" info line under a period's totals
 function laborLineFor(H){
-  const hrs=(H||[]).reduce((a,x)=>a+Number(x.hours||0),0);
-  if(!(hrs>0)) return '';
-  const amt=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
-  return `<div class="small muted" style="margin-top:8px">⏱ Hours worked: <b>${Math.round(hrs*100)/100} hrs · ${money(amt)}</b> — paid through payroll, not reimbursement</div>`;
+  const rows=H||[];
+  const hrs=rows.reduce((a,x)=>a+Number(x.hours||0),0);
+  const amt=rows.reduce((a,x)=>a+Number(x.amount||0),0);
+  const sal=rows.filter(x=>x.source==='salary').reduce((a,x)=>a+Number(x.amount||0),0);
+  if(!(hrs>0) && !(amt>0)) return '';
+  const lbl = hrs>0 ? `${Math.round(hrs*100)/100} hrs · ${money(amt)}${sal>0?' (incl. salary)':''}` : `${money(amt)}${sal>0?' salaried':''}`;
+  return `<div class="small muted" style="margin-top:8px">⏱ Labor: <b>${lbl}</b> — paid through payroll, not reimbursement</div>`;
 }
 function readOnlyBodyHtml(p, T, E, H){
   H=H||[];
@@ -1339,11 +1346,16 @@ function gridRowHtml(mode, it, today, pay, opts={}){
   }
   if(mode==='hours'){
     const cur = it&&it.kind ? it.kind : '';
-    const needHrs = (!ro && it && !(Number(it.hours)>0)) ? ' needs' : '';
-    return `<tr data-id="${id}"${ro?' data-ro="1"':''}>${del}${dateCell}
+    const isSal = !!(it && it.source==='salary');   // salaried daily slice: $ set by the even-split, not clocked hours
+    const needHrs = (!ro && !isSal && it && !(Number(it.hours)>0)) ? ' needs' : '';
+    const delc = isSal ? '<td class="gdel"></td>' : del;   // generated each period — re-bucket it, don't delete it
+    const amtCell = isSal
+      ? `<td><span title="salaried daily portion (salary ÷ workweek days)" style="font-weight:700;color:var(--accent2);white-space:nowrap">💰 ${money(Number(it.amount||0))}</span></td>`
+      : `<td><input class="gnum g-hrs${needHrs}" type="number" inputmode="decimal" step="0.001" placeholder="hrs" value="${it&&it.hours!=null?it.hours:''}"${dis}></td>`;
+    return `<tr data-id="${id}"${ro?' data-ro="1"':''}${isSal?' data-src="salary"':''}>${delc}${dateCell}
       <td>${kindCellBtn('g-kind', cur, {dis})}</td>
       <td>${dispCellBtn('g-hdisp', dispIds(it||{}), {multi:true, dis})}</td>
-      <td><input class="gnum g-hrs${needHrs}" type="number" inputmode="decimal" step="0.001" placeholder="hrs" value="${it&&it.hours!=null?it.hours:''}"${dis}></td>
+      ${amtCell}
       <td>${stateCellBtn((it&&it.state)||gridDefaultState(),{dis})}</td>${statCell}</tr>`;
   }
   // expenses: payment is implied by which table the row lives in (no "Paid by" column)
@@ -1444,7 +1456,7 @@ function dgSummaryLine(ctx){
   const T=ctx.T||[],E=ctx.E||[],H=ctx.H||[];
   const mile=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb,card}=expSplit(E);
   const hrs=H.reduce((a,x)=>a+Number(x.hours||0),0), lab=H.reduce((a,x)=>a+Number(x.amount||0),0);
-  return `Mileage <b>${money(mile)}</b> · Expenses <b>${money(reimb)}</b>${card>0?` · 💳 <b>${money(card)}</b>`:''}${hrs>0?` · Hours <b>${Math.round(hrs*100)/100}h</b> (${money(lab)})`:''} · Reimburse total <b style="color:var(--accent2)">${money(mile+reimb)}</b>`;
+  return `Mileage <b>${money(mile)}</b> · Expenses <b>${money(reimb)}</b>${card>0?` · 💳 <b>${money(card)}</b>`:''}${lab>0?` · Labor <b>${money(lab)}</b>${hrs>0?` (${Math.round(hrs*100)/100}h)`:''}`:''} · Reimburse total <b style="color:var(--accent2)">${money(mile+reimb)}</b>`;
 }
 function dgRefreshSummary(){ const el=$('#dgSummary'); if(el) el.innerHTML=dgSummaryLine(gridCtx()); }
 function renderDayGrid(host){
@@ -1458,8 +1470,9 @@ function renderDayGrid(host){
   const blocks = days.map(day=>{
     const trips=tD[day]||[], exps=eD[day]||[], hrs=hD[day]||[];
     const dm=trips.reduce((a,x)=>a+Number(x.amount||0),0), de=exps.reduce((a,x)=>a+Number(x.amount||0),0), dh=hrs.reduce((a,x)=>a+Number(x.hours||0),0);
+    const dsal=hrs.filter(x=>x.source==='salary').reduce((a,x)=>a+Number(x.amount||0),0);   // salaried days carry $ but 0 clocked hours
     const secs=dgSection(ctx,'miles',day,trips)+dgSection(ctx,'expenses',day,exps)+dgSection(ctx,'hours',day,hrs);
-    const parts=[]; if(dm)parts.push('🚗 '+money(dm)); if(de)parts.push('🧾 '+money(de)); if(dh)parts.push('⏱ '+(Math.round(dh*100)/100)+'h');
+    const parts=[]; if(dm)parts.push('🚗 '+money(dm)); if(de)parts.push('🧾 '+money(de)); if(dh)parts.push('⏱ '+(Math.round(dh*100)/100)+'h'); if(dsal>0)parts.push('💰 '+money(dsal));
     const head=`<div class="dayhd"><div><span class="dw">${dgWeekday(day)}</span><span class="dd">${dgDateLbl(day)}</span></div><div class="dsum">${parts.join(' · ')||'—'}</div></div>`;
     const present={trip:trips.length>0,exp:exps.length>0,hours:hrs.length>0};
     // ＋ buttons only for addable types this day doesn't already have a section for
@@ -1585,11 +1598,17 @@ async function gridAutosave(tr, mode){
     if(msrc==='route' && (tr._routePhoto||tr.dataset.navpath)) payload.start_photo=tr._routePhoto||tr.dataset.navpath;  // nav screenshot = evidence
   } else if(mode==='hours'){
     const kind=tr.querySelector('.g-kind')?.dataset.kind||null;
-    const hrs=Number(tr.querySelector('.g-hrs').value);
     const hIds=(tr.querySelector('.g-hdisp')?.dataset.ids||'').split(',').filter(Boolean);
-    if(isNew && !(date && hrs>0)){ savedIndicator('All changes saved'); return; }
-    payload={ work_date:date, kind, hours:hrs>0?hrs:0, dispensary_ids:hIds.length?hIds:null, dispensary_id:hIds[0]||null, source:'manual',
-      state:tr.querySelector('.g-state')?.dataset.state||null };
+    const st=tr.querySelector('.g-state')?.dataset.state||null;
+    if(tr.dataset.src==='salary'){
+      // salaried daily slice: only re-bucket kind/dispensary/state; never overwrite the
+      // even-split amount, its 0 hours, or the 'salary' source (regen would fight us).
+      payload={ kind, dispensary_ids:hIds.length?hIds:null, dispensary_id:hIds[0]||null, state:st };
+    } else {
+      const hrs=Number(tr.querySelector('.g-hrs').value);
+      if(isNew && !(date && hrs>0)){ savedIndicator('All changes saved'); return; }
+      payload={ work_date:date, kind, hours:hrs>0?hrs:0, dispensary_ids:hIds.length?hIds:null, dispensary_id:hIds[0]||null, source:'manual', state:st };
+    }
   } else {
     const desc=tr.querySelector('.g-desc').value.trim();
     const cat=tr.querySelector('.g-cat').value, amt=Number(tr.querySelector('.g-amt').value);
@@ -2458,6 +2477,8 @@ function admRefreshTotals(){
 async function adminBaDetail(baId){
   const per=state.period;
   openSheet(`<div class="loading"><span class="spin"></span></div>`);
+  // salaried BAs (Maddy): make sure this period's even-split daily labor exists before we read it
+  try{ await supabase.rpc('generate_salary_labor',{p_ba:baId, p_period:per.id}); }catch(_){}
   const [{data:prof},{data:T},{data:E},{data:H},{data:sub}]=await Promise.all([
     supabase.from('profiles').select('*').eq('id',baId).single(),
     supabase.from('trips').select('*').eq('ba_id',baId).eq('period_id',per.id).order('trip_date'),
@@ -2469,6 +2490,7 @@ async function adminBaDetail(baId){
   const {reimb,card}=expSplit(E);
   const labor=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
   const totHours=(H||[]).reduce((a,x)=>a+Number(x.hours||0),0);
+  const salLabor=(H||[]).filter(x=>x.source==='salary').reduce((a,x)=>a+Number(x.amount||0),0);
   const byCat={};
   (E||[]).forEach(x=>{ const c=x.category||'Other'; const v=(byCat[c]=byCat[c]||{reimb:0,card:0}); if(x.payment==='company') v.card+=Number(x.amount||0); else v.reimb+=Number(x.amount||0); });
   const catRows=Object.entries(byCat).sort((a,b)=>(b[1].reimb+b[1].card)-(a[1].reimb+a[1].card))
@@ -2490,7 +2512,7 @@ async function adminBaDetail(baId){
       <div style="text-align:center;margin-top:10px"><div class="k" style="${kst}">Total Expenses</div><div style="font-size:16px;font-weight:700" id="admExp">${money(reimb)}</div></div>
       ${card>0?`<div class="small muted center" style="margin-top:8px">💳 Company card (not reimbursed): <b>${money(card)}</b></div>`:''}
       <div style="text-align:center;margin-top:10px;border-top:1px solid var(--line);padding-top:10px${(H&&H.length)?'':';display:none'}" id="admLaborWrap">
-        <div class="k" style="${kst}">Total Labor · <span id="admHrs">${totHours.toFixed(2)}</span> hrs</div>
+        <div class="k" style="${kst}">Total Labor${totHours>0?` · <span id="admHrs">${totHours.toFixed(2)}</span> hrs`:''}${salLabor>0?' · salaried':''}</div>
         <div style="font-size:16px;font-weight:700" id="admLabor">${money(labor)}</div>
         <div class="small muted" style="margin-top:2px">paid through payroll — not part of reimbursement</div></div>
       ${catRows?`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:8px">
@@ -2610,7 +2632,7 @@ function exportPDF(prof,per,T,E,H){
     <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Dispensary</th><th>Method</th><th>Miles</th><th>Amount</th></tr>${tr||'<tr><td colspan=5>none</td></tr>'}</table>
     <h3>Expenses (reimbursable) — ${money(reimb)}</h3>
     <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Vendor</th><th>Dispensary</th><th>Paid with</th><th>Amount</th></tr>${er||'<tr><td colspan=5>none</td></tr>'}</table>
-    ${H.length?`<h3>Labor — ${laborHrs.toFixed(2)} hrs · ${money(labor)} <span style="font-weight:400;color:#666">(paid via payroll — not part of the reimburse total)</span></h3>
+    ${H.length?`<h3>Labor — ${laborHrs>0?`${laborHrs.toFixed(2)} hrs · `:''}${money(labor)}${laborHrs===0?' (salaried)':''} <span style="font-weight:400;color:#666">(paid via payroll — not part of the reimburse total)</span></h3>
     <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Kind</th><th>Dispensary</th><th>Hours</th><th>Labor cost</th></tr>${hr}</table>`:''}
     <h2 style="text-align:right;margin-top:16px">Reimburse total: ${money(mile+reimb)}</h2>
     ${card>0?`<p style="text-align:right;color:#666;margin:0">Company card (not reimbursed): ${money(card)}</p>`:''}
@@ -2935,6 +2957,8 @@ function editBaSheet(b){
     <select id="euActive"><option value="true" ${b.active?'selected':''}>Active</option><option value="false" ${!b.active?'selected':''}>Inactive</option></select>
     <label class="fl">BA hourly rate <span class="muted">($/hr — turns logged hours into labor cost)</span></label>
     <input id="euHourly" type="number" inputmode="decimal" step="0.01" value="${b.hourly_rate!=null?b.hourly_rate:''}" placeholder="e.g. 25.00" style="max-width:160px">
+    <label class="fl">Salary per pay period <span class="muted">(salaried BAs only — leave blank for hourly. Split evenly across the period's workweek days and auto-linked to each day's mileage or General BA activity.)</span></label>
+    <input id="euSalary" type="number" inputmode="decimal" step="0.01" value="${b.salary_per_period!=null?b.salary_per_period:''}" placeholder="e.g. 2000.00" style="max-width:160px">
     <label class="fl">Name in Gusto <span class="muted">(only if it differs from the full name — used by the auto-import to match hours)</span></label>
     <input id="euGusto" value="${esc(b.gusto_name||'')}" placeholder="${esc(b.full_name||'e.g. Joanna Ayala')}">
     ${isSelf?'<div class="small muted" style="margin-top:8px">This is your own account — you can’t remove your own admin access or deactivate yourself here.</div>':''}
@@ -2974,7 +2998,8 @@ function editBaSheet(b){
     if(isSelf && (role!=='admin' || $('#euActive').value!=='true')) return toast('You can’t demote or deactivate your own account','err');
     const addr=$('#euAddr').value;
     const hr=$('#euHourly').value;
-    const patch={ full_name:$('#euName').value, base_address:addr||null, role, region:region||null, active:$('#euActive').value==='true', hourly_rate:hr!==''?Number(hr):null, gusto_name:$('#euGusto').value.trim()||null };
+    const sal=$('#euSalary').value;
+    const patch={ full_name:$('#euName').value, base_address:addr||null, role, region:region||null, active:$('#euActive').value==='true', hourly_rate:hr!==''?Number(hr):null, salary_per_period:sal!==''?Number(sal):null, gusto_name:$('#euGusto').value.trim()||null };
     if((addr||'')!==(b.base_address||'')){ patch.base_lat=null; patch.base_lng=null; } // re-geocode on next auto-distance
     const btn=$('#euSave'); busy(btn,true);
     const { error }=await supabase.from('profiles').update(patch).eq('id',b.id);
