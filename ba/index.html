@@ -257,12 +257,19 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-06.4';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-06.5';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
 const isUniversalAdmin = ()=> state.profile?.role==='admin' && !state.profile?.region;
 // options for the profile-type <select>; a regional admin can only pick their own region's types
+// human label for a profile's type (Universal Admin / NY Admin / NY BA …)
+function userTypeLabel(b){
+  if(b.role==='admin') return b.region ? `${b.region} Admin` : 'Universal Admin';
+  return b.region ? `${b.region} BA` : 'BA';
+}
+// which filter bucket a user falls in: 'universal', or their region code
+function userCat(b){ return (b.role==='admin' && !b.region) ? 'universal' : (b.region||''); }
 function profileTypeOpts(sel, lockRegion){
   const regions = lockRegion ? [lockRegion] : REGIONS;
   const o=(v,label)=>`<option value="${v}" ${sel===v?'selected':''}>${label}</option>`;
@@ -2703,14 +2710,19 @@ async function adminSettings(m){
       <div class="row wrap" id="kindList">${laborKindNames().map(k=>`<span class="pill" style="display:inline-flex;align-items:center;gap:6px">${esc(k)}<a href="#" data-delkind="${esc(k)}" title="Remove" style="color:var(--muted);text-decoration:none">✕</a></span>`).join(' ')}</div>
     </div>
     <div class="card">
-      <div class="row"><h3 class="grow">Brand ambassadors</h3><button class="btn sm primary" id="addBa">+ Add</button></div>
-      ${(bas||[]).map(b=>`<div class="item">
+      <div class="row"><h3 class="grow">People</h3><button class="btn sm primary" id="addBa">+ Add</button></div>
+      ${isUniversalAdmin()?`<div class="seg" id="uFilter" style="margin:8px 0;flex-wrap:wrap;gap:4px">
+        <button class="${(state.userFilter||'all')==='all'?'on':''}" data-uf="all">All</button>
+        <button class="${state.userFilter==='universal'?'on':''}" data-uf="universal">Universal Admin</button>
+        ${REGIONS.map(r=>`<button class="${state.userFilter===r?'on':''}" data-uf="${r}">${r}</button>`).join('')}
+      </div>`:''}
+      <div id="uList">${(bas||[]).map(b=>`<div class="item" data-ucat="${userCat(b)}">
         <div class="ic">${(b.full_name||'?').slice(0,1).toUpperCase()}</div>
-        <div class="grow"><div class="t">${esc(b.full_name||b.email)} ${b.role==='admin'?'<span class="pill admin">admin</span>':(b.region?`<span class="pill">${esc(b.region)} BA</span>`:'')}${b.active?'':' <span class="muted small">· inactive</span>'}</div>
+        <div class="grow"><div class="t">${esc(b.full_name||b.email)} <span class="pill${b.role==='admin'?' admin':''}">${esc(userTypeLabel(b))}</span>${b.active?'':' <span class="muted small">· inactive</span>'}</div>
           <div class="s">${esc(b.email)}</div>
           <div class="s">🏠 ${b.base_address?esc(b.base_address):'<span class="muted">no home address</span>'}</div></div>
         <button class="btn sm ghost" data-edit="${b.id}">Edit</button>
-      </div>`).join('')}
+      </div>`).join('')}</div>
     </div>
     <div class="card">
       <div class="row"><h3 class="grow">Locations</h3><button class="btn sm primary" id="addDisp">+ Add</button></div>
@@ -2761,6 +2773,11 @@ async function adminSettings(m){
   // on-demand Gusto pull: queue a request; the local gusto-sync daemon on Gianni's Mac picks it
   // up (within ~1 min), downloads the CSV from Gusto, imports the hours, and marks it done.
   wireGustoPull(m);
+  const uf=$('#uFilter'); if(uf) uf.querySelectorAll('button').forEach(btn=>btn.onclick=()=>{
+    state.userFilter=btn.dataset.uf; uf.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===btn));
+    const f=btn.dataset.uf;
+    document.querySelectorAll('#uList .item').forEach(it=>{ it.style.display=(f==='all'||it.dataset.ucat===f)?'':'none'; });
+  });
   m.querySelectorAll('[data-dg]').forEach(el=>el.onclick=()=>{ const k=el.dataset.dg; state.dispOpen[k]=!state.dispOpen[k]; adminSettings(m); });
   m.querySelectorAll('[data-disp]').forEach(b=>b.onclick=()=>dispSheet((disp||[]).find(d=>d.id===b.dataset.disp)));
   m.querySelectorAll('[data-edit]').forEach(el=>el.onclick=()=>editBaSheet((bas||[]).find(x=>x.id===el.dataset.edit)));
@@ -2924,6 +2941,8 @@ function editBaSheet(b){
     <label class="fl" style="margin-top:14px">Password</label>
     <button class="btn block" id="euReset" type="button">🔑 Reset password</button>
     <div class="small muted" style="margin-top:5px">Passwords are encrypted and can’t be shown — not even to admins. Resetting gives you a new temporary password to hand off; ${esc((b.full_name||'they').split(' ')[0])} sets their own on next sign-in.</div>
+    <button class="btn block" id="euResend" type="button" style="margin-top:10px">📧 Resend invite email</button>
+    <div class="small muted" style="margin-top:5px">Re-sends the welcome email (with the app link) and issues a fresh temporary password.</div>
     <button class="btn primary block" id="euSave" style="margin-top:14px">Save</button>
     <button class="btn ghost block" id="euCancel" style="margin-top:8px">Cancel</button>`);
   $('#euCancel').onclick=closeSheet;
@@ -2938,6 +2957,16 @@ function editBaSheet(b){
         <div class="card"><div class="small">Email</div><b>${esc(b.email)}</b><div class="small" style="margin-top:8px">Temp password</div><b style="font-size:18px">${esc(newPw)}</b></div>
         <button class="btn primary block" id="okBtn2" style="margin-top:12px">Done</button>`);
       $('#okBtn2').onclick=()=>{closeSheet();adminSettings($('#main'));};
+    }catch(e){ busy(btn,false); toast(e.message,'err'); }
+  };
+  $('#euResend').onclick=async ()=>{
+    if(!confirm(`Resend the welcome invite to ${b.full_name||b.email}? This issues a new temporary password (their current one stops working).`)) return;
+    const btn=$('#euResend'); busy(btn,true);
+    try{
+      const r=await callFn('admin-resend-invite',{user_id:b.id});
+      busy(btn,false);
+      const res=r&&r.results&&r.results[0];
+      toast(res&&res.ok ? `Invite re-sent to ${b.email}` : (res&&res.error==='forbidden'?'Not allowed for this region':'Could not resend'), res&&res.ok?'ok':'err');
     }catch(e){ busy(btn,false); toast(e.message,'err'); }
   };
   $('#euSave').onclick=async ()=>{
@@ -3021,7 +3050,7 @@ boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles, userTypeLabel, userCat };
 </script>
 </body>
 </html>
