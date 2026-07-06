@@ -2,6 +2,7 @@
 // Verifies the caller is an active admin, then service-role-creates the auth user
 // and a matching profiles row (must_change_password = true so they reset on first login).
 import { admin, caller, json, preflight } from "../_shared/util.ts";
+import { adminCcList, APP_URL, btn, credBox, esc, mailShell, sendMail } from "../_shared/mail.ts";
 
 Deno.serve(async (req) => {
   const pf = preflight(req); if (pf) return pf;
@@ -62,7 +63,29 @@ Deno.serve(async (req) => {
       return json({ ok: false, error: "profile_failed", message: pErr.message }, 400);
     }
 
-    return json({ ok: true, user_id: created.user.id, email });
+    // best-effort invite email (never fails the account creation), CC'ing the admin team
+    let emailed = false;
+    try {
+      const cc = await adminCcList(db, email);
+      const html = mailShell("You're set up on the Wizard Trees field app", `
+        <p style="margin:0 0 12px">Hi ${esc(full_name || "there")}, an admin just set you up on the Wizard Trees brand-ambassador app.</p>
+        ${credBox([["Your login", email], ["Temporary password", password]])}
+        <p style="margin:0 0 14px;color:#777;font-size:13px">You'll choose your own password the first time you sign in.</p>
+        <p style="margin:0 0 16px">${btn(APP_URL, "Open the app →")}</p>
+        <p style="margin:0 0 6px;font-weight:700">What you can do in seconds:</p>
+        <ul style="margin:0 0 14px;padding-left:18px;line-height:1.7">
+          <li>🚗 <b>Log mileage</b> — by address, a navigation screenshot, or odometer photos (it works out the miles for you)</li>
+          <li>🧾 <b>Add expenses</b> — snap a receipt and it fills in the vendor &amp; amount</li>
+          <li>📅 <b>Submit each pay period</b> to get reimbursed</li>
+          <li>🔐 Turn on <b>Face ID / fingerprint</b> for quick sign-in</li>
+        </ul>
+        <p style="margin:0;color:#888;font-size:12px">Tip: open this on your phone and "Add to Home Screen" so it feels like a real app.</p>`);
+      const text = `Hi ${full_name || "there"}, you've been set up on the Wizard Trees field app.\n\nLogin: ${email}\nTemporary password: ${password} (you'll set your own on first sign-in)\nOpen: ${APP_URL}\n\nWhat you can do: log mileage (by address, a nav screenshot, or odometer photos), add expenses by snapping a receipt, and submit each pay period for reimbursement.`;
+      await sendMail({ to: email, cc, subject: "Welcome to the Wizard Trees field app", html, text });
+      emailed = true;
+    } catch (_) { /* email is best-effort */ }
+
+    return json({ ok: true, user_id: created.user.id, email, emailed });
   } catch (e) {
     return json({ ok: false, error: String(e?.message ?? e) }, 500);
   }
