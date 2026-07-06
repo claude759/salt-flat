@@ -17,7 +17,17 @@ Deno.serve(async (req) => {
     const password = String(b.password ?? "");
     const full_name = (b.full_name ?? "").trim();
     const role = b.role === "admin" ? "admin" : "ba";
-    const region = ["CA", "FL", "NY"].includes(b.region) ? b.region : null;
+    let region = ["CA", "FL", "NY"].includes(b.region) ? b.region : null;
+    // Regional admins (admin WITH a region) may only create accounts in their own
+    // region — never a universal admin, never another state. Universal admins
+    // (region null) may create anyone, anywhere.
+    const callerRegion = who.profile?.region ?? null;
+    if (callerRegion) {
+      if (region !== callerRegion) {
+        return json({ ok: false, error: "forbidden", message: `You can only create ${callerRegion} accounts.` }, 403);
+      }
+      region = callerRegion; // pin it, no universal-admin (null) escapes
+    }
     if (!email || password.length < 8) {
       return json({ ok: false, error: "bad_input", message: "Email and an 8+ char temp password are required." }, 400);
     }

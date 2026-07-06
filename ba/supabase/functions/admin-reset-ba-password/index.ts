@@ -27,8 +27,13 @@ Deno.serve(async (req) => {
 
     const db = admin();
     // only reset real profiles in this app — never arbitrary auth users
-    const { data: target, error: tErr } = await db.from("profiles").select("id,email").eq("id", user_id).single();
+    const { data: target, error: tErr } = await db.from("profiles").select("id,email,region").eq("id", user_id).single();
     if (tErr || !target) return json({ ok: false, error: "not_found", message: "No such user." }, 404);
+    // regional admins can only reset accounts in their own region
+    const callerRegion = who.profile?.region ?? null;
+    if (callerRegion && target.region !== callerRegion) {
+      return json({ ok: false, error: "forbidden", message: `You can only manage ${callerRegion} accounts.` }, 403);
+    }
 
     const { error: uErr } = await db.auth.admin.updateUserById(user_id, { password });
     if (uErr) return json({ ok: false, error: "reset_failed", message: uErr.message }, 400);
