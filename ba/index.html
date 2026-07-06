@@ -257,7 +257,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-06.2';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-06.3';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1314,7 +1314,12 @@ function gridRowHtml(mode, it, today, pay, opts={}){
   const statCell = opts.showStatus ? `<td class="gstat">${it&&it.status&&it.status!=='draft'?`<span class="badge ${it.status}">${it.status}</span>`:''}</td>` : '';
   if(mode==='miles'){
     const needMi = (!ro && it && !(Number(it.miles)>0)) ? ' needs' : '';   // incomplete trip — finish destination / miles later
-    return `<tr data-id="${id}"${ro?' data-ro="1"':''}>${del}${dateCell}
+    const navPath = (it && it.miles_source==='route' && it.start_photo) ? it.start_photo : '';
+    const navcell = navPath
+      ? `<div class="rcell"><span class="rchip" data-navview="1">🗺 view</span>${ro?'':`<label class="rrepl" title="replace nav screenshot">✎<input type="file" accept="image/*" class="g-nav" hidden></label>`}</div>`
+      : `<div class="rcell">${ro?'<span class="muted small">—</span>':`<label class="rchip" title="attach a navigation screenshot to read the miles">🗺 add<input type="file" accept="image/*" class="g-nav" hidden></label>`}</div>`;
+    return `<tr data-id="${id}"${ro?' data-ro="1"':''} data-navpath="${esc(navPath)}" data-msrc="${it&&it.miles_source?esc(it.miles_source):''}">${del}${dateCell}
+      <td>${navcell}</td>
       <td><input class="g-start" placeholder="start" value="${it?esc(it.start_label||''):''}" autocomplete="off"${dis}></td>
       <td><input class="g-dest" placeholder="destination" value="${it?esc(it.dest_label||''):''}" autocomplete="off"${dis}></td>
       <td>${dispCellBtn('g-disp', it&&it.dispensary_id?[it.dispensary_id]:[], {dis})}</td>
@@ -1366,6 +1371,35 @@ async function gridReceiptRow(e, tr, mode){
   }catch(err){ toast('Receipt upload failed','err'); cell.innerHTML=prev;
     const ri=cell.querySelector('.g-receipt'); if(ri) ri.onchange=ev=>gridReceiptRow(ev,tr,mode); }
 }
+// Mileage priority: odometer (start+end) > nav-image reading > start/destination calc.
+// Sets the Miles cell to the highest-priority source that's filled + records which.
+function recalcMiles(tr){
+  const mi=tr.querySelector('.g-mi'); if(!mi) return;
+  const os=Number(tr.querySelector('.g-os')?.value), oe=Number(tr.querySelector('.g-oe')?.value);
+  let src=null, val=null;
+  if(os && oe && oe>=os){ val=Math.round((oe-os)*10)/10; src='odometer'; }
+  else if(tr._routeMiles>0){ val=tr._routeMiles; src='route'; }
+  else if(tr._calcMiles>0){ val=tr._calcMiles; src='distance'; }
+  if(src){ mi.value=val; mi.classList.remove('needs'); tr.dataset.msrc=src; gridTotal(); }
+}
+// attach a navigation screenshot → read-route reads the miles; stored as the trip's evidence
+async function gridNavRow(e, tr){
+  const f=e.target.files[0]; if(!f) return;
+  const cell=tr.querySelector('.g-nav')?.closest('.rcell'); if(!cell) return; const prev=cell.innerHTML;
+  cell.innerHTML='<span class="spin"></span>';
+  const rewire=()=>{ const ni=cell.querySelector('.g-nav'); if(ni) ni.onchange=ev=>gridNavRow(ev,tr);
+    const v=cell.querySelector('[data-navview]'); if(v) v.onclick=async()=>{ const p=tr.dataset.navpath; if(p){ const u=await signedUrl('odometer',p); if(u) window.open(u,'_blank'); } }; };
+  try{
+    const path=await uploadPhoto('odometer', f); tr.dataset.navpath=path; tr._routePhoto=path;
+    const r=await callFn('read-route',{path});
+    if(r&&r.ok&&r.miles!=null){ tr._routeMiles=r.miles;
+      const d=tr.querySelector('.g-dest'); if(r.destination && d && !d.value.trim()) d.value=r.destination;
+      toast(`Route read: ${r.miles} mi — double-check it`,'ok');
+    } else toast((r&&r.message)||'Couldn’t read the route — type the miles (image saved)','err');
+    cell.innerHTML=`<span class="rchip" data-navview="1">🗺 view</span><label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-nav" hidden></label>`;
+    rewire(); recalcMiles(tr); scheduleAutosave(tr,'miles');
+  }catch(err){ toast('Upload/read failed — type the miles','err'); cell.innerHTML=prev; rewire(); }
+}
 // ── Day-grouped, inline-editable grid — shared by the BA home and admin review. ──
 // Every day of the pay period is a block; a day's trips/expenses/hours show in
 // spreadsheet rows. Locked rows (submitted/approved for a BA, or hours for a BA)
@@ -1382,7 +1416,7 @@ function dgCanEdit(ctx, kind, it){ if(kind==='hours') return !!ctx.isAdmin;
 function dgCanAdd(ctx, kind){ if(kind==='hours') return false;   // hours only ever come from the Gusto import, never added by hand
   return !!(ctx.isAdmin || ctx.canAdd); }   // admins add on a BA's behalf (RLS insert now allows is_admin); BAs add on an editable period
 function dgHead(mode){
-  if(mode==='miles') return `<tr><th></th><th>Start</th><th>Destination</th><th>Dispensary</th><th>Notes</th><th>Odo st</th><th>Odo end</th><th>Miles</th><th>State</th><th class="gstat">Status</th></tr>`;
+  if(mode==='miles') return `<tr><th></th><th>Nav</th><th>Start</th><th>Destination</th><th>Dispensary</th><th>Notes</th><th>Odo st</th><th>Odo end</th><th>Miles</th><th>State</th><th class="gstat">Status</th></tr>`;
   if(mode==='hours') return `<tr><th></th><th>Kind</th><th>Dispensary</th><th>Hours</th><th>State</th><th class="gstat">Status</th></tr>`;
   return `<tr><th></th><th>Receipt</th><th>Description</th><th>Category</th><th>Dispensary</th><th>Paid</th><th>Amount</th><th>Notes</th><th>State</th><th class="gstat">Status</th></tr>`;
 }
@@ -1484,10 +1518,11 @@ function wireGridRow(tr, mode){
   });
   if(mode==='miles'){
     const os=tr.querySelector('.g-os'),oe=tr.querySelector('.g-oe'),mi=tr.querySelector('.g-mi');
-    const c=()=>{ const s=Number(os.value),e=Number(oe.value); if(s&&e&&e>=s){ mi.value=Math.round((e-s)*10)/10; mi.classList.remove('needs'); tr._autoMi=false; gridTotal(); } };
-    os.addEventListener('input',c); oe.addEventListener('input',c);
+    os.addEventListener('input',()=>recalcMiles(tr)); oe.addEventListener('input',()=>recalcMiles(tr));
     os.addEventListener('click',()=>odoSheet(tr,'os')); oe.addEventListener('click',()=>odoSheet(tr,'oe'));
-    mi.addEventListener('input',()=>{ tr._autoMi=false; });
+    mi.addEventListener('input',()=>{ tr.dataset.msrc='manual'; });   // hand-typed miles = manual override
+    const nav=tr.querySelector('.g-nav'); if(nav) nav.onchange=e=>gridNavRow(e,tr);
+    const nv=tr.querySelector('[data-navview]'); if(nv) nv.onclick=async()=>{ const p=tr.dataset.navpath; if(p){ const u=await signedUrl('odometer',p); if(u) window.open(u,'_blank'); } };
     attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true});
     attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r; if(r.dispId){ const btn=tr.querySelector('.g-disp'); if(btn && btn.dataset.ids!==r.dispId){ btn.dataset.ids=r.dispId; const l=dispCellLabelText([r.dispId]); btn.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; } } scheduleAutosave(tr,mode); });
     ['.g-start','.g-dest'].forEach(sel=>{ const el=tr.querySelector(sel); if(el) el.addEventListener('blur', ()=>setTimeout(()=>maybeCalcDistance(tr),250)); });
@@ -1525,20 +1560,21 @@ async function gridAutosave(tr, mode){
   const isNew=!tr.dataset.id; let payload; const table=gridTable(mode);
   const date=gridRowDate(tr);
   if(mode==='miles'){
+    recalcMiles(tr);                                              // apply odometer > nav > start/dest priority
     const start=tr.querySelector('.g-start').value.trim(), dest=tr.querySelector('.g-dest').value.trim();
     const note=tr.querySelector('.g-note').value.trim();
     const os=tr.querySelector('.g-os').value, oe=tr.querySelector('.g-oe').value;
-    let miles=Number(tr.querySelector('.g-mi').value);
-    if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
-    if(isNew && !(date && (miles>0 || start || dest))){ savedIndicator('All changes saved'); return; }  // save in-progress trips; finish later
-    const hasOdo=os!==''&&oe!=='';
+    const miles=Number(tr.querySelector('.g-mi').value);
+    if(isNew && !(date && (miles>0 || start || dest || tr.dataset.navpath))){ savedIndicator('All changes saved'); return; }  // save in-progress trips; finish later
+    const msrc = tr.dataset.msrc || 'manual';                    // odometer | route | distance | manual
     const dispId = (tr.querySelector('.g-disp')?.dataset.ids||'').split(',').filter(Boolean)[0] || null;
-    payload={ trip_date:date, dispensary_id:dispId, method:hasOdo?'odometer':'manual',
-      start_odo:os?Number(os):null, end_odo:oe?Number(oe):null, miles:miles>0?miles:null, miles_source:hasOdo?'odometer':'manual',
+    payload={ trip_date:date, dispensary_id:dispId, method:msrc==='odometer'?'odometer':'manual',
+      start_odo:os?Number(os):null, end_odo:oe?Number(oe):null, miles:miles>0?miles:null, miles_source:msrc,
       start_label:start||null, dest_label:dest||null, note:note||null,
       state:tr.querySelector('.g-state')?.dataset.state||null };   // roundtrip left alone (only set on insert; grid miles are already final)
     const sC=tr._startResolved?.coords; if(sC){ payload.start_lat=sC.lat; payload.start_lng=sC.lng; }
     if(tr._osPhoto) payload.start_photo=tr._osPhoto; if(tr._oePhoto) payload.end_photo=tr._oePhoto;
+    if(msrc==='route' && (tr._routePhoto||tr.dataset.navpath)) payload.start_photo=tr._routePhoto||tr.dataset.navpath;  // nav screenshot = evidence
   } else if(mode==='hours'){
     const kind=tr.querySelector('.g-kind')?.dataset.kind||null;
     const hrs=Number(tr.querySelector('.g-hrs').value);
@@ -1663,17 +1699,17 @@ function odoSheet(tr, which){
 // auto-compute grid mileage from start+destination (one-way) when no odometer entered
 function maybeCalcDistance(tr){
   const os=tr.querySelector('.g-os')?.value, oe=tr.querySelector('.g-oe')?.value;
-  if(os && oe) return;                                            // odometer wins
+  if(os && oe) return;                                            // odometer already wins
   const start=(tr.querySelector('.g-start')?.value||'').trim(), dest=(tr.querySelector('.g-dest')?.value||'').trim();
   if(!start || !dest) return;
-  const mi=tr.querySelector('.g-mi'); if(mi.value!=='' && !tr._autoMi) return;  // never clobber a hand-entered value
+  if(tr.dataset.msrc==='manual' && tr.querySelector('.g-mi').value!=='') return;  // respect a hand-entered value
   const key=start+'|'+dest; if(tr._distKey===key) return; tr._distKey=key;
   const body={ roundtrip:false }, sR=tr._startResolved, dR=tr._destResolved;
   if(sR&&sR.coords){ body.start_lat=sR.coords.lat; body.start_lng=sR.coords.lng; }   // GPS "Current location"
   else body.start_address=(sR&&sR.addr)||start;
   if(dR&&dR.dispId) body.dispensary_id=dR.dispId; else body.dest_address=(dR&&dR.addr)||dest;
-  mi.placeholder='…';
-  callFn('calc-distance', body).then(r=>{ mi.placeholder='mi'; if(r&&r.ok){ mi.value=r.miles; mi.classList.remove('needs'); tr._autoMi=true; gridTotal(); scheduleAutosave(tr,'miles'); } }).catch(()=>{ mi.placeholder='mi'; });
+  const mi=tr.querySelector('.g-mi'); mi.placeholder='…';
+  callFn('calc-distance', body).then(r=>{ mi.placeholder='mi'; if(r&&r.ok){ tr._calcMiles=r.miles; recalcMiles(tr); scheduleAutosave(tr,'miles'); } }).catch(()=>{ mi.placeholder='mi'; });
 }
 // floating typeahead for grid Start/Destination cells (shared overlay box)
 let _gridSug=null;
@@ -2984,7 +3020,7 @@ boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles };
 </script>
 </body>
 </html>
