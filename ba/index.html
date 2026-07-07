@@ -257,7 +257,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-07.1';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-07.2';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -315,12 +315,23 @@ function baDispensaries(){ const r = state.preview || state.profile?.region; ret
 function matchDispByText(text){
   const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
   const tn=norm(text); if(tn.length<4) return null;
-  const list=baDispensaries().filter(d=>d.active!==false && !/^\*/.test(d.name||''));
   const uniq=arr=>arr.length===1?arr[0].id:null;
-  let c=list.filter(d=>norm(d.name)===tn); if(c.length) return uniq(c);          // exact name
-  c=list.filter(d=>{ const n=norm(d.name); return n.length>=6 &&                  // dest contains the whole store name
+  const named=baDispensaries().filter(d=>d.active!==false && !/^\*/.test(d.name||''));
+  let c=named.filter(d=>norm(d.name)===tn); if(c.length) return uniq(c);          // exact name
+  c=named.filter(d=>{ const n=norm(d.name); return n.length>=6 &&                 // dest contains the whole store name
     (tn===n || tn.startsWith(n+' ') || tn.endsWith(' '+n) || tn.includes(' '+n+' ')); }); if(c.length) return uniq(c);
-  c=list.filter(d=>{ const n=norm(d.name); return tn.length>=5 && n.startsWith(tn+' '); }); if(c.length) return uniq(c);  // typed a strong prefix
+  c=named.filter(d=>{ const n=norm(d.name); return tn.length>=5 && n.startsWith(tn+' '); }); if(c.length) return uniq(c);  // typed a strong prefix
+  // Address match — covers the office ("18-33 42nd St") and any store where the BA typed
+  // the street address. Match on the first 3 tokens (number + street) when the text looks
+  // like an address; includes '* ' placeholders (the office) since it's matched by address.
+  if(/\d/.test(tn)){
+    const sig=s=>norm(s).split(' ').slice(0,3).join(' ');
+    const ds=sig(text);
+    if(ds.split(' ').length>=2){
+      c=baDispensaries().filter(d=>d.active!==false && d.address && sig(d.address)===ds);
+      if(c.length) return uniq(c);
+    }
+  }
   return null;
 }
 // the selectable labor kinds (admin-editable in Settings; safe defaults pre-migration)
@@ -335,7 +346,7 @@ function mselSummary(root){
 const NEW_RETAILER='* New retailer';
 const US_STATES=[['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkansas'],['CA','California'],['CO','Colorado'],['CT','Connecticut'],['DE','Delaware'],['DC','District of Columbia'],['FL','Florida'],['GA','Georgia'],['HI','Hawaii'],['ID','Idaho'],['IL','Illinois'],['IN','Indiana'],['IA','Iowa'],['KS','Kansas'],['KY','Kentucky'],['LA','Louisiana'],['ME','Maine'],['MD','Maryland'],['MA','Massachusetts'],['MI','Michigan'],['MN','Minnesota'],['MS','Mississippi'],['MO','Missouri'],['MT','Montana'],['NE','Nebraska'],['NV','Nevada'],['NH','New Hampshire'],['NJ','New Jersey'],['NM','New Mexico'],['NY','New York'],['NC','North Carolina'],['ND','North Dakota'],['OH','Ohio'],['OK','Oklahoma'],['OR','Oregon'],['PA','Pennsylvania'],['RI','Rhode Island'],['SC','South Carolina'],['SD','South Dakota'],['TN','Tennessee'],['TX','Texas'],['UT','Utah'],['VT','Vermont'],['VA','Virginia'],['WA','Washington'],['WV','West Virginia'],['WI','Wisconsin'],['WY','Wyoming']];
 // "* …" placeholder stores pin to the top of every picker, in this order, before real stores A→Z
-const PLACEHOLDER_TOP=['* Non-BA activity','* General BA activity','* Lead','* New retailer'];
+const PLACEHOLDER_TOP=['* Non-BA activity','* General BA activity','* Office','* Lead','* New retailer'];
 const dispRank=n=>{ const i=PLACEHOLDER_TOP.indexOf(n); return i<0?99:i; };
 const dispSort=(a,b)=>dispRank(a.name)-dispRank(b.name)||a.name.localeCompare(b.name);
 // Picking "* New retailer" anywhere opens this mini-form on a second layer, creates the
@@ -1104,8 +1115,9 @@ function itemIssues(x){
   if(x._k==='hours') return hasDisp ? [] : ['a dispensary'];   // hours only ever need a dispensary link
   const trip = x._k==='trip';
   const out=[];
-  if(!hasDisp && !trip) out.push('a dispensary');   // expenses need a store (use the * placeholders if unsure); trips it's optional
+  if(!hasDisp) out.push(trip?'a location':'a dispensary');   // trips + expenses both need a store or a * placeholder
   if(trip){
+    if(!x.kind) out.push('a category');                      // every trip needs an activity category
     if(!(Number(x.miles)>0)){
       const so=x.start_odo!=null, eo=x.end_odo!=null, hs=!!x.start_label, hd=!!x.dest_label;
       if(so!==eo) out.push('the 2nd odometer reading');
@@ -1151,8 +1163,10 @@ function fixTripSheet(x){
     <h3>Edit this trip</h3>
     <div class="small muted" style="margin-top:2px">${iss.length?`Still needs ${iss.join(', ')}.`:'Change anything below.'}</div>
     <label class="fl">Date</label><input id="fTDate" type="date" value="${x.trip_date||''}">
-    <label class="fl">Dispensary <span class="muted">(optional — helps the per-store report)</span></label>
+    <label class="fl">Location <span class="muted">(the store, or a * placeholder like Office / General BA activity)</span></label>
     <select id="fDisp" class="${needDisp?'needs':''}">${dispOpts}</select>
+    <label class="fl">Category <span class="muted">(what kind of activity)</span></label>
+    <select id="fKind" class="${!x.kind?'needs':''}"><option value="">— pick —</option>${laborKindNames().map(k=>`<option ${(x.kind||((x.dispensary_id&&/office/i.test(dispName(x.dispensary_id)))?'Admin':''))===k?'selected':''}>${esc(k)}</option>`).join('')}</select>
     <label class="fl">Starting location</label>
     <input id="fStart" placeholder="start typing, or pick 📍 Current location" value="${esc(x.start_label||'')}" autocomplete="off" class="${needMiles&&!x.start_label?'needs':''}">
     <label class="fl">Destination</label>
@@ -1181,7 +1195,10 @@ function fixTripSheet(x){
   let startRes=null, destRes=null;
   const recalcFromOdo=()=>{ const s=Number(osEl.value),e=Number(oeEl.value); if(s&&e&&e>=s){ milesEl.value=Math.round((e-s)*10)/10; milesEl.classList.remove('needs'); } };
   attachGridTypeahead(startEl, r=>{ startRes=r; }, {gps:true});
-  attachGridTypeahead(destEl,  r=>{ destRes=r; if(r.dispId && dispEl.value!==r.dispId) dispEl.value=r.dispId; });
+  const officeKind=()=>{ const fk=$('#fKind'); if(fk && !fk.value && dispEl.value && /office/i.test(dispName(dispEl.value))) fk.value='Admin'; };  // office trip → Admin
+  attachGridTypeahead(destEl,  r=>{ destRes=r; if(r.dispId && dispEl.value!==r.dispId) dispEl.value=r.dispId; officeKind(); });
+  dispEl.addEventListener('change', officeKind);
+  destEl.addEventListener('blur', ()=>{ if(!dispEl.value){ const id=matchDispByText(destEl.value); if(id){ dispEl.value=id; dispEl.classList.remove('needs'); officeKind(); } } });
   // inline odometer snap → read-odometer fills the number (no nested popup)
   const wireOdo=(fileEl, inp)=>{ if(!fileEl) return; fileEl.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
     const ph=inp.placeholder; inp.placeholder='reading…';
@@ -1224,7 +1241,7 @@ function fixTripSheet(x){
       busy(btn,false); $('#fMsg').textContent='';
     }
     const hasOdo=os!==''&&oe!=='';
-    const patch={ trip_date:$('#fTDate').value||x.trip_date, dispensary_id:dispEl.value||null, start_label:start||null, dest_label:dest||null,
+    const patch={ trip_date:$('#fTDate').value||x.trip_date, dispensary_id:dispEl.value||null, kind:$('#fKind').value||null, start_label:start||null, dest_label:dest||null,
       start_odo:os!==''?Number(os):null, end_odo:oe!==''?Number(oe):null,
       miles:miles>0?miles:(x.miles||null), roundtrip:$('#fRound').checked,   // never blank out an existing distance
       method:hasOdo?'odometer':'manual', miles_source:hasOdo?'odometer':'manual' };
@@ -1473,8 +1490,8 @@ function dgCanEdit(ctx, kind, it){ if(kind==='hours') return !!ctx.isAdmin;
 function dgCanAdd(ctx, kind){ if(kind==='hours') return false;   // hours only ever come from the Gusto import, never added by hand
   return !!(ctx.isAdmin || ctx.canAdd); }   // admins add on a BA's behalf (RLS insert now allows is_admin); BAs add on an editable period
 function dgHead(mode){
-  if(mode==='miles') return `<tr><th></th><th>Nav</th><th>Start</th><th>Destination</th><th>Dispensary</th><th>Kind</th><th>Notes</th><th>Odo st</th><th>Odo end</th><th>Miles</th><th>Round&nbsp;trip</th><th>State</th><th class="gstat">Status</th></tr>`;
-  if(mode==='hours') return `<tr><th></th><th>Kind</th><th>Dispensary</th><th>Hours</th><th>State</th><th class="gstat">Status</th></tr>`;
+  if(mode==='miles') return `<tr><th></th><th>Nav</th><th>Start</th><th>Destination</th><th>Dispensary</th><th>Category</th><th>Notes</th><th>Odo st</th><th>Odo end</th><th>Miles</th><th>Round&nbsp;trip</th><th>State</th><th class="gstat">Status</th></tr>`;
+  if(mode==='hours') return `<tr><th></th><th>Category</th><th>Dispensary</th><th>Hours</th><th>State</th><th class="gstat">Status</th></tr>`;
   return `<tr><th></th><th>Receipt</th><th>Description</th><th>Category</th><th>Dispensary</th><th>Paid</th><th>Amount</th><th>Notes</th><th>State</th><th class="gstat">Status</th></tr>`;
 }
 function dgKind(mode){ return mode==='miles'?'trip':mode==='hours'?'hours':'exp'; }
@@ -1562,7 +1579,7 @@ function wireGridRow(tr, mode){
         selected: btn.dataset.state?[btn.dataset.state]:[],
         onSave:ids=>{ const s=ids[0]||''; btn.dataset.state=s; btn.innerHTML=s?esc(s):'<span class="pkph">—</span>'; scheduleAutosave(tr,mode); } });
     } else if(btn.classList.contains('g-kind')){
-      cellPickerSheet({ title:'Kind of work', multi:false,
+      cellPickerSheet({ title:'Category', multi:false,
         options: laborKindNames().map(k=>({id:k,name:k})),
         selected: btn.dataset.kind?[btn.dataset.kind]:[],
         onSave:ids=>{ const k=ids[0]||''; btn.dataset.kind=k; btn.innerHTML=k?esc(k):'<span class="pkph">— pick —</span>'; scheduleAutosave(tr,mode); } });
@@ -1593,6 +1610,9 @@ function wireGridRow(tr, mode){
       if((gdb.dataset.ids||'').split(',').filter(Boolean).length) return;   // already linked — leave it
       const id=matchDispByText(gd.value); if(!id) return;
       gdb.dataset.ids=id; const l=dispCellLabelText([id]); gdb.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; gdb.classList.remove('needs');
+      // a trip to the office is admin/general BA time → default the Category if it's blank
+      const kb=tr.querySelector('.g-kind');
+      if(kb && !kb.dataset.kind && /office/i.test(dispName(id))){ kb.dataset.kind='Admin'; kb.innerHTML='Admin'; }
       toast('Linked to '+dispName(id),'ok'); scheduleAutosave(tr,mode);
     });
   } else if(mode==='expenses'){
@@ -2028,7 +2048,9 @@ function tripSheet(){
     const btn=$('#tSave'); busy(btn,true);
     const startLoc = startCoords ? '📍 Current location' : ($('#tStartLoc').value||null);
     // 'route' is a UI mode: stored as method 'distance' + miles_source 'route' + the screenshot as evidence
-    const row={ ba_id:state.session.user.id, trip_date:$('#tDate').value, dispensary_id:destDispId||matchDispByText(destText)||null,
+    const dId = destDispId||matchDispByText(destText)||null;
+    const row={ ba_id:state.session.user.id, trip_date:$('#tDate').value, dispensary_id:dId,
+      kind:(dId && /office/i.test(dispName(dId)))?'Admin':null,   // office trip = admin/general BA time
       method:(method==='route'?'distance':method),
       miles, miles_source:milesSrc, dest_label:destText, start_label:startLoc, note:$('#tNote').value||null, status:'draft' };
     if(method==='odometer'){ row.start_odo=startOdo; row.end_odo=endOdo; row.start_photo=startPath; row.end_photo=endPath; }
@@ -2463,7 +2485,7 @@ function reportItemSheet(it){
     body+=kv('Odometer', (it.start_odo!=null||it.end_odo!=null)?`${it.start_odo??'—'} → ${it.end_odo??'—'}`:'');
     body+=kv('Mileage reimbursement', money(it.amount));
   } else if(hours){
-    body+=kv('Kind', it.kind?esc(it.kind):(it.job?esc(it.job):''));
+    body+=kv('Category', it.kind?esc(it.kind):(it.job?esc(it.job):''));
     body+=kv('Hours', isSplit?`${fullHours} total · ${it.hours} to this store`:`${fullHours}`);
     body+=kv('Pay rate', `$${Number(it.rate).toFixed(2)}/hr`);
     body+=kv('Labor cost', isSplit?`${money(it.fullAmount)} total · ${money(it.amount)} here`:money(it.amount));
@@ -2501,7 +2523,8 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     openSheet(`
       <h3>Edit trip <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.trip_date||''}">
-      <label class="fl">Dispensary</label><select id="aDisp">${dispOpts}</select>
+      <label class="fl">Location</label><select id="aDisp">${dispOpts}</select>
+      <label class="fl">Category</label><select id="aKind"><option value="">— pick —</option>${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
       <label class="fl">Starting location</label><input id="aStart" value="${esc(x.start_label||'')}" autocomplete="off">
       <label class="fl">Destination</label><input id="aDest" value="${esc(x.dest_label||'')}" autocomplete="off">
       <div class="row">
@@ -2515,12 +2538,13 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
     $('#aCancel').onclick=closeSheet; wireNewRetailerSelect($('#aDisp'));
+    $('#aDisp').addEventListener('change',()=>{ const k=$('#aKind'); if(k && !k.value && $('#aDisp').value && /office/i.test(dispName($('#aDisp').value))) k.value='Admin'; });   // office → Admin
     // flipping round-trip doubles/halves the miles in place — admin sees (and can correct) the result before saving
     $('#aRound').onchange=()=>{ const m=Number($('#aMiles').value);
       if(m>0) $('#aMiles').value=Math.round(m*($('#aRound').checked?2:0.5)*100)/100; };
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
-      const patch={ trip_date:$('#aDate').value||x.trip_date, dispensary_id:$('#aDisp').value||null,
+      const patch={ trip_date:$('#aDate').value||x.trip_date, dispensary_id:$('#aDisp').value||null, kind:$('#aKind').value||null,
         start_label:$('#aStart').value.trim()||null, dest_label:$('#aDest').value.trim()||null,
         miles:Number($('#aMiles').value)||null, method:$('#aMethod').value, miles_source:$('#aMethod').value,
         roundtrip:$('#aRound').checked, note:$('#aNote').value.trim()||null };
@@ -2534,7 +2558,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     openSheet(`
       <h3>Edit hours <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.work_date||''}">
-      <label class="fl">Kind of work</label>
+      <label class="fl">Category</label>
       <select id="aKind">${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
       <label class="fl">Dispensaries <span class="muted">(tap all stores this shift covered — cost splits evenly)</span></label>
       ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips'})}
@@ -2824,7 +2848,7 @@ function exportPDF(prof,per,T,E,H){
     <h3>Expenses (reimbursable) — ${money(reimb)}</h3>
     <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Vendor</th><th>Dispensary</th><th>Paid with</th><th>Amount</th></tr>${er||'<tr><td colspan=5>none</td></tr>'}</table>
     ${H.length?`<h3>Labor — ${laborHrs>0?`${laborHrs.toFixed(2)} hrs · `:''}${money(labor)}${laborHrs===0?' (salaried)':''} <span style="font-weight:400;color:#666">(paid via payroll — not part of the reimburse total)</span></h3>
-    <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Kind</th><th>Dispensary</th><th>Hours</th><th>Labor cost</th></tr>${hr}</table>`:''}
+    <table style="width:100%;border-collapse:collapse" border="1" cellpadding="5"><tr><th>Date</th><th>Category</th><th>Dispensary</th><th>Hours</th><th>Labor cost</th></tr>${hr}</table>`:''}
     <h2 style="text-align:right;margin-top:16px">Reimburse total: ${money(mile+reimb)}</h2>
     ${card>0?`<p style="text-align:right;color:#666;margin:0">Company card (not reimbursed): ${money(card)}</p>`:''}
     <p style="color:#666;font-size:12px">Receipt images are stored in the app; open each expense to view.</p>`;
@@ -2918,8 +2942,8 @@ async function adminSettings(m){
       <div id="gustoStatus" class="small muted" style="margin-top:8px"></div>
     </div>
     <div class="card">
-      <div class="row"><h3 class="grow">Labor kinds</h3><button class="btn sm primary" id="addKind">+ Add</button></div>
-      <p class="small muted" style="margin-top:0">The kinds of work hours can be tagged as (store visits, education talks, brand events…). Used in the per-dispensary reports.</p>
+      <div class="row"><h3 class="grow">Categories</h3><button class="btn sm primary" id="addKind">+ Add</button></div>
+      <p class="small muted" style="margin-top:0">The activity categories trips &amp; hours can be tagged as (store visit, education talk, admin…). Used in the per-dispensary reports.</p>
       <div class="row wrap" id="kindList">${laborKindNames().map(k=>`<span class="pill" style="display:inline-flex;align-items:center;gap:6px">${esc(k)}<a href="#" data-delkind="${esc(k)}" title="Remove" style="color:var(--muted);text-decoration:none">✕</a></span>`).join(' ')}</div>
     </div>
     <div class="card">
@@ -3035,7 +3059,7 @@ function importHoursSheet(bas){
     <div class="small muted">Upload a Gusto “time tracking hours” CSV. Only Brand Ambassador hours are imported (Sales etc. ignored), matched to each work date.</div>
     <label class="fl">Brand ambassador</label>
     <select id="ihBa">${list.map(b=>`<option value="${b.id}" data-rate="${b.hourly_rate??''}">${esc(b.full_name||b.email)}${b.hourly_rate!=null?` · $${Number(b.hourly_rate).toFixed(2)}/hr`:' · ⚠ no rate set'}</option>`).join('')}</select>
-    <label class="fl">Kind of work <span class="muted">(applied to these hours; tweak per day after import)</span></label>
+    <label class="fl">Category <span class="muted">(applied to these hours; tweak per day after import)</span></label>
     <select id="ihKind">${laborKindNames().map(k=>`<option>${esc(k)}</option>`).join('')}</select>
     <label class="btn primary block" style="margin-top:12px">📄 Choose Gusto CSV<input id="ihFile" type="file" accept=".csv,text/csv" hidden></label>
     <div id="ihMsg" class="small" style="margin-top:10px"></div>
