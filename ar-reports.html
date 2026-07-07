@@ -875,6 +875,7 @@ function classify(rows){
     // LeafLink orders report export (NY) — header names vary slightly across LeafLink versions,
     // so accept Buyer + a total + a date. Checked LAST so it can't shadow the other reports.
     if(h.includes('Buyer') && (h.includes('Total Amount')||h.includes('Order Total')||h.includes('Total')) && (h.includes('Ship Date')||h.includes('Order Date')||h.includes('Created Date'))) return {type:'leaflink',hr:i};
+    if(has('Order','Product','Quantity','Line Total')) return {type:'leaflink_items',hr:i};   // NY per-order line items (crawl-leaflink flatten)
   }
   return {type:'unknown',hr:-1};
 }
@@ -906,7 +907,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, visits:null, leaflink:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, visits:null, leaflink:null, leaflink_items:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
@@ -917,7 +918,8 @@ const LABELS = {
   nabis_inventory:'Nabis inventory',
   distru_inventory:'Distru inventory valuation',
   visits:'Field schedule (PAD/EDU)',
-  leaflink:'LeafLink orders (NY)'
+  leaflink:'LeafLink orders (NY)',
+  leaflink_items:'LeafLink line items (NY)'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -1109,6 +1111,7 @@ function applyShared(d){
     }
     if(data.visits && data.visits.length){ VISIT_EVENTS=visitsFromWire(data.visits); any=true; }
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); any=true; }
+    if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
@@ -1155,6 +1158,7 @@ async function publishToTeam(){
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
     if(VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
     if(NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
+    if(NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
     // latest values for the current week; past weeks are never overwritten.
@@ -1206,7 +1210,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','visits','leaflink'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','visits','leaflink','leaflink_items'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -2218,6 +2222,7 @@ function buildSku(){
   renderSku(); renderShareBar();
 }
 function renderSku(){
+  if(APP_STATE==='NY') return renderSkuNY();   // NY = LeafLink line items by product type + drop
   const wrap=$('#sku-wrap'), note=$('#sku-note');
   if(!SKU.length){ wrap.innerHTML=`<div class="empty" style="padding:34px;text-align:center">Upload the <b>Distru sales-order items</b> and/or <b>Nabis detailed brand</b> file to see sales by product type.</div>`; note.innerHTML=''; return; }
   const intl=n=>Math.round(n).toLocaleString();
@@ -3034,7 +3039,36 @@ function buildNyEvents(){
 // Shared-payload wire (additive key `ny`): [d, buyer, amt, order #, status] per order.
 function nyToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, Math.round((e.amt||0)*100)/100, e.ref||'', e.st||'']); }
 function nyFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), amt:+a[2]||0, ref:String(a[3]||''), st:String(a[4]||'')})); }
-function buildNy(){ if(FILES.leaflink) NY_EVENTS=buildNyEvents(); if(APP_STATE==='NY') renderTiers(); }
+// ── NY Drops: harvest cohorts, assigned by ORDER DATE (editable boundaries). All sales so far
+//    = Drop 1 (Harvest 1). Harvest 2 finishes packaging ~Jul 10 2026 → orders from then = Drop 2.
+//    NOTE date-based is approximate if old-drop inventory keeps selling — switch to SKU/batch
+//    mapping if Drop 2 ships under distinguishable SKUs. Append future drops here.
+const NY_DROPS=[
+  {n:1, label:'Drop 1 · Harvest 1', start:'2026-01-01'},
+  {n:2, label:'Drop 2 · Harvest 2', start:'2026-07-10'},
+];
+function nyDropOf(ms){ if(ms==null) return null; let hit=null;
+  NY_DROPS.forEach(x=>{ if(ms>=new Date(x.start+'T00:00:00').getTime()) hit=x; }); return hit; }
+// ── NY line items (from the LeafLink order-detail crawler) ──
+let NY_ITEMS=[];   // {ref:order #, product, units, lineTotal}
+function nyParseUnits(q){ const m=String(q||'').match(/-?[\d,]+/); return m?+m[0].replace(/,/g,''):0; }
+// "Wizard Trees | 3.5g Indoor Flower | Black Magic | IndicaSKU: Black Magic Flower 3.5G"
+//   → {format:'3.5g Indoor Flower', strain:'Black Magic', sku:'Black Magic Flower 3.5G'}
+function nyParseProduct(p){ const s=String(p||'');
+  const skuM=s.match(/SKU:\s*(.+)$/i); const core=skuM?s.slice(0,skuM.index):s;
+  const parts=core.split('|').map(x=>x.trim()).filter(Boolean);
+  return { format:(parts[1]||'Other'), strain:(parts[2]||parts[0]||'').trim()||'(unknown)', sku:skuM?skuM[1].trim():'' }; }
+function buildNyItemEvents(){
+  if(!FILES.leaflink_items) return [];
+  const out=[];
+  FILES.leaflink_items.data.forEach(r=>{ const ref=String(r['Order']||'').trim(); if(!ref) return;
+    out.push({ref, product:String(r['Product']||'').trim(), units:nyParseUnits(r['Quantity']), lineTotal:num(r['Line Total'])}); });
+  return out;
+}
+function nyItemsToWire(evs){ return (evs||[]).map(e=>[e.ref, e.product, e.units, Math.round((e.lineTotal||0)*100)/100]); }
+function nyItemsFromWire(w){ return (w||[]).map(a=>({ref:String(a[0]||''), product:String(a[1]||''), units:+a[2]||0, lineTotal:+a[3]||0})); }
+function buildNy(){ if(FILES.leaflink) NY_EVENTS=buildNyEvents(); if(FILES.leaflink_items) NY_ITEMS=buildNyItemEvents();
+  if(APP_STATE==='NY'){ renderTiers(); renderSku(); } }
 function tierDataNY(){
   const months=Math.max(1,+(($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
@@ -3083,19 +3117,78 @@ function nyTierDrill(name){
   if(!list.length) return;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first`,
-    columns:[{l:'Order #'},{l:'Status'},{l:'Ship date'},{l:'Amount',num:true,money:true}],
-    rows:list.map(e=>[e.ref||'—', e.st||'—', fmtDt(e.d), e.amt]),
+    columns:[{l:'Order #'},{l:'Status'},{l:'Drop'},{l:'Date'},{l:'Amount',num:true,money:true}],
+    rows:list.map(e=>{ const dr=nyDropOf(e.d); return [e.ref||'—', e.st||'—', dr?('Drop '+dr.n):'—', fmtDt(e.d), e.amt]; }),
     totalLabel:'Total', total:list.reduce((s,e)=>s+e.amt,0)});
 }
 // ── CA / NY state toggle ──
-function setAppState(st){ APP_STATE=(st==='NY')?'NY':'CA';
+function setAppState(st){ const was=APP_STATE; APP_STATE=(st==='NY')?'NY':'CA';
   document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.state===APP_STATE));
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', APP_STATE==='NY'&&t.dataset.tab!=='tiers'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', APP_STATE==='NY'&&t.dataset.tab!=='tiers'&&t.dataset.tab!=='sku'));
+  if(APP_STATE!==was){
+    // sku date range: NY defaults to ALL TIME (its orders predate CA's "last week" default);
+    // returning to CA restores the last-week preset.
+    if(APP_STATE==='NY'){ if($('#sku-start'))$('#sku-start').value=''; if($('#sku-end'))$('#sku-end').value=''; if($('#sku-preset'))$('#sku-preset').value='custom'; }
+    else { if($('#sku-preset')){ $('#sku-preset').value='lastweek'; applySkuPreset('lastweek'); } }
+  }
   activateTab(APP_STATE==='NY'?'tiers':'ar');
 }
 document.querySelectorAll('#state-toggle button').forEach(b=>b.onclick=()=>setAppState(b.dataset.state));
 
+// ── NY Sales by Type: LeafLink line items grouped by product format → strain, with Drop cohorts ──
+let nyDropFilter=0;   // 0 = all drops
+function nySkuRows(){
+  // join line items → their orders (buyer/date come from the order; cancelled orders drop out)
+  const byRef={}; (NY_EVENTS||[]).forEach(e=>{ byRef[e.ref]=e; });
+  const sd=parseDate(($('#sku-start')||{}).value), ed=parseDate(($('#sku-end')||{}).value);
+  const s=sd?(sd.setHours(0,0,0,0), sd.getTime()):-Infinity, e=ed?(ed.setHours(23,59,59,999), ed.getTime()):Infinity;
+  const rows=[];
+  (NY_ITEMS||[]).forEach(it=>{ const o=byRef[it.ref]; if(!o||o.d==null||o.d<s||o.d>e) return;
+    const drop=nyDropOf(o.d); const p=nyParseProduct(it.product);
+    rows.push({ref:it.ref, buyer:o.c, d:o.d, units:it.units, lineTotal:it.lineTotal, format:p.format, strain:p.strain, sku:p.sku, drop:drop?drop.n:null, dropLabel:drop?drop.label:'—'});
+  });
+  return rows;
+}
+function renderSkuNY(){
+  const wrap=$('#sku-wrap'), note=$('#sku-note'); if(!wrap) return;
+  const all=nySkuRows();
+  if(!all.length){ note.innerHTML='';
+    wrap.innerHTML=`<div class="empty" style="padding:34px;text-align:center">No New York line items in this date range yet — they publish with the hourly refresh.</div>`; return; }
+  // Drop summary cards (range-filtered, ignoring the drop filter so you can always compare drops)
+  const byDrop={}; all.forEach(r=>{ const k=r.drop||0; const g=byDrop[k]||(byDrop[k]={n:r.drop,label:r.dropLabel,units:0,rev:0,orders:new Set()});
+    g.units+=r.units; g.rev+=r.lineTotal; g.orders.add(r.ref); });
+  const dropCards=Object.values(byDrop).sort((a,b)=>(a.n||99)-(b.n||99)).map(g=>
+    `<div class="tier-card"><div class="tc-head"><span class="tc-name">${esc(g.label)}</span><span class="tc-count">${g.orders.size}</span></div>
+     <div class="tc-meta" style="font-size:17px;color:var(--text);font-weight:700">${fmt$(g.rev)}</div>
+     <div class="tc-blurb">${Math.round(g.units).toLocaleString()} units · ${g.orders.size} orders</div></div>`).join('');
+  // Drop filter seg
+  const seg=`<div class="seg-wrap" style="margin:10px 0"><div class="seg" id="ny-drop-seg">
+    <button class="${nyDropFilter===0?'on':''}" data-drop="0">All drops</button>
+    ${NY_DROPS.map(d=>`<button class="${nyDropFilter===d.n?'on':''}" data-drop="${d.n}">${esc(d.label)}</button>`).join('')}
+  </div></div>`;
+  const view=nyDropFilter?all.filter(r=>r.drop===nyDropFilter):all;
+  // group format → strain
+  const fmts={};
+  view.forEach(r=>{ const f=fmts[r.format]||(fmts[r.format]={format:r.format,units:0,rev:0,orders:new Set(),strains:{}});
+    f.units+=r.units; f.rev+=r.lineTotal; f.orders.add(r.ref);
+    const st=f.strains[r.strain]||(f.strains[r.strain]={strain:r.strain,units:0,rev:0,orders:new Set()});
+    st.units+=r.units; st.rev+=r.lineTotal; st.orders.add(r.ref); });
+  const flist=Object.values(fmts).sort((a,b)=>b.rev-a.rev);
+  const strainTable=f=>{ const ss=Object.values(f.strains).sort((a,b)=>b.rev-a.rev);
+    return `<div class="ddhead">Strains</div><table class="ddtable"><thead><tr><th>Strain</th><th class="num">Units</th><th class="num">Orders</th><th class="num">Revenue</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${
+      ss.map(x=>`<tr><td>${esc(x.strain)}</td><td class="num">${Math.round(x.units).toLocaleString()}</td><td class="num">${x.orders.size}</td><td class="num money">${fmt$(x.rev)}</td><td class="num money">${x.units?fmt$(x.rev/x.units):'—'}</td></tr>`).join('')}</tbody></table>`; };
+  const body=flist.map(f=>`<tr class="parent"><td><span class="caret">▶</span> ${esc(f.format)}</td>
+      <td class="num">${Math.round(f.units).toLocaleString()}</td><td class="num">${f.orders.size}</td><td class="num money">${fmt$(f.rev)}</td><td class="num money">${f.units?fmt$(f.rev/f.units):'—'}</td></tr>
+    <tr class="detail hidden"><td colspan="5"><div class="detailbox">${strainTable(f)}</div></td></tr>`).join('');
+  const totU=view.reduce((s2,r)=>s2+r.units,0), totR=view.reduce((s2,r)=>s2+r.lineTotal,0), totO=new Set(view.map(r=>r.ref)).size;
+  wrap.innerHTML=`<div class="tier-cards">${dropCards}</div>${seg}
+    <table id="ny-sku-table"><thead><tr><th>Product Type</th><th class="num">Units</th><th class="num">Orders</th><th class="num">Revenue</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td>Total · ${totO} order${totO!==1?'s':''}</td><td class="num">${Math.round(totU).toLocaleString()}</td><td class="num">${totO}</td><td class="num money">${fmt$(totR)}</td><td class="num money">${totU?fmt$(totR/totU):'—'}</td></tr></tfoot></table>`;
+  wrap.querySelectorAll('#ny-drop-seg button').forEach(b=>b.onclick=()=>{ nyDropFilter=+b.dataset.drop||0; renderSkuNY(); });
+  wrap.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{ const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } });
+  note.innerHTML=`<b>New York sales by product type</b> from LeafLink order line items (crawled per order). <b>Drops</b> are harvest cohorts assigned by order date — ${NY_DROPS.map(d=>`${esc(d.label)} from ${d.start}`).join(' · ')} (boundaries editable; if a new drop ships under new SKUs we can switch to exact SKU-based mapping). Click a product type for its strains. Date range above applies; cancelled orders excluded.`;
+}
 /* ============================ Customer Tiers ============================ */
 // Tier each account by trailing net revenue. Treatment per tier (editable here) — the team
 // uses these to decide PADs / displays / educations / samples.
@@ -3771,6 +3864,10 @@ function concExport(rows,label,fname){
 $('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-source',cdSort,true),'Dispensary','credits-discounts-by-dispensary.csv');
 $('#cb-export').onclick=()=>concExport(concFilterSort(CONC_BRAND,'cb-search',null,cbSort),'Brand','credits-discounts-by-brand.csv');
 $('#sku-export').onclick=()=>{
+  if(APP_STATE==='NY'){ const rows=nySkuRows().filter(r=>!nyDropFilter||r.drop===nyDropFilter);
+    const out=[['Drop','Product Type','Strain','SKU','Order #','Buyer','Order Date','Units','Line Total']];
+    rows.sort((a,b)=>b.d-a.d).forEach(r=>out.push([r.drop?('Drop '+r.drop):'',r.format,r.strain,r.sku,r.ref,r.buyer,new Date(r.d).toISOString().slice(0,10),r.units,r.lineTotal.toFixed(2)]));
+    downloadCSV('ny-sales-by-type.csv',out); return; }
   const rows=[['System','Product','Units','Projected','Actualized','Unit Discounts','Avg $/Unit','Discounts/Credits','Actual Total']];
   const f2=v=>(+v||0).toFixed(2);
   SKU.forEach(sys=>{
@@ -4107,6 +4204,7 @@ function activateTab(tab, fromHash){
   $('#view-cd').classList.toggle('hidden',tab!=='cd');
   if(tab==='cd' && fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='cd-disp'||h==='cd-brand') setCdMode(h==='cd-brand'?'brand':'disp'); }   // honor legacy #cd-disp/#cd-brand links
   $('#view-sku').classList.toggle('hidden',tab!=='sku');
+  if(tab==='sku') renderSku();   // re-render on open (also dispatches to the NY view)
   $('#view-scorecard').classList.toggle('hidden',tab!=='scorecard');
   if(tab==='scorecard') renderScorecard();
   $('#view-tiers').classList.toggle('hidden',tab!=='tiers');
