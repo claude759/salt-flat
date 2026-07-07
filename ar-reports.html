@@ -1078,11 +1078,8 @@ async function hardRefresh(){
   const base=location.href.replace(/[?#].*$/,'');
   location.replace(base+'?v='+Date.now()+(location.hash||''));
 }
-async function loadShared(){
-  if(isPlaceholder()){ renderShareBar(); return; }
-  renderShareBar('loading');
-  try{
-    const d=await jsonpRetry(3);
+// Apply a team payload (freshly fetched OR locally cached) to the app. Returns true if it carried data.
+function applyShared(d){
     const data=normShared(d && d.data);
     let any=false;
     if(data.ar && data.ar.records && data.ar.records.length){
@@ -1124,7 +1121,22 @@ async function loadShared(){
     if(any) renderTiers();   // re-render after the team report arrives (fixes blank Tiers tab on a cold refresh)
     if(any) renderRepMode();   // refresh whichever report is active (visits/customers/sales/payments/…)
     renderShareBar();
-  }catch(e){ renderShareBar('error'); }
+    return any;
+}
+// Stale-while-revalidate: paint the LAST GOOD payload from localStorage instantly, then fetch
+// fresh in the background and re-render when it lands. Apps Script hangs for 15-30s on bad days
+// (multiple incidents Jul 2026) — with this, that never blocks the page again. The Refresh
+// button (hardRefresh) wipes storage, so it still forces a true refetch.
+const SHARED_CACHE_KEY='arReportCacheV1';
+async function loadShared(){
+  if(isPlaceholder()){ renderShareBar(); return; }
+  let hadCache=false;
+  try{ const c=JSON.parse(localStorage.getItem(SHARED_CACHE_KEY)||'null'); if(c&&c.data) hadCache=applyShared(c); }catch(e){}
+  if(!hadCache) renderShareBar('loading');
+  try{
+    const d=await jsonpRetry(3);
+    if(applyShared(d)){ try{ localStorage.setItem(SHARED_CACHE_KEY, JSON.stringify({uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy,data:d.data})); }catch(e){} }
+  }catch(e){ if(!hadCache) renderShareBar('error'); }   // cache already painted → keep showing it (bar says when it's from)
 }
 
 async function publishToTeam(){
