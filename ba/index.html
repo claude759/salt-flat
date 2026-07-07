@@ -257,7 +257,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-06.9';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-07.1';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1378,6 +1378,7 @@ function gridRowHtml(mode, it, today, pay, opts={}){
       <td><input class="gnum g-os" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.start_odo!=null?it.start_odo:''}" readonly style="cursor:pointer"></td>
       <td><input class="gnum g-oe" type="number" inputmode="decimal" placeholder="tap" value="${it&&it.end_odo!=null?it.end_odo:''}" readonly style="cursor:pointer"></td>
       <td><input class="gnum g-mi${needMi}" type="number" inputmode="decimal" placeholder="mi" value="${it&&it.miles!=null?it.miles:''}"${dis}></td>
+      <td style="text-align:center"><input type="checkbox" class="g-rt" ${(it?it.roundtrip:true)?'checked':''}${dis} title="Round trip — the miles cover the drive there and back. Toggling doubles/halves the miles."></td>
       <td>${stateCellBtn((it&&it.state)||gridDefaultState(),{dis})}</td>${statCell}</tr>`;
   }
   if(mode==='hours'){
@@ -1472,7 +1473,7 @@ function dgCanEdit(ctx, kind, it){ if(kind==='hours') return !!ctx.isAdmin;
 function dgCanAdd(ctx, kind){ if(kind==='hours') return false;   // hours only ever come from the Gusto import, never added by hand
   return !!(ctx.isAdmin || ctx.canAdd); }   // admins add on a BA's behalf (RLS insert now allows is_admin); BAs add on an editable period
 function dgHead(mode){
-  if(mode==='miles') return `<tr><th></th><th>Nav</th><th>Start</th><th>Destination</th><th>Dispensary</th><th>Kind</th><th>Notes</th><th>Odo st</th><th>Odo end</th><th>Miles</th><th>State</th><th class="gstat">Status</th></tr>`;
+  if(mode==='miles') return `<tr><th></th><th>Nav</th><th>Start</th><th>Destination</th><th>Dispensary</th><th>Kind</th><th>Notes</th><th>Odo st</th><th>Odo end</th><th>Miles</th><th>Round&nbsp;trip</th><th>State</th><th class="gstat">Status</th></tr>`;
   if(mode==='hours') return `<tr><th></th><th>Kind</th><th>Dispensary</th><th>Hours</th><th>State</th><th class="gstat">Status</th></tr>`;
   return `<tr><th></th><th>Receipt</th><th>Description</th><th>Category</th><th>Dispensary</th><th>Paid</th><th>Amount</th><th>Notes</th><th>State</th><th class="gstat">Status</th></tr>`;
 }
@@ -1578,6 +1579,8 @@ function wireGridRow(tr, mode){
     os.addEventListener('input',()=>recalcMiles(tr)); oe.addEventListener('input',()=>recalcMiles(tr));
     os.addEventListener('click',()=>odoSheet(tr,'os')); oe.addEventListener('click',()=>odoSheet(tr,'oe'));
     mi.addEventListener('input',()=>{ tr.dataset.msrc='manual'; });   // hand-typed miles = manual override
+    const rt=tr.querySelector('.g-rt');   // toggling round trip doubles/halves the miles (like the log-trip form) + persists the flag
+    if(rt) rt.addEventListener('change',()=>{ const m=Number(mi.value); if(m>0){ mi.value=Math.round(m*(rt.checked?2:0.5)*100)/100; mi.classList.remove('needs'); } });
     const nav=tr.querySelector('.g-nav'); if(nav) nav.onchange=e=>gridNavRow(e,tr);
     const nv=tr.querySelector('[data-navview]'); if(nv) nv.onclick=async()=>{ const p=tr.dataset.navpath; if(p){ const u=await signedUrl('odometer',p); if(u) window.open(u,'_blank'); } };
     attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true});
@@ -1637,7 +1640,8 @@ async function gridAutosave(tr, mode){
     payload={ trip_date:date, dispensary_id:dispId, method:msrc==='odometer'?'odometer':'manual',
       start_odo:os?Number(os):null, end_odo:oe?Number(oe):null, miles:miles>0?miles:null, miles_source:msrc,
       start_label:start||null, dest_label:dest||null, note:note||null, kind:tr.querySelector('.g-kind')?.dataset.kind||null,
-      state:tr.querySelector('.g-state')?.dataset.state||null };   // roundtrip left alone (only set on insert; grid miles are already final)
+      roundtrip: !!tr.querySelector('.g-rt')?.checked,   // now visible + editable in the grid
+      state:tr.querySelector('.g-state')?.dataset.state||null };
     const sC=tr._startResolved?.coords; if(sC){ payload.start_lat=sC.lat; payload.start_lng=sC.lng; }
     if(tr._osPhoto) payload.start_photo=tr._osPhoto; if(tr._oePhoto) payload.end_photo=tr._oePhoto;
     if(msrc==='route' && (tr._routePhoto||tr.dataset.navpath)) payload.start_photo=tr._routePhoto||tr.dataset.navpath;  // nav screenshot = evidence
@@ -1668,7 +1672,7 @@ async function gridAutosave(tr, mode){
   tr._saving=true;
   try{
     if(isNew){
-      const {data,error}=await supabase.from(table).insert({...payload, ba_id:gridCtx().baId, status:'draft', ...(mode==='miles'?{roundtrip:false}:{})}).select('*').single();
+      const {data,error}=await supabase.from(table).insert({...payload, ba_id:gridCtx().baId, status:'draft'}).select('*').single();
       if(error) throw error;
       tr.dataset.id=data.id;
       const dc=tr.querySelector('.gdel'); if(dc && !dc.querySelector('.gx')){ dc.innerHTML='<button class="gx" title="delete row">✕</button>'; dc.querySelector('.gx').onclick=()=>gridDelete(tr,mode); }
@@ -2700,6 +2704,12 @@ async function adminBaDetail(baId){
         <div class="small muted center" style="text-transform:uppercase;letter-spacing:.3px;font-weight:700;margin-bottom:4px">Expenses by category ${card>0?`<span style="text-transform:none;font-weight:400">· 💳 = on company card</span>`:''}</div>
         ${catRows}</div>`:''}
     </div>
+    ${(!H||!H.length)?`<div class="card" style="margin:0 0 12px;border:1px dashed var(--line)">
+      <div class="row" style="gap:10px;align-items:flex-start"><div style="font-size:20px;line-height:1">⏱</div>
+      <div class="small"><b>No hours logged for this period.</b> Labor hours sync from Gusto — they're never entered by hand.${
+        (prof.salary_per_period==null && prof.hourly_rate==null)
+        ? ` <span style="color:var(--yellow)">⚠ ${esc((prof.full_name||'This BA').split(' ')[0])} has no hourly rate set, so their Gusto hours can't import.</span> Set one in Settings → edit ${esc(prof.full_name||'them')}.`
+        : ` Use “⬇ Pull from Gusto now” in Settings, or wait for the nightly sync.`}</div></div></div>`:''}
     <div id="admTodo">${todoCard(items,false,true)}</div>
     <div id="admGrid"></div>
     ${(H||[]).some(x=>!x.dispensary_id)?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
