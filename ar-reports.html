@@ -464,6 +464,18 @@
     </div>
     </div>
 
+    <!-- NY ACCOUNTS RECEIVABLE (expected receivables from LeafLink order terms) -->
+    <div id="view-ar-ny" class="hidden">
+      <div class="toolbar">
+        <input type="text" id="ar-ny-search" placeholder="Search buyer / order #…" />
+        <div class="grow"></div>
+        <button class="btn" id="ar-ny-export">⬇ Export CSV</button>
+      </div>
+      <div class="tier-cards" id="ar-ny-cards"></div>
+      <div class="tablewrap" id="ar-ny-wrap"></div>
+      <div class="notes" id="ar-ny-note"></div>
+    </div>
+
     <!-- CREDITS / DISCOUNTS (by Dispensary or Brand) -->
     <div id="view-cd" class="hidden">
       <div class="seg-wrap">
@@ -3034,13 +3046,13 @@ function buildNyEvents(){
     if(/cancel|reject|declin|draft/i.test(st)) return;
     const d=parseDate(r['Ship Date']||r['Order Date']||r['Created Date']); if(!d) return;
     const amt=num(r['Total Amount']!=null?r['Total Amount']:(r['Order Total']!=null?r['Order Total']:r['Total']));
-    out.push({d:d.getTime(), c:buyer, amt, ref:String(r['Order']||r['Order Number']||r['Order ID']||'').trim(), st});
+    out.push({d:d.getTime(), c:buyer, amt, ref:String(r['Order']||r['Order Number']||r['Order ID']||'').trim(), st, terms:String(r['Payment Terms']||'').trim()});
   });
   return out.sort((a,b)=>a.d-b.d);
 }
 // Shared-payload wire (additive key `ny`): [d, buyer, amt, order #, status] per order.
-function nyToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, Math.round((e.amt||0)*100)/100, e.ref||'', e.st||'']); }
-function nyFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), amt:+a[2]||0, ref:String(a[3]||''), st:String(a[4]||'')})); }
+function nyToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, Math.round((e.amt||0)*100)/100, e.ref||'', e.st||'', e.terms||'']); }
+function nyFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), amt:+a[2]||0, ref:String(a[3]||''), st:String(a[4]||''), terms:String(a[5]||'')})); }
 // ── NY Drops: harvest cohorts, assigned by ORDER DATE (editable boundaries). All sales so far
 //    = Drop 1 (Harvest 1). Harvest 2 finishes packaging ~Jul 10 2026 → orders from then = Drop 2.
 //    NOTE date-based is approximate if old-drop inventory keeps selling — switch to SKU/batch
@@ -3127,7 +3139,7 @@ function nyTierDrill(name){
 function setAppState(st){ const was=APP_STATE; APP_STATE=(st==='NY')?'NY':'CA';
   document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.state===APP_STATE));
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', APP_STATE==='NY'&&t.dataset.tab!=='tiers'&&t.dataset.tab!=='sku'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', APP_STATE==='NY'&&!['ar','sku','tiers'].includes(t.dataset.tab)));
   if(APP_STATE!==was){
     // sku date range: NY defaults to ALL TIME (its orders predate CA's "last week" default);
     // returning to CA restores the last-week preset.
@@ -3137,6 +3149,47 @@ function setAppState(st){ const was=APP_STATE; APP_STATE=(st==='NY')?'NY':'CA';
   activateTab(APP_STATE==='NY'?'tiers':'ar');
 }
 document.querySelectorAll('#state-toggle button').forEach(b=>b.onclick=()=>setAppState(b.dataset.state));
+
+// ── NY Accounts Receivable: EXPECTED receivables from order terms ──
+// LeafLink doesn't report buyer payments yet (LeafLink Payments is enabled for the company but
+// no invoices have been assigned — probed Jul 7 2026; financial-api.leaflink.com/api/v2/invoices/
+// is the endpoint to wire WHEN they start). Until then: due date = ship/order date + Net terms,
+// aged into coming-due / past-due buckets. This is a payment SCHEDULE, not confirmed-unpaid.
+function nyTermsDays(t){ const m=String(t||'').match(/net\s*(\d+)/i); if(m) return +m[1]; if(/cod/i.test(String(t||''))) return 0; return null; }   // null = unknown terms
+function nyArData(){
+  const now=new Date(); now.setHours(23,59,59,999);
+  return (NY_EVENTS||[]).map(e=>{ const days=nyTermsDays(e.terms);
+    const due=days==null?null:(e.d+days*86400000);
+    const dpd=due==null?null:Math.floor((now.getTime()-due)/86400000);
+    return {...e, due, dpd}; }).sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
+}
+function renderArNY(){
+  const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note'); if(!wrap) return;
+  const all=nyArData();
+  if(!all.length){ cards.innerHTML=''; note.innerHTML='';
+    wrap.innerHTML='<div class="empty">No New York (LeafLink) orders loaded yet.</div>'; return; }
+  const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
+  const view=q?all.filter(r=>r.c.toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)):all;
+  const tot=view.reduce((s2,r)=>s2+r.amt,0);
+  const past=view.filter(r=>r.dpd!=null&&r.dpd>0), week=view.filter(r=>r.dpd!=null&&r.dpd<=0&&r.dpd>=-7), later=view.filter(r=>r.dpd!=null&&r.dpd<-7);
+  const sum=a=>a.reduce((s2,r)=>s2+r.amt,0);
+  cards.innerHTML=[['Expected total',fmt$(tot),view.length+' orders'],['Past due',fmt$(sum(past)),past.length+' orders','var(--red)'],['Due within 7 days',fmt$(sum(week)),week.length+' orders','var(--yellow)'],['Due later',fmt$(sum(later)),later.length+' orders','var(--green)']]
+    .map(([l,v,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${v}</div><div class="tc-blurb">${sub}</div></div>`).join('');
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const statusCell=r=>{ if(r.dpd==null) return '<span class="neg">terms unknown</span>';
+    if(r.dpd>0) return `<span style="color:var(--red)">overdue ${r.dpd}d</span>`;
+    if(r.dpd===0) return '<span style="color:var(--yellow)">due today</span>';
+    return `<span style="color:${r.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-r.dpd}d</span>`; };
+  const body=view.map(r=>`<tr><td>${esc(r.c)}</td><td>${esc(r.ref||'—')}</td><td class="num">${fmtD(r.d)}</td><td>${esc(r.terms||'—')}</td><td class="num">${fmtD(r.due)}</td><td class="num">${statusCell(r)}</td><td class="num money">${fmt$(r.amt)}</td></tr>`).join('');
+  wrap.innerHTML=`<table id="ar-ny-table"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Amount</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="6">${view.length} order${view.length!==1?'s':''}</td><td class="num money">${fmt$(tot)}</td></tr></tfoot></table>`;
+  note.innerHTML=`<b>New York expected receivables</b> — a payment <b>schedule</b> from LeafLink order terms (due = ship date + terms; Net 30 / COD), NOT confirmed unpaid balances: LeafLink doesn't report buyer payments yet (LeafLink Payments is enabled but no invoices assigned). When payments start flowing there, this page can upgrade to true paid/outstanding. Cancelled/rejected orders excluded.`;
+}
+{ const el=$('#ar-ny-search'); if(el) el.addEventListener('input',renderArNY); }
+{ const el=$('#ar-ny-export'); if(el) el.onclick=()=>{ const rows=nyArData();
+  const out=[['Buyer','Order #','Ship date','Terms','Due date','Days past due','Amount']];
+  rows.forEach(r=>out.push([r.c,r.ref,new Date(r.d).toISOString().slice(0,10),r.terms||'',r.due?new Date(r.due).toISOString().slice(0,10):'',r.dpd==null?'':r.dpd,r.amt.toFixed(2)]));
+  downloadCSV('ny-expected-receivables.csv',out); }; }
 
 // ── NY Sales by Type: LeafLink line items grouped by product format → strain, with Drop cohorts ──
 let nyDropFilter=0;   // 0 = all drops
@@ -4201,8 +4254,10 @@ drop.addEventListener('drop',e=>handleFiles(e.dataTransfer.files));
 function activateTab(tab, fromHash){
   const t=document.querySelector('.tab[data-tab="'+tab+'"]'); if(!t) return false;
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
-  $('#view-ar').classList.toggle('hidden',tab!=='ar');
-  if(tab==='ar'){ if(fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='invoice'||h==='dispensary'||h==='brand') setArMode(h); } freezeInvCols(); }   // honor legacy #invoice/#dispensary/#brand; measure sticky cols if Invoice mode visible
+  $('#view-ar').classList.toggle('hidden',tab!=='ar'||APP_STATE==='NY');
+  $('#view-ar-ny').classList.toggle('hidden',tab!=='ar'||APP_STATE!=='NY');
+  if(tab==='ar'&&APP_STATE==='NY') renderArNY();
+  else if(tab==='ar'){ if(fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='invoice'||h==='dispensary'||h==='brand') setArMode(h); } freezeInvCols(); }   // honor legacy #invoice/#dispensary/#brand; measure sticky cols if Invoice mode visible
   $('#view-cd').classList.toggle('hidden',tab!=='cd');
   if(tab==='cd' && fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='cd-disp'||h==='cd-brand') setCdMode(h==='cd-brand'?'brand':'disp'); }   // honor legacy #cd-disp/#cd-brand links
   $('#view-sku').classList.toggle('hidden',tab!=='sku');
