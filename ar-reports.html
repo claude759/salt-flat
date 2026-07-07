@@ -313,6 +313,11 @@
 
   <!-- REPORTS -->
   <div id="reports" class="hidden">
+    <!-- State picker: California = the full app (Distru + Nabis). New York = LeafLink, Tiers only (for now). -->
+    <div class="seg-wrap"><div class="seg big" id="state-toggle">
+      <button class="on" data-state="CA">California</button>
+      <button data-state="NY">New York</button>
+    </div></div>
     <div class="summary" id="summary"></div>
 
     <div class="tabs">
@@ -867,6 +872,9 @@ function classify(rows){
     if(has('sku_code','sku_name','total_available','sku_price_per_unit')) return {type:'nabis_inventory',hr:i};
     if(has('Available Quantity','Active Value (Price)'))  return {type:'distru_inventory',hr:i};   // Distru Inventory Valuation report
     if(has('Schedule Date','Account Name','Sales Order Notes')) return {type:'visits',hr:i};   // field-schedule flatten (lib/schedule.mjs) — feeds the Reports tab
+    // LeafLink orders report export (NY) — header names vary slightly across LeafLink versions,
+    // so accept Buyer + a total + a date. Checked LAST so it can't shadow the other reports.
+    if(h.includes('Buyer') && (h.includes('Total Amount')||h.includes('Order Total')||h.includes('Total')) && (h.includes('Ship Date')||h.includes('Order Date')||h.includes('Created Date'))) return {type:'leaflink',hr:i};
   }
   return {type:'unknown',hr:-1};
 }
@@ -898,7 +906,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, visits:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, visits:null, leaflink:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
@@ -908,7 +916,8 @@ const LABELS = {
   nabis_brand:'Nabis brand summary',
   nabis_inventory:'Nabis inventory',
   distru_inventory:'Distru inventory valuation',
-  visits:'Field schedule (PAD/EDU)'
+  visits:'Field schedule (PAD/EDU)',
+  leaflink:'LeafLink orders (NY)'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -1102,6 +1111,7 @@ async function loadShared(){
       $('#reports').classList.remove('hidden'); renderSku(); any=true;
     }
     if(data.visits && data.visits.length){ VISIT_EVENTS=visitsFromWire(data.visits); any=true; }
+    if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); any=true; }
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
@@ -1132,6 +1142,7 @@ async function publishToTeam(){
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
     if(VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
+    if(NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
     // latest values for the current week; past weeks are never overwritten.
@@ -1176,14 +1187,14 @@ function handleFiles(fileList){
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); }
+      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); }
     };
     reader.readAsText(f);
   });
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','visits'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','visits','leaflink'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -1191,7 +1202,7 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); });
 }
 
 /* ============================ Build model ============================ */
@@ -2988,6 +2999,91 @@ $('#scm-body').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.
   const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } };
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeScModal(); });
 
+/* ============================ New York (LeafLink) ============================ */
+// NY sells through LeafLink (BME "Wizard Trees", Astoria NY). For now NY has ONE page — Customer
+// Tiers — fed by the LeafLink Orders Report export (order-level only: buyer, dates, total; line
+// items would need per-order clicks in LeafLink, deliberately out of scope). The #state-toggle
+// at the top switches the whole app between California (everything) and New York (Tiers only).
+let APP_STATE='CA';
+let NY_EVENTS=[];   // {d:ms, c:buyer, amt, ref:order #, st:status}
+function buildNyEvents(){
+  if(!FILES.leaflink) return [];
+  const out=[];
+  FILES.leaflink.data.forEach(r=>{
+    const buyer=String(r['Buyer']||r['Customer']||'').replace(/\s*\([^)]*\)\s*$/,'').trim(); if(!buyer) return;   // strip the trailing "(Licensee LLC)"
+    const st=String(r['Status']||'').trim();
+    if(/cancel|reject|declin|draft/i.test(st)) return;
+    const d=parseDate(r['Ship Date']||r['Order Date']||r['Created Date']); if(!d) return;
+    const amt=num(r['Total Amount']!=null?r['Total Amount']:(r['Order Total']!=null?r['Order Total']:r['Total']));
+    out.push({d:d.getTime(), c:buyer, amt, ref:String(r['Order']||r['Order Number']||r['Order ID']||'').trim(), st});
+  });
+  return out.sort((a,b)=>a.d-b.d);
+}
+// Shared-payload wire (additive key `ny`): [d, buyer, amt, order #, status] per order.
+function nyToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, Math.round((e.amt||0)*100)/100, e.ref||'', e.st||'']); }
+function nyFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), amt:+a[2]||0, ref:String(a[3]||''), st:String(a[4]||'')})); }
+function buildNy(){ if(FILES.leaflink) NY_EVENTS=buildNyEvents(); if(APP_STATE==='NY') renderTiers(); }
+function tierDataNY(){
+  const months=Math.max(1,+(($('#tier-months')||{}).value||3));
+  const end=new Date(); end.setHours(23,59,59,999);
+  const start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0);
+  const t1=Math.max(0,+(($('#tier-t1')||{}).value||15000)), t2=Math.min(t1,Math.max(0,+(($('#tier-t2')||{}).value||7000)));
+  const acc={};
+  (NY_EVENTS||[]).forEach(e=>{ if(!e.d||e.d<start.getTime()||e.d>end.getTime()) return;
+    const g=acc[e.c]||(acc[e.c]={name:e.c,rev:0,orders:0,last:null});
+    g.rev+=e.amt||0; g.orders++; if(!g.last||e.d>g.last)g.last=e.d; });
+  const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>({...g,brand:'',source:'LeafLink',tier:g.rev>=t1?1:g.rev>=t2?2:3}));
+  return {rows,start,end,months,t1,t2};
+}
+function renderTiersNY(){
+  const wrap=$('#tier-wrap'), cards=$('#tier-cards'), note=$('#tier-note');
+  const {rows,months,t1,t2}=tierDataNY();
+  if(!rows.length){ cards.innerHTML=''; note.innerHTML='';
+    wrap.innerHTML=`<div class="empty">No New York (LeafLink) orders loaded yet${(NY_EVENTS||[]).length?` in the last ${months} month${months>1?'s':''}`:' — LeafLink joins the hourly refresh after its one-time login'}.</div>`; return; }
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—';
+  cards.innerHTML=TIER_DEFS.map(d=>{ const tr=rows.filter(r=>r.tier===d.n), rev=tr.reduce((s,r)=>s+r.rev,0);
+    const range=d.n===1?`≥ ${fmt$(t1)}`:d.n===2?`${fmt$(t2)} – ${fmt$(t1)}`:`< ${fmt$(t2)}`;
+    return `<div class="tier-card ${d.cls}"><div class="tc-head"><span class="tc-name">${d.name}</span><span class="tc-count">${tr.length}</span></div>
+      <div class="tc-meta">${fmt$(rev)} over ${months} mo · ${range}</div>
+      <div class="tc-blurb">${esc(d.blurb)}</div></div>`; }).join('');
+  let view=tierFilter(rows);
+  const k=tierSort.key,dir=tierSort.dir;
+  view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(av==null)av=-Infinity; if(bv==null)bv=-Infinity; if(typeof av==='string'){av=av.toLowerCase();bv=(''+bv).toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
+  const cols=[['tier','Tier',0],['name','Account',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['last','Last order',1]];
+  const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
+  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click to see this account's orders">
+    <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
+    <td>${esc(r.name)}</td>
+    <td class="num money">${fmt$(r.rev)}</td>
+    <td class="num">${r.orders}</td>
+    <td class="num">${fmtD(r.last)}</td></tr>`).join('');
+  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders}),{rev:0,orders:0});
+  wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="2">${view.length} account${view.length!==1?'s':''}</td>
+    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td><td></td></tr></tfoot></table>`;
+  wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
+    if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:key==='name'?1:-1}; renderTiers(); });
+  note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (order totals; cancelled/rejected orders excluded). Same editable thresholds as California. Click a row for the account's orders. AR / visits / discounts aren't available for NY yet — LeafLink's export is order-level only.`;
+}
+function nyTierDrill(name){
+  const {start,end,months}=tierDataNY();
+  const list=(NY_EVENTS||[]).filter(e=>e.c===name&&e.d>=start.getTime()&&e.d<=end.getTime()).sort((a,b)=>b.d-a.d);
+  if(!list.length) return;
+  const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first`,
+    columns:[{l:'Order #'},{l:'Status'},{l:'Ship date'},{l:'Amount',num:true,money:true}],
+    rows:list.map(e=>[e.ref||'—', e.st||'—', fmtDt(e.d), e.amt]),
+    totalLabel:'Total', total:list.reduce((s,e)=>s+e.amt,0)});
+}
+// ── CA / NY state toggle ──
+function setAppState(st){ APP_STATE=(st==='NY')?'NY':'CA';
+  document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.state===APP_STATE));
+  $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', APP_STATE==='NY'&&t.dataset.tab!=='tiers'));
+  activateTab(APP_STATE==='NY'?'tiers':'ar');
+}
+document.querySelectorAll('#state-toggle button').forEach(b=>b.onclick=()=>setAppState(b.dataset.state));
+
 /* ============================ Customer Tiers ============================ */
 // Tier each account by trailing net revenue. Treatment per tier (editable here) — the team
 // uses these to decide PADs / displays / educations / samples.
@@ -3047,6 +3143,7 @@ function tierFilter(rows){
   return rows.filter(r=>(!tf||r.tier===+tf)&&(!q||r.name.toLowerCase().includes(q)||(r.brand||'').toLowerCase().includes(q)));
 }
 function renderTiers(){
+  if(APP_STATE==='NY') return renderTiersNY();   // NY = LeafLink tiers (order-level)
   const wrap=$('#tier-wrap'), cards=$('#tier-cards'), note=$('#tier-note');
   const {rows,start,end,months,t1,t2}=tierData();
   if(!rows.length){ cards.innerHTML=''; note.innerHTML='';
@@ -3125,11 +3222,16 @@ function tierVisitsDrill(name){
 }
 $('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#tier-wrap').contains(tr)) return;
   const name=tr.getAttribute('data-name');
+  if(APP_STATE==='NY') return nyTierDrill(name);                                             // NY rows → LeafLink orders
   if(ev.target.closest && ev.target.closest('td.over-link')) tierOverdueDrill(name);        // Overdue cell → past-due invoices
   else if(ev.target.closest && ev.target.closest('td.visit-link')) tierVisitsDrill(name);   // Visits cell → PAD/EDU visit detail
   else tierDrill(name); };                                                                  // rest of the row → the account's orders
 ['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
 $('#tier-export').onclick=()=>{
+  if(APP_STATE==='NY'){ const {rows,months}=tierDataNY();
+    const out=[['Tier','Account',`Revenue (${months}mo)`,'Orders','Last order']];
+    tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'']));
+    downloadCSV('customer-tiers-ny.csv',out); return; }
   const {rows,months}=tierData();
   const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'% Disc+Credits','Last order','Visits','AR Outstanding','Overdue','Avg Days Late']];
   tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'',r.visits||0,r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
