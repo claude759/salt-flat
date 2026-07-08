@@ -106,6 +106,16 @@
   .tag{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid var(--line);
     color:var(--muted);font-size:11px;font-weight:650;margin-left:8px;vertical-align:1px}
 
+  /* rec/void market dots (colors from the sheet's header shading) */
+  .mdot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;flex:none;
+    vertical-align:-.5px;box-shadow:0 0 0 2px rgba(15,17,21,.55)}
+  .mdot.rec{background:#cfe2f3}
+  .mdot.void{background:#f6b26b}
+  .key{display:inline-flex;align-items:center;font-weight:500;text-transform:none;letter-spacing:0;
+    color:var(--faint);font-size:12px}
+  .key .mdot{margin:0 5px 0 10px}
+  .fix{color:var(--faint);font-weight:700;margin-left:3px;cursor:help}
+
   footer{padding:14px 16px 26px;text-align:center;color:var(--faint);font-size:11.5px}
 
   /* drop overlay */
@@ -152,7 +162,9 @@
   <!-- ============ Combined (1:1 sheet copy) ============ -->
   <div id="view-combined">
     <section>
-      <h2>Combined<span class="note" id="combinedCount"></span><span class="spacer"></span>
+      <h2>Combined<span class="note" id="combinedCount"></span>
+        <span class="key"><span class="mdot rec"></span>rec<span class="mdot void"></span>void</span>
+        <span class="spacer"></span>
         <button class="btn sm" id="latestBtn">↓ Latest</button></h2>
       <div class="card scroll"><table id="combinedTable">
         <thead><tr>
@@ -176,7 +188,8 @@
     <div class="kpis" id="kpis"></div>
 
     <section>
-      <h2>Totals by market<span class="note" id="rangeNote"></span></h2>
+      <h2>Totals by market<span class="note" id="rangeNote"></span>
+        <span class="key"><span class="mdot rec"></span>rec<span class="mdot void"></span>void</span></h2>
       <div class="card scroll"><table id="totalsTable">
         <thead><tr>
           <th></th><th>Units packaged</th><th>Packaging hours</th><th>Packaging cost</th>
@@ -211,7 +224,8 @@
     </section>
 
     <footer>
-      Pounds use per-product unit weights — 3.5g for jars, pouches, budtender samples &amp; 5-packs (5 × 0.7g); 1.5g for 1.5g pre-rolls · 454g per lb.
+      Pounds use per-product unit weights — 3.5g for jars, pouches, budtender samples &amp; 5-packs (5 × 0.7g); 1.5g for 1.5g pre-rolls; 1g for 1g pre-rolls · 454g per lb.<br>
+      Rows marked * were logged as "1.5g pre-roll" in the sheet but are shown at their true 1g size per the Apr–Jul daily-log emails (the mixed 4/28 batch is split 475 × 1g / 477 × 1.5g, hours &amp; cost pro-rata).
     </footer>
   </div>
 </main>
@@ -248,8 +262,57 @@ const PRODUCTS = [
   {name:'3.5g Pouch',         match:'3.5g pouch',         grams:3.5},
   {name:'Budtender Samples',  match:'budtender samples',  grams:3.5},
   {name:'1.5g Pre-roll',      match:'1.5g pre-roll',      grams:1.5},
+  {name:'1g Pre-roll',        match:'1g pre-roll',        grams:1},
   {name:'5pk .7g Pre-roll',   match:'5pk',                grams:3.5},
 ];
+
+/* ---- size corrections ----
+   The Apr–Jul 2026 daily-log emails show 1g pre-roll production started 4/28
+   (Black Light / Blue Magic / Tea Party), while the tracker kept logging "1.5g".
+   Genuine 1.5g batches (Zangbanger 477, Black Magic 358) ran through 6/1, so:
+   - 4/29 produced 400 = Tidebanger 1g (per 4/29 log) → renamed
+   - 4/28 produced 952 = mixed: 475 × 1g + 477 × 1.5g Zangbanger → split pro-rata
+   - every "1.5g pre-roll" row on/after 6/2 is 1g (Tide/M8/Bluebanger/Wizard OG/
+     Riptide batches; unit counts all reconcile with the logs) → renamed
+   Budtender samples are genuinely 1.5g and are left alone. Applied to every data
+   source (snapshot, sheet sync, file drop) and idempotent, so an already-corrected
+   sheet passes through unchanged. */
+const FIX_FROM = '2026-06-02';
+const FIX_NOTE = 'Logged as 1.5g in the sheet; actually 1g per the daily-log emails';
+function fixSize(r, note){
+  const task = r.task.replace('1.5g', '1g');
+  return {...r, task, lo:task.toLowerCase(), note: note || FIX_NOTE};
+}
+function applyCorrections(list){
+  const out = [];
+  for (const r of list){
+    if (r.lo.includes('1.5g pre-roll')){
+      if (r.date >= FIX_FROM ||
+          (r.date === '2026-04-29' && r.lo.includes('produced') && r.packaged === 400)){
+        out.push(fixSize(r)); continue;
+      }
+      if (r.date === '2026-04-28' && r.lo.includes('produced') && r.packaged === 952){
+        const f = 475 / 952;
+        const hoursA = +(r.hours * f).toFixed(2), costA = +(r.cost * f).toFixed(2),
+              secsA = Math.round((r.seconds || 0) * f);
+        out.push(fixSize({...r, begin:'', end:'', packaged:475, hours:hoursA, cost:costA, seconds:secsA},
+          'Split from the mixed 4/28 batch (952 units): 475 × 1g (Black Light + Blue Magic + Tea Party) per the daily-log emails; hours & cost pro-rata'));
+        out.push({...r, begin:'', end:'', packaged:477, hours:+(r.hours - hoursA).toFixed(2),
+          cost:+(r.cost - costA).toFixed(2), seconds:(r.seconds || 0) - secsA,
+          note:'Split from the mixed 4/28 batch (952 units): 477 × 1.5g (Zangbanger) per the daily-log emails; hours & cost pro-rata'});
+        continue;
+      }
+    }
+    out.push(r);
+  }
+  return out;
+}
+
+function dotFor(lo){
+  if (lo.includes('rec'))  return '<span class="mdot rec"></span>';
+  if (lo.includes('void')) return '<span class="mdot void"></span>';
+  return '';
+}
 
 const PACK_RE   = /packaged|packed|produced/;   // packaging hours & cost buckets
 const LABEL_RE  = /labeled/;                    // labeling hours & cost buckets
@@ -258,12 +321,12 @@ let rows = [];        // active dataset (objects)
 let source = null;    // {label, updatedAt} when loaded from sheet/file
 
 function hydrate(arr){
-  return arr.map(r => ({date:r[0], task:r[1], lo:(r[1]||'').toLowerCase(),
+  return applyCorrections(arr.map(r => ({date:r[0], task:r[1], lo:(r[1]||'').toLowerCase(),
     people:+r[2]||0, begin:r[3]||'', end:r[4]||'', seconds:(r[5]==null?null:+r[5]),
-    hours:+r[6]||0, packaged:+r[7]||0, labeled:+r[8]||0, cost:+r[9]||0}));
+    hours:+r[6]||0, packaged:+r[7]||0, labeled:+r[8]||0, cost:+r[9]||0, note:r[10]||undefined})));
 }
 function dehydrate(objs){
-  return objs.map(r => [r.date, r.task, r.people, r.begin, r.end, r.seconds, r.hours, r.packaged, r.labeled, r.cost]);
+  return objs.map(r => [r.date, r.task, r.people, r.begin, r.end, r.seconds, r.hours, r.packaged, r.labeled, r.cost, r.note || '']);
 }
 function productFor(lo){ return PRODUCTS.find(p => lo.includes(p.match)) || null; }
 function gramsFor(lo){
@@ -335,7 +398,7 @@ function renderCombined(){
     const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
     html += `<tr>
       <td>${fDayMDY(r.date)}</td>
-      <td>${esc(r.task)}</td>
+      <td${r.note ? ` title="${esc(r.note)}"` : ''}>${dotFor(r.lo)}${esc(r.task)}${r.note ? '<span class="fix">*</span>' : ''}</td>
       <td>${r.people ? fNum(r.people) : ''}</td>
       <td>${fClock(r.begin)}</td>
       <td>${fClock(r.end)}</td>
@@ -349,7 +412,9 @@ function renderCombined(){
   }
   body.innerHTML = html || '<tr><td colspan="11" class="empty">No data</td></tr>';
   const days = new Set(sorted.map(r => r.date)).size;
-  document.getElementById('combinedCount').textContent = rows.length ? `${rows.length} entries · ${days} days` : '';
+  const fixed = rows.filter(r => r.note).length;
+  document.getElementById('combinedCount').textContent = rows.length ?
+    `${rows.length} entries · ${days} days${fixed ? ` · ${fixed} size-corrected (*)` : ''}` : '';
 }
 
 /* ================= date range (calculator) ================= */
@@ -431,11 +496,11 @@ function renderCalc(){
     `<div class="kpi"><div class="lbl">${k.lbl}</div><div class="val">${k.val}</div><div class="sub">${k.sub}</div></div>`).join('');
 
   // Totals by market
-  const mk = [['Rec','rec'],['Void','void'],['Overall',null]].map(([name,f]) => [name, marketTotals(sel,f)]);
+  const mk = [['Rec','rec'],['Void','void'],['Overall',null]].map(([name,f]) => [name, f, marketTotals(sel,f)]);
   const tb = document.querySelector('#totalsTable tbody');
-  tb.innerHTML = mk.map(([name,t]) => `
+  tb.innerHTML = mk.map(([name,f,t]) => `
     <tr${name==='Overall'?' class="total"':''}>
-      <td class="rowlbl">${name}</td>
+      <td class="rowlbl">${f ? dotFor(f) : ''}${name}</td>
       <td>${fInt(t.packaged)}</td><td>${fH(t.packHours)}</td><td>${fMoney(t.packCost)}</td>
       <td>${fInt(t.labeled)}</td><td>${fH(t.labelHours)}</td><td>${fMoney(t.labelCost)}</td>
     </tr>`).join('') + `
@@ -454,7 +519,7 @@ function renderCalc(){
   const avgBody = document.querySelector('#avgTable tbody');
   const avgRows = [...byTask.entries()].sort((a,b) => a[0].localeCompare(b[0]));
   avgBody.innerHTML = avgRows.length ? avgRows.map(([task,t]) => `
-    <tr><td class="task">${esc(task)}</td><td>${t.n}</td><td>${fInt(t.units)}</td><td>${fUnitC(t.cpuSum/t.n)}</td></tr>`).join('')
+    <tr><td class="task">${dotFor(task.toLowerCase())}${esc(task)}</td><td>${t.n}</td><td>${fInt(t.units)}</td><td>${fUnitC(t.cpuSum/t.n)}</td></tr>`).join('')
     : `<tr><td colspan="4" class="empty">No entries in this date range</td></tr>`;
 
   // Units & pounds by task — bucketed by which units column is filled, so the
@@ -475,7 +540,7 @@ function renderCalc(){
   const taskRow = (task, t, side) => {
     const lbs = t.units * gramsFor(task.toLowerCase()) / LB;
     const packedLbs = side === 'pack' ? lbs : 0, labeledLbs = side === 'label' ? lbs : 0;
-    return `<tr><td class="task">${esc(task)}</td><td>${fInt(t.units)}</td><td>${fMoney(t.cost)}</td>
+    return `<tr><td class="task">${dotFor(task.toLowerCase())}${esc(task)}</td><td>${fInt(t.units)}</td><td>${fMoney(t.cost)}</td>
       <td>${packedLbs ? fLbs(packedLbs) : '—'}</td><td>${labeledLbs ? fLbs(labeledLbs) : '—'}</td>
       <td>${lbs ? fCents(t.cost/lbs) : '—'}</td></tr>`;
   };
@@ -508,7 +573,7 @@ function renderCalc(){
       html += `<tr class="grouphead"><td colspan="6">${p.market === 'rec' ? 'Rec' : 'Void'}</td></tr>`;
       lastMarket = p.market;
     }
-    html += `<tr><td class="task">${esc(p.name)}<span class="tag">${p.market}</span></td>
+    html += `<tr><td class="task">${dotFor(p.market)}${esc(p.name)}</td>
       <td>${fInt(p.units)}</td><td>${fMoney(p.cost)}</td>
       <td>${fLbs(p.packedLbs)}</td><td>${fLbs(p.labeledLbs)}</td>
       <td>${p.cpl ? fCents(p.cpl) : '—'}</td></tr>`;
@@ -714,7 +779,7 @@ function gridToRows(grid, dateFn){
       seconds: cTime === -1 ? null : parseDur(g[cTime]),
       hours:num(g[cHrs]), packaged:num(g[cPack]), labeled:num(g[cLab]), cost:num(g[cCost])});
   }
-  return out;
+  return applyCorrections(out);
 }
 
 /* ================= boot ================= */
