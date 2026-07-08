@@ -38,17 +38,21 @@ var ALLOWED_DOMAIN   = 'wizardtrees.com';
 var TRACKER_SHEET_ID = '1IUMecFlqCYFe51jBBmu5gIs-8elhlrgxdUPxP3qLFuQ';   // Daily Labor_Unit tracker
 var TRACKER_TAB      = 'Combined';
 
-// -- Serve the app (from the project's "index" HTML file) ------
+// -- Serve the app (from the project's HTML file) --------------
+//    Tries common file names/casings so it works whether you named
+//    the file index, Index, labor-calculator, etc.
 function doGet() {
-  try {
-    return HtmlService.createHtmlOutputFromFile('index')
-      .setTitle('Wizard Trees — Labor / Unit Tracker')
-      .addMetaTag('viewport', 'width=device-width, initial-scale=1');
-  } catch (e) {
-    return HtmlService.createHtmlOutput(
-      '<p style="font:15px sans-serif;padding:40px">Setup needed: add an HTML file named ' +
-      '<b>index</b> to this Apps Script project and paste labor-calculator.html into it.</p>');
+  var names = ['index', 'Index', 'labor-calculator', 'labor_calculator', 'app', 'Page'];
+  for (var i = 0; i < names.length; i++) {
+    try {
+      return HtmlService.createHtmlOutputFromFile(names[i])
+        .setTitle('Wizard Trees - Labor / Unit Tracker')
+        .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+    } catch (e) { /* not that name; try the next */ }
   }
+  return HtmlService.createHtmlOutput(
+    '<p style="font:15px sans-serif;padding:40px">Setup needed: add an HTML file named ' +
+    '<b>index</b> to this Apps Script project and paste labor-calculator.html into it.</p>');
 }
 
 // -- Domain gate. The deployment already restricts who can open the
