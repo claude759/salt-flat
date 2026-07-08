@@ -264,7 +264,8 @@
         <tbody></tbody>
       </table></div>
       <footer style="text-align:left;padding:10px 4px">
-        1g columns follow the daily-log emails, matching the Tasks page: pre-roll units the sheet logged as "1.5g" on/after 6/2/26 — plus 4/28's 475 (of 952), 4/29's 400 produced and 400 (of 877) pre-COA labels, and 5/6's 400 labels — are shown under 1g.
+        1g columns follow the daily-log emails, matching the Tasks page: pre-roll units the sheet logged as "1.5g" on/after 6/2/26 — plus 4/28's 475 (of 952), 4/29's 400 produced and 400 (of 877) pre-COA labels, and 5/6's 400 labels — are shown under 1g.<br>
+        Days after the sheet's last row are auto-filled from the Tasks data: Hours = task hours × people summed over the day's tasks (packaging work only, so it can run below the crew's timeclock total), Ppl = the largest task crew, and pounds follow this sheet's own weights (0.7g per 5pk pre-roll unit, 1.5g budtenders, 3.5g jars/pouches, 1.5g/1g pre-rolls).
       </footer>
     </section>
   </div>
@@ -848,6 +849,96 @@ function lpSplitPreroll(date, prod, pre, post){
   return [z(prod), z(pre), z(post), null, null, null];
 }
 
+/* ---- auto-fill from the Tasks data ----
+   Days after the sheet's last row are derived from the (corrected) tracker rows:
+   units pivoted by task name; Hours = sum of task hours x people (task time,
+   packaging work only); Ppl = biggest task crew; lbs via per-product weights. */
+function mondayOf(iso){
+  const [y,m,d] = iso.split('-').map(Number);
+  const dt = new Date(y, m-1, d);
+  dt.setDate(dt.getDate() - (dt.getDay() + 6) % 7);
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+}
+function addDaysISO(iso, n){
+  const [y,m,d] = iso.split('-').map(Number);
+  const dt = new Date(y, m-1, d + n);
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+}
+function lpCol(lo){
+  if (lo.includes('pre-roll') && !lo.includes('5pk')){
+    if (lo.includes('post coa')) return 3;
+    if (lo.includes('pre coa') || lo.includes('label')) return 2;
+    return 1;
+  }
+  if (lo.includes('5pk')){
+    if (lo.includes('post coa')) return 6;
+    if (lo.includes('pre coa') || lo.includes('label')) return 5;
+    return 4;
+  }
+  if (lo.includes('budtender'))  return lo.includes('label') ? 10 : 9;
+  if (lo.includes('3.5g jar'))   return lo.includes('void') ? (lo.includes('label') ? 12 : 11) : (lo.includes('label') ? 8 : 7);
+  if (lo.includes('3.5g pouch')){
+    if (lo.includes('prep')) return 15;
+    return lo.includes('label') ? 14 : 13;
+  }
+  return null;
+}
+function lpGramsDerived(lo){
+  if (lo.includes('5pk')) return 0.7;         // tracker 5pk counts are individual 0.7g pre-rolls (the sheet's lbs prove it)
+  if (lo.includes('budtender')) return 1.5;   // this sheet weighs budtender samples at 1.5g
+  return gramsFor(lo);
+}
+function lpDerivedBlocks(){
+  let lpMax = null;   // last sheet day with real data (ignore note-only rows on pre-created future dates)
+  for (const b of lpBlocks) for (const d of b.days){
+    if (d.slice(1, 28).some(v => typeof v === 'number' && v !== 0) && (!lpMax || d[0] > lpMax)) lpMax = d[0];
+  }
+  if (!lpMax) return [];
+  const days = new Map(), lbs = new Map();
+  for (const r of rows){
+    if (r.date <= lpMax) continue;
+    let d = days.get(r.date);
+    if (!d){ d = [r.date, ...new Array(28).fill(0)]; days.set(r.date, d); lbs.set(r.date, new Array(16).fill(0)); }
+    const col = lpCol(r.lo);
+    if (col){
+      const units = (r.packaged || 0) + (r.labeled || 0);
+      d[col] += units;
+      lbs.get(r.date)[col] += units * lpGramsDerived(r.lo) / LB;
+    }
+    d[21] += (r.hours || 0) * (r.people || 0);
+    d[22] = Math.max(d[22], r.people || 0);
+  }
+  if (!days.size) return [];
+  const byWeek = new Map();
+  for (const date of [...days.keys()].sort()){
+    const d = days.get(date), L = lbs.get(date);
+    // totals & pounds from the pivoted columns, mirroring the sheet's own column formulas
+    d[16] = d[1] + d[4] + d[7] + d[9];                        // rec packed (produced counts as packed)
+    d[17] = d[2] + d[3] + d[5] + d[6] + d[8] + d[10];         // rec labeled
+    d[18] = d[11] + d[13];                                    // void packed
+    d[19] = d[12] + d[14];                                    // void labeled
+    d[20] = d[15];                                            // prepped
+    d[24] = L[1] + L[4] + L[7] + L[9];
+    d[25] = L[2] + L[3] + L[5] + L[6] + L[8] + L[10];
+    d[26] = L[11] + L[13];
+    d[27] = L[12] + L[14];
+    d[21] = +d[21].toFixed(2);
+    d[23] = d[21] ? (d[16] + d[17] + d[18] + d[19] + d[20]) / d[21] : 0;  // units handled/hr incl. prepped, like the sheet
+    d[28] = null;
+    for (let i = 1; i <= 27; i++) if (!d[i]) d[i] = null;
+    const wk = mondayOf(date);
+    if (!byWeek.has(wk)) byWeek.set(wk, []);
+    byWeek.get(wk).push(d);
+  }
+  return [...byWeek.keys()].sort().map(wk => {
+    const ds = byWeek.get(wk);
+    const tot = new Array(28).fill(null);
+    for (const idx of [16,17,18,19,20,24,25,26,27])
+      tot[idx-1] = ds.reduce((a,d) => a + (d[idx] || 0), 0) || null;
+    return {s: wk, e: addDaysISO(wk, 6), days: ds, tot, auto: true};
+  });
+}
+
 function renderLaborPack(){
   const fmtU = v => v ? fInt(v) : '';
   const fmtL = v => v ? fLb2(v) : '';
@@ -856,10 +947,26 @@ function renderLaborPack(){
     for (let i = from; i <= to; i++) s += `<td${cls ? ` class="${cls}"` : ''}>${arr[i] != null ? fmt(arr[i]) : ''}</td>`;
     return s;
   };
+  // append days derived from the Tasks data, merging into the sheet's last (partial) week
+  const derived = lpDerivedBlocks();
+  let blocks = lpBlocks;
+  if (derived.length){
+    blocks = lpBlocks.slice();
+    const last = blocks[blocks.length - 1];
+    if (last && last.s && mondayOf(last.e || last.s) === derived[0].s){
+      const d0 = derived.shift();
+      const tot = last.tot.map((v, i) => i === 27 ? (v ?? d0.tot[i]) :
+        (v == null && d0.tot[i] == null ? null : (+v || 0) + (+d0.tot[i] || 0)));
+      blocks[blocks.length - 1] = {s: last.s, e: d0.e > (last.e || '') ? d0.e : last.e,
+        days: [...last.days, ...d0.days], tot, auto: 'partial'};
+    }
+    blocks = blocks.concat(derived);
+  }
   let html = '', dayCount = 0, minD = null, maxD = null;
-  for (let i = lpBlocks.length - 1; i >= 0; i--){
-    const b = lpBlocks[i];
-    html += `<tr class="dayhead"><td colspan="32"><span class="stick">Week of ${b.s ? fDayMDY(b.s) : ''} – ${b.e ? fDayMDY(b.e) : ''}</span></td></tr>`;
+  for (let i = blocks.length - 1; i >= 0; i--){
+    const b = blocks[i];
+    const tag = b.auto ? `<span class="wd">· ${b.auto === 'partial' ? 'new days ' : ''}auto-filled from Tasks</span>` : '';
+    html += `<tr class="dayhead"><td colspan="32"><span class="stick">Week of ${b.s ? fDayMDY(b.s) : ''} – ${b.e ? fDayMDY(b.e) : ''}${tag}</span></td></tr>`;
     for (const d of b.days){
       dayCount++;
       if (!minD || d[0] < minD) minD = d[0];
@@ -973,7 +1080,7 @@ async function loadFile(file){
     else if (/\.xlsx?$/i.test(file.name)) result = await parseXLSXAny(file);
     else throw new Error('Drop a .xlsx or .csv file');
     if (result.kind === 'lp'){
-      if (!result.data.length) throw new Error('No usable weeks found in the Labor/Packaging sheet');
+      if (!result.data.length || !result.data.some(b => b.days.length)) throw new Error('No usable day rows found in the Labor/Packaging sheet');
       lpBlocks = result.data;
       lpSource = {label:'from ' + file.name, updatedAt:new Date().toISOString()};
       try{ localStorage.setItem(LS_LP_KEY, JSON.stringify({blocks:lpBlocks, source:lpSource})); }catch(_){}
