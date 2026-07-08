@@ -2528,10 +2528,18 @@ function computeProjectedForCurrentWeek(monday){
   const weekEnd=new Date(monday); weekEnd.setDate(monday.getDate()+6); weekEnd.setHours(23,59,59,999);
   let projD=null, projN=null;
   if(FILES.distru_items){ projD=0;
+    // Invoice discounts by sales order — item lines are GROSS; an invoiced order's real value is
+    // items − its invoice discounts (e.g. Wizard-Wednesday 50% promos: SO-0000208 items $14,773
+    // vs invoice $7,332, Jul 7 2026). Un-invoiced orders stay gross (nothing better exists yet).
+    const discBySO={}, seenSO={};
+    if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{ const so=(r['Sales Order']||'').trim(); if(!so) return;
+      discBySO[so]=(discBySO[so]||0)+Math.abs(num(r['Total Discounts'])); });
     FILES.distru_items.data.forEach(r=>{
       if(isNabisCust(r['Customer'])) return;   // all orders scheduled this week (delivered + pending)
       const dd=parseDate(r['Delivery Date'])||parseDate(r['Order Date']); if(!dd||dd<monday||dd>weekEnd) return;   // no delivery date yet → fall back to order date so freshly-placed orders aren't invisible
       projD += num(r['Quantity']) * num(r['Order Item Price']);
+      const so=(r['Order Number']||'').trim();
+      if(so && !seenSO[so]){ seenSO[so]=1; projD -= (discBySO[so]||0); }   // subtract each order's invoice discounts once
     });
   }
   if(FILES.nabis_detail){ projN=0;
@@ -2598,15 +2606,21 @@ function projectedDetail(monday){
       items:Object.values(x.items).filter(it=>Math.abs(it.lineTotal)>0.005||it.qty).sort((a,b)=>b.lineTotal-a.lineTotal)}))
     .sort((a,b)=>(a.date||Infinity)-(b.date||Infinity) || b.amount-a.amount);   // by delivery date, then $
   if(FILES.distru_items){ const agg={};
+    const discBySO={};
+    if(FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{ const so2=(r['Sales Order']||'').trim(); if(!so2) return;
+      discBySO[so2]=(discBySO[so2]||0)+Math.abs(num(r['Total Discounts'])); });
     FILES.distru_items.data.forEach(r=>{
       if(isNabisCust(r['Customer'])) return;   // all orders scheduled this week (delivered + pending)
       const realDeliv=parseDate(r['Delivery Date']); const dd=realDeliv||parseDate(r['Order Date']); if(!dd||dd<monday||dd>weekEnd) return;   // no delivery date yet → bucket by order date
       const invNum=(r['Invoice Numbers']||'').trim(), so=(r['Order Number']||'').trim();
       const ref=(r['Order Number']||r['Sales Order']||r['Invoice Number']||'').trim()||'(order)';
       const amt=num(r['Quantity'])*num(r['Order Item Price']);
-      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),delivDate:(realDeliv?realDeliv.getTime():null),invDate:(invDateByNum[invNum]||invDateBySO[so]||null),amount:0,items:{}}); if(realDeliv&&g.delivDate==null)g.delivDate=realDeliv.getTime(); g.amount+=amt;
+      const g=agg[ref]||(agg[ref]={ref,customer:(r['Customer']||'').trim(),date:dd.getTime(),delivDate:(realDeliv?realDeliv.getTime():null),invDate:(invDateByNum[invNum]||invDateBySO[so]||null),amount:0,items:{},_so:so}); if(realDeliv&&g.delivDate==null)g.delivDate=realDeliv.getTime(); g.amount+=amt;
       addItem(g, skuClean(r['Product SKU']||r['Product']), skuClean(r['Product']||r['Product SKU']), num(r['Quantity']), amt);
     });
+    // net out each order's invoice discounts (once per order) + surface them as a drill line
+    Object.values(agg).forEach(g=>{ const d=discBySO[g._so]||0; delete g._so;
+      if(d>0.005){ g.amount-=d; addItem(g,'','Invoice discounts (promos etc.)',0,-d); } });
     distru=finish(agg);
   }
   if(FILES.nabis_detail){ const agg={};
@@ -2966,7 +2980,7 @@ function scDrill(dateStr, col){
           return x.date?`${fmtDt(new Date(x.date))} (order date)`:'—'; };   // no delivery date yet → show the order date it's bucketed by
         const iCol=x=>{const v=invOf(x);return v?fmtDt(new Date(v)):'—';};
         const anyFb=list.some(x=>hasDeliv(x)&&delivOf(x)==null);
-        return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending)${anyFb?', plus orders placed this week with no delivery date yet (shown by order date)':''} · ${list.length} orders · click an order for its line items`,
+        return {title:`${label} — week of ${wkLabel}`, sub:`All orders scheduled this week (delivered + pending)${anyFb?', plus orders placed this week with no delivery date yet (shown by order date)':''}; invoiced orders shown NET of their invoice discounts · ${list.length} orders · click an order for its line items`,
           columns: isD ? [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Invoice date'},{l:'Amount',num:true,money:true}]
                        : [{l:'Order #'},{l:'Customer'},{l:'Delivery date'},{l:'Amount',num:true,money:true}],
           rows:list.map(x=> isD ? [x.ref||'—', x.customer||'—', dCol(x), iCol(x), x.amount] : [x.ref||'—', x.customer||'—', dCol(x), x.amount]),
@@ -3139,7 +3153,11 @@ function nyTierDrill(name){
 function setAppState(st){ const was=APP_STATE; APP_STATE=(st==='NY')?'NY':'CA';
   document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.state===APP_STATE));
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', APP_STATE==='NY'&&!['ar','sku','tiers'].includes(t.dataset.tab)));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('hidden', APP_STATE==='NY'&&!['ar','sku','tiers','reports'].includes(t.dataset.tab)));
+  // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary (the others are CA-only data)
+  const NY_REPORTS=['customers','newcust','sales','bydisp'];
+  document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('hidden', APP_STATE==='NY'&&!NY_REPORTS.includes(b.dataset.rep)));
+  if(APP_STATE==='NY'&&!NY_REPORTS.includes(repMode)) setRepMode('customers');
   if(APP_STATE!==was){
     // sku date range: NY defaults to ALL TIME (its orders predate CA's "last week" default);
     // returning to CA restores the last-week preset.
@@ -3594,24 +3612,37 @@ const fmtRangeLabel=(a,b)=>`${new Date(a).toLocaleDateString('en-US',{month:'sho
 // while an order's own sales + discount + credit events (same cust + delivery date) still merge.
 const orderKey=e=>e.s+'|'+(e.ref? e.ref : ('(no #)|'+(e.c||'')+'|'+(e.d||'')));
 
+// Canonical per-order records for the ACTIVE STATE: CA = CONC_EVENTS netted via orderKey
+// (billed − discounts/credits, QuickBooks excluded); NY = LeafLink orders as-is. The four
+// order-based reports (Customers / New Customers / Sales / By Dispensary) all consume this.
+function stateOrders(){
+  if(APP_STATE==='NY')
+    return (NY_EVENTS||[]).map(e=>({_k:'LL|'+(e.ref||((e.c||'')+'|'+e.d)), src:'LeafLink', ref:e.ref||'(no #)', cust:e.c, date:e.d, pd:null, net:e.amt||0}));
+  const byRef={};
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return;
+    const k=orderKey(e); const g=byRef[k]||(byRef[k]={_k:k,src:e.s,ref:e.ref||'(no #)',cust:'',date:null,pd:null,net:0});
+    g.net+=eventBilling(e);
+    if(e.d!=null&&(g.date==null||e.d<g.date)) g.date=e.d;
+    if(e.pd!=null&&(g.pd==null||e.pd>g.pd)) g.pd=e.pd;
+    if(!g.cust&&e.c) g.cust=e.c; });
+  return Object.values(byRef);
+}
+
 // --- Customers (channel + net revenue over a date range) ---
 let custSort={key:'net',dir:-1};
 function customersData(){
   const {start,end}=repRange('cust');
-  // aggregate to one row per order first, so channel/order-count reflect only orders with real
-  // net (a sample-only / fully-discounted order shouldn't add a channel or an order to a customer).
-  const byRef={};
-  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; if(e.d==null||e.d<start||e.d>end) return;
-    const k=orderKey(e); const g=byRef[k]||(byRef[k]={s:e.s,cust:e.c,net:0,d:null});
-    g.net+=eventBilling(e); if(!g.cust&&e.c)g.cust=e.c; if(e.d!=null&&(g.d==null||e.d<g.d))g.d=e.d; });
+  // aggregate per order first (channel/order-count reflect only orders with real net —
+  // a sample-only / fully-discounted order shouldn't add a channel or an order to a customer).
   const acc={};
-  Object.values(byRef).forEach(o=>{ if(Math.abs(o.net)<0.005) return; const key=tierNorm(o.cust); if(!key) return;
+  stateOrders().forEach(o=>{ if(o.date==null||o.date<start||o.date>end) return; if(Math.abs(o.net)<0.005) return;
+    const key=tierNorm(o.cust); if(!key) return;
     const g=acc[key]||(acc[key]={names:{},src:{},orders:0,net:0,first:null,last:null});
-    g.names[o.cust]=(g.names[o.cust]||0)+Math.abs(o.net); g.src[o.s]=true; g.orders++; g.net+=o.net;
-    if(g.first==null||o.d<g.first)g.first=o.d; if(g.last==null||o.d>g.last)g.last=o.d; });
+    g.names[o.cust]=(g.names[o.cust]||0)+Math.abs(o.net); g.src[o.src]=true; g.orders++; g.net+=o.net;
+    if(g.first==null||o.date<g.first)g.first=o.date; if(g.last==null||o.date>g.last)g.last=o.date; });
   return {start,end,rows:Object.values(acc).filter(g=>Math.abs(g.net)>0.005).map(g=>({
     name:Object.entries(g.names).sort((a,b)=>b[1]-a[1])[0][0],
-    channel:g.src.Distru&&g.src.Nabis?'Distru + Nabis':g.src.Distru?'Distru':'Nabis',
+    channel:g.src.LeafLink?'LeafLink':(g.src.Distru&&g.src.Nabis?'Distru + Nabis':g.src.Distru?'Distru':'Nabis'),
     orders:g.orders, net:g.net, first:g.first, last:g.last }))};
 }
 function renderCustomers(){
@@ -3633,7 +3664,9 @@ function renderCustomers(){
     <tfoot><tr class="totals"><td colspan="2">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(custSort.key===key) custSort.dir*=-1; else custSort={key,dir:(key==='name'||key==='channel')?1:-1}; renderCustomers(); });
-  note.innerHTML=`All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name.`;
+  note.innerHTML=APP_STATE==='NY'
+    ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). Click a row for the customer's orders and contents.`
+    : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name.`;
 }
 $('#cust-export').onclick=()=>{
   const {rows}=customersData(); const q=(($('#cust-search')||{}).value||'').trim().toLowerCase();
@@ -3650,13 +3683,10 @@ let ncSort={key:'first',dir:-1};
 function newCustomersData(){
   const {start,end}=repRange('nc');
   // per-order (source|ref) with net + delivery date, then per dispensary (normalized name)
-  const byRef={};
-  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; const k=orderKey(e);
-    const g=byRef[k]||(byRef[k]={cust:e.c,s:e.s,net:0,d:null}); g.net+=eventBilling(e);
-    if(e.d!=null&&(g.d==null||e.d<g.d))g.d=e.d; if(!g.cust&&e.c)g.cust=e.c; });
   const byDisp={};
-  Object.values(byRef).forEach(o=>{ if(Math.abs(o.net)<0.005||o.d==null) return; const key=tierNorm(o.cust); if(!key) return;
-    const g=byDisp[key]||(byDisp[key]={names:{},orders:[]}); g.names[o.cust]=(g.names[o.cust]||0)+Math.abs(o.net); g.orders.push(o); });
+  stateOrders().forEach(o=>{ if(Math.abs(o.net)<0.005||o.date==null) return; const key=tierNorm(o.cust); if(!key) return;
+    const g=byDisp[key]||(byDisp[key]={names:{},orders:[]}); g.names[o.cust]=(g.names[o.cust]||0)+Math.abs(o.net);
+    g.orders.push({cust:o.cust, s:o.src, net:o.net, d:o.date}); });
   const rows=[];
   Object.values(byDisp).forEach(g=>{
     g.orders.sort((a,b)=>a.d-b.d);
@@ -3707,18 +3737,16 @@ $('#nc-export').onclick=()=>{
 // --- Sales / Payments ledgers (per-order net, grouped by source|order #) ---
 const salesState={src:'all',sort:{key:'date',dir:-1}}, payState={src:'all',sort:{key:'date',dir:-1}};
 function orderLedger(prefix, dateField){
-  const {start,end}=repRange(prefix); const byRef={};
-  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return;
-    const k=orderKey(e);
-    const g=byRef[k]||(byRef[k]={_k:k,src:e.s,ref:e.ref||'(no #)',cust:'',date:null,net:0});
-    g.net+=eventBilling(e);
-    // Sales: earliest delivery date. Payments: latest payment date (= when fully settled).
-    const dv=e[dateField]; if(dv!=null){ if(g.date==null || (dateField==='d'? dv<g.date : dv>g.date)) g.date=dv; }
-    if(!g.cust && e.c) g.cust=e.c; });
-  return {start,end,rows:Object.values(byRef).filter(g=>Math.abs(g.net)>0.005 && g.date!=null && g.date>=start && g.date<=end)};
+  const {start,end}=repRange(prefix);
+  // Sales dates by delivery/ship (o.date); Payments dates by payment (o.pd — null for NY/unpaid).
+  const rows=stateOrders().map(o=>({...o, date: dateField==='pd' ? o.pd : o.date}))
+    .filter(g=>Math.abs(g.net)>0.005 && g.date!=null && g.date>=start && g.date<=end);
+  return {start,end,rows};
 }
 function renderLedger(prefix, dateField, dateLabel, state, isPay, selfRender){
   const wrap=$('#'+prefix+'-wrap'), note=$('#'+prefix+'-note'); if(!wrap) return;
+  if(APP_STATE==='NY') state.src='all';   // NY has one source (LeafLink)
+  const srcSeg=$('#'+prefix+'-src'); if(srcSeg&&srcSeg.parentElement) srcSeg.parentElement.classList.toggle('hidden', APP_STATE==='NY');
   const {rows,start,end}=orderLedger(prefix, dateField);
   const q=(($('#'+prefix+'-search')||{}).value||'').trim().toLowerCase();
   let view=rows.filter(r=>(state.src==='all'||r.src===state.src) && (!q||(r.cust||'').toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)));
@@ -3793,6 +3821,19 @@ function contentsRows(evs){ const {lines,disc,credit,net}=orderFmtLines(evs);
   return {rows,net}; }
 // One order (Sales/Payments row) → its contents + link.
 function orderDrill(k){
+  if(APP_STATE==='NY'){
+    const o=stateOrders().find(x=>x._k===k); if(!o) return;
+    const items=(NY_ITEMS||[]).filter(it=>it.ref===o.ref);
+    const ev=(NY_EVENTS||[]).find(e=>(e.ref||'(no #)')===o.ref);
+    const dr=ev?nyDropOf(ev.d):null;
+    const rows=items.map(it=>{ const p=nyParseProduct(it.product); return [p.strain+(p.format?` — ${p.format}`:''), it.units?Math.round(it.units).toLocaleString():'', it.lineTotal]; });
+    openScModal({ title:`${o.ref==='(no #)'?o.cust:('#'+o.ref+' — '+o.cust)}`,
+      sub:['LeafLink','shipped '+drillDt(o.date), dr?dr.label:null, ev&&ev.terms?ev.terms:null].filter(Boolean).join(' · '),
+      columns:[{l:'Contents'},{l:'Units',num:true},{l:'Line Total',num:true,money:true}],
+      rows: rows.length?rows:[['(line items publish with the next hourly refresh)','',o.net]],
+      totalLabel:'Total', total:o.net });
+    return;
+  }
   const evs=(CONC_EVENTS||[]).filter(e=>e.s!=='QuickBooks'&&orderKey(e)===k); if(!evs.length) return;
   const src=evs[0].s, ref=evs[0].ref||'(no #)', cust=((evs.find(e=>e.c)||{}).c||'').trim()||'—';
   let d=null,iv=null,pd=null; evs.forEach(e=>{ if(e.d!=null&&(d==null||e.d<d))d=e.d; if(e.iv!=null&&iv==null)iv=e.iv; if(e.pd!=null&&(pd==null||e.pd>pd))pd=e.pd; });
@@ -3805,6 +3846,21 @@ function orderDrill(k){
 }
 // One customer (Customers/New Customers row) → their orders in the range, each expandable to contents.
 function customerOrdersDrill(name,start,end){
+  if(APP_STATE==='NY'){
+    const key=tierNorm(name);
+    const orders=stateOrders().filter(o=>tierNorm(o.cust)===key&&o.date!=null&&o.date>=start&&o.date<=end).sort((a,b)=>(b.date||0)-(a.date||0));
+    if(!orders.length) return;
+    const itemsTable=ref=>{ const its=(NY_ITEMS||[]).filter(it=>it.ref===ref);
+      if(!its.length) return '<div class="rep" style="padding:4px 0">Line items publish with the next hourly refresh.</div>';
+      return `<div class="ddhead">Contents</div><table class="ddtable"><thead><tr><th>Item</th><th class="num">Units</th><th class="num">Line Total</th></tr></thead><tbody>${
+        its.map(it=>{ const p=nyParseProduct(it.product); return `<tr><td>${esc(p.strain)} <span class="rep">${esc(p.format)}</span></td><td class="num">${Math.round(it.units).toLocaleString()}</td><td class="num money">${fmt$(it.lineTotal)}</td></tr>`; }).join('')}</tbody></table>`; };
+    openScModal({ title:`${name} — orders`, sub:`${orders.length} LeafLink order${orders.length!==1?'s':''} in the selected range · click an order for its contents`,
+      columns:[{l:'Order #'},{l:'Drop'},{l:'Ship date'},{l:'Net',num:true,money:true}],
+      rows:orders.map(o=>{ const dr=nyDropOf(o.date); return [o.ref, dr?('Drop '+dr.n):'—', drillDt(o.date), o.net]; }),
+      rowDetails:orders.map(o=>itemsTable(o.ref)),
+      totalLabel:'Total', total:orders.reduce((s2,o)=>s2+o.net,0) });
+    return;
+  }
   const key=tierNorm(name); const byRef={};
   (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks')return; if(tierNorm(e.c)!==key)return; if(e.d==null||e.d<start||e.d>end)return;
     const k=orderKey(e); const g=byRef[k]||(byRef[k]={s:e.s,ref:e.ref||'(no #)',d:null,evs:[]}); g.evs.push(e); if(e.d!=null&&(g.d==null||e.d<g.d))g.d=e.d; });
@@ -3828,8 +3884,8 @@ $('#pay-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.
 // contents + an invoice link. Same per-order model; billing names (no Stiiizy visit-rollup here).
 function allDispensaries(){
   const names={};
-  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks')return; const k=tierNorm(e.c); if(!k)return;
-    (names[k]||(names[k]={}))[e.c]=(names[k][e.c]||0)+Math.abs(eventBilling(e)); });
+  stateOrders().forEach(o=>{ const k=tierNorm(o.cust); if(!k)return;
+    (names[k]||(names[k]={}))[o.cust]=(names[k][o.cust]||0)+Math.abs(o.net); });
   return Object.entries(names).map(([k,ns])=>({key:k,name:Object.entries(ns).sort((a,b)=>b[1]-a[1])[0][0]}))
     .sort((a,b)=>a.name.toLowerCase()<b.name.toLowerCase()?-1:1);
 }
@@ -3837,6 +3893,11 @@ function fillDispOptions(){ const sel=$('#bd-disp'); if(!sel) return; const cur=
   sel.innerHTML='<option value="">Select a dispensary…</option>'+list.map(d=>`<option value="${esc(d.key)}">${esc(d.name)}</option>`).join('');
   if(cur && list.some(d=>d.key===cur)) sel.value=cur; }
 function bydispData(key,start,end){
+  if(APP_STATE==='NY'){
+    return (NY_EVENTS||[]).filter(e=>tierNorm(e.c)===key && e.d!=null && e.d>=start && e.d<=end)
+      .map(e=>({s:'LeafLink', ref:e.ref||'(no #)', d:e.d, iv:null, pd:null, disc:0, credit:0, evs:[], gross:e.amt||0, net:e.amt||0}))
+      .filter(o=>Math.abs(o.net)>0.005).sort((a,b)=>(b.d||0)-(a.d||0));
+  }
   const byRef={};
   (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks')return; if(tierNorm(e.c)!==key)return; if(e.d==null||e.d<start||e.d>end)return;
     const k=orderKey(e); const g=byRef[k]||(byRef[k]={s:e.s,ref:e.ref||'(no #)',d:null,iv:null,pd:null,disc:0,credit:0,evs:[]});
