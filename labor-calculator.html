@@ -377,13 +377,15 @@ const LABORPACK = [{"s":"2025-11-17","e":"2025-11-21","days":[["2025-11-19",null
 const LS_LP_KEY = 'laborcalc.lp.v1';
 let lpBlocks = LABORPACK, lpSource = null;
 
-/* ---- live sync (checked at most once per day, or via the Sync button) ----
-   The shared sheet must be readable without login for this to work:
-   either File → Share → "Anyone with the link: Viewer", or deploy
-   apps-script-labor.gs (see repo) and paste its /exec URL into PROXY_URL. */
+/* ---- live sync ----
+   Primary path: when the app is served from its gated Apps Script deployment
+   (apps-script-labor.gs — "Anyone within Wizard Trees"), it pulls live data
+   over google.script.run (see gsAvailable/syncNow below), so the sheet stays
+   private. The fetch sources below are only a fallback for when the app is
+   opened as a plain file and the sheet happens to be link-readable. */
 const SHEET_ID  = '1IUMecFlqCYFe51jBBmu5gIs-8elhlrgxdUPxP3qLFuQ';
-const PROXY_URL = '';   // optional apps-script-labor.gs web-app URL (ends in /exec)
-const SYNC_TTL_MS = 20 * 3600 * 1000;   // ~once per day
+const PROXY_URL = '';   // optional public CSV/proxy URL (ends in /exec); usually empty
+const SYNC_TTL_MS = 20 * 3600 * 1000;   // ~once per day (fallback path only)
 function syncSources(){
   return [
     PROXY_URL && {label:'Google Sheet', url:PROXY_URL},
@@ -1038,37 +1040,55 @@ function toast(msg, isErr){
 }
 
 /* ================= live sync ================= */
+// When served from Apps Script (the gated @wizardtrees.com deployment), the page
+// talks to its own backend via google.script.run — no fetch, no CORS, no public sheet.
+function gsAvailable(){ return typeof google !== 'undefined' && google.script && google.script.run; }
+function gsRun(fn){
+  return new Promise((resolve, reject) => {
+    google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn]();
+  });
+}
+function ingestCsv(text, label, manual){
+  if (!text || /^\s*</.test(text)) return false;   // login/HTML page, not CSV
+  const parsed = parseCombinedCSV(text);
+  if (parsed.length < 20) return false;             // wrong tab / truncated — don't clobber
+  const changed = parsed.length !== rows.length ||
+    (parsed.length && rows.length && parsed[parsed.length-1].date !== rows.map(r=>r.date).reduce((a,b)=>a>b?a:b));
+  rows = parsed;
+  source = {label, updatedAt:new Date().toISOString()};
+  try{ localStorage.setItem('laborcalc.lastSync', String(Date.now())); }catch(_){}
+  persist();
+  renderAll();
+  if (manual) toast(`Synced ${rows.length} entries from the Google Sheet`);
+  else if (changed) toast(`Updated from the Google Sheet — ${rows.length} entries`);
+  return true;
+}
+
 async function syncNow(manual){
   const btn = document.getElementById('syncBtn');
   btn.disabled = true;
   try{
+    if (gsAvailable()){
+      try{ if (ingestCsv(await gsRun('getCombinedCsv'), 'Google Sheet (live)', manual)) return true; }
+      catch(_){ /* fall through to fetch sources */ }
+    }
     for (const src of syncSources()){
       try{
         const res = await fetch(src.url, {cache:'no-store', redirect:'follow'});
         if (!res.ok) continue;
-        const text = await res.text();
-        if (/^\s*</.test(text)) continue;               // HTML login page, not CSV
-        const parsed = parseCombinedCSV(text);
-        if (parsed.length < 20) continue;               // wrong tab / truncated — don't clobber
-        const changed = parsed.length !== rows.length ||
-          (parsed.length && rows.length && parsed[parsed.length-1].date !== rows.map(r=>r.date).reduce((a,b)=>a>b?a:b));
-        rows = parsed;
-        source = {label:src.label, updatedAt:new Date().toISOString()};
-        try{ localStorage.setItem('laborcalc.lastSync', String(Date.now())); }catch(_){}
-        persist();
-        renderAll();
-        if (manual) toast(`Synced ${rows.length} entries from the Google Sheet`);
-        else if (changed) toast(`Updated from the Google Sheet — ${rows.length} entries`);
-        return true;
+        if (ingestCsv(await res.text(), src.label, manual)) return true;
       }catch(_){ /* try next source */ }
     }
-    if (manual) toast('Could not reach the sheet without a login — set its sharing to “Anyone with the link: Viewer” (or deploy apps-script-labor.gs), then Sync again.', true);
+    if (manual) toast(gsAvailable()
+      ? 'Could not read the sheet — make sure this Google account can open the tracker sheet.'
+      : 'Live sync runs on the signed-in @wizardtrees.com app. Open that link, or drop an export to update here.', true);
     return false;
   } finally { btn.disabled = false; }
 }
 document.getElementById('syncBtn').onclick = () => syncNow(true);
 
 function maybeAutoSync(){
+  if (gsAvailable()){ syncNow(false); return; }   // hosted app: always refresh live on open
   let last = 0;
   try{ last = +localStorage.getItem('laborcalc.lastSync') || 0; }catch(_){}
   if (Date.now() - last > SYNC_TTL_MS) syncNow(false);
