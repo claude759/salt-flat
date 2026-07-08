@@ -609,6 +609,7 @@
           <button data-rep="customers">Customers</button>
           <button class="on" data-rep="newcust">New Customers</button>
           <button data-rep="sales">Sales</button>
+          <button data-rep="bysku">Sales by SKU</button>
           <button data-rep="bydisp">By Dispensary</button>
           <button data-rep="payments">Payments</button>
           <button data-rep="mom">Month over Month</button>
@@ -679,6 +680,28 @@
         </div>
         <div class="tablewrap" id="nc-wrap"></div>
         <div class="notes" id="nc-note"></div>
+      </div>
+
+      <!-- SALES BY SKU (format-level: who bought each product type, billed vs list, discounts) -->
+      <div id="rep-bysku" class="hidden">
+        <div class="toolbar">
+          <select id="bysku-preset" title="Quick date range">
+            <option value="d30">Last 30 days</option>
+            <option value="3m">Last 3 months</option>
+            <option value="month">This month</option>
+            <option value="lastmonth">Last month</option>
+            <option value="ytd">Year to date</option>
+            <option value="all">All time</option>
+            <option value="custom">Custom…</option>
+          </select>
+          <label class="dt">From <input type="date" id="bysku-start" /></label>
+          <label class="dt">To <input type="date" id="bysku-end" /></label>
+          <input type="text" id="bysku-search" placeholder="Search customer…" />
+          <div class="grow"></div>
+          <button class="btn" id="bysku-export">⬇ Export CSV</button>
+        </div>
+        <div class="tablewrap" id="bysku-wrap"></div>
+        <div class="notes" id="bysku-note"></div>
       </div>
 
       <!-- SALES BY DISPENSARY (pick one dispensary → its detailed invoice activity) -->
@@ -3556,14 +3579,15 @@ $('#repv-date-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closes
 // The Reports tab hosts several reports, picked by the #rep-toggle seg:
 // visits (PAD/EDU) · mom (Month over Month) · time (Sales Over Time).
 let repMode='newcust';   // New Customers is the default report on the Reports tab
-const REP_MODES=['visits','customers','newcust','sales','bydisp','payments','mom','time'];
-function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bydisp:renderBydisp,payments:renderPaymentsReport,mom:renderMom,time:renderTimeSeries}[repMode]||renderReports)(); }
+const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','mom','time'];
+function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,mom:renderMom,time:renderTimeSeries}[repMode]||renderReports)(); }
 function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.rep===repMode));
   $('#rep-visits').classList.toggle('hidden', repMode!=='visits');
   $('#rep-customers').classList.toggle('hidden', repMode!=='customers');
   $('#rep-newcust').classList.toggle('hidden', repMode!=='newcust');
   $('#rep-sales').classList.toggle('hidden', repMode!=='sales');
+  $('#rep-bysku').classList.toggle('hidden', repMode!=='bysku');
   $('#rep-bydisp').classList.toggle('hidden', repMode!=='bydisp');
   $('#rep-payments').classList.toggle('hidden', repMode!=='payments');
   $('#view-mom').classList.toggle('hidden', repMode!=='mom');
@@ -3591,6 +3615,7 @@ $('#rep-export').onclick=()=>{
 const repIso=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 function repPresetRange(p){ const d=new Date(),y=d.getFullYear(),mo=d.getMonth(),today=repIso(d);
   const back=n=>{const x=new Date(d);x.setMonth(x.getMonth()-n);return repIso(x);};
+  if(p==='d30'){ const x=new Date(d); x.setDate(x.getDate()-30); return{s:repIso(x),e:today}; }
   if(p==='d90'){ const x=new Date(d); x.setDate(x.getDate()-90); return{s:repIso(x),e:today}; }
   if(p==='3m')return{s:back(3),e:today}; if(p==='6m')return{s:back(6),e:today}; if(p==='12m')return{s:back(12),e:today};
   if(p==='ytd')return{s:`${y}-01-01`,e:today}; if(p==='month')return{s:repIso(new Date(y,mo,1)),e:today};
@@ -3878,6 +3903,84 @@ $('#cust-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr
 $('#nc-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#nc-wrap').contains(tr))return; const r=repRange('nc'); customerOrdersDrill(tr.getAttribute('data-name'),r.start,r.end); };
 $('#sales-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#sales-wrap').contains(tr))return; orderDrill(tr.getAttribute('data-k')); };
 $('#pay-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#pay-wrap').contains(tr))return; orderDrill(tr.getAttribute('data-k')); };
+
+// ----- Sales by SKU: format-level (3.5g / 1g / 1.5g / vape …) — who bought each type,
+//       through which system, billed vs full list, and the per-unit discount. Built from
+//       CONC_EVENTS' per-order format buckets (works in shared mode; QuickBooks excluded,
+//       matching the other reports). Order-level invoice discounts/credits can't honestly be
+//       attributed to a single format, so they're summarized in the note instead. -----
+function bySkuData(){
+  const {start,end}=repRange('bysku');
+  const A=concAssum();
+  const fmts={}; let orderDisc=0, orderCred=0;
+  const label={pouch:'Budtender pouches', other:'Other / unmapped'};
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; if(e.d==null||e.d<start||e.d>end) return;
+    orderDisc+=e.invoiceDisc||0; orderCred+=e.creditMemos||0;
+    const touch=(key,lbl,L,paidU,sampU,bill)=>{
+      if(!(paidU||sampU||Math.abs(bill)>0.005)) return;
+      const f=fmts[key]||(fmts[key]={key,label:lbl,list:L,units:0,sampU:0,billed:0,customers:{}});
+      f.units+=paidU; f.sampU+=sampU; f.billed+=bill;
+      const ck=(e.c||'Unknown')+'|'+e.s;
+      const c=f.customers[ck]||(f.customers[ck]={cust:e.c||'Unknown',src:e.s,units:0,sampU:0,billed:0,orders:{}});
+      c.units+=paidU; c.sampU+=sampU; c.billed+=bill;
+      const ref=e.ref||'(no #)';
+      const o=c.orders[ref]||(c.orders[ref]={ref,date:e.d,units:0,billed:0});
+      o.units+=paidU; o.billed+=bill; if(e.d&&(!o.date||e.d<o.date)) o.date=e.d;
+    };
+    CONC_FORMATS.forEach(fm=>{ const b=e.fmt&&e.fmt[fm.key]; if(b) touch(fm.key, fm.label, A[fm.key]||0, b.paidU||0, b.sampU||0, b.bill||0); });
+    if((e.pouchU||0)||Math.abs(e.pouchBill||0)>0.005) touch('pouch', label.pouch, A.pouch||0, e.pouchU||0, 0, e.pouchBill||0);
+    if((e.otherU||0)||Math.abs(e.otherBill||0)>0.005) touch('other', label.other, 0, e.otherU||0, 0, e.otherBill||0);
+  });
+  const rows=Object.values(fmts).map(f=>{ const list=f.units*f.list;
+    return {...f, listVal:list, unitDisc:f.list?list-f.billed:0,
+      customers:Object.values(f.customers).map(c=>{ const cl=c.units*f.list;
+        return {...c, listVal:cl, unitDisc:f.list?cl-c.billed:0, orders:Object.values(c.orders).sort((a,b)=>(b.date||0)-(a.date||0))}; })
+        .sort((a,b)=>b.billed-a.billed) };
+  }).sort((a,b)=>b.billed-a.billed);
+  return {start,end,rows,orderDisc,orderCred};
+}
+function renderBySku(){
+  const wrap=$('#bysku-wrap'), note=$('#bysku-note'); if(!wrap) return;
+  const {start,end,rows,orderDisc,orderCred}=bySkuData();
+  const q=(($('#bysku-search')||{}).value||'').trim().toLowerCase();
+  const view=q? rows.map(f=>({...f, customers:f.customers.filter(c=>c.cust.toLowerCase().includes(q))})).filter(f=>f.customers.length) : rows;
+  if(!view.length){ note.innerHTML=''; wrap.innerHTML=`<div class="empty">No sales in ${fmtRangeLabel(start,end)}${q?' matching the search':''}.</div>`; return; }
+  const int=n=>Math.round(n).toLocaleString();
+  const custTable=f=>{ const cs=f.customers;
+    return `<div class="ddhead">Who bought ${esc(f.label)}</div><table class="ddtable"><thead><tr><th>Customer</th><th>Source</th><th class="num">Units</th><th class="num">Samples</th><th class="num">Billed</th><th class="num">@ Full List</th><th class="num">Unit Disc</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${
+      cs.map((c,ci)=>`<tr class="bysku-cust" data-f="${esc(f.key)}" data-ci="${ci}" style="cursor:pointer" title="Click for this customer's orders"><td>${esc(c.cust)}</td><td><span class="src ${esc(c.src)}">${esc(c.src)}</span></td><td class="num">${int(c.units)}</td><td class="num">${c.sampU?int(c.sampU):'—'}</td><td class="num money">${fmt$(c.billed)}</td><td class="num money">${f.list?fmt$(c.listVal):'—'}</td><td class="num money">${f.list?fmt$(c.unitDisc):'—'}</td><td class="num money">${c.units?fmt$(c.billed/c.units):'—'}</td></tr>`).join('')}</tbody></table>`; };
+  const q2=view.map(f=>{ const withQ=f.customers.reduce((a,c)=>({u:a.u+c.units,su:a.su+c.sampU,b:a.b+c.billed}),{u:0,su:0,b:0});
+    const u=q?withQ.u:f.units, su=q?withQ.su:f.sampU, b=q?withQ.b:f.billed, lv=u*f.list;
+    return {f,u,su,b,lv,ud:f.list?lv-b:0}; });
+  const body=q2.map(({f,u,su,b,lv,ud})=>`<tr class="parent"><td><span class="caret">▶</span> ${esc(f.label)}${f.list?` <span class="rep">list ${fmt$(f.list)}</span>`:''}</td>
+      <td class="num">${int(u)}</td><td class="num">${su?int(su):'—'}</td><td class="num money">${fmt$(b)}</td><td class="num money">${f.list?fmt$(lv):'—'}</td><td class="num money">${f.list?fmt$(ud):'—'}</td><td class="num money">${u?fmt$(b/u):'—'}</td></tr>
+    <tr class="detail hidden"><td colspan="7"><div class="detailbox">${custTable({...f,customers:f.customers})}</div></td></tr>`).join('');
+  const tot=q2.reduce((a,x)=>({u:a.u+x.u,su:a.su+x.su,b:a.b+x.b,lv:a.lv+x.lv,ud:a.ud+x.ud}),{u:0,su:0,b:0,lv:0,ud:0});
+  wrap.innerHTML=`<table id="bysku-table"><thead><tr><th>Product Type</th><th class="num">Units</th><th class="num">Samples</th><th class="num">Billed</th><th class="num">@ Full List</th><th class="num">Unit Disc</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td>Total</td><td class="num">${int(tot.u)}</td><td class="num">${tot.su?int(tot.su):'—'}</td><td class="num money">${fmt$(tot.b)}</td><td class="num money">${fmt$(tot.lv)}</td><td class="num money">${fmt$(tot.ud)}</td><td class="num money">${tot.u?fmt$(tot.b/tot.u):'—'}</td></tr></tfoot></table>`;
+  wrap.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{ const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } });
+  note.innerHTML=`<b>Sales by product type</b> in <b>${fmtRangeLabel(start,end)}</b> — who bought each format, through which system, billed vs full list (editable list prices on the Credits/Discounts page). <b>Unit Disc</b> = full list − billed for the paid units. Order-level invoice discounts + credit memos in this range total <b>${fmt$(orderDisc)} + ${fmt$(orderCred)}</b> — they apply to whole orders, not a single product type, so they're not in the rows above (the Sales report and Credits/Discounts page net them). Click a product type for its customers; click a customer for their orders. QuickBooks history excluded.`;
+}
+$('#bysku-wrap').onclick=(ev)=>{ const cr=ev.target.closest?ev.target.closest('tr.bysku-cust'):null; if(!cr||!$('#bysku-wrap').contains(cr)) return;
+  ev.stopPropagation();
+  const {rows}=bySkuData(); const f=rows.find(x=>x.key===cr.getAttribute('data-f')); if(!f) return;
+  const q=(($('#bysku-search')||{}).value||'').trim().toLowerCase();
+  const cs=q?f.customers.filter(c=>c.cust.toLowerCase().includes(q)):f.customers;
+  const c=cs[+cr.getAttribute('data-ci')]; if(!c) return;
+  const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  openScModal({title:`${c.cust} — ${f.label}`, sub:`${c.src} · ${Math.round(c.units).toLocaleString()} units across ${c.orders.length} order${c.orders.length!==1?'s':''}`,
+    columns:[{l:'Order / Inv #'},{l:'Date'},{l:'Units',num:true},{l:'Billed',num:true,money:true}],
+    rows:c.orders.map(o=>[o.ref, fmtDt(o.date), Math.round(o.units).toLocaleString(), o.billed]),
+    totalLabel:'Total', total:c.orders.reduce((s2,o)=>s2+o.billed,0)});
+};
+['bysku-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderBySku); });
+$('#bysku-export').onclick=()=>{
+  const {rows}=bySkuData();
+  const out=[['Product Type','Customer','Source','Units','Samples','Billed','@ Full List','Unit Disc','Avg $/Unit']];
+  rows.forEach(f=>f.customers.forEach(c=>out.push([f.label,c.cust,c.src,Math.round(c.units),Math.round(c.sampU),c.billed.toFixed(2),f.list?c.listVal.toFixed(2):'',f.list?c.unitDisc.toFixed(2):'',c.units?(c.billed/c.units).toFixed(2):''])));
+  downloadCSV('sales-by-sku.csv',out);
+};
+wireRepRange('bysku', renderBySku, 'd30');
 
 // ----- Sales by Dispensary: pick one dispensary → its detailed invoice activity -----
 // Per-invoice rows (delivery/invoice/payment dates, disc+credits, net), each expandable to
