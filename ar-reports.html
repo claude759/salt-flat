@@ -3389,13 +3389,24 @@ function tierDrill(name){
   const {start,end}=tierData();
   const byRef={};
   (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; if(((e.c||'Unknown').trim()||'Unknown')!==name) return; const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
-    const amt=eventBilling(e); if(Math.abs(amt)<0.005) return; const key=e.s+'|'+(e.ref||'(order)');
-    const g=byRef[key]||(byRef[key]={ref:e.ref||'(order)',src:e.s,date:e.d,amt:0}); g.amt+=amt; if(e.d&&(!g.date||e.d<g.date))g.date=e.d; });
-  const list=Object.values(byRef).filter(x=>Math.abs(x.amt)>0.005).sort((a,b)=>(a.date||0)-(b.date||0));
+    const key=orderKey(e);
+    const g=byRef[key]||(byRef[key]={ref:e.ref||'(order)',src:e.s,date:e.d,pd:null,disc:0,cred:0,evs:[]});
+    g.evs.push(e); g.disc+=e.invoiceDisc||0; g.cred+=e.creditMemos||0;
+    if(e.d&&(!g.date||e.d<g.date))g.date=e.d; if(e.pd!=null&&(g.pd==null||e.pd>g.pd))g.pd=e.pd; });
+  const list=Object.values(byRef).map(g=>{ const fl=orderFmtLines(g.evs); return {...g, gross:fl.gross, net:fl.net}; })
+    .filter(x=>Math.abs(x.net)>0.005||Math.abs(x.disc+x.cred)>0.005).sort((a,b)=>(a.date||0)-(b.date||0));
+  if(!list.length) return;
   const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
-  openScModal({title:`${name} — orders`, sub:`Net sales in the tiering window · ${list.length} orders`,
-    columns:[{l:'Order / Inv #'},{l:'Source'},{l:'Date'},{l:'Net',num:true,money:true}],
-    rows:list.map(x=>[x.ref,x.src,fmtDt(x.date),x.amt]), totalLabel:'Total', total:list.reduce((s,x)=>s+x.amt,0)});
+  const contentsTable=evs=>{ const {rows,net}=contentsRows(evs);
+    const bd=rows.map(r=>`<tr><td>${esc(r[0])}</td><td class="num">${esc(r[1])}</td><td class="num money">${fmt$(r[2])}</td></tr>`).join('');
+    return `<div class="ddhead">Contents</div><table class="ddtable"><thead><tr><th>Item</th><th class="num">Units</th><th class="num">Billed</th></tr></thead><tbody>${bd}</tbody><tfoot><tr class="totals"><td>Net</td><td></td><td class="num money">${fmt$(net)}</td></tr></tfoot></table>`; };
+  const totG=list.reduce((s2,x)=>s2+x.gross,0), totDC=list.reduce((s2,x)=>s2+x.disc+x.cred,0), totN=list.reduce((s2,x)=>s2+x.net,0);
+  openScModal({title:`${name} — orders`,
+    sub:`${list.length} order${list.length!==1?'s':''} in the tiering window · gross ${fmt$(totG)} − discounts/credits ${fmt$(totDC)} = net ${fmt$(totN)} · click an order for its contents`,
+    columns:[{l:'Order / Inv #'},{l:'Source'},{l:'Date'},{l:'Paid'},{l:'Gross',num:true,money:true},{l:'Disc + Credits',num:true,money:true},{l:'Net',num:true,money:true}],
+    rows:list.map(x=>[x.ref, x.src, fmtDt(x.date), x.pd?fmtDt(x.pd):'—', x.gross, (x.disc+x.cred)?-(x.disc+x.cred):0, x.net]),
+    rowDetails:list.map(x=>contentsTable(x.evs)),
+    totalLabel:'Net total', total:totN});
 }
 // Overdue (past-due) invoices for an account — matched to AR by normalized name, dpd>0.
 function tierOverdueInvoices(name){
