@@ -1077,10 +1077,8 @@ function gsRun(fn){
     google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn]();
   });
 }
-function ingestCsv(text, label, manual){
-  if (!text || /^\s*</.test(text)) return false;   // login/HTML page, not CSV
-  const parsed = parseCombinedCSV(text);
-  if (parsed.length < 20) return false;             // wrong tab / truncated \u2014 don't clobber
+function ingestParsed(parsed, label, manual){
+  if (!parsed || parsed.length < 20) return false;   // wrong tab / truncated - don't clobber
   const changed = parsed.length !== rows.length ||
     (parsed.length && rows.length && parsed[parsed.length-1].date !== rows.map(r=>r.date).reduce((a,b)=>a>b?a:b));
   rows = parsed;
@@ -1089,8 +1087,55 @@ function ingestCsv(text, label, manual){
   persist();
   renderAll();
   if (manual) toast(`Synced ${rows.length} entries from the Google Sheet`);
-  else if (changed) toast(`Updated from the Google Sheet \u2014 ${rows.length} entries`);
+  else if (changed) toast(`Updated from the Google Sheet - ${rows.length} entries`);
   return true;
+}
+function ingestCsv(text, label, manual){
+  if (!text || /^\s*</.test(text)) return false;   // login/HTML page, not CSV
+  return ingestParsed(parseCombinedCSV(text), label, manual);
+}
+
+/* ---- read the private tracker sheet as the signed-in Google user (Sheets API) ---- */
+let sheetsTokenClient = null, sheetsToken = null;
+function sheetsReady(){ return typeof google !== 'undefined' && google.accounts && google.accounts.oauth2; }
+function getSheetsToken(interactive){
+  return new Promise((resolve, reject) => {
+    if (!sheetsReady()){ reject(new Error('google_not_ready')); return; }
+    if (!sheetsTokenClient){
+      sheetsTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: 'https://www.googleapis.com/auth/spreadsheets.readonly',
+        callback: function(){},
+      });
+    }
+    sheetsTokenClient.callback = function(resp){
+      if (resp && resp.access_token){ sheetsToken = resp.access_token; resolve(resp.access_token); }
+      else reject(new Error((resp && (resp.error || resp.type)) || 'no_token'));
+    };
+    let hint = ''; try{ hint = (JSON.parse(localStorage.getItem('lc.auth')||'{}').email) || ''; }catch(_){}
+    sheetsTokenClient.requestAccessToken({ prompt: interactive ? '' : 'none', hint });
+  });
+}
+async function syncViaSheetsApi(manual){
+  if (!sheetsReady()) return false;
+  let token;
+  try{ token = sheetsToken || await getSheetsToken(!!manual); }
+  catch(e){ if (manual) throw e; return false; }   // silent path: give up quietly
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Combined?valueRenderOption=FORMATTED_VALUE`;
+  const call = t => fetch(url, { headers:{ Authorization:'Bearer ' + t } });
+  let res = await call(token);
+  if (res.status === 401){ sheetsToken = null; token = await getSheetsToken(!!manual); res = await call(token); }
+  if (!res.ok){ let j = {}; try{ j = await res.json(); }catch(_){} throw new Error((j.error && (j.error.status || j.error.message)) || ('http_' + res.status)); }
+  const data = await res.json();
+  return ingestParsed(gridToRows(data.values || [], parseDateStr), 'Google Sheet (live)', manual);
+}
+function sheetsErrMsg(e){
+  const m = String((e && e.message) || e);
+  if (/SERVICE_DISABLED|has not been used|not been enabled/i.test(m)) return 'Turn on the Google Sheets API for the project, then Sync again.';
+  if (/PERMISSION_DENIED|http_403/.test(m)) return 'This account can\'t open the tracker sheet - ask the owner to share it with you (Viewer).';
+  if (/access_denied|popup|interaction|no_token|dismiss|not_ready/i.test(m)) return 'Google didn\'t grant Sheets access - click Sync and choose Allow.';
+  if (/NOT_FOUND|http_404/.test(m)) return 'Couldn\'t find a "Combined" tab in that sheet.';
+  return 'Could not read the sheet (' + m + ').';
 }
 
 async function syncNow(manual){
@@ -1099,8 +1144,12 @@ async function syncNow(manual){
   try{
     if (gsAvailable()){
       try{ if (ingestCsv(await gsRun('getCombinedCsv'), 'Google Sheet (live)', manual)) return true; }
-      catch(_){ /* fall through to fetch sources */ }
+      catch(_){ /* fall through */ }
     }
+    // primary web path: read the private sheet as the signed-in Google user
+    try{ if (await syncViaSheetsApi(manual)) return true; }
+    catch(e){ if (manual){ toast(sheetsErrMsg(e), true); return false; } }
+    // last-resort fallbacks (only work if the sheet is link-shared publicly)
     for (const src of syncSources()){
       try{
         const res = await fetch(src.url, {cache:'no-store', redirect:'follow'});
@@ -1108,19 +1157,16 @@ async function syncNow(manual){
         if (ingestCsv(await res.text(), src.label, manual)) return true;
       }catch(_){ /* try next source */ }
     }
-    if (manual) toast(gsAvailable()
-      ? 'Could not read the sheet \u2014 make sure this Google account can open the tracker sheet.'
-      : 'Live sync runs on the signed-in @wizardtrees.com app. Open that link, or drop an export to update here.', true);
+    if (manual) toast('Could not read the sheet. Click Sync to try again, or drop an export to update here.', true);
     return false;
   } finally { btn.disabled = false; }
 }
 document.getElementById('syncBtn').onclick = () => syncNow(true);
 
 function maybeAutoSync(){
-  if (gsAvailable()){ syncNow(false); return; }   // hosted app: always refresh live on open
-  let last = 0;
-  try{ last = +localStorage.getItem('laborcalc.lastSync') || 0; }catch(_){}
-  if (Date.now() - last > SYNC_TTL_MS) syncNow(false);
+  if (gsAvailable()){ syncNow(false); return; }
+  // silently refresh as the signed-in user (no popup); first-time consent waits for a manual Sync
+  syncViaSheetsApi(false).catch(function(){});
 }
 
 /* ================= data updating (xlsx / csv file) ================= */
