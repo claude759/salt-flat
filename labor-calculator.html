@@ -187,34 +187,37 @@
     .kpi .val{font-size:22px}
     th,td{padding:8px 10px}
   }
+
+  /* Google sign-in gate */
+  #login-gate{position:fixed;inset:0;z-index:9999;background:var(--bg);
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  #login-gate.hidden{display:none}
+  .login-box{width:340px;max-width:100%;text-align:center;
+    background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    padding:34px 30px 28px;box-shadow:var(--shadow)}
+  .login-logo{font-size:19px;font-weight:700;letter-spacing:-.01em}
+  .login-sub{font-size:11px;color:var(--faint);letter-spacing:.14em;margin-top:3px;margin-bottom:24px}
+  #gsi-button{display:flex;justify-content:center;min-height:44px}
+  .login-spin{color:var(--faint);font-size:13px;padding:11px}
+  .login-err{color:var(--red);font-size:12.5px;margin-top:14px;min-height:16px;line-height:1.4}
+  .login-note{color:var(--faint);font-size:12px;margin-top:22px;line-height:1.5}
+  .login-note b{color:var(--muted)}
 </style>
 </head>
 <body>
 
-<script>
-/* Early, standalone error surface \u2014 survives even a syntax error in the main
-   script (separate <script>), so problems inside Google's sandbox are visible. */
-window.addEventListener('error', function (e) {
-  var d = document.getElementById('bootErr') || document.createElement('div');
-  d.id = 'bootErr';
-  d.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99999;background:#8b2020;color:#fff;' +
-    'font:12px/1.5 ui-monospace,monospace;padding:10px 14px;border-radius:8px;white-space:pre-wrap;max-height:45vh;overflow:auto';
-  var L = e.lineno || 0;
-  d.textContent = 'App error (screenshot this):\n' + (e.message || (e.error && e.error.message) || e.type) +
-    (L ? '  @ line ' + L + ':' + (e.colno || '?') : '');
-  (document.body || document.documentElement).appendChild(d);
-  // fetch this page's own served source and print the offending line + context
-  try {
-    fetch(location.href, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
-      var lines = t.split('\n'); var out = '\n--- served source around line ' + L + ' ---\n';
-      for (var k = Math.max(1, L - 3); k <= Math.min(lines.length, L + 3); k++) {
-        out += (k === L ? '>> ' : '   ') + k + ': ' + (lines[k - 1] || '').slice(0, 200) + '\n';
-      }
-      d.textContent += out;
-    }).catch(function (err) { d.textContent += '\n(could not fetch served source: ' + err + ')'; });
-  } catch (_) {}
-});
-</script>
+<!-- Google sign-in gate \u2014 only @wizardtrees.com accounts get past this -->
+<div id="login-gate">
+  <div class="login-box">
+    <div class="login-logo">🌿 Labor / Unit Tracker</div>
+    <div class="login-sub">WIZARD TREES</div>
+    <div id="gsi-button"></div>
+    <div class="login-spin" id="login-spin">Loading sign-in\u2026</div>
+    <div class="login-err" id="login-err"></div>
+    <div class="login-note">Sign in with your <b>@wizardtrees.com</b> Google account.</div>
+  </div>
+</div>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <header>
   <div class="bar">
@@ -232,6 +235,7 @@ window.addEventListener('error', function (e) {
     <button class="btn" id="syncBtn" title="Fetch the latest data from the shared Google Sheet">⟳ Sync Google Sheets</button>
     <button class="btn" id="updateBtn" title="Load a downloaded .xlsx / .csv export">Update from file</button>
     <input type="file" id="fileInput" accept=".xlsx,.csv" hidden>
+    <button class="btn" id="signOutBtn" title="Sign out of this device" onclick="signOut()">Sign out</button>
   </div>
 </header>
 
@@ -1330,7 +1334,56 @@ function boot(){
   reportSel.onchange();
   maybeAutoSync();
 }
+
+/* ================= Google sign-in gate (@wizardtrees.com) ================= */
+const GOOGLE_CLIENT_ID = '__GOOGLE_CLIENT_ID__';   // paste your OAuth "Web application" client ID
+const AUTH_DOMAIN = 'wizardtrees.com';
+const AUTH_TTL_MS = 12 * 3600 * 1000;              // stay signed in ~half a day
+
+function decodeJwt(t){
+  try{ return JSON.parse(atob(String(t).split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))); }catch(_){ return null; }
+}
+function loginErr(msg){ const e = document.getElementById('login-err'); if (e) e.textContent = msg || ''; }
+function openApp(){ const g = document.getElementById('login-gate'); if (g) g.classList.add('hidden'); }
+function onGoogleCredential(resp){
+  const c = decodeJwt(resp && resp.credential);
+  const email = c && (c.email || '').toLowerCase();
+  const ok = c && (c.hd === AUTH_DOMAIN || (email && email.endsWith('@' + AUTH_DOMAIN))) && c.email_verified !== false;
+  if (ok){
+    try{ localStorage.setItem('lc.auth', JSON.stringify({email, at:Date.now()})); }catch(_){}
+    loginErr(''); openApp();
+  } else {
+    loginErr(email ? `${email} isn't a @${AUTH_DOMAIN} account — use your Wizard Trees email.`
+                   : 'Sign-in failed — please try again.');
+  }
+}
+function signOut(){
+  try{ localStorage.removeItem('lc.auth'); }catch(_){}
+  if (window.google && google.accounts) google.accounts.id.disableAutoSelect();
+  location.reload();
+}
+function initGate(){
+  try{
+    const a = JSON.parse(localStorage.getItem('lc.auth') || 'null');
+    if (a && a.email && (Date.now() - a.at) < AUTH_TTL_MS){ openApp(); return; }   // recently signed in
+  }catch(_){}
+  let tries = 0;
+  (function ready(){
+    if (window.google && google.accounts && google.accounts.id){
+      const spin = document.getElementById('login-spin'); if (spin) spin.style.display = 'none';
+      if (/^__/.test(GOOGLE_CLIENT_ID)){ loginErr('Sign-in isn\'t configured yet (client ID missing).'); return; }
+      google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onGoogleCredential,
+        hd: AUTH_DOMAIN, auto_select: true, cancel_on_tap_outside: false });
+      google.accounts.id.renderButton(document.getElementById('gsi-button'),
+        { theme:'filled_blue', size:'large', text:'signin_with', shape:'pill', width:260 });
+      google.accounts.id.prompt();
+    } else if (tries++ < 60){ setTimeout(ready, 150); }
+    else { loginErr('Could not load Google sign-in — check your connection and refresh.'); }
+  })();
+}
+
 boot();
+initGate();
 </script>
 </body>
 </html>
