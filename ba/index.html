@@ -257,7 +257,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-07.3';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-07.4';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -724,6 +724,9 @@ function wireSwitcher(){
 
 // Pay-period phase relative to today, and who may edit it.
 function actingAsBA(){ return !!state.preview || state.profile?.role!=='admin'; }
+// people who log field data = BAs + regional admins (e.g. Maddy = NY admin who also works
+// as a BA). Universal admins (admin, no region) are pure oversight and don't appear as BAs.
+function isFieldWorker(b){ return !!b && (b.role==='ba' || (b.role==='admin' && !!b.region)); }
 function periodPhase(p){ if(!p) return 'none'; const t=todayISO(); if(p.start_date>t) return 'future'; if(p.end_date<t) return 'past'; return 'current'; }
 // In the BA surface only the current, open period is editable; upcoming/past are view-only
 // (admins manage those from the admin tools). A real admin outside preview always passes.
@@ -2642,8 +2645,8 @@ async function adminDash(m){
   T.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ b.mile+=Number(x.amount||0); b.items++; } });
   E.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ if(x.payment==='company') b.card+=Number(x.amount||0); else b.exp+=Number(x.amount||0); b.items++; if(x.receipt_path) b.receipts++; } });
   S.forEach(s=>{ if(byBa[s.ba_id]) byBa[s.ba_id].status=s.status; });
-  // every BA, plus anyone else (incl. you) who has logged something this period
-  let rows=Object.values(byBa).filter(r=> r.p.role==='ba' || r.items>0 );
+  // every field worker (BAs + regional admins like Maddy), plus anyone else who logged something
+  let rows=Object.values(byBa).filter(r=> isFieldWorker(r.p) || r.items>0 );
   if(state.adminRegion!=='all') rows=rows.filter(r=>r.p.region===state.adminRegion);
   const grand=rows.reduce((a,r)=>a+r.mile+r.exp,0);
   m.innerHTML=`
@@ -2862,7 +2865,7 @@ async function adminReview(m){
   await reloadPeriods();
   const per=state.period;
   const [{data:bas}, subs, trips, exps, hours] = await Promise.all([
-    supabase.from('profiles').select('*').eq('role','ba').order('full_name'),
+    supabase.from('profiles').select('*').order('full_name'),
     per?supabase.from('submissions').select('*').eq('period_id',per.id):{data:[]},
     per?supabase.from('trips').select('ba_id').eq('period_id',per.id):{data:[]},
     per?supabase.from('expenses').select('ba_id').eq('period_id',per.id):{data:[]},
@@ -2871,7 +2874,7 @@ async function adminReview(m){
   const subBy={}; (subs.data||[]).forEach(s=>subBy[s.ba_id]=s);
   const cnt={}; (trips.data||[]).concat(exps.data||[]).forEach(x=>cnt[x.ba_id]=(cnt[x.ba_id]||0)+1);
   const hrsBy={}; (hours.data||[]).forEach(h=>hrsBy[h.ba_id]=(hrsBy[h.ba_id]||0)+1);
-  let rows=(bas||[]);
+  let rows=(bas||[]).filter(isFieldWorker);   // BAs + regional admins (Maddy); not universal admins
   if(state.adminRegion!=='all') rows=rows.filter(b=>b.region===state.adminRegion);
   const turnedIn=b=>['submitted','approved'].includes(subBy[b.id]?.status);
   // order: awaiting your approval → not submitted → approved
