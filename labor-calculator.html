@@ -172,15 +172,20 @@
   #combinedTable tr.addrow td{padding:6px 10px;background:var(--bg)}
   .addtask{color:var(--accent2)}
   /* Gantt timeline — embedded in the editable day's header strip */
-  .dh-flex{display:flex;align-items:center;gap:18px}
+  .dh-flex{display:flex;align-items:center;gap:20px}
   .dh-label{white-space:nowrap;flex:none}
-  .dh-flex .tl{flex:1;min-width:180px;max-width:720px;font-weight:400;padding:2px 0}
-  .tl-empty{color:var(--faint);font-size:10.5px;font-weight:400;text-transform:none;letter-spacing:0}
-  .tl-axis{display:flex;justify-content:space-between;font-size:9px;color:var(--faint);font-weight:500;
-    border-top:1px solid var(--muted);padding-top:1px;margin-bottom:2px;line-height:1.2}
+  .dh-flex .tl{flex:1;min-width:220px;font-weight:400;padding:3px 0}
+  .tl-empty{color:var(--faint);font-size:11px;font-weight:400;text-transform:none;letter-spacing:0}
+  .tl-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);font-weight:600;
+    border-top:2px solid var(--muted);padding-top:2px;margin-bottom:4px;line-height:1.2}
   .tl-track{position:relative;width:100%}
-  .tl-bar{position:absolute;height:4px;border-radius:2px;min-width:2px;background:var(--muted)}
+  .tl-bar{position:absolute;height:6px;border-radius:3px;min-width:2px;background:var(--muted)}
   .tl-bar.rec{background:#cfe2f3} .tl-bar.void{background:#f6b26b}
+  /* hours budget next to + add task */
+  .addflex{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .budget{font-size:12.5px;color:var(--muted)}
+  .budget b{font-variant-numeric:tabular-nums;font-size:13px}
+  .budget b.ok{color:var(--green)} .budget b.bad{color:var(--red)}
 
   .tag{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid var(--line);
     color:var(--muted);font-size:11px;font-weight:650;margin-left:8px;vertical-align:1px}
@@ -629,6 +634,8 @@ filterEl.onchange = renderCombined;
     tr.querySelector('.c-cpu').childNodes[0].nodeValue = cpu != null ? fCents(cpu) : '';
     const tl = body.querySelector(`[data-tl="${date}"]`);
     if (tl){ const tmp = document.createElement('div'); tmp.innerHTML = tlWrap(date, arr); tl.replaceWith(tmp.firstElementChild); }
+    const bud = body.querySelector(`[data-budget="${date}"]`);
+    if (bud){ const tmp = document.createElement('div'); tmp.innerHTML = budgetHTML(date, arr); bud.replaceWith(tmp.firstElementChild); }
   }
   body.addEventListener('input', e => {
     const f = e.target.dataset && e.target.dataset.field; if(!f || f==='task') return;
@@ -712,6 +719,42 @@ const TASK_TYPES = [
 ];
 const NONPACK = 'Non-packaging activity';
 const NCOLS = 9;
+
+/* ---- timesheet bridge: the embedded Distro Hours app posts its entries here ---- */
+let tsEntries = [];
+try{ tsEntries = JSON.parse(localStorage.getItem('laborcalc.ts.v1') || '[]') || []; }catch(_){ tsEntries = []; }
+window.addEventListener('message', e => {
+  const d = e.data;
+  if (!d || d.type !== 'wt-hours' || !Array.isArray(d.entries)) return;
+  let host = ''; try{ host = new URL(e.origin).hostname; }catch(_){ return; }
+  const trusted = host.endsWith('.googleusercontent.com') || host === 'script.google.com' || e.origin === location.origin;
+  if (!trusted) return;
+  tsEntries = d.entries;
+  try{ localStorage.setItem('laborcalc.ts.v1', JSON.stringify(tsEntries)); }catch(_){}
+  renderCombined();
+});
+// the day's distro-timesheet summary: earliest in, latest out, total person-hours
+function tsDay(date){
+  const es = tsEntries.filter(t => t.work_date === date && (t.category || 'distro') === 'distro');
+  if (!es.length) return null;
+  let lo = null, hi = null, hours = 0;
+  for (const t of es){
+    hours += +t.hours || 0;
+    const b = toMin(t.clock_in), e2 = toMin(t.clock_out);
+    if (b != null && (lo == null || b < lo)) lo = b;
+    if (e2 != null && (hi == null || e2 > hi)) hi = e2;
+  }
+  return {lo, hi, hours: +hours.toFixed(2)};
+}
+// person-hours the day's tasks account for so far
+function taskHoursUsed(es){ return +es.reduce((a,r) => a + (r.hours || 0) * (r.people || 0), 0).toFixed(2); }
+function budgetHTML(date, es){
+  const ts = tsDay(date);
+  if (!ts) return `<span class="budget faint" data-budget="${date}">no timesheet hours for this day yet</span>`;
+  const used = taskHoursUsed(es);
+  const ok = Math.abs(used - ts.hours) < 0.05;
+  return `<span class="budget" data-budget="${date}">Hours: <b class="${ok ? 'ok' : 'bad'}">${used.toFixed(2)}</b> / ${ts.hours.toFixed(2)} <span class="faint">from timesheet</span></span>`;
+}
 const COLHEAD_T = '<tr class="colhead-t"><td>Task</td><td>Ppl</td><td>Begin</td><td>End</td><td>Time</td><td>Packaged</td><td>Labeled</td><td>Cost</td><td>$ / Unit</td></tr>';
 function dayEntries(date){ return lcEdits[date] || rows.filter(r => r.date === date).slice().sort(taskCmp); }
 function ensureEdit(date){ if(!lcEdits[date]) lcEdits[date] = dayEntries(date).map(r => ({...r})); return lcEdits[date]; }
@@ -755,9 +798,12 @@ function editRow(date, i, r){
 function fMinHM(min){ return fClock(String(Math.floor(min/60)).padStart(2,'0')+':'+String(min%60).padStart(2,'0')); }
 function tlWrap(date, es){
   const timed = es.filter(r => toMin(r.begin)!=null && toMin(r.end)!=null && r.task);
-  if (!timed.length) return `<div class="tl" data-tl="${date}"><div class="tl-empty">add times to see the timeline</div></div>`;
-  let lo=Infinity, hi=-Infinity;
-  for (const r of timed){ lo=Math.min(lo,toMin(r.begin)); hi=Math.max(hi,toMin(r.end)); }
+  const ts = tsDay(date);   // axis = the timesheet's earliest clock-in -> latest clock-out
+  if (!timed.length && !(ts && ts.lo != null && ts.hi != null))
+    return `<div class="tl" data-tl="${date}"><div class="tl-empty">add times to see the timeline</div></div>`;
+  let lo = Infinity, hi = -Infinity;
+  if (ts && ts.lo != null){ lo = ts.lo; hi = ts.hi; }
+  for (const r of timed){ lo = Math.min(lo, toMin(r.begin)); hi = Math.max(hi, toMin(r.end)); }
   const span = Math.max(hi-lo, 1);
   const ordered = timed.slice().sort((a,b)=>toMin(a.begin)-toMin(b.begin));
   const lanes = [];   // pack bars into lanes: reuse a lane when the previous bar in it has ended
@@ -766,11 +812,11 @@ function tlWrap(date, es){
     let li = lanes.findIndex(end => end <= b);
     if (li === -1){ lanes.push(e); li = lanes.length-1; } else lanes[li] = e;
     const cls = r.lo.includes('void') ? 'void' : (r.lo.includes('rec') ? 'rec' : '');
-    return `<div class="tl-bar ${cls}" style="left:${((b-lo)/span*100).toFixed(2)}%;width:${Math.max((e-b)/span*100,0.8).toFixed(2)}%;top:${li*6}px" title="${esc(r.task)} \u00B7 ${fClock(r.begin)}\u2013${fClock(r.end)}"></div>`;
+    return `<div class="tl-bar ${cls}" style="left:${((b-lo)/span*100).toFixed(2)}%;width:${Math.max((e-b)/span*100,0.8).toFixed(2)}%;top:${li*8}px" title="${esc(r.task)} \u00B7 ${fClock(r.begin)}\u2013${fClock(r.end)}"></div>`;
   }).join('');
   return `<div class="tl" data-tl="${date}">
-    <div class="tl-axis"><span>${fMinHM(lo)}</span><span>${fMinHM(hi)}</span></div>
-    <div class="tl-track" style="height:${lanes.length*6-1}px">${bars}</div></div>`;
+    <div class="tl-axis"${ts ? ' title="Earliest clock-in and latest clock-out from the timesheet"' : ''}><span>${fMinHM(lo)}</span><span>${fMinHM(hi)}</span></div>
+    <div class="tl-track" style="height:${Math.max(lanes.length*8-2, 6)}px">${bars}</div></div>`;
 }
 
 function renderCombined(){
@@ -791,7 +837,7 @@ function renderCombined(){
       html += `<tr class="dayhead editday"><td colspan="${NCOLS}"><div class="dh-flex">${label}${tlWrap(date, es)}</div></td></tr>`;
       html += COLHEAD_T;
       es.forEach((r,i) => { html += editRow(date, i, r); });
-      html += `<tr class="addrow"><td colspan="${NCOLS}"><button class="btn sm addtask" data-date="${date}">+ add task</button></td></tr>`;
+      html += `<tr class="addrow"><td colspan="${NCOLS}"><div class="addflex"><button class="btn sm addtask" data-date="${date}">+ add task</button>${budgetHTML(date, es)}</div></td></tr>`;
       shownCount += es.length;
     } else {
       html += `<tr class="dayhead"><td colspan="${NCOLS}">${label}</td></tr>`;
