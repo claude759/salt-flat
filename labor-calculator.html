@@ -179,14 +179,19 @@
   /* Gantt timeline — embedded in the editable day's header strip */
   .dh-flex{display:flex;align-items:center;gap:20px}
   .dh-label{white-space:nowrap;flex:none}
-  .dh-flex .tl{flex:1;min-width:220px;font-weight:400;padding:3px 0}
+  /* track is deliberately narrower than the strip so out-of-window bars visibly poke past the axis */
+  .dh-flex .tl{flex:1;min-width:220px;max-width:520px;font-weight:400;padding:3px 0;margin-right:170px}
   .tl-empty{color:var(--faint);font-size:11px;font-weight:400;text-transform:none;letter-spacing:0}
   .tl-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted);font-weight:600;
     border-top:2px solid var(--muted);padding-top:2px;margin-bottom:4px;line-height:1.2}
   .tl-track{position:relative;width:100%}
-  .tl-bar{position:absolute;height:6px;border-radius:3px;min-width:2px;background:var(--muted)}
+  .tl-bar{position:absolute;height:6px;border-radius:3px;min-width:2px;background:var(--muted);
+    cursor:pointer;transition:box-shadow .12s,filter .12s}
   .tl-bar.rec{background:#cfe2f3} .tl-bar.void{background:#f6b26b}
-  .tl-bar.oob{box-shadow:0 0 0 1.5px var(--red)}   /* task time outside the timesheet clock-in/out window */
+  .tl-bar.oob{outline:1.5px solid var(--red)}   /* task time outside the timesheet clock-in/out window */
+  .tl-bar.hl{filter:brightness(1.3);box-shadow:0 0 9px 2px rgba(124,92,255,.65)}
+  tr.editrow.hl td{background:rgba(124,92,255,.12)}
+  tr.editrow.hl td.task{filter:brightness(1.12)}
   /* hours budget row: timesheet hrs left of TIME, task total under TIME, verdict to the right */
   .ts-cell{color:var(--muted);font-size:12.5px;white-space:nowrap}
   .ts-cell b{color:var(--text);font-variant-numeric:tabular-nums}
@@ -663,6 +668,19 @@ filterEl.onchange = renderCombined;
     const del = e.target.closest('.e-del');
     if (del){ const ctx = rowOf(del); if(ctx){ ctx.arr.splice(ctx.i,1); saveEdits(); renderCombined(); } }
   });
+  // hovering a timeline bar glows the bar and the task row it came from
+  body.addEventListener('mouseover', e => {
+    const bar = e.target.closest('.tl-bar');
+    if (!bar || bar.dataset.ri == null) return;
+    const tl = bar.closest('[data-tl]'); if (!tl) return;
+    bar.classList.add('hl');
+    const row = body.querySelector(`tr.editrow[data-date="${tl.dataset.tl}"][data-i="${bar.dataset.ri}"]`);
+    if (row) row.classList.add('hl');
+  });
+  body.addEventListener('mouseout', e => {
+    if (!e.target.closest('.tl-bar')) return;
+    body.querySelectorAll('.tl-bar.hl, tr.editrow.hl').forEach(el => el.classList.remove('hl'));
+  });
 })();
 
 function buildFilterOptions(){
@@ -818,30 +836,30 @@ function editRow(date, i, r){
 // Gantt: a thin axis (earliest -> latest) with lane-packed bars, embedded in the day header
 function fMinHM(min){ return fClock(String(Math.floor(min/60)).padStart(2,'0')+':'+String(min%60).padStart(2,'0')); }
 function tlWrap(date, es){
-  const timed = es.filter(r => toMin(r.begin)!=null && toMin(r.end)!=null && r.task);
+  const timed = es.map((r,i) => ({r,i})).filter(x => toMin(x.r.begin)!=null && toMin(x.r.end)!=null && x.r.task);
   const ts = tsDay(date);
   const useTs = !!(ts && ts.lo != null && ts.hi != null);
   if (!timed.length && !useTs)
     return `<div class="tl" data-tl="${date}"><div class="tl-empty">add times to see the timeline</div></div>`;
   // axis = STRICTLY the timesheet's earliest clock-in -> latest clock-out;
-  // task bars outside that window get clamped and flagged red, not the axis stretched
+  // task bars outside that window SPILL past the axis edge (capped) and flag red
   let lo, hi;
   if (useTs){ lo = ts.lo; hi = ts.hi; }
-  else { lo = Infinity; hi = -Infinity; for (const r of timed){ lo = Math.min(lo, toMin(r.begin)); hi = Math.max(hi, toMin(r.end)); } }
+  else { lo = Infinity; hi = -Infinity; for (const {r} of timed){ lo = Math.min(lo, toMin(r.begin)); hi = Math.max(hi, toMin(r.end)); } }
   const span = Math.max(hi-lo, 1);
-  const ordered = timed.slice().sort((a,b)=>toMin(a.begin)-toMin(b.begin));
+  const ordered = timed.slice().sort((a,b)=>toMin(a.r.begin)-toMin(b.r.begin));
   const lanes = [];   // pack bars into lanes: reuse a lane when the previous bar in it has ended
-  const bars = ordered.map(r => {
+  const bars = ordered.map(({r,i}) => {
     const b=toMin(r.begin), e=toMin(r.end);
     let li = lanes.findIndex(end => end <= b);
     if (li === -1){ lanes.push(e); li = lanes.length-1; } else lanes[li] = e;
     const cls = r.lo.includes('void') ? 'void' : (r.lo.includes('rec') ? 'rec' : '');
     const oob = useTs && (b < lo || e > hi);
-    const cb = Math.max(b, lo), ce = Math.min(e, hi);
-    const left = ce > cb ? (cb-lo)/span*100 : Math.min(Math.max((b-lo)/span*100, 0), 99);
-    const width = ce > cb ? Math.max((ce-cb)/span*100, 0.8) : 1;
+    const left = Math.max((b-lo)/span*100, -15);           // spill past the ends, within reason
+    const right = Math.min((e-lo)/span*100, 145);
+    const width = Math.max(right-left, 0.8);
     const warn = oob ? ' \u00B7 \u26A0 outside timesheet hours' : '';
-    return `<div class="tl-bar ${cls}${oob ? ' oob' : ''}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%;top:${li*8}px" title="${esc(r.task)} \u00B7 ${fClock(r.begin)}\u2013${fClock(r.end)}${warn}"></div>`;
+    return `<div class="tl-bar ${cls}${oob ? ' oob' : ''}" data-ri="${i}" style="left:${left.toFixed(2)}%;width:${width.toFixed(2)}%;top:${li*8}px" title="${esc(r.task)} \u00B7 ${fClock(r.begin)}\u2013${fClock(r.end)}${warn}"></div>`;
   }).join('');
   return `<div class="tl" data-tl="${date}">
     <div class="tl-axis"${useTs ? ' title="Earliest clock-in and latest clock-out from the timesheet"' : ''}><span>${fMinHM(lo)}</span><span>${fMinHM(hi)}</span></div>
