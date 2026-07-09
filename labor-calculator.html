@@ -150,6 +150,31 @@
   #combinedTable tbody tr.dayhead:hover td{background:var(--panel2)}
   #combinedTable tr.dayhead .wd{color:var(--faint);font-weight:500;margin-left:8px}
   #combinedTable thead th{position:sticky;top:0;z-index:2}
+  /* editable day (task entry) */
+  #combinedTable tr.dayhead.editday td{border-top:1px solid var(--accent)}
+  .editbadge{margin-left:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--accent2);border:1px solid var(--accent);border-radius:999px;padding:1px 8px;vertical-align:1px}
+  #combinedTable tr.editrow td{padding:2px 6px}
+  #combinedTable tr.editrow td.task{padding:0}
+  #combinedTable select.e-task{width:100%;background:transparent;border:0;color:var(--text);font:inherit;padding:8px 10px;cursor:pointer;color-scheme:dark}
+  #combinedTable select.e-task:focus{background:var(--panel2);outline:1px solid var(--accent)}
+  #combinedTable input.e-n,#combinedTable input.e-t{background:var(--panel2);border:1px solid var(--line);border-radius:7px;
+    color:var(--text);font:inherit;font-size:13px;padding:5px 6px;width:100%;text-align:right;color-scheme:dark}
+  #combinedTable input.e-t{text-align:left}
+  #combinedTable input.e-n:focus,#combinedTable input.e-t:focus{border-color:var(--accent);outline:none}
+  #combinedTable td.c-time,#combinedTable td.c-hrs,#combinedTable td.c-cost,#combinedTable td.c-cpu{color:var(--muted)}
+  .e-del{margin-left:8px;border:0;background:none;color:var(--faint);cursor:pointer;font-size:12px}
+  .e-del:hover{color:var(--red)}
+  #combinedTable tr.addrow td{padding:6px 10px;background:var(--bg)}
+  .addtask{color:var(--accent2)}
+  /* Gantt timeline */
+  #combinedTable tr.tl-row td{background:var(--bg);padding:8px 12px 10px}
+  .tl-empty{color:var(--faint);font-size:12px}
+  .tl-axis{display:flex;justify-content:space-between;font-size:10.5px;color:var(--faint);
+    border-top:1.5px solid var(--muted);padding-top:3px;margin-bottom:4px}
+  .tl-track{position:relative;width:100%}
+  .tl-bar{position:absolute;height:7px;border-radius:3px;min-width:2px;background:var(--muted)}
+  .tl-bar.rec{background:#cfe2f3} .tl-bar.void{background:#f6b26b}
 
   .tag{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid var(--line);
     color:var(--muted);font-size:11px;font-weight:650;margin-left:8px;vertical-align:1px}
@@ -593,6 +618,41 @@ function openTimesheets(){
 const filterEl = document.getElementById('taskFilter');
 filterEl.onchange = renderCombined;
 
+/* editing handlers (delegated once on the Tasks table body) */
+(function wireEditing(){
+  const body = document.querySelector('#combinedTable tbody');
+  function rowOf(el){ const tr = el.closest('tr.editrow'); if(!tr) return null;
+    const date=tr.dataset.date, i=+tr.dataset.i; const arr=ensureEdit(date); return {tr,date,i,r:arr[i],arr}; }
+  function refreshDerived(ctx){   // update the changed row's computed cells + this day's timeline, no full re-render
+    const {tr,r,date,arr}=ctx; recomputeRow(r); saveEdits();
+    const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
+    tr.querySelector('.c-time').textContent = fDur(r.seconds);
+    tr.querySelector('.c-hrs').textContent  = r.hours ? fNum(r.hours) : '';
+    tr.querySelector('.c-cost').textContent = fCents(r.cost);
+    tr.querySelector('.c-cpu').childNodes[0].nodeValue = cpu != null ? fCents(cpu) : '';
+    const tlr = body.querySelector(`tr.tl-row[data-date="${date}"]`);
+    if (tlr){ const tmp = document.createElement('tbody'); tmp.innerHTML = timelineRow(date, arr); tlr.replaceWith(tmp.firstElementChild); }
+  }
+  body.addEventListener('input', e => {
+    const f = e.target.dataset && e.target.dataset.field; if(!f || f==='task') return;
+    const ctx = rowOf(e.target); if(!ctx || !ctx.r) return;
+    ctx.r[f] = (f==='people'||f==='packaged'||f==='labeled') ? (+e.target.value||0) : e.target.value;
+    refreshDerived(ctx);
+  });
+  body.addEventListener('change', e => {
+    if (e.target.dataset && e.target.dataset.field==='task'){
+      const ctx = rowOf(e.target); if(!ctx || !ctx.r) return;
+      ctx.r.task = e.target.value; recomputeRow(ctx.r); saveEdits(); renderCombined();  // task change repaints color/rank
+    }
+  });
+  body.addEventListener('click', e => {
+    const add = e.target.closest('.addtask');
+    if (add){ const date=add.dataset.date; ensureEdit(date).push(blankTask(date)); saveEdits(); renderCombined(); return; }
+    const del = e.target.closest('.e-del');
+    if (del){ const ctx = rowOf(del); if(ctx){ ctx.arr.splice(ctx.i,1); saveEdits(); renderCombined(); } }
+  });
+})();
+
 function buildFilterOptions(){
   const current = filterEl.value || 'all';
   filterEl.innerHTML = '';
@@ -631,41 +691,115 @@ function taskRank(lo){
   return 99;
 }
 
+/* ============ in-app task entry (editable days) ============
+   Days on/after EDIT_FROM are editable directly on the Tasks page; edits live in
+   the app (localStorage), decoupled from the tracker-sheet sync. */
+const EDIT_FROM = '2026-07-08';
+const LS_EDITS = 'laborcalc.edits.v1';
+let lcEdits = {};
+try{ lcEdits = JSON.parse(localStorage.getItem(LS_EDITS) || '{}') || {}; }catch(_){ lcEdits = {}; }
+function saveEdits(){ try{ localStorage.setItem(LS_EDITS, JSON.stringify(lcEdits)); }catch(_){} }
+const isEditable = date => date >= EDIT_FROM;
+const toMin = hm => { if(!hm) return null; const p=String(hm).split(':'); const h=+p[0], m=+p[1]; return isNaN(h)||isNaN(m)?null:h*60+m; };
+const taskCmp = (a,b) => (taskRank(a.lo)-taskRank(b.lo)) || (a.begin<b.begin?-1:a.begin>b.begin?1:0);
+
+// canonical task types for the dropdown, in the Labor/Packaging column order
+const TASK_TYPES = [
+  '1.5g pre-roll produced (rec)','1.5g pre-roll labeled (pre COA)(rec)','1.5g pre-roll labeled (post COA)(rec)',
+  '1g pre-roll produced (rec)','1g pre-roll labeled (pre COA)(rec)','1g pre-roll labeled (post COA)(rec)',
+  '5pk (.7g) pre-roll produced(rec)','5pk (.7g) pre-roll labeled (pre COA)(rec)','5pk (.7g) pre-roll labeled (post COA)(rec)',
+  '3.5g jar packed (rec)','3.5g jar labeled (rec)',
+  '1.5g budtender samples (packaged)(rec)','1.5g budtender samples (labeled)(rec)',
+  '3.5g jar packed (void)','3.5g jar labeled (void)',
+  '3.5g pouch packed (void)','3.5g pouch labeled (void)','3.5g pouch prepped (void)',
+];
+function dayEntries(date){ return lcEdits[date] || rows.filter(r => r.date === date).slice().sort(taskCmp); }
+function ensureEdit(date){ if(!lcEdits[date]) lcEdits[date] = dayEntries(date).map(r => ({...r})); return lcEdits[date]; }
+function blankTask(date){ return {date, task:'', lo:'', people:0, begin:'', end:'', seconds:null, hours:0, packaged:0, labeled:0, cost:0, note:null}; }
+function recomputeRow(r){
+  const b=toMin(r.begin), e=toMin(r.end);
+  if (b!=null && e!=null){ let d=e-b; if(d<0) d+=1440; r.seconds=d*60; r.hours=+(d/60).toFixed(2); }
+  else { r.seconds=null; r.hours=0; }
+  r.lo = (r.task||'').toLowerCase();
+  r.cost = +(((r.hours||0) * (r.people||0)) * 20).toFixed(2);   // flat $20/hr for now; timesheet-based pay comes with the budget feature
+}
+
+function readRow(r){
+  const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
+  return `<tr>
+    <td class="task${mkClass(r.lo)}"${r.note ? ' title="' + esc(r.note) + '"' : ''}>${esc(r.task)}${r.note ? '<span class="fix">*</span>' : ''}</td>
+    <td>${r.people ? fNum(r.people) : ''}</td><td>${fClock(r.begin)}</td><td>${fClock(r.end)}</td>
+    <td>${fDur(r.seconds)}</td><td>${r.hours ? fNum(r.hours) : ''}</td>
+    <td>${r.packaged ? fNum(r.packaged) : ''}</td><td>${r.labeled ? fNum(r.labeled) : ''}</td>
+    <td>${fCents(r.cost)}</td><td>${cpu != null ? fCents(cpu) : ''}</td></tr>`;
+}
+function editRow(date, i, r){
+  const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
+  let opts = '<option value=""' + (r.task?'':' selected') + '>\u2014 pick task \u2014</option>';
+  opts += TASK_TYPES.map(t => '<option'+(t===r.task?' selected':'')+'>'+esc(t)+'</option>').join('');
+  if (r.task && !TASK_TYPES.includes(r.task)) opts += '<option selected>'+esc(r.task)+'</option>';
+  return `<tr class="editrow" data-date="${date}" data-i="${i}">
+    <td class="task${mkClass(r.lo)}"><select data-field="task" class="e-task">${opts}</select></td>
+    <td><input data-field="people" type="number" min="0" step="1" value="${r.people||''}" class="e-n"></td>
+    <td><input data-field="begin" type="time" value="${r.begin||''}" class="e-t"></td>
+    <td><input data-field="end" type="time" value="${r.end||''}" class="e-t"></td>
+    <td class="c-time">${fDur(r.seconds)}</td>
+    <td class="c-hrs">${r.hours ? fNum(r.hours) : ''}</td>
+    <td><input data-field="packaged" type="number" min="0" value="${r.packaged||''}" class="e-n"></td>
+    <td><input data-field="labeled" type="number" min="0" value="${r.labeled||''}" class="e-n"></td>
+    <td class="c-cost">${fCents(r.cost)}</td>
+    <td class="c-cpu">${cpu != null ? fCents(cpu) : ''}<button class="e-del" title="Delete this task">\u2715</button></td>
+  </tr>`;
+}
+// Gantt: a thin axis (earliest -> latest) with a bar per task below it
+function fMinHM(min){ return fClock(String(Math.floor(min/60)).padStart(2,'0')+':'+String(min%60).padStart(2,'0')); }
+function timelineRow(date, es){
+  const timed = es.filter(r => toMin(r.begin)!=null && toMin(r.end)!=null && r.task);
+  if (!timed.length) return `<tr class="tl-row" data-date="${date}"><td colspan="10"><div class="tl-empty">Add task times below to see the day's timeline.</div></td></tr>`;
+  let lo=Infinity, hi=-Infinity;
+  for (const r of timed){ lo=Math.min(lo,toMin(r.begin)); hi=Math.max(hi,toMin(r.end)); }
+  const span = Math.max(hi-lo, 1);
+  const ordered = timed.slice().sort((a,b)=>toMin(a.begin)-toMin(b.begin));
+  const bars = ordered.map((r, idx) => {
+    const b=toMin(r.begin), e=toMin(r.end);
+    const cls = r.lo.includes('void') ? 'void' : (r.lo.includes('rec') ? 'rec' : '');
+    return `<div class="tl-bar ${cls}" style="left:${((b-lo)/span*100).toFixed(2)}%;width:${Math.max((e-b)/span*100,0.6).toFixed(2)}%;top:${idx*10}px" title="${esc(r.task)} \u00B7 ${fClock(r.begin)}\u2013${fClock(r.end)}"></div>`;
+  }).join('');
+  return `<tr class="tl-row" data-date="${date}"><td colspan="10">
+    <div class="tl"><div class="tl-axis"><span>${fMinHM(lo)}</span><span>${fMinHM(hi)}</span></div>
+    <div class="tl-track" style="height:${ordered.length*10+2}px">${bars}</div></div></td></tr>`;
+}
+
 function renderCombined(){
   buildFilterOptions();
   const shown = combinedFiltered();
-  const sorted = [...shown].sort((a,b) =>
-    a.date !== b.date ? (a.date < b.date ? 1 : -1)
-    : (taskRank(a.lo) - taskRank(b.lo)) || (a.begin < b.begin ? -1 : a.begin > b.begin ? 1 : 0));
+  const dateSet = new Set(shown.map(r => r.date));
+  Object.keys(lcEdits).forEach(d => { if (isEditable(d)) dateSet.add(d); });
+  const dates = [...dateSet].sort((a,b) => a<b ? 1 : -1);   // newest first
   const body = document.querySelector('#combinedTable tbody');
-  let html = '', lastDate = null;
-  for (const r of sorted){
-    if (r.date !== lastDate){
-      const [y,m,d] = r.date.split('-').map(Number);
-      const wd = new Date(y, m-1, d).toLocaleDateString('en-US', {weekday:'long'});
-      html += `<tr class="dayhead"><td colspan="10">${fDayMDY(r.date)}<span class="wd">${wd}</span></td></tr>`;
-      lastDate = r.date;
+  let html = '', shownCount = 0;
+  for (const date of dates){
+    const [y,m,d] = date.split('-').map(Number);
+    const wd = new Date(y, m-1, d).toLocaleDateString('en-US', {weekday:'long'});
+    const editable = isEditable(date);
+    html += `<tr class="dayhead${editable?' editday':''}"><td colspan="10">${fDayMDY(date)}<span class="wd">${wd}</span>${editable?'<span class="editbadge">editable</span>':''}</td></tr>`;
+    if (editable){
+      const es = dayEntries(date);
+      html += timelineRow(date, es);
+      es.forEach((r,i) => { html += editRow(date, i, r); });
+      html += `<tr class="addrow"><td colspan="10"><button class="btn sm addtask" data-date="${date}">+ add task</button></td></tr>`;
+      shownCount += es.length;
+    } else {
+      const dayrows = shown.filter(r => r.date === date).sort(taskCmp);
+      for (const r of dayrows) html += readRow(r);
+      shownCount += dayrows.length;
     }
-    const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);   // sheet: K = cost/H if H, else cost/I
-    html += `<tr>
-      <td class="task${mkClass(r.lo)}"${r.note ? ' title="' + esc(r.note) + '"' : ''}>${esc(r.task)}${r.note ? '<span class="fix">*</span>' : ''}</td>
-      <td>${r.people ? fNum(r.people) : ''}</td>
-      <td>${fClock(r.begin)}</td>
-      <td>${fClock(r.end)}</td>
-      <td>${fDur(r.seconds)}</td>
-      <td>${r.hours ? fNum(r.hours) : ''}</td>
-      <td>${r.packaged ? fNum(r.packaged) : ''}</td>
-      <td>${r.labeled ? fNum(r.labeled) : ''}</td>
-      <td>${fCents(r.cost)}</td>
-      <td>${cpu != null ? fCents(cpu) : ''}</td>
-    </tr>`;
   }
   body.innerHTML = html || '<tr><td colspan="10" class="empty">No matching entries</td></tr>';
-  const days = new Set(sorted.map(r => r.date)).size;
-  const fixed = sorted.filter(r => r.note).length;
-  const of = sorted.length !== rows.length ? `${sorted.length} of ${rows.length}` : `${rows.length}`;
+  const fixed = shown.filter(r => r.note).length;
+  const of = shownCount !== rows.length ? `${shownCount} of ${rows.length}` : `${rows.length}`;
   document.getElementById('combinedCount').textContent = rows.length ?
-    `${of} entries \u00B7 ${days} days${fixed ? ' \u00B7 ' + fixed + ' size-corrected (*)' : ''}` : '';
+    `${of} entries \u00B7 ${dates.length} days${fixed ? ' \u00B7 ' + fixed + ' size-corrected (*)' : ''}` : '';
 }
 
 /* ================= date range (calculator) ================= */
