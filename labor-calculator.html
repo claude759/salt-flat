@@ -111,6 +111,11 @@
   table.mini td, table.mini th{padding:5px 10px}
   table.mini td{border-bottom:1px solid rgba(42,47,58,.4)}
   table.mini td.side{color:var(--faint);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+  table.mini tr.rateline td{background:rgba(30,34,43,.45);color:var(--muted);text-align:left;
+    font-size:12px;padding:6px 12px}
+  table.mini tr.rateline td b{color:var(--text)}
+  table.mini tr.rateline.grand td{border-top:1px solid var(--line);color:var(--text);font-weight:600}
+  table.mini tr.mm td:first-child{border-left:2px solid var(--amber, #f08a24)}
 
   /* Labor / Packaging pivot */
   #lpTable th, #lpTable td{padding:6px 9px;font-size:12.5px;border-right:1px solid #333a47}
@@ -982,27 +987,47 @@ function renderCostLb(sel){
 }
 
 /* click a month row -> expand the Combined entries behind it */
-function costlbDetailHTML(entries){
-  const items = [...entries].sort((a,b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
-  const trs = items.map(r => {
-    const gr = gramsFor(r.lo);
-    const side = PACK_RE.test(r.lo) ? 'Packaging' : LABEL_RE.test(r.lo) ? 'Labeling' : '\u2014';
-    return `<tr>
+/* Drill-down mirrors the report's two column groups: a Packaging section and a
+   Labeling section, each ending in a \u03a3 row that must equal the month's numbers,
+   plus the rate math written out \u2014 so the calculation can be audited by eye. */
+function costlbSection(kind, entries){
+  const payRe = kind === 'pack' ? PACK_RE : LABEL_RE;
+  const unitsOf = r => kind === 'pack' ? r.packaged : r.labeled;
+  const label = kind === 'pack' ? 'Packaging' : 'Labeling';
+  const list = entries.filter(r => payRe.test(r.lo) || unitsOf(r) > 0)
+    .sort((a,b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+  let H = 0, P = 0, U = 0, L = 0;
+  const trs = list.map(r => {
+    const pays = payRe.test(r.lo);           // pay/hours bucket = task name
+    const u = unitsOf(r) || 0;               // lbs bucket = units column
+    const lbs = u ? u * gramsFor(r.lo) / LB : 0;
+    if (pays){ H += r.hours || 0; P += r.cost || 0; }
+    U += u; L += lbs;
+    const mm = !pays && u > 0;               // units counted here, pay counted elsewhere
+    return `<tr${mm ? ' class="mm" title="Units land in this bucket, but this task\'s pay is counted in the other one (by task name)"' : ''}>
       <td>${fDayMDY(r.date)}</td>
       <td class="task${mkClass(r.lo)}"${r.note ? ' title="' + esc(r.note) + '"' : ''}>${esc(r.task)}${r.note ? '<span class="fix">*</span>' : ''}</td>
-      <td class="side">${side}</td>
-      <td>${r.hours ? fNum(r.hours) : ''}</td>
-      <td>${fCents(r.cost)}</td>
-      <td>${r.packaged ? fNum(r.packaged) : ''}</td>
-      <td>${r.packaged ? fLb2(r.packaged * gr / LB) : ''}</td>
-      <td>${r.labeled ? fNum(r.labeled) : ''}</td>
-      <td>${r.labeled ? fLb2(r.labeled * gr / LB) : ''}</td>
-    </tr>`;
+      <td>${pays ? fNum(r.hours) : '<span class="faint">\u2014</span>'}</td>
+      <td>${pays ? fCents(r.cost) : '<span class="faint">\u2014</span>'}</td>
+      <td>${u ? fNum(u) : ''}</td>
+      <td>${u ? fLb2(lbs) : ''}</td></tr>`;
   }).join('');
+  const rate = L ? P / L : null;
+  const html = `<tr class="grouphead"><td colspan="6">${label}</td></tr>${trs}
+    <tr class="total"><td colspan="2">\u03a3 ${label} \u2014 must match the month row</td>
+      <td>${fH2(H)}</td><td>${fCents(P)}</td><td>${fInt(U)}</td><td>${fLb2(L)}</td></tr>
+    <tr class="rateline"><td colspan="6">${label} $ / lb = ${fCents(P)} \u00f7 ${fLb2(L)} lbs = <b>${rate != null ? fCents(rate) : '\u2014'}</b></td></tr>`;
+  return {html, rate};
+}
+function costlbDetailHTML(entries){
+  const pack = costlbSection('pack', entries);
+  const lab  = costlbSection('label', entries);
+  const total = (pack.rate != null || lab.rate != null) ? (pack.rate || 0) + (lab.rate || 0) : null;
   return `<tr class="mdetail"><td colspan="11"><div class="mini-wrap"><table class="mini">
-    <thead><tr><th>Day</th><th>Task</th><th>Counted in</th><th>Hrs</th><th>Pay</th>
-    <th>Packaged</th><th>Lbs</th><th>Labeled</th><th>Lbs</th></tr></thead>
-    <tbody>${trs}</tbody></table></div></td></tr>`;
+    <thead><tr><th>Day</th><th>Task</th><th>Hrs</th><th>Pay</th><th>Units</th><th>Lbs</th></tr></thead>
+    <tbody>${pack.html}${lab.html}
+    <tr class="rateline grand"><td colspan="6">Total $ / lb = ${pack.rate != null ? fCents(pack.rate) : '\u2014'} + ${lab.rate != null ? fCents(lab.rate) : '\u2014'} = <b>${total != null ? fCents(total) : '\u2014'}</b></td></tr>
+    </tbody></table></div></td></tr>`;
 }
 for (const id of ['costlbRec','costlbVoid']){
   document.querySelector('#' + id + ' tbody').addEventListener('click', e => {
