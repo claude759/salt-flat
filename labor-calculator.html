@@ -176,6 +176,7 @@
   #combinedTable input.e-t{text-align:left}
   #combinedTable input.e-n:focus,#combinedTable input.e-t:focus{border-color:var(--accent);outline:none}
   #combinedTable td.c-time,#combinedTable td.c-hrs,#combinedTable td.c-cost,#combinedTable td.c-cpu{color:var(--muted)}
+  #combinedTable td.avgcpu{color:var(--faint);white-space:nowrap}
   .e-del{margin-left:8px;border:0;background:none;color:var(--faint);cursor:pointer;font-size:12px}
   .e-del:hover{color:var(--red)}
   #combinedTable tr.addrow td{padding:6px 10px;background:var(--bg)}
@@ -649,7 +650,7 @@ filterEl.onchange = renderCombined;
     const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
     tr.querySelector('.c-time').textContent = fDur(r.seconds);
     tr.querySelector('.c-cost').textContent = fCents(r.cost);
-    tr.querySelector('.c-cpu').childNodes[0].nodeValue = cpu != null ? fCents(cpu) : '';
+    tr.querySelector('.c-cpu').textContent = cpu != null ? fCents(cpu) : '';
     const tl = body.querySelector(`[data-tl="${date}"]`);
     if (tl){ const tmp = document.createElement('div'); tmp.innerHTML = tlWrap(date, arr); tl.replaceWith(tmp.firstElementChild); }
     const brow = body.querySelector(`tr[data-budgetrow="${date}"]`);
@@ -749,7 +750,7 @@ const TASK_TYPES = [
   '3.5g pouch packed (void)','3.5g pouch labeled (void)','3.5g pouch prepped (void)',
 ];
 const NONPACK = 'Non-packaging activity';
-const NCOLS = 9;
+const NCOLS = 10;
 
 /* ---- timesheet bridge: the embedded Distro Hours app posts its entries here ---- */
 let tsEntries = [];
@@ -796,10 +797,29 @@ function addRowHTML(date, es){
     <td></td>
     <td colspan="2" class="ts-cell">${tsCell}</td>
     <td class="used-cell"><b class="${!ts ? '' : ok ? 'ok' : 'bad'}">${used.toFixed(2)}</b></td>
-    <td colspan="4" class="verdict-cell">${verdict}</td>
+    <td colspan="5" class="verdict-cell">${verdict}</td>
   </tr>`;
 }
-const COLHEAD_T = '<tr class="colhead-t"><td>Task</td><td>Ppl</td><td>Begin</td><td>End</td><td>Time</td><td>Packaged</td><td>Labeled</td><td>Cost</td><td>$ / Unit</td></tr>';
+const COLHEAD_T = '<tr class="colhead-t"><td>Task</td><td>Ppl</td><td>Begin</td><td>End</td><td>Time</td><td>Packaged</td><td>Labeled</td><td>Cost</td><td>$ / Unit</td><td title="Mean of each entry\'s cost ÷ units for this task over the last 3 months of data">Avg $ / Unit</td></tr>';
+
+// 3-month per-task benchmark: mean of each entry's cost/units over the trailing
+// 90 days of the synced data (stable while you edit — in-app edits aren't included)
+let _avgMap = new Map();
+function buildAvgMap(){
+  const m = new Map();
+  if (!rows.length) return m;
+  const maxD = rows.map(r => r.date).reduce((a,b) => a>b?a:b);
+  const cut = addDaysISO(maxD, -90);
+  for (const r of rows){
+    if (r.date < cut || !r.task) continue;
+    const u = (r.packaged||0) + (r.labeled||0);
+    if (u <= 0) continue;
+    const e = m.get(r.task) || {n:0, s:0};
+    e.n++; e.s += r.cost/u; m.set(r.task, e);
+  }
+  return m;
+}
+function avgCpuFor(task){ const e = _avgMap.get(task); return e ? e.s/e.n : null; }
 function dayEntries(date){ return lcEdits[date] || rows.filter(r => r.date === date).slice().sort(taskCmp); }
 function ensureEdit(date){ if(!lcEdits[date]) lcEdits[date] = dayEntries(date).map(r => ({...r})); return lcEdits[date]; }
 function blankTask(date){ return {date, task:'', lo:'', people:0, begin:'', end:'', seconds:null, hours:0, packaged:0, labeled:0, cost:0, note:null}; }
@@ -813,12 +833,14 @@ function recomputeRow(r){
 
 function readRow(r){
   const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
+  const avg = avgCpuFor(r.task);
   return `<tr>
     <td class="task${mkClass(r.lo)}"${r.note ? ' title="' + esc(r.note) + '"' : ''}>${esc(r.task)}${r.note ? '<span class="fix">*</span>' : ''}</td>
     <td>${r.people ? fNum(r.people) : ''}</td><td>${fClock(r.begin)}</td><td>${fClock(r.end)}</td>
     <td>${fDur(r.seconds)}</td>
     <td>${r.packaged ? fNum(r.packaged) : ''}</td><td>${r.labeled ? fNum(r.labeled) : ''}</td>
-    <td>${fCents(r.cost)}</td><td>${cpu != null ? fCents(cpu) : ''}</td></tr>`;
+    <td>${fCents(r.cost)}</td><td>${cpu != null ? fCents(cpu) : ''}</td>
+    <td class="avgcpu">${avg != null ? fCents(avg) : ''}</td></tr>`;
 }
 function editRow(date, i, r){
   const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
@@ -835,7 +857,8 @@ function editRow(date, i, r){
     <td><input data-field="packaged" type="number" min="0" value="${r.packaged||''}" class="e-n"></td>
     <td><input data-field="labeled" type="number" min="0" value="${r.labeled||''}" class="e-n"></td>
     <td class="c-cost">${fCents(r.cost)}</td>
-    <td class="c-cpu">${cpu != null ? fCents(cpu) : ''}<button class="e-del" title="Delete this task">\u2715</button></td>
+    <td class="c-cpu">${cpu != null ? fCents(cpu) : ''}</td>
+    <td class="avgcpu">${avgCpuFor(r.task) != null ? fCents(avgCpuFor(r.task)) : ''}<button class="e-del" title="Delete this task">\u2715</button></td>
   </tr>`;
 }
 // Gantt: a thin axis (earliest -> latest) with lane-packed bars, embedded in the day header
@@ -873,6 +896,7 @@ function tlWrap(date, es){
 
 function renderCombined(){
   buildFilterOptions();
+  _avgMap = buildAvgMap();
   const shown = combinedFiltered();
   const dateSet = new Set(shown.map(r => r.date));
   Object.keys(lcEdits).forEach(d => { if (isEditable(d)) dateSet.add(d); });
