@@ -973,6 +973,12 @@ function renderCombined(){
     const editable = isEditable(date);
     const label = `<span class="dh-label">${fDayMDY(date)}<span class="wd">${wd}</span>${editable?'<span class="editbadge">editable</span>':''}</span>`;
     if (editable){
+      // adopt synced rows into app storage on first sight, so an editable day can
+      // never vanish because of a sync fallback, reset, or sheet-side change
+      if (!lcEdits[date]){
+        const fromRows = rows.filter(r => r.date === date);
+        if (fromRows.length){ lcEdits[date] = fromRows.map(r => ({...r})).sort(taskCmp); saveEdits(); }
+      }
       const es = dayEntries(date);
       html += `<tr class="dayhead editday"><td colspan="${NCOLS}"><div class="dh-flex">${label}${tlWrap(date, es)}</div></td></tr>`;
       html += COLHEAD_T;
@@ -1579,8 +1585,10 @@ dataBadgeEl.addEventListener('click', e => { if (!e.target.closest('#resetData')
 
 function maybeAutoSync(){
   if (gsAvailable()){ syncNow(false); return; }
-  // silently refresh as the signed-in user (no popup); first-time consent waits for a manual Sync
-  syncViaSheetsApi(false).catch(function(){});
+  // silently refresh as the signed-in user (no popup); first-time consent waits for a manual Sync.
+  // If it can't connect AND we're showing snapshot-only data, say so instead of failing quietly.
+  const hint = ok => { if (!ok && !source) toast('Live sheet data isn\'t connected — click the data badge (top right) to reconnect.', true); };
+  syncViaSheetsApi(false).then(hint).catch(function(){ hint(false); });
 }
 
 /* ================= data updating (drag-drop a .xlsx / .csv export) ================= */
@@ -1784,6 +1792,21 @@ function boot(){
     const lp = JSON.parse(localStorage.getItem(LS_LP_KEY) || 'null');
     if (lp && Array.isArray(lp.blocks) && lp.blocks.length){ lpBlocks = lp.blocks; lpSource = lp.source || {label:'saved locally'}; }
   }catch(_){}
+  // one-time recovery: 7/8's tasks (entered 2026-07-08) if neither app storage nor the data has them
+  if (!lcEdits['2026-07-08'] && !rows.some(r => r.date === '2026-07-08')){
+    const seed = [
+      ['1g pre-roll produced (rec)', 7, '11:30', '13:30', 500, 0],
+      ['5pk (.7g) pre-roll produced(rec)', 7, '14:20', '17:20', 1000, 0],
+      ['1.5g budtender samples (labeled)(rec)', 2, '10:00', '10:20', 0, 150],
+      ['3.5g jar labeled (void)', 3, '15:20', '16:00', 0, 128],
+      ['3.5g pouch packed (void)', 3, '10:00', '12:00', 128, 0],
+      ['3.5g pouch labeled (void)', 3, '13:00', '15:20', 0, 814],
+    ].map(([task, people, begin, end, packaged, labeled]) => {
+      const r = {date:'2026-07-08', task, lo:task.toLowerCase(), people, begin, end, seconds:null, hours:0, packaged, labeled, cost:0, note:null};
+      recomputeRow(r); return r;
+    });
+    lcEdits['2026-07-08'] = seed; saveEdits();
+  }
   buildPresets();
   const [s,e] = PRESETS.find(p => p.id === 'all').range();
   startEl.value = s; endEl.value = e; setActiveChip('all');
