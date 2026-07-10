@@ -655,7 +655,7 @@ filterEl.onchange = renderCombined;
   function rowOf(el){ const tr = el.closest('tr.editrow'); if(!tr) return null;
     const date=tr.dataset.date, i=+tr.dataset.i; const arr=ensureEdit(date); return {tr,date,i,r:arr[i],arr}; }
   function refreshDerived(ctx){   // update the changed row's computed cells + this day's timeline, no full re-render
-    const {tr,r,date,arr}=ctx; recomputeRow(r); saveEdits();
+    const {tr,r,date,arr}=ctx; recomputeRow(r); saveEdits(); markDirtyDay(date);
     const cpu = r.packaged ? r.cost/r.packaged : (r.labeled ? r.cost/r.labeled : null);
     tr.querySelector('.c-time').textContent = fDur(r.seconds);
     tr.querySelector('.c-cost').textContent = fCents(r.cost);
@@ -674,14 +674,14 @@ filterEl.onchange = renderCombined;
   body.addEventListener('change', e => {
     if (e.target.dataset && e.target.dataset.field==='task'){
       const ctx = rowOf(e.target); if(!ctx || !ctx.r) return;
-      ctx.r.task = e.target.value; recomputeRow(ctx.r); saveEdits(); renderCombined();  // task change repaints color/rank
+      ctx.r.task = e.target.value; recomputeRow(ctx.r); saveEdits(); markDirtyDay(ctx.date); renderCombined();  // task change repaints color/rank
     }
   });
   body.addEventListener('click', e => {
     const add = e.target.closest('.addtask');
-    if (add){ const date=add.dataset.date; ensureEdit(date).push(blankTask(date)); saveEdits(); renderCombined(); return; }
+    if (add){ const date=add.dataset.date; ensureEdit(date).push(blankTask(date)); saveEdits(); markDirtyDay(date); renderCombined(); return; }
     const del = e.target.closest('.e-del');
-    if (del){ const ctx = rowOf(del); if(ctx){ ctx.arr.splice(ctx.i,1); saveEdits(); renderCombined(); } }
+    if (del){ const ctx = rowOf(del); if(ctx){ ctx.arr.splice(ctx.i,1); saveEdits(); markDirtyDay(ctx.date); renderCombined(); } }
   });
   // hovering a timeline bar glows the bar and the task row it came from
   body.addEventListener('mouseover', e => {
@@ -703,7 +703,7 @@ filterEl.onchange = renderCombined;
     const arr = ensureEdit(sel.dataset.date);
     const r = blankTask(sel.dataset.date);
     r.task = NONPACK; r.begin = b; r.end = en; r.people = +ppl || 1;
-    recomputeRow(r); arr.push(r); saveEdits(); renderCombined();
+    recomputeRow(r); arr.push(r); saveEdits(); markDirtyDay(sel.dataset.date); renderCombined();
   });
 })();
 
@@ -775,17 +775,136 @@ let tsEntries = [];
 try{ tsEntries = JSON.parse(localStorage.getItem('laborcalc.ts.v1') || '[]') || []; }catch(_){ tsEntries = []; }
 window.addEventListener('message', e => {
   const d = e.data;
-  if (!d || d.type !== 'wt-hours' || !Array.isArray(d.entries)) return;
+  if (!d || !d.type) return;
   let host = ''; try{ host = new URL(e.origin).hostname; }catch(_){ return; }
   const trusted = host.endsWith('.googleusercontent.com') || host === 'script.google.com' || e.origin === location.origin;
   if (!trusted) return;
-  const firstConnect = !window.__tsAnnounced;
-  window.__tsAnnounced = true;
-  tsEntries = d.entries;
-  try{ localStorage.setItem('laborcalc.ts.v1', JSON.stringify(tsEntries)); }catch(_){}
-  renderCombined();
-  if (firstConnect) toast(`Timesheet hours connected · ${tsEntries.length} entries`);
+  if (d.type === 'wt-hours' && Array.isArray(d.entries)){
+    hoursPort = { win: e.source, origin: e.origin };   // keep the reply channel to the Hours frame
+    const firstConnect = !window.__tsAnnounced;
+    window.__tsAnnounced = true;
+    tsEntries = d.entries;
+    try{ localStorage.setItem('laborcalc.ts.v1', JSON.stringify(tsEntries)); }catch(_){}
+    renderCombined();
+    if (firstConnect) toast(`Timesheet hours connected · ${tsEntries.length} entries`);
+    if (trkDirty.days.size || trkDirty.notes.size) schedulePush();
+  } else if (d.type === 'wt-tracker'){
+    onSharedState(e, d);
+  } else if (d.type === 'wt-tracker-error'){
+    if (!d.req || (trkPending && d.req === trkPending.req)){   // ignore errors for saves we already gave up on
+      trkPending = null;   // stays dirty
+      toast('Couldn’t save shared task data — retrying shortly.', true);
+      setTimeout(schedulePush, 30000);
+    }
+  }
 });
+
+/* ---- shared task store: editable days + LP notes live in the Distro Hours
+   backend so the whole team sees the same entries. The embedded Hours frame is
+   the relay: we post 'wt-tracker-save' to it, it writes through Apps Script
+   (as the signed-in @wizardtrees user) and answers 'wt-tracker' with the full
+   shared state + an ack. localStorage stays on as the offline cache; a day you
+   just edited locally always wins until the shared store confirms it. ---- */
+let hoursPort = null;                                     // reply channel to the Hours frame
+// dirty = local changes the shared store hasn't confirmed; stamps = when each
+// was last edited (per-date last-writer-wins across the team). Persisted so an
+// edit made just before the tab closed still pushes — and still wins the
+// merge — in the next session.
+let trkDirty = { days: new Set(), notes: new Set(), dayStamps: {}, noteStamps: {} };
+try{
+  const s = JSON.parse(localStorage.getItem('laborcalc.trkdirty.v1') || 'null');
+  if (s) trkDirty = { days: new Set(s.days || []), notes: new Set(s.notes || []),
+                      dayStamps: s.dayStamps || {}, noteStamps: s.noteStamps || {} };
+}catch(_){}
+let trkPending = null, trkReq = 0, trkSeenShared = false, trkPushTimer = null, trkRev = '';
+function saveDirty(){ try{ localStorage.setItem('laborcalc.trkdirty.v1', JSON.stringify({
+  days: [...trkDirty.days], notes: [...trkDirty.notes],
+  dayStamps: trkDirty.dayStamps, noteStamps: trkDirty.noteStamps })); }catch(_){} }
+function markDirtyDay(date){
+  trkDirty.days.add(date); trkDirty.dayStamps[date] = new Date().toISOString();
+  if (trkPending) trkPending.days.delete(date);   // the in-flight save no longer covers this date
+  saveDirty(); schedulePush();
+}
+function markDirtyNote(date){
+  trkDirty.notes.add(date); trkDirty.noteStamps[date] = new Date().toISOString();
+  if (trkPending) trkPending.notes.delete(date);
+  saveDirty(); schedulePush();
+}
+function schedulePush(){ clearTimeout(trkPushTimer); trkPushTimer = setTimeout(pushShared, 900); }
+function pushShared(){
+  if (!hoursPort || trkPending || (!trkDirty.days.size && !trkDirty.notes.size)) return;
+  const days = {}, notes = {}, dayStamps = {}, noteStamps = {};
+  trkDirty.days.forEach(d => {
+    if (!lcEdits[d]){ trkDirty.days.delete(d); return; }   // nothing to push for this date
+    days[d] = lcEdits[d].map(slimTask); dayStamps[d] = trkDirty.dayStamps[d] || '';
+  });
+  trkDirty.notes.forEach(d => { notes[d] = lpNotes[d] == null ? '' : lpNotes[d]; noteStamps[d] = trkDirty.noteStamps[d] || ''; });
+  if (!Object.keys(days).length && !Object.keys(notes).length){ saveDirty(); return; }
+  const req = ++trkReq;
+  trkPending = { req, days: new Set(Object.keys(days)), notes: new Set(Object.keys(notes)) };
+  try{ hoursPort.win.postMessage({type:'wt-tracker-save', days, notes, dayStamps, noteStamps, req}, hoursPort.origin); }
+  catch(_){ trkPending = null; return; }
+  setTimeout(() => {   // no ack (frame reloaded, reply lost, ...): free the lane and retry.
+    // the per-date stamps make retrying safe — the server drops writes older than what it holds
+    if (trkPending && trkPending.req === req){ trkPending = null; schedulePush(); }
+  }, 20000);
+}
+function slimTask(r){ return { date:r.date, task:r.task, people:r.people, begin:r.begin, end:r.end,
+  seconds:r.seconds, hours:r.hours, packaged:r.packaged, labeled:r.labeled, cost:r.cost, note:r.note == null ? null : r.note }; }
+function onSharedState(e, d){
+  hoursPort = { win: e.source, origin: e.origin };
+  if (d.ack && trkPending && d.ack === trkPending.req){
+    trkPending.days.forEach(x => trkDirty.days.delete(x));
+    trkPending.notes.forEach(x => trkDirty.notes.delete(x));
+    trkPending = null; saveDirty();
+  }
+  // a slow load can deliver a snapshot read BEFORE a save that already acked;
+  // rev (the store's newest write time) lets us drop such stale states outright
+  if (d.rev && trkRev && String(d.rev) < trkRev){
+    if (trkDirty.days.size || trkDirty.notes.size) schedulePush();
+    return;
+  }
+  if (d.rev) trkRev = String(d.rev);
+  const days = d.days || {}, notes = d.notes || {};
+  // sanitize at the boundary (fields land in HTML attributes) but do NOT
+  // recompute: the sender's derived fields are the truth (adopted sheet rows
+  // keep sheet-computed cost/seconds that recomputeRow would flatten)
+  const hm = v => /^\d{1,2}:\d{2}$/.test(String(v == null ? '' : v).trim()) ? String(v).trim() : '';
+  for (const date in days){                    // shared wins unless we hold an unconfirmed local edit
+    if (trkDirty.days.has(date)) continue;
+    lcEdits[date] = (days[date] || []).map(r => ({
+      date, task: String(r.task || ''), lo: String(r.task || '').toLowerCase(),
+      people: +r.people || 0, begin: hm(r.begin), end: hm(r.end),
+      seconds: r.seconds == null || r.seconds === '' ? null : (+r.seconds || 0),
+      hours: +r.hours || 0, packaged: +r.packaged || 0, labeled: +r.labeled || 0,
+      cost: +r.cost || 0, note: r.note == null ? null : String(r.note),
+    }));
+  }
+  for (const date in notes){
+    if (trkDirty.notes.has(date)) continue;
+    lpNotes[date] = String(notes[date]);   // '' is a real override (it hides the sheet note)
+  }
+  saveEdits(); saveLpNotes();
+  if (!trkSeenShared){                         // first shared state: migrate local-only days/notes up
+    trkSeenShared = true;
+    const now = new Date().toISOString();
+    Object.keys(lcEdits).forEach(dd => { if (!(dd in days)){ trkDirty.days.add(dd); trkDirty.dayStamps[dd] = trkDirty.dayStamps[dd] || now; } });
+    Object.keys(lpNotes).forEach(dd => { if (!(dd in notes)){ trkDirty.notes.add(dd); trkDirty.noteStamps[dd] = trkDirty.noteStamps[dd] || now; } });
+    saveDirty();
+    toast('Shared task storage connected');
+  }
+  if (trkDirty.days.size || trkDirty.notes.size) schedulePush();
+  // don't yank the table out from under someone mid-keystroke; the merged
+  // data is saved and shows on the next natural re-render
+  const el = document.activeElement;
+  const editing = el && el.closest && el.closest('#combinedTable, #lpTable');
+  if (!editing){ renderCombined(); renderLaborPack(); }
+}
+setInterval(() => {   // periodic tick: flush anything unshared, else re-pull to stay converged
+  if (!hoursPort) return;
+  if (trkDirty.days.size || trkDirty.notes.size){ if (!trkPending) schedulePush(); return; }
+  if (!trkPending){ try{ hoursPort.win.postMessage({type:'wt-tracker-pull'}, hoursPort.origin); }catch(_){} }
+}, 5*60*1000);
 // the day's distro-timesheet summary: earliest in, latest out, total person-hours
 function tsDay(date){
   const es = tsEntries.filter(t => t.work_date === date && (t.category || 'distro') === 'distro');
@@ -977,7 +1096,12 @@ function renderCombined(){
       // never vanish because of a sync fallback, reset, or sheet-side change
       if (!lcEdits[date]){
         const fromRows = rows.filter(r => r.date === date);
-        if (fromRows.length){ lcEdits[date] = fromRows.map(r => ({...r})).sort(taskCmp); saveEdits(); }
+        if (fromRows.length){
+          lcEdits[date] = fromRows.map(r => ({...r})).sort(taskCmp); saveEdits();
+          // adopted after the shared store spoke: propagate it (before: the
+          // first-shared-state migration decides, so we never stomp the store)
+          if (trkSeenShared) markDirtyDay(date);
+        }
       }
       const es = dayEntries(date);
       html += `<tr class="dayhead editday"><td colspan="${NCOLS}"><div class="dh-flex">${label}${tlWrap(date, es)}</div></td></tr>`;
@@ -1282,11 +1406,12 @@ function renderReports(){
    a sheet-provided note is the starting value until overridden */
 let lpNotes = {};
 try{ lpNotes = JSON.parse(localStorage.getItem('laborcalc.lpnotes.v1') || '{}') || {}; }catch(_){ lpNotes = {}; }
+function saveLpNotes(){ try{ localStorage.setItem('laborcalc.lpnotes.v1', JSON.stringify(lpNotes)); }catch(_){} }
 function lpNoteFor(date, sheetNote){ return lpNotes[date] !== undefined ? lpNotes[date] : (sheetNote || ''); }
 document.querySelector('#lpTable tbody').addEventListener('input', e => {
   const inp = e.target.closest('input.lp-note'); if (!inp) return;
   lpNotes[inp.dataset.date] = inp.value;
-  try{ localStorage.setItem('laborcalc.lpnotes.v1', JSON.stringify(lpNotes)); }catch(_){}
+  saveLpNotes(); markDirtyNote(inp.dataset.date);
 });
 /* Split the sheet's combined "1.5g/1.0g pre-roll" columns into 1.5g vs 1g,
    using the same email-derived rules as the Tasks-page corrections. Values
