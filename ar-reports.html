@@ -149,6 +149,7 @@
   .b3{background:#4a2012;color:#ff9d6e}
   .b4{background:#4a1418;color:#ff9aa0}
   .money{font-variant-numeric:tabular-nums}
+  td.addr{max-width:230px;white-space:normal;font-size:12px;color:var(--muted)}
   .neg{color:var(--muted)}
   /* Customer Tiers */
   td.over-link{cursor:pointer}
@@ -1152,6 +1153,7 @@ function applyShared(d){
       $('#reports').classList.remove('hidden'); renderSku(); any=true;
     }
     if(data.visits && data.visits.length){ VISIT_EVENTS=visitsFromWire(data.visits); any=true; }
+    if(data.custDir) CUST_DIR=custDirFromWire(data.custDir);   // customer directory (legal name / address / license)
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
@@ -1207,6 +1209,7 @@ async function publishToTeam(){
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
     if(VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
+    if(CUST_DIR && Object.keys(CUST_DIR).length) cur.custDir=custDirToWire(CUST_DIR);  // additive; customer directory persists like visits
     if(NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     if(NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
@@ -1255,7 +1258,7 @@ function handleFiles(fileList){
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); }
+      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); buildCustDir(); }
     };
     reader.readAsText(f);
   });
@@ -1270,7 +1273,7 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); buildCustDir(); });
 }
 
 /* ============================ Build model ============================ */
@@ -3489,6 +3492,34 @@ $('#tier-export').onclick=()=>{
 // downloads the sheet as .xlsx, flattens every "…SCHEDULE…" tab's daily tables into
 // field-schedule.csv (lib/schedule.mjs), and the app keeps only rows whose Sales Order
 // Notes / Distro Team Notes mention PAD, EDU, or education.
+// Customer directory: tierNorm(name) → {dba, legal, address, license, region}. Sourced ONLY
+// from Nabis (Site = "DBA [LEGAL ENTITY]", Site Address, Retailer License) — Distru's exports
+// carry no address/legal name, so Distru-only accounts have no entry (blank, honestly). Keyed
+// by the SAME tierNorm used to merge customers, so it attaches to the merged report row. Carried
+// in the published payload (additive, like visits) so shared viewers see it without the raw files.
+let CUST_DIR={};
+function buildCustDir(){
+  const dir={};
+  const scan=(rows,dateCol)=>{ if(!rows) return; rows.forEach(r=>{
+    const raw=(r['Site']||'').trim(); if(!raw || isOwnEntity(raw)) return;
+    const key=tierNorm(raw); if(!key) return;
+    const dba=raw.replace(/\s*\[[^\]]*\]\s*$/,'').trim();
+    const m=raw.match(/\[([^\]]*)\]\s*$/); const legal=m?m[1].trim():'';
+    const address=(r['Site Address']||'').trim(), license=(r['Retailer License']||'').trim(), region=(r['Region']||'').trim();
+    const d=parseDate(r[dateCol]); const t=d?d.getTime():0;
+    const cur=dir[key];
+    if(!cur){ dir[key]={dba,legal,address,license,region,_d:t}; }
+    else if(t>=cur._d){ dir[key]={dba:dba||cur.dba, legal:legal||cur.legal, address:address||cur.address, license:license||cur.license, region:region||cur.region, _d:t}; }
+    else { if(!cur.legal&&legal)cur.legal=legal; if(!cur.address&&address)cur.address=address; if(!cur.license&&license)cur.license=license; if(!cur.region&&region)cur.region=region; }
+  }); };
+  scan(FILES.nabis_detail && FILES.nabis_detail.data, 'Delivery Date');   // richest source (has Region/POC)
+  scan(FILES.nabis_brand  && FILES.nabis_brand.data,  'Delivery Date');   // fallback / fill blanks
+  CUST_DIR=dir;
+}
+function custInfo(name){ return CUST_DIR[tierNorm(name)]||{}; }
+function custDirToWire(dir){ const o={}; for(const k in dir){ const v=dir[k]; o[k]=[v.dba||'',v.legal||'',v.address||'',v.license||'',v.region||'']; } return o; }
+function custDirFromWire(o){ const d={}; if(o) for(const k in o){ const a=o[k]||[]; d[k]={dba:a[0]||'',legal:a[1]||'',address:a[2]||'',license:a[3]||'',region:a[4]||'',_d:0}; } return d; }
+
 let VISIT_EVENTS=[];   // {d:ms, c:account, pad:bool, edu:bool, note} — keyword-matched rows only
 const VISIT_PAD_RE=/\bPADs?\b/i;                 // PAD / PADs / pad — word-bounded (won't catch "padded")
 const VISIT_EDU_RE=/\bEDUs?\b|educat/i;          // EDU / edu / education / educate / educations
@@ -3709,10 +3740,13 @@ function customersData(){
     const g=acc[key]||(acc[key]={names:{},src:{},orders:0,net:0,first:null,last:null});
     g.names[o.cust]=(g.names[o.cust]||0)+Math.abs(o.net); g.src[o.src]=true; g.orders++; g.net+=o.net;
     if(g.first==null||o.date<g.first)g.first=o.date; if(g.last==null||o.date>g.last)g.last=o.date; });
-  return {start,end,rows:Object.values(acc).filter(g=>Math.abs(g.net)>0.005).map(g=>({
-    name:Object.entries(g.names).sort((a,b)=>b[1]-a[1])[0][0],
-    channel:g.src.LeafLink?'LeafLink':(g.src.Distru&&g.src.Nabis?'Distru + Nabis':g.src.Distru?'Distru':'Nabis'),
-    orders:g.orders, net:g.net, first:g.first, last:g.last }))};
+  return {start,end,rows:Object.values(acc).filter(g=>Math.abs(g.net)>0.005).map(g=>{
+    const name=Object.entries(g.names).sort((a,b)=>b[1]-a[1])[0][0];
+    const info=custInfo(name);   // legal name / address / license / region (Nabis-sourced; blank for Distru-only)
+    return {
+      name, legal:info.legal||'', address:info.address||'', license:info.license||'', region:info.region||'',
+      channel:g.src.LeafLink?'LeafLink':(g.src.Distru&&g.src.Nabis?'Distru + Nabis':g.src.Distru?'Distru':'Nabis'),
+      orders:g.orders, net:g.net, first:g.first, last:g.last }; })};
 }
 function renderCustomers(){
   const wrap=$('#cust-wrap'), note=$('#cust-note'); if(!wrap) return;
@@ -3723,25 +3757,34 @@ function renderCustomers(){
   const k=custSort.key,dir=custSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.net-a.net); });
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
-  const cols=[['name','Customer',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]];
+  const cols=APP_STATE==='NY'
+    ? [['name','Customer',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]]
+    : [['name','Customer',0],['legal','Legal name (DBA)',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]];
+  const showDir=APP_STATE!=='NY';
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
-  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders + contents"><td>${esc(r.name)}</td><td><span class="src ${r.channel.replace(/[^A-Za-z]/g,'')}">${esc(r.channel)}</span></td>
+  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders + contents"><td>${esc(r.name)}</td>${showDir?`<td>${esc(r.legal||'—')}</td><td class="addr">${esc(r.address||'—')}</td>`:''}<td><span class="src ${r.channel.replace(/[^A-Za-z]/g,'')}">${esc(r.channel)}</span></td>
     <td class="num">${r.orders}</td><td class="num money">${fmt$(r.net)}</td><td class="num">${fmtD(r.first)}</td><td class="num">${fmtD(r.last)}</td></tr>`).join('');
   const tot=view.reduce((a,r)=>({net:a.net+r.net,orders:a.orders+r.orders}),{net:0,orders:0});
   const nD=view.filter(r=>r.channel==='Distru').length, nN=view.filter(r=>r.channel==='Nabis').length, nB=view.filter(r=>r.channel==='Distru + Nabis').length;
   wrap.innerHTML=`<table id="cust-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td colspan="2">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
+    <tfoot><tr class="totals"><td colspan="${showDir?4:2}">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
-    if(custSort.key===key) custSort.dir*=-1; else custSort={key,dir:(key==='name'||key==='channel')?1:-1}; renderCustomers(); });
+    if(custSort.key===key) custSort.dir*=-1; else custSort={key,dir:(['name','legal','address','channel'].includes(key))?1:-1}; renderCustomers(); });
   note.innerHTML=APP_STATE==='NY'
     ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). Click a row for the customer's orders and contents.`
     : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name.`;
 }
 $('#cust-export').onclick=()=>{
   const {rows}=customersData(); const q=(($('#cust-search')||{}).value||'').trim().toLowerCase();
-  const out=[['Customer','Channel','Orders','Net Revenue','First order','Last order']];
+  const ny=APP_STATE==='NY';
+  const out=[ny
+    ? ['Customer','Channel','Orders','Net Revenue','First order','Last order']
+    : ['Customer (DBA)','Legal name','Address','Retailer License','Region','Channel','Orders','Net Revenue','First order','Last order']];
   (q?rows.filter(r=>r.name.toLowerCase().includes(q)):rows).sort((a,b)=>b.net-a.net)
-    .forEach(r=>out.push([r.name,r.channel,r.orders,r.net.toFixed(2),r.first?new Date(r.first).toISOString().slice(0,10):'',r.last?new Date(r.last).toISOString().slice(0,10):'']));
+    .forEach(r=>{ const d=r.first?new Date(r.first).toISOString().slice(0,10):'', l=r.last?new Date(r.last).toISOString().slice(0,10):'';
+      out.push(ny
+        ? [r.name,r.channel,r.orders,r.net.toFixed(2),d,l]
+        : [r.name,r.legal||'',r.address||'',r.license||'',r.region||'',r.channel,r.orders,r.net.toFixed(2),d,l]); });
   downloadCSV('customers-by-channel.csv',out);
 };
 
