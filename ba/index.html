@@ -265,7 +265,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.6';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.7';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -342,6 +342,8 @@ function matchDispByText(text){
   }
   return null;
 }
+// everything a store can be found by in a picker search: trade name, legal/DBA name, address
+function dispSearchText(d){ return [d.name, d.legal_name, d.address].filter(Boolean).join(' '); }
 // a typed store NAME → that store's saved street address (for distance calcs the
 // geocoder can trust — ORS can't reliably geocode business names)
 function dispAddrByText(text){
@@ -429,7 +431,7 @@ function dispChipsHtml(selectedIds, opts={}){
     <button type="button" class="msel-toggle"><span class="msel-sum">${sum}</span><span class="msel-caret">▾</span></button>
     <div class="msel-menu hide">
       <input class="msel-search" type="text" placeholder="🔍 Type to search stores…" autocomplete="off">
-      ${all.map(d=>`<label class="msel-opt"><input type="checkbox" data-id="${d.id}" data-name="${esc(d.name)}" ${sel.has(d.id)?'checked':''}><span>${esc(d.name)}</span></label>`).join('')}
+      ${all.map(d=>`<label class="msel-opt"><input type="checkbox" data-id="${d.id}" data-name="${esc(d.name)}" data-search="${esc(dispSearchText(d))}" ${sel.has(d.id)?'checked':''}><span>${esc(d.name)}</span></label>`).join('')}
       <div class="msel-none small muted hide" style="padding:9px 10px">No stores match.</div>
     </div>
   </div>`;
@@ -442,7 +444,9 @@ function wireDispChips(id){
     const q=(search?.value||'').trim().toLowerCase();
     let shown=0;
     root.querySelectorAll('.msel-opt').forEach(o=>{
-      const hit=!q || (o.querySelector('input')?.dataset.name||'').toLowerCase().includes(q);
+      const inp=o.querySelector('input');
+      const hay=((inp?.dataset.search||inp?.dataset.name)||'').toLowerCase();   // name + DBA + address
+      const hit=!q || q.split(/\s+/).every(t=>hay.includes(t));
       o.classList.toggle('hide',!hit); if(hit) shown++;
     });
     if(noneEl) noneEl.classList.toggle('hide', shown>0);
@@ -705,7 +709,7 @@ function searchifySelect(sel, title){
   sel.addEventListener('change', label);
   const NONE='~none~';
   btn.onclick=()=>cellPickerSheet({ title, multi:false,
-    options:[...sel.options].map(o=>({id:o.value===''?NONE:o.value, name:o.text})),
+    options:[...sel.options].map(o=>({id:o.value===''?NONE:o.value, name:o.text, search:o.dataset.search||undefined})),
     selected: sel.value===''?[NONE]:[sel.value],
     onSave:ids=>{ const v=ids[0];
       if(v===undefined) return;                                        // unchecked current = no change
@@ -1207,7 +1211,7 @@ function fixItemSheet(kind, id){
   trip ? fixTripSheet(x) : fixExpenseSheet(x);
 }
 function fixTripSheet(x){
-  const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   const iss = itemIssues({...x,_k:'trip'});
   const needDisp = !x.dispensary_id, needMiles = !(Number(x.miles)>0);
   openSheet(`
@@ -1317,7 +1321,7 @@ function fixTripSheet(x){
   };
 }
 function fixExpenseSheet(x){
-  const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   const cats = EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
   const iss = itemIssues({...x,_k:'exp'});
   const needDisp=!x.dispensary_id, needAmt=!(Number(x.amount)>0), needRec=!x.receipt_path;
@@ -1643,7 +1647,7 @@ function wireGridRow(tr, mode){
     } else {
       const multi=btn.dataset.multi==='1';
       cellPickerSheet({ title:multi?'Dispensaries (select all that apply)':'Dispensary', multi,
-        options: baDispensaries().filter(d=>d.active!==false).slice().sort(dispSort).map(d=>({id:d.id,name:d.name})),   // region-scoped: NY BAs never see CA stores
+        options: baDispensaries().filter(d=>d.active!==false).slice().sort(dispSort).map(d=>({id:d.id,name:d.name,search:dispSearchText(d)})),   // region-scoped; searchable by name/DBA/address
         selected: (btn.dataset.ids||'').split(',').filter(Boolean),
         onSave:ids=>{ btn.dataset.ids=ids.join(','); const l=dispCellLabelText(ids); btn.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; btn.classList.remove('needs'); scheduleAutosave(tr,mode); } });
     }
@@ -1797,8 +1801,10 @@ function cellPickerSheet({title, options, selected, multi, onSave}){
   let sel=new Set((selected||[]).filter(Boolean));
   const draw=()=>{
     const q=($('#pkSearch')?.value||'').trim().toLowerCase();
+    const toks=q.split(/\s+/).filter(Boolean);
+    const hay=o=>((o.search||o.name)||'').toLowerCase();   // options may carry extra searchable text (DBA, address)
     const chosen=options.filter(o=>sel.has(o.id)), rest=options.filter(o=>!sel.has(o.id));
-    const list=[...chosen,...rest].filter(o=>!q||o.name.toLowerCase().includes(q));
+    const list=[...chosen,...rest].filter(o=>!toks.length||toks.every(t=>hay(o).includes(t)));
     const el=$('#pkList'); if(!el) return;
     el.innerHTML = list.length ? list.map(o=>`<label class="msel-opt"><input type="checkbox" data-id="${esc(o.id)}" ${sel.has(o.id)?'checked':''}><span>${esc(o.name)}</span></label>`).join('')
       : '<div class="small muted" style="padding:9px 10px">No matches.</div>';
@@ -2575,7 +2581,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
   const x = preloaded || (await supabase.from(table).select('*').eq('id',id).single()).data;
   if(!x){ toast('Could not load item — try again','err'); return; }
   const allDisp = [...(state.dispensaries||[])].sort(dispSort);
-  const dispOpts = `<option value="">— none —</option>`+allDisp.map(d=>`<option value="${d.id}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
+  const dispOpts = `<option value="">— none —</option>`+allDisp.map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   if(kind==='trip'){
     openSheet(`
       <h3>Edit trip <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
