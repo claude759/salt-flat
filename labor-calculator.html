@@ -255,6 +255,8 @@
     background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 16px;
     box-shadow:var(--shadow);font-size:13px;max-width:90vw}
   #toast.err{border-color:var(--red)}
+  #toast.act{cursor:pointer;border-color:var(--accent);color:var(--text)}
+  #toast.act:hover{background:var(--panel)}
   #toast.on{display:block}
 
   @media (max-width:640px){
@@ -330,7 +332,6 @@
       <button class="tab" data-tab="timesheets">Timesheets</button>
     </nav>
     <div class="spacer"></div>
-    <div class="badge" id="dataBadge"><span class="dot" id="dataDot"></span><span id="dataInfo"></span></div>
     <button class="btn" id="signOutBtn" title="Sign out of this device" onclick="signOut()">Sign out</button>
   </div>
 </header>
@@ -1710,32 +1711,24 @@ function lpSyncHeaderOffset(){
   });
 }
 
-function renderAll(){ renderCombined(); renderLaborPack(); renderReports(); updateBadge(); }
+function renderAll(){ renderCombined(); renderLaborPack(); renderReports(); }
 
-function updateBadge(){
-  const info = document.getElementById('dataInfo');
-  const dot  = document.getElementById('dataDot');
-  const maxDate = rows.length ? rows.map(r => r.date).reduce((a,b) => a>b?a:b) : null;
-  let txt = maxDate ? `Data through ${fDate(maxDate)} \u00B7 ${rows.length} entries` : 'No data';
-  let src = source ? source.label : 'snapshot';
-  dot.className = 'dot' + (source ? '' : ' stale');
-  info.innerHTML = esc(txt) + ` <span class="faint">(${esc(src)})</span>` +
-    (source ? ` <button title="Reset to built-in snapshot" id="resetData">\u2715</button>` : '');
-  const btn = document.getElementById('resetData');
-  if (btn) btn.onclick = () => {
-    try{ localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_LP_KEY); }catch(_){}
-    source = null; rows = hydrate(BUILTIN);
-    lpSource = null; lpBlocks = LABORPACK;
-    toast('Reset to built-in snapshot'); renderAll();
-  };
-}
+// Reset to the built-in snapshot (drops the locally-cached live sync). No longer
+// on a visible badge; kept reachable from the console for the rare corrupt-cache case.
+window.resetTrackerData = function(){
+  try{ localStorage.removeItem(LS_KEY); localStorage.removeItem(LS_LP_KEY); }catch(_){}
+  source = null; rows = hydrate(BUILTIN);
+  lpSource = null; lpBlocks = LABORPACK;
+  toast('Reset to built-in snapshot'); renderAll();
+};
 
 /* ================= toast ================= */
 let toastTimer;
-function toast(msg, isErr){
+function toast(msg, isErr, onClick){
   const t = document.getElementById('toast');
-  t.textContent = msg; t.className = 'on' + (isErr ? ' err' : '');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = '', 5200);
+  t.textContent = msg; t.className = 'on' + (isErr ? ' err' : '') + (onClick ? ' act' : '');
+  t.onclick = onClick ? () => { t.className = ''; t.onclick = null; onClick(); } : null;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.className = ''; t.onclick = null; }, onClick ? 12000 : 5200);
 }
 
 /* ================= live sync ================= */
@@ -1749,6 +1742,7 @@ function gsRun(fn){
 }
 function ingestParsed(parsed, label, manual){
   if (!parsed || parsed.length < 20) return false;   // wrong tab / truncated - don't clobber
+  if (!manual && userLoadedFile) return false;       // don't let a late background sync overwrite a file the user just dropped
   const changed = parsed.length !== rows.length ||
     (parsed.length && rows.length && parsed[parsed.length-1].date !== rows.map(r=>r.date).reduce((a,b)=>a>b?a:b));
   rows = parsed;
@@ -1818,7 +1812,7 @@ async function syncNow(manual){
     }
     // primary web path: read the private sheet as the signed-in Google user
     try{ if (await syncViaSheetsApi(manual)) return true; }
-    catch(e){ if (manual){ toast(sheetsErrMsg(e), true); return false; } }
+    catch(e){ if (manual){ toast(sheetsErrMsg(e), true, () => syncNow(true)); return false; } }
     // last-resort fallbacks (only work if the sheet is link-shared publicly)
     for (const src of syncSources()){
       try{
@@ -1827,22 +1821,32 @@ async function syncNow(manual){
         if (ingestCsv(await res.text(), src.label, manual)) return true;
       }catch(_){ /* try next source */ }
     }
-    if (manual) toast('Could not read the sheet. Click the data badge to try again, or drop an export to update here.', true);
+    if (manual) toast('Could not read the sheet — tap to try again, or drop an export to update here.', true, () => syncNow(true));
     return false;
   } finally { if (btn) btn.disabled = false; }
 }
-// the data badge doubles as the manual sync trigger (also grants first-time Sheets consent)
-const dataBadgeEl = document.getElementById('dataBadge');
-dataBadgeEl.style.cursor = 'pointer';
-dataBadgeEl.title = 'Click to sync the latest data from the Google Sheet';
-dataBadgeEl.addEventListener('click', e => { if (!e.target.closest('#resetData')) syncNow(true); });
 
-function maybeAutoSync(){
+// Silent background refresh as the signed-in user (no popup). The first attempt can
+// miss because the Google Identity script isn't loaded yet, or a token/network blip;
+// retry with backoff so the local cache reliably warms up and later opens are instant.
+// Only if it still can't connect AND there's no live data do we surface a one-tap
+// prompt (the first-time Sheets consent needs a user gesture, which the badge used
+// to provide). Existing users already granted consent, so this rarely appears.
+function maybeAutoSync(attempt){
+  attempt = attempt || 0;
   if (gsAvailable()){ syncNow(false); return; }
-  // silently refresh as the signed-in user (no popup); first-time consent waits for a manual Sync.
-  // If it can't connect AND we're showing snapshot-only data, say so instead of failing quietly.
-  const hint = ok => { if (!ok && !source) toast('Live sheet data isn\'t connected — click the data badge (top right) to reconnect.', true); };
-  syncViaSheetsApi(false).then(hint).catch(function(){ hint(false); });
+  const retry = () => { if (attempt < 4) setTimeout(() => maybeAutoSync(attempt + 1), 1200 * (attempt + 1)); else offerManualSync(); };
+  syncViaSheetsApi(false).then(ok => { if (!ok) retry(); }).catch(retry);
+}
+let manualSyncOffered = false;
+let userLoadedFile = false;   // the user drag-dropped a Combined export this session; keep silent syncs from clobbering it
+function offerManualSync(){
+  if (source || manualSyncOffered) return;   // already have live data, or already asked
+  manualSyncOffered = true;
+  // Tapping runs syncNow(true); if THAT fails it shows its own tap-to-retry error
+  // toast (with the specific remedy, e.g. "ask the owner to share it") — so we don't
+  // re-arm here and clobber that diagnostic.
+  toast('Tap to load the latest data from Google', false, () => syncNow(true));
 }
 
 /* ================= data updating (drag-drop a .xlsx / .csv export) ================= */
@@ -1874,6 +1878,7 @@ async function loadFile(file){
     if (!parsed.length) throw new Error('No usable rows found \u2014 expected the Combined tab (Day / Task / Time In decimal / Unit Packaged / Units Labeled / Total Cost) or the Labor/Packaging sheet');
     rows = parsed;
     source = {label:'from ' + file.name, updatedAt:new Date().toISOString()};
+    userLoadedFile = true;
     persist();
     toast(`Loaded ${rows.length} entries from ${file.name}`);
     renderAll();
