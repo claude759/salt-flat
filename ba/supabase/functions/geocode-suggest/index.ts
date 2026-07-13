@@ -1,18 +1,11 @@
-// geocode-suggest: live US address autocomplete via Photon (komoot's OSM geocoder —
-// keyless, built for search-as-you-type; the old OpenRouteService key was disallowed,
-// which silently killed suggestions). Biased toward the caller's home area when we
-// already have their coords (cached by calc-distance). Returns [] gracefully on any
-// problem so the client's local suggestions still work.
+// geocode-suggest: live address + business autocomplete via Google Places (the
+// picked string is resolved to coords later by calc-distance, so we return labels
+// only — no Place Details call, keeps it one cheap request per keystroke-batch).
+// Biased to the caller's home area when we have their coords (cached by calc-distance).
+// Returns [] gracefully on any problem so the client's local suggestions still work.
 import { caller, json, preflight } from "../_shared/util.ts";
 
-const UA = { "User-Agent": "wizardtrees-ba-app/1.0" };
-
-// compose a readable one-line label from Photon's structured properties
-function photonLabel(p: Record<string, string | undefined>) {
-  const line1 = [p.housenumber, p.street].filter(Boolean).join(" ") || p.name || "";
-  const line2 = [p.city || p.district || p.county, p.state, p.postcode].filter(Boolean).join(", ");
-  return [line1, line2].filter(Boolean).join(", ");
-}
+const KEY = Deno.env.get("GOOGLE_MAPS_KEY");
 
 Deno.serve(async (req) => {
   const pf = preflight(req); if (pf) return pf;
@@ -22,24 +15,23 @@ Deno.serve(async (req) => {
 
     const { text } = await req.json();
     const q = String(text ?? "").trim();
-    if (q.length < 3) return json({ ok: true, suggestions: [] });
+    if (q.length < 3 || !KEY) return json({ ok: true, suggestions: [] });
 
-    const u = new URL("https://photon.komoot.io/api/");
-    u.searchParams.set("q", q);
-    u.searchParams.set("limit", "8");
-    // bias to the caller's home area if we already have it (no live geocode here)
+    const u = new URL("https://maps.googleapis.com/maps/api/place/autocomplete/json");
+    u.searchParams.set("input", q);
+    u.searchParams.set("components", "country:us");
+    u.searchParams.set("key", KEY);
+    // bias to the caller's home area if we have it (Places uses this to rank nearby hits)
     const fLat = who.profile?.base_lat, fLng = who.profile?.base_lng;
     if (fLat != null && fLng != null) {
-      u.searchParams.set("lat", String(fLat));
-      u.searchParams.set("lon", String(fLng));
+      u.searchParams.set("location", `${fLat},${fLng}`);
+      u.searchParams.set("radius", "60000"); // ~37 mi
     }
 
-    const r = await fetch(u, { headers: UA }).then((x) => x.json()).catch(() => null);
-    const seen = new Set<string>();
-    const suggestions = (r?.features ?? [])
-      .filter((f: any) => f?.properties?.countrycode === "US" && Array.isArray(f?.geometry?.coordinates))
-      .map((f: any) => ({ label: photonLabel(f.properties), lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] }))
-      .filter((s: any) => s.label && !seen.has(s.label) && seen.add(s.label))
+    const r = await fetch(u).then((x) => x.json()).catch(() => null);
+    const suggestions = (r?.predictions ?? [])
+      .map((p: any) => ({ label: String(p?.description ?? "") }))
+      .filter((s: any) => s.label)
       .slice(0, 6);
 
     return json({ ok: true, suggestions });

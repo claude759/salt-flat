@@ -265,7 +265,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.11';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.12';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1295,7 +1295,13 @@ function fixTripSheet(x){
         // route destination = the Destination field (not the Location tag, which stays on the store)
         const fdId=(destRes&&destRes.dispId)||matchDispByText(dest);
         if(fdId){ body.dispensary_id=fdId; } else body.dest_address=(destRes&&destRes.addr)||dispAddrByText(dest)||dest;
-        const r=await callFn('calc-distance',body); if(r&&r.ok) miles=r.miles;
+        const r=await callFn('calc-distance',body);
+        if(r&&r.ok && r.routes?.length){
+          const mult=$('#fRound').checked?2:1;
+          let route=r.routes[0];
+          if(r.routes.length>1){ const picked=await pickRoute(r.routes); if(picked) route=picked; }
+          miles=Math.round(route.miles*mult*100)/100;
+        }
       }catch(err){}
       busy(btn,false); $('#fMsg').textContent='';
     }
@@ -1796,6 +1802,39 @@ function kindCellBtn(cls, kind, opts={}){ return `<button type="button" class="c
 function stateCellBtn(val, opts={}){ return `<button type="button" class="cellpick g-state" data-state="${esc(val||'')}"${opts.dis||''}>${val?esc(val):'<span class="pkph">—</span>'}</button>`; }
 // the state a new row defaults to = the BA whose data this grid shows (their region)
 function gridDefaultState(){ const c=gridCtx(); return (c&&c.region) || state.profile?.region || ''; }
+// Google calc returns `routes` (one-way miles + a "via" summary). Show them as tappable
+// options so the BA picks the route they actually drove; resolves the chosen ONE-WAY
+// route object. roundtrip is applied by the caller. Auto-resolves if there's only one.
+function pickRoute(routes){
+  routes = (routes||[]).filter(r=>r && Number(r.miles)>0);
+  return new Promise(resolve=>{
+    if(routes.length<=1){ resolve(routes[0]||null); return; }
+    openSheet2(`<h3>Which route?</h3>
+      <div class="small muted" style="margin:2px 0 8px">Pick the one you drove — it sets the miles.</div>
+      <div>${routes.map((o,i)=>`<button type="button" class="btn ghost block rtopt" data-i="${i}" style="margin-top:6px;text-align:left;display:flex;justify-content:space-between;align-items:baseline">
+        <span><b>${o.miles} mi</b>${o.mins?` <span class="muted">· ${o.mins} min</span>`:''}</span>
+        <span class="muted small" style="min-width:0;text-align:right">${o.summary?'via '+esc(o.summary):''}</span></button>`).join('')}</div>
+      <button type="button" class="btn ghost block" id="rtCancel" style="margin-top:12px">Keep shortest</button>`);
+    const done=r=>{ closeSheet2(); resolve(r); };
+    $('#rtCancel').onclick=()=>done(routes[0]);
+    document.querySelectorAll('.rtopt').forEach(b=>b.onclick=()=>done(routes[+b.dataset.i]));
+  });
+}
+// after a calc: fill the miles input with the shortest route (× roundtrip), and if there
+// are alternatives, reveal a "Choose route" button that opens pickRoute to change it.
+function applyRoutes(r, roundtrip, milesEl, btnEl){
+  const routes = (r&&r.ok&&Array.isArray(r.routes)) ? r.routes.filter(x=>Number(x.miles)>0) : [];
+  if(!routes.length) return false;
+  const mult = roundtrip()?2:1;
+  const setMiles=o=>{ milesEl.value = Math.round(o.miles*mult*100)/100; milesEl.classList.remove('needs'); };
+  setMiles(routes[0]);
+  if(btnEl){
+    if(routes.length>1){ btnEl.style.display=''; btnEl.textContent=`🛣 Choose route (${routes.length})`;
+      btnEl.onclick=async()=>{ const o=await pickRoute(routes); if(o){ const m=roundtrip()?2:1; milesEl.value=Math.round(o.miles*m*100)/100; } };
+    } else btnEl.style.display='none';
+  }
+  return true;
+}
 // tap-to-open picker for a grid dispensary / kind cell: checkbox list, SELECTED items
 // float to the top, live search. multi=true keeps the sheet open; single picks & closes.
 function cellPickerSheet({title, options, selected, multi, onSave}){
@@ -2067,8 +2106,13 @@ function tripSheet(){
     const btn=$('#tCalc'); busy(btn,true);
     try{
       const r=await callFn('calc-distance', body);
-      if(r.ok){ miles=r.miles; milesSrc=r.source; $('#tMiles').value=miles; showCost(); toast('Distance computed','ok'); }
-      else toast(r.message||'Enter miles manually','err');
+      if(r.ok && r.routes?.length){
+        const mult=$('#tRound').checked?2:1;
+        let route=r.routes[0];
+        if(r.routes.length>1){ const picked=await pickRoute(r.routes); if(picked) route=picked; }  // explicit button → open picker
+        miles=Math.round(route.miles*mult*100)/100; milesSrc=r.source; $('#tMiles').value=miles; showCost();
+        toast(`Distance: ${miles} mi${route.summary?' · via '+route.summary:''}`,'ok');
+      } else toast(r.message||'Enter miles manually','err');
     }catch(e){ toast(e.message,'err'); }
     busy(btn,false);
   };
@@ -2600,6 +2644,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
         <div class="grow"><label class="fl">Miles</label><input id="aMiles" type="number" inputmode="decimal" value="${x.miles!=null?x.miles:''}"></div>
         <div class="grow"><label class="fl">Method</label><select id="aMethod"><option value="manual" ${x.method==='manual'?'selected':''}>manual</option><option value="odometer" ${x.method==='odometer'?'selected':''}>odometer</option></select></div>
       </div>
+      <button type="button" id="aRoutes" class="btn ghost sm block" style="display:none;margin-top:8px"></button>
       <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="aRound" ${x.roundtrip?'checked':''} style="width:auto;min-height:auto"> Round trip (there &amp; back) <span class="muted">— toggling adjusts the miles</span></label>
       <label class="fl">Note</label><textarea id="aNote" rows="2">${esc(x.note||'')}</textarea>
       <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
@@ -2636,8 +2681,10 @@ async function adminEditItem(kind, id, onSaved, preloaded){
         if(de){ if(destStore) body.dispensary_id=destStore; else body.dest_address=dispAddrByText(de)||de; }
         else if(dId){ body.dispensary_id=dId; }
         const r=await callFn('calc-distance', body);
-        if(r&&r.ok){ $('#aMiles').value=r.miles; $('#aMsg').textContent=''; toast(`Distance: ${r.miles} mi${$('#aRound').checked?' (round trip)':''}`,'ok'); }
-        else { const msg=(r&&r.message)||'Couldn’t auto-calculate — type the miles.'; $('#aMsg').style.color='var(--yellow)'; $('#aMsg').textContent=msg; }
+        if(applyRoutes(r, ()=>$('#aRound').checked, $('#aMiles'), $('#aRoutes'))){
+          $('#aMsg').textContent=''; const n=r.routes.length;
+          toast(`Distance: ${$('#aMiles').value} mi${n>1?` · ${n} routes — tap "Choose route"`:''}`,'ok');
+        } else { const msg=(r&&r.message)||'Couldn’t auto-calculate — type the miles.'; $('#aMsg').style.color='var(--yellow)'; $('#aMsg').textContent=msg; }
       }catch(_){ $('#aMsg').textContent=''; }
       aBusy=false;
     }
