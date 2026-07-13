@@ -100,6 +100,7 @@
     display:flex;align-items:center;justify-content:space-between}
   .selpick::after{content:'▾';color:var(--muted);margin-left:8px;flex:none}
   .selpick.needs{border-color:var(--red)}
+  .msel-toggle.needs{border-color:var(--red);box-shadow:0 0 0 2px rgba(239,77,86,.22)}
 
   /* big action buttons (BA home) */
   .actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -265,7 +266,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.12';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.13';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -428,7 +429,7 @@ function dispChipsHtml(selectedIds, opts={}){
   const sum = !selNames.length ? '<span class="muted">Select stores…</span>'
     : (selNames.length<=2 ? esc(selNames.join(', ')) : `${esc(selNames[0])} <span class="muted">+${selNames.length-1} more</span>`);
   return `<div class="msel" id="${id}" data-all="${opts.all?'1':''}">
-    <button type="button" class="msel-toggle"><span class="msel-sum">${sum}</span><span class="msel-caret">▾</span></button>
+    <button type="button" class="msel-toggle${opts.needs?' needs':''}"><span class="msel-sum">${sum}</span><span class="msel-caret">▾</span></button>
     <div class="msel-menu hide">
       <input class="msel-search" type="text" placeholder="🔍 Type to search stores…" autocomplete="off">
       ${all.map(d=>`<label class="msel-opt"><input type="checkbox" data-id="${d.id}" data-name="${esc(d.name)}" data-search="${esc(dispSearchText(d))}" ${sel.has(d.id)?'checked':''}><span>${esc(d.name)}</span></label>`).join('')}
@@ -470,6 +471,7 @@ function wireDispChips(id){
       return;
     }
     if(sum) sum.innerHTML=mselSummary(root);
+    if(tog && root.querySelector('.msel-opt input:checked')) tog.classList.remove('needs');   // picked a store → clear the red "needs" flag
   });
 }
 function readDispChips(id){ const root=$('#'+(id||'dchips')); return root?[...root.querySelectorAll('.msel-opt input:checked')].map(c=>c.dataset.id):[]; }
@@ -717,6 +719,10 @@ function searchifySelect(sel, title){
       sel.dispatchEvent(new Event('change',{bubbles:true})); label(); } });
 }
 function closeSheet(){ $('#sheet')?.remove(); }
+// clear the red "missing" highlight off a field once it's filled — covers plain
+// inputs AND searchified selects (the visible .selpick button mirrors the hidden select)
+function clearNeed(el){ if(!el) return; el.classList.remove('needs');
+  const b=el.nextElementSibling; if(b&&b.classList.contains('selpick')) b.classList.remove('needs'); }
 // second-layer sheet: overlays whatever is already on screen (the admin detail sheet,
 // or the home) WITHOUT destroying it, so closing returns you to exactly where you were
 // (same view, same scroll). Used by the grid's cell popups (picker / notes / odometer).
@@ -2630,18 +2636,24 @@ async function adminEditItem(kind, id, onSaved, preloaded){
   const table = kind==='trip' ? 'trips' : kind==='hours' ? 'hours' : 'expenses';
   const x = preloaded || (await supabase.from(table).select('*').eq('id',id).single()).data;
   if(!x){ toast('Could not load item — try again','err'); return; }
+  // mirror itemIssues(): flag the same missing fields the To-do lists, so opening an
+  // item straight from a To-do row shows exactly what needs filling, highlighted red
+  const hasDisp = x.dispensary_id || (x.dispensary_ids && x.dispensary_ids.length);
+  const needMiles = kind==='trip' && !(Number(x.miles)>0);
+  const iss = itemIssues({...x, _k: kind==='trip'?'trip':kind==='hours'?'hours':'exp'});
+  const issHint = iss.length ? `<div class="small" style="margin-top:2px;color:var(--yellow)">Highlighted below: needs ${iss.join(', ')}.</div>` : '';
   const allDisp = [...(state.dispensaries||[])].sort(dispSort);
   const dispOpts = `<option value="">— none —</option>`+allDisp.map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   if(kind==='trip'){
     openSheet(`
-      <h3>Edit trip <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
+      <h3>Edit trip <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>${issHint}
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.trip_date||''}">
-      <label class="fl">Location</label><select id="aDisp">${dispOpts}</select>
-      <label class="fl">Category</label><select id="aKind"><option value="">— pick —</option>${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
-      <label class="fl">Starting location</label><input id="aStart" value="${esc(x.start_label||'')}" autocomplete="off">
-      <label class="fl">Destination</label><input id="aDest" value="${esc(x.dest_label||'')}" autocomplete="off">
+      <label class="fl">Location</label><select id="aDisp" class="${!hasDisp?'needs':''}">${dispOpts}</select>
+      <label class="fl">Category</label><select id="aKind" class="${!x.kind?'needs':''}"><option value="">— pick —</option>${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
+      <label class="fl">Starting location</label><input id="aStart" value="${esc(x.start_label||'')}" autocomplete="off" class="${needMiles&&!x.start_label?'needs':''}">
+      <label class="fl">Destination</label><input id="aDest" value="${esc(x.dest_label||'')}" autocomplete="off" class="${needMiles&&!x.dest_label?'needs':''}">
       <div class="row">
-        <div class="grow"><label class="fl">Miles</label><input id="aMiles" type="number" inputmode="decimal" value="${x.miles!=null?x.miles:''}"></div>
+        <div class="grow"><label class="fl">Miles</label><input id="aMiles" type="number" inputmode="decimal" value="${x.miles!=null?x.miles:''}" class="${needMiles?'needs':''}"></div>
         <div class="grow"><label class="fl">Method</label><select id="aMethod"><option value="manual" ${x.method==='manual'?'selected':''}>manual</option><option value="odometer" ${x.method==='odometer'?'selected':''}>odometer</option></select></div>
       </div>
       <button type="button" id="aRoutes" class="btn ghost sm block" style="display:none;margin-top:8px"></button>
@@ -2652,10 +2664,13 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
     $('#aCancel').onclick=closeSheet; wireNewRetailerSelect($('#aDisp'));
-    $('#aDisp').addEventListener('change',()=>{ const k=$('#aKind'); if(k && !k.value && $('#aDisp').value && /office/i.test(dispName($('#aDisp').value))){ k.value=OFFICE_KIND; k.dispatchEvent(new Event('change',{bubbles:true})); } });   // office → General BA Activity/Admin (change keeps picker label in sync)
+    $('#aDisp').addEventListener('change',()=>{ if($('#aDisp').value) clearNeed($('#aDisp')); const k=$('#aKind'); if(k && !k.value && $('#aDisp').value && /office/i.test(dispName($('#aDisp').value))){ k.value=OFFICE_KIND; k.dispatchEvent(new Event('change',{bubbles:true})); clearNeed(k); } });   // office → General BA Activity/Admin (change keeps picker label in sync)
+    $('#aKind').addEventListener('change',()=>{ if($('#aKind').value) clearNeed($('#aKind')); });
+    // as the user fills a missing field, drop its red highlight (searchified selects clear via the picker)
+    ['#aStart','#aDest','#aMiles'].forEach(s=>{ const el=$(s); if(el) el.addEventListener('input',()=>{ if(String(el.value).trim()) clearNeed(el); }); });
     // address/store suggestions while typing, same as the BA popups; picking a store
     // as the destination also fills the Location select (change syncs its picker label)
-    const aSetDisp=id=>{ const d=$('#aDisp'); if(d && d.value!==id){ d.value=id; d.dispatchEvent(new Event('change',{bubbles:true})); } };
+    const aSetDisp=id=>{ const d=$('#aDisp'); if(d && d.value!==id){ d.value=id; d.dispatchEvent(new Event('change',{bubbles:true})); clearNeed(d); } };
     // 🏠 = the TRIP OWNER's saved home (not the admin's) — top suggestion for their trips
     const {data:ownerP}=await supabase.from('profiles').select('base_address').eq('id',x.ba_id).maybeSingle();
     const ownerHome=ownerP?.base_address||null;
@@ -2682,6 +2697,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
         else if(dId){ body.dispensary_id=dId; }
         const r=await callFn('calc-distance', body);
         if(applyRoutes(r, ()=>$('#aRound').checked, $('#aMiles'), $('#aRoutes'))){
+          clearNeed($('#aMiles'));
           $('#aMsg').textContent=''; const n=r.routes.length;
           toast(`Distance: ${$('#aMiles').value} mi${n>1?` · ${n} routes — tap "Choose route"`:''}`,'ok');
         } else { const msg=(r&&r.message)||'Couldn’t auto-calculate — type the miles.'; $('#aMsg').style.color='var(--yellow)'; $('#aMsg').textContent=msg; }
@@ -2709,7 +2725,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
           if(dest){ if(destStore) body.dispensary_id=destStore; else body.dest_address=dispAddrByText(dest)||dest; }
           else if($('#aDisp').value){ body.dispensary_id=$('#aDisp').value; }
           const r=await callFn('calc-distance', body);
-          if(r&&r.ok){ miles=r.miles; $('#aMiles').value=miles; toast(`Distance: ${r.miles} mi${$('#aRound').checked?' (round trip)':''}`,'ok'); }
+          if(r&&r.ok){ miles=r.miles; $('#aMiles').value=miles; clearNeed($('#aMiles')); toast(`Distance: ${r.miles} mi${$('#aRound').checked?' (round trip)':''}`,'ok'); }
           else { const msg=(r&&r.message)||'Couldn’t auto-calculate — type the miles.'; $('#aMsg').style.color='var(--yellow)'; $('#aMsg').textContent=msg; toast(msg,'err'); }
         }catch(e){ toast('Distance service unavailable — type the miles.','err'); }
         busy(btn,false); if(miles>0) $('#aMsg').textContent='';
@@ -2726,12 +2742,12 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     };
   } else if(kind==='hours'){
     openSheet(`
-      <h3>Edit hours <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
+      <h3>Edit hours <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>${issHint}
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.work_date||''}">
       <label class="fl">Category</label>
       <select id="aKind">${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
       <label class="fl">Dispensaries <span class="muted">(tap all stores this shift covered — cost splits evenly)</span></label>
-      ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips'})}
+      ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips', needs:!hasDisp})}
       <div class="row" style="margin-top:10px">
         <div class="grow"><label class="fl">Hours</label><input id="aHours" type="number" inputmode="decimal" step="0.001" value="${x.hours!=null?x.hours:''}"></div>
         <div class="grow"><label class="fl">Pay rate</label><input value="$${Number(x.rate).toFixed(2)}/hr" disabled style="opacity:.65"></div>
@@ -2755,26 +2771,28 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     };
   } else {
     const cats=EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
+    const needAmt=!(Number(x.amount)>0), needRec=!x.receipt_path && x.status!=='approved';   // same as itemIssues()
     const recUrl=x.receipt_path?await signedUrl('receipts',x.receipt_path):null;
     openSheet(`
-      <h3>Edit expense <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
+      <h3>Edit expense <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>${issHint}
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.expense_date||''}">
       <label class="fl">Vendor</label><input id="aVendor" value="${esc(x.vendor||'')}">
       <div class="row">
-        <div class="grow"><label class="fl">Amount</label><input id="aAmt" type="number" inputmode="decimal" step="0.01" value="${x.amount!=null?x.amount:''}"></div>
+        <div class="grow"><label class="fl">Amount</label><input id="aAmt" type="number" inputmode="decimal" step="0.01" value="${x.amount!=null?x.amount:''}" class="${needAmt?'needs':''}"></div>
         <div class="grow"><label class="fl">Category</label><select id="aCat">${cats}</select></div>
       </div>
       <label class="fl">Paid with</label><select id="aPay">${PAYMENTS.map(([v,l])=>`<option value="${v}" ${x.payment===v?'selected':''}>${l}</option>`).join('')}</select>
       <label class="fl">Dispensaries <span class="muted">(tap all stores — cost splits evenly)</span></label>
-      ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips'})}
+      ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips', needs:!hasDisp})}
       <label class="fl">Note</label><textarea id="aNote" rows="2">${esc(x.note||'')}</textarea>
       <div style="margin-top:10px">${recUrl?`<a class="btn block" href="${recUrl}" target="_blank">📄 View receipt</a>`:'<div class="small muted">No receipt attached.</div>'}
-        <label class="btn ghost block" style="margin-top:6px;cursor:pointer">📎 ${x.receipt_path?'Replace':'Attach'} receipt<input id="aRec" type="file" accept="image/*" hidden></label></div>
+        <label class="btn ${needRec?'primary':'ghost'} block" style="margin-top:6px;cursor:pointer">📎 ${x.receipt_path?'Replace':'Attach'} receipt<input id="aRec" type="file" accept="image/*" hidden></label></div>
       <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
     $('#aCancel').onclick=closeSheet; wireDispChips('aDispChips');
+    { const a=$('#aAmt'); if(a) a.addEventListener('input',()=>{ if(Number(a.value)>0) clearNeed(a); }); }
     let receiptPath=x.receipt_path||null, recChanged=false;
     const aRec=$('#aRec'); if(aRec) aRec.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
       toast('Uploading receipt…');
