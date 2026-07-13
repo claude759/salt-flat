@@ -265,7 +265,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.9';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.10';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -2614,11 +2614,34 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     const {data:ownerP}=await supabase.from('profiles').select('base_address').eq('id',x.ba_id).maybeSingle();
     const ownerHome=ownerP?.base_address||null;
     attachGridTypeahead($('#aStart'), ()=>{}, {home:ownerHome});
-    attachGridTypeahead($('#aDest'),  r=>{ if(r.dispId) aSetDisp(r.dispId); }, {home:ownerHome});
-    $('#aDest').addEventListener('blur', ()=>{ if(!$('#aDisp').value){ const id=matchDispByText($('#aDest').value); if(id) aSetDisp(id); } });
+    attachGridTypeahead($('#aDest'),  r=>{ if(r.dispId) aSetDisp(r.dispId); aRecalc(); }, {home:ownerHome});
+    $('#aDest').addEventListener('blur', ()=>{ if(!$('#aDisp').value){ const id=matchDispByText($('#aDest').value); if(id) aSetDisp(id); } aRecalc(); });
+    $('#aStart').addEventListener('blur', aRecalc);
+    // LIVE distance: fill Miles the moment both ends are known (no need to hit Save first).
+    // Skips if miles already entered; office/store dest uses the saved address the router trusts.
+    let aBusy=false;
+    async function aRecalc(){
+      if(aBusy || Number($('#aMiles').value)>0) return;
+      const s=$('#aStart').value.trim(), de=$('#aDest').value.trim(), dId=$('#aDisp').value;
+      if(!s || !(de||dId)) return;
+      aBusy=true; $('#aMsg').style.color='var(--muted)'; $('#aMsg').textContent='Calculating distance…';
+      try{
+        const body={ roundtrip:$('#aRound').checked, for_ba:x.ba_id };
+        body.start_address = dispAddrByText(s) || s;
+        const did = dId || matchDispByText(de);
+        if(did) body.dispensary_id=did; else body.dest_address = dispAddrByText(de) || de;
+        const r=await callFn('calc-distance', body);
+        if(r&&r.ok){ $('#aMiles').value=r.miles; $('#aMsg').textContent=''; toast(`Distance: ${r.miles} mi${$('#aRound').checked?' (round trip)':''}`,'ok'); }
+        else { const msg=(r&&r.message)||'Couldn’t auto-calculate — type the miles.'; $('#aMsg').style.color='var(--yellow)'; $('#aMsg').textContent=msg; }
+      }catch(_){ $('#aMsg').textContent=''; }
+      aBusy=false;
+    }
+    $('#aDisp').addEventListener('change', ()=>setTimeout(aRecalc,0));
     // flipping round-trip doubles/halves the miles in place — admin sees (and can correct) the result before saving
     $('#aRound').onchange=()=>{ const m=Number($('#aMiles').value);
-      if(m>0) $('#aMiles').value=Math.round(m*($('#aRound').checked?2:0.5)*100)/100; };
+      if(m>0) $('#aMiles').value=Math.round(m*($('#aRound').checked?2:0.5)*100)/100;
+      else aRecalc(); };
+    setTimeout(aRecalc,0);   // if the trip opened with both ends set (like this one) and no miles, calc now
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
       // no miles but we know both ends → auto-calc (same as the BA fix popup). A typed
