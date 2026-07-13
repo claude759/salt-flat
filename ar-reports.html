@@ -1192,7 +1192,15 @@ async function publishToTeam(){
   const btn=$('#sb-publish'), old=btn.textContent; btn.disabled=true; btn.textContent='Publishing…';
   try{
     let cur={};
-    try{ const d0=await jsonpRetry(3); cur=normShared(d0 && d0.data); }catch(e){}   // merge base — retried so a flake can't drop additive keys (visits/scorecard)
+    // Merge base: the CURRENT team payload. If we can't READ it we must not WRITE, because
+    // publishing over an unknown base rebuilds the payload from scratch and permanently drops
+    // everything not re-derivable from the loaded files — past scorecard snapshots, NY data on
+    // a CA-only run, visit history. Exactly that (a flaky Apps Script failing the load-time AND
+    // publish-time fetches) silently wiped the 6/22 + 6/29 2026 weekly snapshots. Abort instead —
+    // the hourly automation simply retries next run. (A missing/first-ever payload does NOT
+    // throw: the script answers with an empty object, so first publish still works.)
+    try{ const d0=await jsonpRetry(3); cur=normShared(d0 && d0.data); }
+    catch(e){ throw new Error('mergebase'); }
     // Slim payload for reliable transfer: drop heavy drill-down detail (line items,
     // per-format/credit breakdowns). Summary numbers, aging, discounts/credits, brand rollup all survive.
     if(hasAR)  cur.ar  ={records:recordsToPayload(RAW),cleaning:CLEAN};   // keep line items (slim) so the team sees the per-invoice breakdown + link
@@ -1222,7 +1230,9 @@ async function publishToTeam(){
     btn.textContent='Published ✓';
     setTimeout(()=>{ btn.textContent=old; renderShareBar(); },2600);
   }catch(e){
-    alert('Publish failed — could not reach the server. Check your connection and try again.');
+    alert(e && e.message==='mergebase'
+      ? 'Publish aborted: could not load the existing team report to merge into (server hiccup). Nothing was overwritten — try again in a minute.'
+      : 'Publish failed — could not reach the server. Check your connection and try again.');
     btn.textContent=old; renderShareBar();
   }
 }
