@@ -1,11 +1,18 @@
-// geocode-suggest: live US address autocomplete via OpenRouteService (Pelias),
-// biased toward the caller's home area when we already have their coords (cached
-// by calc-distance). Proxies ORS so the key stays server-side. Returns []
-// gracefully on any problem so the client's local suggestions still work.
-// Kept lean (no per-keystroke geocoding) so it stays fast.
+// geocode-suggest: live US address autocomplete via Photon (komoot's OSM geocoder —
+// keyless, built for search-as-you-type; the old OpenRouteService key was disallowed,
+// which silently killed suggestions). Biased toward the caller's home area when we
+// already have their coords (cached by calc-distance). Returns [] gracefully on any
+// problem so the client's local suggestions still work.
 import { caller, json, preflight } from "../_shared/util.ts";
 
-const ORS_KEY = Deno.env.get("ORS_KEY");
+const UA = { "User-Agent": "wizardtrees-ba-app/1.0" };
+
+// compose a readable one-line label from Photon's structured properties
+function photonLabel(p: Record<string, string | undefined>) {
+  const line1 = [p.housenumber, p.street].filter(Boolean).join(" ") || p.name || "";
+  const line2 = [p.city || p.district || p.county, p.state, p.postcode].filter(Boolean).join(", ");
+  return [line1, line2].filter(Boolean).join(", ");
+}
 
 Deno.serve(async (req) => {
   const pf = preflight(req); if (pf) return pf;
@@ -15,24 +22,25 @@ Deno.serve(async (req) => {
 
     const { text } = await req.json();
     const q = String(text ?? "").trim();
-    if (q.length < 3 || !ORS_KEY) return json({ ok: true, suggestions: [] });
+    if (q.length < 3) return json({ ok: true, suggestions: [] });
 
-    const u = new URL("https://api.openrouteservice.org/geocode/autocomplete");
-    u.searchParams.set("api_key", ORS_KEY);
-    u.searchParams.set("text", q);
-    u.searchParams.set("boundary.country", "US");
-    u.searchParams.set("size", "6");
+    const u = new URL("https://photon.komoot.io/api/");
+    u.searchParams.set("q", q);
+    u.searchParams.set("limit", "8");
     // bias to the caller's home area if we already have it (no live geocode here)
     const fLat = who.profile?.base_lat, fLng = who.profile?.base_lng;
     if (fLat != null && fLng != null) {
-      u.searchParams.set("focus.point.lat", String(fLat));
-      u.searchParams.set("focus.point.lon", String(fLng));
+      u.searchParams.set("lat", String(fLat));
+      u.searchParams.set("lon", String(fLng));
     }
 
-    const r = await fetch(u).then((x) => x.json()).catch(() => null);
+    const r = await fetch(u, { headers: UA }).then((x) => x.json()).catch(() => null);
+    const seen = new Set<string>();
     const suggestions = (r?.features ?? [])
-      .map((f: any) => ({ label: f?.properties?.label ?? "", lat: f?.geometry?.coordinates?.[1], lng: f?.geometry?.coordinates?.[0] }))
-      .filter((s: any) => s.label && s.lat != null);
+      .filter((f: any) => f?.properties?.countrycode === "US" && Array.isArray(f?.geometry?.coordinates))
+      .map((f: any) => ({ label: photonLabel(f.properties), lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] }))
+      .filter((s: any) => s.label && !seen.has(s.label) && seen.add(s.label))
+      .slice(0, 6);
 
     return json({ ok: true, suggestions });
   } catch {

@@ -1,17 +1,18 @@
-// calc-distance: driving miles from a starting location to a dispensary, via
-// OpenRouteService (free, no credit card). Start can be GPS coords (start_lat/
-// start_lng), a typed address (start_address), or — if neither — the caller's
-// saved base address. Round-trip by default. Geocoded coords are cached onto the
-// profile/dispensary rows so we only geocode once. Any failure returns a graceful
-// 200 {ok:false} so the BA just types miles instead.
+// calc-distance: driving miles from a starting location to a dispensary.
+// Geocoding = Photon (komoot, OSM) and routing = OSRM demo — both keyless; the old
+// OpenRouteService key got disallowed (403 on every endpoint), which silently killed
+// all auto-distance. Start can be GPS coords (start_lat/start_lng), a typed address
+// (start_address), or — if neither — the trip owner's saved base address. Round-trip
+// by default. Geocoded coords are cached onto the profile/dispensary rows so we only
+// geocode once. Any failure returns a graceful 200 {ok:false} so the BA types miles.
 import { admin, caller, json, preflight } from "../_shared/util.ts";
 
-const ORS_KEY = Deno.env.get("ORS_KEY");
+const UA = { "User-Agent": "wizardtrees-ba-app/1.0" };
 
-// Keep ambiguous addresses in the BA's part of the country. focus.point only
+// Keep ambiguous addresses in the BA's part of the country. A bias point only
 // RE-RANKS results — "376 stockton st" still matched Stockton St, San Francisco.
-// boundary.rect (the BA's whole state) is a HARD filter, so out-of-state matches
-// are impossible; focus.point then picks the closest in-state hit.
+// bbox (the BA's whole state) is a HARD filter, so out-of-state matches are
+// impossible; the bias point then picks the closest in-state hit.
 const REGION_FOCUS: Record<string, { lat: number; lng: number }> = {
   NY: { lat: 40.71, lng: -74.0 },
   CA: { lat: 34.05, lng: -118.24 },
@@ -23,21 +24,15 @@ const REGION_RECT: Record<string, [number, number, number, number]> = {   // [mi
   FL: [-87.70, 24.30, -79.80, 31.10],
 };
 async function geocode(address: string, focus?: { lat: number; lng: number } | null, rect?: [number, number, number, number] | null) {
-  if (!ORS_KEY) return null;
   try {
-    const u = new URL("https://api.openrouteservice.org/geocode/search");
-    u.searchParams.set("api_key", ORS_KEY);
-    u.searchParams.set("text", address);
-    u.searchParams.set("boundary.country", "US");
-    if (rect) {
-      u.searchParams.set("boundary.rect.min_lon", String(rect[0])); u.searchParams.set("boundary.rect.min_lat", String(rect[1]));
-      u.searchParams.set("boundary.rect.max_lon", String(rect[2])); u.searchParams.set("boundary.rect.max_lat", String(rect[3]));
-    }
-    if (focus) { u.searchParams.set("focus.point.lat", String(focus.lat)); u.searchParams.set("focus.point.lon", String(focus.lng)); }
-    u.searchParams.set("size", "1");
-    const r = await fetch(u).then((x) => x.json());
-    const c = r?.features?.[0]?.geometry?.coordinates; // [lon, lat]
-    return Array.isArray(c) ? { lat: c[1], lng: c[0] } : null;
+    const u = new URL("https://photon.komoot.io/api/");
+    u.searchParams.set("q", address);
+    u.searchParams.set("limit", "5");
+    if (focus) { u.searchParams.set("lat", String(focus.lat)); u.searchParams.set("lon", String(focus.lng)); }
+    if (rect) u.searchParams.set("bbox", rect.join(","));
+    const r = await fetch(u, { headers: UA }).then((x) => x.json());
+    const f = (r?.features ?? []).find((f: any) => f?.properties?.countrycode === "US" && Array.isArray(f?.geometry?.coordinates));
+    return f ? { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] } : null;
   } catch {
     return null;
   }
@@ -48,15 +43,12 @@ const addrSig = (s: string) =>
   String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
     .replace(/^(\d+) (\d+) /, "$1$2 ").split(" ").slice(0, 3).join(" ");
 
-// one-way driving meters, or null on any failure
+// one-way driving meters via the OSRM demo router, or null on any failure
 async function drivingMeters(o: { lat: number; lng: number }, d: { lat: number; lng: number }) {
   try {
-    const u = new URL("https://api.openrouteservice.org/v2/directions/driving-car");
-    u.searchParams.set("api_key", ORS_KEY!);
-    u.searchParams.set("start", `${o.lng},${o.lat}`);
-    u.searchParams.set("end", `${d.lng},${d.lat}`);
-    const r = await fetch(u).then((x) => x.json());
-    const m = r?.features?.[0]?.properties?.summary?.distance;
+    const u = `https://router.project-osrm.org/route/v1/driving/${o.lng},${o.lat};${d.lng},${d.lat}?overview=false`;
+    const r = await fetch(u, { headers: UA }).then((x) => x.json());
+    const m = r?.routes?.[0]?.distance;
     return typeof m === "number" ? m : null;
   } catch {
     return null;
@@ -73,7 +65,6 @@ Deno.serve(async (req) => {
 
     const body = await req.json();
     const dispensary_id = body.dispensary_id;
-    if (!ORS_KEY) return manual("Auto-distance isn’t set up yet — enter miles manually.", "no_provider");
 
     const db = admin();
 
