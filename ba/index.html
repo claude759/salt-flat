@@ -94,6 +94,12 @@
   .msel-opt input{width:17px;height:17px;flex:none;accent-color:var(--accent);margin:0}
   .g-rt{width:15px;height:15px;min-height:0;flex:none;accent-color:var(--muted);cursor:pointer;margin:0;opacity:.8}
   .g-rt:checked{accent-color:var(--accent);opacity:1}
+  /* tap-to-search replacement for long native selects (searchifySelect) */
+  .selpick{width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:10px;padding:11px 12px;font:inherit;font-size:15px;min-height:44px;cursor:pointer;
+    display:flex;align-items:center;justify-content:space-between}
+  .selpick::after{content:'▾';color:var(--muted);margin-left:8px;flex:none}
+  .selpick.needs{border-color:var(--red)}
 
   /* big action buttons (BA home) */
   .actions{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -259,7 +265,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.2';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.3';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -327,7 +333,7 @@ function matchDispByText(text){
   // the street address. Match on the first 3 tokens (number + street) when the text looks
   // like an address; includes '* ' placeholders (the office) since it's matched by address.
   if(/\d/.test(tn)){
-    const sig=s=>norm(s).split(' ').slice(0,3).join(' ');
+    const sig=s=>norm(s).replace(/^(\d+) (\d+) /,'$1$2 ').split(' ').slice(0,3).join(' ');   // "18-33 42nd" ≡ "1833 42nd" (Queens hyphenated numbers)
     const ds=sig(text);
     if(ds.split(' ').length>=2){
       c=baDispensaries().filter(d=>d.active!==false && d.address && sig(d.address)===ds);
@@ -350,7 +356,7 @@ const US_STATES=[['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkans
 // "* …" placeholder stores pin to the top of every picker, in this order, before real stores A→Z
 const PLACEHOLDER_TOP=['* Non-BA activity','* General BA activity','* Office','* Lead','* New retailer'];
 const OFFICE_KIND='General BA Activity/Admin';   // category auto-applied to trips to the office
-const dispRank=n=>{ const i=PLACEHOLDER_TOP.indexOf(n); return i<0?99:i; };
+const dispRank=n=>{ const key=/^\* Office/.test(n||'')?'* Office':n; const i=PLACEHOLDER_TOP.indexOf(key); return i<0?99:i; };   // '* Office (CA)'/'* Office (NY)' pin like '* Office'
 const dispSort=(a,b)=>dispRank(a.name)-dispRank(b.name)||a.name.localeCompare(b.name);
 // Picking "* New retailer" anywhere opens this mini-form on a second layer, creates the
 // store, and hands the new row back to the caller (which selects it in place).
@@ -672,6 +678,32 @@ function openSheet(html){
   b.addEventListener('click',e=>{ if(e.target===b) closeSheet(); });
   document.body.appendChild(b);
   b.querySelector('.sheetx').onclick=closeSheet;
+  // every long dropdown in every popup becomes a tap-to-search picker (type to filter)
+  setTimeout(()=>b.querySelectorAll('select').forEach(s=>searchifySelect(s)),0);
+}
+// Replace a long native <select> with a button that opens the searchable picker.
+// The select stays in the DOM (hidden) as the value holder, so all existing
+// .value reads and change handlers keep working untouched.
+function searchifySelect(sel, title){
+  if(!sel || sel._searchified || sel.disabled || sel.options.length<8) return;
+  sel._searchified=true;
+  if(!title){ let el=sel.previousElementSibling;                       // use the field's label as the picker title
+    while(el && !(el.tagName==='LABEL'&&el.classList.contains('fl'))) el=el.previousElementSibling;
+    title=(el?el.childNodes[0]?.textContent:'')?.trim()||'Choose'; }
+  const btn=document.createElement('button'); btn.type='button'; btn.className='selpick'+(sel.classList.contains('needs')?' needs':'');
+  const label=()=>{ const o=sel.options[sel.selectedIndex];
+    btn.innerHTML=(o&&o.text.trim())?esc(o.text):'<span class="pkph">— pick —</span>';
+    btn.classList.toggle('needs', sel.classList.contains('needs')); };
+  sel.style.display='none'; sel.insertAdjacentElement('afterend', btn); label();
+  sel.addEventListener('change', label);
+  const NONE='~none~';
+  btn.onclick=()=>cellPickerSheet({ title, multi:false,
+    options:[...sel.options].map(o=>({id:o.value===''?NONE:o.value, name:o.text})),
+    selected: sel.value===''?[NONE]:[sel.value],
+    onSave:ids=>{ const v=ids[0];
+      if(v===undefined) return;                                        // unchecked current = no change
+      sel.value = v===NONE?'':v; sel.classList.remove('needs');
+      sel.dispatchEvent(new Event('change',{bubbles:true})); label(); } });
 }
 function closeSheet(){ $('#sheet')?.remove(); }
 // second-layer sheet: overlays whatever is already on screen (the admin detail sheet,
@@ -1203,10 +1235,12 @@ function fixTripSheet(x){
   let startRes=null, destRes=null;
   const recalcFromOdo=()=>{ const s=Number(osEl.value),e=Number(oeEl.value); if(s&&e&&e>=s){ milesEl.value=Math.round((e-s)*10)/10; milesEl.classList.remove('needs'); } };
   attachGridTypeahead(startEl, r=>{ startRes=r; }, {gps:true});
-  const officeKind=()=>{ const fk=$('#fKind'); if(fk && !fk.value && dispEl.value && /office/i.test(dispName(dispEl.value))) fk.value=OFFICE_KIND; };  // office trip → General BA Activity/Admin
-  attachGridTypeahead(destEl,  r=>{ destRes=r; if(r.dispId && dispEl.value!==r.dispId) dispEl.value=r.dispId; officeKind(); });
+  // programmatic value sets dispatch 'change' so the searchable-picker button labels stay in sync
+  const setVal=(el,v)=>{ el.value=v; el.classList.remove('needs'); el.dispatchEvent(new Event('change',{bubbles:true})); };
+  const officeKind=()=>{ const fk=$('#fKind'); if(fk && !fk.value && dispEl.value && /office/i.test(dispName(dispEl.value))) setVal(fk,OFFICE_KIND); };  // office trip → General BA Activity/Admin
+  attachGridTypeahead(destEl,  r=>{ destRes=r; if(r.dispId && dispEl.value!==r.dispId) setVal(dispEl,r.dispId); officeKind(); });
   dispEl.addEventListener('change', officeKind);
-  destEl.addEventListener('blur', ()=>{ if(!dispEl.value){ const id=matchDispByText(destEl.value); if(id){ dispEl.value=id; dispEl.classList.remove('needs'); officeKind(); } } });
+  destEl.addEventListener('blur', ()=>{ if(!dispEl.value){ const id=matchDispByText(destEl.value); if(id){ setVal(dispEl,id); officeKind(); } } });
   // inline odometer snap → read-odometer fills the number (no nested popup)
   const wireOdo=(fileEl, inp)=>{ if(!fileEl) return; fileEl.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
     const ph=inp.placeholder; inp.placeholder='reading…';
@@ -1594,7 +1628,7 @@ function wireGridRow(tr, mode){
     } else {
       const multi=btn.dataset.multi==='1';
       cellPickerSheet({ title:multi?'Dispensaries (select all that apply)':'Dispensary', multi,
-        options: (state.dispensaries||[]).filter(d=>d.active!==false).slice().sort(dispSort).map(d=>({id:d.id,name:d.name})),
+        options: baDispensaries().filter(d=>d.active!==false).slice().sort(dispSort).map(d=>({id:d.id,name:d.name})),   // region-scoped: NY BAs never see CA stores
         selected: (btn.dataset.ids||'').split(',').filter(Boolean),
         onSave:ids=>{ btn.dataset.ids=ids.join(','); const l=dispCellLabelText(ids); btn.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; btn.classList.remove('needs'); scheduleAutosave(tr,mode); } });
     }
@@ -2208,7 +2242,7 @@ function drawLocations(m){
   m.innerHTML=`
     <div class="card">
       <div class="row"><h3 class="grow">Locations <span class="muted small">${p.region?'· '+p.region:''}</span></h3><button class="btn sm primary" id="mAddLoc">+ Add</button></div>
-      <div id="mLocList">${(state.dispensaries||[]).map(d=>`<div class="item">
+      <div id="mLocList">${baDispensaries().map(d=>`<div class="item">
         <div class="ic">${d.private?'🏠':'📍'}</div>
         <div class="grow"><div class="t">${esc(d.name)} ${d.private?'<span class="pill">private</span>':'<span class="pill">shared</span>'}</div><div class="s">${esc(d.address||'no address')}</div></div>
         <button class="btn sm ghost" data-eloc="${d.id}">Edit</button>
@@ -2216,7 +2250,7 @@ function drawLocations(m){
       <p class="small muted" style="margin-top:6px">Shared locations are visible to all ${p.region||''} ambassadors; Private (Home) ones stay yours.</p>
     </div>`;
   $('#mAddLoc').onclick=()=>dispSheet(null,{onSaved:()=>drawLocations(m)});
-  m.querySelectorAll('[data-eloc]').forEach(b=>b.onclick=()=>dispSheet((state.dispensaries||[]).find(d=>d.id===b.dataset.eloc),{onSaved:()=>drawLocations(m)}));
+  m.querySelectorAll('[data-eloc]').forEach(b=>b.onclick=()=>dispSheet(baDispensaries().find(d=>d.id===b.dataset.eloc),{onSaved:()=>drawLocations(m)}));
 }
 
 /* ═══════════════════════════ ADMIN SURFACE ═══════════════════════════ */
@@ -2546,7 +2580,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
     `);
     $('#aCancel').onclick=closeSheet; wireNewRetailerSelect($('#aDisp'));
-    $('#aDisp').addEventListener('change',()=>{ const k=$('#aKind'); if(k && !k.value && $('#aDisp').value && /office/i.test(dispName($('#aDisp').value))) k.value=OFFICE_KIND; });   // office → General BA Activity/Admin
+    $('#aDisp').addEventListener('change',()=>{ const k=$('#aKind'); if(k && !k.value && $('#aDisp').value && /office/i.test(dispName($('#aDisp').value))){ k.value=OFFICE_KIND; k.dispatchEvent(new Event('change',{bubbles:true})); } });   // office → General BA Activity/Admin (change keeps picker label in sync)
     // flipping round-trip doubles/halves the miles in place — admin sees (and can correct) the result before saving
     $('#aRound').onchange=()=>{ const m=Number($('#aMiles').value);
       if(m>0) $('#aMiles').value=Math.round(m*($('#aRound').checked?2:0.5)*100)/100; };
