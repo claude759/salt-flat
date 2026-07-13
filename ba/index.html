@@ -302,7 +302,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.18';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.19';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -377,6 +377,13 @@ function matchDispByText(text){
       if(c.length) return uniq(c);
     }
   }
+  // token-subset fallback: every typed word (≥4 chars) appears in exactly ONE store's name.
+  // Covers hand-abbreviated labels like "Flowery (Richmond)" → The Flowery … Richmond Ave.
+  const toks=tn.split(' ').filter(t=>t.length>=4);
+  if(toks.length>=2){
+    c=named.filter(d=>{ const n=norm(d.name); return toks.every(t=>n.includes(t)); });
+    if(c.length) return uniq(c);
+  }
   return null;
 }
 // everything a store can be found by in a picker search: trade name, legal/DBA name, address
@@ -387,6 +394,23 @@ function dispAddrByText(text){
   const id=matchDispByText(text); if(!id) return null;
   const d=(state.dispensaries||[]).find(x=>x.id===id);
   return (d && d.address && !/placeholder/i.test(d.address)) ? d.address : null;
+}
+// first-3-token signature of an address (mirrors calc-distance's addrSig) — lets us tell
+// when a typed Destination is really the BA's home ("11 Arthur St" ≡ their base address)
+function addrSig(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().replace(/^(\d+) (\d+) /,'$1$2 ').split(' ').slice(0,3).join(' '); }
+function isHomeAddr(text, home){ if(/^\s*home\s*$/i.test(text||'')) return true; const t=addrSig(text); return !!(home && t && t===addrSig(home)); }
+// Resolve a trip's Start + Destination against the store list + the owner's home.
+// A place that IS a known store shows the store's canonical name (so Location / Start /
+// Destination read identically when they're the same place). The trip's Location follows
+// the DESTINATION store — or, when the destination is home (an "end of shift" leg), the
+// START store, so return-home mileage still counts toward the dispensary visited.
+function resolveTripPlaces(startText, destText, home){
+  const startId=matchDispByText(startText), destId=matchDispByText(destText);
+  const destIsHome=isHomeAddr(destText, home);
+  return { startId, destId, destIsHome,
+    startCanon: startId?dispName(startId):startText,
+    destCanon:  destId ?dispName(destId): destText,
+    linkDispId: destId || (destIsHome ? startId : null) };
 }
 // the selectable labor kinds (admin-editable in Settings; safe defaults pre-migration)
 const DEFAULT_LABOR_KINDS = ['Store visit','Education talk','Demo / PAD','Brand event','Travel','Admin'];
@@ -1297,7 +1321,18 @@ function fixTripSheet(x){
   const officeKind=()=>{ const fk=$('#fKind'); if(fk && !fk.value && dispEl.value && /office/i.test(dispName(dispEl.value))) setVal(fk,OFFICE_KIND); };  // office trip → General BA Activity/Admin
   attachGridTypeahead(destEl,  r=>{ destRes=r; if(r.dispId && dispEl.value!==r.dispId) setVal(dispEl,r.dispId); officeKind(); });
   dispEl.addEventListener('change', officeKind);
-  destEl.addEventListener('blur', ()=>{ if(!dispEl.value){ const id=matchDispByText(destEl.value); if(id){ setVal(dispEl,id); officeKind(); } } });
+  // canonicalize Start/Destination to store names + set Location (dest store, or the START
+  // store when heading home so the return leg still counts toward that dispensary)
+  const fHome=()=>state.profile?.base_address||gridCtx().homeAddr||null;
+  function fRelink(){
+    const r=resolveTripPlaces(startEl.value.trim(), destEl.value.trim(), fHome());
+    if(r.startCanon!==startEl.value) startEl.value=r.startCanon;
+    if(r.destCanon!==destEl.value) destEl.value=r.destCanon;
+    if(r.linkDispId && !dispEl.value){ setVal(dispEl,r.linkDispId); officeKind(); }
+  }
+  destEl.addEventListener('blur', fRelink);
+  startEl.addEventListener('blur', fRelink);
+  fRelink();
   // inline odometer snap → read-odometer fills the number (no nested popup)
   const wireOdo=(fileEl, inp)=>{ if(!fileEl) return; fileEl.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
     const ph=inp.placeholder; inp.placeholder='reading…';
@@ -2788,10 +2823,20 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     // 🏠 = the TRIP OWNER's saved home (not the admin's) — top suggestion for their trips
     const {data:ownerP}=await supabase.from('profiles').select('base_address').eq('id',x.ba_id).maybeSingle();
     const ownerHome=ownerP?.base_address||null;
-    attachGridTypeahead($('#aStart'), ()=>{}, {home:ownerHome});
-    attachGridTypeahead($('#aDest'),  r=>{ if(r.dispId) aSetDisp(r.dispId); aRecalc(); }, {home:ownerHome});
-    $('#aDest').addEventListener('blur', ()=>{ if(!$('#aDisp').value){ const id=matchDispByText($('#aDest').value); if(id) aSetDisp(id); } aRecalc(); });
-    $('#aStart').addEventListener('blur', aRecalc);
+    // normalize Start/Destination to canonical store names + set Location (the destination
+    // store, or the START store on a going-home leg) so it reads consistently and the
+    // return-home mileage still counts toward that dispensary. Only fills an EMPTY Location.
+    function aRelink(){
+      const r=resolveTripPlaces($('#aStart').value.trim(), $('#aDest').value.trim(), ownerHome);
+      if(r.startCanon!==$('#aStart').value) $('#aStart').value=r.startCanon;
+      if(r.destCanon!==$('#aDest').value) $('#aDest').value=r.destCanon;
+      if(r.linkDispId && !$('#aDisp').value) aSetDisp(r.linkDispId);
+    }
+    attachGridTypeahead($('#aStart'), ()=>{ aRelink(); }, {home:ownerHome});
+    attachGridTypeahead($('#aDest'),  r=>{ if(r.dispId) aSetDisp(r.dispId); aRelink(); aRecalc(); }, {home:ownerHome});
+    $('#aDest').addEventListener('blur', ()=>{ aRelink(); aRecalc(); });
+    $('#aStart').addEventListener('blur', ()=>{ aRelink(); aRecalc(); });
+    aRelink();   // on open: normalize an existing leg's fields + fill Location if it was blank
     // LIVE distance: fill Miles the moment both ends are known (no need to hit Save first).
     // Skips if miles already entered; office/store dest uses the saved address the router trusts.
     let aBusy=false;
