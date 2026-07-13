@@ -265,7 +265,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.3';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.4';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -341,6 +341,13 @@ function matchDispByText(text){
     }
   }
   return null;
+}
+// a typed store NAME → that store's saved street address (for distance calcs the
+// geocoder can trust — ORS can't reliably geocode business names)
+function dispAddrByText(text){
+  const id=matchDispByText(text); if(!id) return null;
+  const d=(state.dispensaries||[]).find(x=>x.id===id);
+  return (d && d.address && !/placeholder/i.test(d.address)) ? d.address : null;
 }
 // the selectable labor kinds (admin-editable in Settings; safe defaults pre-migration)
 const DEFAULT_LABOR_KINDS = ['Store visit','Education talk','Demo / PAD','Brand event','Travel','Admin'];
@@ -1276,8 +1283,9 @@ function fixTripSheet(x){
     if(!(miles>0) && start && dest){
       busy(btn,true); $('#fMsg').style.color='var(--muted)'; $('#fMsg').textContent='Calculating distance…';
       try{ const body={roundtrip:$('#fRound').checked};   // match the (possibly just-toggled) round-trip setting
-        if(startRes&&startRes.coords){ body.start_lat=startRes.coords.lat; body.start_lng=startRes.coords.lng; } else body.start_address=(startRes&&startRes.addr)||start;
-        if(destRes&&destRes.dispId){ body.dispensary_id=destRes.dispId; } else body.dest_address=(destRes&&destRes.addr)||dest;
+        if(startRes&&startRes.coords){ body.start_lat=startRes.coords.lat; body.start_lng=startRes.coords.lng; } else body.start_address=(startRes&&startRes.addr)||dispAddrByText(start)||start;
+        const fdId=(destRes&&destRes.dispId)||dispEl.value||matchDispByText(dest);
+        if(fdId){ body.dispensary_id=fdId; } else body.dest_address=(destRes&&destRes.addr)||dispAddrByText(dest)||dest;
         const r=await callFn('calc-distance',body); if(r&&r.ok) miles=r.miles;
       }catch(err){}
       busy(btn,false); $('#fMsg').textContent='';
@@ -2586,14 +2594,31 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       if(m>0) $('#aMiles').value=Math.round(m*($('#aRound').checked?2:0.5)*100)/100; };
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
+      // no miles but we know both ends → auto-calc (same as the BA fix popup). A typed
+      // store NAME becomes its saved address; the Location select wins as destination.
+      let miles=Number($('#aMiles').value);
+      const start=$('#aStart').value.trim(), dest=$('#aDest').value.trim();
+      if(!(miles>0) && start && (dest || $('#aDisp').value)){
+        busy(btn,true); $('#aMsg').style.color='var(--muted)'; $('#aMsg').textContent='Calculating distance…';
+        try{
+          const body={ roundtrip:$('#aRound').checked, for_ba:x.ba_id };   // bias geocoding to the BA, not the admin
+          body.start_address = dispAddrByText(start) || start;
+          const dId=$('#aDisp').value || matchDispByText(dest);
+          if(dId) body.dispensary_id=dId; else body.dest_address = dispAddrByText(dest) || dest;
+          const r=await callFn('calc-distance', body);
+          if(r&&r.ok){ miles=r.miles; $('#aMiles').value=miles; }
+          else if(r&&r.message){ $('#aMsg').style.color='var(--yellow)'; $('#aMsg').textContent=r.message; }
+        }catch(_){}
+        busy(btn,false); if(miles>0) $('#aMsg').textContent='';
+      }
       const patch={ trip_date:$('#aDate').value||x.trip_date, dispensary_id:$('#aDisp').value||null, kind:$('#aKind').value||null,
-        start_label:$('#aStart').value.trim()||null, dest_label:$('#aDest').value.trim()||null,
+        start_label:start||null, dest_label:dest||null,
         miles:Number($('#aMiles').value)||null, method:$('#aMethod').value, miles_source:$('#aMethod').value,
         roundtrip:$('#aRound').checked, note:$('#aNote').value.trim()||null };
       busy(btn,true);
       const {data,error}=await supabase.from('trips').update(patch).eq('id',id).select('*').single();
       busy(btn,false);
-      if(error){ $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
+      if(error){ $('#aMsg').style.color='var(--red)'; $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
       closeSheet(); toast('Trip updated ✓','ok'); onSaved&&onSaved(data);
     };
   } else if(kind==='hours'){

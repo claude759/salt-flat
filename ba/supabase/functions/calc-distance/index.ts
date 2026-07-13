@@ -62,10 +62,17 @@ Deno.serve(async (req) => {
 
     const db = admin();
 
-    // geocode bias: the BA's saved coords if we have them, else their region's metro
-    const focus = (who.profile?.base_lat != null && who.profile?.base_lng != null)
-      ? { lat: who.profile.base_lat, lng: who.profile.base_lng }
-      : (REGION_FOCUS[who.profile?.region ?? ""] ?? null);
+    // geocode bias: the trip OWNER's coords/region — when an admin edits a BA's trip
+    // (body.for_ba), bias to that BA, not the admin (a CA admin fixing a NY trip must
+    // not pull ambiguous addresses toward LA). Falls back to the caller's own profile.
+    let fp = who.profile;
+    if (body.for_ba && who.profile?.role === "admin") {
+      const { data: t } = await db.from("profiles").select("base_lat,base_lng,region").eq("id", String(body.for_ba)).maybeSingle();
+      if (t) fp = t;
+    }
+    const focus = (fp?.base_lat != null && fp?.base_lng != null)
+      ? { lat: fp.base_lat, lng: fp.base_lng }
+      : (REGION_FOCUS[fp?.region ?? ""] ?? null);
 
     // ── resolve START: GPS coords > typed address > saved base ──
     let sLat = body.start_lat, sLng = body.start_lng, sLabel: string | null = null;
