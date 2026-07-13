@@ -265,7 +265,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.4';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.5';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -773,15 +773,19 @@ function periodPhase(p){ if(!p) return 'none'; const t=todayISO(); if(p.start_da
 // (admins manage those from the admin tools). A real admin outside preview always passes.
 function canEditPeriod(p){ if(!actingAsBA()) return true; return periodPhase(p)==='current' && p?.status!=='closed'; }
 
+const ALL_PERIODS={ id:'all', label:'All pay periods', start_date:'all', end_date:'', status:'open' };
+const isAllPeriods=p=>!!p && p.id==='all';
 function periodPicker(onChange, opts={}){
   let list = state.periods;
   if(opts.hideFuture) list = list.filter(p=>periodPhase(p)!=='future');   // BAs can't pick a not-yet-started period
   if(!list.length) list = state.periods;                                  // never render an empty picker
-  const html = list.map(p=>{
-    const tag = p.status==='closed' ? ' (closed)' : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : '');
+  const html = `<option value="all" ${isAllPeriods(state.period)?'selected':''}>All pay periods</option>` + list.map(p=>{
+    const tag = p.status==='closed' ? ' (closed)'
+      : periodPhase(p)==='current' ? ' (current)'
+      : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : '');
     return `<option value="${p.id}" ${state.period?.id===p.id?'selected':''}>${esc(p.label)}${tag}</option>`;
   }).join('');
-  setTimeout(()=>{ const s=$('#perSel'); if(s) s.onchange=()=>{ state.period = state.periods.find(p=>p.id===s.value); onChange(); }; },0);
+  setTimeout(()=>{ const s=$('#perSel'); if(s) s.onchange=()=>{ state.period = s.value==='all' ? ALL_PERIODS : state.periods.find(p=>p.id===s.value); onChange(); }; },0);
   return `<select id="perSel">${html||'<option>No periods</option>'}</select>`;
 }
 
@@ -1566,8 +1570,11 @@ function dgRefreshSummary(){ const el=$('#dgSummary'); if(el) el.innerHTML=dgSum
 function renderDayGrid(host){
   host = host || $('#gridcard'); if(!host) return;
   const ctx=gridCtx(); const per=ctx.per||state.period;
-  const days = per ? periodDays(per.start_date, per.end_date) : [];
   const T=ctx.T||[], E=ctx.E||[], H=ctx.H||[];
+  // 'All pay periods': there's no fixed day range — show only the days that have data, newest first
+  const days = isAllPeriods(per)
+    ? [...new Set([...T.map(x=>x.trip_date),...E.map(x=>x.expense_date),...H.map(x=>x.work_date)].filter(Boolean))].sort().reverse()
+    : (per ? periodDays(per.start_date, per.end_date) : []);
   const bucket=(arr,f)=>{ const m={}; (arr||[]).forEach(x=>{ (m[x[f]]=m[x[f]]||[]).push(x); }); return m; };
   const tD=bucket(T,'trip_date'), eD=bucket(E,'expense_date'), hD=bucket(H,'work_date');
   const addable=['miles','expenses','hours'].filter(m=>dgCanAdd(ctx,dgKind(m)));
@@ -2696,18 +2703,20 @@ async function adminDash(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   await reloadPeriods();
   const per=state.period;
+  const all=isAllPeriods(per);
+  const perQ=q=>all?q:q.eq('period_id',per.id);   // 'All pay periods' = no period filter
   const [{data:profs}, trips, exps, subs] = await Promise.all([
     supabase.from('profiles').select('*').order('full_name'),
-    per?supabase.from('trips').select('ba_id,amount,status').eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('ba_id,amount,status,payment,receipt_path').eq('period_id',per.id):{data:[]},
-    per?supabase.from('submissions').select('*').eq('period_id',per.id):{data:[]},
+    per?perQ(supabase.from('trips').select('ba_id,amount,status')):{data:[]},
+    per?perQ(supabase.from('expenses').select('ba_id,amount,status,payment,receipt_path')):{data:[]},
+    per?perQ(supabase.from('submissions').select('*')):{data:[]},
   ]);
   const T=trips.data||[],E=exps.data||[],S=subs.data||[];
   const byBa={};
-  (profs||[]).forEach(b=>byBa[b.id]={p:b,mile:0,exp:0,card:0,items:0,receipts:0,status:'open'});
+  (profs||[]).forEach(b=>byBa[b.id]={p:b,mile:0,exp:0,card:0,items:0,receipts:0,status:'open',subN:0});
   T.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ b.mile+=Number(x.amount||0); b.items++; } });
   E.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ if(x.payment==='company') b.card+=Number(x.amount||0); else b.exp+=Number(x.amount||0); b.items++; if(x.receipt_path) b.receipts++; } });
-  S.forEach(s=>{ if(byBa[s.ba_id]) byBa[s.ba_id].status=s.status; });
+  S.forEach(s=>{ const b=byBa[s.ba_id]; if(b){ if(!all) b.status=s.status; if(['submitted','approved'].includes(s.status)) b.subN++; } });
   // every field worker (BAs + regional admins like Maddy), plus anyone else who logged something
   let rows=Object.values(byBa).filter(r=> isFieldWorker(r.p) || r.items>0 );
   if(state.adminRegion!=='all') rows=rows.filter(r=>r.p.region===state.adminRegion);
@@ -2719,8 +2728,8 @@ async function adminDash(m){
         ${adminRegionPicker('regSel')}</div>
       <div class="totbar" style="margin-top:12px">
         <div class="tot"><div class="k">People</div><div class="v">${rows.length}</div></div>
-        <div class="tot"><div class="k">Submitted</div><div class="v">${rows.filter(r=>r.status==='submitted').length}</div></div>
-        <div class="tot sum"><div class="k">Period total</div><div class="v">${money(grand)}</div></div>
+        <div class="tot"><div class="k">${all?'Periods in':'Submitted'}</div><div class="v">${all?rows.reduce((a,r)=>a+r.subN,0):rows.filter(r=>r.status==='submitted').length}</div></div>
+        <div class="tot sum"><div class="k">${all?'All-time total':'Period total'}</div><div class="v">${money(grand)}</div></div>
       </div>
     </div>
     <div class="card">
@@ -2732,7 +2741,8 @@ async function adminDash(m){
             <div class="t" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.p.full_name||r.p.email)}${r.p.id===state.session.user.id?' <span class="pill">you</span>':''}</div>
             ${r.p.region?`<div class="s">${esc(r.p.region)}</div>`:''}
           </div>
-          ${r.status&&r.status!=='open'?`<span class="badge ${r.status}" style="margin-left:8px;flex:none">${r.status}</span>`:''}
+          ${all ? (r.subN>0?`<span class="pill" style="margin-left:8px;flex:none">${r.subN} period${r.subN>1?'s':''} in</span>`:'')
+                : (r.status&&r.status!=='open'?`<span class="badge ${r.status}" style="margin-left:8px;flex:none">${r.status}</span>`:'')}
           <div style="font-weight:700;white-space:nowrap;margin-left:8px;flex:none">${money(r.mile+r.exp)}</div>
         </div>`).join(''):`<p class="muted small">No people${state.adminRegion!=='all'?' in '+state.adminRegion:''} yet — add them in Settings.</p>`}
     </div>`;
@@ -2752,15 +2762,17 @@ function admRefreshTotals(){
 }
 async function adminBaDetail(baId){
   const per=state.period;
+  const allPer=isAllPeriods(per);
+  const perQ=q=>allPer?q:q.eq('period_id',per.id);
   openSheet(`<div class="loading"><span class="spin"></span></div>`);
   // salaried BAs (Maddy): make sure this period's even-split daily labor exists before we read it
-  try{ await supabase.rpc('generate_salary_labor',{p_ba:baId, p_period:per.id}); }catch(_){}
+  if(!allPer){ try{ await supabase.rpc('generate_salary_labor',{p_ba:baId, p_period:per.id}); }catch(_){} }
   const [{data:prof},{data:T},{data:E},{data:H},{data:sub}]=await Promise.all([
     supabase.from('profiles').select('*').eq('id',baId).single(),
-    supabase.from('trips').select('*').eq('ba_id',baId).eq('period_id',per.id).order('trip_date'),
-    supabase.from('expenses').select('*').eq('ba_id',baId).eq('period_id',per.id).order('expense_date'),
-    supabase.from('hours').select('*').eq('ba_id',baId).eq('period_id',per.id).order('work_date'),
-    supabase.from('submissions').select('*').eq('ba_id',baId).eq('period_id',per.id).maybeSingle(),
+    perQ(supabase.from('trips').select('*').eq('ba_id',baId)).order('trip_date'),
+    perQ(supabase.from('expenses').select('*').eq('ba_id',baId)).order('expense_date'),
+    perQ(supabase.from('hours').select('*').eq('ba_id',baId)).order('work_date'),
+    allPer?{data:null}:supabase.from('submissions').select('*').eq('ba_id',baId).eq('period_id',per.id).maybeSingle(),
   ]);
   const mile=(T||[]).reduce((a,x)=>a+ +x.amount,0);
   const {reimb,card}=expSplit(E);
@@ -2779,7 +2791,7 @@ async function adminBaDetail(baId){
   state.grid={ baId, isAdmin:true, per, region: prof.region, T:T||[], E:E||[], H:H||[], canAdd:false, onChange:admRefreshTotals };
   openSheet(`
     <h3>${esc(prof.full_name||prof.email)}</h3>
-    <div class="small muted">${esc(per.label)} · <span class="badge ${S.status}">${S.status}</span></div>
+    <div class="small muted">${esc(per.label)}${allPer?'':` · <span class="badge ${S.status}">${S.status}</span>`}</div>
     <div class="card" style="margin:12px 0">
       <div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap">
         <div><div class="k" style="${kst}">Total Mileage</div><div style="font-size:20px;font-weight:750" id="admMile">${money(mile)}</div></div>
@@ -2803,7 +2815,7 @@ async function adminBaDetail(baId){
         : ` Use “⬇ Pull from Gusto now” in Settings, or wait for the nightly sync.`}</div></div></div>`:''}
     <div id="admTodo">${todoCard(items,false,true)}</div>
     <div id="admGrid"></div>
-    ${(H||[]).some(x=>!x.dispensary_id)?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
+    ${(!allPer && (H||[]).some(x=>!x.dispensary_id))?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
     <div class="row wrap" style="margin-top:16px">
       ${S.status==='submitted'?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
@@ -2927,19 +2939,28 @@ async function adminReview(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   await reloadPeriods();
   const per=state.period;
+  const allPer=isAllPeriods(per);
+  const perQ=q=>allPer?q:q.eq('period_id',per.id);   // 'All pay periods' = no period filter
   const [{data:bas}, subs, trips, exps, hours] = await Promise.all([
     supabase.from('profiles').select('*').order('full_name'),
-    per?supabase.from('submissions').select('*').eq('period_id',per.id):{data:[]},
-    per?supabase.from('trips').select('ba_id').eq('period_id',per.id):{data:[]},
-    per?supabase.from('expenses').select('ba_id').eq('period_id',per.id):{data:[]},
-    per?supabase.from('hours').select('ba_id').eq('period_id',per.id):{data:[]},
+    per?perQ(supabase.from('submissions').select('*')):{data:[]},
+    per?perQ(supabase.from('trips').select('ba_id')):{data:[]},
+    per?perQ(supabase.from('expenses').select('ba_id')):{data:[]},
+    per?perQ(supabase.from('hours').select('ba_id')):{data:[]},
   ]);
-  const subBy={}; (subs.data||[]).forEach(s=>subBy[s.ba_id]=s);
+  // per-period: one submission per BA. All-periods: aggregate — a BA counts as awaiting
+  // if ANY period is sitting at 'submitted'; badge shows how many periods are in.
+  const subBy={}, subN={};
+  (subs.data||[]).forEach(s=>{
+    if(['submitted','approved'].includes(s.status)) subN[s.ba_id]=(subN[s.ba_id]||0)+1;
+    const cur=subBy[s.ba_id];
+    if(!cur || s.status==='submitted' || (cur.status!=='submitted' && (s.submitted_at||'')>(cur.submitted_at||''))) subBy[s.ba_id]=s;
+  });
   const cnt={}; (trips.data||[]).concat(exps.data||[]).forEach(x=>cnt[x.ba_id]=(cnt[x.ba_id]||0)+1);
   const hrsBy={}; (hours.data||[]).forEach(h=>hrsBy[h.ba_id]=(hrsBy[h.ba_id]||0)+1);
   let rows=(bas||[]).filter(isFieldWorker);   // BAs + regional admins (Maddy); not universal admins
   if(state.adminRegion!=='all') rows=rows.filter(b=>b.region===state.adminRegion);
-  const turnedIn=b=>['submitted','approved'].includes(subBy[b.id]?.status);
+  const turnedIn=b=>allPer ? (subN[b.id]||0)>0 : ['submitted','approved'].includes(subBy[b.id]?.status);
   // order: awaiting your approval → not submitted → approved
   const rank=b=>{ const s=subBy[b.id]?.status; return s==='submitted'?0 : s==='approved'?2 : 1; };
   rows=rows.slice().sort((a,b)=>rank(a)-rank(b)||(a.full_name||'').localeCompare(b.full_name||''));
@@ -2960,7 +2981,8 @@ async function adminReview(m){
       <h3>BA submissions ${per?`<span class="muted small">· ${esc(per.label)}</span>`:''}</h3>
       ${rows.length?rows.map(b=>{
         const st=subBy[b.id]?.status||'none', items=cnt[b.id]||0, hrs=hrsBy[b.id]||0;
-        const hrsTag=hrs?` · ⏱ ${hrs} day${hrs===1?'':'s'} of hours`:'';
+        const hrsTag=(hrs?` · ⏱ ${hrs} day${hrs===1?'':'s'} of hours`:'')
+          +(allPer&&subN[b.id]?` · 📬 ${subN[b.id]} period${subN[b.id]>1?'s':''} in`:'');
         let badge, cls, sub;
         if(st==='submitted'){ badge='✓ submitted'; cls='submitted'; sub=`Awaiting approval${subBy[b.id]?.submitted_at?' · '+new Date(subBy[b.id].submitted_at).toLocaleDateString():''}${hrsTag}`; }
         else if(st==='approved'){ badge='✓ approved'; cls='approved'; sub='Approved & reimbursed'+hrsTag; }
