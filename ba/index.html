@@ -265,7 +265,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.8';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.9';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1661,8 +1661,8 @@ function wireGridRow(tr, mode){
     if(rt) rt.addEventListener('change',()=>{ const m=Number(mi.value); if(m>0){ mi.value=Math.round(m*(rt.checked?2:0.5)*100)/100; mi.classList.remove('needs'); } });
     const nav=tr.querySelector('.g-nav'); if(nav) nav.onchange=e=>gridNavRow(e,tr);
     const nv=tr.querySelector('[data-navview]'); if(nv) nv.onclick=async()=>{ const p=tr.dataset.navpath; if(p){ const u=await signedUrl('odometer',p); if(u) window.open(u,'_blank'); } };
-    attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true});
-    attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r; if(r.dispId){ const btn=tr.querySelector('.g-disp'); if(btn && btn.dataset.ids!==r.dispId){ btn.dataset.ids=r.dispId; const l=dispCellLabelText([r.dispId]); btn.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; } } scheduleAutosave(tr,mode); });
+    attachGridTypeahead(tr.querySelector('.g-start'), r=>{ tr._startResolved=r; scheduleAutosave(tr,mode); }, {gps:true, home:gridCtx().homeAddr});
+    attachGridTypeahead(tr.querySelector('.g-dest'),  r=>{ tr._destResolved=r; if(r.dispId){ const btn=tr.querySelector('.g-disp'); if(btn && btn.dataset.ids!==r.dispId){ btn.dataset.ids=r.dispId; const l=dispCellLabelText([r.dispId]); btn.innerHTML=l?esc(l):'<span class="pkph">— pick —</span>'; } } scheduleAutosave(tr,mode); }, {home:gridCtx().homeAddr});
     ['.g-start','.g-dest'].forEach(sel=>{ const el=tr.querySelector(sel); if(el) el.addEventListener('blur', ()=>setTimeout(()=>maybeCalcDistance(tr),250)); });
     // if they typed a destination that clearly is a known store but didn't pick the chip,
     // link it for them (visible) so the trip counts as a visit — only on a confident match
@@ -1903,7 +1903,7 @@ function attachGridTypeahead(input, onResolve, opts={}){
       if(it._gps){ box.classList.add('hide'); getGridGps(input,onResolve); return; }
       input.value=it.display; box.classList.add('hide'); onResolve({display:it.display,addr:it.addr,dispId:it.dispId}); });
   };
-  const render=()=>{ box._owner=input; const q=input.value; local=placeItems(q);
+  const render=()=>{ box._owner=input; const q=input.value; local=placeItems(q, opts.home);
     if(opts.gps) local=[{display:'📍 Current location', addr:'', dispId:null, label:'📍 Current location', sub:'use your GPS', _gps:true}, ...local];
     clearTimeout(timer);
     const wantRemote=!!(q&&q.trim().length>=3); paint(local,wantRemote);
@@ -1924,9 +1924,14 @@ function rememberPlaces(...labels){
     const i=cur.findIndex(p=>p.toLowerCase()===v.toLowerCase()); if(i>=0) cur.splice(i,1); cur.unshift(v); }
   state.recentPlaces=cur.slice(0,30);
 }
-function placeItems(q){
-  q=(q||'').trim().toLowerCase(); const out=[]; const base=state.profile.base_address;
-  if(base && (q===''||'home'.includes(q)||'base'.includes(q)||base.toLowerCase().includes(q)))
+function placeItems(q, home){
+  // home: override whose 🏠 shows — an admin editing a BA's trip sees THAT BA's home.
+  // Matches loosely: full-address substring, 'home', or any typed token hitting it
+  // ('376 sto' → '376 Stockton St, Brooklyn…').
+  q=(q||'').trim().toLowerCase(); const out=[];
+  const base = home!==undefined ? home : state.profile?.base_address;
+  const bl=(base||'').toLowerCase();
+  if(base && (q===''||'home'.includes(q)||'base'.includes(q)||q.split(/\s+/).every(t=>bl.includes(t))))
     out.push({display:base, addr:base, dispId:null, label:'🏠 Home', sub:base});
   const qTokens=q.split(/\s+/).filter(Boolean);
   const hitD=(d)=>{ const hay=(d.name+' '+(d.address||'')).toLowerCase(); return qTokens.every(t=>hay.includes(t)); };
@@ -1950,7 +1955,7 @@ function attachPlaceTypeahead(input, box, onResolve, opts={}){
       onResolve({display:it.display, addr:it.addr, dispId:it.dispId}); });
   };
   const render=()=>{
-    const q=input.value; local=opts.addressOnly?[]:placeItems(q); clearTimeout(timer);
+    const q=input.value; local=opts.addressOnly?[]:placeItems(q, opts.home); clearTimeout(timer);
     const wantRemote = !!(q && q.trim().length>=3);
     paint(local, wantRemote);
     if(wantRemote) timer=setTimeout(async()=>{
@@ -2605,8 +2610,11 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     // address/store suggestions while typing, same as the BA popups; picking a store
     // as the destination also fills the Location select (change syncs its picker label)
     const aSetDisp=id=>{ const d=$('#aDisp'); if(d && d.value!==id){ d.value=id; d.dispatchEvent(new Event('change',{bubbles:true})); } };
-    attachGridTypeahead($('#aStart'), ()=>{});
-    attachGridTypeahead($('#aDest'),  r=>{ if(r.dispId) aSetDisp(r.dispId); });
+    // 🏠 = the TRIP OWNER's saved home (not the admin's) — top suggestion for their trips
+    const {data:ownerP}=await supabase.from('profiles').select('base_address').eq('id',x.ba_id).maybeSingle();
+    const ownerHome=ownerP?.base_address||null;
+    attachGridTypeahead($('#aStart'), ()=>{}, {home:ownerHome});
+    attachGridTypeahead($('#aDest'),  r=>{ if(r.dispId) aSetDisp(r.dispId); }, {home:ownerHome});
     $('#aDest').addEventListener('blur', ()=>{ if(!$('#aDisp').value){ const id=matchDispByText($('#aDest').value); if(id) aSetDisp(id); } });
     // flipping round-trip doubles/halves the miles in place — admin sees (and can correct) the result before saving
     $('#aRound').onchange=()=>{ const m=Number($('#aMiles').value);
@@ -2800,7 +2808,7 @@ async function adminBaDetail(baId){
   const items=[...(T||[]).map(x=>({...x,_k:'trip'})),...(E||[]).map(x=>({...x,_k:'exp'})),...(H||[]).map(x=>({...x,_k:'hours'}))];
   // shared day-grid context: the admin edits THIS BA's data inline (RLS lets admins
   // edit any row + add hours; adding trips/expenses on a BA's behalf stays disabled).
-  state.grid={ baId, isAdmin:true, per, region: prof.region, T:T||[], E:E||[], H:H||[], canAdd:false, onChange:admRefreshTotals };
+  state.grid={ baId, isAdmin:true, per, region: prof.region, homeAddr: prof.base_address||null, T:T||[], E:E||[], H:H||[], canAdd:false, onChange:admRefreshTotals };
   openSheet(`
     <h3>${esc(prof.full_name||prof.email)}</h3>
     <div class="small muted">${esc(per.label)}${allPer?'':` · <span class="badge ${S.status}">${S.status}</span>`}</div>
