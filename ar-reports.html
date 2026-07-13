@@ -172,6 +172,12 @@
   .cr-use-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
   .cr-use-form input{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:12.5px}
   .cr-use-form input.err{border-color:var(--red)}
+  .cr-ac-wrap{position:relative;display:block}
+  .cr-ac-wrap input{width:100%;box-sizing:border-box}
+  .cr-ac{position:absolute;top:100%;left:0;right:0;z-index:60;background:var(--panel2);border:1px solid var(--line);border-radius:9px;margin-top:4px;max-height:250px;overflow:auto;box-shadow:0 10px 28px rgba(0,0,0,.45)}
+  .cr-ac .opt{padding:8px 11px;cursor:pointer;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .cr-ac .opt:hover,.cr-ac .opt.hi{background:var(--accent);color:#fff}
+  .cr-ac .none{padding:8px 11px;color:var(--muted);font-size:12px}
   .cr-mini{padding:5px 10px;font-size:12px}
   .cr-del{color:var(--muted);cursor:pointer;background:none;border:0;font-size:14px;padding:4px 6px}
   .cr-del:hover{color:var(--red)}
@@ -869,7 +875,7 @@
       <div id="cr-addbox" class="cr-addbox">
         <div class="cr-addhead">Add an accepted credit</div>
         <div class="cr-form">
-          <label>Dispensary<input id="cr-disp" list="cr-disp-list" placeholder="Dispensary name" autocomplete="off" /></label>
+          <label>Dispensary<span class="cr-ac-wrap"><input id="cr-disp" placeholder="Start typing a NY customer…" autocomplete="off" /><div id="cr-ac" class="cr-ac hidden"></div></span></label>
           <label>Credit amount<input id="cr-amt" type="number" step="0.01" min="0" placeholder="0.00" /></label>
           <label>Accepted by <span class="muted2">(optional)</span><input id="cr-by" placeholder="your name" autocomplete="off" /></label>
           <label class="cr-note-fld">Note<textarea id="cr-note" rows="2" placeholder="reason / details for this credit"></textarea></label>
@@ -880,7 +886,6 @@
           <button class="btn primary" id="cr-add">Add credit</button>
         </div>
       </div>
-      <datalist id="cr-disp-list"></datalist>
 
       <div id="cr-summary" class="cr-summary"></div>
       <div id="cr-wrap"></div>
@@ -4605,11 +4610,42 @@ function setCrMode(m){ crMode=(m==='used')?'used':'active';
   renderCreditsTable(); }
 document.querySelectorAll('#cr-toggle button').forEach(b=>b.onclick=()=>setCrMode(b.dataset.cr));
 
+// Styled typeahead for the Dispensary field, fed by the NY (LeafLink) customers list. Replaces
+// the native <datalist> (unreliable + unstyled white dropdown). Filters as you type, click or
+// Enter to fill; a free-typed name is still allowed (NY customers can be new).
+let CR_NAMES=[];
+function crSetupAutocomplete(names){
+  CR_NAMES=names||[];
+  const inp=$('#cr-disp'), box=$('#cr-ac'); if(!inp||!box) return;
+  let shown=[], hi=-1;
+  const paint=()=>{ const q=inp.value.trim().toLowerCase();
+    shown = (q ? CR_NAMES.filter(n=>n.toLowerCase().includes(q)) : CR_NAMES).slice(0,12);
+    hi=-1;
+    if(!CR_NAMES.length){ box.classList.add('hidden'); return; }   // no NY list loaded → just a plain input
+    box.innerHTML = shown.length
+      ? shown.map((n,i)=>`<div class="opt" data-i="${i}">${esc(n)}</div>`).join('')
+      : '<div class="none">No NY customer match — you can still type a new name</div>';
+    box.classList.remove('hidden');
+    box.querySelectorAll('.opt').forEach(o=>o.onmousedown=e=>{ e.preventDefault(); inp.value=shown[+o.dataset.i]; box.classList.add('hidden'); });
+  };
+  inp.oninput=paint; inp.onfocus=paint;
+  inp.onblur=()=>setTimeout(()=>box.classList.add('hidden'),150);
+  inp.onkeydown=e=>{ if(box.classList.contains('hidden'))return;
+    if(e.key==='ArrowDown') hi=Math.min(hi+1,shown.length-1);
+    else if(e.key==='ArrowUp') hi=Math.max(hi-1,0);
+    else if(e.key==='Enter'){ if(hi>=0&&shown[hi]){ inp.value=shown[hi]; box.classList.add('hidden'); e.preventDefault(); } return; }
+    else if(e.key==='Escape'){ box.classList.add('hidden'); return; }
+    else return;
+    e.preventDefault();
+    box.querySelectorAll('.opt').forEach((o,i)=>o.classList.toggle('hi',i===hi));
+    const el=box.querySelector('.opt.hi'); if(el) el.scrollIntoView({block:'nearest'});
+  };
+}
+
 async function renderCredits(){
   const wrap=$('#cr-wrap'); if(!wrap) return;
-  // dispensary autocomplete from the NY (LeafLink) customers
-  const names=new Set(); (NY_EVENTS||[]).forEach(e=>{ if(e.c) names.add(e.c); });
-  $('#cr-disp-list').innerHTML=[...names].sort().map(n=>`<option value="${esc(n)}"></option>`).join('');
+  // dispensary typeahead from the NY (LeafLink) customers list
+  crSetupAutocomplete([...new Set((NY_EVENTS||[]).map(e=>e.c).filter(Boolean))].sort((a,b)=>a.localeCompare(b)));
   wrap.innerHTML=`<div class="empty">Loading credits…</div>`;
   try{ CREDITS=await sbCredits('select=*&order=created_at.desc'); }
   catch(e){ wrap.innerHTML=`<div class="empty">Couldn't load credits (${esc(e.message)}). Check your connection and hit Refresh.</div>`; return; }
