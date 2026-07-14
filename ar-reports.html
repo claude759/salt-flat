@@ -181,6 +181,16 @@
   .cr-mini{padding:5px 10px;font-size:12px}
   .cr-del{color:var(--muted);cursor:pointer;background:none;border:0;font-size:14px;padding:4px 6px}
   .cr-del:hover{color:var(--red)}
+  .clickrow{cursor:pointer}
+  .clickrow:hover td{background:rgba(255,255,255,.035)}
+  .cr-src{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--panel2);white-space:nowrap}
+  .cr-src.credit{color:var(--accent2)}
+  .cr-src.discount{color:var(--orange)}
+  /* NY invoice drill summary */
+  .nyinv-sum{display:flex;gap:10px;flex-wrap:wrap}
+  .nyinv-sum>div{flex:1;min-width:110px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
+  .nyinv-sum span{display:block;font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .nyinv-sum b{font-size:15px;font-weight:800}
   /* NY remittance waterfall */
   .nywf{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:16px;max-width:620px}
   .nywf-h{font-weight:700;font-size:13.5px;margin-bottom:10px}
@@ -410,7 +420,7 @@
       <div class="tab" data-tab="scorecard">Sales Scorecard</div>
       <div class="tab" data-tab="tiers">Customer Tiers</div>
       <div class="tab" data-tab="reports">Reports</div>
-      <div class="tab hidden" data-tab="credits">Credits Track</div>
+      <div class="tab hidden" data-tab="credits">Credits/Discount Tracker</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -917,7 +927,7 @@
       <div class="cr-bar">
         <div id="cr-toggle" class="seg big">
           <button class="on" data-cr="active">Active credits</button>
-          <button data-cr="used">Used credits</button>
+          <button data-cr="used">Used credits / discounts</button>
         </div>
         <div class="grow"></div>
         <button class="btn" id="cr-refresh" title="Reload from the server">↻ Refresh</button>
@@ -1357,6 +1367,7 @@ function applyShared(d){
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
     if(data.nyInv && data.nyInv.length){ NY_INV=nyInvFromWire(data.nyInv); any=true; }   // NY recon invoices (real paid/outstanding/discounts)
+    if(data.nyRItems && data.nyRItems.length){ NY_RITEMS=nyRItemsFromWire(data.nyRItems); any=true; }   // NY recon line items (invoice drill-down)
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
@@ -1414,6 +1425,7 @@ async function publishToTeam(){
     if(NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     if(NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
     if(NY_INV && NY_INV.length) cur.nyInv=nyInvToWire(NY_INV);                          // additive; NY recon invoices (paid/outstanding/discounts)
+    if(NY_RITEMS && NY_RITEMS.length) cur.nyRItems=nyRItemsToWire(NY_RITEMS);            // additive; NY recon line items (invoice drill-down)
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
     // latest values for the current week; past weeks are never overwritten.
@@ -3381,6 +3393,40 @@ function buildNyInv(){
 }
 function nyInvToWire(list){ return (list||[]).map(x=>[x.inv,x.so,x.c,x.d,x.due,x.st,x.total,x.paid,x.out,x.disc,x.dsum]); }
 function nyInvFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),so:String(a[1]||''),c:String(a[2]||''),d:a[3]||null,due:a[4]||null,st:String(a[5]||''),total:+a[6]||0,paid:+a[7]||0,out:+a[8]||0,disc:+a[9]||0,dsum:String(a[10]||'')})); }
+// NY recon LINE ITEMS — what an invoice is actually made of (product, units, price, per-line discount).
+let NY_RITEMS=[];   // {inv, c, product, qty, price, gross, disc}
+function buildNyRItems(){
+  if(!FILES.ny_recon_items) return [];
+  return FILES.ny_recon_items.data.map(r=>({
+    inv:(r['Invoice Numbers']||'').trim(), c:nyReconCust(r['Customer']),
+    product:(r['Product']||'').trim()||(r['Product SKU']||'').trim(),
+    qty:num(r['Quantity']), price:num(r['Order Item Price']),
+    gross:num(r['Gross Sale']), disc:Math.abs(num(r['Invoice Discount'])),
+  })).filter(x=>x.inv);
+}
+function nyRItemsToWire(l){ return (l||[]).map(x=>[x.inv,x.c,x.product,x.qty,x.price,Math.round(x.gross*100)/100,Math.round(x.disc*100)/100]); }
+function nyRItemsFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),c:String(a[1]||''),product:String(a[2]||''),qty:+a[3]||0,price:+a[4]||0,gross:+a[5]||0,disc:+a[6]||0})); }
+// Click an invoice on the NY AR page → its line items + discount detail.
+function nyInvDrill(invNo){
+  const x=(NY_INV||[]).find(v=>v.inv===invNo); if(!x) return;
+  const items=(NY_RITEMS||[]).filter(i=>i.inv===invNo);
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const head=`<div class="nyinv-sum">
+      <div><span>Invoiced</span><b>${fmt$(x.total)}</b></div>
+      <div><span>Discount</span><b style="color:var(--orange)">${x.disc>0.005?('-'+fmt$(x.disc)):'—'}</b></div>
+      <div><span>Collected</span><b style="color:var(--green)">${fmt$(x.paid)}</b></div>
+      <div><span>Outstanding</span><b style="color:${x.out>0.005?'var(--yellow)':'var(--green)'}">${fmt$(x.out)}</b></div>
+    </div>${x.dsum?`<div class="muted2" style="margin-top:8px;font-size:12px">Discount note: <b>${esc(x.dsum)}</b></div>`:''}`;
+  openScModal({
+    title:`${x.c} — ${x.inv}`,
+    sub:[`invoiced ${fmtD(x.d)}`, `due ${fmtD(x.due)}`, x.st||null, x.so?('SO '+x.so):null].filter(Boolean).join(' · '),
+    headHtml:head,
+    columns:[{l:'Product'},{l:'Units',num:true},{l:'Price',num:true,money:true},{l:'Gross',num:true,money:true},{l:'Discount',num:true,money:true},{l:'Net',num:true,money:true}],
+    rows: items.length
+      ? items.map(i=>[i.product, Math.round(i.qty).toLocaleString(), i.price, i.gross, i.disc>0.005?-i.disc:0, i.gross-i.disc])
+      : [['(line items arrive with the next recon ingest)','','',x.total+x.disc, x.disc>0.005?-x.disc:0, x.total]],
+    totalLabel:'Invoice total', total:x.total });
+}
 // The remittance waterfall: what the dispensaries owe → what Wizard Trees actually receives.
 function nyRecon(){
   const L=NY_INV||[]; if(!L.length) return null;
@@ -3396,6 +3442,7 @@ function nyRecon(){
 
 function buildNy(){ if(FILES.leaflink) NY_EVENTS=buildNyEvents(); if(FILES.leaflink_items) NY_ITEMS=buildNyItemEvents();
   if(FILES.ny_invoices) NY_INV=buildNyInv();
+  if(FILES.ny_recon_items) NY_RITEMS=buildNyRItems();
   if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); } }
 function tierDataNY(){
   const months=Math.max(1,+(($('#tier-months')||{}).value||3));
@@ -3520,7 +3567,7 @@ function renderArNYRecon(){
     if(x.dpd>0) return `<span style="color:var(--red)">overdue ${x.dpd}d</span>`;
     if(x.dpd===0) return '<span style="color:var(--yellow)">due today</span>';
     return `<span style="color:${x.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-x.dpd}d</span>`; };
-  const body=view.map(x=>`<tr>
+  const body=view.map(x=>`<tr class="clickrow" data-inv="${esc(x.inv)}" title="Click for line items + discount detail">
     <td>${esc(x.c)}</td><td>${esc(x.inv)}</td><td class="num">${fmtD(x.d)}</td><td class="num">${fmtD(x.due)}</td>
     <td class="num">${statusCell(x)}</td>
     <td class="num money">${x.disc>0.005?`<span style="color:var(--orange)">-${fmt$(x.disc)}</span>`:'<span class="neg">—</span>'}</td>
@@ -3529,7 +3576,8 @@ function renderArNYRecon(){
     <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
   wrap.innerHTML=wfHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
-  note.innerHTML=`<b>New York receivables</b> — REAL invoice balances from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>): <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed, <b>Discount</b> = invoice-level discount. Wizard Trees is the brand, so what you actually receive is the <b>Net PO</b> above (after the 9% NY excise baked into the price and the distributor's 10% fee). Sales/orders elsewhere on the NY side still come from LeafLink (live); this page is the authoritative money view and updates when a new recon workbook is ingested.`;
+  wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
+  note.innerHTML=`<b>New York receivables</b> — click any invoice for its line items + discount detail. REAL invoice balances from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>): <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed, <b>Discount</b> = invoice-level discount. Wizard Trees is the brand, so what you actually receive is the <b>Net PO</b> above (after the 9% NY excise baked into the price and the distributor's 10% fee). Sales/orders elsewhere on the NY side still come from LeafLink (live); this page is the authoritative money view and updates when a new recon workbook is ingested.`;
 }
 function renderArNY(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note'); if(!wrap) return;
@@ -4880,34 +4928,61 @@ function crAttHtml(atts){ return (atts||[]).map(a=>{ const ic=(/pdf/i.test(a.typ
   return `<a class="cr-att" href="${esc(sbFileUrl(a.path))}" target="_blank" rel="noopener" title="${esc(a.name||'')}">${ic} ${esc((a.name||'file').slice(0,24))}</a>`; }).join('') || '<span class="neg">—</span>'; }
 const crD=s=>s?new Date(String(s).length<=10?s+'T00:00:00':s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
 
+// The USED view merges two things, because both are concessions that have already been given:
+//   1. credits you logged here and marked used, and
+//   2. the invoice-level DISCOUNTS from the NY recon upload (by definition already applied).
+// Recon discounts are read-only (they come from the distributor's file) — clicking one opens the
+// invoice it was applied to, rather than the credit editor.
+function crUsedList(){
+  const manual=(CREDITS||[]).filter(c=>c.status==='used').map(c=>({
+    id:c.id, src:'credit', dispensary:c.dispensary, amount:+c.amount||0, note:(c.note||'').trim(),
+    used_date:c.used_date||'', used_invoice:c.used_invoice||'', attachments:c.attachments||[] }));
+  const disc=(NY_INV||[]).filter(x=>x.disc>0.005).map(x=>({
+    id:'inv:'+x.inv, src:'discount', dispensary:x.c, amount:x.disc, note:(x.dsum||'Invoice discount').trim(),
+    used_date:x.d?new Date(x.d).toISOString().slice(0,10):'', used_invoice:x.inv, attachments:[], inv:x.inv }));
+  return [...manual,...disc].sort((a,b)=>String(b.used_date||'').localeCompare(String(a.used_date||'')));
+}
 function renderCreditsTable(){
   const wrap=$('#cr-wrap'), sum=$('#cr-summary'), foot=$('#cr-foot'); if(!wrap) return;
-  const list=CREDITS.filter(c=>c.status===crMode);
-  const total=list.reduce((s,c)=>s+(+c.amount||0),0);
-  sum.innerHTML=`<div class="cr-scard"><div class="l">${crMode==='active'?'Active credits':'Used credits'}</div><div class="v">${list.length}</div></div>
-    <div class="cr-scard"><div class="l">Total ${crMode==='active'?'outstanding':'applied'}</div><div class="v money">${fmt$(total)}</div></div>`;
-  if(!list.length){ wrap.innerHTML=`<div class="empty">No ${crMode} credits yet.${crMode==='active'?' Add one above.':''}</div>`; foot.innerHTML=''; return; }
+  const isActive=crMode==='active';
+  const list=isActive
+    ? (CREDITS||[]).filter(c=>c.status==='active').map(c=>({id:c.id,src:'credit',dispensary:c.dispensary,amount:+c.amount||0,note:(c.note||'').trim(),attachments:c.attachments||[],created_at:c.created_at,created_by:c.created_by}))
+    : crUsedList();
+  const total=list.reduce((s,c)=>s+(c.amount||0),0);
+  const nCred=list.filter(c=>c.src==='credit').length, nDisc=list.filter(c=>c.src==='discount').length;
+  sum.innerHTML=isActive
+    ? `<div class="cr-scard"><div class="l">Active credits</div><div class="v">${list.length}</div></div>
+       <div class="cr-scard"><div class="l">Total outstanding</div><div class="v money">${fmt$(total)}</div></div>`
+    : `<div class="cr-scard"><div class="l">Used credits</div><div class="v">${nCred}</div></div>
+       <div class="cr-scard"><div class="l">Invoice discounts</div><div class="v">${nDisc}</div></div>
+       <div class="cr-scard"><div class="l">Total applied</div><div class="v money">${fmt$(total)}</div></div>`;
+  if(!list.length){ wrap.innerHTML=`<div class="empty">${isActive?'No active credits yet. Add one above.':'No used credits or discounts yet.'}</div>`; foot.innerHTML=''; return; }
   const rows=list.map(c=>{
-    const att=crAttHtml(c.attachments), noteFull=(c.note||'').trim();
-    const noteCell = noteFull ? `<td class="cr-note-cell" title="${esc(noteFull)}">${esc(noteFull)}</td>` : `<td><span class="neg">—</span></td>`;
-    if(crMode==='active') return `<tr class="cr-row" data-id="${esc(c.id)}">
-      <td>${esc(c.dispensary)}</td><td class="num money">${fmt$(+c.amount||0)}</td>${noteCell}<td>${att}</td>
+    const att=crAttHtml(c.attachments);
+    const noteCell = c.note ? `<td class="cr-note-cell" title="${esc(c.note)}">${esc(c.note)}</td>` : `<td><span class="neg">—</span></td>`;
+    if(isActive) return `<tr class="cr-row" data-id="${esc(c.id)}" data-src="credit">
+      <td>${esc(c.dispensary)}</td><td class="num money">${fmt$(c.amount)}</td>${noteCell}<td>${att}</td>
       <td class="num">${crD(c.created_at)}${c.created_by?`<div class="muted2" style="font-size:11px">${esc(c.created_by)}</div>`:''}</td>
       <td class="cr-actioncell"><button class="btn cr-mini cr-markused">Mark used ↦</button></td>
       <td class="cr-delcell"><button class="cr-del" title="Delete">✕</button></td></tr>`;
-    return `<tr class="cr-row" data-id="${esc(c.id)}">
-      <td>${esc(c.dispensary)}</td><td class="num money">${fmt$(+c.amount||0)}</td>${noteCell}
+    const isDisc=c.src==='discount';
+    return `<tr class="cr-row" data-id="${esc(c.id)}" data-src="${c.src}" data-inv="${esc(c.used_invoice||'')}"${isDisc?' title="From the recon upload — click to open the invoice"':''}>
+      <td>${esc(c.dispensary)}</td>
+      <td><span class="cr-src ${c.src}">${isDisc?'Invoice discount':'Credit'}</span></td>
+      <td class="num money">${fmt$(c.amount)}</td>${noteCell}
       <td class="num">${crD(c.used_date)}</td><td>${esc(c.used_invoice||'')||'<span class="neg">—</span>'}</td><td>${att}</td>
-      <td class="cr-delcell"><button class="cr-del" title="Delete">✕</button></td></tr>`;
+      <td class="cr-delcell">${isDisc?'':'<button class="cr-del" title="Delete">✕</button>'}</td></tr>`;
   }).join('');
-  const head = crMode==='active'
+  const head = isActive
     ? `<th>Dispensary</th><th class="num">Amount</th><th>Note</th><th>Attachments</th><th class="num">Added</th><th></th><th></th>`
-    : `<th>Dispensary</th><th class="num">Amount</th><th>Note</th><th class="num">Used date</th><th>Invoice #</th><th>Attachments</th><th></th>`;
+    : `<th>Dispensary</th><th>Source</th><th class="num">Amount</th><th>Note</th><th class="num">Date applied</th><th>Invoice #</th><th>Attachments</th><th></th>`;
   wrap.innerHTML=`<table id="cr-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
-  foot.innerHTML=`Stored live in Supabase — visible to everyone with the app link. Click a row to view details or edit. ${crMode==='active'?'“Mark used” records the date + invoice the credit was applied to, then moves it to the Used tab.':''}`;
-  // whole-row click → view/edit (ignore clicks on the action buttons / attachment links / inline forms)
+  foot.innerHTML=isActive
+    ? `Credits stored live in Supabase — visible to everyone with the app link. Click a row to view details or edit. “Mark used” records the date + invoice the credit was applied to, then moves it to the Used tab.`
+    : `Both kinds of concession that have already been given: <b>Credits</b> you logged and marked used, and <b>Invoice discounts</b> pulled straight from the NY recon upload (read-only — click one to open its invoice).`;
   wrap.querySelectorAll('#cr-table tbody tr.cr-row').forEach(tr=>tr.onclick=e=>{
-    if(e.target.closest('button,a,input,.cr-use-form,.cr-delconf')) return; crEditModal(tr.dataset.id); });
+    if(e.target.closest('button,a,input,.cr-use-form,.cr-delconf')) return;
+    if(tr.dataset.src==='discount') nyInvDrill(tr.dataset.inv); else crEditModal(tr.dataset.id); });
   wrap.querySelectorAll('.cr-del').forEach(b=>b.onclick=e=>{ e.stopPropagation(); crConfirmDelete(b.closest('tr')); });
   wrap.querySelectorAll('.cr-markused').forEach(b=>b.onclick=e=>{ e.stopPropagation(); crShowUseForm(b.closest('tr')); });
 }
