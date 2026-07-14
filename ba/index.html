@@ -313,7 +313,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.23';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.24';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -2194,8 +2194,18 @@ function tripSheet(presetDate, editTrip){
     method:(t.method==='odometer'?'odometer':'distance'), miles:t.miles!=null?Number(t.miles):null,
     milesSrc:t.miles_source||'manual', note:t.note||'', startOdo:t.start_odo, endOdo:t.end_odo,
     startPath:t.start_photo||null, endPath:t.end_photo||null, routePath:null, kind:t.kind||null, tripId:t.id, saved:true });
-  const parts=[ editMode ? partFromTrip(editTrip) : newPart(state.profile.base_address||'') ];
-  let activeIdx=0;
+  // load THIS day's already-logged trips (from the in-memory grid/period data) as legs, so
+  // editing one trip shows the whole day's journey and you can navigate / add / delete legs
+  const date = editMode ? editTrip.trip_date : (presetDate || todayISO());
+  const dayTrips = (((typeof gridCtx==='function' && gridCtx().T) || state._T || []))
+    .filter(t=>String(t.trip_date)===String(date))
+    .sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
+  const parts = dayTrips.map(partFromTrip);
+  let activeIdx;
+  if(editMode){ activeIdx = parts.findIndex(p=>p.tripId===editTrip.id);
+    if(activeIdx<0){ parts.push(partFromTrip(editTrip)); activeIdx=parts.length-1; } }
+  else if(parts.length){ parts.push(newPart(parts[parts.length-1].destLabel)); activeIdx=parts.length-1; }  // continue the day
+  else { parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
 
   openSheet(`
     <h3>${editMode?'Edit trip':"Log the day's miles"}</h3>
@@ -2203,7 +2213,7 @@ function tripSheet(presetDate, editTrip){
     <label class="fl">Date</label><input id="tDate" type="date" value="${editMode?editTrip.trip_date:(presetDate||todayISO())}">
     <div id="partsHost" style="margin-top:6px"></div>
     <button class="btn ghost block" id="tAddLeg" style="margin-top:10px;display:none">＋ Add another leg</button>
-    <button class="btn ${editMode?'ghost':'primary'} block" id="tDone" style="margin-top:10px">${editMode?'Cancel':'Done'}</button>
+    <button class="btn ghost block" id="tDone" style="margin-top:10px">Done</button>
   `);
   $('#tDone').onclick=()=>{ closeSheet(); if(!editMode) state.baTab='home'; if(typeof drawBA==='function') drawBA(); };
   $('#tAddLeg').onclick=()=>{ const last=parts[parts.length-1]; parts.push(newPart(last?last.destLabel:'')); activeIdx=parts.length-1; render(); };
@@ -2222,7 +2232,7 @@ function tripSheet(presetDate, editTrip){
   function activeFormHtml(p,i){
     const seg=(m,ic,t,s)=>`<button class="${p.method===m?'on':''}" data-m="${m}"><span class="mi">${ic}</span><b>${t}</b><small>${s}</small></button>`;
     return `<div class="legcard">
-      <div class="leghd"><b>${editMode?'Trip':'Leg '+(i+1)}</b>${(!editMode&&i>0)?'<span class="muted small">start = last stop (editable)</span>':''}</div>
+      <div class="leghd"><b>Leg ${i+1}</b>${i>0?'<span class="muted small">start = last stop (editable)</span>':''}</div>
       <label class="fl">How do you want the miles?</label>
       <div class="mtiles" id="tSeg">${seg('distance','📍','Addresses','A → B')}${seg('route','🗺','Nav screenshot','reads your map')}${seg('odometer','📷','Odometer','start &amp; end')}</div>
       <div id="tStartWrap" class="${p.method!=='distance'?'hide':''}">
@@ -2256,7 +2266,7 @@ function tripSheet(presetDate, editTrip){
       <label class="fl">Note (optional)</label><input id="tNote" placeholder="e.g. dropped samples, met buyer, BJ's lunch" value="${esc(p.note||'')}">
       <div id="tCost" class="small muted" style="margin-top:10px"></div>
       <button class="btn primary block" id="tSave" style="margin-top:12px">${editMode?'Save changes':(p.saved?'Update leg '+(i+1):'Save leg '+(i+1))}</button>
-      ${p.tripId?`<button class="btn ghost block" id="tDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete ${editMode?'trip':'leg'}</button>`:''}
+      ${p.tripId?`<button class="btn ghost block" id="tDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete trip</button>`:''}
     </div>`;
   }
   function render(){
@@ -2270,10 +2280,9 @@ function tripSheet(presetDate, editTrip){
   async function delLeg(i){
     const p=parts[i];
     if(p.tripId){ const {error}=await supabase.from('trips').delete().eq('id',p.tripId); if(error) return toast('Couldn’t delete: '+error.message,'err'); toast('Trip deleted','ok'); }
-    if(editMode){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }
     parts.splice(i,1);
-    if(!parts.length){ parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
-    else if(activeIdx>=parts.length || activeIdx===i) activeIdx=-1;
+    if(!parts.length){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }   // nothing left → close
+    if(activeIdx>=parts.length || activeIdx===i) activeIdx=-1;
     else if(activeIdx>i) activeIdx--;
     render();
   }
@@ -2369,8 +2378,9 @@ function tripSheet(presetDate, editTrip){
     };
     $('#tStartPhoto').onchange=e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'start');} };
     $('#tEndPhoto').onchange  =e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'end');} };
-    { const del=$('#tDel'); if(del) del.onclick=()=>{ if(confirm(`Delete this ${editMode?'trip':'leg'}? This can’t be undone.`)) delLeg(i); }; }
+    { const del=$('#tDel'); if(del) del.onclick=()=>{ if(confirm('Delete this trip? This can’t be undone.')) delLeg(i); }; }
     $('#tSave').onclick=async ()=>{
+      const wasUpdate=!!p.tripId;
       p.startLabel=$('#tStartLoc')?($('#tStartLoc').value||p.startLabel):p.startLabel;
       p.destLabel=$('#tDest').value.trim(); p.note=$('#tNote').value||null;
       if($('#tKind')) p.kind=$('#tKind').value||p.kind||null;
@@ -2395,8 +2405,9 @@ function tripSheet(presetDate, editTrip){
       p.tripId=res.data.id; p.saved=true;
       rememberPlaces(startLoc, p.destLabel);
       await ensurePeriodForDate(row.trip_date);
-      toast(editMode?'Trip updated ✓':`Leg ${i+1} saved ✓`,'ok');
-      if(editMode){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }
+      toast(wasUpdate?'Trip updated ✓':`Leg ${i+1} saved ✓`,'ok');
+      // last leg → open the next one (start = this stop) so you can keep going to leg 2, 3…;
+      // an earlier leg just collapses back to its summary
       if(i===parts.length-1){ parts.push(newPart(p.destLabel)); activeIdx=parts.length-1; }
       else { activeIdx=-1; }
       render();
