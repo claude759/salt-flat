@@ -255,6 +255,8 @@
   .bub-lc{display:flex;flex-direction:column;gap:1px;min-width:0}
   .bub-top{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;color:color-mix(in srgb, var(--c) 58%, var(--text))}
   .bub-sub{font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bub-sub.route{white-space:normal;overflow:visible;max-width:none;line-height:1.35}
+  .bub-route{align-items:flex-start} .bub-route .bub-val{margin-top:1px}
   .bub-val{font-size:21px;font-weight:850;line-height:1;color:color-mix(in srgb, var(--c) 42%, var(--text));letter-spacing:-.3px;flex:none;white-space:nowrap}
   .bub.warn{border-style:dashed;border-color:var(--yellow)}
   .bub .bub-flag{position:absolute;top:-7px;right:-7px;font-size:12px;background:var(--panel);border-radius:50%;
@@ -313,7 +315,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.24';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.25';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1700,13 +1702,18 @@ function renderDayGrid(host){
     ${topAdd}${blocks||'<p class="muted small">No days in this period.</p>'}
   </div>`;
   host.querySelectorAll('.bub[data-id]').forEach(b=>b.onclick=()=>openDayItem(b.dataset.k,b.dataset.id));
+  host.querySelectorAll('.bub[data-daymiles]').forEach(b=>b.onclick=()=>{ const first=(gridCtx().T||[]).find(t=>String(t.id)===String(b.dataset.first)); tripSheet(b.dataset.daymiles, first||undefined); });
   host.querySelectorAll('.bub-add').forEach(b=>b.onclick=()=>dgAdd(b.dataset.add,b.dataset.day));
 }
 // one day's pills: a bubble per entry (hours → mileage → expenses) + ＋ add bubbles
 function dgBubbles(ctx, day, trips, exps, hrs, addable){
   const out=[];
   hrs.forEach(x=>out.push(bubbleHtml('hours',ctx,x)));
-  trips.forEach(x=>out.push(bubbleHtml('trip',ctx,x)));
+  // BA view: the day's driving is ONE journey — collapse every leg into a single route
+  // pill (Home → stop → stop → …) that opens the multi-leg editor. Admins keep per-trip
+  // bubbles so adminEditItem (with its explicit Location dropdown) stays reachable.
+  if(!ctx.isAdmin && trips.length){ out.push(dayRouteBubble(ctx, day, trips)); }
+  else { trips.forEach(x=>out.push(bubbleHtml('trip',ctx,x))); }
   exps.forEach(x=>out.push(bubbleHtml('exp',ctx,x)));
   const adds=(addable||[]).map(m=>`<button class="bub-add" data-add="${m}" data-day="${day}">＋ ${m==='miles'?'Mileage':'Expense'}</button>`);
   const addrow = adds.length?`<div class="bub-addrow">${adds.join('')}</div>`:'';
@@ -1739,6 +1746,24 @@ function bubbleHtml(kind, ctx, x){
     +`<span class="bub-val">${esc(val)}</span></button>`;
 }
 function hoursHM(h){ h=Math.max(0,Number(h)||0); const m=Math.round(h*60); return `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`; }
+// one pill for the whole day's drive: "Home → stop → stop → …" + total miles. Nodes are
+// the linked store name (or the typed label), long ones abbreviated.
+function dayRouteBubble(ctx, day, trips){
+  const legs=trips.slice().sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
+  const total=legs.reduce((a,t)=>a+Number(t.miles||0),0);
+  const warn=legs.some(t=>itemIssues({...t,_k:'trip'}).length>0);
+  const abbr=(s)=>{ s=String(s||'?').replace(/,\s*(usa|us)\s*$/i,'').split(',')[0].trim(); return s.length>17?s.slice(0,16)+'…':s; };
+  const node=(label,dispId)=> dispId ? abbr(dispName(dispId)) : abbr(label);
+  const chain=[ node(legs[0].start_label, null) ];
+  legs.forEach(t=>chain.push(node(t.dest_label, t.dispensary_id||(t.dispensary_ids&&t.dispensary_ids[0]))));
+  const route=chain.join(' → ');
+  return `<button class="bub bub-miles bub-route${warn?' warn':''}" data-daymiles="${day}" data-first="${legs[0].id}">`
+    +(warn?'<span class="bub-flag">⚠</span>':'')
+    +`<span class="bub-l"><span class="bub-ic">🚗</span><span class="bub-lc">`
+    +`<span class="bub-top">Mileage · ${legs.length} leg${legs.length>1?'s':''}</span>`
+    +`<span class="bub-sub route">${esc(route)}</span></span></span>`
+    +`<span class="bub-val">${Math.round(total*10)/10} mi</span></button>`;
+}
 // tap an existing bubble → the edit popup (or a read-only detail if it's locked)
 function openDayItem(kind, id){
   const ctx=gridCtx();
