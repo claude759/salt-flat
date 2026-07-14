@@ -969,28 +969,33 @@ function num(s){ if(s==null) return 0; const v=parseFloat(String(s).replace(/[$,
 const SUPABASE_URL='https://dhiqhgtmelxwelyoowle.supabase.co';
 const SUPABASE_KEY='sb_publishable_FtScmtn1C0tE1bwUsavJFg_koiVEu14';
 const AUTH_ENABLED=true;
-const ALL_PAGES=['ar','cd','sku','scorecard','tiers','reports','credits'];
-const ADMIN_EMAILS=['gianni@wizardtrees.com'];
-// Per-person page access. Key = @wizardtrees.com email; value = array of page keys OR 'all'.
-// Page keys: ar (Accounts Receivable) · cd (Credits/Discounts) · sku (Sales by Type) ·
-// scorecard (Sales Scorecard) · tiers (Customer Tiers) · reports (Reports) · credits (NY Credits
-// Track). Anyone signed in with @wizardtrees.com but NOT listed here gets DEFAULT_ACCESS.
-const PAGE_ACCESS={
+// Per-person access, by STATE. Value: 'all' = both CA + NY · 'CA' = California only · 'NY' = New
+// York only. Anyone signed in with @wizardtrees.com but NOT listed here gets a "contact the admin"
+// screen (no access). To change someone, edit this map + redeploy.
+const STATE_ACCESS={
   'gianni@wizardtrees.com':'all',
-  // 'someone@wizardtrees.com':['ar','reports'],   // ← restrict specific people here
+  'victoria@wizardtrees.com':'all',
+  'scott@wizardtrees.com':'all',
+  'nouri@wizardtrees.com':'CA',
+  'jesse@wizardtrees.com':'CA',
+  'joanna@wizardtrees.com':'CA',
+  'cesar@wizardtrees.com':'CA',
+  'carlos@wizardtrees.com':'CA',
+  'justin@wizardtrees.com':'CA',
+  'makenna@wizardtrees.com':'CA',
+  'maddy@wizardtrees.com':'NY',
 };
-const DEFAULT_ACCESS='all';   // ← currently everyone @wizardtrees.com sees all pages; change to a restricted list once the team's access is decided
-let AUTH_USER=null, AUTH_PAGES=ALL_PAGES.slice();
+let AUTH_USER=null, AUTH_STATES=['CA','NY'];   // states the signed-in user may see (default = all, for the auto-publisher bypass)
 
 function agentBypass(){ try{ return localStorage.getItem('salesAppAgent')==='1' || new URLSearchParams(location.search).get('agent')==='1'; }catch(e){ return false; } }
 let _sbAuth=null;
 function sbAuth(){ if(_sbAuth) return _sbAuth; if(window.supabase&&window.supabase.createClient){ _sbAuth=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}); } return _sbAuth; }
-function accessFor(email){ const a=PAGE_ACCESS[email]; const acc=(a===undefined?DEFAULT_ACCESS:a); return acc==='all'?ALL_PAGES.slice():acc.slice(); }
-function pageAllowed(tab){ return AUTH_PAGES.includes(tab); }
+function statesFor(email){ const a=STATE_ACCESS[email]; if(a===undefined) return null; return a==='all'?['CA','NY']:[a]; }   // null = not granted any access
+function stateAllowed(st){ return AUTH_STATES.includes(st); }
 
 async function initAuth(){
   const gate=$('#login-gate');
-  if(!AUTH_ENABLED || agentBypass()){ AUTH_USER={email:'agent'}; AUTH_PAGES=ALL_PAGES.slice(); if(gate) gate.classList.add('hidden'); return; }
+  if(!AUTH_ENABLED || agentBypass()){ AUTH_USER={email:'agent'}; AUTH_STATES=['CA','NY']; if(gate) gate.classList.add('hidden'); return; }
   const c=sbAuth();
   if(!c){ showLogin('error'); return; }
   let session=null;
@@ -998,17 +1003,21 @@ async function initAuth(){
   if(!session){ showLogin('signin'); return; }
   const email=((session.user&&session.user.email)||'').toLowerCase();
   if(!email.endsWith('@wizardtrees.com')){ try{ await c.auth.signOut(); }catch(e){} showLogin('denied', email); return; }
-  AUTH_USER={email}; AUTH_PAGES=accessFor(email);
-  if(gate) gate.classList.add('hidden');
-  renderAuthChip(); applyPageAccess();
+  const states=statesFor(email);
+  if(!states){ showLogin('noaccess', email); return; }   // valid @wizardtrees.com but not granted any pages
+  AUTH_USER={email}; AUTH_STATES=states;
+  renderAuthChip(); applyStateAccess();       // set the right state FIRST (under the overlay)…
+  if(gate) gate.classList.add('hidden');      // …then reveal, so single-state users don't flash the other state
 }
 function showLogin(mode, detail){
   const gate=$('#login-gate'), body=$('#lg-body'); if(!gate||!body) return;
   gate.classList.remove('hidden');
   if(mode==='denied') body.innerHTML=`<div class="lg-sub">Access is limited to <b>@wizardtrees.com</b> accounts.${detail?` You're signed in as <b>${esc(detail)}</b>.`:''}</div><button class="lg-btn" id="lg-google">Try a different account</button>`;
+  else if(mode==='noaccess') body.innerHTML=`<div class="lg-sub">You're signed in as <b>${esc(detail)}</b>, but you haven't been granted access to any pages yet.<br><br>Please contact your admin to get access.</div><button class="lg-btn" id="lg-signout">Sign out</button>`;
   else if(mode==='error') body.innerHTML=`<div class="lg-sub">Couldn't load the sign-in service. Please refresh and try again.</div><button class="lg-btn" onclick="location.reload()">Refresh</button>`;
   else body.innerHTML=`<div class="lg-sub">Sign in with your <b>@wizardtrees.com</b> Google account to continue.</div><button class="lg-btn" id="lg-google"><span class="lg-g">G</span> Sign in with Google</button>`;
   const g=$('#lg-google'); if(g) g.onclick=doGoogleSignIn;
+  const so=$('#lg-signout'); if(so) so.onclick=doSignOut;
 }
 async function doGoogleSignIn(){
   const c=sbAuth(); if(!c){ location.reload(); return; }
@@ -1020,14 +1029,12 @@ async function doSignOut(){ const c=sbAuth(); if(c){ try{ await c.auth.signOut()
 function renderAuthChip(){ const el=$('#authchip'); if(!el||!AUTH_USER||AUTH_USER.email==='agent') return; el.classList.remove('hidden');
   el.innerHTML=`<span class="ac-email" title="${esc(AUTH_USER.email)}">${esc(AUTH_USER.email)}</span> <button class="ac-out" id="ac-out">Sign out</button>`;
   const b=$('#ac-out'); if(b) b.onclick=doSignOut; }
-// Apply the signed-in user's page access: hide disallowed tabs and jump off one if it's active.
-function applyPageAccess(){
-  const NY_TABS=['ar','sku','tiers','reports','credits'], NY_ONLY=['credits'];
-  document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
-    const stateHidden = APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb);
-    t.classList.toggle('hidden', stateHidden || !pageAllowed(tb)); });
-  const active=document.querySelector('.tab.active');
-  if(!active || active.classList.contains('hidden')){ const first=document.querySelector('.tab:not(.hidden)'); if(first) activateTab(first.dataset.tab); }
+// Apply the signed-in user's STATE access: show only the CA/NY toggle buttons they may use, hide
+// the toggle entirely if they only get one state, and land them on an allowed state.
+function applyStateAccess(){
+  document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('hidden', !stateAllowed(b.dataset.state)));
+  const tog=$('#state-toggle'); if(tog) tog.classList.toggle('hidden', AUTH_STATES.length<2);
+  setAppState(stateAllowed(APP_STATE) ? APP_STATE : AUTH_STATES[0]);
 }
 // Filifera sells to Nabis (the distributor) THROUGH Distru, so Distru has orders with
 // Customer/Company = "Nabis". That product is tracked downstream in the Nabis system, so
@@ -3390,15 +3397,15 @@ function nyTierDrill(name){
     totalLabel:'Total', total:list.reduce((s,e)=>s+e.amt,0)});
 }
 // ── CA / NY state toggle ──
-function setAppState(st){ const was=APP_STATE; APP_STATE=(st==='NY')?'NY':'CA';
+function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUTH_STATES[0]||st;   // never enter a state the signed-in user can't see
+  const was=APP_STATE; APP_STATE=st;
   document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.state===APP_STATE));
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
-  // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the NY-only
-  // tabs. AND honor the signed-in user's page access (pageAllowed) on top of the state rules.
+  // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the
+  // NY-only tabs. (Access is by STATE now — applyStateAccess gates which states you can reach.)
   const NY_TABS=['ar','sku','tiers','reports','credits'], NY_ONLY=['credits'];
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
-    const stateHidden = APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb);
-    t.classList.toggle('hidden', stateHidden || !pageAllowed(tb)); });
+    t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary (the others are CA-only data)
   const NY_REPORTS=['customers','newcust','sales','bydisp'];
   document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('hidden', APP_STATE==='NY'&&!NY_REPORTS.includes(b.dataset.rep)));
@@ -3409,8 +3416,7 @@ function setAppState(st){ const was=APP_STATE; APP_STATE=(st==='NY')?'NY':'CA';
     if(APP_STATE==='NY'){ if($('#sku-preset')){ $('#sku-preset').value='30d'; applySkuPreset('30d'); } }
     else { if($('#sku-preset')){ $('#sku-preset').value='lastweek'; applySkuPreset('lastweek'); } }
   }
-  const pref=APP_STATE==='NY'?'tiers':'ar', prefEl=document.querySelector('.tab[data-tab="'+pref+'"]'), first=document.querySelector('.tab:not(.hidden)');
-  activateTab((prefEl && !prefEl.classList.contains('hidden')) ? pref : (first ? first.dataset.tab : pref));
+  activateTab(APP_STATE==='NY'?'tiers':'ar');
 }
 document.querySelectorAll('#state-toggle button').forEach(b=>b.onclick=()=>setAppState(b.dataset.state));
 
@@ -4919,7 +4925,6 @@ $('#cr-add') && ($('#cr-add').onclick=async ()=>{
 });
 
 function activateTab(tab, fromHash){
-  if(!pageAllowed(tab)){ const first=document.querySelector('.tab:not(.hidden)'); if(first && first.dataset.tab!==tab) return activateTab(first.dataset.tab, fromHash); }
   const t=document.querySelector('.tab[data-tab="'+tab+'"]'); if(!t) return false;
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
   $('#view-ar').classList.toggle('hidden',tab!=='ar'||APP_STATE==='NY');
