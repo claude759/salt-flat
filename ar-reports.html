@@ -3453,7 +3453,16 @@ function tierDataNY(){
   (NY_EVENTS||[]).forEach(e=>{ if(!e.d||e.d<start.getTime()||e.d>end.getTime()) return;
     const g=acc[e.c]||(acc[e.c]={name:e.c,rev:0,orders:0,last:null});
     g.rev+=e.amt||0; g.orders++; if(!g.last||e.d>g.last)g.last=e.d; });
-  const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>({...g,brand:'',source:'LeafLink',tier:g.rev>=t1?1:g.rev>=t2?2:3}));
+  // Discounts/credits per account — from the NY recon invoices (invoice-level), joined by
+  // normalized account name. LeafLink order totals are GROSS, so % = concessions ÷ revenue.
+  const concBy={};
+  (NY_INV||[]).forEach(x=>{ if(!x.d||x.d<start.getTime()||x.d>end.getTime()) return;
+    const k=tierNorm(x.c); if(!k) return; concBy[k]=(concBy[k]||0)+(x.disc||0); });
+  const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
+    const totalConc=concBy[tierNorm(g.name)]||0;
+    return {...g, brand:'', source:'LeafLink', tier:g.rev>=t1?1:g.rev>=t2?2:3,
+      totalConc, pctDC: g.rev>0.005 ? totalConc/g.rev : null };
+  });
   return {rows,start,end,months,t1,t2};
 }
 function renderTiersNY(){
@@ -3470,21 +3479,26 @@ function renderTiersNY(){
   let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(av==null)av=-Infinity; if(bv==null)bv=-Infinity; if(typeof av==='string'){av=av.toLowerCase();bv=(''+bv).toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
-  const cols=[['tier','Tier',0],['name','Account',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['last','Last order',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['last','Last order',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click to see this account's orders">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
     <td>${esc(r.name)}</td>
     <td class="num money">${fmt$(r.rev)}</td>
     <td class="num">${r.orders}</td>
+    <td class="num money">${r.totalConc>0.005?`<span style="color:var(--orange)">${fmt$(r.totalConc)}</span>`:'<span class="neg">—</span>'}</td>
+    <td class="num">${r.pctDC==null?'<span class="neg">—</span>':(r.pctDC>0.00005?`<span style="color:${r.pctDC>=0.1?'var(--red)':r.pctDC>=0.05?'var(--yellow)':'var(--muted)'}">${(r.pctDC*100).toFixed(1)}%</span>`:'<span class="neg">—</span>')}</td>
     <td class="num">${fmtD(r.last)}</td></tr>`).join('');
-  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders}),{rev:0,orders:0});
+  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,conc:a.conc+(r.totalConc||0)}),{rev:0,orders:0,conc:0});
   wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="2">${view.length} account${view.length!==1?'s':''}</td>
-    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td><td></td></tr></tfoot></table>`;
+    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td>
+    <td class="num money">${tot.conc>0.005?fmt$(tot.conc):'—'}</td>
+    <td class="num">${tot.rev>0.005&&tot.conc>0.005?((tot.conc/tot.rev)*100).toFixed(1)+'%':'—'}</td>
+    <td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:key==='name'?1:-1}; renderTiers(); });
-  note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (order totals; cancelled/rejected orders excluded). Same editable thresholds as California. Click a row for the account's orders. AR / visits / discounts aren't available for NY yet — LeafLink's export is order-level only.`;
+  note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (order totals; cancelled/rejected orders excluded). Same editable thresholds as California. Click a row for the account's orders. <b>Disc + Credits</b> = invoice-level discounts from the distributor's recon, joined to the account by name; <b>% of Sales</b> = that ÷ revenue (LeafLink order totals are gross, so the two are the same basis). Visits/AR aren't tracked per-account for NY yet.`;
 }
 function nyTierDrill(name){
   const {start,end,months}=tierDataNY();
@@ -3736,14 +3750,15 @@ function renderTiers(){
   let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
-  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['pctDC','% Disc+Credits',1],['last','Last order',1],['visits','Visits',1],['arOut','AR Outstanding',1],['arOver','Overdue',1],['avgPaidLate','Avg Days Late',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['last','Last order',1],['visits','Visits',1],['arOut','AR Outstanding',1],['arOver','Overdue',1],['avgPaidLate','Avg Days Late',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
     <td>${esc(r.name)}</td>
     <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
     <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
-    <td class="num">${r.pctDC==null?'<span class="neg">—</span>':((r.pctDC*100).toFixed(1)+'%')}</td>
+    <td class="num money">${(r.totalConc||0)>0.005?`<span style="color:var(--orange)">${fmt$(r.totalConc)}</span>`:'<span class="neg">—</span>'}</td>
+    <td class="num">${r.pctDC==null?'<span class="neg">—</span>':`<span style="color:${r.pctDC>=0.25?'var(--red)':r.pctDC>=0.15?'var(--yellow)':'var(--muted)'}">${(r.pctDC*100).toFixed(1)}%</span>`}</td>
     <td class="num">${fmtD(r.last)}</td>
     <td class="num${r.visits?' visit-link':''}"${r.visits?' title="Click to see this account’s PAD/EDU visits"':''}>${r.visits?`<span style="color:var(--green)">${r.visits}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
@@ -3753,12 +3768,14 @@ function renderTiers(){
   const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,gross:a.gross+(r.grossList||0),conc:a.conc+(r.totalConc||0),visits:a.visits+r.visits,out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,gross:0,conc:0,visits:0,out:0,over:0});
   wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="3">${view.length} account${view.length!==1?'s':''}</td>
-    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.gross>0.005?((tot.conc/tot.gross*100).toFixed(1)+'%'):'—'}</td><td></td><td class="num">${tot.visits||'—'}</td>
+    <td class="num money">${fmt$(tot.rev)}</td>
+    <td class="num money">${tot.conc>0.005?fmt$(tot.conc):'—'}</td>
+    <td class="num">${tot.gross>0.005?((tot.conc/tot.gross*100).toFixed(1)+'%'):'—'}</td><td></td><td class="num">${tot.visits||'—'}</td>
     <td class="num money">${fmt$(tot.out)}</td><td class="num money">${tot.over?fmt$(tot.over):'—'}</td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:(key==='name'||key==='brand'||key==='source')?1:-1}; renderTiers(); });
   const isoD=dt=>`${dt.getMonth()+1}/${dt.getDate()}/${String(dt.getFullYear()).slice(2)}`;
-  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, or its <b>Visits</b> count for the PAD/EDU visit dates + notes (from the field-schedule sheet, same window; matched by name — best-effort). <b>% Disc+Credits</b> = the account's total concessions ÷ gross-at-list over the same window — the Credits/Discounts page's "% of Gross" (per-unit discounts + samples at list + pouches + invoice discounts + credit memos), from live Nabis/Distru data. <b>Avg Days Late</b> = the account's <b>actual</b> average days late paid, from real payment dates (Nabis detailed report's Paid At vs. delivery + terms; Distru payment dates vs. invoice due date), averaged over its paid orders in the window (on-time/early = 0; not-yet-paid orders are excluded). Shows "—" for accounts with no paid orders in range. An account selling through both Nabis and Distru under different names will appear as two rows.`;
+  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, or its <b>Visits</b> count for the PAD/EDU visit dates + notes (from the field-schedule sheet, same window; matched by name — best-effort). <b>Disc + Credits</b> = the account's total concessions over the window (per-unit discounts + free samples at list + budtender pouches + invoice discounts + credit memos), from live Nabis/Distru data; <b>% of Sales</b> = that ÷ gross-at-list — the same figure as the Credits/Discounts page's "% of Gross", so the two pages tie. <b>Avg Days Late</b> = the account's <b>actual</b> average days late paid, from real payment dates (Nabis detailed report's Paid At vs. delivery + terms; Distru payment dates vs. invoice due date), averaged over its paid orders in the window (on-time/early = 0; not-yet-paid orders are excluded). Shows "—" for accounts with no paid orders in range. An account selling through both Nabis and Distru under different names will appear as two rows.`;
 }
 function tierDrill(name){
   const {start,end}=tierData();
@@ -3817,12 +3834,12 @@ $('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr
 ['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
 $('#tier-export').onclick=()=>{
   if(APP_STATE==='NY'){ const {rows,months}=tierDataNY();
-    const out=[['Tier','Account',`Revenue (${months}mo)`,'Orders','Last order']];
-    tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.rev.toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'']));
+    const out=[['Tier','Account',`Revenue (${months}mo)`,'Orders','Disc + Credits','% of Sales','Last order']];
+    tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.rev.toFixed(2),r.orders,(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'']));
     downloadCSV('customer-tiers-ny.csv',out); return; }
   const {rows,months}=tierData();
-  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'% Disc+Credits','Last order','Visits','AR Outstanding','Overdue','Avg Days Late']];
-  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'',r.visits||0,r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
+  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Disc + Credits','% of Sales','Last order','Visits','AR Outstanding','Overdue','Avg Days Late']];
+  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'',r.visits||0,r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
   downloadCSV('customer-tiers.csv',out);
 };
 
