@@ -49,7 +49,7 @@ $$;
 -- ---- distro_roster: the packaging crew (data rows, NOT auth users) ----------
 create table if not exists public.distro_roster (
   id              uuid primary key default gen_random_uuid(),
-  last            text not null,
+  last            text,               -- nullable: harvest workers may be first-name only
   first           text not null,
   full_name       text,
   team            text,               -- "Norma's Team" / "Justin's Team"
@@ -135,6 +135,19 @@ create table if not exists public.labor_history (
 );
 create index if not exists labor_history_date_ix on public.labor_history(work_date);
 
+-- retro-relax for projects created before the rule changed (idempotent)
+alter table public.distro_roster alter column last drop not null;
+
+-- ---- shift fidelity columns (added for the Phase 1 import) ------------------
+--   people: harvest rows record a crew size and pay hours × rate × people
+--   pay_period: the Hours app's optional period tag
+--   source_id: the original sheet row id — makes re-imports idempotent
+alter table public.distro_shifts add column if not exists people int not null default 1;
+alter table public.distro_shifts add column if not exists pay_period date;
+alter table public.distro_shifts add column if not exists source_id text;
+create unique index if not exists distro_shifts_source_id_ux
+  on public.distro_shifts(source_id) where source_id is not null;
+
 -- ---- server-owned hours & total on shifts (mirrors the BA money pattern) ----
 create or replace function public.distro_shift_calc()
 returns trigger language plpgsql as $$
@@ -149,7 +162,7 @@ begin
   else
     new.hours := 0;
   end if;
-  new.total := round(coalesce(new.hours,0) * coalesce(new.rate,0), 2);
+  new.total := round(coalesce(new.hours,0) * coalesce(new.rate,0) * coalesce(new.people,1), 2);
   new.updated_at := now();
   return new;
 end $$;
