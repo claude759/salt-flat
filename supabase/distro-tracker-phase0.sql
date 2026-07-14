@@ -76,7 +76,7 @@ create table if not exists public.distro_shifts (
   hours         numeric(7,3)  not null default 0,   -- trigger-owned (see below)
   rate          numeric(8,2)  not null default 0,
   total         numeric(10,2) not null default 0,   -- trigger-owned
-  source        text not null default 'manual' check (source in ('manual','ocr','import')),
+  source        text not null default 'manual' check (source in ('manual','ocr','import','notes')),
   photo_path    text,                 -- Storage: timesheets/<uuid>.jpg
   note          text,
   updated_by    uuid references auth.users(id),
@@ -145,6 +145,10 @@ alter table public.distro_roster alter column last drop not null;
 alter table public.distro_shifts add column if not exists people int not null default 1;
 alter table public.distro_shifts add column if not exists pay_period date;
 alter table public.distro_shifts add column if not exists source_id text;
+alter table public.distro_shifts add column if not exists overlap_ok boolean not null default false;   -- harvest double-booking warning dismissed
+-- retro-widen: harvest rows saved from pasted notes carry source='notes'
+alter table public.distro_shifts drop constraint if exists distro_shifts_source_check;
+alter table public.distro_shifts add constraint distro_shifts_source_check check (source in ('manual','ocr','import','notes'));
 create unique index if not exists distro_shifts_source_id_ux
   on public.distro_shifts(source_id) where source_id is not null;
 

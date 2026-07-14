@@ -324,6 +324,9 @@
   #tsTable input.nm{width:92px} #tsTable input.n{width:56px} #tsTable input.t{width:104px}
   #tsTable select.pp,#tsTable select.tm{width:52px}
   #tsTable tr.carried td{background:rgba(214,164,65,.07)}
+  #tsTable tr.warnrow td{background:rgba(239,77,86,.08);color:var(--text);padding:8px 12px;font-size:12.5px}
+  #tsTable tr.overlap td{background:rgba(239,77,86,.06)}
+  #tsTable .warndismiss{margin-left:10px}
   #tsTable .gx{background:none;border:0;color:var(--faint);cursor:pointer;font-size:13px;padding:2px 5px}
   #tsTable .gx:hover{color:var(--red)}
   #tsTable .pbtn{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);
@@ -531,11 +534,13 @@
 
   <!-- ============ Timesheets (embeds the Distro Hours app) ============ -->
   <div id="view-timesheets" hidden>
+    <div class="seg" id="ts-catseg" style="margin-bottom:12px"></div>
     <div class="ts-drop" id="ts-drop">
       <div class="big">📸 Drop a timesheet photo</div>
       <div class="small">or click to choose a file — Claude reads the rows, you review, then save.</div>
       <input type="file" id="ts-photo" accept="image/*" capture="environment" hidden>
     </div>
+    <div id="ts-paste"></div>
     <div id="ts-review"></div>
     <div class="card" id="ts-card">
       <div class="ts-toolbar">
@@ -729,8 +734,9 @@ const tsState = {
 };
 try{ const v = JSON.parse(localStorage.getItem('lc.tsview')||'{}');
   if (v.preset) tsState.filter.preset = v.preset;
-  if (v.view) tsState.view = v.view; }catch(_){}
-function saveTsView(){ try{ localStorage.setItem('lc.tsview', JSON.stringify({preset:tsState.filter.preset, view:tsState.view})); }catch(_){} }
+  if (v.view) tsState.view = v.view;
+  if (v.category === 'harvest' || v.category === 'distro') tsState.category = v.category; }catch(_){}
+function saveTsView(){ try{ localStorage.setItem('lc.tsview', JSON.stringify({preset:tsState.filter.preset, view:tsState.view, category:tsState.category})); }catch(_){} }
 
 const tsFullName = s => [s.last, s.first].filter(Boolean).join(' ').trim() || (s.first || s.last || '');
 // match a name against the crew roster (exact last+first, then aliases, then first-only)
@@ -794,7 +800,6 @@ async function insertShift(rec){
       .select('*').single();
     if (error){ toast('Couldn’t add the row — check your connection.', true); return null; }
     const s = shiftToTs(data);
-    s.photo_path = data.photo_path || null; s.note = data.note || null;
     shifts.push(s);
     return s;
   } finally { shiftSyncBusy--; }
@@ -835,17 +840,58 @@ let tsShellWired = false;
 function renderTimesheets(){
   if (!document.getElementById('ts-card')) return;
   if (!tsShellWired){ wireTsShell(); tsShellWired = true; }
-  renderTsViewseg(); renderTsFilters(); renderTsLog();
+  renderTsCatseg(); renderTsViewseg(); renderTsPaste(); renderTsFilters(); renderTsLog();
+}
+// two separate pages under Timesheets, like the old app's top tabs
+function renderTsCatseg(){
+  const seg = document.getElementById('ts-catseg');
+  seg.innerHTML = [['distro','Distro Hours'],['harvest','Harvest / Deleaf Hours']]
+    .map(([k,l]) => '<button data-cat="'+k+'" class="'+(tsState.category===k?'on':'')+'">'+l+'</button>').join('');
+  seg.querySelectorAll('button').forEach(b => b.onclick = () => {
+    if (tsState.category === b.dataset.cat) return;
+    tsState.category = b.dataset.cat;
+    saveTsView(); renderTimesheets();
+  });
+  // per-page dropzone labels
+  const drop = document.getElementById('ts-drop');
+  const isH = tsState.category === 'harvest';
+  drop.querySelector('.big').textContent = isH ? '📸 Drop a harvest photo' : '📸 Drop a timesheet photo';
+  drop.querySelector('.small').textContent = isH
+    ? 'or paste notes below — Claude reads it, you review, then save.'
+    : 'or click to choose a file — Claude reads the rows, you review, then save.';
+}
+function renderTsPaste(){
+  const box = document.getElementById('ts-paste');
+  if (tsState.category !== 'harvest'){ box.innerHTML = ''; return; }
+  if (box.querySelector('#ts-notes')) return;   // keep the user's draft across re-renders
+  box.innerHTML = '<div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px">'
+    + '<h3 style="margin:0 0 4px;font-size:15px">Paste harvest / deleaf notes</h3>'
+    + '<div class="faint" style="font-size:12.5px;margin-bottom:8px">Paste the raw notes as you get them; Claude sorts them by location (23rd = Slane, 25th = Filifera, imperial = Imperial, Olympic = Olympic) into rows you can review before saving.</div>'
+    + '<textarea id="ts-notes" rows="6" placeholder="Paste the messy notes here..." style="width:100%;box-sizing:border-box;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--text);font:inherit;font-size:13px;padding:10px;color-scheme:dark"></textarea>'
+    + '<div style="margin-top:10px"><button class="btn primary" id="ts-parse">Parse notes</button></div></div>';
+  document.getElementById('ts-parse').onclick = async (e) => {
+    const btn = e.currentTarget;
+    const text = document.getElementById('ts-notes').value.trim();
+    if (!text){ toast('Paste the notes first.', true); return; }
+    btn.disabled = true; btn.textContent = 'Parsing…';
+    try{
+      const { data: res, error } = await sb.functions.invoke('parse-harvest', { body: { text } });
+      if (error || !res || res.ok === false) throw new Error((res && res.error) || (error && error.message) || 'Couldn’t parse the notes.');
+      if (!(res.rows||[]).length){ toast('No harvest entries found in those notes.', true); return; }
+      openHarvestReview(res.rows, null, null);
+    }catch(err){ toast(err.message || 'Parse failed', true); }
+    finally{ btn.disabled = false; btn.textContent = 'Parse notes'; }
+  };
 }
 function renderTsViewseg(){
   const seg = document.getElementById('ts-viewseg');
+  if (tsState.category === 'harvest'){ seg.innerHTML = ''; seg.style.display = 'none'; return; }
+  seg.style.display = '';
   const views = [['log','Log'],['norma',"Norma's Team"],['justin',"Justin's Team"],['simplified','By Employee Simplified']];
-  seg.innerHTML = views.map(([k,l]) => '<button data-v="'+k+'" class="'+(tsState.view===k?'on':'')+'">'+l+'</button>').join('')
-    + '<button data-v="harvest" class="'+(tsState.category==='harvest'?'on':'')+'" title="Harvest / deleaf hours">Harvest</button>';
+  seg.innerHTML = views.map(([k,l]) => '<button data-v="'+k+'" class="'+(tsState.view===k?'on':'')+'">'+l+'</button>').join('');
   seg.querySelectorAll('button').forEach(b => b.onclick = () => {
-    if (b.dataset.v === 'harvest'){ tsState.category = tsState.category==='harvest' ? 'distro' : 'harvest'; }
-    else { tsState.category = 'distro'; tsState.view = b.dataset.v; }
-    saveTsView(); renderTsViewseg(); renderTsFilters(); renderTsLog();
+    tsState.view = b.dataset.v;
+    saveTsView(); renderTsViewseg(); renderTsLog();
   });
 }
 function renderTsFilters(){
@@ -884,15 +930,16 @@ function renderTsLog(){
     if (tsState.view === 'justin') return renderTsByTeam('justin');
   }
   const isH = tsState.category === 'harvest';
+  if (isH) return renderHarvestLog();
   const rows = filteredShifts().slice().sort((a,b) => {
     const x=a.work_date||'', y=b.work_date||'';
     if (x!==y) return x<y?1:-1;
     return (a.id<b.id?-1:1);
   });
-  let th=0, tt=0; for (const s of rows){ th += (+s.hours||0)*(isH?(+s.people||1):1); tt += (+s.total||0); }
+  let th=0, tt=0; for (const s of rows){ th += +s.hours||0; tt += +s.total||0; }
   tsTotbar([['Rows', rows.length], ['Total hours', tsNum(th)], ['Gross pay', tsMoney(tt), 'sum']]);
   const tbl = document.getElementById('tsTable');
-  const NC = isH ? 12 : 13;
+  const NC = 13;
   const thisP = periodWindow(0)[0], lastP = periodWindow(-1)[0];
   function ppSelect(s){
     const eff = effPeriodStart(s), natural = periodStartOf(s.work_date), isC = eff === thisP;
@@ -948,6 +995,88 @@ function renderTsLog(){
         + '<td><button class="gx" title="Delete">✕</button></td></tr>';
     }
     body += '<tr class="sub"><td colspan="'+(NC-5)+'" class="num">'+groupHead(d)+' subtotal</td><td></td><td class="num">'+tsNum(gh)+'</td><td></td><td class="num">'+tsMoney(gt)+'</td><td></td></tr>';
+  }
+  tbl.innerHTML = '<tbody>'+body+'</tbody>';
+  hydrateTsThumbs();
+}
+
+/* ---- Harvest / Deleaf page: location-grouped log with overlap warnings ----- */
+const HARVEST_LOCS = ['Slane','Filifera','Imperial','Olympic','Portal'];
+function harvestOverlaps(rows){
+  const flagged = new Set(), warnings = []; const byWorker = new Map();
+  for (const s of rows){
+    const name = (s.first||'').trim(); if (!name || s.overlap_ok) continue;
+    let a = toMin(s.clock_in), b = toMin(s.clock_out); if (a==null || b==null) continue;
+    if (b <= a) b += 1440;   // overnight
+    const key = name.toLowerCase()+'|'+(s.work_date||'');
+    if (!byWorker.has(key)) byWorker.set(key, []);
+    byWorker.get(key).push({s, a, b});
+  }
+  for (const list of byWorker.values()){
+    if (list.length < 2) continue;
+    const involved = new Set();
+    for (let i=0;i<list.length;i++) for (let j=i+1;j<list.length;j++){
+      if (list[i].a < list[j].b && list[j].a < list[i].b){ involved.add(list[i].s); involved.add(list[j].s); }
+    }
+    if (involved.size){
+      const arr = [...involved]; arr.forEach(s => flagged.add(s.id));
+      const ivs = arr.slice().sort((x,y) => toMin(x.clock_in)-toMin(y.clock_in))
+        .map(s => fClock(s.clock_in)+'–'+fClock(s.clock_out));
+      warnings.push({ worker:arr[0].first, date:arr[0].work_date, ids:arr.map(s=>s.id), ivs });
+    }
+  }
+  return { flagged, warnings };
+}
+function renderHarvestLog(){
+  const rows = filteredShifts().slice().sort((a,b) => {
+    const x=a.work_date||'', y=b.work_date||'';
+    return x<y?1:x>y?-1:(a.id<b.id?-1:1);
+  });
+  let th=0, tt=0; for (const s of rows){ th += (+s.hours||0)*(+s.people||1); tt += +s.total||0; }
+  tsTotbar([['Rows', rows.length], ['Total hours', tsNum(th)], ['Gross pay', tsMoney(tt), 'sum']]);
+  const tbl = document.getElementById('tsTable');
+  const NC = 12;
+  if (!rows.length){
+    tbl.innerHTML = '<tbody><tr class="emptyrow"><td colspan="'+NC+'">No harvest entries for this filter. Paste notes above, drop a photo, or “+ Add row”.</td></tr></tbody>';
+    return;
+  }
+  const groups = []; const byLoc = new Map();
+  for (const s of rows){ const k = s.company || '(no location)'; if (!byLoc.has(k)){ byLoc.set(k, []); groups.push(k); } byLoc.get(k).push(s); }
+  groups.sort((a,b) => ((HARVEST_LOCS.indexOf(a)+1||99)-(HARVEST_LOCS.indexOf(b)+1||99)) || (a<b?-1:1));
+  const locOpts = c => [...new Set(HARVEST_LOCS.concat(rows.map(x=>x.company).filter(Boolean)))]
+    .map(o => '<option '+(c===o?'selected':'')+'>'+esc(o)+'</option>').join('');
+  const colHead = '<tr class="colhead"><td>Location</td><td>Date</td><td>Last</td><td>Worker</td><td>Task</td><td class="num">People</td><td>In</td><td>Out</td><td class="num">Hours</td><td class="num">Rate</td><td class="num">Total</td><td></td></tr>';
+  const ov = harvestOverlaps(rows);
+  let body = '';
+  for (const w of ov.warnings){
+    const dl = w.date ? new Date(w.date+'T00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : '';
+    body += '<tr class="warnrow"><td colspan="'+NC+'">⚠️ <b>'+esc(w.worker)+'</b> has overlapping hours on '+esc(dl)+' — '+esc(w.ivs.join('  &  '))+' can’t both be right. <button class="pbtn warndismiss" data-ids="'+esc(w.ids.join(','))+'">Dismiss</button></td></tr>';
+  }
+  for (const loc of groups){
+    const es = byLoc.get(loc); let gh=0, gt=0;
+    const pics = [...new Set(es.map(x => x.photo_path).filter(Boolean))];
+    const picBtns = pics.map(p => ' <img class="pthumb" data-path="'+esc(p)+'" title="View the uploaded notes" src="'+TS_THUMB_PLACEHOLDER+'">').join('');
+    body += '<tr class="datehead"><td colspan="'+NC+'">'+esc(loc)+picBtns
+      + ' <button class="pbtn gadd" data-loc="'+esc(loc)+'" title="Add a blank row to this location">+ row</button></td></tr>';
+    body += colHead;
+    for (const s of es){
+      gh += (+s.hours||0)*(+s.people||1); gt += +s.total||0;
+      const overlap = ov.flagged.has(s.id) ? ' overlap' : '';
+      body += '<tr data-id="'+s.id+'" class="'+overlap.trim()+'"'+(overlap?' title="Overlaps another shift for this worker on this day"':'')+'>'
+        + '<td><select data-f="company">'+locOpts(s.company)+'</select></td>'
+        + '<td><input data-f="work_date" type="date" value="'+esc(s.work_date||'')+'" class="t"></td>'
+        + '<td><input data-f="last" class="nm" value="'+esc(s.last||'')+'"></td>'
+        + '<td><input data-f="first" class="nm" value="'+esc(s.first||'')+'"></td>'
+        + '<td><input data-f="team" value="'+esc(s.team||'')+'" class="nm" placeholder="task"></td>'
+        + '<td><input data-f="people" type="number" min="1" value="'+(s.people??1)+'" class="n"></td>'
+        + '<td><input data-f="clock_in" type="time" value="'+esc(s.clock_in||'')+'" class="t"></td>'
+        + '<td><input data-f="clock_out" type="time" value="'+esc(s.clock_out||'')+'" class="t"></td>'
+        + '<td class="calc c-h num">'+tsNum(s.hours)+'</td>'
+        + '<td><input data-f="rate" type="number" min="0" step="0.01" value="'+(s.rate??'')+'" class="n"></td>'
+        + '<td class="calc money c-t num">'+tsMoney(s.total)+'</td>'
+        + '<td><button class="gx" title="Delete">✕</button></td></tr>';
+    }
+    body += '<tr class="sub"><td colspan="'+(NC-4)+'" class="num">'+esc(loc)+' total</td><td class="num">'+tsNum(gh)+'</td><td></td><td class="num">'+tsMoney(gt)+'</td><td></td></tr>';
   }
   tbl.innerHTML = '<tbody>'+body+'</tbody>';
   hydrateTsThumbs();
@@ -1079,7 +1208,24 @@ function wireTsShell(){
   });
   tbl.addEventListener('click', async e => {
     const gadd = e.target.closest('.gadd');
-    if (gadd){ addShiftRow(gadd.dataset.key); return; }
+    if (gadd){
+      if (gadd.dataset.loc){   // harvest groups key by LOCATION, not date
+        const s2 = await insertShift({ work_date: todayISO(), category:'harvest', company: gadd.dataset.loc, rate: 20 });
+        if (s2){ renderTsFilters(); renderTsLog(); renderCombined(); toast('Row added'); }
+      } else addShiftRow(gadd.dataset.key);
+      return;
+    }
+    const wd = e.target.closest('.warndismiss');
+    if (wd){
+      const ids = wd.dataset.ids.split(',').filter(Boolean);
+      shiftSyncBusy++;
+      const { error } = await sb.from('distro_shifts').update({ overlap_ok: true, updated_by: myId }).in('id', ids);
+      shiftSyncBusy--;
+      if (error){ toast('Couldn’t dismiss the warning.', true); return; }
+      shifts.forEach(s => { if (ids.includes(s.id)) s.overlap_ok = true; });
+      renderTsLog(); toast('Overlap flag dismissed');
+      return;
+    }
     const thumb = e.target.closest('img.pthumb');
     if (thumb && TS_PHOTO_CACHE[thumb.dataset.path]){ window.open(TS_PHOTO_CACHE[thumb.dataset.path], '_blank', 'noopener'); return; }
     const gx = e.target.closest('.gx');
@@ -1141,6 +1287,13 @@ async function handleTsPhoto(file){
     const path = crypto.randomUUID() + '.jpg';
     const up = await sb.storage.from('timesheets').upload(path, small, { contentType: 'image/jpeg' });
     if (up.error) throw new Error('upload failed: ' + up.error.message);
+    if (tsState.category === 'harvest'){
+      const { data: res, error: fnErr } = await sb.functions.invoke('parse-harvest', { body: { path } });
+      if (fnErr || !res || res.ok === false) throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read that photo — try a clearer one.');
+      if (!(res.rows||[]).length){ toast('No harvest entries found in that photo', true); return; }
+      openHarvestReview(res.rows, URL.createObjectURL(small), path);
+      return;
+    }
     const { data: res, error: fnErr } = await sb.functions.invoke('read-timesheet', { body: { path } });
     if (fnErr || !res || res.ok === false) throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read the sheet — try a clearer photo or add the rows manually.');
     if (!(res.rows||[]).length){ toast('No rows found on that sheet — try a clearer photo or add them manually', true); return; }
@@ -1245,7 +1398,7 @@ function drawTsReview(){
   };
   box.querySelector('#ts-rv-save').onclick = async (e) => {
     const btn = e.currentTarget; btn.disabled = true;
-    let added = 0;
+    let added = 0; const failed = [];
     for (const r of rv.rows){
       if (!r.include) continue;
       const ok = await insertShift({
@@ -1255,13 +1408,110 @@ function drawTsReview(){
         break_minutes: r.break_minutes || 0, rate: r.rate == null ? 20 : r.rate,
         source: 'ocr', photo_path: rv.path || null,
       });
-      if (ok) added++;
+      if (ok) added++; else failed.push(r);
     }
-    tsState.review = null; drawTsReview();
+    if (failed.length){   // keep whatever didn't save so nothing typed is lost
+      rv.rows = failed; drawTsReview();
+      toast('Saved '+added+', but '+failed.length+' row'+(failed.length===1?'':'s')+' failed — still in the review below. Check your connection and save again.', true);
+    } else {
+      tsState.review = null; drawTsReview();
+      toast('Saved '+added+' row'+(added===1?'':'s')+' — they’re in the log below.');
+    }
     renderTsFilters(); renderTsLog(); renderCombined();
-    toast('Saved '+added+' row'+(added===1?'':'s')+' — they’re in the log below.');
   };
 }
+/* ---- harvest notes review: parsed rows -> check -> save -------------------- */
+function openHarvestReview(parsed, dataUrl, path){
+  const rows = (parsed||[]).map(r => ({
+    include: true,
+    location: r.location || '', work_date: r.date || todayISO(),
+    task: r.task || '', worker: r.worker || '',
+    people: r.people || 1,
+    clock_in: r.time_in || '', clock_out: r.time_out || '',
+    rate: (r.worker && /norma/i.test(r.worker)) ? 25 : (r.rate || 20),
+    note: r.note || '',
+  }));
+  tsState.review = null; drawTsReview();          // close any distro review first
+  tsState.harvestReview = { rows, dataUrl, path };
+  drawHarvestReview();
+}
+function drawHarvestReview(){
+  const rv = tsState.harvestReview; const box = document.getElementById('ts-review');
+  if (!rv){ box.innerHTML = ''; return; }
+  const allLocs = [...new Set(HARVEST_LOCS.concat(rv.rows.map(r => r.location).filter(Boolean)))];
+  const locOpts = sel => ['<option value="">(set location)</option>'].concat(allLocs.map(l => '<option '+(sel===l?'selected':'')+'>'+esc(l)+'</option>')).join('');
+  const rowHtml = (r, i) => {
+    const h = tsCalcHours(r.clock_in, r.clock_out, 0);
+    const t = tsCalcTotal(h, r.rate!=null?+r.rate:null, r.people);
+    return '<tr data-i="'+i+'" class="'+(r.include?'':'off')+'">'
+      + '<td><input type="checkbox" data-f="include" '+(r.include?'checked':'')+'></td>'
+      + '<td><select data-f="location">'+locOpts(r.location)+'</select></td>'
+      + '<td><input data-f="work_date" type="date" value="'+esc(r.work_date)+'" class="t" style="width:130px"></td>'
+      + '<td><input data-f="worker" value="'+esc(r.worker)+'" placeholder="crew" style="width:110px"></td>'
+      + '<td><input data-f="task" value="'+esc(r.task)+'" style="width:130px"></td>'
+      + '<td><input data-f="people" type="number" min="1" value="'+r.people+'" class="n"></td>'
+      + '<td><input data-f="clock_in" type="time" value="'+esc(r.clock_in)+'" class="t"></td>'
+      + '<td><input data-f="clock_out" type="time" value="'+esc(r.clock_out)+'" class="t"></td>'
+      + '<td class="calc c-h">'+tsNum(h)+'</td>'
+      + '<td><input data-f="rate" type="number" min="0" step="0.01" value="'+(r.rate??'')+'" class="n"></td>'
+      + '<td class="calc money c-t">'+tsMoney(t)+'</td>'
+      + '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc(r.note)+'">'+esc(r.note)+'</td></tr>';
+  };
+  const inc = rv.rows.filter(r => r.include).length;
+  box.innerHTML = '<div class="card">'
+    + '<h3>Review the harvest notes</h3>'
+    + '<div class="muted">Claude parsed '+rv.rows.length+' rows. Fix anything that looks off, untick rows to skip, then save.</div>'
+    + '<div class="scroll"><table><thead><tr><th></th><th>Location</th><th>Date</th><th>Worker</th><th>Task</th><th>People</th><th>In</th><th>Out</th><th class="num">Hours</th><th>Rate</th><th class="num">Total</th><th>Note</th></tr></thead>'
+    + '<tbody>'+rv.rows.map(rowHtml).join('')+'</tbody></table></div>'
+    + '<div class="rvbar"><button class="btn primary" id="ts-hrv-save">Save '+inc+' row'+(inc===1?'':'s')+'</button>'
+    + '<button class="btn sm" id="ts-hrv-cancel">Discard</button></div>'
+    + (rv.dataUrl ? '<img class="rvpic" src="'+rv.dataUrl+'">' : '')
+    + '</div>';
+  const tbody = box.querySelector('tbody');
+  tbody.addEventListener('input', e => {
+    const cell = e.target.closest('[data-f]'); if (!cell) return;
+    const r = rv.rows[+cell.closest('tr').dataset.i]; if (!r) return;
+    const f = cell.dataset.f;
+    if (f === 'include'){ r.include = cell.checked; drawHarvestReview(); return; }
+    if (f === 'people') r[f] = +cell.value||1;
+    else if (f === 'rate') r[f] = cell.value===''?null:+cell.value;
+    else r[f] = cell.value;
+    if (f === 'worker' && /norma/i.test(cell.value)) r.rate = 25;
+    const h = tsCalcHours(r.clock_in, r.clock_out, 0);
+    const tr = cell.closest('tr');
+    tr.querySelector('.c-h').textContent = tsNum(h);
+    tr.querySelector('.c-t').textContent = tsMoney(tsCalcTotal(h, r.rate!=null?+r.rate:null, r.people));
+  });
+  box.querySelector('#ts-hrv-cancel').onclick = () => {
+    if (rv.path) sb.storage.from('timesheets').remove([rv.path]);
+    tsState.harvestReview = null; drawHarvestReview();
+  };
+  box.querySelector('#ts-hrv-save').onclick = async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    let added = 0; const failed = [];
+    for (const r of rv.rows){
+      if (!r.include) continue;
+      const ok = await insertShift({
+        category: 'harvest', work_date: r.work_date || todayISO(),
+        company: r.location || null, first: r.worker || null, team: r.task || null,
+        people: Math.max(1, Math.round(r.people||1)), clock_in: r.clock_in || null, clock_out: r.clock_out || null,
+        break_minutes: 0, rate: r.rate == null ? 20 : r.rate, note: r.note || null,
+        source: rv.path ? 'ocr' : 'notes', photo_path: rv.path || null,
+      });
+      if (ok) added++; else failed.push(r);
+    }
+    if (failed.length){   // keep whatever didn't save so nothing typed is lost
+      rv.rows = failed; drawHarvestReview();
+      toast('Saved '+added+', but '+failed.length+' row'+(failed.length===1?'':'s')+' failed — still in the review below. Check your connection and save again.', true);
+    } else {
+      tsState.harvestReview = null; drawHarvestReview();
+      const notes = document.getElementById('ts-notes'); if (notes) notes.value = '';
+      toast('Saved '+added+' harvest row'+(added===1?'':'s')+'.');
+    }
+    renderTsFilters(); renderTsLog(); renderCombined();
+  };
+}
+
 // downscale a photo before upload (phone photos are huge; OCR doesn't need them)
 function shrinkImage(file, maxDim){
   return new Promise((resolve, reject) => {
@@ -1486,7 +1736,9 @@ function shiftToTs(x){
   return { id:x.id, category:x.category||'distro', company:x.company||'', work_date:x.work_date,
     clock_in:hhmm(x.clock_in), clock_out:hhmm(x.clock_out), break_minutes:+x.break_minutes||0,
     people:+x.people||1, hours:+x.hours||0, rate:+x.rate||0, total:+x.total||0,
-    team:x.team||'', last:x.last||'', first:x.first||'', roster_id:x.roster_id||null };
+    team:x.team||'', last:x.last||'', first:x.first||'', roster_id:x.roster_id||null,
+    pay_period:x.pay_period||null, note:x.note||null, photo_path:x.photo_path||null,
+    overlap_ok:!!x.overlap_ok };
 }
 // paged fetch: no silent row ceiling (PostgREST caps single requests at ~1000)
 async function fetchAll(table, orderCol){
