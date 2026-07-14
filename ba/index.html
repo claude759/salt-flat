@@ -339,7 +339,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.33';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.34';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -463,6 +463,12 @@ const US_STATES=[['AL','Alabama'],['AK','Alaska'],['AZ','Arizona'],['AR','Arkans
 // "* …" placeholder stores pin to the top of every picker, in this order, before real stores A→Z
 const PLACEHOLDER_TOP=['* Non-BA activity','* General BA activity','* Office','* Lead','* New retailer'];
 const OFFICE_KIND='General BA Activity/Admin';   // category auto-applied to trips to the office
+// trip categories that don't happen AT a store — these trips need no Location link
+const NONSTORE_KINDS=['Lead','Non-BA activity','General BA Activity/Admin'];
+// legacy "category disguised as a place" placeholder locations. Excluded from TRIP
+// pickers (destination/start/Location) — the CATEGORY covers them now. They stay in the
+// DB (hours + expense links still point at them, and hours keep using them as buckets).
+const NONSTORE_PLACE_RE=/^\*\s*(lead\s*$|non.?ba activity|general ba activity)/i;
 const dispRank=n=>{ const key=/^\* Office/.test(n||'')?'* Office':n; const i=PLACEHOLDER_TOP.indexOf(key); return i<0?99:i; };   // '* Office (CA)'/'* Office (NY)' pin like '* Office'
 const dispSort=(a,b)=>dispRank(a.name)-dispRank(b.name)||a.name.localeCompare(b.name);
 // Picking "* New retailer" anywhere opens this mini-form on a second layer, creates the
@@ -1271,7 +1277,9 @@ function itemIssues(x){
   if(x._k==='hours') return hasDisp ? [] : ['a dispensary'];   // hours only ever need a dispensary link
   const trip = x._k==='trip';
   const out=[];
-  if(!hasDisp) out.push(trip?'a location':'a dispensary');   // trips + expenses both need a store or a * placeholder
+  // trips whose CATEGORY is a non-store kind (Lead / Non-BA / General BA) don't happen
+  // at a store — the kind explains them, so no location link is required
+  if(!hasDisp && !(trip && NONSTORE_KINDS.includes(x.kind||''))) out.push(trip?'a location':'a dispensary');
   if(trip){
     if(!x.kind) out.push('a category');                      // every trip needs an activity category
     if(!(Number(x.miles)>0)){
@@ -2072,7 +2080,7 @@ function placeItems(q, home){
     out.push({display:base, addr:base, dispId:null, label:'🏠 Home', sub:base});
   const qTokens=q.split(/\s+/).filter(Boolean);
   const hitD=(d)=>{ const hay=(d.name+' '+(d.address||'')).toLowerCase(); return qTokens.every(t=>hay.includes(t)); };
-  baDispensaries().filter(d=>!q||hitD(d)).slice(0,6)
+  baDispensaries().filter(d=>!NONSTORE_PLACE_RE.test(d.name||'')&&(!q||hitD(d))).slice(0,6)
     .forEach(d=>out.push({display:d.name, addr:d.address||d.name, dispId:d.id, label:'🏬 '+d.name, sub:d.address||''}));
   (state.recentPlaces||[]).filter(p=>p.toLowerCase().includes(q)).slice(0,4)
     .forEach(p=>out.push({display:p, addr:p, dispId:null, label:'🕘 '+p, sub:'recent'}));
@@ -2146,8 +2154,9 @@ function tripSheet(presetDate, editTrip, opts){
   // a leg the BA may still change: unsaved, or draft/rejected. Submitted/approved legs
   // render read-only (the server trigger would silently revert edits anyway).
   const unlockedLeg = (p)=>!p.tripId || p.status==='draft' || p.status==='rejected';
-  // is this leg still missing what the To-do rule requires? (live check on the part)
-  const partIssues = (p)=>!((p.destDispId||matchDispByText(p.destLabel)) && p.kind && Number(p.miles)>0);
+  // is this leg still missing what the To-do rule requires? (live check on the part —
+  // a non-store kind waives the location link, mirroring itemIssues)
+  const partIssues = (p)=>!((p.destDispId||matchDispByText(p.destLabel)||NONSTORE_KINDS.includes(p.kind||'')) && p.kind && Number(p.miles)>0);
   // keep the in-memory day data honest as we write, so the grid/totals stay right even
   // if the sheet is dismissed via ✕/backdrop instead of Done
   let dirty=false;
@@ -2488,10 +2497,12 @@ function tripSheet(presetDate, editTrip, opts){
       const mk=(el,ev,ok)=>{ if(!el) return; el.classList.add('needs');
         const pk=el.nextElementSibling; if(pk&&pk.classList.contains('selpick')) pk.classList.add('needs');
         el.addEventListener(ev,()=>{ if(ok()) clearNeed(el); }); };
-      if(!(p.destDispId||matchDispByText(p.destLabel)))
-        mk($('#tDest'),'input',()=>!!(p.destDispId||matchDispByText($('#tDest').value)));
+      if(!(p.destDispId||matchDispByText(p.destLabel)||NONSTORE_KINDS.includes(p.kind||'')))
+        mk($('#tDest'),'input',()=>!!(p.destDispId||matchDispByText($('#tDest').value)||NONSTORE_KINDS.includes($('#tKind')?.value||'')));
       if(!p.kind) mk($('#tKind'),'change',()=>!!$('#tKind').value);
       if(!(Number(p.miles)>0)) mk($('#tMiles'),'input',()=>Number($('#tMiles').value)>0);
+      // picking a non-store category resolves the 'needs a location' issue too
+      $('#tKind').addEventListener('change',()=>{ if(NONSTORE_KINDS.includes($('#tKind').value)){ const d=$('#tDest'); if(d) clearNeed(d); } });
       if(fixArmed && i===fixLeg){
         fixArmed=false;
         const card=$('#partsHost')&&$('#partsHost').querySelector('.legcard');
@@ -2961,11 +2972,16 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     : supabase.from(table).update(patch).eq('id',id).select('*').single();
   // mirror itemIssues(): flag the same missing fields the To-do lists, so opening an
   // item straight from a To-do row shows exactly what needs filling, highlighted red
-  const hasDisp = x.dispensary_id || (x.dispensary_ids && x.dispensary_ids.length);
+  const hasDisp = x.dispensary_id || (x.dispensary_ids && x.dispensary_ids.length)
+    || (kind==='trip' && NONSTORE_KINDS.includes(x.kind||''));   // non-store trips need no location (mirrors itemIssues)
   const needMiles = kind==='trip' && !(Number(x.miles)>0);
   const iss = itemIssues({...x, _k: kind==='trip'?'trip':kind==='hours'?'hours':'exp'});
   const issHint = iss.length ? `<div class="small" style="margin-top:2px;color:var(--yellow)">Highlighted below: needs ${iss.join(', ')}.</div>` : '';
-  const allDisp = [...(state.dispensaries||[])].sort(dispSort);
+  // trips: hide the category-placeholder locations (Lead / Non-BA / General BA) — the
+  // Category field covers those now. A trip still LINKED to one keeps it listed+selected.
+  const allDisp = [...(state.dispensaries||[])]
+    .filter(d=> kind!=='trip' || x.dispensary_id===d.id || !NONSTORE_PLACE_RE.test(d.name||''))
+    .sort(dispSort);
   const dispOpts = `<option value="">— none —</option>`+allDisp.map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   if(kind==='trip'){
     openSheet(`
