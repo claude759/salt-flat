@@ -181,6 +181,11 @@
   .cr-mini{padding:5px 10px;font-size:12px}
   .cr-del{color:var(--muted);cursor:pointer;background:none;border:0;font-size:14px;padding:4px 6px}
   .cr-del:hover{color:var(--red)}
+  /* NY remittance waterfall */
+  .nywf{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:16px;max-width:620px}
+  .nywf-h{font-weight:700;font-size:13.5px;margin-bottom:10px}
+  .nywf .ddtable{width:100%}
+  .nywf-n{margin-top:10px;font-size:12.5px;color:var(--muted);line-height:1.6}
   .cr-note-cell{max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .cr-row{cursor:pointer}
   .cr-row:hover td{background:rgba(255,255,255,.035)}
@@ -1083,6 +1088,11 @@ function classify(rows){
   for(let i=0;i<Math.min(rows.length,8);i++){
     const h=(rows[i]||[]).map(x=>String(x).trim());
     const has=(...n)=>n.every(x=>h.includes(x));
+    // NY recon (the NY distributor's Distru export — real paid/outstanding/discounts). MUST be
+    // checked BEFORE distru_invoice/distru_items: it shares their columns, so the 'NY Recon' /
+    // recon-economics markers are what tell them apart.
+    if(has('Invoice Number','NY Recon'))                 return {type:'ny_invoices',hr:i};
+    if(has('Order Number','Gross Sale','Invoice Discount','Net Product')) return {type:'ny_recon_items',hr:i};
     if(has('Payment #','Credits Applied Amount'))        return {type:'distru_payments',hr:i};
     if(has('Invoice Number','Outstanding'))             return {type:'distru_invoice',hr:i};
     if(has('Line Item Id','Order Item Price'))           return {type:'distru_items',hr:i};
@@ -1132,7 +1142,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
@@ -1145,7 +1155,9 @@ const LABELS = {
   distru_companies:'Distru company directory',
   visits:'Field schedule (PAD/EDU)',
   leaflink:'LeafLink orders (NY)',
-  leaflink_items:'LeafLink line items (NY)'
+  leaflink_items:'LeafLink line items (NY)',
+  ny_invoices:'NY recon invoices (payments/discounts)',
+  ny_recon_items:'NY recon line items'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -1344,6 +1356,7 @@ function applyShared(d){
     if(data.custDir) CUST_DIR=custDirFromWire(data.custDir);   // customer directory (legal name / address / license)
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
+    if(data.nyInv && data.nyInv.length){ NY_INV=nyInvFromWire(data.nyInv); any=true; }   // NY recon invoices (real paid/outstanding/discounts)
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
@@ -1400,6 +1413,7 @@ async function publishToTeam(){
     if(CUST_DIR && Object.keys(CUST_DIR).length) cur.custDir=custDirToWire(CUST_DIR);  // additive; customer directory persists like visits
     if(NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     if(NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
+    if(NY_INV && NY_INV.length) cur.nyInv=nyInvToWire(NY_INV);                          // additive; NY recon invoices (paid/outstanding/discounts)
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
     // latest values for the current week; past weeks are never overwritten.
@@ -1453,7 +1467,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_companies','visits','leaflink','leaflink_items'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_companies','visits','leaflink','leaflink_items','ny_invoices','ny_recon_items'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -3342,8 +3356,47 @@ function buildNyItemEvents(){
 }
 function nyItemsToWire(evs){ return (evs||[]).map(e=>[e.ref, e.product, e.units, Math.round((e.lineTotal||0)*100)/100]); }
 function nyItemsFromWire(w){ return (w||[]).map(a=>({ref:String(a[0]||''), product:String(a[1]||''), units:+a[2]||0, lineTotal:+a[3]||0})); }
+/* ---- NY recon (the NY distributor's Distru export) — REAL invoices: paid / outstanding /
+   discounts. NY is the distributor's Distru org (OCM-DIST licence), not ours, so it can't be
+   scraped: they send a monthly BRAND RECON workbook which ingest-ny-recon.mjs turns into
+   ny-invoices.csv + ny-items.csv. This is what upgrades the NY AR page from an *estimated*
+   LeafLink payment schedule to true paid/outstanding. ---- */
+let NY_INV=[];   // {inv, so, c, d, due, st, total, paid, out, disc, dsum}
+// Economics (reconciled exactly against the distributor's Summary sheet):
+//   invoice Total  = delivered (already net of discounts) ; gross = delivered + discounts
+//   NY excise is 9% INCLUDED in the price → net product = delivered / 1.09
+//   the distributor then takes a 10% distribution fee → Net PO (what Wizard Trees receives)
+const NY_EXCISE_DIV=1.09, NY_DISTRO_FEE=0.10;
+const nyReconCust=s=>String(s||'').replace(/\s*\([^)]*\)\s*$/,'').trim();   // "Store (Legal LLC)" → "Store" (matches the LeafLink buyer name)
+function buildNyInv(){
+  if(!FILES.ny_invoices) return [];
+  return FILES.ny_invoices.data.map(r=>{
+    const inv=(r['Invoice Number']||'').trim(); if(!inv) return null;
+    const iv=parseDate(r['Invoice Date']), dd=parseDate(r['Due Date']);
+    return { inv, so:(r['Sales Order']||'').trim(), c:nyReconCust(r['Customer']),
+      d:iv?iv.getTime():null, due:dd?dd.getTime():null, st:(r['Status']||'').trim(),
+      total:num(r['Total']), paid:num(r['Paid']), out:num(r['Outstanding']),
+      disc:Math.abs(num(r['Total Discounts'])), dsum:(r['Discount Summary']||'').trim() };
+  }).filter(Boolean);
+}
+function nyInvToWire(list){ return (list||[]).map(x=>[x.inv,x.so,x.c,x.d,x.due,x.st,x.total,x.paid,x.out,x.disc,x.dsum]); }
+function nyInvFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),so:String(a[1]||''),c:String(a[2]||''),d:a[3]||null,due:a[4]||null,st:String(a[5]||''),total:+a[6]||0,paid:+a[7]||0,out:+a[8]||0,disc:+a[9]||0,dsum:String(a[10]||'')})); }
+// The remittance waterfall: what the dispensaries owe → what Wizard Trees actually receives.
+function nyRecon(){
+  const L=NY_INV||[]; if(!L.length) return null;
+  const delivered=L.reduce((s,x)=>s+x.total,0), discounts=L.reduce((s,x)=>s+x.disc,0);
+  const collected=L.reduce((s,x)=>s+x.paid,0), outstanding=L.reduce((s,x)=>s+x.out,0);
+  const gross=delivered+discounts;
+  const netProduct=delivered/NY_EXCISE_DIV, excise=delivered-netProduct;
+  const distroFee=netProduct*NY_DISTRO_FEE, netPO=netProduct-distroFee;
+  // what's actually been remitted so far scales with what's been collected
+  const collectedNetPO=delivered>0 ? netPO*(collected/delivered) : 0;
+  return {n:L.length, gross, discounts, delivered, excise, netProduct, distroFee, netPO, collected, outstanding, collectedNetPO};
+}
+
 function buildNy(){ if(FILES.leaflink) NY_EVENTS=buildNyEvents(); if(FILES.leaflink_items) NY_ITEMS=buildNyItemEvents();
-  if(APP_STATE==='NY'){ renderTiers(); renderSku(); } }
+  if(FILES.ny_invoices) NY_INV=buildNyInv();
+  if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); } }
 function tierDataNY(){
   const months=Math.max(1,+(($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
@@ -3433,8 +3486,54 @@ function nyArData(){
     const dpd=due==null?null:Math.floor((now.getTime()-due)/86400000);
     return {...e, due, dpd}; }).sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
 }
+// NY AR — REAL invoices from the distributor's recon (paid / outstanding / discounts) plus the
+// remittance waterfall. Falls back to the old LeafLink terms-estimate when no recon is loaded.
+function renderArNYRecon(){
+  const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note');
+  const R=nyRecon(); if(!R) return;
+  const now=new Date(); now.setHours(23,59,59,999);
+  const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
+  const all=(NY_INV||[]).map(x=>({...x, dpd:(x.due==null?null:Math.floor((now.getTime()-x.due)/86400000))}))
+    .sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
+  const view=q?all.filter(x=>x.c.toLowerCase().includes(q)||x.inv.toLowerCase().includes(q)):all;
+  const S=(a,k)=>a.reduce((s,x)=>s+(x[k]||0),0);
+  const open=view.filter(x=>x.out>0.005), past=open.filter(x=>x.dpd!=null&&x.dpd>0);
+  const invoiced=S(view,'total'), collected=S(view,'paid'), outstanding=S(view,'out');
+  cards.innerHTML=[
+    ['Invoiced', fmt$(invoiced), view.length+' invoice'+(view.length!==1?'s':'')],
+    ['Collected', fmt$(collected), invoiced>0?((collected/invoiced)*100).toFixed(1)+'% of invoiced':'—','var(--green)'],
+    ['Outstanding', fmt$(outstanding), open.length+' open','var(--yellow)'],
+    ['Past due', fmt$(S(past,'out')), past.length+' invoice'+(past.length!==1?'s':''),'var(--red)'],
+  ].map(([l,v,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${v}</div><div class="tc-blurb">${esc(sub)}</div></div>`).join('');
+  // Remittance waterfall — what dispensaries owe → what Wizard Trees actually receives
+  const wf=[['Gross sales',R.gross,''],['Discounts',-R.discounts,'neg'],['Product delivered (invoiced)',R.delivered,'sub'],
+    ['NY excise (9%, included in price)',-R.excise,'neg'],['Net product',R.netProduct,'sub'],
+    ['Distributor fee (10%)',-R.distroFee,'neg'],['Net PO — Wizard Trees receives',R.netPO,'tot']];
+  const wfHtml=`<div class="nywf"><div class="nywf-h">Remittance — from gross sales to what Wizard Trees receives</div>
+    <table class="ddtable">${wf.map(([l,v,cls])=>`<tr class="${cls==='tot'?'totals':''}">
+      <td${cls==='sub'?' style="font-weight:700"':''}>${esc(l)}</td>
+      <td class="num money"${cls==='neg'?' style="color:var(--red)"':(cls==='tot'?' style="color:var(--green);font-weight:800"':'')}>${fmt$(v)}</td></tr>`).join('')}</table>
+    <div class="nywf-n">Collected from dispensaries so far: <b>${fmt$(R.collected)}</b> of ${fmt$(R.delivered)} — so <b>${fmt$(R.collectedNetPO)}</b> of the ${fmt$(R.netPO)} Net PO has been remitted. The rest follows as invoices are paid.</div></div>`;
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const statusCell=x=>{ if(x.out<=0.005) return '<span style="color:var(--green)">paid</span>';
+    if(x.dpd==null) return '<span class="neg">—</span>';
+    if(x.dpd>0) return `<span style="color:var(--red)">overdue ${x.dpd}d</span>`;
+    if(x.dpd===0) return '<span style="color:var(--yellow)">due today</span>';
+    return `<span style="color:${x.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-x.dpd}d</span>`; };
+  const body=view.map(x=>`<tr>
+    <td>${esc(x.c)}</td><td>${esc(x.inv)}</td><td class="num">${fmtD(x.d)}</td><td class="num">${fmtD(x.due)}</td>
+    <td class="num">${statusCell(x)}</td>
+    <td class="num money">${x.disc>0.005?`<span style="color:var(--orange)">-${fmt$(x.disc)}</span>`:'<span class="neg">—</span>'}</td>
+    <td class="num money">${fmt$(x.total)}</td>
+    <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
+    <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
+  wrap.innerHTML=wfHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="5">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
+  note.innerHTML=`<b>New York receivables</b> — REAL invoice balances from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>): <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed, <b>Discount</b> = invoice-level discount. Wizard Trees is the brand, so what you actually receive is the <b>Net PO</b> above (after the 9% NY excise baked into the price and the distributor's 10% fee). Sales/orders elsewhere on the NY side still come from LeafLink (live); this page is the authoritative money view and updates when a new recon workbook is ingested.`;
+}
 function renderArNY(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note'); if(!wrap) return;
+  if((NY_INV||[]).length) return renderArNYRecon();   // recon loaded → REAL paid/outstanding/discounts
   const all=nyArData();
   if(!all.length){ cards.innerHTML=''; note.innerHTML='';
     wrap.innerHTML='<div class="empty">No New York (LeafLink) orders loaded yet.</div>'; return; }
