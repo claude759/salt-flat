@@ -350,6 +350,41 @@ function broadcastHours(){
   }catch(_){}
 }
 
+/* ---- shared tracker store relay -------------------------------------------
+   The embedding Labor/Unit Tracker (GitHub Pages) keeps its task days + notes
+   in THIS app's backend so the whole team shares one copy, but it can't call
+   google.script.run across origins. This page is the relay: it loads the
+   shared state on boot and hands it up, and accepts 'wt-tracker-save'
+   messages (from the tracker's origin ONLY) that it writes via Apps Script,
+   answering with the fresh shared state + an ack. Standalone, all no-ops. */
+const TRACKER_ORIGIN='https://claude759.github.io';
+function broadcastTracker(st,ack){
+  try{
+    if(window.top===window) return;
+    window.top.postMessage({type:'wt-tracker', days:(st&&st.days)||{}, notes:(st&&st.notes)||{}, rev:(st&&st.rev)||'', ack:ack||null}, TRACKER_ORIGIN);
+  }catch(_){}
+}
+async function loadTrackerShared(){
+  if(window.top===window) return;   // not embedded: nobody to relay to
+  try{
+    const r=await grun('apiTrackerLoad');
+    if(r&&r.ok!==false) broadcastTracker(r.state);
+  }catch(_){}
+}
+window.addEventListener('message', async e=>{
+  if(e.origin!==TRACKER_ORIGIN) return;
+  const d=e.data||{};
+  if(d.type==='wt-tracker-pull'){ loadTrackerShared(); return; }
+  if(d.type!=='wt-tracker-save') return;
+  try{
+    const r=await grun('apiTrackerSave', JSON.stringify({days:d.days||{}, notes:d.notes||{}, dayStamps:d.dayStamps||{}, noteStamps:d.noteStamps||{}}));
+    if(!r||r.ok===false) throw new Error((r&&r.error)||'save failed');
+    broadcastTracker(r.state, d.req);
+  }catch(err){
+    try{ window.top.postMessage({type:'wt-tracker-error', req:d.req||null}, TRACKER_ORIGIN); }catch(_){}
+  }
+});
+
 function renderError(){
   app.innerHTML=`<div class="auth"><div class="authcard card">
     <h3>Couldn't load data</h3>
@@ -1349,7 +1384,7 @@ function startDemo(){
 /* ---- boot ----------------------------------------------------------------- */
 restoreView();                 // return to the tab + pay-period the user last had open
 if(DEMO) startDemo();
-else loadAll().then(render);   // served by Apps Script \u2192 load the user's data, then show the app
+else loadAll().then(function(){ render(); loadTrackerShared(); });   // served by Apps Script \u2192 load the user's data, then show the app
 </script>
 </body>
 </html>

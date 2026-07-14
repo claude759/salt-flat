@@ -1,4 +1,8 @@
 // ==============================================================
+//  RETIRED 2026-07-14 - final source, kept for reference only.
+//  The deployed script now serves a "moved" redirect page; the app
+//  lives on in the Labor / Unit Tracker (Supabase) Timesheets tab.
+// ==============================================================
 //  Wizard Trees - Distro Hours - Apps Script web app (all-in-one)
 //
 //  Serves the timesheet app itself (HtmlService) AND stores the rows
@@ -170,6 +174,95 @@ function apiImport() {                 // load the 74 historical Distro rows + s
   catch (e) { Logger.log('import: ' + e); return { ok: false, error: String(e && e.message || e) }; }
   finally { lock.releaseLock(); }
 }
+
+// -- Shared Labor/Unit Tracker store (task days + LP notes) ------
+//    The tracker app (GitHub Pages) can't call google.script.run itself,
+//    so its embedded copy of THIS page relays for it over postMessage:
+//    the page receives 'wt-tracker-save' and calls these. Every
+//    @wizardtrees.com user reads/writes the same two tabs, so the
+//    team sees the same task entries everywhere.
+var TRK_DAY_COLS  = ['date', 'json', 'updated_at', 'updated_by', 'stamp'];
+var TRK_NOTE_COLS = ['date', 'note', 'updated_at', 'updated_by', 'stamp'];
+
+function apiTrackerLoad() {
+  requireUser_();
+  return { ok: true, state: trackerState_(getBook_()) };
+}
+// Saves are per-date last-writer-wins by the CLIENT edit stamp (ISO string):
+// a delayed/retried save can never overwrite a date that holds a newer edit.
+function apiTrackerSave(json) {
+  var email = requireUser_();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) return { ok: false, error: 'busy' };
+  try {
+    var ss = getBook_();
+    var p = JSON.parse(json || '{}');
+    var now = new Date().toISOString();
+    var days = p.days || {}, notes = p.notes || {};
+    var dayStamps = p.dayStamps || {}, noteStamps = p.noteStamps || {};
+    var dsh = getTab_(ss, 'tracker_days', TRK_DAY_COLS);
+    for (var d in days) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || !Array.isArray(days[d])) continue;
+      var st = stampStr_(dayStamps[d]);
+      upsertByDate_(dsh, d, [d, JSON.stringify(days[d]), cellSafe_(now), email, cellSafe_(st)], st);
+    }
+    var nsh = getTab_(ss, 'tracker_notes', TRK_NOTE_COLS);
+    for (var n in notes) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(n)) continue;
+      var st2 = stampStr_(noteStamps[n]);
+      upsertByDate_(nsh, n, [n, cellSafe_(String(notes[n] == null ? '' : notes[n])), cellSafe_(now), email, cellSafe_(st2)], st2);
+    }
+    return { ok: true, state: trackerState_(ss) };
+  } catch (e) { Logger.log('trackerSave: ' + e); return { ok: false, error: String(e && e.message || e) }; }
+  finally { lock.releaseLock(); }
+}
+function trackerState_(ss) {
+  var days = {}, notes = {}, rev = '';
+  var dv = getTab_(ss, 'tracker_days', TRK_DAY_COLS).getDataRange().getValues();
+  for (var i = 1; i < dv.length; i++) {
+    var d = normDay_(dv[i][0]); if (!d) continue;
+    try { var arr = JSON.parse(String(dv[i][1] || '[]')); if (Array.isArray(arr)) days[d] = arr; } catch (e) {}
+    var w = stampStr_(dv[i][2]); if (w > rev) rev = w;
+  }
+  var nv = getTab_(ss, 'tracker_notes', TRK_NOTE_COLS).getDataRange().getValues();
+  for (var j = 1; j < nv.length; j++) {
+    var d2 = normDay_(nv[j][0]); if (!d2) continue;
+    notes[d2] = String(nv[j][1] == null ? '' : nv[j][1]);
+    var w2 = stampStr_(nv[j][2]); if (w2 > rev) rev = w2;
+  }
+  return { days: days, notes: notes, rev: rev };
+}
+// Sheets coerces yyyy-mm-dd cells into Dates; normalize back to the string key.
+function normDay_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, tz_(), 'yyyy-MM-dd');
+  var s = String(v == null ? '' : v).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+// ISO stamps are written force-text, but guard reads anyway (a coerced Date
+// still compares correctly once round-tripped back to ISO).
+function stampStr_(v) {
+  if (v instanceof Date) return v.toISOString();
+  return String(v == null ? '' : v);
+}
+// Update the date's row in place, or append one. If the stored row carries a
+// NEWER client stamp than this write, skip it (last-writer-wins per date).
+function upsertByDate_(sh, date, rowVals, stamp) {
+  var last = sh.getLastRow();
+  if (last > 1) {
+    var vals = sh.getRange(2, 1, last - 1, TRK_DAY_COLS.length).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (normDay_(vals[i][0]) !== date) continue;
+      if (stamp && stampStr_(vals[i][4]) > stamp) return;   // stored edit is newer: drop this write
+      sh.getRange(i + 2, 1, 1, rowVals.length).setValues([rowVals]);
+      return;
+    }
+  }
+  sh.appendRow(rowVals);
+}
+// Force text entry for every non-empty value: keeps =/+ from becoming live
+// formulas, keeps date/number-looking notes from being coerced, and keeps a
+// real leading apostrophe intact (Sheets consumes the sacrificial one).
+function cellSafe_(s) { return s === '' ? s : "'" + s; }
 
 // -- Spreadsheet helpers ---------------------------------------
 function props_() { return PropertiesService.getScriptProperties(); }
