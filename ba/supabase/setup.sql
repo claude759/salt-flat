@@ -38,7 +38,7 @@ create table if not exists public.profiles (
 -- ---------------------------------------------------------------------------
 create table if not exists public.app_settings (
   id                int primary key default 1 check (id = 1),
-  mileage_rate      numeric(6,3) not null default 0.725,   -- 2026 IRS business rate
+  mileage_rate      numeric(6,3) not null default 0.76,    -- IRS business rate Jul–Dec 2026
   period_length_days int not null default 14,              -- bi-weekly
   period_anchor     date not null default date '2026-06-20', -- pay-period start; windows derive from this
   updated_at        timestamptz not null default now()
@@ -98,7 +98,7 @@ create table if not exists public.trips (
   end_photo     text,
   miles         numeric(8,2),
   miles_source  text,                  -- 'maps_cache' | 'maps_live' | 'odometer' | 'manual'
-  rate          numeric(6,3) not null default 0.725,  -- set authoritatively by trigger
+  rate          numeric(6,3) not null default 0.76,   -- set authoritatively by trigger
   amount        numeric(10,2) not null default 0,     -- miles*rate, set by trigger
   period_id     uuid references public.pay_periods(id),
   status        text not null default 'draft' check (status in ('draft','submitted','approved','rejected')),
@@ -206,7 +206,7 @@ as $$
   select coalesce(
     (select rate_override from public.profiles where id = p),
     (select mileage_rate from public.app_settings where id = 1),
-    0.725
+    0.76
   );
 $$;
 
