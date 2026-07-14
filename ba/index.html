@@ -339,7 +339,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.34';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.35';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -465,6 +465,12 @@ const PLACEHOLDER_TOP=['* Non-BA activity','* General BA activity','* Office','*
 const OFFICE_KIND='General BA Activity/Admin';   // category auto-applied to trips to the office
 // trip categories that don't happen AT a store — these trips need no Location link
 const NONSTORE_KINDS=['Lead','Non-BA activity','General BA Activity/Admin'];
+// a trip's kind can hold SEVERAL categories, stored as one comma-joined string
+// ("Store visit, Demo / PAD") — kind names themselves never contain commas
+const kindList=(s)=>String(s||'').split(',').map(x=>x.trim()).filter(Boolean);
+// only when EVERY selected kind is non-store is the location waived — one store-ish
+// kind in the mix (e.g. "Store visit, Lead") means the trip did visit a store
+const isNonstoreKind=(s)=>{ const l=kindList(s); return l.length>0 && l.every(k=>NONSTORE_KINDS.includes(k)); };
 // legacy "category disguised as a place" placeholder locations. Excluded from TRIP
 // pickers (destination/start/Location) — the CATEGORY covers them now. They stay in the
 // DB (hours + expense links still point at them, and hours keep using them as buckets).
@@ -1279,7 +1285,7 @@ function itemIssues(x){
   const out=[];
   // trips whose CATEGORY is a non-store kind (Lead / Non-BA / General BA) don't happen
   // at a store — the kind explains them, so no location link is required
-  if(!hasDisp && !(trip && NONSTORE_KINDS.includes(x.kind||''))) out.push(trip?'a location':'a dispensary');
+  if(!hasDisp && !(trip && isNonstoreKind(x.kind))) out.push(trip?'a location':'a dispensary');
   if(trip){
     if(!x.kind) out.push('a category');                      // every trip needs an activity category
     if(!(Number(x.miles)>0)){
@@ -2156,7 +2162,7 @@ function tripSheet(presetDate, editTrip, opts){
   const unlockedLeg = (p)=>!p.tripId || p.status==='draft' || p.status==='rejected';
   // is this leg still missing what the To-do rule requires? (live check on the part —
   // a non-store kind waives the location link, mirroring itemIssues)
-  const partIssues = (p)=>!((p.destDispId||matchDispByText(p.destLabel)||NONSTORE_KINDS.includes(p.kind||'')) && p.kind && Number(p.miles)>0);
+  const partIssues = (p)=>!((p.destDispId||matchDispByText(p.destLabel)||isNonstoreKind(p.kind)) && p.kind && Number(p.miles)>0);
   // keep the in-memory day data honest as we write, so the grid/totals stay right even
   // if the sheet is dismissed via ✕/backdrop instead of Done
   let dirty=false;
@@ -2285,8 +2291,8 @@ function tripSheet(presetDate, editTrip, opts){
         </div>
       </div>
       <label class="fl">Miles</label><input id="tMiles" type="number" inputmode="decimal" step="0.1" placeholder="calculated, or enter manually" value="${p.miles??''}">
-      <label class="fl">Category</label>
-      <select id="tKind"><option value="">— what kind of activity —</option>${laborKindNames().map(k=>`<option ${p.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${p.kind&&!laborKindNames().includes(p.kind)?`<option selected>${esc(p.kind)}</option>`:''}</select>
+      <label class="fl">Category <span class="muted">(pick all that apply)</span></label>
+      <button type="button" class="selpick" id="tKind" value="${esc(p.kind||'')}">${p.kind?esc(p.kind):'<span class="pkph">— what kind of activity —</span>'}</button>
       <label class="fl">Note (optional)</label><input id="tNote" placeholder="e.g. dropped samples, met buyer, BJ's lunch" value="${esc(p.note||'')}">
       <div id="tCost" class="small muted" style="margin-top:10px"></div>
       ${lock?'':`<button class="btn primary block" id="tSave" style="margin-top:12px">${p.saved?(editMode?'Save changes':'Update leg '+(i+1)):'Save leg '+(i+1)}</button>`}
@@ -2363,8 +2369,18 @@ function tripSheet(presetDate, editTrip, opts){
     });
     $('#tMiles').oninput=e=>{ p.miles=e.target.value?Number(e.target.value):null; p.milesSrc='manual'; showCost(); };
     $('#tNote').oninput=e=>{ p.note=e.target.value||null; };
-    searchifySelect($('#tKind'));   // tap-to-search category picker (re-applied each render)
-    $('#tKind').onchange=e=>{ p.kind=e.target.value||null; };
+    // Category = MULTI-select (a leg can be e.g. "Store visit, Demo / PAD"); stored as one
+    // comma-joined string in trips.kind. The button carries .value like the old select did,
+    // so officeKind()'s programmatic set + the save handler keep working unchanged.
+    { const kb=$('#tKind');
+      const kLabel=()=>{ kb.innerHTML = kb.value ? esc(kb.value) : '<span class="pkph">— what kind of activity —</span>'; };
+      kb.addEventListener('change', ()=>{ p.kind=kb.value||null; kLabel(); });
+      kb.onclick=()=>{ const opts=laborKindNames().slice(); kindList(p.kind).forEach(k=>{ if(!opts.includes(k)) opts.push(k); });
+        cellPickerSheet({ title:'Category (pick all that apply)', multi:true,
+          options:opts.map(k=>({id:k,name:k})), selected:kindList(kb.value),
+          onSave:ids=>{ kb.value=ids.join(', '); kb.dispatchEvent(new Event('change',{bubbles:true})); if(kb.value) clearNeed(kb); } });
+      };
+    }
     // a trip to an Office auto-defaults the category to General BA Activity/Admin (still editable)
     const officeKind=()=>{ const k=$('#tKind'); if(k && !p.kind && p.destDispId && /office/i.test(dispName(p.destDispId))){ p.kind=OFFICE_KIND; k.value=OFFICE_KIND; k.dispatchEvent(new Event('change',{bubbles:true})); } };
     $('#tGps').onclick=()=>{
@@ -2497,12 +2513,12 @@ function tripSheet(presetDate, editTrip, opts){
       const mk=(el,ev,ok)=>{ if(!el) return; el.classList.add('needs');
         const pk=el.nextElementSibling; if(pk&&pk.classList.contains('selpick')) pk.classList.add('needs');
         el.addEventListener(ev,()=>{ if(ok()) clearNeed(el); }); };
-      if(!(p.destDispId||matchDispByText(p.destLabel)||NONSTORE_KINDS.includes(p.kind||'')))
-        mk($('#tDest'),'input',()=>!!(p.destDispId||matchDispByText($('#tDest').value)||NONSTORE_KINDS.includes($('#tKind')?.value||'')));
+      if(!(p.destDispId||matchDispByText(p.destLabel)||isNonstoreKind(p.kind)))
+        mk($('#tDest'),'input',()=>!!(p.destDispId||matchDispByText($('#tDest').value)||isNonstoreKind($('#tKind')?.value)));
       if(!p.kind) mk($('#tKind'),'change',()=>!!$('#tKind').value);
       if(!(Number(p.miles)>0)) mk($('#tMiles'),'input',()=>Number($('#tMiles').value)>0);
-      // picking a non-store category resolves the 'needs a location' issue too
-      $('#tKind').addEventListener('change',()=>{ if(NONSTORE_KINDS.includes($('#tKind').value)){ const d=$('#tDest'); if(d) clearNeed(d); } });
+      // picking a purely non-store category resolves the 'needs a location' issue too
+      $('#tKind').addEventListener('change',()=>{ if(isNonstoreKind($('#tKind').value)){ const d=$('#tDest'); if(d) clearNeed(d); } });
       if(fixArmed && i===fixLeg){
         fixArmed=false;
         const card=$('#partsHost')&&$('#partsHost').querySelector('.legcard');
@@ -2973,7 +2989,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
   // mirror itemIssues(): flag the same missing fields the To-do lists, so opening an
   // item straight from a To-do row shows exactly what needs filling, highlighted red
   const hasDisp = x.dispensary_id || (x.dispensary_ids && x.dispensary_ids.length)
-    || (kind==='trip' && NONSTORE_KINDS.includes(x.kind||''));   // non-store trips need no location (mirrors itemIssues)
+    || (kind==='trip' && isNonstoreKind(x.kind));   // non-store trips need no location (mirrors itemIssues)
   const needMiles = kind==='trip' && !(Number(x.miles)>0);
   const iss = itemIssues({...x, _k: kind==='trip'?'trip':kind==='hours'?'hours':'exp'});
   const issHint = iss.length ? `<div class="small" style="margin-top:2px;color:var(--yellow)">Highlighted below: needs ${iss.join(', ')}.</div>` : '';
