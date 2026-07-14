@@ -313,7 +313,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.22';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.23';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1285,7 +1285,7 @@ function fixItemSheet(kind, id){
   const x = arr.find(o=>String(o.id)===String(id));
   if(!x){ toast('Item not found — pull down to refresh','err'); return; }
   if(!(x.status==='draft' || x.status==='rejected')){ toast('This item is locked (already submitted).','err'); return; }
-  trip ? fixTripSheet(x) : fixExpenseSheet(x);
+  trip ? tripSheet(x.trip_date, x) : fixExpenseSheet(x);
 }
 function fixTripSheet(x){
   const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
@@ -1746,7 +1746,7 @@ function openDayItem(kind, id){
   const x = arr.find(o=>String(o.id)===String(id)); if(!x) return;
   if(!dgCanEdit(ctx,kind,x)) return itemDetailSheet(kind,x);   // BA hours / locked items
   if(ctx.isAdmin){ adminEditItem(kind,id,d=>dgApplyEdit(kind,d),x); }
-  else if(kind==='trip'){ fixTripSheet(x); }
+  else if(kind==='trip'){ tripSheet(x.trip_date, x); }
   else if(kind==='exp'){ fixExpenseSheet(x); }
 }
 // tap ＋ → the create popup. BAs use their own log flows (which self-refresh via drawBA);
@@ -2177,8 +2177,11 @@ function placeDatalist(){
 }
 
 /* ── Log trip sheet ── */
-function tripSheet(presetDate){
-  if(!canEditPeriod(state.period)) return toast('This pay period is view-only — ask an admin to make changes.','err');
+// presetDate → seed a new day's first leg. editTrip → open a SINGLE existing trip in the
+// SAME leg form (edit mode), with Save/Delete instead of the multi-leg flow.
+function tripSheet(presetDate, editTrip){
+  if(!canEditPeriod(state.period) && !(editTrip && state.grid?.isAdmin)) return toast('This pay period is view-only — ask an admin to make changes.','err');
+  const editMode = !!editTrip;
   const rate = Number(state.profile.rate_override ?? state.settings?.mileage_rate ?? 0.67);
   // The day's drive is logged one LEG at a time: Home → stop → stop → … → Home.
   // Each leg saves as its own trip; the next leg's start auto-fills from this leg's
@@ -2186,18 +2189,23 @@ function tripSheet(presetDate){
   const newPart = (startLabel)=>({ startLabel:startLabel||'', startAddr:startLabel||'', startCoords:null,
     destLabel:'', destAddr:'', destDispId:null, method:'distance', miles:null, milesSrc:null, note:'',
     startOdo:null, endOdo:null, startPath:null, endPath:null, routePath:null, kind:null, tripId:null, saved:false });
-  const parts=[ newPart(state.profile.base_address||'') ];   // leg 1 starts at home
+  const partFromTrip = (t)=>({ startLabel:t.start_label||'', startAddr:t.start_label||'', startCoords:null,
+    destLabel:t.dest_label||'', destAddr:'', destDispId:t.dispensary_id||null,
+    method:(t.method==='odometer'?'odometer':'distance'), miles:t.miles!=null?Number(t.miles):null,
+    milesSrc:t.miles_source||'manual', note:t.note||'', startOdo:t.start_odo, endOdo:t.end_odo,
+    startPath:t.start_photo||null, endPath:t.end_photo||null, routePath:null, kind:t.kind||null, tripId:t.id, saved:true });
+  const parts=[ editMode ? partFromTrip(editTrip) : newPart(state.profile.base_address||'') ];
   let activeIdx=0;
 
   openSheet(`
-    <h3>Log the day's miles</h3>
-    <div class="small muted" style="margin:-4px 0 8px">One leg at a time — each saves on its own and feeds the next.</div>
-    <label class="fl">Date</label><input id="tDate" type="date" value="${presetDate||todayISO()}">
+    <h3>${editMode?'Edit trip':"Log the day's miles"}</h3>
+    <div class="small muted" style="margin:-4px 0 8px">${editMode?'Change anything below.':'One leg at a time — each saves on its own and feeds the next.'}</div>
+    <label class="fl">Date</label><input id="tDate" type="date" value="${editMode?editTrip.trip_date:(presetDate||todayISO())}">
     <div id="partsHost" style="margin-top:6px"></div>
     <button class="btn ghost block" id="tAddLeg" style="margin-top:10px;display:none">＋ Add another leg</button>
-    <button class="btn primary block" id="tDone" style="margin-top:10px">Done</button>
+    <button class="btn ${editMode?'ghost':'primary'} block" id="tDone" style="margin-top:10px">${editMode?'Cancel':'Done'}</button>
   `);
-  $('#tDone').onclick=()=>{ closeSheet(); state.baTab='home'; if(typeof drawBA==='function') drawBA(); };
+  $('#tDone').onclick=()=>{ closeSheet(); if(!editMode) state.baTab='home'; if(typeof drawBA==='function') drawBA(); };
   $('#tAddLeg').onclick=()=>{ const last=parts[parts.length-1]; parts.push(newPart(last?last.destLabel:'')); activeIdx=parts.length-1; render(); };
   render();
 
@@ -2214,7 +2222,7 @@ function tripSheet(presetDate){
   function activeFormHtml(p,i){
     const seg=(m,ic,t,s)=>`<button class="${p.method===m?'on':''}" data-m="${m}"><span class="mi">${ic}</span><b>${t}</b><small>${s}</small></button>`;
     return `<div class="legcard">
-      <div class="leghd"><b>Leg ${i+1}</b>${i>0?'<span class="muted small">start = last stop (editable)</span>':''}</div>
+      <div class="leghd"><b>${editMode?'Trip':'Leg '+(i+1)}</b>${(!editMode&&i>0)?'<span class="muted small">start = last stop (editable)</span>':''}</div>
       <label class="fl">How do you want the miles?</label>
       <div class="mtiles" id="tSeg">${seg('distance','📍','Addresses','A → B')}${seg('route','🗺','Nav screenshot','reads your map')}${seg('odometer','📷','Odometer','start &amp; end')}</div>
       <div id="tStartWrap" class="${p.method!=='distance'?'hide':''}">
@@ -2247,7 +2255,8 @@ function tripSheet(presetDate){
       <select id="tKind"><option value="">— what kind of activity —</option>${laborKindNames().map(k=>`<option ${p.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${p.kind&&!laborKindNames().includes(p.kind)?`<option selected>${esc(p.kind)}</option>`:''}</select>
       <label class="fl">Note (optional)</label><input id="tNote" placeholder="e.g. dropped samples, met buyer, BJ's lunch" value="${esc(p.note||'')}">
       <div id="tCost" class="small muted" style="margin-top:10px"></div>
-      <button class="btn primary block" id="tSave" style="margin-top:12px">${p.saved?'Update leg '+(i+1):'Save leg '+(i+1)}</button>
+      <button class="btn primary block" id="tSave" style="margin-top:12px">${editMode?'Save changes':(p.saved?'Update leg '+(i+1):'Save leg '+(i+1))}</button>
+      ${p.tripId?`<button class="btn ghost block" id="tDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete ${editMode?'trip':'leg'}</button>`:''}
     </div>`;
   }
   function render(){
@@ -2260,7 +2269,8 @@ function tripSheet(presetDate){
   }
   async function delLeg(i){
     const p=parts[i];
-    if(p.tripId){ try{ await supabase.from('trips').delete().eq('id',p.tripId); }catch(_){} }
+    if(p.tripId){ const {error}=await supabase.from('trips').delete().eq('id',p.tripId); if(error) return toast('Couldn’t delete: '+error.message,'err'); toast('Trip deleted','ok'); }
+    if(editMode){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }
     parts.splice(i,1);
     if(!parts.length){ parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
     else if(activeIdx>=parts.length || activeIdx===i) activeIdx=-1;
@@ -2359,6 +2369,7 @@ function tripSheet(presetDate){
     };
     $('#tStartPhoto').onchange=e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'start');} };
     $('#tEndPhoto').onchange  =e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'end');} };
+    { const del=$('#tDel'); if(del) del.onclick=()=>{ if(confirm(`Delete this ${editMode?'trip':'leg'}? This can’t be undone.`)) delLeg(i); }; }
     $('#tSave').onclick=async ()=>{
       p.startLabel=$('#tStartLoc')?($('#tStartLoc').value||p.startLabel):p.startLabel;
       p.destLabel=$('#tDest').value.trim(); p.note=$('#tNote').value||null;
@@ -2384,7 +2395,8 @@ function tripSheet(presetDate){
       p.tripId=res.data.id; p.saved=true;
       rememberPlaces(startLoc, p.destLabel);
       await ensurePeriodForDate(row.trip_date);
-      toast(`Leg ${i+1} saved ✓`,'ok');
+      toast(editMode?'Trip updated ✓':`Leg ${i+1} saved ✓`,'ok');
+      if(editMode){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }
       if(i===parts.length-1){ parts.push(newPart(p.destLabel)); activeIdx=parts.length-1; }
       else { activeIdx=-1; }
       render();
