@@ -339,7 +339,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.32';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.33';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1313,134 +1313,6 @@ function fixItemSheet(kind, id){
   if(!(x.status==='draft' || x.status==='rejected')){ toast('This item is locked (already submitted).','err'); return; }
   trip ? tripSheet(x.trip_date, x, {fix:true}) : fixExpenseSheet(x);
 }
-function fixTripSheet(x){
-  const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
-  const iss = itemIssues({...x,_k:'trip'});
-  const needDisp = !x.dispensary_id, needMiles = !(Number(x.miles)>0);
-  openSheet(`
-    <h3>Edit this trip</h3>
-    <div class="small muted" style="margin-top:2px">${iss.length?`Still needs ${iss.join(', ')}.`:'Change anything below.'}</div>
-    <label class="fl">Date</label><input id="fTDate" type="date" value="${x.trip_date||''}">
-    <label class="fl">Location <span class="muted">(the store, or a * placeholder like Office / General BA activity)</span></label>
-    <select id="fDisp" class="${needDisp?'needs':''}">${dispOpts}</select>
-    <label class="fl">Category <span class="muted">(what kind of activity)</span></label>
-    <select id="fKind" class="${!x.kind?'needs':''}"><option value="">— pick —</option>${laborKindNames().map(k=>`<option ${(x.kind||((x.dispensary_id&&/office/i.test(dispName(x.dispensary_id)))?OFFICE_KIND:''))===k?'selected':''}>${esc(k)}</option>`).join('')}</select>
-    <label class="fl">Starting location</label>
-    <input id="fStart" placeholder="start typing, or pick 📍 Current location" value="${esc(x.start_label||'')}" autocomplete="off" class="${needMiles&&!x.start_label?'needs':''}">
-    <label class="fl">Destination</label>
-    <input id="fDest" placeholder="dispensary or address" value="${esc(x.dest_label||'')}" autocomplete="off" class="${needMiles&&!x.dest_label?'needs':''}">
-    <div class="row">
-      <div class="grow"><label class="fl">Odometer start</label>
-        <div class="row" style="gap:6px"><input id="fOs" type="number" inputmode="decimal" placeholder="reading" value="${x.start_odo!=null?x.start_odo:''}" style="flex:1">
-          <label class="btn ghost sm" style="flex:none" title="snap odometer">📷<input id="fOsFile" type="file" accept="image/*" capture="environment" hidden></label></div></div>
-      <div class="grow"><label class="fl">Odometer end</label>
-        <div class="row" style="gap:6px"><input id="fOe" type="number" inputmode="decimal" placeholder="reading" value="${x.end_odo!=null?x.end_odo:''}" style="flex:1">
-          <label class="btn ghost sm" style="flex:none" title="snap odometer">📷<input id="fOeFile" type="file" accept="image/*" capture="environment" hidden></label></div></div>
-    </div>
-    <label class="fl">Miles <span class="muted">(auto-fills from odometer or address)</span></label>
-    <div class="row" style="gap:6px">
-      <input id="fMiles" type="number" inputmode="decimal" placeholder="miles" value="${x.miles!=null?x.miles:''}" class="${needMiles?'needs':''}" style="flex:1">
-      <label class="btn ghost sm" style="flex:none" title="upload a route screenshot — reads the miles">🗺<input id="fRoute" type="file" accept="image/*" hidden></label>
-    </div>
-    <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="fRound" ${x.roundtrip?'checked':''} style="width:auto;min-height:auto"> Round trip (there &amp; back)</label>
-    <div id="fMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
-    <button class="btn primary block" id="fSave" style="margin-top:8px">Save</button>
-    <button class="btn ghost block" id="fCancel" style="margin-top:8px">Cancel</button>
-  `);
-  $('#fCancel').onclick=closeSheet;
-  const startEl=$('#fStart'), destEl=$('#fDest'), milesEl=$('#fMiles'), dispEl=$('#fDisp'), osEl=$('#fOs'), oeEl=$('#fOe');
-  wireNewRetailerSelect(dispEl);
-  let startRes=null, destRes=null;
-  const recalcFromOdo=()=>{ const s=Number(osEl.value),e=Number(oeEl.value); if(s&&e&&e>=s){ milesEl.value=Math.round((e-s)*10)/10; milesEl.classList.remove('needs'); } };
-  attachGridTypeahead(startEl, r=>{ startRes=r; }, {gps:true});
-  // programmatic value sets dispatch 'change' so the searchable-picker button labels stay in sync
-  const setVal=(el,v)=>{ el.value=v; el.classList.remove('needs'); el.dispatchEvent(new Event('change',{bubbles:true})); };
-  const officeKind=()=>{ const fk=$('#fKind'); if(fk && !fk.value && dispEl.value && /office/i.test(dispName(dispEl.value))) setVal(fk,OFFICE_KIND); };  // office trip → General BA Activity/Admin
-  attachGridTypeahead(destEl,  r=>{ destRes=r; if(r.dispId && dispEl.value!==r.dispId) setVal(dispEl,r.dispId); officeKind(); });
-  dispEl.addEventListener('change', officeKind);
-  // canonicalize Start/Destination to store names + set Location (dest store, or the START
-  // store when heading home so the return leg still counts toward that dispensary)
-  const fHome=()=>state.profile?.base_address||gridCtx().homeAddr||null;
-  function fRelink(){
-    const r=resolveTripPlaces(startEl.value.trim(), destEl.value.trim(), fHome());
-    if(r.startCanon!==startEl.value) startEl.value=r.startCanon;
-    if(r.destCanon!==destEl.value) destEl.value=r.destCanon;
-    if(r.linkDispId && !dispEl.value){ setVal(dispEl,r.linkDispId); officeKind(); }
-  }
-  destEl.addEventListener('blur', fRelink);
-  startEl.addEventListener('blur', fRelink);
-  fRelink();
-  // inline odometer snap → read-odometer fills the number (no nested popup)
-  const wireOdo=(fileEl, inp)=>{ if(!fileEl) return; fileEl.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
-    const ph=inp.placeholder; inp.placeholder='reading…';
-    try{ const path=await uploadPhoto('odometer',f); inp._photo=path; const r=await callFn('read-odometer',{path});
-      if(r&&r.ok&&r.reading!=null){ inp.value=r.reading; toast('Read '+r.reading+' — check it','ok'); }
-      else toast((r&&r.message)||'Couldn’t read it — type the number','err');
-    }catch(err){ toast('Upload/read failed — type the number','err'); }
-    inp.placeholder=ph; recalcFromOdo(); }; };
-  wireOdo($('#fOsFile'), osEl); wireOdo($('#fOeFile'), oeEl);
-  let fRoutePath=null;
-  const fR=$('#fRoute'); if(fR) fR.onchange=async e=>{
-    const f=e.target.files[0]; if(!f) return;
-    toast('Reading your route…');
-    try{
-      fRoutePath=await uploadPhoto('odometer',f);
-      const r=await callFn('read-route',{path:fRoutePath});
-      if(r&&r.ok&&r.miles!=null){ milesEl.value=r.miles; milesEl.classList.remove('needs'); toast(`Route read: ${r.miles} mi — double-check it`,'ok'); }
-      else toast((r&&r.message)||'Couldn’t read the route — type the miles (screenshot saved)','err');
-    }catch(err){ toast('Route reader unavailable — screenshot saved, type the miles','err'); }
-  };
-  osEl.addEventListener('input',recalcFromOdo); oeEl.addEventListener('input',recalcFromOdo);
-  // flipping round-trip doubles/halves the miles in place (visible before saving)
-  $('#fRound').onchange=()=>{ const m=Number(milesEl.value);
-    if(m>0) milesEl.value=Math.round(m*($('#fRound').checked?2:0.5)*100)/100; };
-  [dispEl,milesEl].forEach(el=>el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }));
-  $('#fSave').onclick=async()=>{
-    const btn=$('#fSave');
-    const start=startEl.value.trim(), dest=destEl.value.trim();
-    const os=osEl.value, oe=oeEl.value;
-    let miles=Number(milesEl.value);
-    if(!(miles>0)){ const s=Number(os),e=Number(oe); if(s&&e&&e>=s) miles=Math.round((e-s)*10)/10; }
-    // no miles yet but both endpoints known → ask ORS once
-    if(!(miles>0) && start && dest){
-      busy(btn,true); $('#fMsg').style.color='var(--muted)'; $('#fMsg').textContent='Calculating distance…';
-      try{ const body={roundtrip:$('#fRound').checked};   // match the (possibly just-toggled) round-trip setting
-        if(startRes&&startRes.coords){ body.start_lat=startRes.coords.lat; body.start_lng=startRes.coords.lng; } else body.start_address=(startRes&&startRes.addr)||dispAddrByText(start)||start;
-        // route destination = the Destination field (not the Location tag, which stays on the store)
-        const fdId=(destRes&&destRes.dispId)||matchDispByText(dest);
-        if(fdId){ body.dispensary_id=fdId; } else body.dest_address=(destRes&&destRes.addr)||dispAddrByText(dest)||dest;
-        const r=await callFn('calc-distance',body);
-        if(r&&r.ok && r.routes?.length){
-          const mult=$('#fRound').checked?2:1;
-          let route=r.routes[0];
-          if(r.routes.length>1){ const picked=await pickRoute(r.routes); if(picked) route=picked; }
-          miles=Math.round(route.miles*mult*100)/100;
-        }
-      }catch(err){}
-      busy(btn,false); $('#fMsg').textContent='';
-    }
-    const hasOdo=os!==''&&oe!=='';
-    const patch={ trip_date:$('#fTDate').value||x.trip_date, dispensary_id:dispEl.value||null, kind:$('#fKind').value||null, start_label:start||null, dest_label:dest||null,
-      start_odo:os!==''?Number(os):null, end_odo:oe!==''?Number(oe):null,
-      miles:miles>0?miles:(x.miles||null), roundtrip:$('#fRound').checked,   // never blank out an existing distance
-      method:hasOdo?'odometer':'manual', miles_source:hasOdo?'odometer':'manual' };
-    if(startRes&&startRes.coords){ patch.start_lat=startRes.coords.lat; patch.start_lng=startRes.coords.lng; }
-    if(osEl._photo) patch.start_photo=osEl._photo; if(oeEl._photo) patch.end_photo=oeEl._photo;
-    if(fRoutePath && !osEl._photo) patch.start_photo=fRoutePath;   // route screenshot as evidence (odometer photo wins)
-    const left=itemIssues({...x, ...patch, _k:'trip'});
-    if(left.length){ $('#fMsg').style.color='var(--red)'; $('#fMsg').textContent='Still needs '+left.join(', ')+'.'; return; }
-    busy(btn,true);
-    const {data,error}=await supabase.from('trips').update(patch).eq('id',x.id).select('*').single();
-    busy(btn,false);
-    if(error){ $('#fMsg').style.color='var(--red)'; $('#fMsg').textContent='Couldn’t save: '+error.message; return; }
-    const i=(state._T||[]).findIndex(o=>o.id===x.id);
-    if(data.period_id && state.period && data.period_id!==state.period.id){
-      if(i>=0) state._T.splice(i,1);
-      toast(`Trip moved to the pay period covering ${fmtDate(data.trip_date)}`,'ok');
-    } else { if(i>=0) state._T[i]=data; toast('Trip updated ✓','ok'); }
-    closeSheet(); refreshItems(); refreshTotals(); renderGrid();
-  };
-}
 function fixExpenseSheet(x){
   const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
   const cats = EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
@@ -1729,7 +1601,9 @@ function renderDayGrid(host){
   host.querySelectorAll('.bub[data-daymiles]').forEach(b=>b.onclick=()=>{
     const day=b.dataset.daymiles, T=gridCtx().T||[];
     const dayT=T.filter(t=>String(t.trip_date)===String(day)).sort((a,c)=>String(a.created_at||a.id).localeCompare(String(c.created_at||c.id)));
-    const hasIssue=dayT.some(t=>itemIssues({...t,_k:'trip'}).length);   // a to-do → jump to the leg that needs fixing; otherwise a plain (all-collapsed) edit
+    // a FIXABLE to-do (same status rule as the To-do card) → jump to the broken leg;
+    // otherwise a plain (all-collapsed) edit. Locked legs are never fix targets.
+    const hasIssue=dayT.some(t=>tripFixable(t)&&itemIssues({...t,_k:'trip'}).length);
     tripSheet(day, dayT[0]||undefined, {fix:hasIssue});
   });
   host.querySelectorAll('.bub-add').forEach(b=>b.onclick=()=>dgAdd(b.dataset.add,b.dataset.day));
@@ -1786,10 +1660,13 @@ function abbrPlace(s, max=18){
 }
 // one pill for the whole day's drive: "Home → stop → stop → …" + total miles. Nodes are
 // the linked store name (or the typed label), long ones abbreviated.
+// only draft/rejected trips are the BA's to fix — the same status rule todoCard applies.
+// A submitted/approved leg with gaps is the ADMIN's problem, not a BA to-do.
+function tripFixable(t){ return t.status==='draft' || t.status==='rejected'; }
 function dayRouteBubble(ctx, day, trips){
   const legs=trips.slice().sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
   const total=legs.reduce((a,t)=>a+Number(t.miles||0),0);
-  const warn=legs.some(t=>itemIssues({...t,_k:'trip'}).length>0);
+  const warn=legs.some(t=>tripFixable(t)&&itemIssues({...t,_k:'trip'}).length>0);
   const node=(label,dispId)=> dispId ? dispName(dispId) : (label||'');
   const chain=[ node(legs[0].start_label, null) ];
   legs.forEach(t=>chain.push(node(t.dest_label, t.dispensary_id||(t.dispensary_ids&&t.dispensary_ids[0]))));
@@ -2212,6 +2089,12 @@ function attachPlaceTypeahead(input, box, onResolve, opts={}){
     box.innerHTML=html; box.classList.remove('hide');
     box.querySelectorAll('.sg[data-i]').forEach(el=>el.onmousedown=ev=>{ ev.preventDefault();
       const it=items[+el.dataset.i]; input.value=it.display; box.classList.add('hide');
+      // a pick must behave like typing: fire 'input' FIRST (label/state listeners run,
+      // red 'needs' highlights clear), THEN resolve with the richer pick data (dispId,
+      // address) so the resolve handler's values win over the generic input handler's
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      clearTimeout(timer);         // the input handler's render() re-opened the list + queued a remote search
+      box.classList.add('hide'); box.innerHTML='';
       onResolve({display:it.display, addr:it.addr, dispId:it.dispId}); });
   };
   const render=()=>{
@@ -2258,7 +2141,22 @@ function tripSheet(presetDate, editTrip, opts){
     destLabel:t.dest_label||'', destAddr:'', destDispId:t.dispensary_id||null,
     method:(t.method==='odometer'?'odometer':'distance'), miles:t.miles!=null?Number(t.miles):null,
     milesSrc:t.miles_source||'manual', note:t.note||'', startOdo:t.start_odo, endOdo:t.end_odo,
-    startPath:t.start_photo||null, endPath:t.end_photo||null, routePath:null, kind:t.kind||null, tripId:t.id, saved:true });
+    startPath:t.start_photo||null, endPath:t.end_photo||null, routePath:null, kind:t.kind||null,
+    tripId:t.id, status:t.status||'draft', saved:true });
+  // a leg the BA may still change: unsaved, or draft/rejected. Submitted/approved legs
+  // render read-only (the server trigger would silently revert edits anyway).
+  const unlockedLeg = (p)=>!p.tripId || p.status==='draft' || p.status==='rejected';
+  // is this leg still missing what the To-do rule requires? (live check on the part)
+  const partIssues = (p)=>!((p.destDispId||matchDispByText(p.destLabel)) && p.kind && Number(p.miles)>0);
+  // keep the in-memory day data honest as we write, so the grid/totals stay right even
+  // if the sheet is dismissed via ✕/backdrop instead of Done
+  let dirty=false;
+  const syncT=(rowOrId, del)=>{ dirty=true; const T=state._T; if(!Array.isArray(T)) return;
+    const id=del?rowOrId:rowOrId.id, ix=T.findIndex(t=>String(t.id)===String(id));
+    if(del){ if(ix>=0) T.splice(ix,1); }
+    else if(ix>=0) T[ix]={...T[ix],...rowOrId}; else T.push(rowOrId);
+    // refresh of the (backgrounded) home is best-effort — it must never break the save/delete flow
+    try{ const c=(typeof gridCtx==='function')&&gridCtx(); if(c&&typeof c.onChange==='function') c.onChange(); }catch(_e){} };
   // load THIS day's already-logged trips (from the in-memory grid/period data) as legs, so
   // editing one trip shows the whole day's journey and you can navigate / add / delete legs
   const date = editMode ? editTrip.trip_date : (presetDate || todayISO());
@@ -2266,7 +2164,8 @@ function tripSheet(presetDate, editTrip, opts){
     .filter(t=>String(t.trip_date)===String(date))
     .sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
   const parts = dayTrips.map(partFromTrip);
-  const legIssues = dayTrips.map(t=>itemIssues({...t,_k:'trip'}));   // aligned 1:1 with parts
+  // fix-mode only ever targets legs the BA can actually fix (same rule as the To-do card)
+  const legIssues = dayTrips.map(t=>tripFixable(t)?itemIssues({...t,_k:'trip'}):[]);   // aligned 1:1 with parts
   let activeIdx;
   if(opts.fix){
     // opened from a to-do → jump straight to the leg that needs fixing. Prefer the
@@ -2285,8 +2184,8 @@ function tripSheet(presetDate, editTrip, opts){
   }
   else if(parts.length){ parts.push(newPart(parts[parts.length-1].destLabel)); activeIdx=parts.length-1; }  // continue the day
   else { parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
-  const fixLeg = opts.fix ? activeIdx : -1;   // the leg to auto-focus + red-highlight (once)
-  let fixArmed = fixLeg>=0;
+  let fixLeg = opts.fix ? activeIdx : -1;     // the leg to auto-focus (re-targeted after each save)
+  let fixArmed = fixLeg>=0;                   // gates the one-time auto-scroll
 
   const headTitle = opts.fix ? 'Finish this trip' : (editMode ? "Edit the day's miles" : "Log the day's miles");
   const headSub = opts.fix ? 'The highlighted fields still need info.'
@@ -2301,6 +2200,27 @@ function tripSheet(presetDate, editTrip, opts){
   `);
   $('#tDone').onclick=()=>{ closeSheet(); if(!editMode) state.baTab='home'; if(typeof drawBA==='function') drawBA(); };
   $('#tAddLeg').onclick=()=>{ const last=parts[parts.length-1]; parts.push(newPart(last?last.destLabel:'')); activeIdx=parts.length-1; render(); };
+  // dismissing via ✕ or the backdrop must refresh too — otherwise the day grid keeps
+  // showing deleted legs / missing new ones and Submit totals compute from stale data
+  { const sh=$('#sheet');
+    if(sh){ const refresh=()=>{ if(dirty && typeof drawBA==='function') drawBA(); };
+      sh.addEventListener('click',e=>{ if(e.target===sh) refresh(); });
+      const x=sh.querySelector('.sheetx'); if(x) x.onclick=()=>{ closeSheet(); refresh(); }; } }
+  // one Date field rules the whole day: changing it offers to MOVE the already-saved
+  // legs (else they'd silently split across two dates / two pay periods)
+  $('#tDate').onchange=async e=>{
+    const nd=e.target.value; if(!nd || nd===date) return;
+    const movable=parts.filter(q=>q.tripId && unlockedLeg(q));
+    if(!movable.length) return;
+    if(!confirm(`Move the ${movable.length} saved leg${movable.length>1?'s':''} of this day to ${nd} too?\n(Cancel = only legs saved from now on get the new date)`)) return;
+    await ensurePeriodForDate(nd);
+    let moved=0;
+    for(const q of movable){
+      const {data,error}=await supabase.from('trips').update({trip_date:nd}).eq('id',q.tripId).select('*').single();
+      if(!error && data){ syncT(data); moved++; }
+    }
+    toast(moved===movable.length?`Day moved to ${fmtDate(nd)} ✓`:`Moved ${moved}/${movable.length} legs — the rest are locked`, moved?'ok':'err');
+  };
   render();
 
   function summaryHtml(p,i){
@@ -2308,10 +2228,12 @@ function tripSheet(presetDate, editTrip, opts){
     // (a store name like "* Office (CA)") is protected from shrinking. Both long → both give.
     const a=abbrPlace(p.startLabel,40), b=abbrPlace(p.destLabel,40), PROT=18;
     const sa=(a.length<=PROT && b.length>a.length)?0:1, sb=(b.length<=PROT && a.length>b.length)?0:1;
+    const lock=!unlockedLeg(p);
     return `<div class="legsum" data-i="${i}">
-      <div class="lgn">Leg ${i+1} · <span class="lmi">${p.miles!=null?p.miles+' mi':'— mi'}</span>${p.saved?'':' · draft'}</div>
+      <div class="lgn">Leg ${i+1} · <span class="lmi">${p.miles!=null?p.miles+' mi':'— mi'}</span>${p.saved?(lock?' · '+esc(p.status):''):' · draft'}</div>
       <div class="t"><span class="pl" style="flex-shrink:${sa}">${esc(a)}</span><span class="ar">→</span><span class="pl" style="flex-shrink:${sb}">${esc(b)}</span></div>
-      <button class="legx" data-del="${i}" title="remove leg">✕</button>
+      ${lock?`<span class="legx" style="cursor:default" title="${esc(p.status)} — an admin can change it">🔒</span>`
+            :`<button class="legx" data-del="${i}" title="remove leg">✕</button>`}
     </div>`;
   }
   function activeFormHtml(p,i){
@@ -2319,11 +2241,13 @@ function tripSheet(presetDate, editTrip, opts){
     // an expanded leg can always be collapsed back — except a lone, never-saved one
     // (there'd be nothing left to show)
     const canCollapse = parts.length>1 || p.saved;
+    const lock=!unlockedLeg(p);
     return `<div class="legcard">
       <div class="leghd${canCollapse?' can':''}"${canCollapse?' id="tLegHd"':''}><b>Leg ${i+1}</b>
-        <span class="hdr">${i>0?'<span class="muted small">start = last stop (editable)</span>':''}
+        <span class="hdr">${i>0&&!lock?'<span class="muted small">start = last stop (editable)</span>':''}
         ${canCollapse?'<button class="legcol" id="tCollapse" type="button" title="Collapse this leg" aria-label="Collapse this leg">▴ Collapse</button>':''}</span>
       </div>
+      ${lock?`<div class="small" style="color:var(--yellow);margin:-2px 0 8px">🔒 This leg is ${esc(p.status)} — ask an admin to change or delete it.</div>`:''}
       <label class="fl">How do you want the miles?</label>
       <div class="mtiles" id="tSeg">${seg('distance','📍','Addresses','A → B')}${seg('route','🗺','Nav screenshot','reads your map')}${seg('odometer','📷','Odometer','start &amp; end')}</div>
       <div id="tStartWrap" class="${p.method!=='distance'?'hide':''}">
@@ -2356,8 +2280,8 @@ function tripSheet(presetDate, editTrip, opts){
       <select id="tKind"><option value="">— what kind of activity —</option>${laborKindNames().map(k=>`<option ${p.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${p.kind&&!laborKindNames().includes(p.kind)?`<option selected>${esc(p.kind)}</option>`:''}</select>
       <label class="fl">Note (optional)</label><input id="tNote" placeholder="e.g. dropped samples, met buyer, BJ's lunch" value="${esc(p.note||'')}">
       <div id="tCost" class="small muted" style="margin-top:10px"></div>
-      <button class="btn primary block" id="tSave" style="margin-top:12px">${editMode?'Save changes':(p.saved?'Update leg '+(i+1):'Save leg '+(i+1))}</button>
-      ${p.tripId?`<button class="btn ghost block" id="tDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete trip</button>`:''}
+      ${lock?'':`<button class="btn primary block" id="tSave" style="margin-top:12px">${p.saved?(editMode?'Save changes':'Update leg '+(i+1)):'Save leg '+(i+1)}</button>`}
+      ${p.tripId&&!lock?`<button class="btn ghost block" id="tDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete trip</button>`:''}
     </div>`;
   }
   function render(){
@@ -2370,29 +2294,57 @@ function tripSheet(presetDate, editTrip, opts){
     const arrow='<div class="legarrow" aria-hidden="true"><svg width="14" height="18" viewBox="0 0 14 18"><path d="M7 1v14.5M2.5 11.5 7 16l4.5-4.5"/></svg></div>';
     host.innerHTML = parts.map((p,i)=> (i?arrow:'') + (i===activeIdx ? activeFormHtml(p,i) : summaryHtml(p,i))).join('');
     const ab=$('#tAddLeg'); if(ab) ab.style.display = (activeIdx<0 && parts.length) ? 'block' : 'none';
-    host.querySelectorAll('.legsum').forEach(el=>el.onclick=e=>{ if(e.target.closest('[data-del]')) return; activeIdx=Number(el.dataset.i); render(); });
+    host.querySelectorAll('.legsum').forEach(el=>el.onclick=e=>{ if(e.target.closest('[data-del]')) return;
+      activeIdx=prunePristine(Number(el.dataset.i)); render(); });
     host.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delLeg(Number(b.dataset.del)));
     if(activeIdx>=0) wireActive(parts[activeIdx], activeIdx);
   }
-  // collapse the open leg back to its summary bar. A pristine, never-saved leg would
-  // collapse into an empty "? → ?" row, so drop it instead of leaving a ghost draft.
-  function collapseLeg(i){
-    const p=parts[i];
-    if(p && !p.saved && !String(p.destLabel||'').trim() && p.miles==null && parts.length>1) parts.splice(i,1);
-    activeIdx=-1; render();
+  // navigating away from a pristine, never-saved leg drops it (else it'd linger as an
+  // empty "? → ?" ghost pill). Returns the target index, adjusted if a splice shifted it.
+  function prunePristine(target){
+    const p=parts[activeIdx];
+    if(activeIdx>=0 && p && !p.saved && !String(p.destLabel||'').trim() && p.miles==null && parts.length>1){
+      parts.splice(activeIdx,1);
+      if(target>activeIdx) target--;
+    }
+    return target;
   }
-  async function delLeg(i){
-    const p=parts[i];
-    if(p.tripId){ const {error}=await supabase.from('trips').delete().eq('id',p.tripId); if(error) return toast('Couldn’t delete: '+error.message,'err'); toast('Trip deleted','ok'); }
-    parts.splice(i,1);
-    if(!parts.length){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }   // nothing left → close
-    if(activeIdx>=parts.length || activeIdx===i) activeIdx=-1;
-    else if(activeIdx>i) activeIdx--;
-    render();
+  // collapse the open leg back to its summary bar (dropping it if pristine)
+  function collapseLeg(){ activeIdx=prunePristine(-1); render(); }
+  let deleting=false;                        // re-entrancy guard: a 2nd tap while the DB
+  async function delLeg(i){                  // call is in flight would splice a 2nd leg
+    if(deleting) return; deleting=true;
+    try{
+      const p=parts[i]; if(!p) return;
+      if(p.tripId){
+        if(!confirm('Delete this trip? This can’t be undone.')) return;
+        // .select('id') so an RLS-filtered no-op (locked trip) is detectable — a bare
+        // delete returns no error even when it deleted nothing
+        const {data,error}=await supabase.from('trips').delete().eq('id',p.tripId).select('id');
+        if(error) return toast('Couldn’t delete: '+error.message,'err');
+        if(!data || !data.length) return toast('This trip is locked (already submitted) — ask an admin.','err');
+        syncT(p.tripId,true);
+        toast('Trip deleted','ok');
+      }
+      parts.splice(i,1);
+      if(!parts.length){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }   // nothing left → close
+      if(activeIdx===i) activeIdx=-1;
+      else if(activeIdx>i) activeIdx--;
+      render();
+    } finally { deleting=false; }
   }
   function wireActive(p,i){
-    const showCost=()=>{ const c=$('#tCost'); if(c) c.innerHTML = (p.miles!=null&&p.miles>0) ? `Reimbursement: <b style="color:var(--accent2)">${money(p.miles*rate)}</b> &nbsp;<span class="muted">(${p.miles} mi × ${money(rate)})</span>` : ''; };
+    const showCost=()=>{ const c=$('#tCost'); if(c) c.innerHTML = (p.miles!=null&&p.miles>0) ? `Reimbursement: <b style="color:var(--accent2)">${money(p.miles*rate)}</b> &nbsp;<span class="muted">(${p.miles} mi × ${money(rate)})</span>` : '';
+      if(Number(p.miles)>0){ const m=$('#tMiles'); if(m) clearNeed(m); } };   // auto-filled miles (odometer/Calculate/route) clear the red too
     showCost();
+    // submitted/approved leg → read-only card: the server trigger would silently revert
+    // any edit, so don't pretend. Collapse is the only live control.
+    if(!unlockedLeg(p)){
+      const card=$('#partsHost')&&$('#partsHost').querySelector('.legcard');
+      if(card) card.querySelectorAll('input,select,button').forEach(el=>{ if(el.id!=='tCollapse') el.disabled=true; });
+      const hd=$('#tLegHd'); if(hd) hd.onclick=()=>collapseLeg();
+      return;
+    }
     $('#tSeg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
       $('#tSeg').querySelectorAll('button').forEach(x=>x.classList.remove('on')); b.classList.add('on'); p.method=b.dataset.m;
       $('#tStartWrap').classList.toggle('hide',p.method!=='distance');
@@ -2482,8 +2434,8 @@ function tripSheet(presetDate, editTrip, opts){
     };
     $('#tStartPhoto').onchange=e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'start');} };
     $('#tEndPhoto').onchange  =e=>{ if(e.target.files[0]){toast('Reading photo…');readOdo(e.target.files[0],'end');} };
-    { const del=$('#tDel'); if(del) del.onclick=()=>{ if(confirm('Delete this trip? This can’t be undone.')) delLeg(i); }; }
-    { const hd=$('#tLegHd'); if(hd) hd.onclick=()=>collapseLeg(i); }   // tap the header (or its ▴ Collapse) to close the leg
+    { const del=$('#tDel'); if(del) del.onclick=()=>delLeg(i); }       // delLeg itself confirms
+    { const hd=$('#tLegHd'); if(hd) hd.onclick=()=>collapseLeg(); }    // tap the header (or its ▴ Collapse) to close the leg
     $('#tSave').onclick=async ()=>{
       const wasUpdate=!!p.tripId;
       p.startLabel=$('#tStartLoc')?($('#tStartLoc').value||p.startLabel):p.startLabel;
@@ -2500,37 +2452,51 @@ function tripSheet(presetDate, editTrip, opts){
         method:(p.method==='route'?'distance':p.method), miles:p.miles, miles_source:p.milesSrc,
         dest_label:p.destLabel, start_label:startLoc, note:p.note, status:'draft', roundtrip:false };
       if(p.method==='odometer'){ row.start_odo=p.startOdo; row.end_odo=p.endOdo; row.start_photo=p.startPath; row.end_photo=p.endPath; }
+      else { row.start_odo=null; row.end_odo=null; }   // method switched away → don't leave readings that contradict the miles
       if(p.method==='distance' && p.startCoords){ row.start_lat=p.startCoords.lat; row.start_lng=p.startCoords.lng; }
       if(p.method==='route' && p.routePath) row.start_photo=p.routePath;
+      // the pay period must EXIST before the row is written — the trigger assigns
+      // period_id at write time and leaves it null if no period covers the date yet
+      await ensurePeriodForDate(row.trip_date);
       let res;
-      if(p.tripId) res=await supabase.from('trips').update(row).eq('id',p.tripId).select('id').single();
-      else res=await supabase.from('trips').insert(row).select('id').single();
+      if(p.tripId) res=await supabase.from('trips').update(row).eq('id',p.tripId).select('*').single();
+      else res=await supabase.from('trips').insert(row).select('*').single();
       busy(btn,false);
       if(res.error) return toast(res.error.message,'err');
-      p.tripId=res.data.id; p.saved=true;
+      p.tripId=res.data.id; p.saved=true; p.status=res.data.status||'draft';
+      syncT(res.data);
       rememberPlaces(startLoc, p.destLabel);
-      await ensurePeriodForDate(row.trip_date);
       toast(wasUpdate?'Trip updated ✓':`Leg ${i+1} saved ✓`,'ok');
-      // last leg → open the next one (start = this stop) so you can keep going to leg 2, 3…;
-      // an earlier leg just collapses back to its summary
-      if(i===parts.length-1){ parts.push(newPart(p.destLabel)); activeIdx=parts.length-1; }
+      // log flow: saving the last leg chains straight into the next one (start = this
+      // stop). Edit flow: collapse back to the overview — '+ Add another leg' covers
+      // extending the day. Fix flow: jump to the next broken leg, if any.
+      if(!editMode && i===parts.length-1){ parts.push(newPart(p.destLabel)); activeIdx=parts.length-1; }
+      else if(opts.fix){
+        const nx=parts.findIndex((q,qi)=>qi!==i && q.tripId && unlockedLeg(q) && partIssues(q));
+        if(nx>=0){ fixLeg=nx; fixArmed=true; activeIdx=nx; }
+        else activeIdx=-1;
+      }
       else { activeIdx=-1; }
       render();
     };
-    // fix-mode: on first open, red-highlight exactly what's still missing on this leg
-    // (same rule as the To-do) and scroll it into view. Cleared as each field is filled.
-    if(fixArmed && i===fixLeg){
-      fixArmed=false;
-      const dId=p.destDispId||(p.destLabel&&matchDispByText(p.destLabel));
-      const marks=[];
-      if(!dId) marks.push($('#tDest'));                  // 'a location'
-      if(!p.kind) marks.push($('#tKind'));               // 'a category'
-      if(!(Number(p.miles)>0)) marks.push($('#tMiles')); // the miles / start+dest / odometer
-      marks.forEach(el=>{ if(!el) return; el.classList.add('needs');
+    // fix-mode: whenever a still-broken leg is open, red-highlight exactly what's
+    // missing (same rule as the To-do). A mark clears only when its issue is actually
+    // RESOLVED — not on any keystroke: Destination needs a real store link, Category a
+    // real pick, Miles a positive number (programmatic fills clear via showCost).
+    // Highlights survive collapse/reopen; the auto-scroll fires once per fix target.
+    if(opts.fix){
+      const mk=(el,ev,ok)=>{ if(!el) return; el.classList.add('needs');
         const pk=el.nextElementSibling; if(pk&&pk.classList.contains('selpick')) pk.classList.add('needs');
-        el.addEventListener(el.tagName==='SELECT'?'change':'input', ()=>clearNeed(el)); });
-      const card=$('#partsHost')&&$('#partsHost').querySelector('.legcard');
-      if(card) requestAnimationFrame(()=>card.scrollIntoView({block:'center',behavior:'smooth'}));
+        el.addEventListener(ev,()=>{ if(ok()) clearNeed(el); }); };
+      if(!(p.destDispId||matchDispByText(p.destLabel)))
+        mk($('#tDest'),'input',()=>!!(p.destDispId||matchDispByText($('#tDest').value)));
+      if(!p.kind) mk($('#tKind'),'change',()=>!!$('#tKind').value);
+      if(!(Number(p.miles)>0)) mk($('#tMiles'),'input',()=>Number($('#tMiles').value)>0);
+      if(fixArmed && i===fixLeg){
+        fixArmed=false;
+        const card=$('#partsHost')&&$('#partsHost').querySelector('.legcard');
+        if(card) requestAnimationFrame(()=>card.scrollIntoView({block:'center',behavior:'smooth'}));
+      }
     }
   }
 }
@@ -3354,8 +3320,10 @@ async function autoLinkHours(baId, periodId, H){
   const un=(H||[]).filter(x=>!x.dispensary_id && !(x.dispensary_ids&&x.dispensary_ids.length));
   if(!un.length) return toast('All hours are already linked','ok');
   const dates=un.map(x=>x.work_date);
+  // NB: trips has only the single dispensary_id (no dispensary_ids array column) —
+  // selecting a missing column makes PostgREST reject the whole query silently here
   const [{data:T},{data:E}]=await Promise.all([
-    supabase.from('trips').select('trip_date,dispensary_id,dispensary_ids').eq('ba_id',baId).in('trip_date',dates),
+    supabase.from('trips').select('trip_date,dispensary_id').eq('ba_id',baId).in('trip_date',dates),
     supabase.from('expenses').select('expense_date,dispensary_id,dispensary_ids').eq('ba_id',baId).in('expense_date',dates),
   ]);
   const idsOn=(rows,dateField,d)=>{ const s=new Set();
@@ -3377,7 +3345,9 @@ async function autoLinkHours(baId, periodId, H){
 function exportCSV(prof,per,T,E,H){
   H=H||[];
   const rows=[['Type','Date','Dispensary','Detail','Paid','Miles/Hrs','Rate','Amount','Status','Note']];
-  T.forEach(x=>rows.push(['Mileage',x.trip_date,dispName(x.dispensary_id),x.method,'',x.miles??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
+  T.forEach(x=>rows.push(['Mileage',x.trip_date,
+    x.dispensary_id?dispName(x.dispensary_id):(x.dest_label||''),        // unlinked legs still show WHERE they went
+    `${x.method}${x.kind?' · '+x.kind:''}`,'',x.miles??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
   E.forEach(x=>rows.push(['Expense',x.expense_date,dispName(x.dispensary_id),`${x.vendor||''} (${x.category||''})`,x.payment==='company'?'Company card':'Reimburse',' ','',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
   H.forEach(x=>rows.push(['Labor',x.work_date,dispLabel(x)||dispName(x.dispensary_id),x.kind||x.job||'',`Payroll`,x.hours??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
   const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
@@ -3397,7 +3367,7 @@ function exportPDF(prof,per,T,E,H){
   H=H||[];
   const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
   const labor=H.reduce((a,x)=>a+Number(x.amount||0),0), laborHrs=H.reduce((a,x)=>a+Number(x.hours||0),0);
-  const tr=T.map(x=>`<tr><td>${fmtDate(x.trip_date)}</td><td>${esc(dispName(x.dispensary_id))}</td><td>${x.method}</td><td style="text-align:right">${x.miles??''}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
+  const tr=T.map(x=>`<tr><td>${fmtDate(x.trip_date)}</td><td>${esc(x.dispensary_id?dispName(x.dispensary_id):(x.dest_label||''))}</td><td>${x.method}${x.kind?' · '+esc(x.kind):''}</td><td style="text-align:right">${x.miles??''}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
   const er=E.map(x=>`<tr><td>${fmtDate(x.expense_date)}</td><td>${esc(x.vendor||'')} — ${esc(x.category||'')}</td><td>${esc(dispName(x.dispensary_id))}</td><td>${x.payment==='company'?'Company card':'Reimburse'}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
   const hr=H.map(x=>`<tr><td>${fmtDate(x.work_date)}</td><td>${esc(x.kind||x.job||'')}</td><td>${esc(dispLabel(x)||dispName(x.dispensary_id))}</td><td style="text-align:right">${x.hours??''}</td><td style="text-align:right">${money(x.amount)}</td></tr>`).join('');
   $('#printarea').innerHTML=`
@@ -3860,7 +3830,7 @@ boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixTripSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles, userTypeLabel, userCat };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles, userTypeLabel, userCat };
 </script>
 </body>
 </html>
