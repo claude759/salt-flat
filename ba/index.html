@@ -315,7 +315,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.25';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.26';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1287,7 +1287,7 @@ function fixItemSheet(kind, id){
   const x = arr.find(o=>String(o.id)===String(id));
   if(!x){ toast('Item not found — pull down to refresh','err'); return; }
   if(!(x.status==='draft' || x.status==='rejected')){ toast('This item is locked (already submitted).','err'); return; }
-  trip ? tripSheet(x.trip_date, x) : fixExpenseSheet(x);
+  trip ? tripSheet(x.trip_date, x, {fix:true}) : fixExpenseSheet(x);
 }
 function fixTripSheet(x){
   const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
@@ -1702,7 +1702,12 @@ function renderDayGrid(host){
     ${topAdd}${blocks||'<p class="muted small">No days in this period.</p>'}
   </div>`;
   host.querySelectorAll('.bub[data-id]').forEach(b=>b.onclick=()=>openDayItem(b.dataset.k,b.dataset.id));
-  host.querySelectorAll('.bub[data-daymiles]').forEach(b=>b.onclick=()=>{ const first=(gridCtx().T||[]).find(t=>String(t.id)===String(b.dataset.first)); tripSheet(b.dataset.daymiles, first||undefined); });
+  host.querySelectorAll('.bub[data-daymiles]').forEach(b=>b.onclick=()=>{
+    const day=b.dataset.daymiles, T=gridCtx().T||[];
+    const dayT=T.filter(t=>String(t.trip_date)===String(day)).sort((a,c)=>String(a.created_at||a.id).localeCompare(String(c.created_at||c.id)));
+    const hasIssue=dayT.some(t=>itemIssues({...t,_k:'trip'}).length);   // a to-do → jump to the leg that needs fixing; otherwise a plain (all-collapsed) edit
+    tripSheet(day, dayT[0]||undefined, {fix:hasIssue});
+  });
   host.querySelectorAll('.bub-add').forEach(b=>b.onclick=()=>dgAdd(b.dataset.add,b.dataset.day));
 }
 // one day's pills: a bubble per entry (hours → mileage → expenses) + ＋ add bubbles
@@ -1724,24 +1729,25 @@ function dgBubbles(ctx, day, trips, exps, hrs, addable){
 // (same rule as the To-do), 💳 marks a company-card expense; locked = view-only.
 function bubbleHtml(kind, ctx, x){
   const editable=dgCanEdit(ctx,kind,x), warn=itemIssues({...x,_k:kind}).length>0;
-  let cls,ic,type,val,sub,flag='';
+  let cls,type,val,sub,flag='';
   if(kind==='trip'){
-    cls='bub-miles'; ic='🚗'; type='Mileage';
+    cls='bub-miles'; type='Mileage';
     const mi=Number(x.miles); val = mi>0?`${Math.round(mi*10)/10} mi`:'— mi';
     const d=x.dispensary_id||(x.dispensary_ids&&x.dispensary_ids[0]);
     sub = d?dispName(d):(x.dest_label||x.start_label||'Trip');
   } else if(kind==='exp'){
-    cls='bub-exp'; ic='🧾'; type='Expense'; val=money(Number(x.amount||0));
+    cls='bub-exp'; type='Expense'; val=money(Number(x.amount||0));
     sub = x.vendor||x.category||'Expense'; if(x.payment==='company') flag='💳';
   } else {
-    cls='bub-hours'; ic='⏱'; type='Hours';
+    cls='bub-hours'; type='Hours';
     val = x.source==='salary'?money(Number(x.amount||0)):hoursHM(Number(x.hours||0));
     sub = x.kind||(x.source==='salary'?'Salary':'Hours');
   }
   if(warn) flag='⚠';
+  // no leading icon — the colour + type label already distinguish mileage / expense / hours
   return `<button class="bub ${cls}${warn?' warn':''}${editable?'':' locked'}" data-k="${kind}" data-id="${x.id}">`
     +(flag?`<span class="bub-flag">${flag}</span>`:'')
-    +`<span class="bub-l"><span class="bub-ic">${ic}</span><span class="bub-lc">`
+    +`<span class="bub-l"><span class="bub-lc">`
     +`<span class="bub-top">${type}</span><span class="bub-sub">${esc(sub)}</span></span></span>`
     +`<span class="bub-val">${esc(val)}</span></button>`;
 }
@@ -1759,7 +1765,7 @@ function dayRouteBubble(ctx, day, trips){
   const route=chain.join(' → ');
   return `<button class="bub bub-miles bub-route${warn?' warn':''}" data-daymiles="${day}" data-first="${legs[0].id}">`
     +(warn?'<span class="bub-flag">⚠</span>':'')
-    +`<span class="bub-l"><span class="bub-ic">🚗</span><span class="bub-lc">`
+    +`<span class="bub-l"><span class="bub-lc">`
     +`<span class="bub-top">Mileage · ${legs.length} leg${legs.length>1?'s':''}</span>`
     +`<span class="bub-sub route">${esc(route)}</span></span></span>`
     +`<span class="bub-val">${Math.round(total*10)/10} mi</span></button>`;
@@ -2204,7 +2210,8 @@ function placeDatalist(){
 /* ── Log trip sheet ── */
 // presetDate → seed a new day's first leg. editTrip → open a SINGLE existing trip in the
 // SAME leg form (edit mode), with Save/Delete instead of the multi-leg flow.
-function tripSheet(presetDate, editTrip){
+function tripSheet(presetDate, editTrip, opts){
+  opts = opts||{};
   if(!canEditPeriod(state.period) && !(editTrip && state.grid?.isAdmin)) return toast('This pay period is view-only — ask an admin to make changes.','err');
   const editMode = !!editTrip;
   const rate = Number(state.profile.rate_override ?? state.settings?.mileage_rate ?? 0.67);
@@ -2226,15 +2233,34 @@ function tripSheet(presetDate, editTrip){
     .filter(t=>String(t.trip_date)===String(date))
     .sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
   const parts = dayTrips.map(partFromTrip);
+  const legIssues = dayTrips.map(t=>itemIssues({...t,_k:'trip'}));   // aligned 1:1 with parts
   let activeIdx;
-  if(editMode){ activeIdx = parts.findIndex(p=>p.tripId===editTrip.id);
-    if(activeIdx<0){ parts.push(partFromTrip(editTrip)); activeIdx=parts.length-1; } }
+  if(opts.fix){
+    // opened from a to-do → jump straight to the leg that needs fixing. Prefer the
+    // specific trip that was tapped (if it's incomplete), else the first incomplete leg.
+    const own = editMode ? parts.findIndex(p=>p.tripId===editTrip.id) : -1;
+    activeIdx = (own>=0 && legIssues[own] && legIssues[own].length) ? own : legIssues.findIndex(iss=>iss&&iss.length);
+    if(activeIdx<0){
+      if(own>=0) activeIdx=own;
+      else if(editMode){ parts.push(partFromTrip(editTrip)); activeIdx=parts.length-1; }
+      else { parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
+    }
+  }
+  else if(editMode){                                                 // plain edit → every leg collapsed; tap one to open it
+    if(!parts.some(p=>p.tripId===editTrip.id)) parts.push(partFromTrip(editTrip));
+    activeIdx = -1;
+  }
   else if(parts.length){ parts.push(newPart(parts[parts.length-1].destLabel)); activeIdx=parts.length-1; }  // continue the day
   else { parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
+  const fixLeg = opts.fix ? activeIdx : -1;   // the leg to auto-focus + red-highlight (once)
+  let fixArmed = fixLeg>=0;
 
+  const headTitle = opts.fix ? 'Finish this trip' : (editMode ? "Edit the day's miles" : "Log the day's miles");
+  const headSub = opts.fix ? 'The highlighted fields still need info.'
+    : (editMode ? 'Tap a leg to edit it, add another, or delete.' : 'One leg at a time — each saves on its own and feeds the next.');
   openSheet(`
-    <h3>${editMode?'Edit trip':"Log the day's miles"}</h3>
-    <div class="small muted" style="margin:-4px 0 8px">${editMode?'Change anything below.':'One leg at a time — each saves on its own and feeds the next.'}</div>
+    <h3>${headTitle}</h3>
+    <div class="small muted" style="margin:-4px 0 8px">${headSub}</div>
     <label class="fl">Date</label><input id="tDate" type="date" value="${editMode?editTrip.trip_date:(presetDate||todayISO())}">
     <div id="partsHost" style="margin-top:6px"></div>
     <button class="btn ghost block" id="tAddLeg" style="margin-top:10px;display:none">＋ Add another leg</button>
@@ -2437,6 +2463,21 @@ function tripSheet(presetDate, editTrip){
       else { activeIdx=-1; }
       render();
     };
+    // fix-mode: on first open, red-highlight exactly what's still missing on this leg
+    // (same rule as the To-do) and scroll it into view. Cleared as each field is filled.
+    if(fixArmed && i===fixLeg){
+      fixArmed=false;
+      const dId=p.destDispId||(p.destLabel&&matchDispByText(p.destLabel));
+      const marks=[];
+      if(!dId) marks.push($('#tDest'));                  // 'a location'
+      if(!p.kind) marks.push($('#tKind'));               // 'a category'
+      if(!(Number(p.miles)>0)) marks.push($('#tMiles')); // the miles / start+dest / odometer
+      marks.forEach(el=>{ if(!el) return; el.classList.add('needs');
+        const pk=el.nextElementSibling; if(pk&&pk.classList.contains('selpick')) pk.classList.add('needs');
+        el.addEventListener(el.tagName==='SELECT'?'change':'input', ()=>clearNeed(el)); });
+      const card=$('#partsHost')&&$('#partsHost').querySelector('.legcard');
+      if(card) requestAnimationFrame(()=>card.scrollIntoView({block:'center',behavior:'smooth'}));
+    }
   }
 }
 /* ── Add expense sheet ── */
