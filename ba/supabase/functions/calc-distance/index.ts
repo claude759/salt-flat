@@ -29,6 +29,29 @@ async function geocode(address: string, region?: string | null) {
     return null;
   }
 }
+// Resolve a store by BUSINESS NAME via Google Places (many imported stores have no
+// street address, only a trade name like "Goat Global DTLA"). Region-restricted so
+// the result stays in the BA's state. Returns coords + a formatted address to cache.
+async function findPlace(name: string, region?: string | null) {
+  if (!KEY || !name) return null;
+  try {
+    const stateName = region && STATE_NAME[region] ? STATE_NAME[region] : "";
+    const u = new URL("https://maps.googleapis.com/maps/api/place/findplacefromtext/json");
+    u.searchParams.set("input", `${name} dispensary${stateName ? " " + stateName : ""}`);
+    u.searchParams.set("inputtype", "textquery");
+    u.searchParams.set("fields", "geometry,formatted_address");
+    u.searchParams.set("key", KEY);
+    const r = await fetch(u).then((x) => x.json());
+    const c = r?.candidates?.[0];
+    const loc = c?.geometry?.location;
+    if (!loc || typeof loc.lat !== "number") return null;
+    // guard against a wrong-state match when we know the state
+    if (stateName && c.formatted_address && !new RegExp(`\\b(${region}|${stateName})\\b`, "i").test(c.formatted_address)) return null;
+    return { lat: loc.lat, lng: loc.lng, address: (c.formatted_address as string) || null };
+  } catch {
+    return null;
+  }
+}
 // "376 stockton st" typed by hand ≈ "376 Stockton St, Brooklyn, NY 11206" saved on the
 // profile — compare the first 3 normalized tokens (joining hyphenated leading numbers)
 const addrSig = (s: string) =>
@@ -93,7 +116,10 @@ Deno.serve(async (req) => {
       if (isHome && fp.base_lat != null && fp.base_lng != null) {
         sLat = fp.base_lat; sLng = fp.base_lng; sLabel = typed;
       } else {
-        const g = await geocode(isHome ? fp.base_address : typed, region);
+        // try as a street address first; if that fails it may be a store/office NAME
+        // (e.g. "* Office (CA)", "Goat Global DTLA") → resolve as a business via Places
+        const g = await geocode(isHome ? fp.base_address : typed, region)
+          || (isHome ? null : await findPlace(typed, region));
         if (!g) return manual("Couldn’t find that starting address — enter miles manually.", "geocode_start");
         sLat = g.lat; sLng = g.lng; sLabel = typed;
         if (isHome) await db.from("profiles").update({ base_lat: sLat, base_lng: sLng }).eq("id", fpId);
@@ -116,6 +142,11 @@ Deno.serve(async (req) => {
         if ((dLat == null || dLng == null) && disp.address) {
           const g = await geocode(disp.address, disp.state ?? region);
           if (g) { dLat = g.lat; dLng = g.lng; await db.from("dispensaries").update({ lat: dLat, lng: dLng }).eq("id", dispensary_id); }
+        }
+        // no usable street address (common for the imported store list) → find it by name
+        if (dLat == null || dLng == null) {
+          const fp = await findPlace(disp.name, disp.state ?? region);
+          if (fp) { dLat = fp.lat; dLng = fp.lng; await db.from("dispensaries").update({ lat: dLat, lng: dLng, address: disp.address || fp.address }).eq("id", dispensary_id); }
         }
       }
     } else if (body.dest_lat != null && body.dest_lng != null) {
