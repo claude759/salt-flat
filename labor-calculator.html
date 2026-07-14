@@ -791,7 +791,7 @@ function filteredShifts(){
   return shifts.filter(s => {
     if ((s.category||'distro') !== tsState.category) return false;
     if (f.company && s.company !== f.company) return false;
-    if (f.employee && tsFullName(s) !== f.employee) return false;
+    if (f.employee && tsFullName(s).toLowerCase() !== f.employee.toLowerCase()) return false;
     if (byPeriod){ if (effPeriodStart(s) !== from) return false; }
     else { if (from && s.work_date < from) return false; if (to && s.work_date > to) return false; }
     return true;
@@ -903,7 +903,13 @@ function renderTsViewseg(){
 }
 function renderTsFilters(){
   const f = tsState.filter;
-  const emps = [...new Set(shifts.filter(s=>(s.category||'distro')===tsState.category).map(tsFullName).filter(Boolean))].sort();
+  const empSeen = new Map();   // case-insensitive dedupe, first-seen casing wins
+  for (const s of shifts){
+    if ((s.category||'distro') !== tsState.category) continue;
+    const n = tsFullName(s); if (!n) continue;
+    const k = n.toLowerCase(); if (!empSeen.has(k)) empSeen.set(k, n);
+  }
+  const emps = [...empSeen.values()].sort((a,b) => a.localeCompare(b));
   const cos = TS_COMPANIES.concat([...new Set(shifts.map(s=>s.company).filter(c=>c && !TS_COMPANIES.includes(c)))]);
   document.getElementById('ts-filters').innerHTML =
     '<div class="seg" id="ts-preset">'
@@ -1099,11 +1105,16 @@ function renderTsByTeam(teamKey){
   const tbl = document.getElementById('tsTable');
   const head = '<thead><tr><th>Date</th><th>Company</th><th>In</th><th>Out</th><th class="num">Break</th><th class="num">Hours</th><th class="num">Rate</th><th class="num">Total</th></tr></thead>';
   if (!rows.length){ tbl.innerHTML = head+'<tbody><tr class="emptyrow"><td colspan="8">No '+(teamKey==='norma'?'Norma':'Justin')+"'s Team hours for this filter.</td></tr></tbody>"; return; }
-  const groups = []; const byEmp = new Map();
-  for (const s of rows){ const k = tsFullName(s)||'(no name)'; if (!byEmp.has(k)){ byEmp.set(k, []); groups.push(k); } byEmp.get(k).push(s); }
+  // group case-insensitively so a stray PHAM SUONG never splits from Pham Suong
+  const groups = []; const byEmp = new Map(); const displayOf = new Map();
+  for (const s of rows){
+    const k = (tsFullName(s)||'(no name)').toLowerCase();
+    if (!byEmp.has(k)){ byEmp.set(k, []); groups.push(k); displayOf.set(k, tsFullName(s)||'(no name)'); }
+    byEmp.get(k).push(s);
+  }
   let body = '';
-  for (const name of groups){
-    const es = byEmp.get(name); let gh=0, gt=0;
+  for (const k of groups){
+    const es = byEmp.get(k); const name = displayOf.get(k); let gh=0, gt=0;
     body += '<tr class="datehead"><td colspan="8">'+esc(name)+'</td></tr>';
     for (const s of es){
       gh += +s.hours||0; gt += +s.total||0;
@@ -1119,7 +1130,7 @@ function renderTsByTeam(teamKey){
 function renderTsSimplified(){
   const map = new Map();
   for (const s of filteredShifts()){
-    const key = (s.last||'')+'|'+(s.first||'')+'|'+(s.team||'');
+    const key = ((s.last||'')+'|'+(s.first||'')+'|'+(s.team||'')).toLowerCase();   // case-insensitive rollup
     if (!map.has(key)) map.set(key, { last:s.last||'', first:s.first||'', team:s.team||'', hours:0, pay:0, notes:new Set() });
     const g = map.get(key); g.hours += +s.hours||0; g.pay += +s.total||0; if (s.note) g.notes.add(s.note);
   }
@@ -1204,7 +1215,20 @@ function wireTsShell(){
     applyShiftField(s, f, cell.value);
     if ((f==='last' || f==='first')){   // roster autofill for a fresh name
       const m = rosterMatch(s.last, s.first);
-      if (m){ s.roster_id = m.id; if (!s.team) s.team = m.team || teamForName(m, s.last, s.first); if (!s.rate) s.rate = rateForName(m, s.last, s.first); }
+      if (m){
+        s.roster_id = m.id;
+        // adopt the roster's canonical casing so "PHAM" never becomes a second person
+        if (m.last != null && s.last && s.last !== m.last) s.last = m.last;
+        if (m.first && s.first && s.first !== m.first) s.first = m.first;
+        const tr2 = cell.closest('tr');
+        const lin = tr2.querySelector('[data-f="last"]'), fin = tr2.querySelector('[data-f="first"]');
+        if (lin && lin !== cell) lin.value = s.last || '';
+        if (fin && fin !== cell) fin.value = s.first || '';
+        if (cell.dataset.f === 'last' && s.last) cell.value = s.last;
+        if (cell.dataset.f === 'first' && s.first) cell.value = s.first;
+        if (!s.team) s.team = m.team || teamForName(m, s.last, s.first);
+        if (!s.rate) s.rate = rateForName(m, s.last, s.first);
+      }
       else if (!s.team){ s.team = teamForName(null, s.last, s.first); }
       const tsel = cell.closest('tr').querySelector('[data-f="team"]'); if (tsel) tsel.value = s.team || '';
     }
