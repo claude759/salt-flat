@@ -131,7 +131,15 @@
   .leghd.can:hover .legcol{color:var(--text);border-color:var(--accent2)}
   .legsum{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:12px;padding:10px 13px;margin-top:9px;cursor:pointer;background:var(--panel2);transition:border-color .12s}
   .legsum:hover{border-color:var(--accent2)}
-  .legsum .t{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* start → dest on ONE line: each end ellipsizes on its own (flex-shrink trims the long
+     address harder than the short store name), so both stay readable at any width */
+  .legsum .t{display:flex;align-items:baseline;gap:5px;font-size:13.5px;white-space:nowrap;min-width:0}
+  .legsum .t .pl{overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .legsum .t .ar{color:var(--muted);flex:none}
+  /* the day reads as one chained journey: leg ─┬─↓─ leg ─┬─↓─ leg */
+  .legarrow{display:flex;flex-direction:column;align-items:center;gap:1px;margin-top:9px;user-select:none}
+  .legarrow .ln{width:2px;height:11px;background:var(--line);border-radius:1px}
+  .legarrow .ar{color:var(--muted);font-size:13px;line-height:1}
   .legsum .lgn{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
   .legx{background:transparent;border:none;color:var(--muted);font-size:15px;cursor:pointer;padding:2px 4px;margin-left:4px;line-height:1}
   .legx:hover{color:var(--red)}
@@ -321,7 +329,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.27';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.28';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1758,14 +1766,21 @@ function bubbleHtml(kind, ctx, x){
     +`<span class="bub-val">${esc(val)}</span></button>`;
 }
 function hoursHM(h){ h=Math.max(0,Number(h)||0); const m=Math.round(h*60); return `${Math.floor(m/60)}:${String(m%60).padStart(2,'0')}`; }
+// shorten a place for a one-line route: drop the country, keep the first comma-segment
+// (the street or the store name), then hard-truncate. "27402 Waynesborough Lane, Santa
+// Clarita, CA, USA" → "27402 Waynesboro…" — so BOTH ends of a leg stay readable.
+function abbrPlace(s, max=18){
+  s=String(s||'').replace(/,\s*(usa|u\.?s\.?a?\.?)\s*$/i,'').split(',')[0].trim();
+  if(!s) return '?';
+  return s.length>max ? s.slice(0,max-1).trim()+'…' : s;
+}
 // one pill for the whole day's drive: "Home → stop → stop → …" + total miles. Nodes are
 // the linked store name (or the typed label), long ones abbreviated.
 function dayRouteBubble(ctx, day, trips){
   const legs=trips.slice().sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
   const total=legs.reduce((a,t)=>a+Number(t.miles||0),0);
   const warn=legs.some(t=>itemIssues({...t,_k:'trip'}).length>0);
-  const abbr=(s)=>{ s=String(s||'?').replace(/,\s*(usa|us)\s*$/i,'').split(',')[0].trim(); return s.length>17?s.slice(0,16)+'…':s; };
-  const node=(label,dispId)=> dispId ? abbr(dispName(dispId)) : abbr(label);
+  const node=(label,dispId)=> abbrPlace(dispId ? dispName(dispId) : label);
   const chain=[ node(legs[0].start_label, null) ];
   legs.forEach(t=>chain.push(node(t.dest_label, t.dispensary_id||(t.dispensary_ids&&t.dispensary_ids[0]))));
   const route=chain.join(' → ');
@@ -2277,10 +2292,14 @@ function tripSheet(presetDate, editTrip, opts){
   render();
 
   function summaryHtml(p,i){
+    // one line, both ends readable: the LONG end eats the truncation while a short one
+    // (a store name like "* Office (CA)") is protected from shrinking. Both long → both give.
+    const a=abbrPlace(p.startLabel,40), b=abbrPlace(p.destLabel,40), PROT=18;
+    const sa=(a.length<=PROT && b.length>a.length)?0:1, sb=(b.length<=PROT && a.length>b.length)?0:1;
     return `<div class="legsum" data-i="${i}">
       <div class="grow" style="min-width:0">
         <div class="lgn">Leg ${i+1}${p.saved?'':' · draft'}</div>
-        <div class="t">${esc(p.startLabel||'?')} <span class="muted">→</span> ${esc(p.destLabel||'?')}</div>
+        <div class="t"><span class="pl" style="flex-shrink:${sa}">${esc(a)}</span><span class="ar">→</span><span class="pl" style="flex-shrink:${sb}">${esc(b)}</span></div>
       </div>
       <div style="text-align:right;white-space:nowrap">${p.miles!=null?`<b>${p.miles} mi</b>`:'<span class="muted small">—</span>'}
         <button class="legx" data-del="${i}" title="remove leg">✕</button></div>
@@ -2334,7 +2353,8 @@ function tripSheet(presetDate, editTrip, opts){
   }
   function render(){
     const host=$('#partsHost'); if(!host) return;
-    host.innerHTML = parts.map((p,i)=> i===activeIdx ? activeFormHtml(p,i) : summaryHtml(p,i)).join('');
+    const arrow='<div class="legarrow" aria-hidden="true"><span class="ln"></span><span class="ar">↓</span></div>';
+    host.innerHTML = parts.map((p,i)=> (i?arrow:'') + (i===activeIdx ? activeFormHtml(p,i) : summaryHtml(p,i))).join('');
     const ab=$('#tAddLeg'); if(ab) ab.style.display = (activeIdx<0 && parts.length) ? 'block' : 'none';
     host.querySelectorAll('.legsum').forEach(el=>el.onclick=e=>{ if(e.target.closest('[data-del]')) return; activeIdx=Number(el.dataset.i); render(); });
     host.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delLeg(Number(b.dataset.del)));
