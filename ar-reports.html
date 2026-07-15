@@ -1002,7 +1002,14 @@ const STATE_ACCESS={
 };
 let AUTH_USER=null, AUTH_STATES=['CA','NY'];   // states the signed-in user may see (default = all, for the auto-publisher bypass)
 
-function agentBypass(){ try{ return localStorage.getItem('salesAppAgent')==='1' || new URLSearchParams(location.search).get('agent')==='1'; }catch(e){ return false; } }
+// Auto-publisher bypass. The publisher sets this localStorage flag via Playwright addInitScript
+// (before any page script runs) — NOT via a URL param, which would be trivially guessable by
+// anyone with the link. Setting it by hand needs devtools, a much higher bar. (A client-side
+// gate on public HTML is still not real data security — that's the "full lockdown" option the
+// user declined; this only stops casual/URL access.)
+function agentBypass(){ try{ return !!localStorage.getItem('salesAppAgent'); }catch(e){ return false; } }
+// Clear the cached team report (but NOT the Supabase auth session or the agent flag).
+function clearReportCache(){ try{ localStorage.removeItem(SHARED_CACHE_KEY); }catch(e){} }
 let _sbAuth=null;
 function sbAuth(){ if(_sbAuth) return _sbAuth; if(window.supabase&&window.supabase.createClient){ _sbAuth=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}); } return _sbAuth; }
 function statesFor(email){ const a=STATE_ACCESS[email]; if(a===undefined) return null; return a==='all'?['CA','NY']:[a]; }   // null = not granted any access
@@ -1040,7 +1047,7 @@ async function doGoogleSignIn(){
   try{ await c.auth.signInWithOAuth({provider:'google', options:{ redirectTo: location.origin+location.pathname, queryParams:{ hd:'wizardtrees.com', prompt:'select_account' } }}); }
   catch(e){ if(btn){ btn.disabled=false; btn.textContent='Sign in with Google'; } alert('Sign-in failed to start: '+e.message); }
 }
-async function doSignOut(){ const c=sbAuth(); if(c){ try{ await c.auth.signOut(); }catch(e){} } location.reload(); }
+async function doSignOut(){ clearReportCache(); const c=sbAuth(); if(c){ try{ await c.auth.signOut(); }catch(e){} } location.reload(); }
 function renderAuthChip(){ const el=$('#authchip'); if(!el||!AUTH_USER||AUTH_USER.email==='agent') return; el.classList.remove('hidden');
   el.innerHTML=`<span class="ac-email" title="${esc(AUTH_USER.email)}">${esc(AUTH_USER.email)}</span> <button class="ac-out" id="ac-out">Sign out</button>`;
   const b=$('#ac-out'); if(b) b.onclick=doSignOut; }
@@ -1300,8 +1307,9 @@ async function hardRefresh(){
   const haveLocal=(RAW&&RAW.length)||(CONC_EVENTS&&CONC_EVENTS.length)||(SKU_EVENTS&&SKU_EVENTS.length);
   if(!SHARED && haveLocal && !confirm('Refresh reloads the latest team report and discards files you’ve loaded but not published yet. Continue?')) return;
   const btn=$('#sb-refresh'); const oldLabel=btn?btn.textContent:''; if(btn){ btn.disabled=true; btn.textContent='Refreshing…'; }
-  // wipe browser-side caches
-  try{ localStorage.clear(); }catch(e){}
+  // wipe browser-side caches — but keep the Supabase auth session + the agent flag, or Refresh
+  // would sign the user (or the auto-publisher) out on every click.
+  try{ Object.keys(localStorage).forEach(k=>{ if(k==='salesAppAgent'||/^sb-.*-auth-token$/.test(k)) return; localStorage.removeItem(k); }); }catch(e){}
   try{ sessionStorage.clear(); }catch(e){}
   try{ document.cookie.split(';').forEach(c=>{ const n=c.split('=')[0].trim(); if(n) document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'; }); }catch(e){}
   try{ if(window.caches&&caches.keys) caches.keys().then(ks=>ks.forEach(k=>caches.delete(k))); }catch(e){}
@@ -3715,7 +3723,7 @@ function tierData(){
     const k=visitGroupKey(v.c); if(k) (vis[k]||(vis[k]=[])).push(v); });
   // avgPaidLate = TRUE mean days late the account actually PAID, from real payment dates (Nabis
   // detailed report's Paid At; Distru payments file) over the paid orders in the window.
-  const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
+  const rows=Object.values(acc).map(g=>{
     const nk=tierNorm(g.name);
     const tier=g.rev>=t1?1:g.rev>=t2?2:3, a=ar[nk]||{out:0,over:0};
     // % Disc+Credits = total concessions ÷ gross-at-list, the Credits/Discounts page's "% of Gross"
@@ -3725,7 +3733,11 @@ function tierData(){
     return {name:g.name,source:[...g.src].sort().join(' + '),brand:brandOf(g.name),rev:g.rev,
       orders:Object.values(g.orders).filter(v=>Math.abs(v)>0.005).length,last:g.last?g.last.getTime():null,
       visits:(vis[nk]||[]).length, grossList, totalConc, pctDC:grossList>0.005?totalConc/grossList:null,
-      arOut:a.out,arOver:a.over,avgPaidLate:g.plCnt?g.plSum/g.plCnt:null,paidOrders:g.plCnt,tier}; });
+      arOut:a.out,arOver:a.over,avgPaidLate:g.plCnt?g.plSum/g.plCnt:null,paidOrders:g.plCnt,tier}; })
+    // Keep accounts with revenue OR any concession activity (a sample-only account has $0 revenue
+    // but real gross/concessions). Dropping the latter made Tiers' totals disagree with the
+    // Credits/Discounts page by the sample-only accounts — now they reconcile, as the footnote says.
+    .filter(r=>Math.abs(r.rev)>0.005 || Math.abs(r.totalConc)>0.005 || (r.grossList||0)>0.005);
   return {rows,start,end,months,t1,t2};
 }
 // Search + tier-filter predicate, shared by the table render and the CSV export (WYSIWYG).
@@ -5030,6 +5042,7 @@ async function crMarkUsed(id,date,invoice){
 function crEditModal(id){
   const c=CREDITS.find(x=>x.id===id); if(!c) return;
   let atts=(c.attachments||[]).slice();   // local editable copy until Save
+  const removedPaths=[];                  // files to delete from storage only once Save confirms
   const attIcon=a=>(/pdf/i.test(a.type)||/\.pdf$/i.test(a.name||''))?'📄':(/image/i.test(a.type)?'🖼️':'📎');
   const attHtml=()=> atts.length ? atts.map((a,i)=>`<span class="cr-att-edit"><a class="cr-att" href="${esc(sbFileUrl(a.path))}" target="_blank" rel="noopener" title="${esc(a.name||'')}">${attIcon(a)} ${esc((a.name||'file').slice(0,28))}</a><button class="cr-att-rm" data-i="${i}" title="Remove">✕</button></span>`).join('') : '<span class="muted2">No attachments yet.</span>';
   const usedFields = c.status==='used'
@@ -5056,7 +5069,9 @@ function crEditModal(id){
     </div></div>`;
   $('#sc-modal').classList.remove('hidden');
   const relist=()=>{ $('#cre-attlist').innerHTML=attHtml();
-    $('#cre-attlist').querySelectorAll('.cr-att-rm').forEach(b=>b.onclick=async()=>{ const a=atts[+b.dataset.i]; if(!a)return; b.disabled=true; try{ await sbDeleteFile(a.path); }catch(_){/**/} atts.splice(+b.dataset.i,1); relist(); }); };
+    $('#cre-attlist').querySelectorAll('.cr-att-rm').forEach(b=>b.onclick=()=>{ const a=atts[+b.dataset.i]; if(!a)return;
+      if(a.path) removedPaths.push(a.path);   // mark for deletion ON SAVE (Cancel = no-op, so the file survives)
+      atts.splice(+b.dataset.i,1); relist(); }); };
   relist();
   $('#cre-files').onchange=async()=>{ const files=[...($('#cre-files').files||[])], msg=$('#cre-msg');
     for(const f of files){ if(f.size>15*1024*1024){ msg.innerHTML='<span style="color:var(--orange)">Skipped a file over 15MB.</span>'; continue; }
@@ -5074,7 +5089,9 @@ function crEditModal(id){
     const patch={dispensary:disp,amount:amt,note,created_by:by,attachments:atts};
     if(c.status==='used'){ patch.used_date=$('#cre-udate').value||null; patch.used_invoice=($('#cre-uinv').value||'').trim(); }
     btn.disabled=true; btn.textContent='Saving…';
-    try{ await sbCreditUpdate(c.id,patch); closeScModal(); await renderCredits(); }
+    try{ await sbCreditUpdate(c.id,patch);
+      for(const p of removedPaths){ try{ await sbDeleteFile(p); }catch(_){/* row already updated; orphan is harmless */} }
+      closeScModal(); await renderCredits(); }
     catch(e){ msg.innerHTML=`<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled=false; btn.textContent='Save changes'; }
   };
 }
@@ -5101,22 +5118,39 @@ $('#cr-add') && ($('#cr-add').onclick=async ()=>{
   if(!disp){ msg.innerHTML='<span style="color:var(--red)">Enter a dispensary name.</span>'; return; }
   if(!(amt>0)){ msg.innerHTML='<span style="color:var(--red)">Enter a credit amount greater than 0.</span>'; return; }
   btn.disabled=true; const old=btn.textContent; btn.textContent='Saving…'; msg.textContent='';
+  let row;
   try{
-    const row=await sbCreditInsert({dispensary:disp,amount:amt,note,created_by:by,status:'active',attachments:[]});
+    row=await sbCreditInsert({dispensary:disp,amount:amt,note,created_by:by,status:'active',attachments:[]});
+  }catch(e){ msg.innerHTML=`<span style="color:var(--red)">Couldn't save: ${esc(e.message)}</span>`; btn.disabled=false; btn.textContent=old; return; }
+  // The credit row is SAVED. Uploads are best-effort from here — an upload failure must NOT read
+  // as "couldn't save" (that caused duplicate rows when users clicked Add again). Report partials.
+  let uploadWarn='';
+  try{
     const files=[...($('#cr-files').files||[])];
     if(files.length){ btn.textContent=`Uploading ${files.length} file${files.length>1?'s':''}…`;
-      const atts=[]; for(const f of files){ if(f.size>15*1024*1024){ msg.innerHTML=`<span style="color:var(--orange)">Skipped ${esc(f.name)} (over 15MB).</span>`; continue; } atts.push(await sbUpload(row.id,f)); }
+      const atts=[]; let failed=0, skipped=0;
+      for(const f of files){ if(f.size>15*1024*1024){ skipped++; continue; }
+        try{ atts.push(await sbUpload(row.id,f)); }catch(_){ failed++; } }
       if(atts.length) await sbCreditUpdate(row.id,{attachments:atts});
+      if(failed||skipped) uploadWarn=` <span style="color:var(--orange)">(${[failed?failed+' upload'+(failed>1?'s':'')+' failed':'',skipped?skipped+' over 15MB skipped':''].filter(Boolean).join(', ')} — the credit was still saved; re-open it to attach again)</span>`;
     }
-    $('#cr-disp').value=''; $('#cr-amt').value=''; $('#cr-note').value=''; $('#cr-files').value='';   // keep 'Accepted by'
-    msg.innerHTML='<span style="color:var(--green)">Credit added.</span>'; setTimeout(()=>{msg.textContent='';},2500);
-    crMode='active'; await renderCredits();
-  }catch(e){ msg.innerHTML=`<span style="color:var(--red)">Couldn't save: ${esc(e.message)}</span>`; }
-  finally{ btn.disabled=false; btn.textContent=old; }
+  }catch(_){/* attachments best-effort; the credit is already saved */}
+  $('#cr-disp').value=''; $('#cr-amt').value=''; $('#cr-note').value=''; $('#cr-files').value='';   // keep 'Accepted by'
+  msg.innerHTML='<span style="color:var(--green)">Credit added.</span>'+uploadWarn; setTimeout(()=>{msg.textContent='';},4000);
+  crMode='active'; try{ await renderCredits(); }catch(_){}
+  btn.disabled=false; btn.textContent=old;
 });
 
 function activateTab(tab, fromHash){
   const t=document.querySelector('.tab[data-tab="'+tab+'"]'); if(!t) return false;
+  // Access guard: a tab hidden for the current state / the signed-in user's grants must not be
+  // reachable via a #hash deep-link. If asked for one, fall back to the first visible tab.
+  // (agentBypass = the auto-publisher, which is allowed everything.)
+  if(t.classList.contains('hidden') && !agentBypass()){
+    const first=document.querySelector('.tab:not(.hidden)');
+    if(first && first!==t) return activateTab(first.dataset.tab, fromHash);
+    return false;
+  }
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active');
   $('#view-ar').classList.toggle('hidden',tab!=='ar'||APP_STATE==='NY');
   $('#view-ar-ny').classList.toggle('hidden',tab!=='ar'||APP_STATE!=='NY');
