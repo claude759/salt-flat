@@ -339,7 +339,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.38';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.39';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1351,8 +1351,21 @@ function fixExpenseSheet(x){
     <div id="fMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
     <button class="btn primary block" id="fSave" style="margin-top:8px">Save</button>
     <button class="btn ghost block" id="fCancel" style="margin-top:8px">Cancel</button>
+    <button class="btn ghost block" id="fDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete expense</button>
   `);
   $('#fCancel').onclick=closeSheet; wireDispChips('fDispChips');
+  $('#fDel').onclick=async()=>{
+    if(!confirm('Delete this expense? This can’t be undone.')) return;
+    const btn=$('#fDel'); busy(btn,true);
+    // .select('id') so an RLS-filtered no-op (locked row) errors instead of fake-succeeding
+    const {data,error}=await supabase.from('expenses').delete().eq('id',x.id).select('id');
+    busy(btn,false);
+    if(error) return toast('Couldn’t delete: '+error.message,'err');
+    if(!data||!data.length) return toast('This expense is locked (already submitted) — ask an admin.','err');
+    const i=(state._E||[]).findIndex(o=>o.id===x.id); if(i>=0) state._E.splice(i,1);
+    closeSheet(); toast('Expense deleted','ok');
+    refreshItems(); refreshTotals(); renderGrid();
+  };
   let receiptPath=x.receipt_path||null, ocr=x.ocr_raw||null, recChanged=false;
   if(x.receipt_path) signedUrl('receipts',x.receipt_path).then(u=>{ if(u){ const t=$('#fThumb'); if(t) t.src=u; } });
   { const el=$('#fAmt'); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }); }
@@ -1716,13 +1729,17 @@ function dgAdd(mode, day){
         [kind==='trip'?'trip_date':'expense_date']:day });
   } else if(mode==='miles'){ tripSheet(day); } else { expenseSheet(day); }
 }
-// admin popup saved → patch the in-memory array + re-render this grid + top totals
+// admin popup saved (or deleted: data={_deleted:true,id}) → patch the in-memory array +
+// re-render this grid + top totals
 function dgApplyEdit(kind, data){
   if(!data) return; const ctx=gridCtx();
   const arr = kind==='trip'?ctx.T:kind==='exp'?ctx.E:ctx.H; if(!arr) return;
-  const moved = data.period_id && ctx.per && !isAllPeriods(ctx.per) && data.period_id!==ctx.per.id;
   const i=arr.findIndex(o=>String(o.id)===String(data.id));
-  if(i>=0){ if(moved) arr.splice(i,1); else arr[i]=data; } else if(!moved) arr.push(data);
+  if(data._deleted){ if(i>=0) arr.splice(i,1); }
+  else {
+    const moved = data.period_id && ctx.per && !isAllPeriods(ctx.per) && data.period_id!==ctx.per.id;
+    if(i>=0){ if(moved) arr.splice(i,1); else arr[i]=data; } else if(!moved) arr.push(data);
+  }
   renderDayGrid(state._dgHost); if(typeof ctx.onChange==='function') ctx.onChange();
 }
 // read-only detail for a locked item (BA hours, submitted/approved rows)
@@ -2988,6 +3005,21 @@ async function adminEditItem(kind, id, onSaved, preloaded){
   const write = patch => isNew
     ? supabase.from(table).insert({ ...patch, ba_id:x.ba_id, period_id:x.period_id, status:x.status||'draft', state:x.state }).select('*').single()
     : supabase.from(table).update(patch).eq('id',id).select('*').single();
+  // Delete lives in the same popup (trips + expenses; hours sync from Gusto). RLS is the
+  // real gate — BAs may delete own draft/rejected rows, admins anything in their region.
+  const delBtn = (!isNew && kind!=='hours')
+    ? `<button class="btn ghost block" id="aDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete ${kind==='trip'?'trip':'expense'}</button>` : '';
+  const wireDel = () => { const d=$('#aDel'); if(!d) return; d.onclick=async()=>{
+    if(!confirm(`Delete this ${kind==='trip'?'trip':'expense'}? This can’t be undone.`)) return;
+    busy(d,true);
+    // .select('id') so an RLS-filtered no-op errors instead of silently "succeeding"
+    const {data,error}=await supabase.from(table).delete().eq('id',id).select('id');
+    busy(d,false);
+    if(error) return toast('Couldn’t delete: '+error.message,'err');
+    if(!data||!data.length) return toast('Couldn’t delete — this item is locked.','err');
+    closeSheet(); toast(kind==='trip'?'Trip deleted':'Expense deleted','ok');
+    onSaved&&onSaved({_deleted:true, id});
+  }; };
   // mirror itemIssues(): flag the same missing fields the To-do lists, so opening an
   // item straight from a To-do row shows exactly what needs filling, highlighted red
   const hasDisp = x.dispensary_id || (x.dispensary_ids && x.dispensary_ids.length)
@@ -3019,8 +3051,9 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+      ${delBtn}
     `);
-    $('#aCancel').onclick=closeSheet; wireNewRetailerSelect($('#aDisp'));
+    $('#aCancel').onclick=closeSheet; wireDel(); wireNewRetailerSelect($('#aDisp'));
     $('#aDisp').addEventListener('change',()=>{ if($('#aDisp').value) clearNeed($('#aDisp')); const k=$('#aKind'); if(k && !k.value && $('#aDisp').value && /office/i.test(dispName($('#aDisp').value))){ k.value=OFFICE_KIND; k.dispatchEvent(new Event('change',{bubbles:true})); clearNeed(k); } });   // office → General BA Activity/Admin (change keeps picker label in sync)
     $('#aKind').addEventListener('change',()=>{ if($('#aKind').value) clearNeed($('#aKind')); });
     // as the user fills a missing field, drop its red highlight (searchified selects clear via the picker)
@@ -3157,8 +3190,9 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+      ${delBtn}
     `);
-    $('#aCancel').onclick=closeSheet; wireDispChips('aDispChips');
+    $('#aCancel').onclick=closeSheet; wireDel(); wireDispChips('aDispChips');
     { const a=$('#aAmt'); if(a) a.addEventListener('input',()=>{ if(Number(a.value)>0) clearNeed(a); }); }
     let receiptPath=x.receipt_path||null, recChanged=false;
     const aRec=$('#aRec'); if(aRec) aRec.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
@@ -3871,7 +3905,7 @@ boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles, userTypeLabel, userCat };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixExpenseSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles, userTypeLabel, userCat };
 </script>
 </body>
 </html>
