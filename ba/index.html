@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.53';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.54';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -810,7 +810,7 @@ async function offerPasskeyEnroll(){
 
 /* ─────────────────────────── modal sheet ─────────────────────────── */
 function openSheet(html){
-  closeSheet();
+  $('#sheet')?.remove();   // replace WITHOUT firing the return-to hook
   const b=document.createElement('div'); b.className='backdrop'; b.id='sheet';
   b.innerHTML = `<div class="sheet"><button class="sheetx" aria-label="Close" title="Close">✕</button>${html}</div>`;
   b.addEventListener('click',e=>{ if(e.target===b) closeSheet(); });
@@ -843,7 +843,8 @@ function searchifySelect(sel, title){
       sel.value = v===NONE?'':v; sel.classList.remove('needs');
       sel.dispatchEvent(new Event('change',{bubbles:true})); label(); } });
 }
-function closeSheet(){ $('#sheet')?.remove(); }
+function closeSheet(){ $('#sheet')?.remove();
+  const r=state._sheetReturn; state._sheetReturn=null; if(r) r(); }
 // clear the red "missing" highlight off a field once it's filled — covers plain
 // inputs AND searchified selects (the visible .selpick button mirrors the hidden select)
 function clearNeed(el){ if(!el) return; el.classList.remove('needs');
@@ -1651,6 +1652,7 @@ function renderDayGrid(host){
   host.querySelectorAll('.bub[data-id]').forEach(b=>b.onclick=()=>openDayItem(b.dataset.k,b.dataset.id));
   host.querySelectorAll('.bub[data-daymiles]').forEach(b=>b.onclick=()=>{
     const day=b.dataset.daymiles, T=gridCtx().T||[];
+    if(gridCtx().isAdmin && gridCtx().baId) state._sheetReturn=()=>adminBaDetail(gridCtx().baId);
     const dayT=T.filter(t=>String(t.trip_date)===String(day)).sort((a,c)=>String(a.created_at||a.id).localeCompare(String(c.created_at||c.id)));
     // a FIXABLE to-do (same status rule as the To-do card) → jump to the broken leg;
     // otherwise a plain (all-collapsed) edit. Locked legs are never fix targets.
@@ -1744,6 +1746,7 @@ function dayRouteBubble(ctx, day, trips){
 // tap an existing bubble → the edit popup (or a read-only detail if it's locked)
 function openDayItem(kind, id){
   const ctx=gridCtx();
+  if(ctx.isAdmin && ctx.baId) state._sheetReturn=()=>adminBaDetail(ctx.baId);   // editor closes → back to this BA
   const arr = kind==='trip'?(ctx.T||[]):kind==='exp'?(ctx.E||[]):(ctx.H||[]);
   const x = arr.find(o=>String(o.id)===String(id)); if(!x) return;
   if(!dgCanEdit(ctx,kind,x)) return itemDetailSheet(kind,x);   // BA hours / locked items
@@ -1755,6 +1758,7 @@ function openDayItem(kind, id){
 // admins add on the viewed BA's behalf through adminEditItem's new-item mode.
 function dgAdd(mode, day){
   const ctx=gridCtx(); const kind = mode==='miles'?'trip':'exp';
+  if(ctx.isAdmin && ctx.baId) state._sheetReturn=()=>adminBaDetail(ctx.baId);
   if(mode==='miles'){ tripSheet(day); }                                  // same day editor for BA + admin
   else if(ctx.isAdmin){
     adminEditItem(kind,null,d=>dgApplyEdit(kind,d),
@@ -2995,6 +2999,7 @@ function visitSheet(v){
 // bubble tracker, with the tapped item pre-expanded. Tapping any bubble toggles its
 // inline detail, so a full day can be audited without leaving the popup.
 async function dayAuditSheet(baId, date, focusKey){
+  state._sheetReturn=null;               // parent popup — its own close is a plain close
   const [{data:prof},{data:T},{data:E},{data:H}] = await Promise.all([
     supabase.from('profiles').select('full_name,base_address').eq('id',baId).single(),
     supabase.from('trips').select('*').eq('ba_id',baId).eq('trip_date',date),
@@ -3053,6 +3058,7 @@ async function dayAuditSheet(baId, date, focusKey){
   host.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation();
     const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
   host.querySelectorAll('.adEdit').forEach(b=>b.onclick=ev=>{ ev.stopPropagation();
+    state._sheetReturn=()=>dayAuditSheet(baId, date, null);   // editor closes → back to this day
     const ed=b.dataset.ed;
     if(ed==='trip'){
       // hand the viewer-aware day editor a proper context for THIS BA's day
@@ -3299,9 +3305,11 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       const {data,error}=await write(patch);
       busy(btn,false);
       if(error){ $('#aMsg').style.color='var(--red)'; $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
+      const keepRet=chainNext?state._sheetReturn:null; if(chainNext) state._sheetReturn=null;
       closeSheet(); toast(isNew?'Trip added ✓':'Trip updated ✓','ok'); onSaved&&onSaved(data);
       // chain the day like the BA multi-leg logger: fresh popup, same BA + date,
       // start pre-filled with the leg we just saved's destination
+      if(chainNext) state._sheetReturn=keepRet;
       if(chainNext) adminEditItem('trip', null, onSaved, { _new:true, ba_id:x.ba_id,
         period_id:(data&&data.period_id)||x.period_id, status:'draft', state:x.state, roundtrip:false,
         trip_date:(data&&data.trip_date)||patch.trip_date, start_label:(data&&data.dest_label)||patch.dest_label||'' });
@@ -3442,6 +3450,7 @@ function admRefreshTotals(){
   const tb=document.getElementById('admTodo'); if(tb) tb.innerHTML=todoCard([...T.map(x=>({...x,_k:'trip'})),...E.map(x=>({...x,_k:'exp'})),...H.map(x=>({...x,_k:'hours'}))],false,true);
 }
 async function adminBaDetail(baId){
+  state._sheetReturn=null;               // this IS the parent popup — plain close for itself
   const per=state.period;
   const allPer=isAllPeriods(per);
   const perQ=q=>allPer?q:q.eq('period_id',per.id);
@@ -3527,12 +3536,14 @@ async function adminBaDetail(baId){
   });
   document.querySelectorAll('#sheet .catxp').forEach(el=>el.onclick=()=>{
     const c=gridCtx(); const x=(c.E||[]).find(o=>String(o.id)===String(el.dataset.xid)); if(!x) return;
+    state._sheetReturn=()=>adminBaDetail(baId);
     adminEditItem('exp', x.id, d=>dgApplyEdit('exp',d), x);
   });
   $('#approveBtn')&&($('#approveBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); approveSubmission(baId,per.id,c.T,c.E,c.H); });
   $('#autolinkBtn')&&($('#autolinkBtn').onclick=async()=>{ await flushGrid($('#admGrid')); autoLinkHours(baId,per.id,gridCtx().H||[]); });
   // to-do rows (delegated so they survive live re-renders) open the field-fix popup editor
-  const at=$('#admTodo'); if(at) at.onclick=e=>{ const row=e.target.closest('.todo-fix'); if(row) adminEditItem(row.dataset.fixKind, row.dataset.fixId, ()=>adminBaDetail(baId)); };
+  const at=$('#admTodo'); if(at) at.onclick=e=>{ const row=e.target.closest('.todo-fix');
+    if(row){ state._sheetReturn=()=>adminBaDetail(baId); adminEditItem(row.dataset.fixKind, row.dataset.fixId, ()=>{}); } };
 }
 // admin attaches/replaces a receipt image on an expense (e.g. for back-filled data).
 // Uploaded under the admin's own storage prefix (which RLS already permits); admins can view any receipt.
