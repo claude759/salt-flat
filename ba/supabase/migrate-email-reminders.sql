@@ -33,11 +33,13 @@ $$;
 revoke all on function public.ba_notify_authorized(text) from public, anon, authenticated;
 grant execute on function public.ba_notify_authorized(text) to service_role;
 
--- fire ba-notify when a submission transitions INTO 'submitted' (not on approve/edits)
+-- fire ba-notify when a submission transitions INTO 'submitted' (not on approve/edits,
+-- and NOT on an admin undoing an approval — approved→submitted is not a BA submitting)
 create or replace function public.trg_submission_notify()
 returns trigger language plpgsql security definer set search_path = public, vault, net as $$
 begin
-  if new.status = 'submitted' and (tg_op = 'INSERT' or old.status is distinct from 'submitted') then
+  if new.status = 'submitted' and (tg_op = 'INSERT'
+       or (old.status is distinct from 'submitted' and old.status is distinct from 'approved')) then
     perform net.http_post(
       url := 'https://dhiqhgtmelxwelyoowle.supabase.co/functions/v1/ba-notify',
       headers := jsonb_build_object(

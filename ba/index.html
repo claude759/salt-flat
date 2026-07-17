@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.54';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.55';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -360,7 +360,12 @@ function profileTypeOpts(sel, lockRegion){
   for(const r of regions){ html += o('ba|'+r, `${r} Brand Ambassador`) + o('admin|'+r, `${r} Admin`); }
   return html;
 }
-const EXPENSE_CATEGORIES = ['Travel','Tolls','Parking','Meals','Food for retailer','Flights','Lodging','Displays','Supplies','Other'];
+const EXPENSE_CATEGORIES = ['Travel/Parking/Tolls','Meals','Food for retailer','Flights','Lodging','Displays','Supplies','Other'];
+// category <select> options: a stored value that's NOT in the list still renders as
+// itself (selected) — otherwise the browser silently shows the first option and the
+// row looks categorized when it isn't
+const catOptions = cur => (cur && !EXPENSE_CATEGORIES.includes(cur) ? [cur,...EXPENSE_CATEGORIES] : EXPENSE_CATEGORIES)
+  .map(c=>`<option ${cur===c?'selected':''}>${esc(c)}</option>`).join('');
 const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company card']];
 function expSplit(E){ let reimb=0, card=0; (E||[]).forEach(x=>{ if(x.payment==='company') card+=Number(x.amount||0); else reimb+=Number(x.amount||0); }); return {reimb, card}; }
 
@@ -1350,7 +1355,7 @@ function fixItemSheet(kind, id){
 }
 function fixExpenseSheet(x){
   const dispOpts = `<option value="">— pick a dispensary —</option>`+baDispensaries().map(d=>`<option value="${d.id}" data-search="${esc(dispSearchText(d))}" ${x.dispensary_id===d.id?'selected':''}>${esc(d.name)}</option>`).join('');
-  const cats = EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
+  const cats = catOptions(x.category);
   const iss = itemIssues({...x,_k:'exp'});
   const needDisp=!x.dispensary_id, needAmt=!(Number(x.amount)>0), needRec=!x.receipt_path;
   openSheet(`
@@ -1513,7 +1518,7 @@ function gridRowHtml(mode, it, today, pay, opts={}){
   }
   // expenses: payment is implied by which table the row lives in (no "Paid by" column)
   const rowPay = it ? (it.payment||'reimbursement') : (pay||'reimbursement');
-  const cats=EXPENSE_CATEGORIES.map(c=>`<option ${it&&it.category===c?'selected':''}>${c}</option>`).join('');
+  const cats=catOptions(it&&it.category);
   const rcell = it&&it.receipt_path
     ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span>${ro?'':`<label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-receipt" hidden></label>`}</div>`
     : `<div class="rcell">${ro?'<span class="muted small">—</span>':`<label class="rchip">📎 add<input type="file" accept="image/*" class="g-receipt" hidden></label>`}</div>`;
@@ -2341,6 +2346,7 @@ function tripSheet(presetDate, editTrip, opts){
         <span class="hdr">${i>0&&!lock?'<span class="muted small">start = last stop (editable)</span>':''}
         ${canCollapse?'<button class="legcol" id="tCollapse" type="button" title="Collapse this leg" aria-label="Collapse this leg">▴ Collapse</button>':''}</span>
       </div>
+      ${isAdminCtx && p.saved && p.status==='approved' ? `<button type="button" class="btn ghost sm block" id="tUndo" style="margin:2px 0 8px">↩ Undo approval <span class="muted small">— back to submitted</span></button>`:''}
       ${lock?`<div class="small" style="color:var(--yellow);margin:-2px 0 8px">🔒 This leg is ${esc(p.status)} — ask an admin to change or delete it.</div>`:''}
       <label class="fl">How do you want the miles?</label>
       <div class="mtiles" id="tSeg">${seg('distance','📍','Addresses','A → B')}${seg('route','🗺','Nav screenshot','reads your map')}${seg('odometer','📷','Odometer','start &amp; end')}</div>
@@ -2431,6 +2437,13 @@ function tripSheet(presetDate, editTrip, opts){
     const showCost=()=>{ const c=$('#tCost'); if(c) c.innerHTML = (p.miles!=null&&p.miles>0) ? `Reimbursement: <b style="color:var(--accent2)">${money(p.miles*rate)}</b> &nbsp;<span class="muted">(${p.miles} mi × ${money(rate)})</span>` : '';
       if(Number(p.miles)>0){ const m=$('#tMiles'); if(m) clearNeed(m); } };   // auto-filled miles (odometer/Calculate/route) clear the red too
     showCost();
+    // admin: approved leg → back to submitted (also un-stamps the period submission)
+    { const u=$('#tUndo'); if(u) u.onclick=async()=>{
+        const cper=ctx.per||state.period;
+        if(cper && cper.status==='closed' && !confirm('This pay period is CLOSED — it may already be paid out. Undo approval anyway?')) return;
+        busy(u,true); const r=await undoApproval('trips', p.tripId); busy(u,false);
+        if(!r) return;
+        p.status='submitted'; syncT({id:p.tripId, status:'submitted'}); render(); }; }
     // submitted/approved leg → read-only card: the server trigger would silently revert
     // any edit, so don't pretend. Collapse is the only live control.
     if(!unlockedLeg(p)){
@@ -2625,7 +2638,7 @@ function tripSheet(presetDate, editTrip, opts){
 /* ── Add expense sheet ── */
 function expenseSheet(presetDate){
   if(!canEditPeriod(state.period)) return toast('This pay period is view-only — ask an admin to make changes.','err');
-  let receiptPath=null, ocr=null;
+  let receiptPath=null, ocr=null, catTouched=false;
   const dispOpts = baDispensaries().map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
   const cats=EXPENSE_CATEGORIES;
   openSheet(`
@@ -2669,6 +2682,9 @@ function expenseSheet(presetDate){
     await ensurePeriodForDate(ed); await drawBA();
     return data;
   }
+  // a category the BA explicitly picked is a real choice — the background OCR must not
+  // overwrite it (an untouched select sits on the first option, indistinguishable by value)
+  { const c=$('#eCat'); if(c) c.addEventListener('change',()=>{ catTouched=true; }); }
   // Snap → upload → save instantly → home. OCR then fills the row in the background.
   $('#eFile').onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
@@ -2677,13 +2693,13 @@ function expenseSheet(presetDate){
     try{ receiptPath=await uploadPhoto('receipts',f); }
     catch(err){ $('#eOcr').textContent='Upload failed — try again, or enter it manually below.'; return; }
     const saved = await saveExpenseDraft();
-    if(saved) ocrFillInBackground(receiptPath, saved.id);
+    if(saved) ocrFillInBackground(receiptPath, saved.id, catTouched);
   };
   $('#eSave').onclick=async ()=>{ const b=$('#eSave'); busy(b,true); const ok=await saveExpenseDraft(); if(!ok) busy(b,false); };  // manual (no-photo) entry
 }
 // After a snapped receipt is saved instantly, the OCR runs here and fills the
 // still-empty fields in place when it returns — the popup never waits on it.
-async function ocrFillInBackground(path, id){
+async function ocrFillInBackground(path, id, catTouched){
   try{
     const r=await callFn('extract-receipt',{path});
     if(!r) return;
@@ -2692,7 +2708,7 @@ async function ocrFillInBackground(path, id){
     if(r.ok){
       if(r.total!=null && !(Number(row.amount)>0)) patch.amount=r.total;
       if(r.vendor && !((row.vendor||'').trim())) patch.vendor=r.vendor;
-      if(r.category && (!row.category || row.category===EXPENSE_CATEGORIES[0])) patch.category=r.category;
+      if(r.category && !catTouched && (!row.category || row.category===EXPENSE_CATEGORIES[0])) patch.category=r.category;
     }
     const { data, error }=await supabase.from('expenses').update(patch).eq('id',id).eq('status','draft').select('*').single();
     if(error||!data) return;
@@ -3173,6 +3189,26 @@ async function adminEditItem(kind, id, onSaved, preloaded){
   // real gate — BAs may delete own draft/rejected rows, admins anything in their region.
   const delBtn = (!isNew && kind!=='hours')
     ? `<button class="btn ghost block" id="aDel" style="margin-top:8px;color:var(--red);border-color:color-mix(in srgb, var(--red) 40%, transparent)">🗑 Delete ${kind==='trip'?'trip':'expense'}</button>` : '';
+  // approved items get an escape hatch back to review (per-item; also un-stamps the submission)
+  let canUndo = !isNew && x.status==='approved';
+  // Gusto-imported hours arrive approved with NO submission — undoing one would strand it
+  // at 'submitted' (no “Approve all” exists to bring it back). Only offer undo on hours
+  // when the period's submission really is stamped approved.
+  if(canUndo && kind==='hours'){
+    const {data:sub}=await supabase.from('submissions').select('status').eq('ba_id',x.ba_id).eq('period_id',x.period_id).maybeSingle();
+    canUndo = !!(sub && sub.status==='approved');
+  }
+  const undoBtn = canUndo
+    ? `<button class="btn ghost block" id="aUndo" style="margin-top:8px">↩ Undo approval <span class="muted small">— back to submitted</span></button>` : '';
+  const wireUndo = () => { const u=$('#aUndo'); if(!u) return; u.onclick=async()=>{
+    const per=(state.periods||[]).find(p=>p.id===x.period_id);
+    if(per && per.status==='closed' && !confirm('This pay period is CLOSED — it may already be paid out. Undo approval anyway?')) return;
+    busy(u,true);
+    const r=await undoApproval(table, id);
+    busy(u,false);
+    if(!r) return;
+    closeSheet(); onSaved&&onSaved({...x, status:'submitted'});
+  }; };
   const wireDel = () => { const d=$('#aDel'); if(!d) return; d.onclick=async()=>{
     if(!confirm(`Delete this ${kind==='trip'?'trip':'expense'}? This can’t be undone.`)) return;
     busy(d,true);
@@ -3216,9 +3252,10 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aNext" style="margin-top:8px">＋ Save &amp; add next leg</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+      ${undoBtn}
       ${delBtn}
     `);
-    $('#aCancel').onclick=closeSheet; wireDel(); wireNewRetailerSelect($('#aDisp'));
+    $('#aCancel').onclick=closeSheet; wireUndo(); wireDel(); wireNewRetailerSelect($('#aDisp'));
     $('#aDisp').addEventListener('change',()=>{ if($('#aDisp').value) clearNeed($('#aDisp')); const k=$('#aKind'); const def=$('#aDisp').value&&defaultKindForDisp($('#aDisp').value); if(k && !k.value && def){ k.value=def; k.dispatchEvent(new Event('change',{bubbles:true})); clearNeed(k); } });   // office → General BA Activity/Admin (change keeps picker label in sync)
     $('#aKind').addEventListener('change',()=>{ if($('#aKind').value) clearNeed($('#aKind')); });
     // as the user fills a missing field, drop its red highlight (searchified selects clear via the picker)
@@ -3331,8 +3368,9 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+      ${undoBtn}
     `);
-    $('#aCancel').onclick=closeSheet; wireDispChips('aDispChips');
+    $('#aCancel').onclick=closeSheet; wireUndo(); wireDispChips('aDispChips');
     $('#aSave').onclick=async()=>{
       const btn=$('#aSave');
       const patch={ work_date:$('#aDate').value||x.work_date, kind:$('#aKind').value, ...dispPatch('aDispChips'),
@@ -3344,7 +3382,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       closeSheet(); toast('Hours updated ✓','ok'); onSaved&&onSaved(data);
     };
   } else {
-    const cats=EXPENSE_CATEGORIES.map(c=>`<option ${x.category===c?'selected':''}>${c}</option>`).join('');
+    const cats=catOptions(x.category);
     const needAmt=!(Number(x.amount)>0), needRec=!x.receipt_path && x.status!=='approved';   // same as itemIssues()
     const recUrl=x.receipt_path?await signedUrl('receipts',x.receipt_path):null;
     openSheet(`
@@ -3364,9 +3402,10 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <div id="aMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
       <button class="btn primary block" id="aSave" style="margin-top:8px">Save changes</button>
       <button class="btn ghost block" id="aCancel" style="margin-top:8px">Cancel</button>
+      ${undoBtn}
       ${delBtn}
     `);
-    $('#aCancel').onclick=closeSheet; wireDel(); wireDispChips('aDispChips');
+    $('#aCancel').onclick=closeSheet; wireUndo(); wireDel(); wireDispChips('aDispChips');
     { const a=$('#aAmt'); if(a) a.addEventListener('input',()=>{ if(Number(a.value)>0) clearNeed(a); }); }
     let receiptPath=x.receipt_path||null, recChanged=false;
     const aRec=$('#aRec'); if(aRec) aRec.onchange=async e=>{ const f=e.target.files[0]; if(!f) return;
@@ -3560,9 +3599,13 @@ async function adminAttachReceipt(e, baId){
 }
 async function approveSubmission(baId,periodId,T,E,H){
   if(!confirm('Approve all submitted items for this BA this period?')) return;
-  // approve ONLY submitted items (never sweep in un-submitted drafts or rejected)
-  const subMile=(T||[]).filter(x=>x.status==='submitted').reduce((a,x)=>a+ +x.amount,0);
-  const {reimb:subExp, card:subCard}=expSplit((E||[]).filter(x=>x.status==='submitted'));
+  // approve ONLY submitted items (never sweep in un-submitted drafts or rejected) — but
+  // the stamped TOTALS cover submitted + already-approved, i.e. the whole period as it
+  // stands after this click. Otherwise an undo→re-approve cycle would overwrite the
+  // totals with just the one redone item's amounts.
+  const apr=x=>x.status==='submitted'||x.status==='approved';
+  const subMile=(T||[]).filter(apr).reduce((a,x)=>a+ +x.amount,0);
+  const {reimb:subExp, card:subCard}=expSplit((E||[]).filter(apr));
   // labor snapshot covers ALL the period's hours (they're payroll-managed, usually already approved on import)
   const subLabor=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
   const { error:e1 }=await supabase.from('trips').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','submitted');
@@ -3580,6 +3623,25 @@ async function rejectItem(kind,id,baId){
   const note=prompt('Reason for rejection (the BA will see this):'); if(note===null) return;
   await supabase.from(kind).update({status:'rejected',reject_note:note}).eq('id',id);
   toast('Item rejected'); adminBaDetail(baId);
+}
+// Undo an approval: the item drops back to 'submitted' for re-review. If the whole
+// submission had already been stamped approved, it reverts too — so the BA's card
+// reads "awaiting approval" again and the “Approve all” button comes back.
+async function undoApproval(table, id){
+  const {data:rows, error}=await supabase.from(table).update({status:'submitted'}).eq('id',id).select('ba_id,period_id');
+  if(error || !rows || !rows.length){ toast('Couldn’t undo approval'+(error?': '+error.message:''),'err'); return null; }
+  const r=rows[0];
+  if(r.ba_id && r.period_id){
+    const {error:e2}=await supabase.from('submissions')
+      .update({status:'submitted', approved_by:null, approved_at:null})
+      .eq('ba_id',r.ba_id).eq('period_id',r.period_id).eq('status','approved');
+    if(e2){ toast('Item is back to submitted, but the period is still stamped approved — reopen and retry.','err'); return r; }
+  }
+  toast('Approval undone — back to submitted','ok');
+  // the Dashboard/Review page BEHIND the popups was drawn pre-undo — refresh it so the
+  // BA reappears in the awaiting-approval queue (mirrors approveSubmission's drawAdmin)
+  try{ if(state.profile && state.profile.role==='admin') drawAdmin(); }catch(_){}
+  return r;
 }
 // Link each unlinked hours entry to the dispensaries of that day's trips (else expenses).
 async function autoLinkHours(baId, periodId, H){
