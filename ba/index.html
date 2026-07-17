@@ -339,7 +339,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.41';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.42';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -382,8 +382,17 @@ function dispLabel(x){
   const names = dispIds(x).map(dispName).filter(n=>n && n!=='—');
   return names.join(', ');
 }
-// split a value evenly across an item's dispensaries → [{id, share, n}] (id null = unlinked, n=1)
+// split a value across an item's dispensaries → [{id, share, n, hrs?, kind?}]
+// Hours rows with a trip-derived `alloc` split by LEG MILES (each entry carries its
+// leg's kind + exact hour share); everything else splits evenly. id null = unlinked.
 function dispSplit(x, value){
+  const al = Array.isArray(x.alloc) ? x.alloc.filter(e=>e&&e.d) : null;
+  if(al && al.length){
+    const W = al.reduce((a,e)=>a+Number(e.w||0),0) || al.length;
+    const H = Number(x.hours||0);
+    return al.map(e=>{ const f=(Number(e.w||0)||(W===al.length?1:0))/W;
+      return { id:e.d, share:value*f, n:al.length, hrs:H*f, kind:e.k||x.kind||null }; });
+  }
   const ids = dispIds(x); const list = ids.length ? ids : [null];
   const n = list.length, share = value / n;
   return list.map(id=>({id, share, n}));
@@ -1674,7 +1683,9 @@ function bubbleHtml(kind, ctx, x){
   } else {
     cls='bub-hours'; type='Hours';
     val = x.source==='salary'?money(Number(x.amount||0)):hoursHM(Number(x.hours||0));
-    sub = x.kind||(x.source==='salary'?'Salary':'Hours');
+    // a trip-derived alloc carries the day's real category mix (split by leg miles)
+    const ak=[...new Set((Array.isArray(x.alloc)?x.alloc:[]).map(e=>e&&e.k).filter(Boolean))];
+    sub = ak.length ? ak.join(' · ') : (x.kind||(x.source==='salary'?'Salary':'Hours'));
   }
   if(warn) flag='⚠';
   // no leading icon — the colour + type label already distinguish mileage / expense / hours
@@ -1754,7 +1765,12 @@ function itemDetailSheet(kind, x){
   const disp=id=>id?dispName(id):null; let title;
   if(kind==='trip'){ title='Trip'; add('Date',fmtDate(x.trip_date)); add('Start',x.start_label); add('Destination',x.dest_label); add('Dispensary',disp(x.dispensary_id||(x.dispensary_ids&&x.dispensary_ids[0]))); add('Category',x.kind); add('Miles',x.miles); add('Reimbursement',money(Number(x.amount||0))); }
   else if(kind==='exp'){ title='Expense'; add('Date',fmtDate(x.expense_date)); add('Vendor',x.vendor); add('Category',x.category); add('Amount',money(Number(x.amount||0))); add('Paid with',x.payment); }
-  else { title='Hours'; add('Date',fmtDate(x.work_date)); add('Category',x.kind); add('Dispensary',disp(x.dispensary_id||(x.dispensary_ids&&x.dispensary_ids[0]))); add('Hours',x.source==='salary'?('salaried · '+money(Number(x.amount||0))):hoursHM(Number(x.hours||0))); }
+  else { title='Hours'; add('Date',fmtDate(x.work_date));
+    add('Hours',x.source==='salary'?('salaried · '+money(Number(x.amount||0))):hoursHM(Number(x.hours||0)));
+    const shares=dispSplit(x, Number(x.amount||0));
+    if(shares.length && shares[0].hrs!=null){   // miles-weighted split → show where the day went
+      shares.forEach(s=>add(dispName(s.id)+(s.kind?' · '+s.kind:''), `${hoursHM(s.hrs)} · ${money(s.share)}`));
+    } else { add('Category',x.kind); add('Dispensary',disp(x.dispensary_id||(x.dispensary_ids&&x.dispensary_ids[0]))); } }
   openSheet(`<h3>${title} <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
     <div class="small muted" style="margin:2px 0 12px">View only${kind==='hours'?' — labor hours sync from Gusto':' — this period is locked'}.</div>
     <div style="display:flex;flex-direction:column;gap:8px">${rows.join('')}</div>
@@ -2843,7 +2859,8 @@ function buildVisits(trips, exps, hrs, ctx){
   (trips||[]).forEach(t=>{ if(!inRegion(t.ba_id)||!t.dispensary_id) return;
     const v=ens(t.ba_id,t.dispensary_id,t.trip_date); v.mile+=Number(t.amount||0); v.miles+=Number(t.miles||0); v.trips.push(t); });
   (hrs||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const A=Number(h.amount||0), H=Number(h.hours||0);
-    dispSplit(h,A).forEach(({id,share,n})=>{ if(!id) return; const v=ens(h.ba_id,id,h.work_date); v.labor+=share; v.laborHrs+=H/n; v.hours.push({row:h,share,n}); }); });
+    dispSplit(h,A).forEach(({id,share,n,hrs:hshare})=>{ if(!id) return; const v=ens(h.ba_id,id,h.work_date);
+      v.labor+=share; v.laborHrs+=(hshare!=null?hshare:H/n); v.hours.push({row:h,share,n}); }); });
   (exps||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const A=Number(x.amount||0);
     dispSplit(x,A).forEach(({id,share,n})=>{ if(!id) return; const v=ens(x.ba_id,id,x.expense_date);
       if(x.payment==='company') v.card+=share; else v.exp+=share; v.expenses.push({row:x,share,n}); }); });
