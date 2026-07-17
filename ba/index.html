@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.51';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.52';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -3502,12 +3502,14 @@ async function adminBaDetail(baId){
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
       <button class="btn grow" id="pdfBtn">🖨 Print / PDF</button>
     </div>
+    <button class="btn block" id="attachBtn" style="margin-top:8px">🗂 Download all attachments <span class="muted small">— receipts + odometer/route photos as a ZIP</span></button>
     <button class="btn ghost block" id="closeBtn" style="margin-top:8px">Close</button>
   `);
   renderDayGrid($('#admGrid'));
   $('#closeBtn').onclick=()=>{ flushGrid($('#admGrid')); closeSheet(); };
   $('#csvBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); exportCSV(prof,per,c.T||[],c.E||[],c.H||[]); };
   $('#pdfBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); exportPDF(prof,per,c.T||[],c.E||[],c.H||[]); };
+  $('#attachBtn').onclick=async()=>{ const c=gridCtx(); downloadAllAttachments(prof, allPer?null:per, c.T||[], c.E||[], $('#attachBtn')); };
   $('#approveBtn')&&($('#approveBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); approveSubmission(baId,per.id,c.T,c.E,c.H); });
   $('#autolinkBtn')&&($('#autolinkBtn').onclick=async()=>{ await flushGrid($('#admGrid')); autoLinkHours(baId,per.id,gridCtx().H||[]); });
   // to-do rows (delegated so they survive live re-renders) open the field-fix popup editor
@@ -3576,6 +3578,44 @@ async function autoLinkHours(baId, periodId, H){
 }
 
 /* ── exports ── */
+
+// bundle every uploaded file for the viewed BA/period — expense receipts + trip
+// odometer/route photos — into one ZIP (per-file downloads get browser-blocked).
+// JSZip loads lazily from the CDN only when the button is used.
+async function downloadAllAttachments(prof, per, T, E, btn){
+  const files=[]; const seen=new Set();
+  const push=(bucket,path,name)=>{ if(!path||seen.has(bucket+':'+path)) return; seen.add(bucket+':'+path); files.push({bucket,path,name}); };
+  (E||[]).forEach(x=>push('receipts', x.receipt_path,
+    `${x.expense_date}_receipt_${(x.vendor||'expense').replace(/[^\w-]+/g,'-').slice(0,30)}_${Number(x.amount||0).toFixed(2)}`));
+  (T||[]).forEach(t=>{ const d=(t.dest_label||'trip').replace(/[^\w-]+/g,'-').slice(0,24);
+    push('odometer', t.start_photo, `${t.trip_date}_odo-start_${d}`);
+    push('odometer', t.end_photo,   `${t.trip_date}_odo-end_${d}`); });
+  if(!files.length) return toast('No attachments in this period','err');
+  busy(btn,true); toast(`Fetching ${files.length} attachment${files.length>1?'s':''}…`);
+  try{
+    const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+    const zip=new JSZip(); let ok=0; const used=new Set();
+    for(const f of files){
+      try{
+        const u=await signedUrl(f.bucket, f.path); if(!u) continue;
+        const r=await fetch(u); if(!r.ok) continue;
+        const ext=(String(f.path).match(/\.(\w{2,4})$/)||[])[1]||'jpg';
+        let nm=`${f.name}.${ext}`, i=2;
+        while(used.has(nm)) nm=`${f.name}_${i++}.${ext}`;
+        used.add(nm);
+        zip.file(nm, await r.blob()); ok++;
+      }catch(_e){ /* skip unfetchable file, keep going */ }
+    }
+    if(!ok){ busy(btn,false); return toast('Couldn’t fetch any attachments','err'); }
+    const blob=await zip.generateAsync({type:'blob'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=`attachments_${(prof.full_name||prof.email||'ba').replace(/\W+/g,'_')}_${per?per.start_date:'all-periods'}.zip`;
+    a.click();
+    toast(ok===files.length?`Downloaded ${ok} attachment${ok>1?'s':''} ✓`:`Downloaded ${ok}/${files.length} (some files were unavailable)`,'ok');
+  }catch(e){ toast('Download failed: '+(e&&e.message||e),'err'); }
+  busy(btn,false);
+}
+
 function exportCSV(prof,per,T,E,H){
   H=H||[];
   const rows=[['Type','Date','Dispensary','Detail','Paid','Miles/Hrs','Rate','Amount','Status','Note']];
