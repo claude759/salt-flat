@@ -339,7 +339,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.42';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.43';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1647,7 +1647,7 @@ function renderDayGrid(host){
     const dayT=T.filter(t=>String(t.trip_date)===String(day)).sort((a,c)=>String(a.created_at||a.id).localeCompare(String(c.created_at||c.id)));
     // a FIXABLE to-do (same status rule as the To-do card) → jump to the broken leg;
     // otherwise a plain (all-collapsed) edit. Locked legs are never fix targets.
-    const hasIssue=dayT.some(t=>tripFixable(t)&&itemIssues({...t,_k:'trip'}).length);
+    const hasIssue=dayT.some(t=>(gridCtx().isAdmin||tripFixable(t))&&itemIssues({...t,_k:'trip'}).length);
     tripSheet(day, dayT[0]||undefined, {fix:hasIssue});
   });
   host.querySelectorAll('.bub-add').forEach(b=>b.onclick=()=>dgAdd(b.dataset.add,b.dataset.day));
@@ -1656,11 +1656,9 @@ function renderDayGrid(host){
 function dgBubbles(ctx, day, trips, exps, hrs, addable){
   const out=[];
   hrs.forEach(x=>out.push(bubbleHtml('hours',ctx,x)));
-  // BA view: the day's driving is ONE journey — collapse every leg into a single route
-  // pill (Home → stop → stop → …) that opens the multi-leg editor. Admins keep per-trip
-  // bubbles so adminEditItem (with its explicit Location dropdown) stays reachable.
-  if(!ctx.isAdmin && trips.length){ out.push(dayRouteBubble(ctx, day, trips)); }
-  else { trips.forEach(x=>out.push(bubbleHtml('trip',ctx,x))); }
+  // the day's driving is ONE journey for everyone — a single route pill (Home → stop →
+  // stop → …) that opens the multi-leg day editor (ctx-aware: admins edit the viewed BA)
+  if(trips.length) out.push(dayRouteBubble(ctx, day, trips));
   exps.forEach(x=>out.push(bubbleHtml('exp',ctx,x)));
   const adds=(addable||[]).map(m=>`<button class="bub-add" data-add="${m}" data-day="${day}">＋ ${m==='miles'?'Mileage':'Expense'}</button>`);
   const addrow = adds.length?`<div class="bub-addrow">${adds.join('')}</div>`:'';
@@ -1712,7 +1710,7 @@ function tripFixable(t){ return t.status==='draft' || t.status==='rejected'; }
 function dayRouteBubble(ctx, day, trips){
   const legs=trips.slice().sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
   const total=legs.reduce((a,t)=>a+Number(t.miles||0),0);
-  const warn=legs.some(t=>tripFixable(t)&&itemIssues({...t,_k:'trip'}).length>0);
+  const warn=legs.some(t=>((ctx&&ctx.isAdmin)||tripFixable(t))&&itemIssues({...t,_k:'trip'}).length>0);
   const node=(label,dispId)=> dispId ? dispName(dispId) : (label||'');
   const chain=[ node(legs[0].start_label, null) ];
   legs.forEach(t=>chain.push(node(t.dest_label, t.dispensary_id||(t.dispensary_ids&&t.dispensary_ids[0]))));
@@ -1732,19 +1730,20 @@ function openDayItem(kind, id){
   const arr = kind==='trip'?(ctx.T||[]):kind==='exp'?(ctx.E||[]):(ctx.H||[]);
   const x = arr.find(o=>String(o.id)===String(id)); if(!x) return;
   if(!dgCanEdit(ctx,kind,x)) return itemDetailSheet(kind,x);   // BA hours / locked items
-  if(ctx.isAdmin){ adminEditItem(kind,id,d=>dgApplyEdit(kind,d),x); }
-  else if(kind==='trip'){ tripSheet(x.trip_date, x); }
+  if(kind==='trip'){ tripSheet(x.trip_date, x); }                       // same day editor for BA + admin
+  else if(ctx.isAdmin){ adminEditItem(kind,id,d=>dgApplyEdit(kind,d),x); }
   else if(kind==='exp'){ fixExpenseSheet(x); }
 }
 // tap ＋ → the create popup. BAs use their own log flows (which self-refresh via drawBA);
 // admins add on the viewed BA's behalf through adminEditItem's new-item mode.
 function dgAdd(mode, day){
   const ctx=gridCtx(); const kind = mode==='miles'?'trip':'exp';
-  if(ctx.isAdmin){
+  if(mode==='miles'){ tripSheet(day); }                                  // same day editor for BA + admin
+  else if(ctx.isAdmin){
     adminEditItem(kind,null,d=>dgApplyEdit(kind,d),
       { _new:true, ba_id:ctx.baId, period_id:ctx.per&&ctx.per.id, status:'draft', state:ctx.region, roundtrip:false,
-        [kind==='trip'?'trip_date':'expense_date']:day });
-  } else if(mode==='miles'){ tripSheet(day); } else { expenseSheet(day); }
+        expense_date:day });
+  } else { expenseSheet(day); }
 }
 // admin popup saved (or deleted: data={_deleted:true,id}) → patch the in-memory array +
 // re-render this grid + top totals
@@ -2183,7 +2182,14 @@ function placeDatalist(){
 // SAME leg form (edit mode), with Save/Delete instead of the multi-leg flow.
 function tripSheet(presetDate, editTrip, opts){
   opts = opts||{};
-  if(!canEditPeriod(state.period) && !(editTrip && state.grid?.isAdmin)) return toast('This pay period is view-only — ask an admin to make changes.','err');
+  // ctx-aware: on the BA home this is the signed-in BA; on an admin's BA-detail it's the
+  // VIEWED BA — legs save under ctx.baId, home autofill uses THEIR address, and admins
+  // may edit any status/period (the server trigger recomputes amount admin-side).
+  const ctx=(typeof gridCtx==='function'&&gridCtx())||{};
+  const isAdminCtx=!!ctx.isAdmin;
+  const forBA=ctx.baId||state.session.user.id;
+  const homeAddr=(ctx.homeAddr!=null)?ctx.homeAddr:(state.profile.base_address||'');
+  if(!isAdminCtx && !canEditPeriod(state.period)) return toast('This pay period is view-only — ask an admin to make changes.','err');
   const editMode = !!editTrip;
   const rate = Number(state.profile.rate_override ?? state.settings?.mileage_rate ?? 0.76);
   // The day's drive is logged one LEG at a time: Home → stop → stop → … → Home.
@@ -2200,14 +2206,14 @@ function tripSheet(presetDate, editTrip, opts){
     tripId:t.id, status:t.status||'draft', saved:true });
   // a leg the BA may still change: unsaved, or draft/rejected. Submitted/approved legs
   // render read-only (the server trigger would silently revert edits anyway).
-  const unlockedLeg = (p)=>!p.tripId || p.status==='draft' || p.status==='rejected';
+  const unlockedLeg = (p)=>isAdminCtx || !p.tripId || p.status==='draft' || p.status==='rejected';
   // is this leg still missing what the To-do rule requires? (live check on the part —
   // a non-store kind waives the location link, mirroring itemIssues)
   const partIssues = (p)=>!((p.destDispId||matchDispByText(p.destLabel)||isNonstoreKind(p.kind)) && p.kind && Number(p.miles)>0);
   // keep the in-memory day data honest as we write, so the grid/totals stay right even
   // if the sheet is dismissed via ✕/backdrop instead of Done
   let dirty=false;
-  const syncT=(rowOrId, del)=>{ dirty=true; const T=state._T; if(!Array.isArray(T)) return;
+  const syncT=(rowOrId, del)=>{ dirty=true; const T=(typeof gridCtx==='function'&&gridCtx().T)||state._T; if(!Array.isArray(T)) return;
     const id=del?rowOrId:rowOrId.id, ix=T.findIndex(t=>String(t.id)===String(id));
     if(del){ if(ix>=0) T.splice(ix,1); }
     else if(ix>=0) T[ix]={...T[ix],...rowOrId}; else T.push(rowOrId);
@@ -2221,7 +2227,7 @@ function tripSheet(presetDate, editTrip, opts){
     .sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
   const parts = dayTrips.map(partFromTrip);
   // fix-mode only ever targets legs the BA can actually fix (same rule as the To-do card)
-  const legIssues = dayTrips.map(t=>tripFixable(t)?itemIssues({...t,_k:'trip'}):[]);   // aligned 1:1 with parts
+  const legIssues = dayTrips.map(t=>(isAdminCtx||tripFixable(t))?itemIssues({...t,_k:'trip'}):[]);   // aligned 1:1 with parts
   let activeIdx;
   if(opts.fix){
     // opened from a to-do → jump straight to the leg that needs fixing. Prefer the
@@ -2231,7 +2237,7 @@ function tripSheet(presetDate, editTrip, opts){
     if(activeIdx<0){
       if(own>=0) activeIdx=own;
       else if(editMode){ parts.push(partFromTrip(editTrip)); activeIdx=parts.length-1; }
-      else { parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
+      else { parts.push(newPart(homeAddr)); activeIdx=0; }
     }
   }
   else if(editMode){                                                 // plain edit → every leg collapsed; tap one to open it
@@ -2239,7 +2245,7 @@ function tripSheet(presetDate, editTrip, opts){
     activeIdx = -1;
   }
   else if(parts.length){ parts.push(newPart(parts[parts.length-1].destLabel)); activeIdx=parts.length-1; }  // continue the day
-  else { parts.push(newPart(state.profile.base_address||'')); activeIdx=0; }
+  else { parts.push(newPart(homeAddr)); activeIdx=0; }
   let fixLeg = opts.fix ? activeIdx : -1;     // the leg to auto-focus (re-targeted after each save)
   let fixArmed = fixLeg>=0;                   // gates the one-time auto-scroll
 
@@ -2254,12 +2260,14 @@ function tripSheet(presetDate, editTrip, opts){
     <button class="btn ghost block" id="tAddLeg" style="margin-top:10px;display:none">＋ Add another leg</button>
     <button class="btn ghost block" id="tDone" style="margin-top:10px">Done</button>
   `);
-  $('#tDone').onclick=()=>{ closeSheet(); if(!editMode) state.baTab='home'; if(typeof drawBA==='function') drawBA(); };
+  const refreshAfter=()=>{ if(isAdminCtx){ if(state._dgHost) renderDayGrid(state._dgHost); if(typeof ctx.onChange==='function') ctx.onChange(); }
+    else if(typeof drawBA==='function') drawBA(); };
+  $('#tDone').onclick=()=>{ closeSheet(); if(!editMode && !isAdminCtx) state.baTab='home'; refreshAfter(); };
   $('#tAddLeg').onclick=()=>{ const last=parts[parts.length-1]; parts.push(newPart(last?last.destLabel:'')); activeIdx=parts.length-1; render(); };
   // dismissing via ✕ or the backdrop must refresh too — otherwise the day grid keeps
   // showing deleted legs / missing new ones and Submit totals compute from stale data
   { const sh=$('#sheet');
-    if(sh){ const refresh=()=>{ if(dirty && typeof drawBA==='function') drawBA(); };
+    if(sh){ const refresh=()=>{ if(dirty) refreshAfter(); };
       sh.addEventListener('click',e=>{ if(e.target===sh) refresh(); });
       const x=sh.querySelector('.sheetx'); if(x) x.onclick=()=>{ closeSheet(); refresh(); }; } }
   // one Date field rules the whole day: changing it offers to MOVE the already-saved
@@ -2383,7 +2391,7 @@ function tripSheet(presetDate, editTrip, opts){
         toast('Trip deleted','ok');
       }
       parts.splice(i,1);
-      if(!parts.length){ closeSheet(); if(typeof drawBA==='function') drawBA(); return; }   // nothing left → close
+      if(!parts.length){ closeSheet(); refreshAfter(); return; }   // nothing left → close
       if(activeIdx===i) activeIdx=-1;
       else if(activeIdx>i) activeIdx--;
       render();
@@ -2435,13 +2443,13 @@ function tripSheet(presetDate, editTrip, opts){
       }, ()=>{ toast('Couldn’t get location — allow access or type an address','err'); $('#tStartHint').textContent=''; },
         {enableHighAccuracy:true,timeout:10000,maximumAge:60000});
     };
-    attachPlaceTypeahead($('#tStartLoc'), $('#tSug'), r=>{ p.startAddr=r.addr; p.startCoords=null; $('#tStartHint').textContent=''; });
+    attachPlaceTypeahead($('#tStartLoc'), $('#tSug'), r=>{ p.startAddr=r.addr; p.startCoords=null; $('#tStartHint').textContent=''; }, {home:homeAddr});
     $('#tStartLoc').addEventListener('input', e=>{ p.startLabel=e.target.value; p.startCoords=null; });
-    attachPlaceTypeahead($('#tDest'), $('#tSugDest'), r=>{ p.destAddr=r.addr; p.destDispId=r.dispId; officeKind(); });
+    attachPlaceTypeahead($('#tDest'), $('#tSugDest'), r=>{ p.destAddr=r.addr; p.destDispId=r.dispId; officeKind(); }, {home:homeAddr});
     $('#tDest').addEventListener('input', e=>{ p.destLabel=e.target.value; p.destDispId=null; });
     $('#tCalc').onclick=async ()=>{
       const destText=$('#tDest').value.trim(); if(!destText) return toast('Enter a destination first','err');
-      const body={ roundtrip:false };
+      const body={ roundtrip:false, for_ba:forBA };
       if(p.startCoords){ body.start_lat=p.startCoords.lat; body.start_lng=p.startCoords.lng; }
       else { const a=(p.startAddr||$('#tStartLoc').value).trim();
         if(a && a!=='📍 Current location'){
@@ -2513,10 +2521,11 @@ function tripSheet(presetDate, editTrip, opts){
       const btn=$('#tSave'); busy(btn,true);
       const startLoc = p.startCoords ? '📍 Current location' : (p.startLabel||null);
       const dId = p.destDispId||matchDispByText(p.destLabel)||null;
-      const row={ ba_id:state.session.user.id, trip_date:$('#tDate').value, dispensary_id:dId,
+      const row={ ba_id:forBA, trip_date:$('#tDate').value, dispensary_id:dId,
         kind: p.kind || ((dId && /office/i.test(dispName(dId)))?OFFICE_KIND:null),
         method:(p.method==='route'?'distance':p.method), miles:p.miles, miles_source:p.milesSrc,
-        dest_label:p.destLabel, start_label:startLoc, note:p.note, status:'draft', roundtrip:false };
+        dest_label:p.destLabel, start_label:startLoc, note:p.note, roundtrip:false };
+      if(!p.tripId) row.status='draft';
       if(p.method==='odometer'){ row.start_odo=p.startOdo; row.end_odo=p.endOdo; row.start_photo=p.startPath; row.end_photo=p.endPath; }
       else { row.start_odo=null; row.end_odo=null; }   // method switched away → don't leave readings that contradict the miles
       if(p.method==='distance' && p.startCoords){ row.start_lat=p.startCoords.lat; row.start_lng=p.startCoords.lng; }
