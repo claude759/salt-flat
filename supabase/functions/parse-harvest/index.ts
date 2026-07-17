@@ -33,6 +33,12 @@ const HARVEST_INSTR =
   'task (harvest, veg, deleaf, clean lamps, transplant, loading, general cleaning, etc). A header naming a ' +
   'person (e.g. the sender) applies to every row below it; a section header like "DISTRO" or "OLYMPIC" ' +
   'applies to the rows under it until the next header.\n' +
+  'These are often photos of a phone showing a chat or notes app: the CONTACT NAME in the chat header or ' +
+  'title bar (a name bubble at the very top of the image) is the WORKER — apply it to every row. If a single ' +
+  'name is visible anywhere and the rows themselves name nobody, do NOT return worker null; use that name.\n' +
+  'Transcribe carefully — these lists are messy handwriting or low-res screenshots. A date wildly outside ' +
+  'the run of the list (like 7/25 inside a 7/5..7/16 list) is almost certainly a misread; re-examine the ' +
+  'line before writing it. Do not skip lines: one physical line = one row.\n' +
   'Return ONLY a JSON object, no prose: {"rows":[{"category":"distro"|"harvest"|null,"date":"YYYY-MM-DD"|null,"location":string|null,' +
   '"task":string|null,"worker":string|null,"people":number|null,"rate":number|null,"time_in":"HH:MM"|null,"time_out":"HH:MM"|null,"note":string}]}\n' +
   'Rules:\n' +
