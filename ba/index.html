@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.58';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.59';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -463,6 +463,29 @@ function resolveTripPlaces(startText, destText, home){
     startCanon: startId?dispName(startId):startText,
     destCanon:  destId ?dispName(destId): destText,
     linkDispId: destId || (destIsHome ? startId : null) };
+}
+// THE attribution rule for a mileage leg, in one place (the day editor's save AND its
+// live "Location (cost attributed to)" row both use it):
+//   destination store → a home/private-pin destination attributes to the store they LEFT
+//   → errand stops (retail=false: post office, food, gas) and purely non-store categories
+//   file under the * General BA activity bucket → else unlinked (a real miss, shows as a to-do).
+function legAttribution({destText, startText, destDispId, kind, homeAddr}){
+  const list=state.dispensaries||[];
+  const byId=id=>id?list.find(x=>x.id===id):null;
+  const gen=list.find(x=>x.active!==false && /^\*\s*general ba activity/i.test(x.name||''));
+  let d = destDispId || matchDispByText(String(destText||'').trim()) || null;
+  const row=byId(d);
+  const homeish = isHomeAddr(String(destText||'').trim(), homeAddr) || !!(row&&row.private);
+  if(row&&row.private) d=null;                       // a private home pin is 'home', not a store
+  if(!d && homeish){
+    const s=String(startText||'').trim();
+    const exact=list.find(x=>x.active!==false && x.name===s);   // exact name first — matchDispByText skips '* ' buckets
+    d=(exact&&exact.id)||matchDispByText(s)||null;
+  }
+  { const r=byId(d);                                  // errand stop → General BA activity
+    if(r && r.retail===false && !/^\*/.test(r.name||'')) d=gen?gen.id:d; }
+  if(!d && isNonstoreKind(kind)) d=gen?gen.id:null;
+  return d;
 }
 // the selectable labor kinds (admin-editable in Settings; safe defaults pre-migration)
 const DEFAULT_LABOR_KINDS = ['Store visit','Education talk','Demo / PAD','Brand event','Travel','Admin'];
@@ -2445,18 +2468,8 @@ function tripSheet(presetDate, editTrip, opts){
     // overrides it (picking nothing returns it to auto).
     const calcLink=()=>{
       if(p.linkDispId!==undefined) return p.linkDispId;
-      const destTxt=($('#tDest')?.value||p.destLabel||'').trim();
-      const startTxt=($('#tStartLoc')?.value||p.startLabel||'').trim();
-      let d=p.destDispId||matchDispByText(destTxt)||null;
-      if(!d && isHomeAddr(destTxt, homeAddr)){
-        const exact=(state.dispensaries||[]).find(x=>x.active!==false && x.name===startTxt);
-        d=(exact&&exact.id)||matchDispByText(startTxt)||null;
-      }
-      if(!d && isNonstoreKind($('#tKind')?.value||p.kind)){
-        const gen=(state.dispensaries||[]).find(x=>x.active!==false && /^\*\s*general ba activity/i.test(x.name||''));
-        if(gen) d=gen.id;
-      }
-      return d;
+      return legAttribution({ destText:$('#tDest')?.value||p.destLabel, startText:$('#tStartLoc')?.value||p.startLabel,
+        destDispId:p.destDispId, kind:$('#tKind')?.value||p.kind, homeAddr });
     };
     const linkLabel=()=>{ const b=$('#tLink'); if(!b) return; const d=calcLink();
       b.innerHTML = d ? esc(dispName(d))+(p.linkDispId!==undefined?'':' <span class="muted small">· auto</span>')
@@ -2600,24 +2613,8 @@ function tripSheet(presetDate, editTrip, opts){
       const startLoc = p.startCoords ? '📍 Current location' : (p.startLabel||null);
       let dId;
       if(p.linkDispId!==undefined){ dId=p.linkDispId; }   // Location row override — the picker's word is final
-      else{
-        dId = p.destDispId||matchDispByText(p.destLabel)||null;
-        // driving home: attribute the leg to the store they LEFT, so the mileage cost
-        // lands on the location they were visiting (resolveTripPlaces rule). Exact name
-        // first — matchDispByText skips '* ' placeholders, but an office/bucket start
-        // ('* Office (NY)') is a legit place to be driving home from.
-        if(!dId && isHomeAddr(p.destLabel, homeAddr)){
-          const exact=(state.dispensaries||[]).find(d=>d.active!==false && d.name===(p.startLabel||'').trim());
-          dId = (exact&&exact.id) || matchDispByText(p.startLabel||'') || null;
-        }
-        // still nothing and the category is purely non-store (errands, transit, leads):
-        // file it under the General BA activity bucket — same place the matching hours
-        // land — so the report's 'Not linked' section only ever shows real misses
-        if(!dId && isNonstoreKind(p.kind)){
-          const gen=(state.dispensaries||[]).find(d=>d.active!==false && /^\*\s*general ba activity/i.test(d.name||''));
-          if(gen) dId=gen.id;
-        }
-      }
+      else dId=legAttribution({ destText:p.destLabel, startText:p.startLabel,
+        destDispId:p.destDispId, kind:p.kind, homeAddr });
       const row={ ba_id:forBA, trip_date:$('#tDate').value, dispensary_id:dId,
         kind: p.kind || ((dId && /office/i.test(dispName(dId)))?OFFICE_KIND:null),
         method:(p.method==='route'?'distance':p.method), miles:p.miles, miles_source:p.milesSrc,
@@ -4223,6 +4220,7 @@ function dispSheet(d, opts={}){
     <div id="dSug" class="tsug hide"></div>
     ${stateField}
     <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="dPrivate" ${d?.private?'checked':''} style="width:auto;min-height:auto"> Private — my Home (only I can see it)</label>
+    <label class="row" style="gap:8px;font-size:13px;margin-top:8px;align-items:flex-start"><input type="checkbox" id="dRetail" ${(d?d.retail!==false:true)?'checked':''} style="width:auto;min-height:auto"> Retail store / dispensary <span class="muted">— uncheck for errand stops (post office, food, gas): trips there file under General BA activity</span></label>
     <label class="fl">Legal name <span class="muted">(optional)</span></label><input id="dLegal" value="${esc(d?.legal_name||'')}">
     <label class="fl">License # <span class="muted">(optional)</span></label><input id="dLic" value="${esc(d?.license||'')}">
     ${edit&&isAdmin?`<label class="fl">Active</label><select id="dActive"><option value="true" ${d.active?'selected':''}>Active</option><option value="false" ${!d.active?'selected':''}>Inactive</option></select>`:''}
@@ -4236,7 +4234,7 @@ function dispSheet(d, opts={}){
     if(!st) return toast(isAdmin?'Pick a state':'Your profile has no state set — ask an admin','err');
     const addrChanged = !edit || ($('#dAddr').value||'')!==(d.address||'');
     const patch={ name, legal_name:$('#dLegal').value||null, state:st, private:$('#dPrivate').checked,
-      address:$('#dAddr').value||null, license:$('#dLic').value||null };
+      retail:$('#dRetail').checked, address:$('#dAddr').value||null, license:$('#dLic').value||null };
     if(edit&&isAdmin) patch.active = $('#dActive').value==='true';
     if(addrChanged){ patch.lat=null; patch.lng=null; }
     let error;
