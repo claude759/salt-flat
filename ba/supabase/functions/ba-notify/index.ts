@@ -41,12 +41,17 @@ function periodLabel(p: { label?: string; start_date: string; end_date: string }
 }
 
 let _smtp: SMTPClient | null = null;
-async function sendMail(to: string, subject: string, html: string, text: string) {
+async function sendMail(to: string, subject: string, html: string, text: string, cc?: string[]) {
   if (!GMAIL_USER || !GMAIL_PASS) throw new Error("email_not_configured");
   _smtp ??= new SMTPClient({
     connection: { hostname: "smtp.gmail.com", port: 465, tls: true, auth: { username: GMAIL_USER, password: GMAIL_PASS } },
   });
-  await _smtp.send({ from: `${FROM_NAME} <${GMAIL_USER}>`, to, subject, content: text, html });
+  // collapse template indentation: whitespace-only lines were quoted-printable-encoded
+  // and rendered as a literal '=20' in some clients (seen in Gmail)
+  const flat = html.replace(/\n\s*/g, "");
+  const msg: Record<string, unknown> = { from: `${FROM_NAME} <${GMAIL_USER}>`, to, subject, content: text, html: flat };
+  if (cc && cc.length) msg.cc = cc;
+  await _smtp.send(msg as never);
 }
 
 function shell(title: string, body: string) {
@@ -134,16 +139,25 @@ Deno.serve(async (req) => {
       const { ba_id, period_id } = body;
       if (!ba_id || !period_id) return json({ ok: false, error: "ba_id and period_id required" }, 400);
       const [{ data: ba }, { data: period }, { data: sub }] = await Promise.all([
-        db.from("profiles").select("full_name,email").eq("id", ba_id).single(),
+        db.from("profiles").select("full_name,email,region").eq("id", ba_id).single(),
         db.from("pay_periods").select("*").eq("id", period_id).single(),
         db.from("submissions").select("*").eq("ba_id", ba_id).eq("period_id", period_id).maybeSingle(),
       ]);
       const to = testTo || ADMIN_EMAIL;
       if (!to) return json({ ok: false, error: "ADMIN_EMAIL not set" }, 200);
+      // CC the submitting BA's REGIONAL admins (e.g. Maddy for NY) — active admin
+      // profiles whose region matches; never the automation login or the To recipient
+      let cc: string[] = [];
+      if (ba?.region) {
+        const { data: regAdmins } = await db.from("profiles").select("email")
+          .eq("role", "admin").eq("region", ba.region).eq("active", true);
+        cc = (regAdmins || []).map((a: { email: string }) => a.email)
+          .filter((e: string) => e && e !== to && e !== ba?.email && !/^automation@/i.test(e));
+      }
       const { subject, html, text } = submittedEmail(ba, period, sub);
-      if (dry) return json({ ok: true, would_notify: to, subject });
-      await sendMail(to, subject, html, text);
-      return json({ ok: true, notified: to });
+      if (dry) return json({ ok: true, would_notify: to, cc, subject });
+      await sendMail(to, subject, html, text, cc);
+      return json({ ok: true, notified: to, cc });
     }
 
     return json({ ok: false, error: "unknown job" }, 400);
