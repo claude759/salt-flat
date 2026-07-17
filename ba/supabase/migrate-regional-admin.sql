@@ -36,11 +36,14 @@ create policy profiles_update on public.profiles for update to authenticated
   using      ( id = auth.uid() or public.is_universal_admin() or (public.is_admin() and region = public.admin_region()) )
   with check ( id = auth.uid() or public.is_universal_admin() or (public.is_admin() and region = public.admin_region()) );
 
--- ── dispensaries: universal all; everyone else (incl. regional admin) by state ──
+-- ── dispensaries: universal all; everyone else (incl. regional admin) by state.
+--    state-NULL shared rows are the GLOBAL '* …' buckets (General BA activity, Brand
+--    event, New retailer…) — every signed-in user must see them or the client-side
+--    attribution rules silently no-op for BAs (2026-07-17 fix). ──
 drop policy if exists dispensaries_select on public.dispensaries;
 create policy dispensaries_select on public.dispensaries for select to authenticated
   using ( public.is_universal_admin()
-       or (private = false and state = public.my_region())
+       or (private = false and (state = public.my_region() or state is null))
        or (created_by = auth.uid()) );
 drop policy if exists dispensaries_insert on public.dispensaries;
 create policy dispensaries_insert on public.dispensaries for insert to authenticated
