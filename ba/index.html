@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.57';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.58';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -2378,6 +2378,8 @@ function tripSheet(presetDate, editTrip, opts){
       <label class="fl">Miles</label><input id="tMiles" type="number" inputmode="decimal" step="0.1" placeholder="calculated, or enter manually" value="${p.miles??''}">
       <label class="fl">Category <span class="muted">(pick all that apply)</span></label>
       <button type="button" class="selpick" id="tKind" value="${esc(p.kind||'')}">${p.kind?esc(p.kind):'<span class="pkph">— what kind of activity —</span>'}</button>
+      <label class="fl">Location <span class="muted">(cost attributed to)</span></label>
+      <button type="button" class="selpick" id="tLink"></button>
       <label class="fl">Note (optional)</label><input id="tNote" placeholder="e.g. dropped samples, met buyer, BJ's lunch" value="${esc(p.note||'')}">
       <div id="tCost" class="small muted" style="margin-top:10px"></div>
       ${lock?'':`<button class="btn primary block" id="tSave" style="margin-top:12px">${p.saved?(editMode?'Save changes':'Update leg '+(i+1)):'Save leg '+(i+1)}</button>`}
@@ -2437,6 +2439,39 @@ function tripSheet(presetDate, editTrip, opts){
     const showCost=()=>{ const c=$('#tCost'); if(c) c.innerHTML = (p.miles!=null&&p.miles>0) ? `Reimbursement: <b style="color:var(--accent2)">${money(p.miles*rate)}</b> &nbsp;<span class="muted">(${p.miles} mi × ${money(rate)})</span>` : '';
       if(Number(p.miles)>0){ const m=$('#tMiles'); if(m) clearNeed(m); } };   // auto-filled miles (odometer/Calculate/route) clear the red too
     showCost();
+    // Location row = where this leg's cost lands (store or bucket). It mirrors the
+    // save-time auto-link chain LIVE — destination store → return-home start store →
+    // General-BA bucket — so the attribution is visible BEFORE saving; tapping the row
+    // overrides it (picking nothing returns it to auto).
+    const calcLink=()=>{
+      if(p.linkDispId!==undefined) return p.linkDispId;
+      const destTxt=($('#tDest')?.value||p.destLabel||'').trim();
+      const startTxt=($('#tStartLoc')?.value||p.startLabel||'').trim();
+      let d=p.destDispId||matchDispByText(destTxt)||null;
+      if(!d && isHomeAddr(destTxt, homeAddr)){
+        const exact=(state.dispensaries||[]).find(x=>x.active!==false && x.name===startTxt);
+        d=(exact&&exact.id)||matchDispByText(startTxt)||null;
+      }
+      if(!d && isNonstoreKind($('#tKind')?.value||p.kind)){
+        const gen=(state.dispensaries||[]).find(x=>x.active!==false && /^\*\s*general ba activity/i.test(x.name||''));
+        if(gen) d=gen.id;
+      }
+      return d;
+    };
+    const linkLabel=()=>{ const b=$('#tLink'); if(!b) return; const d=calcLink();
+      b.innerHTML = d ? esc(dispName(d))+(p.linkDispId!==undefined?'':' <span class="muted small">· auto</span>')
+                      : '<span class="pkph">— not linked yet —</span>'; };
+    { const b=$('#tLink'); if(b){ linkLabel();
+      b.onclick=()=>{ const lopts=(state.dispensaries||[]).filter(d=>d.active!==false).sort(dispSort)
+          .map(d=>({id:d.id, name:d.name, search:dispSearchText(d)}));
+        const cur=calcLink();
+        cellPickerSheet({ title:'Attribute this leg to…', options:lopts, selected:cur?[cur]:[],
+          onSave:ids=>{ p.linkDispId = ids.length ? ids[0] : undefined; linkLabel(); } }); };
+      ['#tDest','#tStartLoc'].forEach(sl=>{ const el=$(sl); if(el){
+        el.addEventListener('input',()=>setTimeout(linkLabel,0));
+        el.addEventListener('blur',()=>setTimeout(linkLabel,0)); }});
+      { const k=$('#tKind'); if(k) k.addEventListener('change',()=>linkLabel()); }
+    } }
     // admin: approved leg → back to submitted (also un-stamps the period submission)
     { const u=$('#tUndo'); if(u) u.onclick=async()=>{
         const cper=ctx.per||state.period;
@@ -2563,21 +2598,25 @@ function tripSheet(presetDate, editTrip, opts){
       if(!(p.miles>0)) return toast('Need the miles for this leg','err');
       const btn=$('#tSave'); busy(btn,true);
       const startLoc = p.startCoords ? '📍 Current location' : (p.startLabel||null);
-      let dId = p.destDispId||matchDispByText(p.destLabel)||null;
-      // driving home: attribute the leg to the store they LEFT, so the mileage cost
-      // lands on the location they were visiting (resolveTripPlaces rule). Exact name
-      // first — matchDispByText skips '* ' placeholders, but an office/bucket start
-      // ('* Office (NY)') is a legit place to be driving home from.
-      if(!dId && isHomeAddr(p.destLabel, homeAddr)){
-        const exact=(state.dispensaries||[]).find(d=>d.active!==false && d.name===(p.startLabel||'').trim());
-        dId = (exact&&exact.id) || matchDispByText(p.startLabel||'') || null;
-      }
-      // still nothing and the category is purely non-store (errands, transit, leads):
-      // file it under the General BA activity bucket — same place the matching hours
-      // land — so the report's 'Not linked' section only ever shows real misses
-      if(!dId && isNonstoreKind(p.kind)){
-        const gen=(state.dispensaries||[]).find(d=>d.active!==false && /^\*\s*general ba activity/i.test(d.name||''));
-        if(gen) dId=gen.id;
+      let dId;
+      if(p.linkDispId!==undefined){ dId=p.linkDispId; }   // Location row override — the picker's word is final
+      else{
+        dId = p.destDispId||matchDispByText(p.destLabel)||null;
+        // driving home: attribute the leg to the store they LEFT, so the mileage cost
+        // lands on the location they were visiting (resolveTripPlaces rule). Exact name
+        // first — matchDispByText skips '* ' placeholders, but an office/bucket start
+        // ('* Office (NY)') is a legit place to be driving home from.
+        if(!dId && isHomeAddr(p.destLabel, homeAddr)){
+          const exact=(state.dispensaries||[]).find(d=>d.active!==false && d.name===(p.startLabel||'').trim());
+          dId = (exact&&exact.id) || matchDispByText(p.startLabel||'') || null;
+        }
+        // still nothing and the category is purely non-store (errands, transit, leads):
+        // file it under the General BA activity bucket — same place the matching hours
+        // land — so the report's 'Not linked' section only ever shows real misses
+        if(!dId && isNonstoreKind(p.kind)){
+          const gen=(state.dispensaries||[]).find(d=>d.active!==false && /^\*\s*general ba activity/i.test(d.name||''));
+          if(gen) dId=gen.id;
+        }
       }
       const row={ ba_id:forBA, trip_date:$('#tDate').value, dispensary_id:dId,
         kind: p.kind || ((dId && /office/i.test(dispName(dId)))?OFFICE_KIND:null),
