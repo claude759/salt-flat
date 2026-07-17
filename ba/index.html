@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.56';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.57';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -3557,6 +3557,7 @@ async function adminBaDetail(baId){
     ${(!allPer && (H||[]).some(x=>!x.dispensary_id))?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
     <div class="row wrap" style="margin-top:16px">
       ${(!allPer && S.status!=='approved' && [...(T||[]),...(E||[]),...(H||[])].some(x=>x.status==='submitted'||x.status==='draft'))?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
+      ${(!allPer && S.status==='approved')?`<button class="btn grow" id="unapproveBtn">↩ Unapprove</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
       <button class="btn grow" id="pdfBtn">🖨 Print / PDF</button>
     </div>
@@ -3579,6 +3580,7 @@ async function adminBaDetail(baId){
     adminEditItem('exp', x.id, d=>dgApplyEdit('exp',d), x);
   });
   $('#approveBtn')&&($('#approveBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); approveSubmission(baId,per.id,c.T,c.E,c.H,S.status); });
+  $('#unapproveBtn')&&($('#unapproveBtn').onclick=()=>unapprovePeriod(baId,per.id));
   $('#autolinkBtn')&&($('#autolinkBtn').onclick=async()=>{ await flushGrid($('#admGrid')); autoLinkHours(baId,per.id,gridCtx().H||[]); });
   // to-do rows (delegated so they survive live re-renders) open the field-fix popup editor
   const at=$('#admTodo'); if(at) at.onclick=e=>{ const row=e.target.closest('.todo-fix');
@@ -3636,6 +3638,24 @@ async function rejectItem(kind,id,baId){
   const note=prompt('Reason for rejection (the BA will see this):'); if(note===null) return;
   await supabase.from(kind).update({status:'rejected',reject_note:note}).eq('id',id);
   toast('Item rejected'); adminBaDetail(baId);
+}
+// Whole-period unapprove — the true inverse of “Approve all”: every approved item
+// (trips, expenses, hours) returns to 'submitted' and the submission is un-stamped,
+// so the BA is back in the review queue and “Approve all” reappears.
+async function unapprovePeriod(baId, periodId){
+  const per=(state.periods||[]).find(p=>p.id===periodId);
+  if(per && per.status==='closed' && !confirm('This pay period is CLOSED — it may already be paid out. Unapprove anyway?')) return;
+  if(!confirm('Undo this approval? Every approved item this period goes back to “submitted” for re-review (nothing is deleted).')) return;
+  for(const t of ['trips','expenses','hours']){
+    const {error}=await supabase.from(t).update({status:'submitted'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
+    if(error) return toast('Unapprove failed: '+error.message,'err');
+  }
+  const {error:e2}=await supabase.from('submissions').update({status:'submitted', approved_by:null, approved_at:null})
+    .eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
+  if(e2) return toast('Items are back to submitted, but the period is still stamped approved — reopen and retry.','err');
+  toast('Approval undone — period is back in review','ok');
+  try{ drawAdmin(); }catch(_){}
+  adminBaDetail(baId);
 }
 // Undo an approval: the item drops back to 'submitted' for re-review. If the whole
 // submission had already been stamped approved, it reverts too — so the BA's card
