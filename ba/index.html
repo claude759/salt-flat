@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.59';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.60';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4030,9 +4030,22 @@ function gustoBaHours(text){
     const yy=m[3].length===2?('20'+m[3]):m[3];
     const date=`${yy}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
     let h=0; if(isBA(r[j1t])) h+=Number(r[j1h]||0); if(j2t>=0&&isBA(r[j2t])) h+=Number(r[j2h]||0);
-    if(h>0) out.push({date, hours:Math.round(h*1000)/1000});
+    if(h>0) out.push({date, hours:Math.round(h*1000)/1000, note:gustoShiftNote(r,head)});
   }
   return {rows:out, total:Math.round(out.reduce((a,x)=>a+x.hours,0)*1000)/1000};
+}
+// free-text shift note off a Gusto daily row (mirrors gusto-sync/parse.mjs shiftNote):
+// a 'Notes' column if present, else the last prose cell; strips a trailing " - Name Name".
+function gustoShiftNote(r, head){
+  const nc = head.indexOf('notes')>=0 ? head.indexOf('notes') : head.indexOf('note');
+  let note = nc>=0 ? (r[nc]||'').trim() : '';
+  if(!note){ for(let k=r.length-1;k>9;k--){ const c=(r[k]||'').trim();
+    if(!c || /^-?\d[\d.]*$/.test(c)) continue;
+    if(/^(un)?approved$/i.test(c)) continue;
+    if(/\b(am|pm|now)\b/i.test(c)) continue;
+    if(/brand ambassador|brand rep|^sales$/i.test(c)) continue;
+    note=c; break; } }
+  return note.replace(/\s*[-–]\s*[A-Z][\w'’.-]+(?:\s+[A-Z][\w'’.-]+){1,2}\s*$/,'').trim();
 }
 function importHoursSheet(bas){
   const list=(bas||[]).filter(b=>b.role==='ba');
@@ -4041,8 +4054,8 @@ function importHoursSheet(bas){
     <div class="small muted">Upload a Gusto “time tracking hours” CSV. Only Brand Ambassador hours are imported (Sales etc. ignored), matched to each work date.</div>
     <label class="fl">Brand ambassador</label>
     <select id="ihBa">${list.map(b=>`<option value="${b.id}" data-rate="${b.hourly_rate??''}">${esc(b.full_name||b.email)}${b.hourly_rate!=null?` · $${Number(b.hourly_rate).toFixed(2)}/hr`:' · ⚠ no rate set'}</option>`).join('')}</select>
-    <label class="fl">Category <span class="muted">(applied to these hours; tweak per day after import)</span></label>
-    <select id="ihKind">${laborKindNames().map(k=>`<option>${esc(k)}</option>`).join('')}</select>
+    <label class="fl">Category <span class="muted">(no-trip days only; days with miles use their route's categories)</span></label>
+    <select id="ihKind">${laborKindNames().map(k=>`<option ${k==='General BA Activity/Admin'?'selected':''}>${esc(k)}</option>`).join('')}</select>
     <label class="btn primary block" style="margin-top:12px">📄 Choose Gusto CSV<input id="ihFile" type="file" accept=".csv,text/csv" hidden></label>
     <div id="ihMsg" class="small" style="margin-top:10px"></div>
     <button class="btn primary block hide" id="ihImport" style="margin-top:10px">Import</button>
@@ -4069,7 +4082,7 @@ function importHoursSheet(bas){
     try{
       // upsert on (ba_id, work_date, source): atomic, idempotent re-import (no destructive delete)
       const { error }=await supabase.from('hours').upsert(
-        parsed.map(p=>({ba_id:baId, work_date:p.date, hours:p.hours, job:'Brand Ambassador', kind:$('#ihKind')?.value||'Store visit', source:'gusto', status:'approved', note:'Gusto import'})),
+        parsed.map(p=>({ba_id:baId, work_date:p.date, hours:p.hours, job:'Brand Ambassador', kind:$('#ihKind')?.value||'General BA Activity/Admin', source:'gusto', status:'approved', note:p.note||'Gusto import'})),
         { onConflict:'ba_id,work_date,source' });
       if(error) throw error;
       busy(btn,false); closeSheet(); toast(`Imported ${parsed.length} day(s) of hours`,'ok'); drawAdmin();
