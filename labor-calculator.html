@@ -177,8 +177,8 @@
   .cmp-table td{padding:5px 8px;border-bottom:1px solid var(--line)}
   .cmp-table th.num,.cmp-table td.num{text-align:right}
   .cmp-table tr.overlap td{background:rgba(239,166,77,.07)}
-  .cmp-table .pbtn,.cmp-pair .pbtn{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);font:inherit;font-size:11.5px;padding:3px 9px;cursor:pointer}
-  .cmp-pair .pbtn:hover{border-color:var(--accent);color:var(--text)}
+  .cmp-table .pbtn,.cmp-pair .pbtn,.cmp-head .pbtn{background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);font:inherit;font-size:11.5px;padding:3px 9px;cursor:pointer}
+  .cmp-pair .pbtn:hover,.cmp-head .pbtn:hover{border-color:var(--accent);color:var(--text)}
   .cmp-table button.rowdel{background:none;border:0;color:var(--muted);cursor:pointer;font-size:13px;padding:2px 5px}
   .cmp-table button.rowdel:hover{color:rgb(239,77,86)}
   .cbadge{display:inline-block;border-radius:6px;padding:1px 7px;font-size:11px;font-weight:600}
@@ -1039,6 +1039,104 @@ function shiftIval(s){
   if (a == null || b == null || a === b) return null;   // in==out means no usable span, not 24h
   return [a, b < a ? b + 1440 : b];   // overnight-aware
 }
+/* ---- shareable per-person timesheet image (Copy image button) ----
+   Drawn by hand on a white canvas — a clean card to paste straight into a
+   chat with the worker, without the page's buttons/flags UI. */
+let CMP_CARDS = {};   // emp key -> payload for the copy button
+function drawTimesheetCard(p){
+  const W = 840, pad = 28, rowH = 34;
+  const headerH = 92, thH = 34, footH = p.overlapCount ? 92 : 66;
+  const H = headerH + thH + p.rows.length * rowH + footH;
+  const S = 2, c = document.createElement('canvas');
+  c.width = W * S; c.height = H * S;
+  const x = c.getContext('2d'); x.scale(S, S);
+  const FONT = '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+  const rrect = (x0, y0, w, h, r) => {
+    x.beginPath();
+    if (x.roundRect) x.roundRect(x0, y0, w, h, r); else x.rect(x0, y0, w, h);
+    x.fill();
+  };
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, W, H);
+  x.fillStyle = '#111827'; x.font = '700 24px ' + FONT;
+  x.fillText(p.name, pad, 44);
+  x.fillStyle = '#6b7280'; x.font = '13px ' + FONT;
+  x.fillText('Wizard Trees — hours worked · ' + p.rangeLabel, pad, 68);
+  const catOf = s => (s.category || 'distro') === 'harvest' ? 'harvest' : 'distro';
+  const cols = [
+    { label: 'DATE',        w: 82,  get: r => fDayMDY(r.work_date) },
+    { label: 'TYPE',        w: 78,  get: () => '' },
+    { label: 'COMPANY',     w: 96,  get: r => r.company || '' },
+    { label: 'TEAM / TASK', w: 158, get: r => (r.team || '').slice(0, 22) },
+    { label: 'IN',          w: 82,  get: r => fClock(r.clock_in) },
+    { label: 'OUT',         w: 82,  get: r => fClock(r.clock_out) },
+    { label: 'HOURS', num: true, w: 66, get: r => tsNum(catOf(r) === 'harvest' ? (r.hours || 0) * (r.people || 1) : r.hours) },
+    { label: 'RATE',  num: true, w: 66, get: r => tsMoney(r.rate) },
+    { label: 'TOTAL', num: true, w: 74, get: r => tsMoney(r.total) },
+  ];
+  let y = headerH;
+  x.fillStyle = '#f3f4f6'; x.fillRect(pad - 8, y, W - 2 * pad + 16, thH);
+  x.fillStyle = '#4b5563'; x.font = '700 10.5px ' + FONT;
+  let cx = pad;
+  for (const col of cols){
+    x.textAlign = col.num ? 'right' : 'left';
+    x.fillText(col.label, col.num ? cx + col.w - 8 : cx, y + 22);
+    cx += col.w;
+  }
+  y += thH;
+  for (let i = 0; i < p.rows.length; i++){
+    const r = p.rows[i];
+    const flagged = p.overlapIds.has(r.id);
+    x.fillStyle = flagged ? '#fff7ed' : (i % 2 ? '#fafafa' : '#ffffff');
+    x.fillRect(pad - 8, y, W - 2 * pad + 16, rowH);
+    cx = pad;
+    for (const col of cols){
+      if (col.label === 'TYPE'){
+        const harv = catOf(r) === 'harvest';
+        x.fillStyle = harv ? '#ecfdf5' : '#eef2ff';
+        rrect(cx, y + 8, 60, 18, 9);
+        x.fillStyle = harv ? '#059669' : '#4f46e5';
+        x.font = '700 10px ' + FONT; x.textAlign = 'center';
+        x.fillText(harv ? 'HARVEST' : 'DISTRO', cx + 30, y + 21);
+      } else {
+        x.fillStyle = '#1f2937'; x.font = '12.5px ' + FONT;
+        x.textAlign = col.num ? 'right' : 'left';
+        x.fillText(String(col.get(r) ?? ''), col.num ? cx + col.w - 8 : cx, y + 22);
+      }
+      cx += col.w;
+    }
+    if (flagged){ x.fillStyle = '#d97706'; x.font = '12px ' + FONT; x.textAlign = 'left'; x.fillText('⚠', pad - 24, y + 22); }
+    y += rowH;
+  }
+  x.strokeStyle = '#e5e7eb'; x.beginPath(); x.moveTo(pad - 8, y + 6); x.lineTo(W - pad + 8, y + 6); x.stroke();
+  x.fillStyle = '#111827'; x.font = '700 14px ' + FONT; x.textAlign = 'left';
+  x.fillText('Distro ' + tsNum(p.dH) + ' h  ·  Harvest ' + tsNum(p.hH) + ' h  ·  Combined ' + tsNum(p.dH + p.hH) + ' h', pad, y + 34);
+  x.textAlign = 'right';
+  x.fillText('Gross ' + tsMoney(p.gross), W - pad, y + 34);
+  if (p.overlapCount){
+    x.fillStyle = '#d97706'; x.font = '12px ' + FONT; x.textAlign = 'left';
+    x.fillText('⚠ ' + p.overlapCount + ' flagged row' + (p.overlapCount > 1 ? 's' : '') + ' overlap other entries and are being double-checked.', pad, y + 58);
+  }
+  return c;
+}
+async function copyEmpTimesheet(k){
+  const p = CMP_CARDS[k]; if (!p) return;
+  const canvas = drawTimesheetCard(p);
+  const blobP = new Promise(res => canvas.toBlob(res, 'image/png'));
+  try{
+    if (!navigator.clipboard || !window.ClipboardItem) throw new Error('no clipboard');
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobP })]);
+    toast('Copied ' + p.name + '’s timesheet as an image — paste it into a chat.');
+  }catch(_){
+    const blob = await blobP; if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = p.name.replace(/\s+/g, '_') + '_timesheet.png';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('Clipboard not available here — downloaded ' + p.name + '’s timesheet image instead.');
+  }
+}
+
 function renderCompare(){
   const box = document.getElementById('ts-compare');
   const [c0, c1] = compareRange();
@@ -1076,10 +1174,13 @@ function renderCompare(){
     ((pairsOf.has(b) ? 1 : 0) - (pairsOf.has(a) ? 1 : 0)) || a.localeCompare(b));
   const catOf = s => (s.category || 'distro') === 'harvest' ? 'harvest' : 'distro';
   const badge = s => '<span class="cbadge ' + catOf(s) + '">' + (catOf(s) === 'harvest' ? 'Harvest' : 'Distro') + '</span>';
+  const CMP_PRESETS = [['period','This pay period'],['lastperiod','Last pay period'],['30d','Last 30 days'],['all','All']];
   const presetSeg = '<div class="seg" id="cmp-preset" style="margin-bottom:12px">'
-    + [['period','This pay period'],['lastperiod','Last pay period'],['30d','Last 30 days'],['all','All']]
-      .map(([k, l]) => '<button data-k="' + k + '" class="' + (tsState.comparePreset === k ? 'on' : '') + '">' + l + '</button>').join('')
+    + CMP_PRESETS.map(([k, l]) => '<button data-k="' + k + '" class="' + (tsState.comparePreset === k ? 'on' : '') + '">' + l + '</button>').join('')
     + '</div>';
+  const rangeLabel = (CMP_PRESETS.find(([k]) => k === tsState.comparePreset) || [,'All'])[1]
+    + (c0 ? ' · ' + fDayMDY(c0) + ' – ' + fDayMDY(c1) : ' recorded dates');
+  CMP_CARDS = {};
   let html = '<div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px">'
     + '<h3 style="margin:0 0 4px;font-size:15px">Compare distro vs harvest / deleaf hours</h3>'
     + '<div class="faint" style="font-size:12.5px;margin-bottom:10px">Every named row from both pages, lined up per person. '
@@ -1095,9 +1196,13 @@ function renderCompare(){
     const hH = list.filter(s => catOf(s) === 'harvest').reduce((a, s) => a + (s.hours || 0) * (s.people || 1), 0);
     const gross = list.reduce((a, s) => a + (s.total || 0), 0);
     const pairs = pairsOf.get(k) || [];
+    const empOverlaps = new Set(list.filter(s => overlapIds.has(s.id)).map(s => s.id));
+    CMP_CARDS[k] = { name: displayOf.get(k), rows: list, dH, hH, gross, rangeLabel,
+      overlapIds: empOverlaps, overlapCount: empOverlaps.size };
     html += '<div class="cmp-emp' + (pairs.length ? ' warn' : '') + '">'
       + '<div class="cmp-head"><b>' + esc(displayOf.get(k)) + '</b>'
       + (pairs.length ? ' <span class="cmp-flag">⚠️ ' + pairs.length + ' overlap' + (pairs.length > 1 ? 's' : '') + '</span>' : '')
+      + ' <button class="pbtn cmp-copy" data-k="' + esc(k) + '" title="Copy this person’s timesheet as an image — paste it straight into a chat">📋 Copy image</button>'
       + '<span class="cmp-tot">Distro ' + tsNum(dH) + 'h · Harvest ' + tsNum(hH) + 'h · Combined ' + tsNum(dH + hH) + 'h · ' + tsMoney(gross) + '</span></div>';
     for (const [a, b] of pairs){
       const span = s => fClock(s.clock_in) + '–' + fClock(s.clock_out);
@@ -1127,6 +1232,7 @@ function renderCompare(){
   box.querySelectorAll('#cmp-preset button').forEach(bn => bn.onclick = () => {
     tsState.comparePreset = bn.dataset.k; renderCompare();
   });
+  box.querySelectorAll('button.cmp-copy').forEach(bn => bn.onclick = () => copyEmpTimesheet(bn.dataset.k));
   box.querySelectorAll('button.cmp-unkeep').forEach(bn => bn.onclick = async () => {
     const tr = bn.closest('tr[data-id]');
     const s = shifts.find(x => x.id === tr.dataset.id); if (!s) return;
