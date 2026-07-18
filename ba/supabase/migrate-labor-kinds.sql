@@ -25,7 +25,12 @@ create policy labor_kinds_write on public.labor_kinds for all to authenticated
   using (public.is_admin()) with check (public.is_admin());
 
 -- what kind of labor each hours entry is (denormalized name; the table feeds the dropdown)
-alter table public.hours add column if not exists kind text not null default 'Store visit';
+alter table public.hours add column if not exists kind text not null default 'General BA Activity/Admin';
+-- default changed 2026-07-18 (was 'Store visit'): rows created without an explicit kind
+-- (the salary split, any future path) are admin/general time — a day WITH trips shows its
+-- real per-leg category mix from hours.alloc regardless, so the default is only the
+-- no-miles fallback and 'Store visit' falsely claimed store activity on no-trip days.
+alter table public.hours alter column kind set default 'General BA Activity/Admin';
 
 -- how this BA's name appears in Gusto exports (fallback: full_name match)
 alter table public.profiles add column if not exists gusto_name text;
