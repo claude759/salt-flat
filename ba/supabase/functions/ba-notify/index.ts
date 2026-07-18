@@ -127,7 +127,9 @@ Deno.serve(async (req) => {
       for (const b of targets) {
         const { subject, html, text } = reminderEmail(b.full_name, period);
         const to = testTo || b.email;
-        try { await sendMail(to, subject, html, text); sent.push({ to, ok: true }); }
+        // CC the admin on every reminder (per Gianni 2026-07-18) — skipped on diverted test sends
+        const cc = (!testTo && ADMIN_EMAIL && ADMIN_EMAIL !== to) ? [ADMIN_EMAIL] : undefined;
+        try { await sendMail(to, subject, html, text, cc); sent.push({ to, ok: true }); }
         catch (e) { sent.push({ to, ok: false, error: String((e as Error)?.message || e) }); }
       }
       // stamp so it never re-sends (skip stamping for test/diverted runs)
