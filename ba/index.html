@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.61';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.62';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -935,9 +935,21 @@ function actingAsBA(){ return !!state.preview || state.profile?.role!=='admin'; 
 // Active field staff only: inactive profiles (e.g. ar-reports-only logins that the
 // handle_new_user trigger auto-minted as role 'ba') stay out of Review/Dashboard lists.
 function isFieldWorker(b){ return !!b && b.active!==false && (b.role==='ba' || (b.role==='admin' && !!b.region)); }
-function periodPhase(p){ if(!p) return 'none'; const t=todayISO(); if(p.start_date>t) return 'future'; if(p.end_date<t) return 'past'; return 'current'; }
-// In the BA surface only the current, open period is editable; upcoming/past are view-only
-// (admins manage those from the admin tools). A real admin outside preview always passes.
+// A just-ended period stays editable through a GRACE window — until the following
+// MONDAY 12:00 noon (device-local) — so BAs can still finish + submit after the
+// period closes Friday and the reminder email lands Saturday (per Gianni 2026-07-18).
+function periodGraceEnd(p){
+  if(!p || !p.end_date || !/^\d{4}-/.test(p.end_date)) return null;
+  const d=new Date(p.end_date+'T12:00:00');
+  do{ d.setDate(d.getDate()+1); }while(d.getDay()!==1);   // advance to the next Monday
+  return d;                                               // Monday 12:00 local
+}
+function periodPhase(p){ if(!p) return 'none'; const t=todayISO();
+  if(p.start_date>t) return 'future';
+  if(p.end_date<t){ const g=periodGraceEnd(p); return (g && new Date()<g) ? 'current' : 'past'; }
+  return 'current'; }
+// In the BA surface only the current(+grace), open period is editable; upcoming/past are
+// view-only (admins manage those from the admin tools). A real admin outside preview always passes.
 function canEditPeriod(p){ if(!actingAsBA()) return true; return periodPhase(p)==='current' && p?.status!=='closed'; }
 
 const ALL_PERIODS={ id:'all', label:'All pay periods', start_date:'all', end_date:'', status:'open' };
@@ -948,7 +960,7 @@ function periodPicker(onChange, opts={}){
   if(!list.length) list = state.periods;                                  // never render an empty picker
   const html = `<option value="all" ${isAllPeriods(state.period)?'selected':''}>All pay periods</option>` + list.map(p=>{
     const tag = p.status==='closed' ? ' (closed)'
-      : periodPhase(p)==='current' ? ' (current)'
+      : periodPhase(p)==='current' ? (p.end_date<todayISO() ? ' (submit by Mon 12pm)' : ' (current)')
       : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : '');
     return `<option value="${p.id}" ${state.period?.id===p.id?'selected':''}>${esc(p.label)}${tag}</option>`;
   }).join('');
