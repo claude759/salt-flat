@@ -166,6 +166,14 @@
   #rosterTable tr.inactive td input:not([type=checkbox]),#rosterTable tr.inactive td select{opacity:.45}
   #rosterTable button.rowdel{background:none;border:0;color:var(--muted);cursor:pointer;font-size:14px;padding:4px 6px}
   #rosterTable button.rowdel:hover{color:rgb(239,77,86)}
+  .cmp-filters{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin-bottom:12px}
+  .cmp-cos{display:flex;align-items:center;gap:8px}
+  .cmp-coslabel{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  #cmp-cos button::before{content:"✓ ";opacity:.9}
+  #cmp-cos button:not(.on){text-decoration:line-through;opacity:.7}
+  #cmp-cos button:not(.on)::before{content:"";opacity:0}
+  .cmp-copyall{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--muted);font:inherit;font-size:12px;padding:6px 12px;cursor:pointer;white-space:nowrap}
+  .cmp-copyall:hover{border-color:var(--accent);color:var(--text)}
   .cmp-emp{border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px}
   .cmp-emp.warn{border-color:rgba(239,166,77,.5)}
   .cmp-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;font-size:13.5px}
@@ -815,6 +823,7 @@ const tsState = {
   view: 'log',          // 'log' | 'norma' | 'justin' | 'simplified'
   filter: { company:'', employee:'', from:'', to:'', preset:'period' },
   comparePreset: 'period',   // the Compare page's own date window
+  compareCos: new Set(),     // companies EXCLUDED from the Compare page (empty = show all)
   review: null,         // {company, sheet_date, rows:[...], dataUrl, path}
 };
 try{ const v = JSON.parse(localStorage.getItem('lc.tsview')||'{}');
@@ -1052,10 +1061,17 @@ function shiftIval(s){
    Drawn by hand on a white canvas — a clean card to paste straight into a
    chat with the worker, without the page's buttons/flags UI. */
 let CMP_CARDS = {};   // emp key -> payload for the copy button
+let CMP_ORDER = [];   // visible emp keys, in display order (for "copy whole page")
+let CMP_RANGE = '';   // the date-window label shown on the composed image
+// logical (1x) height of a person's card — used to size the composite without
+// rendering every card first
+function cardHeight(p){
+  return 92 /*header*/ + 34 /*th*/ + p.rows.length * 34 + (p.overlapCount ? 92 : 66) /*foot*/;
+}
 function drawTimesheetCard(p){
   const W = 840, pad = 28, rowH = 34;
-  const headerH = 92, thH = 34, footH = p.overlapCount ? 92 : 66;
-  const H = headerH + thH + p.rows.length * rowH + footH;
+  const headerH = 92, thH = 34;
+  const H = cardHeight(p);
   const S = 2, c = document.createElement('canvas');
   c.width = W * S; c.height = H * S;
   const x = c.getContext('2d'); x.scale(S, S);
@@ -1127,33 +1143,104 @@ function drawTimesheetCard(p){
   }
   return c;
 }
-async function copyEmpTimesheet(k){
-  const p = CMP_CARDS[k]; if (!p) return;
-  const canvas = drawTimesheetCard(p);
+// copy a canvas to the clipboard as PNG, or download it if the clipboard image
+// API isn't available (older browsers / non-secure context)
+async function copyCanvas(canvas, filename, okMsg){
   const blobP = new Promise(res => canvas.toBlob(res, 'image/png'));
+  const hasClipboardImg = navigator.clipboard && window.ClipboardItem;
+  let clipboardTried = false;
   try{
-    if (!navigator.clipboard || !window.ClipboardItem) throw new Error('no clipboard');
+    if (!hasClipboardImg) throw new Error('no clipboard');
+    clipboardTried = true;
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobP })]);
-    toast('Copied ' + p.name + '’s timesheet as an image — paste it into a chat.');
-  }catch(_){
-    const blob = await blobP; if (!blob) return;
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = p.name.replace(/\s+/g, '_') + '_timesheet.png';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    toast('Clipboard not available here — downloaded ' + p.name + '’s timesheet image instead.');
+    toast(okMsg); return;
+  }catch(_){ /* fall through to a download */ }
+  const blob = await blobP;
+  if (!blob){ toast('That image was too large for this browser to render — try a shorter date window or fewer companies.', true); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  // honest about which happened: a real copy failure vs. no clipboard-image support
+  toast((clipboardTried ? 'Couldn’t copy to the clipboard — downloaded ' : 'Clipboard images aren’t supported here — downloaded ') + filename + ' instead.');
+}
+function copyEmpTimesheet(k){
+  const p = CMP_CARDS[k]; if (!p) return;
+  return copyCanvas(drawTimesheetCard(p), p.name.replace(/\s+/g, '_') + '_timesheet.png',
+    'Copied ' + p.name + '’s timesheet as an image — paste it into a chat.');
+}
+// stack every visible person's card onto one tall image (respects the current
+// company filter + date window, since CMP_ORDER/CMP_CARDS are built from them)
+function copyAllTimesheets(){
+  const keys = CMP_ORDER.filter(k => CMP_CARDS[k]);
+  if (!keys.length){ toast('Nothing to copy in this view.', true); return; }
+  const payloads = keys.map(k => CMP_CARDS[k]);
+  const W = 840, gap = 16, titleH = 70, botPad = 10;
+  // size the page from the card-height formula (no need to render first)
+  const pageH = titleH + payloads.reduce((a, p) => a + cardHeight(p) + gap, 0) + botPad;
+  // cap the composite's pixel area so a tall page still renders on Safari
+  // (~16.7M px canvas-area limit) — drop the export scale before it overflows
+  const S = Math.min(2, Math.sqrt(16000000 / (W * pageH)));
+  const big = document.createElement('canvas');
+  big.width = Math.round(W * S); big.height = Math.round(pageH * S);
+  const x = big.getContext('2d'); x.scale(S, S);
+  const FONT = '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+  x.fillStyle = '#eef0f4'; x.fillRect(0, 0, W, pageH);
+  x.fillStyle = '#111827'; x.font = '700 21px ' + FONT; x.textAlign = 'left';
+  x.fillText('Timesheets — hours worked', 16, 34);
+  x.fillStyle = '#6b7280'; x.font = '13px ' + FONT;
+  x.fillText(CMP_RANGE + ' · ' + keys.length + ' ' + (keys.length === 1 ? 'person' : 'people'), 16, 56);
+  let y = titleH;
+  for (const p of payloads){
+    // render one card at a time and let it be collected — a 100-person export
+    // never holds every full-res card canvas at once
+    const c = drawTimesheetCard(p), h = cardHeight(p);
+    x.drawImage(c, 0, 0, c.width, c.height, 0, y, W, h);
+    x.strokeStyle = '#e5e7eb'; x.lineWidth = 1; x.strokeRect(0.5, y + 0.5, W - 1, h - 1);
+    y += h + gap;
   }
+  return copyCanvas(big, 'timesheets_' + (CMP_RANGE.split('·')[0].trim().replace(/\s+/g, '_') || 'all') + '.png',
+    'Copied all ' + keys.length + ' timesheets as one image — paste it into a chat or doc.');
 }
 
 function renderCompare(){
   const box = document.getElementById('ts-compare');
   const [c0, c1] = compareRange();
-  const rows = shifts.filter(s => tsFullName(s) && (!c0 || (s.work_date >= c0 && s.work_date <= c1)));
+  const dateRows = shifts.filter(s => tsFullName(s) && (!c0 || (s.work_date >= c0 && s.work_date <= c1)));
+  // company toggle chips: exclude a company and its rows drop out (people with
+  // no rows left disappear; everyone else's totals recompute)
+  const coLabel = s => s.company || '(no company)';
+  const allCos = [...new Set(dateRows.map(coLabel))];
+  for (const c of [...tsState.compareCos]) if (!allCos.includes(c)) tsState.compareCos.delete(c);   // forget stale exclusions
+  const rows = dateRows.filter(s => !tsState.compareCos.has(coLabel(s)));
   // distro rows store "Last First", harvest rows keep the raw self-reported
   // name ("First Last") — sort the name's words so both spellings of the same
   // person land in ONE group and their hours actually get compared
   const empKey = s => tsFullName(s).toLowerCase().split(/\s+/).sort().join(' ');
+  // Overlap detection runs on the FULL date window (NOT company-filtered), so
+  // toggling a company off can't hide a genuine cross-company double-count —
+  // a visible row still glows even when its overlapping partner is filtered out.
+  const overlapIds = new Set(), pairsAll = new Map();
+  const det = new Map();   // key -> work_date -> [[shift, interval]]
+  for (const s of dateRows){
+    if (s.overlap_ok) continue;
+    const iv = shiftIval(s); if (!iv) continue;
+    const k = empKey(s);
+    if (!det.has(k)) det.set(k, new Map());
+    const bd = det.get(k);
+    if (!bd.has(s.work_date)) bd.set(s.work_date, []);
+    bd.get(s.work_date).push([s, iv]);
+  }
+  for (const [k, bd] of det){
+    const pairs = [];
+    for (const arr of bd.values())
+      for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++){
+        const [a, ia] = arr[i], [b, ib] = arr[j];
+        if (ia[0] < ib[1] && ib[0] < ia[1]){ pairs.push([a, b]); overlapIds.add(a.id); overlapIds.add(b.id); }
+      }
+    if (pairs.length) pairsAll.set(k, pairs);
+  }
+  // visible grouping = company-filtered rows (this is what gets displayed)
   const byEmp = new Map(), displayOf = new Map();
   for (const s of rows){
     const k = empKey(s);
@@ -1161,50 +1248,53 @@ function renderCompare(){
     if (s.last && s.first) displayOf.set(k, tsFullName(s));   // prefer the roster-style casing
     byEmp.get(k).push(s);
   }
-  // overlapping pairs per employee+day, across BOTH categories (dismissed rows skip)
-  const overlapIds = new Set(), pairsOf = new Map();
-  for (const [k, list] of byEmp){
-    const byDate = new Map();
-    for (const s of list){
-      if (s.overlap_ok) continue;
-      const iv = shiftIval(s); if (!iv) continue;
-      if (!byDate.has(s.work_date)) byDate.set(s.work_date, []);
-      byDate.get(s.work_date).push([s, iv]);
-    }
-    const pairs = [];
-    for (const arr of byDate.values())
-      for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++){
-        const [a, ia] = arr[i], [b, ib] = arr[j];
-        if (ia[0] < ib[1] && ib[0] < ia[1]){ pairs.push([a, b]); overlapIds.add(a.id); overlapIds.add(b.id); }
-      }
-    if (pairs.length) pairsOf.set(k, pairs);
-  }
   const emps = [...byEmp.keys()].sort((a, b) =>
-    ((pairsOf.has(b) ? 1 : 0) - (pairsOf.has(a) ? 1 : 0)) || a.localeCompare(b));
+    ((pairsAll.has(b) ? 1 : 0) - (pairsAll.has(a) ? 1 : 0)) || a.localeCompare(b));
   const catOf = s => (s.category || 'distro') === 'harvest' ? 'harvest' : 'distro';
   const badge = s => '<span class="cbadge ' + catOf(s) + '">' + (catOf(s) === 'harvest' ? 'Harvest' : 'Distro') + '</span>';
   const CMP_PRESETS = [['period','This pay period'],['lastperiod','Last pay period'],['30d','Last 30 days'],['all','All']];
-  const presetSeg = '<div class="seg" id="cmp-preset" style="margin-bottom:12px">'
+  const presetSeg = '<div class="seg" id="cmp-preset">'
     + CMP_PRESETS.map(([k, l]) => '<button data-k="' + k + '" class="' + (tsState.comparePreset === k ? 'on' : '') + '">' + l + '</button>').join('')
     + '</div>';
+  // one toggle chip per company present in this window; on = included
+  const CO_ORDER = ['Filifera','Slane','Portal','Imperial','Olympic'];
+  const cosSorted = allCos.slice().sort((a, b) =>
+    ((CO_ORDER.indexOf(a) + 1 || 99) - (CO_ORDER.indexOf(b) + 1 || 99)) || a.localeCompare(b));
+  // show the chips whenever there's more than one company OR an exclusion is
+  // active (so a filter that narrows to one company can still be undone)
+  const cosSeg = (allCos.length > 1 || tsState.compareCos.size)
+    ? '<div class="cmp-cos"><span class="cmp-coslabel">Companies</span><div class="seg" id="cmp-cos">'
+      + cosSorted.map(c => '<button data-co="' + esc(c) + '" class="' + (tsState.compareCos.has(c) ? '' : 'on') + '">' + esc(c) + '</button>').join('')
+      + '</div></div>'
+    : '';
+  // a company filter narrows every total, so the exported images say so
+  const coNote = tsState.compareCos.size
+    ? ' · ' + (cosSorted.filter(c => !tsState.compareCos.has(c)).join(', ') || 'no companies') + ' only'
+    : '';
   const rangeLabel = (CMP_PRESETS.find(([k]) => k === tsState.comparePreset) || [,'All'])[1]
-    + (c0 ? ' · ' + fDayMDY(c0) + ' – ' + fDayMDY(c1) : ' recorded dates');
-  CMP_CARDS = {};
+    + (c0 ? ' · ' + fDayMDY(c0) + ' – ' + fDayMDY(c1) : ' recorded dates') + coNote;
+  CMP_CARDS = {}; CMP_ORDER = emps.slice(); CMP_RANGE = rangeLabel;
   let html = '<div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px">'
-    + '<h3 style="margin:0 0 4px;font-size:15px">Compare distro vs harvest / deleaf hours</h3>'
+    + '<div style="display:flex;align-items:flex-start;gap:10px">'
+    + '<h3 style="margin:0 0 4px;font-size:15px;flex:1">Compare distro vs harvest / deleaf hours</h3>'
+    + '<button class="pbtn cmp-copyall" title="Copy an image of every timesheet shown below — paste it into a chat or doc">📋 Copy whole page</button></div>'
     + '<div class="faint" style="font-size:12.5px;margin-bottom:10px">Every named row from both pages, lined up per person. '
     + 'Rows that overlap in time on the same day are flagged — usually the same hours submitted twice. '
     + 'Delete the duplicate, or Keep both if the person really worked both. '
     + 'The date window here goes by the actual work date (pay-period overrides don’t move rows on this page).</div>'
-    + presetSeg;
-  if (!emps.length) html += '<div class="empty" style="padding:20px">No named rows in this date range</div>';
+    + '<div class="cmp-filters">' + presetSeg + cosSeg + '</div>';
+  if (!emps.length) html += '<div class="empty" style="padding:20px">'
+    + (tsState.compareCos.size ? 'No rows for the selected companies in this date range' : 'No named rows in this date range') + '</div>';
   for (const k of emps){
     const list = byEmp.get(k).slice().sort((a, b) =>
       ((a.work_date + '|' + (a.clock_in || '')) < (b.work_date + '|' + (b.clock_in || ''))) ? -1 : 1);
     const dH = list.filter(s => catOf(s) === 'distro').reduce((a, s) => a + (s.hours || 0), 0);
     const hH = list.filter(s => catOf(s) === 'harvest').reduce((a, s) => a + (s.hours || 0) * (s.people || 1), 0);
     const gross = list.reduce((a, s) => a + (s.total || 0), 0);
-    const pairs = pairsOf.get(k) || [];
+    // banners only for pairs whose BOTH rows are visible; a row overlapping a
+    // now-hidden company still glows (via overlapIds) but shows no dangling banner
+    const visIds = new Set(list.map(s => s.id));
+    const pairs = (pairsAll.get(k) || []).filter(([a, b]) => visIds.has(a.id) && visIds.has(b.id));
     const empOverlaps = new Set(list.filter(s => overlapIds.has(s.id)).map(s => s.id));
     CMP_CARDS[k] = { name: displayOf.get(k), rows: list, dH, hH, gross, rangeLabel,
       overlapIds: empOverlaps, overlapCount: empOverlaps.size };
@@ -1241,6 +1331,13 @@ function renderCompare(){
   box.querySelectorAll('#cmp-preset button').forEach(bn => bn.onclick = () => {
     tsState.comparePreset = bn.dataset.k; renderCompare();
   });
+  box.querySelectorAll('#cmp-cos button').forEach(bn => bn.onclick = () => {
+    const c = bn.dataset.co;
+    if (tsState.compareCos.has(c)) tsState.compareCos.delete(c); else tsState.compareCos.add(c);
+    renderCompare();
+  });
+  const copyAllBtn = box.querySelector('button.cmp-copyall');
+  if (copyAllBtn) copyAllBtn.onclick = () => copyAllTimesheets();
   box.querySelectorAll('button.cmp-copy').forEach(bn => bn.onclick = () => copyEmpTimesheet(bn.dataset.k));
   box.querySelectorAll('button.cmp-unkeep').forEach(bn => bn.onclick = async () => {
     const tr = bn.closest('tr[data-id]');
