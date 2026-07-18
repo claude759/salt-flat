@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.60';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.61';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -479,8 +479,9 @@ function legAttribution({destText, startText, destDispId, kind, homeAddr}){
   if(row&&row.private) d=null;                       // a private home pin is 'home', not a store
   if(!d && homeish){
     const s=String(startText||'').trim();
-    const exact=list.find(x=>x.active!==false && x.name===s);   // exact name first — matchDispByText skips '* ' buckets
-    d=(exact&&exact.id)||matchDispByText(s)||null;
+    const exact=list.find(x=>x.active!==false && !x.private && x.name===s);   // exact name first — matchDispByText skips '* ' buckets; never a private home pin
+    const m=matchDispByText(s); const mRow=byId(m);
+    d=(exact&&exact.id) || (mRow&&!mRow.private?m:null) || null;   // driving home FROM a home pin isn't a store → stays null → GEN
   }
   { const r=byId(d);                                  // errand stop → General BA activity
     if(r && r.retail===false && !/^\*/.test(r.name||'')) d=gen?gen.id:d; }
@@ -2466,24 +2467,37 @@ function tripSheet(presetDate, editTrip, opts){
     // save-time auto-link chain LIVE — destination store → return-home start store →
     // General-BA bucket — so the attribution is visible BEFORE saving; tapping the row
     // overrides it (picking nothing returns it to auto).
+    const legLocked=!unlockedLeg(p);
     const calcLink=()=>{
-      if(p.linkDispId!==undefined) return p.linkDispId;
+      // locked legs show the SAVED attribution (the DB truth — can't change it, so don't
+      // recompute and risk claiming a link the row doesn't have)
+      if(legLocked) return p.destDispId||null;
+      if(p.linkDispId!==undefined) return p.linkDispId;   // explicit picker override wins
       return legAttribution({ destText:$('#tDest')?.value||p.destLabel, startText:$('#tStartLoc')?.value||p.startLabel,
-        destDispId:p.destDispId, kind:$('#tKind')?.value||p.kind, homeAddr });
+        destDispId:p.destDispId, kind:$('#tKind')?($('#tKind').value||null):p.kind, homeAddr });   // button value is truth — no p.kind fallback (a cleared category must read as cleared)
     };
     const linkLabel=()=>{ const b=$('#tLink'); if(!b) return; const d=calcLink();
-      b.innerHTML = d ? esc(dispName(d))+(p.linkDispId!==undefined?'':' <span class="muted small">· auto</span>')
+      const auto = !legLocked && p.linkDispId===undefined;   // '· auto' only for a live-derived value
+      b.innerHTML = d ? esc(dispName(d))+(auto?' <span class="muted small">· auto</span>':'')
                       : '<span class="pkph">— not linked yet —</span>'; };
     { const b=$('#tLink'); if(b){ linkLabel();
-      b.onclick=()=>{ const lopts=(state.dispensaries||[]).filter(d=>d.active!==false).sort(dispSort)
-          .map(d=>({id:d.id, name:d.name, search:dispSearchText(d)}));
+      // attribution targets = real retail stores + the legit '* ' buckets, in the viewed
+      // BA's region. Exclude private home pins, errand stops (retail=false), and the
+      // retired category-placeholders (* Lead / * New retailer) — none are cost buckets.
+      b.onclick=()=>{ const region=ctx.region||state.profile?.region||null;
+        const lopts=(state.dispensaries||[])
+          .filter(d=> d.active!==false && !d.private
+             && (!region || !d.state || d.state===region)
+             && !/^\*\s*(lead|new retailer)/i.test(d.name||'')
+             && (d.retail!==false || (d.name||'').startsWith('*')))
+          .sort(dispSort).map(d=>({id:d.id, name:d.name, search:dispSearchText(d)}));
         const cur=calcLink();
         cellPickerSheet({ title:'Attribute this leg to…', options:lopts, selected:cur?[cur]:[],
           onSave:ids=>{ p.linkDispId = ids.length ? ids[0] : undefined; linkLabel(); } }); };
       ['#tDest','#tStartLoc'].forEach(sl=>{ const el=$(sl); if(el){
         el.addEventListener('input',()=>setTimeout(linkLabel,0));
         el.addEventListener('blur',()=>setTimeout(linkLabel,0)); }});
-      { const k=$('#tKind'); if(k) k.addEventListener('change',()=>linkLabel()); }
+      { const k=$('#tKind'); if(k) k.addEventListener('change',()=>setTimeout(linkLabel,0)); }
     } }
     // admin: approved leg → back to submitted (also un-stamps the period submission)
     { const u=$('#tUndo'); if(u) u.onclick=async()=>{
@@ -2592,7 +2606,7 @@ function tripSheet(presetDate, editTrip, opts){
         if(r&&r.ok&&r.miles!=null){
           p.miles=r.miles; p.milesSrc='route'; $('#tMiles').value=p.miles; showCost();
           $('#tRouteHint').textContent=`Read ${r.miles} mi${r.destination?' → '+r.destination:''} — double-check it`;
-          if(r.destination && !$('#tDest').value.trim()){ $('#tDest').value=r.destination; p.destLabel=r.destination; }
+          if(r.destination && !$('#tDest').value.trim()){ $('#tDest').value=r.destination; p.destLabel=r.destination; $('#tDest').dispatchEvent(new Event('input',{bubbles:true})); }   // refresh the Location row's live attribution
           toast(`Route read: ${r.miles} mi`,'ok');
         } else { $('#tRouteHint').textContent='Screenshot saved — type the miles below.'; toast((r&&r.message)||'Couldn’t read the route — enter the miles manually','err'); }
       }catch(err){ $('#tRouteHint').textContent='Screenshot saved — type the miles below.'; toast('Route reader unavailable — enter the miles manually','err'); }
@@ -3592,7 +3606,7 @@ async function adminBaDetail(baId){
     <div id="admGrid"></div>
     ${(!allPer && (H||[]).some(x=>!x.dispensary_id))?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
     <div class="row wrap" style="margin-top:16px">
-      ${(!allPer && S.status!=='approved' && [...(T||[]),...(E||[]),...(H||[])].some(x=>x.status==='submitted'||x.status==='draft'))?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
+      ${(!allPer && S.status!=='approved' && (S.status==='submitted' || [...(T||[]),...(E||[]),...(H||[])].some(x=>x.status==='submitted'||x.status==='draft')))?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
       ${(!allPer && S.status==='approved')?`<button class="btn grow" id="unapproveBtn">↩ Unapprove</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
       <button class="btn grow" id="pdfBtn">🖨 Print / PDF</button>
@@ -3681,14 +3695,27 @@ async function rejectItem(kind,id,baId){
 async function unapprovePeriod(baId, periodId){
   const per=(state.periods||[]).find(p=>p.id===periodId);
   if(per && per.status==='closed' && !confirm('This pay period is CLOSED — it may already be paid out. Unapprove anyway?')) return;
-  if(!confirm('Undo this approval? Every approved item this period goes back to “submitted” for re-review (nothing is deleted).')) return;
-  for(const t of ['trips','expenses','hours']){
-    const {error}=await supabase.from(t).update({status:'submitted'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
+  // Was this a REAL BA submission, or an admin override-approve of a never-submitted
+  // period? submitted_at is only set when the BA presses Submit; approveSubmission's
+  // sweep upsert leaves it null. If it was a sweep, unapprove must return items to
+  // 'draft' (not 'submitted') so the BA can still edit/delete them — RLS locks BAs out
+  // of submitted rows — and the submission goes back to 'open', not 'submitted'.
+  const {data:sub}=await supabase.from('submissions').select('submitted_at').eq('ba_id',baId).eq('period_id',periodId).maybeSingle();
+  const wasSwept = !sub || !sub.submitted_at;
+  const itemStatus = wasSwept ? 'draft' : 'submitted';
+  const subStatus  = wasSwept ? 'open'  : 'submitted';
+  if(!confirm(`Undo this approval? Every approved item this period goes back to “${itemStatus}”${wasSwept?' so the BA can finish it':' for re-review'} (nothing is deleted).`)) return;
+  // trips/expenses follow itemStatus (draft on a sweep-undo so the BA regains edit access);
+  // hours are payroll-managed + never BA-editable → 'submitted' regardless (re-approve restores them)
+  for(const t of ['trips','expenses']){
+    const {error}=await supabase.from(t).update({status:itemStatus}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
     if(error) return toast('Unapprove failed: '+error.message,'err');
   }
-  const {error:e2}=await supabase.from('submissions').update({status:'submitted', approved_by:null, approved_at:null})
+  const {error:eh}=await supabase.from('hours').update({status:'submitted'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
+  if(eh) return toast('Unapprove failed: '+eh.message,'err');
+  const {error:e2}=await supabase.from('submissions').update({status:subStatus, approved_by:null, approved_at:null})
     .eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
-  if(e2) return toast('Items are back to submitted, but the period is still stamped approved — reopen and retry.','err');
+  if(e2) return toast('Items reverted, but the period is still stamped approved — reopen and retry.','err');
   toast('Approval undone — period is back in review','ok');
   try{ drawAdmin(); }catch(_){}
   adminBaDetail(baId);

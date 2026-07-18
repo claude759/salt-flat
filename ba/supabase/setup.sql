@@ -55,6 +55,7 @@ create table if not exists public.dispensaries (
   address     text,
   state       text check (state in ('CA','FL','NY')),  -- only BAs in this region see it
   private     boolean not null default false,          -- true = personal (Home), visible to owner only
+  retail      boolean not null default true,           -- false = errand stop (post office, gas, food); its trips file under * General BA activity
   lat         double precision,
   lng         double precision,
   license     text,
