@@ -33,9 +33,10 @@ const HARVEST_INSTR =
   'task (harvest, veg, deleaf, clean lamps, transplant, loading, general cleaning, etc). A header naming a ' +
   'person (e.g. the sender) applies to every row below it; a section header like "DISTRO" or "OLYMPIC" ' +
   'applies to the rows under it until the next header.\n' +
-  'These are often photos of a phone showing a chat or notes app: the CONTACT NAME in the chat header or ' +
-  'title bar (a name bubble at the very top of the image) is the WORKER — apply it to every row. If a single ' +
-  'name is visible anywhere and the rows themselves name nobody, do NOT return worker null; use that name.\n' +
+  'These are often photos of a phone showing a chat or notes app: a lone personal name — the contact name in ' +
+  'the chat header/title bar at the TOP, or a signature name on its own line at the BOTTOM (e.g. "Tany", ' +
+  '"Elmer") — is the WORKER; apply it to EVERY row. If any single name is visible anywhere and the rows ' +
+  'themselves name nobody, do NOT return worker null; use that name for all rows.\n' +
   'Transcribe carefully — these lists are messy handwriting or low-res screenshots. A date wildly outside ' +
   'the run of the list (like 7/25 inside a 7/5..7/16 list) is almost certainly a misread; re-examine the ' +
   'line before writing it. Do not skip lines: one physical line = one row.\n' +
@@ -43,6 +44,12 @@ const HARVEST_INSTR =
   '"task":string|null,"worker":string|null,"people":number|null,"rate":number|null,"time_in":"HH:MM"|null,"time_out":"HH:MM"|null,"note":string}]}\n' +
   'Rules:\n' +
   '- Bare dates like "6/7", "jun 6", "5/27", "6/20/16" are year 2026 (ignore an obviously wrong year like 16). Output YYYY-MM-DD.\n' +
+  '- SPANISH is common. Month names: enero=01 febrero=02 marzo=03 abril=04 mayo=05 junio=06 julio=07 ' +
+  'agosto=08 septiembre/setiembre=09 octubre=10 noviembre=11 diciembre=12. "5 de julio" -> 2026-07-05. ' +
+  'Weekdays: lunes/martes/miércoles/jueves/viernes/sábado/domingo (a weekday-only Spanish row follows the ' +
+  'same rule as English — date null, weekday in the note). "hrs"/"horas" totals lines (e.g. "32.8 hrs") are ' +
+  'SUMMARY lines, not work rows — skip them. "la 23"/"la 25" (Spanish "the 23rd/25th") are the street ' +
+  'shorthand -> Slane/Filifera. Times stay am/pm as written ("8am - 1pm").\n' +
   '- A row giving ONLY a weekday ("Monday - 8am-5pm"): date null, and START the note with that weekday name.\n' +
   '- If a weekday and a date disagree ("sat 8/11" when 8/11 is not a Saturday), KEEP the written date but ' +
   'start the note with "DATE?" and the discrepancy (e.g. "DATE? sat vs 8/11 — maybe 7/11") so a human resolves it. Never move a date yourself.\n' +
