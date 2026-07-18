@@ -49,7 +49,12 @@ async function sendMail(to: string, subject: string, html: string, text: string,
   // collapse template indentation: whitespace-only lines were quoted-printable-encoded
   // and rendered as a literal '=20' in some clients (seen in Gmail)
   const flat = html.replace(/\n\s*/g, "");
-  const msg: Record<string, unknown> = { from: `${FROM_NAME} <${GMAIL_USER}>`, to, subject, content: text, html: flat };
+  // subjects must stay PURE ASCII: any non-ASCII char (the en dash in period labels)
+  // makes denomailer RFC-2047-encode the subject, and on subjects long enough to wrap
+  // (~78 encoded chars — Makenna's name got there) it splits the encoded word so badly
+  // the header block breaks and the rest of the headers render as the message body.
+  const asciiSubject = subject.replace(/[–—]/g, "-").replace(/[^\x20-\x7E]/g, "");
+  const msg: Record<string, unknown> = { from: `${FROM_NAME} <${GMAIL_USER}>`, to, subject: asciiSubject, content: text, html: flat };
   if (cc && cc.length) msg.cc = cc;
   await _smtp.send(msg as never);
 }
