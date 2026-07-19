@@ -41,7 +41,7 @@ const HARVEST_INSTR =
   'the run of the list (like 7/25 inside a 7/5..7/16 list) is almost certainly a misread; re-examine the ' +
   'line before writing it. Do not skip lines: one physical line = one row.\n' +
   'Return ONLY a JSON object, no prose: {"rows":[{"category":"distro"|"harvest"|null,"date":"YYYY-MM-DD"|null,"location":string|null,' +
-  '"task":string|null,"worker":string|null,"people":number|null,"rate":number|null,"time_in":"HH:MM"|null,"time_out":"HH:MM"|null,"note":string}]}\n' +
+  '"task":string|null,"break_min":number|null,"worker":string|null,"people":number|null,"rate":number|null,"time_in":"HH:MM"|null,"time_out":"HH:MM"|null,"note":string}]}\n' +
   'Rules:\n' +
   '- Bare dates like "6/7", "jun 6", "5/27", "6/20/16" are year 2026 (ignore an obviously wrong year like 16). Output YYYY-MM-DD.\n' +
   '- SPANISH is common. Month names: enero=01 febrero=02 marzo=03 abril=04 mayo=05 junio=06 julio=07 ' +
@@ -65,7 +65,11 @@ const HARVEST_INSTR =
   '- If the image has a header naming the location or person, apply it to every row below it.\n' +
   '- location: use the mapped business name (Slane/Filifera/Imperial/Olympic for harvest; Portal or another ' +
   'distro company name for distro rows). If none is given, null.\n' +
-  '- task: short label incl. room if noted. note: a short snippet of the original line (incl. things like "no lunch").\n' +
+  '- BREAKS/LUNCH are NOT tasks. A lunch or break notation — "30m", "30 min", "30 min break", "1/2 hr", ' +
+  '"half hour", "1 hr lunch", "lunch", "break" — goes in "break_min" as the number of MINUTES (30, 60, ...); ' +
+  '"no lunch"/"no break" -> break_min 0. NEVER put a break/lunch value in "task". If no break is mentioned, break_min null. ' +
+  'Keep the original wording in the note either way.\n' +
+  '- task: short label incl. room if noted (harvest / veg / deleaf / clean lamps / etc). note: a short snippet of the original line.\n' +
   '- One row per distinct work entry. Skip pure header/label lines with no work info.\n';
 
 async function staffCaller(req: Request) {
@@ -110,6 +114,26 @@ function cleanLocation(s: unknown){
   }
   return s.trim() || null;
 }
+// minutes from a break/lunch token, or null if the token isn't a break at all
+function breakFromToken(s: string): number | null {
+  const t = s.toLowerCase().trim();
+  let m = t.match(/^(\d{1,3})\s*(m|min|mins|minute|minutes)(\s*(break|lunch))?$/);
+  if (m) return Math.min(600, +m[1]);
+  // a bare "1 hr" / "2 hour" alone in the task is a break like "1/2 hr" is (keyword optional, symmetric)
+  m = t.match(/^(\d)\s*(hr|hour|hours)(\s*(break|lunch))?$/);
+  if (m) return Math.min(600, +m[1] * 60);
+  if (/^(1\/2|½|half)\s*(hr|hour)(\s*(break|lunch))?$/.test(t)) return 30;
+  if (/^no\s+(lunch|break)$/.test(t)) return 0;
+  if (/^(lunch|break)$/.test(t)) return 0;   // recognized, unknown length -> 0 (a human sets it)
+  return null;
+}
+// numeric minutes, or recover a stringy break_min the model may emit ("30 min", "½ hr")
+const cleanBreak = (v: unknown) => {
+  const n = Number(v);
+  if (isFinite(n) && n >= 0) return Math.min(600, Math.round(n));
+  if (typeof v === "string"){ const b = breakFromToken(v); if (b !== null) return b; }
+  return 0;
+};
 function normNote(r: any){
   if (!r || typeof r !== "object") return null;
   let people = Number(r.people); if (!isFinite(people) || people < 1) people = 1; people = Math.round(people);
@@ -119,11 +143,17 @@ function normNote(r: any){
   const c = String(r.category ?? "").toLowerCase();
   let category = c === "distro" || c === "harvest" ? c : null;
   if (location === "Portal") category = "distro";   // Portal is a packaging company, never a grow site
+  // a break can arrive in break_min, or (if the model slipped) still be sitting
+  // in the task like "30m" — recover it so it never pollutes Team/Task
+  let task = typeof r.task === "string" ? r.task.trim() : null;
+  let brk = cleanBreak(r.break_min);
+  if (task){ const b = breakFromToken(task); if (b !== null){ task = null; if (!brk) brk = b; } }
   const row = {
     category,
     date: isDate(r.date) ? r.date : null,
     location,
-    task: typeof r.task === "string" ? r.task.trim() : null,
+    task,
+    break_min: brk,
     worker,
     rate: isNorma ? 25 : 20,
     people: isNorma ? 1 : people,
