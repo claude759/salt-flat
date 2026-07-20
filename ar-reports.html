@@ -2876,7 +2876,7 @@ function distruAssetsRows(){
   (FILES.distru_assets ? FILES.distru_assets.data : []).forEach(r=>{
     const quar=/testing/i.test(r['Location']||'');
     const qty=num(r['Active Quantity']); const price=num(r['Unit Price']);
-    const key=(r['Product']||r['SKU']||'').trim()+'|'+(r['Subcategory']||'')+'|'+(quar?'Q':'D');
+    const key=(r['Product']||r['SKU']||'').trim()+'|'+(r['Subcategory']||'').trim()+'|'+(quar?'Q':'D');
     const g=agg[key] || (agg[key]={n:(r['Product']||r['SKU']||'').trim(), b:(r['Subcategory']||'').trim(), q:0, p:price, quar});
     g.q+=qty; if(price>0) g.p=price;   // hold a real unit price even if some packages report 0
   });
@@ -2915,6 +2915,17 @@ function onHandDetail(){
 function computeOnHandValue(){
   const d=onHandDetail();
   return d ? d.reduce((s,x)=>s+x.value,0) : null;
+}
+// On-hand is "complete" — safe to PUBLISH (else carry the prior forward) — only when Nabis inventory
+// is loaded AND the Distru ASSETS report is loaded with usable rows. The Valuation report is
+// deliberately NOT accepted as a substitute: it has no Location column, so it can't drop
+// Testing/Quarantined, and publishing it would inflate on-hand by the quarantined stock (~$84k). So
+// a flaky assets download (or an empty/corrupt export) leaves on-hand INCOMPLETE this run → the
+// snapshot + detail merge keep the last good (assets-based) figure instead of clobbering it.
+// onHandDetail's Valuation fallback stays for LIVE display only; it never reaches the published
+// snapshot, because that is gated here.
+function onHandComplete(){
+  return !!FILES.nabis_inventory && !!FILES.distru_assets && distruAssetsRows().length > 0;
 }
 // FULL exported inventory for one source — EVERY line the report exported, each tagged with why it
 // is (exc=null) or isn't (exc=reason) counted toward on-hand. The included rows (exc=null) reconcile
@@ -3047,7 +3058,7 @@ function captureScorecardSnap(){
   // On-hand needs BOTH inventory sources to be a COMPLETE figure. The nabis-inventory scrape flakes
   // (~1 run in 13), which would otherwise drop ~$48k of Nabis and republish a partial on-hand that
   // clobbers the good one. When incomplete, OMIT onHand so the merge keeps the last good snapshot.
-  const invComplete = !!(FILES.nabis_inventory && (FILES.distru_assets || FILES.distru_inventory));
+  const invComplete = onHandComplete();
   const onHand = invComplete ? computeOnHandValue() : null;
   // Only capture if we have something worth storing. Skip otherwise so we don't pollute
   // snapshots with all-null entries.
@@ -3209,7 +3220,7 @@ function renderScorecard(){
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
-  note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> on the current (live) row = all orders scheduled for delivery this week (Mon–Sun), delivered + pending; click it to see each order, then click an order for its line items. For past weeks the column shows that week's <b>actual net sales</b> (billed − discounts/credits), which reconciles to the Sales by Type page — click it to see the orders that make it up. <b>Total On Hand Inventory</b> = sellable stock at list price (available units × unit price) from the Nabis inventory + Distru Inventory Valuation reports; click it to see Nabis vs Distru, each expandable to its SKUs.`;
+  note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> on the current (live) row = all orders scheduled for delivery this week (Mon–Sun), delivered + pending; click it to see each order, then click an order for its line items. For past weeks the column shows that week's <b>actual net sales</b> (billed − discounts/credits), which reconciles to the Sales by Type page — click it to see the orders that make it up. <b>Total On Hand Inventory</b> = sellable stock at unit price, from the Nabis inventory + Distru Inventory Assets reports — Nabis counts available units (excludes samples & archived); Distru counts Active units and excludes the Testing/Quarantined location; click it to see Nabis vs Distru, each expandable to its SKUs.`;
 }
 
 $('#sc-export').onclick=()=>{
@@ -3227,7 +3238,7 @@ function buildScDetail(){
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   // Same completeness guard as the snapshot: if an inventory source is missing this run, carry the
   // previously-published breakdown forward rather than publishing a partial (Distru-only) one.
-  const invComplete = !!(FILES.nabis_inventory && (FILES.distru_assets || FILES.distru_inventory));
+  const invComplete = onHandComplete();
   const inv = invComplete
     ? (onHandDetail()||[]).map(x=>({source:x.source,name:x.name,batch:x.batch,qty:x.qty,price:x.price}))
     : ((SC_DETAIL && SC_DETAIL.inv) || []);
@@ -3317,7 +3328,7 @@ function scDrill(dateStr, col){
     // Separate Nabis and Distru inventory: one expandable group per source, each → its SKUs.
     const groups={}; det.forEach(x=>{ const s=x.source||'Nabis'; (groups[s]||(groups[s]=[])).push(x); });
     const order=['Nabis','Distru'].filter(s=>groups[s]); Object.keys(groups).forEach(s=>{ if(!order.includes(s)) order.push(s); });
-    const skuTable=items=>`<div class="ddhead">SKUs</div><table class="ddtable invitems"><thead><tr><th>SKU</th><th class="num">Available</th><th class="num">Unit price</th><th class="num">Value</th></tr></thead><tbody>`+
+    const skuTable=(items,src)=>`<div class="ddhead">SKUs</div><table class="ddtable invitems"><thead><tr><th>SKU</th><th class="num">${src==='Distru'?'Active':'Available'}</th><th class="num">Unit price</th><th class="num">Value</th></tr></thead><tbody>`+
       items.map(x=>`<tr><td>${esc(x.name)}${x.batch?` <span class="rep">${esc(x.batch)}</span>`:''}</td><td class="num">${Math.round(x.qty).toLocaleString()}</td><td class="num money">${fmt$(x.price)}</td><td class="num money">${fmt$(x.value)}</td></tr>`).join('')+
       `</tbody><tfoot><tr class="totals"><td>Total · ${items.length} SKU${items.length!==1?'s':''}</td><td></td><td></td><td class="num money">${fmt$(items.reduce((a,x)=>a+x.value,0))}</td></tr></tfoot></table>`;
     // "View full report" buttons — only for a source that is ACTUALLY in this on-hand summary
@@ -3327,11 +3338,11 @@ function scDrill(dateStr, col){
     // and the empty-array check avoids a button that opens an empty report.
     const invBtns=order.filter(s=>{ const d=fullInventoryDetail(s); return d && d.length; })
       .map(s=>`<button class="scm-link" data-invsrc="${s}">View full ${s} report ↗</button>`).join(' ');
-    return {title:'Total On Hand Inventory', sub:`available units × unit price (samples & archived excluded) · click a source for its SKUs`,
+    return {title:'Total On Hand Inventory', sub:`on-hand at unit price · Nabis: available units (excl. samples & archived) · Distru: active units (excl. Testing/Quarantined) · click a source for its SKUs`,
       headHtml: invBtns||undefined,
       columns:[{l:'Source'},{l:'SKUs',num:true},{l:'Value',num:true,money:true}],
       rows:order.map(s=>[`${s} inventory`, groups[s].length, groups[s].reduce((a,x)=>a+x.value,0)]),
-      rowDetails:order.map(s=>skuTable(groups[s])),
+      rowDetails:order.map(s=>skuTable(groups[s], s)),
       totalLabel:'Total', total:det.reduce((s,x)=>s+x.value,0)};
   }
   if(col==='projN'||col==='projD'){
