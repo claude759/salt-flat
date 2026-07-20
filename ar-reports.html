@@ -324,6 +324,11 @@
   .scm-head-extra{padding:2px 0 10px}
   .scm-link{display:inline-block;color:var(--accent2);font-size:12.5px;font-weight:600;text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:6px 11px;background:var(--panel2)}
   .scm-link:hover{border-color:var(--accent2)}
+  button.scm-link{font-family:inherit;cursor:pointer}
+  button.scm-link+button.scm-link{margin-left:4px}
+  #sc-modal2 tr.inv-exc td{opacity:.5}
+  #sc-modal2 tr.inv-div td{background:var(--panel2);color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.4px;font-weight:700;padding:8px 6px;border-top:1px solid var(--line)}
+  #sc-modal2 .inv-in{color:#7ee0a0;font-size:11px;font-weight:600}
   /* Sales by Type — two-system layout */
   th.sys{text-align:center;font-size:13px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:9px}
   th.sys.Nabis{background:rgba(255,143,94,.13);color:var(--nabis)}
@@ -978,6 +983,18 @@
   </div>
 </div>
 
+<!-- Secondary popup (stacks above #sc-modal) — full exported inventory report per source -->
+<div id="sc-modal2" class="scm hidden" style="z-index:1100">
+  <div class="scm-backdrop"></div>
+  <div class="scm-panel" role="dialog" aria-modal="true">
+    <div class="scm-head">
+      <div><div class="scm-title" id="scm2-title"></div><div class="scm-sub" id="scm2-sub"></div></div>
+      <button class="scm-x" id="scm2-close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="scm-body" id="scm2-body"></div>
+  </div>
+</div>
+
 <!-- Supabase JS (auth: Google sign-in gate). GitHub Pages allows external scripts; pinned major. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
@@ -1134,6 +1151,7 @@ function classify(rows){
     // AFTER nabis_detail so the line-item file (which shares some cols) isn't caught here.
     if(has('Order Number','Price Reduction','Order Discount','Order Credit Amount')) return {type:'nabis_brand',hr:i};
     if(has('sku_code','sku_name','total_available','sku_price_per_unit')) return {type:'nabis_inventory',hr:i};
+    if(has('Product','Location','Selling Quantity','Active Quantity')) return {type:'distru_assets',hr:i};   // Distru Inventory Assets report (package-level, has a Location column → lets us exclude Testing/Quarantined)
     if(has('Available Quantity','Active Value (Price)'))  return {type:'distru_inventory',hr:i};   // Distru Inventory Valuation report
     if(has('Name','Legal Business Name','Address'))       return {type:'distru_companies',hr:i};   // Distru company directory (DBA/legal/address/license — lib/distru-companies.mjs)
     if(has('Schedule Date','Account Name','Sales Order Notes')) return {type:'visits',hr:i};   // field-schedule flatten (lib/schedule.mjs) — feeds the Reports tab
@@ -1172,7 +1190,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null };
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
@@ -1182,6 +1200,7 @@ const LABELS = {
   nabis_brand:'Nabis brand summary',
   nabis_inventory:'Nabis inventory',
   distru_inventory:'Distru inventory valuation',
+  distru_assets:'Distru inventory assets',
   distru_companies:'Distru company directory',
   visits:'Field schedule (PAD/EDU)',
   leaflink:'LeafLink orders (NY)',
@@ -1500,7 +1519,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_companies','visits','leaflink','leaflink_items','ny_invoices','ny_recon_items'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_assets','distru_companies','visits','leaflink','leaflink_items','ny_invoices','ny_recon_items'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -2848,13 +2867,27 @@ function computeProjectedForCurrentWeek(monday){
   return {projN, projD};
 }
 
-// Per-SKU on-hand detail, merged from the Nabis inventory CSV (non-sample, non-archived) and the
-// Distru Inventory Valuation report (available units × unit price), both filtered to qty&price>0.
-// Returns [{source:'Nabis'|'Distru', name, batch, qty, price, value}] sorted by value desc, or
-// null if neither inventory file is loaded.
+// Distru Inventory Assets report → one aggregated line per SKU, with a `quar` flag for the
+// "Testing / Quarantined" location. Sums ACTIVE Quantity across a SKU's packages (Selling qty =
+// already on open orders → shows in Projected Sales; Assembling = WIP — neither is counted). Shared
+// by the on-hand total and the full-report popup so the two always reconcile.
+function distruAssetsRows(){
+  const agg={};
+  (FILES.distru_assets ? FILES.distru_assets.data : []).forEach(r=>{
+    const quar=/testing/i.test(r['Location']||'');
+    const qty=num(r['Active Quantity']); const price=num(r['Unit Price']);
+    const key=(r['Product']||r['SKU']||'').trim()+'|'+(r['Subcategory']||'')+'|'+(quar?'Q':'D');
+    const g=agg[key] || (agg[key]={n:(r['Product']||r['SKU']||'').trim(), b:(r['Subcategory']||'').trim(), q:0, p:price, quar});
+    g.q+=qty; if(price>0) g.p=price;   // hold a real unit price even if some packages report 0
+  });
+  return Object.values(agg);
+}
+// Per-SKU on-hand detail, merged from the Nabis inventory CSV (non-sample, non-archived) and Distru.
+// Returns [{source:'Nabis'|'Distru', name, batch, qty, price, value}] sorted by value desc, or null
+// if no inventory file is loaded.
 function onHandDetail(){
-  const hasN=!!FILES.nabis_inventory, hasD=!!FILES.distru_inventory;
-  if(!hasN && !hasD) return null;
+  const hasN=!!FILES.nabis_inventory, hasA=!!FILES.distru_assets, hasD=!!FILES.distru_inventory;
+  if(!hasN && !hasA && !hasD) return null;
   const out=[];
   if(hasN) FILES.nabis_inventory.data.forEach(r=>{
     if((r['sku_is_sample']||'').toLowerCase()==='yes') return;          // exclude penny samples
@@ -2864,12 +2897,14 @@ function onHandDetail(){
     if(qty>0 && price>0) out.push({source:'Nabis', name:(r['sku_name']||r['sku_code']||'').trim(),
       batch:(r['batch_code']||'').trim(), qty, price, value:qty*price});
   });
-  // Distru Inventory Valuation: value finished on-hand at list price (ACTIVE Quantity × Unit
-  // Price), per Gianni Jul 2026. ACTIVE = finished goods physically in inventory (includes those
-  // reserved for open orders). Deliberately NOT "Available" (= Active − Reserved) and NOT
-  // "Assembling" (work-in-progress, a separate column). Unpriced bulk flower (Unit Price 0) and
-  // zero-qty rows drop out, same as Nabis excludes price/qty ≤ 0.
-  if(hasD) FILES.distru_inventory.data.forEach(r=>{
+  // Distru on-hand — PREFER the Inventory Assets report (has a Location column): ACTIVE Quantity ×
+  // Unit Price over sellable Distro packages, EXCLUDING "Testing / Quarantined" per Gianni Jul 2026.
+  // Falls back to the older Valuation report (no location → can't exclude quarantine) only when the
+  // assets report isn't loaded. Unpriced (bulk) and zero-qty lines drop out, as on the Nabis side.
+  if(hasA){
+    distruAssetsRows().forEach(g=>{ if(g.quar || g.q<=0 || g.p<=0) return;
+      out.push({source:'Distru', name:g.n, batch:g.b, qty:g.q, price:g.p, value:g.q*g.p}); });
+  } else if(hasD) FILES.distru_inventory.data.forEach(r=>{
     const qty=num(r['Active Quantity']); const price=num(r['Unit Price']);
     if(qty>0 && price>0) out.push({source:'Distru', name:(r['Name']||r['SKU']||'').trim(),
       batch:(r['Subcategory']||'').trim(), qty, price, value:qty*price});
@@ -2880,6 +2915,39 @@ function onHandDetail(){
 function computeOnHandValue(){
   const d=onHandDetail();
   return d ? d.reduce((s,x)=>s+x.value,0) : null;
+}
+// FULL exported inventory for one source — EVERY line the report exported, each tagged with why it
+// is (exc=null) or isn't (exc=reason) counted toward on-hand. The included rows (exc=null) reconcile
+// exactly to that source's on-hand value. Reads the raw files locally / at publish time; falls back
+// to the slim SC_DETAIL.invFull carried in the shared payload so team viewers see the same numbers.
+// Item shape kept short for the payload: {n:name, b:batch/subcategory, q:qty, p:unit price, exc}.
+function fullInventoryDetail(source){
+  if(source==='Nabis' && FILES.nabis_inventory){
+    return FILES.nabis_inventory.data.map(r=>{
+      const q=num(r['total_available']), p=num(r['sku_price_per_unit']);
+      const sample=(r['sku_is_sample']||'').toLowerCase()==='yes';
+      const arch=(r['sku_is_archived']||'').toLowerCase()==='yes' || (r['sku_batch_is_archived']||'').toLowerCase()==='yes';
+      const exc = sample?'Sample' : arch?'Archived' : (q<=0?'No stock' : (p<=0?'No price' : null));
+      return {n:(r['sku_name']||r['sku_code']||'').trim(), b:(r['batch_code']||'').trim(), q, p, exc};
+    });
+  }
+  if(source==='Distru' && FILES.distru_assets){
+    // One line per SKU-per-location-bucket. Quarantined stock is shown but flagged excluded, so the
+    // full report is a straight audit of the assets export; the included rows sum to Distru on-hand.
+    return distruAssetsRows().map(g=>{
+      const exc = g.quar ? 'Testing / Quarantined' : (g.q<=0 ? 'No active stock' : (g.p<=0 ? 'Unpriced (bulk)' : null));
+      return {n:g.n, b:g.b, q:g.q, p:g.p, exc};
+    });
+  }
+  if(source==='Distru' && FILES.distru_inventory){
+    return FILES.distru_inventory.data.map(r=>{
+      const q=num(r['Active Quantity']), p=num(r['Unit Price']);
+      const exc = q<=0?'No stock' : (p<=0?'Unpriced (bulk)' : null);
+      return {n:(r['Name']||r['SKU']||'').trim(), b:(r['Subcategory']||'').trim(), q, p, exc};
+    });
+  }
+  if(SC_DETAIL && SC_DETAIL.invFull && Array.isArray(SC_DETAIL.invFull[source])) return SC_DETAIL.invFull[source];
+  return null;
 }
 // Per-order projected-sales detail for `monday`'s week (all orders scheduled that week —
 // delivered + pending; excludes cancelled/rejected and Nabis pickup-from-brand). Orders with no
@@ -2979,7 +3047,7 @@ function captureScorecardSnap(){
   // On-hand needs BOTH inventory sources to be a COMPLETE figure. The nabis-inventory scrape flakes
   // (~1 run in 13), which would otherwise drop ~$48k of Nabis and republish a partial on-hand that
   // clobbers the good one. When incomplete, OMIT onHand so the merge keeps the last good snapshot.
-  const invComplete = !!(FILES.nabis_inventory && FILES.distru_inventory);
+  const invComplete = !!(FILES.nabis_inventory && (FILES.distru_assets || FILES.distru_inventory));
   const onHand = invComplete ? computeOnHandValue() : null;
   // Only capture if we have something worth storing. Skip otherwise so we don't pollute
   // snapshots with all-null entries.
@@ -3083,7 +3151,7 @@ function renderScorecard(){
   const liveIdx = (CONC_EVENTS||[]).length||(RAW||[]).length ? 0 : -1;
   // Drillability per column, by data availability:
   const hasEv=(CONC_EVENTS||[]).length>0, hasInv=(INVOICES||[]).length>0;
-  const hasOnHand = !!FILES.nabis_inventory || !!FILES.distru_inventory || !!(SC_DETAIL&&SC_DETAIL.inv);
+  const hasOnHand = !!FILES.nabis_inventory || !!FILES.distru_assets || !!FILES.distru_inventory || !!(SC_DETAIL&&SC_DETAIL.inv);
   const COLKEY=['date','projN','projD','lwN','lwD','lwT','cust','mtd','priorMtd','fourWk','onHand','arCur','arPd1_60','arPd60_90','arTotal'];
   const SALES=new Set(['lwN','lwD','lwT','cust','mtd','priorMtd','fourWk']);
   const AR=new Set(['arCur','arPd1_60','arPd60_90','arTotal']);
@@ -3159,10 +3227,16 @@ function buildScDetail(){
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   // Same completeness guard as the snapshot: if an inventory source is missing this run, carry the
   // previously-published breakdown forward rather than publishing a partial (Distru-only) one.
-  const invComplete = !!(FILES.nabis_inventory && FILES.distru_inventory);
+  const invComplete = !!(FILES.nabis_inventory && (FILES.distru_assets || FILES.distru_inventory));
   const inv = invComplete
     ? (onHandDetail()||[]).map(x=>({source:x.source,name:x.name,batch:x.batch,qty:x.qty,price:x.price}))
     : ((SC_DETAIL && SC_DETAIL.inv) || []);
+  // Full exported inventory (every line, incl. excluded) so team viewers can open the complete
+  // Nabis/Distru reports. Same completeness guard as `inv`: carry the prior forward when a source
+  // is missing this run rather than publishing a partial breakdown.
+  const invFull = invComplete
+    ? { Nabis: fullInventoryDetail('Nabis')||[], Distru: fullInventoryDetail('Distru')||[] }
+    : ((SC_DETAIL && SC_DETAIL.invFull) || null);
   const pd=projectedDetail(currentMon);
   // Slim each projected order for the shared payload: short item keys (s/p/q/lt) keep the
   // line-item drill-down available to team viewers without bloating the published JSON.
@@ -3170,7 +3244,7 @@ function buildScDetail(){
     it:(o.items||[]).map(i=>({s:i.sku,p:i.product,q:i.qty,lt:i.lineTotal}))}));
   // date = the week this detail belongs to, so the drill-down stays clickable on the right row
   // even after the week rolls over and is no longer the "live" row.
-  return { date:isoD(currentMon), inv, pN:slim(pd.nabis), pD:slim(pd.distru) };
+  return { date:isoD(currentMon), inv, invFull, pN:slim(pd.nabis), pD:slim(pd.distru) };
 }
 
 // ── Scorecard drill-down: given a cell (week Monday + column), return the line items ────────
@@ -3246,7 +3320,15 @@ function scDrill(dateStr, col){
     const skuTable=items=>`<div class="ddhead">SKUs</div><table class="ddtable invitems"><thead><tr><th>SKU</th><th class="num">Available</th><th class="num">Unit price</th><th class="num">Value</th></tr></thead><tbody>`+
       items.map(x=>`<tr><td>${esc(x.name)}${x.batch?` <span class="rep">${esc(x.batch)}</span>`:''}</td><td class="num">${Math.round(x.qty).toLocaleString()}</td><td class="num money">${fmt$(x.price)}</td><td class="num money">${fmt$(x.value)}</td></tr>`).join('')+
       `</tbody><tfoot><tr class="totals"><td>Total · ${items.length} SKU${items.length!==1?'s':''}</td><td></td><td></td><td class="num money">${fmt$(items.reduce((a,x)=>a+x.value,0))}</td></tr></tfoot></table>`;
+    // "View full report" buttons — only for a source that is ACTUALLY in this on-hand summary
+    // (`order`) AND has non-empty exported line items. Gating on `order` (not a fixed Nabis/Distru
+    // list) keeps the button in lock-step with the rows shown: it can never surface a source pulled
+    // only from a stale prior payload (e.g. one local inventory file loaded over last night's snap),
+    // and the empty-array check avoids a button that opens an empty report.
+    const invBtns=order.filter(s=>{ const d=fullInventoryDetail(s); return d && d.length; })
+      .map(s=>`<button class="scm-link" data-invsrc="${s}">View full ${s} report ↗</button>`).join(' ');
     return {title:'Total On Hand Inventory', sub:`available units × unit price (samples & archived excluded) · click a source for its SKUs`,
+      headHtml: invBtns||undefined,
       columns:[{l:'Source'},{l:'SKUs',num:true},{l:'Value',num:true,money:true}],
       rows:order.map(s=>[`${s} inventory`, groups[s].length, groups[s].reduce((a,x)=>a+x.value,0)]),
       rowDetails:order.map(s=>skuTable(groups[s])),
@@ -3344,15 +3426,49 @@ function openScModal(spec){
   $('#sc-modal').classList.remove('hidden');
 }
 function closeScModal(){ const m=$('#sc-modal'); if(m) m.classList.add('hidden'); }
+
+// Second popup: the FULL exported inventory report for one source (opens above the on-hand modal).
+// Shows every exported line — included rows first (they sum to on-hand), then the excluded ones
+// (samples, archived, no-stock, unpriced bulk) dimmed with their reason, so the numbers can be
+// audited straight against the Nabis/Distru export.
+function openInvReport(source){
+  const det=fullInventoryDetail(source);
+  const t=$('#scm2-title'), sub=$('#scm2-sub'), body=$('#scm2-body');
+  t.textContent=`Full ${source} inventory report`;
+  if(!det || !det.length){ sub.textContent=''; body.innerHTML='<div class="scm-empty">The full export isn’t available in this view.</div>'; $('#sc-modal2').classList.remove('hidden'); return; }
+  const items=det.map(x=>({n:x.n,b:x.b,q:x.q,p:x.p,exc:x.exc,inc:!x.exc,value:(x.q||0)*(x.p||0)}));
+  items.sort((a,b)=> (a.inc===b.inc ? b.value-a.value : (a.inc?-1:1)));   // counted rows first, then by value
+  const inc=items.filter(x=>x.inc), exc=items.filter(x=>!x.inc);
+  const onHand=inc.reduce((s,x)=>s+x.value,0);
+  const qtyLabel=source==='Nabis'?'Available':'Active';
+  const row=x=>`<tr class="${x.inc?'':'inv-exc'}"><td>${esc(x.n||'—')}${x.b?` <span class="rep">${esc(x.b)}</span>`:''}</td>`+
+    `<td class="num">${Math.round(x.q||0).toLocaleString()}</td><td class="num money">${fmt$(x.p||0)}</td>`+
+    `<td class="num money">${x.inc?fmt$(x.value):'<span class="neg">—</span>'}</td>`+
+    `<td>${x.inc?'<span class="inv-in">On hand</span>':`<span class="rep">${esc(x.exc)}</span>`}</td></tr>`;
+  const divider=exc.length?`<tr class="inv-div"><td colspan="5">Excluded from on-hand · ${exc.length} item${exc.length!==1?'s':''}</td></tr>`:'';
+  const foot=`<tfoot><tr><td colspan="3">On-hand total · ${inc.length} SKU${inc.length!==1?'s':''}</td><td class="num money">${fmt$(onHand)}</td><td></td></tr></tfoot>`;
+  body.innerHTML=`<table><thead><tr><th>${source==='Nabis'?'SKU':'Product'}</th><th class="num">${qtyLabel}</th><th class="num">Unit price</th><th class="num">Value</th><th>Status</th></tr></thead><tbody>${inc.map(row).join('')}${divider}${exc.map(row).join('')}</tbody>${foot}</table>`;
+  sub.textContent=`${det.length} exported line items · ${inc.length} counted toward on-hand (${fmt$(onHand)})${exc.length?` · ${exc.length} excluded`:''}`;
+  $('#sc-modal2').classList.remove('hidden');
+}
+function closeInvReport(){ const m=$('#sc-modal2'); if(m) m.classList.add('hidden'); }
+
 // Wire the modal + delegated cell clicks once (static elements; #sc-wrap survives re-renders).
 $('#scm-close').onclick=closeScModal;
 $('#sc-modal .scm-backdrop').onclick=closeScModal;
+$('#scm2-close').onclick=closeInvReport;
+$('#sc-modal2 .scm-backdrop').onclick=closeInvReport;
 $('#sc-wrap').onclick=(ev)=>{ const td=ev.target.closest?ev.target.closest('td.drill'):null; if(!td) return;
   openScModal(scDrill(td.getAttribute('data-d'), td.getAttribute('data-c'))); };
-// Expand/collapse a projected order's line items inside the modal.
-$('#scm-body').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr) return;
+// Modal body clicks: "View full report" buttons open the second popup; otherwise expand/collapse a row.
+$('#scm-body').onclick=(ev)=>{
+  const btn=ev.target.closest?ev.target.closest('[data-invsrc]'):null;
+  if(btn){ openInvReport(btn.getAttribute('data-invsrc')); return; }
+  const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr) return;
   const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } };
-document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeScModal(); });
+// Esc closes the top-most popup first (full report), then the drill modal.
+document.addEventListener('keydown',e=>{ if(e.key!=='Escape') return;
+  const m2=$('#sc-modal2'); if(m2 && !m2.classList.contains('hidden')) closeInvReport(); else closeScModal(); });
 
 /* ============================ New York (LeafLink) ============================ */
 // NY sells through LeafLink (BME "Wizard Trees", Astoria NY). For now NY has ONE page — Customer
