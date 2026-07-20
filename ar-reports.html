@@ -2974,11 +2974,17 @@ function captureScorecardSnap(){
   const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   const pr=computeProjectedForCurrentWeek(currentMon);
-  const onHand=computeOnHandValue();
+  // On-hand needs BOTH inventory sources to be a COMPLETE figure. The nabis-inventory scrape flakes
+  // (~1 run in 13), which would otherwise drop ~$48k of Nabis and republish a partial on-hand that
+  // clobbers the good one. When incomplete, OMIT onHand so the merge keeps the last good snapshot.
+  const invComplete = !!(FILES.nabis_inventory && FILES.distru_inventory);
+  const onHand = invComplete ? computeOnHandValue() : null;
   // Only capture if we have something worth storing. Skip otherwise so we don't pollute
   // snapshots with all-null entries.
   if(pr.projN==null && pr.projD==null && onHand==null) return null;
-  return { date:isoD(currentMon), values:{projN:pr.projN, projD:pr.projD, onHand} };
+  const values={projN:pr.projN, projD:pr.projD};
+  if(onHand!=null) values.onHand=onHand;   // omit when incomplete → the snap merge keeps the prior on-hand
+  return { date:isoD(currentMon), values };
 }
 
 function scorecardRows(){
@@ -3149,7 +3155,12 @@ function buildScDetail(){
   const now=new Date(); now.setHours(0,0,0,0);
   const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-  const inv=(onHandDetail()||[]).map(x=>({source:x.source,name:x.name,batch:x.batch,qty:x.qty,price:x.price}));
+  // Same completeness guard as the snapshot: if an inventory source is missing this run, carry the
+  // previously-published breakdown forward rather than publishing a partial (Distru-only) one.
+  const invComplete = !!(FILES.nabis_inventory && FILES.distru_inventory);
+  const inv = invComplete
+    ? (onHandDetail()||[]).map(x=>({source:x.source,name:x.name,batch:x.batch,qty:x.qty,price:x.price}))
+    : ((SC_DETAIL && SC_DETAIL.inv) || []);
   const pd=projectedDetail(currentMon);
   // Slim each projected order for the shared payload: short item keys (s/p/q/lt) keep the
   // line-item drill-down available to team viewers without bloating the published JSON.
