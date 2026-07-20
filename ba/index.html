@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.65';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.66';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1276,7 +1276,7 @@ async function baReport(m){
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this range yet.</p>`}
     </div>`;
   // Your visits — same data as discrete (store, day) visits (own data, so no BA name)
-  const visits=buildVisits(trips.data,exps.data,hrs.data,{inRegion:()=>true, baName:()=>'', dnm:dn});
+  const visits=buildVisits(trips.data,exps.data,hrs.data,{keep:()=>true, baName:()=>'', dnm:dn});
   const nvTrips=(trips.data||[]).filter(t=>!t.dispensary_id);
   const nvExps=(exps.data||[]).filter(x=>dispIds(x).length===0);
   const nonVisit={ tripCount:nvTrips.length, tripAmt:nvTrips.reduce((a,t)=>a+Number(t.amount||0),0),
@@ -2909,7 +2909,7 @@ async function adminReport(m){
   const {start,end}=ensureRepRange();
   const [{data:profs},{data:disps},trips,exps,hrs]=await Promise.all([
     supabase.from('profiles').select('id,full_name,region'),
-    supabase.from('dispensaries').select('id,name'),
+    supabase.from('dispensaries').select('id,name,state'),
     supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,ba_id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
     supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,kind,note,status,source').gte('work_date',start).lte('work_date',end),
@@ -2918,20 +2918,25 @@ async function adminReport(m){
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
   const region=state.adminRegion;
   const inRegion=ba_id=>region==='all' || (pById[ba_id]&&pById[ba_id].region===region);
+  // region membership follows the linked dispensary's state too — so an admin (no region)
+  // or a cross-region user logging spend at, say, a NY store still lands under the NY
+  // report, not only under "All". Unlinked/general items fall back to the logger's region.
+  const dRegion=id=>{ const d=id&&dById[id]; return d?(d.state||null):null; };
+  const keep=(ba_id,dispId)=>inRegion(ba_id) || dRegion(dispId)===region;
   const baName=ba_id=>(pById[ba_id]&&pById[ba_id].full_name)||'BA';
   const agg={}, items={};   // dispensary_id|'none' -> totals / item list
   const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0}; items[k]=items[k]||[]; };
-  (trips.data||[]).forEach(t=>{ if(!inRegion(t.ba_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
+  (trips.data||[]).forEach(t=>{ if(!keep(t.ba_id,t.dispensary_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,ba_id:t.ba_id,date:t.trip_date,ba:baName(t.ba_id),disp:(dById[k]&&dById[k].name)||'',
       start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,
       start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
   const dnm=id=>(id&&dById[id])?dById[id].name:'';
-  (exps.data||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const A=Number(x.amount||0), names=dispIds(x).map(dnm).filter(Boolean);
-    dispSplit(x,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=share;
+  (exps.data||[]).forEach(x=>{ const A=Number(x.amount||0), names=dispIds(x).map(dnm).filter(Boolean);
+    dispSplit(x,A).forEach(({id,share,n})=>{ if(!keep(x.ba_id,id)) return; const k=id||'none'; ensure(k); agg[k][x.payment==='company'?'card':'exp']+=share;
       items[k].push({kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:baName(x.ba_id),disp:dnm(id),dispNames:names,splitN:n,
         vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
-  (hrs.data||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dnm).filter(Boolean);
-    dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share;
+  (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dnm).filter(Boolean);
+    dispSplit(h,A).forEach(({id,share,n})=>{ if(!keep(h.ba_id,id)) return; const k=id||'none'; ensure(k); agg[k].labor+=share;
       items[k].push({kind:'hours',id:h.id,ba_id:h.ba_id,date:h.work_date,ba:baName(h.ba_id),disp:dnm(id),dispNames:names,splitN:n,
         hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,cat:h.kind,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
@@ -2957,7 +2962,7 @@ async function adminReport(m){
 
   // Visits: the SAME data reorganized as discrete (BA, store, day) visits — each with
   // its round-trip mileage$, that day's labor$ share, and any expense$ rolled together.
-  const visits=buildVisits(trips.data,exps.data,hrs.data,{inRegion,baName,dnm});
+  const visits=buildVisits(trips.data,exps.data,hrs.data,{keep,baName,dnm});
   // Not everything is a store visit — trips/expenses with no store linked are legit
   // (general driving, supplies, non-BA time). Tally them so nothing's lost, framed neutrally.
   const nvTrips=(trips.data||[]).filter(t=>inRegion(t.ba_id) && !t.dispensary_id);
@@ -3007,18 +3012,18 @@ async function adminReport(m){
 // don't form a visit (surfaced as a "complete these" nudge instead).
 const isPlaceholderName=n=>/^\*\s/.test(n||'');
 function buildVisits(trips, exps, hrs, ctx){
-  const {inRegion,baName,dnm}=ctx; const V={};
+  const {keep,baName,dnm}=ctx; const V={};
   const ens=(b,d,dt)=>{ const k=`${b}|${d}|${dt}`;
     if(!V[k]) V[k]={key:k,ba_id:b,disp_id:d,date:dt,ba:baName(b),disp:dnm(d)||'(deleted location)',
       mile:0,labor:0,exp:0,card:0,miles:0,laborHrs:0,trips:[],hours:[],expenses:[]};
     return V[k]; };
-  (trips||[]).forEach(t=>{ if(!inRegion(t.ba_id)||!t.dispensary_id) return;
+  (trips||[]).forEach(t=>{ if(!t.dispensary_id||!keep(t.ba_id,t.dispensary_id)) return;
     const v=ens(t.ba_id,t.dispensary_id,t.trip_date); v.mile+=Number(t.amount||0); v.miles+=Number(t.miles||0); v.trips.push(t); });
-  (hrs||[]).forEach(h=>{ if(!inRegion(h.ba_id)) return; const A=Number(h.amount||0), H=Number(h.hours||0);
-    dispSplit(h,A).forEach(({id,share,n,hrs:hshare})=>{ if(!id) return; const v=ens(h.ba_id,id,h.work_date);
+  (hrs||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0);
+    dispSplit(h,A).forEach(({id,share,n,hrs:hshare})=>{ if(!id||!keep(h.ba_id,id)) return; const v=ens(h.ba_id,id,h.work_date);
       v.labor+=share; v.laborHrs+=(hshare!=null?hshare:H/n); v.hours.push({row:h,share,n}); }); });
-  (exps||[]).forEach(x=>{ if(!inRegion(x.ba_id)) return; const A=Number(x.amount||0);
-    dispSplit(x,A).forEach(({id,share,n})=>{ if(!id) return; const v=ens(x.ba_id,id,x.expense_date);
+  (exps||[]).forEach(x=>{ const A=Number(x.amount||0);
+    dispSplit(x,A).forEach(({id,share,n})=>{ if(!id||!keep(x.ba_id,id)) return; const v=ens(x.ba_id,id,x.expense_date);
       if(x.payment==='company') v.card+=share; else v.exp+=share; v.expenses.push({row:x,share,n}); }); });
   return Object.values(V).map(v=>({...v,total:v.mile+v.labor+v.exp+v.card})).filter(v=>v.total>0);
 }
