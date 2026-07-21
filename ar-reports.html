@@ -116,6 +116,7 @@
   .adm-table th{text-align:left;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.4px;padding:8px 10px;border-bottom:1px solid var(--line)}
   .adm-table td{padding:8px 10px;border-bottom:1px solid var(--line)}
   .adm-table select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 8px;font:inherit;font-size:12.5px}
+  .adm-table .muted2{color:var(--muted);font-size:12.5px}
   .adm-x{background:none;border:1px solid var(--line);border-radius:8px;color:var(--red);width:26px;height:26px;cursor:pointer;font-size:13px;line-height:1}
   .adm-x:hover{border-color:var(--red)}
   .adm-add{display:flex;gap:8px;margin-top:14px;align-items:center;flex-wrap:wrap}
@@ -348,6 +349,8 @@
   .scm-body thead th{position:sticky;top:0;background:var(--panel2);color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.4px;z-index:1}
   .scm-body tfoot td{position:sticky;bottom:0;background:var(--panel2);font-weight:700;border-top:2px solid var(--line)}
   .scm-empty{padding:26px 4px;color:var(--muted);text-align:center}
+  .scm-body tr.row-green td{color:var(--green)}
+  .scm-body tr.row-div td{color:var(--muted);font-size:11px;letter-spacing:.4px;padding-top:12px}
   .scm-head-extra{padding:2px 0 10px}
   .scm-link{display:inline-block;color:var(--accent2);font-size:12.5px;font-weight:600;text-decoration:none;border:1px solid var(--line);border-radius:8px;padding:6px 11px;background:var(--panel2)}
   .scm-link:hover{border-color:var(--accent2)}
@@ -1104,14 +1107,24 @@ function sbAuth(){ if(_sbAuth) return _sbAuth; if(window.supabase&&window.supaba
 const ADMIN_EMAILS=['gianni@wizardtrees.com'];
 const isAdmin=()=>!!(AUTH_USER&&ADMIN_EMAILS.includes(AUTH_USER.email));
 let ACCESS_TABLE=null;   // Map(email → 'all'|'CA'|'NY') from Supabase app_access; null = not loaded (fall back to STATE_ACCESS)
+const ACCESS_CACHE_KEY='wtAccessCache';   // last-known-good copy of app_access (per browser)
 async function loadAccessTable(){
   const c=sbAuth(); if(!c) return false;
   try{
     const {data,error}=await c.from('app_access').select('email,states').abortSignal(AbortSignal.timeout(8000));
-    if(error||!Array.isArray(data)) return false;
+    if(error||!Array.isArray(data)) throw (error||new Error('bad response'));
     ACCESS_TABLE=new Map(data.map(r=>[String(r.email||'').toLowerCase(), r.states]));
+    try{ localStorage.setItem(ACCESS_CACHE_KEY, JSON.stringify({t:Date.now(), rows:[...ACCESS_TABLE]})); }catch(e){}
     return true;
-  }catch(e){ return false; }
+  }catch(e){
+    // Fetch failed → hydrate this browser's LAST KNOWN table so panel removals/downgrades stick
+    // through flaky networks (the hardcoded STATE_ACCESS fallback would silently resurrect a
+    // removed person's old access). Falls through to the hardcoded map only on a first-ever
+    // visit in that browser. Known limit: a removed person's OWN cache predates their removal
+    // until one successful load — same exposure as before, fixed only by server-side enforcement.
+    if(!ACCESS_TABLE) try{ const k=JSON.parse(localStorage.getItem(ACCESS_CACHE_KEY)||'null'); if(k&&Array.isArray(k.rows)) ACCESS_TABLE=new Map(k.rows); }catch(e2){}
+    return false;
+  }
 }
 function statesFor(email){
   if(ADMIN_EMAILS.includes(email)) return ['CA','NY'];
@@ -1185,11 +1198,14 @@ function closeAdmin(){ $('#admin-modal').classList.add('hidden'); }
 function renderAdmin(msg){
   const body=$('#admin-body'); if(!body) return;
   if(!ACCESS_TABLE){
-    body.innerHTML=`<div class="scm-empty">Couldn't load the live access list from Supabase — the app is running on its built-in fallback list, which can only be changed by editing the code.<br><br><button class="btn" id="adm-retry">Retry</button></div>`;
+    body.innerHTML=`<div class="scm-empty">Couldn't load the live access list from Supabase — the app is running on its fallback list (this browser's last-known copy when one exists, else the built-in list). Editing needs the live table.<br><br><button class="btn" id="adm-retry">Retry</button></div>`;
     const r=$('#adm-retry'); if(r) r.onclick=async()=>{ await loadAccessTable(); renderAdmin(); };
     return;
   }
-  const rows=[...ACCESS_TABLE.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
+  // Pin admin rows into the roster even if their table row was removed out-of-band — they always
+  // have access (statesFor override), so the list should say so rather than omit them.
+  const merged=new Map(ACCESS_TABLE); ADMIN_EMAILS.forEach(e=>{ if(!merged.has(e)) merged.set(e,'all'); });
+  const rows=[...merged.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
   const opt=(sel)=>ADMIN_LEVELS.map(([v,l])=>`<option value="${v}"${v===sel?' selected':''}>${l}</option>`).join('');
   const tr=([email,states])=>{
     const admin=ADMIN_EMAILS.includes(email);
@@ -1209,21 +1225,28 @@ function renderAdmin(msg){
   body.querySelectorAll('[data-adm-set]').forEach(s=>s.onchange=()=>adminSet(s.getAttribute('data-adm-set'), s.value));
   body.querySelectorAll('[data-adm-del]').forEach(b=>b.onclick=()=>adminRemove(b.getAttribute('data-adm-del')));
   const g=$('#adm-grant'); if(g) g.onclick=()=>{ const em=(($('#adm-email')||{}).value||'').trim().toLowerCase();
-    if(!/^[^@\s]+@wizardtrees\.com$/.test(em)){ renderAdmin('Enter a full @wizardtrees.com address.'); const i=$('#adm-email'); if(i){ i.value=em; i.focus(); } return; }
+    // validation error updates in place — a full re-render would wipe the typed email + chosen level
+    if(!/^[^@\s]+@wizardtrees\.com$/.test(em)){ const e2=$('#adm-err'); if(e2) e2.textContent='Enter a full @wizardtrees.com address.'; const i=$('#adm-email'); if(i) i.focus(); return; }
     adminSet(em, ($('#adm-states')||{}).value||'CA'); };
 }
+// After a confirmed write, apply the change to the local Map too (optimistically), so a failed
+// post-write refresh can't silently show the pre-write list as if the save was lost.
 async function adminSet(email,states){
   const c=sbAuth(); if(!c) return;
   const {error}=await c.from('app_access').upsert({email, states, updated_by:(AUTH_USER&&AUTH_USER.email)||'', updated_at:new Date().toISOString()});
   if(error){ renderAdmin('Save failed: '+(error.message||'unknown error')); return; }
-  await loadAccessTable(); renderAdmin();
+  if(ACCESS_TABLE) ACCESS_TABLE.set(email,states);
+  const ok=await loadAccessTable();
+  renderAdmin(ok?undefined:'Saved — but the list couldn\'t be refreshed; showing your change locally. Reload to verify.');
 }
 async function adminRemove(email){
   if(!confirm(`Remove ${email}'s access? They'll get the "contact your admin" screen on their next visit.`)) return;
   const c=sbAuth(); if(!c) return;
   const {error}=await c.from('app_access').delete().eq('email',email);
   if(error){ renderAdmin('Remove failed: '+(error.message||'unknown error')); return; }
-  await loadAccessTable(); renderAdmin();
+  if(ACCESS_TABLE) ACCESS_TABLE.delete(email);
+  const ok=await loadAccessTable();
+  renderAdmin(ok?undefined:'Removed — but the list couldn\'t be refreshed; showing your change locally. Reload to verify.');
 }
 // Filifera sells to Nabis (the distributor) THROUGH Distru, so Distru has orders with
 // Customer/Company = "Nabis". That product is tracked downstream in the Nabis system, so
@@ -1493,7 +1516,7 @@ async function hardRefresh(){
   const btn=$('#sb-refresh'); const oldLabel=btn?btn.textContent:''; if(btn){ btn.disabled=true; btn.textContent='Refreshing…'; }
   // wipe browser-side caches — but keep the Supabase auth session + the agent flag, or Refresh
   // would sign the user (or the auto-publisher) out on every click.
-  try{ Object.keys(localStorage).forEach(k=>{ if(k==='salesAppAgent'||/^sb-.*-auth-token$/.test(k)) return; localStorage.removeItem(k); }); }catch(e){}
+  try{ Object.keys(localStorage).forEach(k=>{ if(k==='salesAppAgent'||k===ACCESS_CACHE_KEY||/^sb-.*-auth-token$/.test(k)) return; localStorage.removeItem(k); }); }catch(e){}
   try{ sessionStorage.clear(); }catch(e){}
   try{ document.cookie.split(';').forEach(c=>{ const n=c.split('=')[0].trim(); if(n) document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/'; }); }catch(e){}
   try{ if(window.caches&&caches.keys) caches.keys().then(ks=>ks.forEach(k=>caches.delete(k))); }catch(e){}
@@ -3638,7 +3661,7 @@ function openScModal(spec){
       const det=hasDet?spec.rowDetails[ri]:null;
       const cells=r.map((v,j)=>{const c=spec.columns[j]; const val=c.money?((v===''||v==null)?'':fmt$(+v||0)):esc(String(v));   // blank money cells stay blank (divider/adjustment rows), not $0.00
         return `<td class="${c.num?'num money':''}">${(j===0&&det)?`<span class="caret">▶</span> ${val}`:val}</td>`;}).join('');
-      const parent=`<tr class="${det?'parent':''}">${cells}</tr>`;
+      const parent=`<tr class="${det?'parent':''}${(Array.isArray(spec.rowClass)&&spec.rowClass[ri])?' '+spec.rowClass[ri]:''}">${cells}</tr>`;   // optional per-row class (e.g. green payment rows)
       const detail=det?`<tr class="detail hidden"><td colspan="${spec.columns.length}"><div class="detailbox invdetail">${det}</div></td></tr>`:'';
       return parent+detail;
     }).join('');
