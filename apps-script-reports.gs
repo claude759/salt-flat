@@ -75,8 +75,40 @@ function out_(obj, e) {
 
 // ── Entry points ──────────────────────────────────────────────
 function doGet(e) {
-  // Returns the latest published dataset (or { empty:true } if none yet).
+  var action = e && e.parameter && e.parameter.action;
+  if (action === 'hmops') return hmops_(e);
+  // Default: returns the latest published dataset (or { empty:true } if none yet).
   return out_(readData_(), e);
+}
+
+// HM OPS "Order Queue" sheet → the Wizard Trees rows only. Token-gated and READ-ONLY.
+// Runs as the script owner (gianni@), who has view access to the shared sheet — so the
+// nightly pipeline can read it without the sheet being public. Scans every weekly tab
+// (names like "7/20-7/24") and returns rows whose Box Count/Brands mentions Wizard Trees.
+var HMOPS_SHEET_ID = '1SckEftdpPhT1G-zmEsFKLit0y-32WkmK8kpYV0roVOA';
+function hmops_(e) {
+  if (e.parameter.token !== 'wt-health-7f3a9c21') return out_({ ok: false, error: 'bad token' }, e);
+  try {
+    var ss = SpreadsheetApp.openById(HMOPS_SHEET_ID);
+    var rows = [];
+    ss.getSheets().forEach(function (sh) {
+      var name = String(sh.getName() || '').trim();
+      if (!/^\d{1,2}\/\d{1,2}\s*-\s*\d{1,2}\/\d{1,2}$/.test(name)) return;   // weekly tabs only (skip DROP LISTS / Driver Blocks / Template)
+      var vals = sh.getDataRange().getDisplayValues();
+      if (vals.length < 2) return;
+      var head = vals[0].map(function (h) { return String(h || '').trim(); });
+      var bi = head.indexOf('Box Count/Brands'); if (bi < 0) bi = 4;   // column E if the header ever changes
+      for (var r = 1; r < vals.length; r++) {
+        if (!/wizard\s*trees/i.test(String(vals[r][bi] || ''))) continue;
+        var o = { week: name };
+        head.forEach(function (h, i) { if (h) o[h] = String(vals[r][i] == null ? '' : vals[r][i]); });
+        rows.push(o);
+      }
+    });
+    return out_({ ok: true, fetchedAt: new Date().toISOString(), rows: rows }, e);
+  } catch (ex) {
+    return out_({ ok: false, error: ex.message }, e);
+  }
 }
 
 function doPost(e) {
@@ -98,6 +130,18 @@ function doPost(e) {
       };
       writeData_(obj);
       return out_({ ok: true, uploadedAt: obj.uploadedAt, uploadedBy: obj.uploadedBy }, e);
+    }
+    if (action === 'email') {
+      // Morning systems-health review, emailed by the local 5am health-check.mjs. Token-gated
+      // and FIXED recipient so this public endpoint can't be abused to send arbitrary mail.
+      // Sends as the script owner via Gmail — no SMTP creds anywhere.
+      if (e.parameter.token !== 'wt-health-7f3a9c21') return out_({ ok: false, error: 'bad token' }, e);
+      MailApp.sendEmail({
+        to: 'gianni@wizardtrees.com',
+        subject: (e.parameter.subject || 'Wizard Trees — Systems Health').toString().slice(0, 200),
+        body: (e.parameter.body || '').toString().slice(0, 40000)
+      });
+      return out_({ ok: true, emailed: true }, e);
     }
     return out_({ ok: false, error: 'Unknown action: ' + action }, e);
   } catch (ex) {
