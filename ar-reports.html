@@ -1202,6 +1202,13 @@ function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num
 
 /* ============================ State ============================ */
 const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null };
+// Provenance of publishable state: which payload keys were rebuilt from ACTUAL FILES this session.
+// loadShared paints the localStorage cache first (stale-while-revalidate), so state can be
+// cache-derived — publishing that would overwrite the (fresher) live payload with stale data.
+// That exact clobber regressed NY from 231→105 orders on 2026-07-21 (9:52 run: no LeafLink files
+// + flaky revalidate fetch → published the 9:29 cache over the 9:49 payload). publishToTeam only
+// includes keys marked here; everything else rides the freshly-fetched merge base.
+const FRESH=new Set();
 const LABELS = {
   distru_invoice:'Distru invoice history',
   distru_items:'Distru sales-order items',
@@ -1455,8 +1462,10 @@ async function loadShared(){
 
 async function publishToTeam(){
   if(isPlaceholder()){ alert('Team sharing isn\'t set up yet. See apps-script-reports.gs for the one-time setup.'); return; }
-  const hasAR=RAW&&RAW.length, hasConc=CONC_EVENTS&&CONC_EVENTS.length, hasSku=SKU_EVENTS&&SKU_EVENTS.length;
-  if(!hasAR && !hasConc && !hasSku) return;
+  // Publish ONLY state rebuilt from FILES this session (FRESH). Cache/payload-derived state must
+  // never be re-published: it can be older than the live payload and would clobber it (see FRESH).
+  const hasAR=FRESH.has('ar')&&RAW&&RAW.length, hasConc=FRESH.has('conc')&&CONC_EVENTS&&CONC_EVENTS.length, hasSku=FRESH.has('sku')&&SKU_EVENTS&&SKU_EVENTS.length;
+  if(!FRESH.size){ alert('Nothing locally loaded to publish — drop CSV files first (the live report already has the latest published data).'); return; }
   const who=$('#sb-name').value.trim();
   const btn=$('#sb-publish'), old=btn.textContent; btn.disabled=true; btn.textContent='Publishing…';
   try{
@@ -1475,14 +1484,14 @@ async function publishToTeam(){
     if(hasAR)  cur.ar  ={records:recordsToPayload(RAW),cleaning:CLEAN};   // keep line items (slim) so the team sees the per-invoice breakdown + link
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
-    if(VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
-    if(CUST_DIR && Object.keys(CUST_DIR).length) cur.custDir=custDirToWire(CUST_DIR);  // additive; customer directory persists like visits
-    if(NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
-    if(NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
-    if(NY_INV && NY_INV.length) cur.nyInv=nyInvToWire(NY_INV);                          // additive; NY recon invoices (paid/outstanding/discounts)
-    if(NY_QBO && NY_QBO.length) cur.nyQbo=nyQboToWire(NY_QBO);                          // additive; WTNY QuickBooks invoices (our receivables)
-    if(NY_QBO_PAY && NY_QBO_PAY.length) cur.nyQboPay=nyQboPayToWire(NY_QBO_PAY);        // additive; payments applied to those invoices
-    if(NY_RITEMS && NY_RITEMS.length) cur.nyRItems=nyRItemsToWire(NY_RITEMS);            // additive; NY recon line items (invoice drill-down)
+    if(FRESH.has('visits') && VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
+    if(FRESH.has('custDir') && CUST_DIR && Object.keys(CUST_DIR).length) cur.custDir=custDirToWire(CUST_DIR);  // additive; customer directory persists like visits
+    if(FRESH.has('ny') && NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
+    if(FRESH.has('nyItems') && NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
+    if(FRESH.has('nyInv') && NY_INV && NY_INV.length) cur.nyInv=nyInvToWire(NY_INV);                          // additive; NY recon invoices (paid/outstanding/discounts)
+    if(FRESH.has('nyQbo') && NY_QBO && NY_QBO.length) cur.nyQbo=nyQboToWire(NY_QBO);                          // additive; WTNY QuickBooks invoices (our receivables)
+    if(FRESH.has('nyQboPay') && NY_QBO_PAY && NY_QBO_PAY.length) cur.nyQboPay=nyQboPayToWire(NY_QBO_PAY);        // additive; payments applied to those invoices
+    if(FRESH.has('nyRItems') && NY_RITEMS && NY_RITEMS.length) cur.nyRItems=nyRItemsToWire(NY_RITEMS);            // additive; NY recon line items (invoice drill-down)
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
     // latest values for the current week; past weeks are never overwritten.
@@ -1492,7 +1501,10 @@ async function publishToTeam(){
     // Enrich every past Monday with computed AR so shared viewers (no raw FILES) see real
     // values, not blanks. Past snapshots are merged additively — projN/projD/onHand stay.
     snaps = enrichSnapsWithAllAR(snaps);
-    cur.scorecard = { snaps, detail: buildScDetail() };
+    // Drill detail: only rebuild when item files are loaded; otherwise keep the merge base's
+    // detail (fresher than any cache-derived SC_DETAIL) so pN/pD drill lists never blank out.
+    const baseDetail = cur.scorecard && cur.scorecard.detail;
+    cur.scorecard = { snaps, detail: (FILES.distru_items||FILES.nabis_detail) ? buildScDetail() : (baseDetail || buildScDetail()) };
     const body=new URLSearchParams({action:'publish',uploadedBy:who,payload:JSON.stringify(cur)});
     await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});   // throws only on real network failure
     // Confirm is best-effort: the POST above is opaque (no-cors), so a failed read-back
@@ -1695,6 +1707,7 @@ function build(){
   const haveAny = FILES.distru_invoice || FILES.nabis_aging;
   if(!haveAny){ RAW=null; SHARED=null; $('#reports').classList.add('hidden'); renderNotes(); renderShareBar(); return; }
   RAW = ingestFromFiles();
+  FRESH.add('ar');               // built from FILES → safe to publish
   SHARED = null;                 // uploading puts us in local (unpublished) mode
   rebuild();
 }
@@ -2263,7 +2276,7 @@ function aggregateConcessions(){
 }
 
 function buildConcessions(){
-  if(FILES.distru_items || FILES.nabis_detail) CONC_EVENTS=buildConcEvents().concat(qboConcEvents());   // rebuild events from files (+ QuickBooks historical)
+  if(FILES.distru_items || FILES.nabis_detail){ CONC_EVENTS=buildConcEvents().concat(qboConcEvents()); FRESH.add('conc'); }   // rebuild events from files (+ QuickBooks historical)
   if(CONC_EVENTS && CONC_EVENTS.length) aggregateConcessions();
   else if(!(SHARED && CONC && CONC.length)) { CONC=[]; CONC_BRAND=[]; }          // don't blank a legacy shared snapshot
   if(CONC.length) $('#reports').classList.remove('hidden');
@@ -2541,7 +2554,7 @@ function aggregateSku(){
   SKU=SRCS.map(build).filter(s=> s.source!=='QuickBooks' || s.totals.units>0.0001 || Math.abs(s.totals.actualized)>0.005 || (s.invoices&&s.invoices.length) || Math.abs(s.discCredits||0)>0.005);
 }
 function buildSku(){
-  if(FILES.distru_items || FILES.nabis_detail) SKU_EVENTS=buildSkuEvents().concat(qboSkuEvents());
+  if(FILES.distru_items || FILES.nabis_detail){ SKU_EVENTS=buildSkuEvents().concat(qboSkuEvents()); FRESH.add('sku'); }
   if(SKU_EVENTS && SKU_EVENTS.length) aggregateSku();
   else if(!(SHARED && SKU && SKU.length)) SKU=[];
   if(SKU.length) $('#reports').classList.remove('hidden');
@@ -3081,9 +3094,13 @@ function captureScorecardSnap(){
   const onHand = invComplete ? computeOnHandValue() : null;
   // Only capture if we have something worth storing. Skip otherwise so we don't pollute
   // snapshots with all-null entries.
-  if(pr.projN==null && pr.projD==null && onHand==null) return null;
-  const values={projN:pr.projN, projD:pr.projD};
+  // Projected values are only publishable when computed from ACTUAL item files this session —
+  // otherwise they came from the cache/payload (possibly stale) and must not overwrite the snap.
+  const projFresh = !!(FILES.distru_items || FILES.nabis_detail);
+  const values={};
+  if(projFresh){ values.projN=pr.projN; values.projD=pr.projD; }
   if(onHand!=null) values.onHand=onHand;   // omit when incomplete → the snap merge keeps the prior on-hand
+  if(!Object.keys(values).length) return null;
   return { date:isoD(currentMon), values };
 }
 
@@ -3651,11 +3668,11 @@ function nyRecon(){
   return {n:L.length, gross, discounts, delivered, excise, netProduct, distroFee, netPO, collected, outstanding, collectedNetPO};
 }
 
-function buildNy(){ if(FILES.leaflink) NY_EVENTS=buildNyEvents(); if(FILES.leaflink_items) NY_ITEMS=buildNyItemEvents();
-  if(FILES.ny_invoices) NY_INV=buildNyInv();
-  if(FILES.ny_recon_items) NY_RITEMS=buildNyRItems();
-  if(FILES.ny_qbo_inv) NY_QBO=buildNyQbo();
-  if(FILES.ny_qbo_pay) NY_QBO_PAY=buildNyQboPay();
+function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny'); } if(FILES.leaflink_items){ NY_ITEMS=buildNyItemEvents(); FRESH.add('nyItems'); }
+  if(FILES.ny_invoices){ NY_INV=buildNyInv(); FRESH.add('nyInv'); }
+  if(FILES.ny_recon_items){ NY_RITEMS=buildNyRItems(); FRESH.add('nyRItems'); }
+  if(FILES.ny_qbo_inv){ NY_QBO=buildNyQbo(); FRESH.add('nyQbo'); }
+  if(FILES.ny_qbo_pay){ NY_QBO_PAY=buildNyQboPay(); FRESH.add('nyQboPay'); }
   if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); } }
 function tierDataNY(){
   const months=Math.max(1,+(($('#tier-months')||{}).value||3));
@@ -3718,9 +3735,18 @@ function nyTierDrill(name){
   const list=(NY_EVENTS||[]).filter(e=>e.c===name&&e.d>=start.getTime()&&e.d<=end.getTime()).sort((a,b)=>b.d-a.d);
   if(!list.length) return;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
-  openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first`,
+  // Expandable line items per order (from the LeafLink per-order crawl). Orders with no cached
+  // items yet render flat (null detail) — items publish with the next NY refresh.
+  const itemsTable=ref=>{ const items=(NY_ITEMS||[]).filter(it=>it.ref===ref); if(!items.length) return null;
+    const body=items.map(it=>{ const p=nyParseProduct(it.product); const nm=p.strain+(p.format?` — ${p.format}`:'');
+      const u=it.units||0, unit=u?it.lineTotal/u:0;
+      return `<tr><td>${esc(nm)}</td><td class="num">${u?Math.round(u).toLocaleString():''}</td><td class="num money">${unit?fmt$(unit):''}</td><td class="num money">${fmt$(it.lineTotal)}</td></tr>`; }).join('');
+    const tu=items.reduce((s,it)=>s+(it.units||0),0), tl=items.reduce((s,it)=>s+(it.lineTotal||0),0);
+    return `<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Price/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${body}</tbody><tfoot><tr class="totals"><td>Total · ${items.length} line${items.length!==1?'s':''}</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr></tfoot></table>`; };
+  openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first · click an order for its line items`,
     columns:[{l:'Order #'},{l:'Status'},{l:'Drop'},{l:'Date'},{l:'Amount',num:true,money:true}],
     rows:list.map(e=>{ const dr=nyDropOf(e.d); return [e.ref||'—', e.st||'—', dr?('Drop '+dr.n):'—', fmtDt(e.d), e.amt]; }),
+    rowDetails:list.map(e=>itemsTable(e.ref)),
     totalLabel:'Total', total:list.reduce((s,e)=>s+e.amt,0)});
 }
 // ── CA / NY state toggle ──
@@ -3830,6 +3856,19 @@ function renderArNYRecon(){
       <td class="num money"${cls==='neg'?' style="color:var(--red)"':(cls==='tot'?' style="color:var(--green);font-weight:800"':'')}>${fmt$(v)}</td></tr>`).join('')}</table>
     <div class="nywf-n">Collected from dispensaries so far: <b>${fmt$(R.collected)}</b> of ${fmt$(R.delivered)} — so <b>${fmt$(R.collectedNetPO)}</b> of the ${fmt$(R.netPO)} Net PO has been remitted. The rest follows as invoices are paid.</div></div>`;
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  // New LeafLink orders the distributor hasn't invoiced yet (shipped after the newest recon
+  // invoice). The recon workbook is monthly — without this the AR page looked frozen between
+  // workbooks; new orders now show immediately and graduate into the receivables table (with
+  // real paid/outstanding) when the next recon is ingested.
+  const maxInvD=all.reduce((m,x)=>Math.max(m,x.d||0),0);
+  const pendAll=nyArData().filter(r=>r.d && r.d>maxInvD);
+  const pend=q?pendAll.filter(r=>r.c.toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)):pendAll;
+  const pendSum=pend.reduce((s,r)=>s+(r.amt||0),0);
+  const pendHtml=pend.length?`<div class="nywf"><div class="nywf-h">New LeafLink orders — awaiting distributor invoicing</div>
+    <table class="ddtable"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Expected due</th><th class="num">Amount</th></tr></thead>
+    <tbody>${pend.map(r=>`<tr><td>${esc(r.c)}</td><td>${esc(r.ref||'—')}</td><td class="num">${fmtD(r.d)}</td><td>${esc(r.terms||'—')}</td><td class="num">${fmtD(r.due)}</td><td class="num money">${fmt$(r.amt||0)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr class="totals"><td colspan="5">${pend.length} order${pend.length!==1?'s':''}</td><td class="num money">${fmt$(pendSum)}</td></tr></tfoot></table>
+    <div class="nywf-n">Orders shipped in LeafLink after the last recon invoice (${fmtD(maxInvD)}). The distributor hasn't invoiced them yet, so they're not in the receivables table below — they move down there (with real paid/outstanding) when the next monthly recon workbook is ingested.</div></div>`:'';
   const statusCell=x=>{ if(x.out<=0.005) return '<span style="color:var(--green)">paid</span>';
     if(x.dpd==null) return '<span class="neg">—</span>';
     if(x.dpd>0) return `<span style="color:var(--red)">overdue ${x.dpd}d</span>`;
@@ -3842,7 +3881,7 @@ function renderArNYRecon(){
     <td class="num money">${fmt$(x.total)}</td>
     <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
-  wrap.innerHTML=nyQboSection()+wfHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
+  wrap.innerHTML=nyQboSection()+pendHtml+wfHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
   wireNyQbo(wrap);
   wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
@@ -4145,7 +4184,9 @@ function buildCustDir(){
   });
   scan(FILES.nabis_detail && FILES.nabis_detail.data, 'Delivery Date');   // richest source (has Region/POC)
   scan(FILES.nabis_brand  && FILES.nabis_brand.data,  'Delivery Date');   // fallback / fill blanks
-  CUST_DIR=dir;
+  // Only replace the directory when a source file is actually loaded — otherwise a file drop with
+  // none of these sources would blank the cache-loaded directory (and publishing is provenance-gated).
+  if(FILES.distru_companies || FILES.nabis_detail || FILES.nabis_brand){ CUST_DIR=dir; FRESH.add('custDir'); }
 }
 function custInfo(name){ return CUST_DIR[tierNorm(name)]||{}; }
 function custDirToWire(dir){ const o={}; for(const k in dir){ const v=dir[k]; o[k]=[v.dba||'',v.legal||'',v.address||'',v.license||'',v.region||'']; } return o; }
@@ -4170,7 +4211,7 @@ function buildVisitEvents(){
 // Shared-payload wire: [d, account, flags(1=PAD|2=EDU), note] per visit (additive payload key).
 function visitsToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, (e.pad?1:0)|(e.edu?2:0), e.note||'']); }
 function visitsFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), pad:!!(a[2]&1), edu:!!(a[2]&2), note:String(a[3]||'')})); }
-function buildVisits(){ if(FILES.visits) VISIT_EVENTS=buildVisitEvents(); renderRepMode(); }   // refresh the ACTIVE report (visits/customers/sales/…) — CONC_EVENTS was just rebuilt upstream
+function buildVisits(){ if(FILES.visits){ VISIT_EVENTS=buildVisitEvents(); FRESH.add('visits'); } renderRepMode(); }   // refresh the ACTIVE report (visits/customers/sales/…) — CONC_EVENTS was just rebuilt upstream
 // Stiiizy rollup (user request Jul 2 2026): all Stiiizy-branded stores count under ONE
 // account "STIIIZY" — matches any name containing sti(i…)zy (incl. the sheet's "Stiizy"
 // typo), the Airfield San Jose store, and Authentic 209 (Stiiizy Modesto). The raw store
