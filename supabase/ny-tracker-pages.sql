@@ -43,42 +43,57 @@ create table if not exists public.ny_notes (
 );
 
 -- ---- ny_units_days: the LP Units page, one row per day ---------------------
+--   NY runs 1g pre-rolls and .7g 5-packs only, and doesn't split rec from void,
+--   so this drops CA's 1.5g pre-roll columns and its per-market jar/total/pound
+--   columns in favour of one packed / labeled pair.
 create table if not exists public.ny_units_days (
   work_date       date primary key,
-  p15_prod        numeric(12,2),
-  p15_pre         numeric(12,2),
-  p15_post        numeric(12,2),
   p10_prod        numeric(12,2),
   p10_pre         numeric(12,2),
   p10_post        numeric(12,2),
   pk5_prod        numeric(12,2),
   pk5_pre         numeric(12,2),
   pk5_post        numeric(12,2),
-  jar_rec_pack    numeric(12,2),
-  jar_rec_label   numeric(12,2),
+  jar_pack        numeric(12,2),
+  jar_label       numeric(12,2),
   bud_pack        numeric(12,2),
   bud_label       numeric(12,2),
-  jar_void_pack   numeric(12,2),
-  jar_void_label  numeric(12,2),
   pouch_pack      numeric(12,2),
   pouch_label     numeric(12,2),
   prep            numeric(12,2),
   hours           numeric(8,2),
   ppl             numeric(6,2),
-  tot_rec_pack    numeric(12,2),
-  tot_rec_label   numeric(12,2),
-  tot_void_pack   numeric(12,2),
-  tot_void_label  numeric(12,2),
+  tot_pack        numeric(12,2),
+  tot_label       numeric(12,2),
   tot_prep        numeric(12,2),
   uph             numeric(16,6),
-  lbs_rec_pack    numeric(12,6),
-  lbs_rec_label   numeric(12,6),
-  lbs_void_pack   numeric(12,6),
-  lbs_void_label  numeric(12,6),
+  lbs_pack        numeric(12,6),
+  lbs_label       numeric(12,6),
   source          text not null default 'edit' check (source in ('import','edit')),
   updated_by      uuid references auth.users(id),
   updated_at      timestamptz not null default now()
 );
+
+-- reshape for projects that ran the first cut of this file (the table is only
+-- ever empty at that point, so dropping the unused market columns is safe)
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema='public' and table_name='ny_units_days' and column_name='jar_rec_pack') then
+    alter table public.ny_units_days
+      drop column if exists p15_prod,      drop column if exists p15_pre,
+      drop column if exists p15_post,      drop column if exists jar_void_pack,
+      drop column if exists jar_void_label,
+      drop column if exists tot_void_pack, drop column if exists tot_void_label,
+      drop column if exists lbs_void_pack, drop column if exists lbs_void_label;
+    alter table public.ny_units_days rename column jar_rec_pack  to jar_pack;
+    alter table public.ny_units_days rename column jar_rec_label to jar_label;
+    alter table public.ny_units_days rename column tot_rec_pack  to tot_pack;
+    alter table public.ny_units_days rename column tot_rec_label to tot_label;
+    alter table public.ny_units_days rename column lbs_rec_pack  to lbs_pack;
+    alter table public.ny_units_days rename column lbs_rec_label to lbs_label;
+  end if;
+end $$;
 
 -- ---- ny_labor_history: NY's own frozen-history table -----------------------
 --   The CA app reads labor_history for its pre-cutover rows. NY has no history
