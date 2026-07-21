@@ -196,6 +196,17 @@
   .nywf-h{font-weight:700;font-size:13.5px;margin-bottom:10px}
   .nywf .ddtable{width:100%}
   .nywf-n{margin-top:10px;font-size:12.5px;color:var(--muted);line-height:1.6}
+  /* NY AR cards: full-width variant (the 620px cap suited the old compact waterfall; the QBO
+     receivables + pending-orders tables need the room), and a collapsible body for long lists. */
+  .nywf-wide{max-width:none}
+  .nywf-tgl{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:0;user-select:none}
+  .nywf-tgl:hover{color:var(--accent2)}
+  .nywf-tgl .caret{display:inline-block;margin-right:7px;font-size:10px;color:var(--muted);transition:transform .15s}
+  .nywf-tgl.open .caret{transform:rotate(90deg)}
+  .nywf-sum{font-weight:600;font-size:12.5px;color:var(--muted);white-space:nowrap}
+  .nywf-scroll{max-height:380px;overflow:auto;margin-top:10px}
+  .nywf-scroll .ddtable thead th{position:sticky;top:0;background:var(--panel2);z-index:2;box-shadow:inset 0 -1px 0 var(--line)}
+  .nywf-scroll .ddtable tfoot td{position:sticky;bottom:0;background:var(--panel2);z-index:2;box-shadow:inset 0 1px 0 var(--line)}
   /* Credits/Discounts: the whole point of these tables is the % of Gross, but it's the LAST of 10
      columns and scrolled off-screen on narrower windows. Pin it (and its header/footer) to the
      right edge so it's always readable. Direct-child selectors keep this off the nested
@@ -3629,6 +3640,7 @@ function nyInvFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),so:Strin
 let NY_QBO=[];      // {inv, c, d, due, memo, total, bal}
 let NY_QBO_PAY=[];  // {d, amt, c, inv}
 let NY_QBO_ASOF=null;   // ISO timestamp of the last successful QBO pull (from the payload) — drives the as-of / STALE badge
+let NY_PEND_OPEN=false; // "New LeafLink orders" card expanded? (collapsed by default — the list runs 100+ rows; state survives re-renders from search typing)
 function buildNyQbo(){
   if(!FILES.ny_qbo_inv) return [];
   return FILES.ny_qbo_inv.data.map(r=>{
@@ -3819,17 +3831,25 @@ function nyTierDrill(name){
   if(!list.length) return;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
   // Expandable line items per order (from the LeafLink per-order crawl). Orders with no cached
-  // items yet render flat (null detail) — items publish with the next NY refresh.
-  const itemsTable=ref=>{ const items=(NY_ITEMS||[]).filter(it=>it.ref===ref); if(!items.length) return null;
+  // items yet render flat (null detail) — items publish with the next NY refresh. When the order
+  // carries LeafLink credits/discounts (report `Credits` column), the breakdown shows them as a
+  // red line plus an explicit Order-total row, so the math down to the Amount column is visible.
+  const itemsTable=e=>{ const items=(NY_ITEMS||[]).filter(it=>it.ref===e.ref); const cr=e.cr||0;
+    if(!items.length && cr<=0.005) return null;
     const body=items.map(it=>{ const p=nyParseProduct(it.product); const nm=p.strain+(p.format?` — ${p.format}`:'');
       const u=it.units||0, unit=u?it.lineTotal/u:0;
       return `<tr><td>${esc(nm)}</td><td class="num">${u?Math.round(u).toLocaleString():''}</td><td class="num money">${unit?fmt$(unit):''}</td><td class="num money">${fmt$(it.lineTotal)}</td></tr>`; }).join('');
     const tu=items.reduce((s,it)=>s+(it.units||0),0), tl=items.reduce((s,it)=>s+(it.lineTotal||0),0);
-    return `<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Price/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${body}</tbody><tfoot><tr class="totals"><td>Total · ${items.length} line${items.length!==1?'s':''}</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr></tfoot></table>`; };
+    const foot = cr>0.005
+      ? `<tr><td>Subtotal · ${items.length} line${items.length!==1?'s':''}</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr>`+
+        `<tr><td style="color:var(--red)">Credits / discounts</td><td></td><td></td><td class="num money" style="color:var(--red)">-${fmt$(cr)}</td></tr>`+
+        `<tr class="totals"><td>Order total</td><td></td><td></td><td class="num money">${fmt$(e.amt)}</td></tr>`
+      : `<tr class="totals"><td>Total · ${items.length} line${items.length!==1?'s':''}</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr>`;
+    return `<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Price/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`; };
   openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first · click an order for its line items`,
     columns:[{l:'Order #'},{l:'Status'},{l:'Drop'},{l:'Date'},{l:'Amount',num:true,money:true}],
     rows:list.map(e=>{ const dr=nyDropOf(e.d); return [e.ref||'—', e.st||'—', dr?('Drop '+dr.n):'—', fmtDt(e.d), e.amt]; }),
-    rowDetails:list.map(e=>itemsTable(e.ref)),
+    rowDetails:list.map(e=>itemsTable(e)),
     totalLabel:'Total', total:list.reduce((s,e)=>s+e.amt,0)});
 }
 // ── CA / NY state toggle ──
@@ -3899,7 +3919,7 @@ function nyQboSection(){
   const asOf=ageH==null?'' : ageH>6
     ? ` · <span style="color:var(--red);font-weight:700">STALE — last updated ${ageH>48?Math.round(ageH/24)+' days':Math.round(ageH)+'h'} ago</span>`
     : ` · as of ${new Date(NY_QBO_ASOF).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`;
-  return `<div class="nywf"><div class="nywf-h">Our invoices — Wizard Trees NY (QuickBooks)${asOf||' · live balances'}</div>
+  return `<div class="nywf nywf-wide"><div class="nywf-h">Our invoices — Wizard Trees NY (QuickBooks)${asOf||' · live balances'}</div>
     <table class="ddtable" id="ny-qbo-table"><thead><tr><th>Invoice #</th><th>Customer</th><th class="num">Date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th></tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${rows.length} invoice${rows.length!==1?'s':''} · ${open.length} open${overdue.length?` · <span style="color:var(--red)">${overdue.length} overdue</span>`:''}</td><td class="num money">${fmt$(S('total'))}</td><td class="num money">${fmt$(S('paid'))}</td><td class="num money">${fmt$(S('bal'))}</td></tr></tfoot></table>
@@ -3951,11 +3971,15 @@ function renderArNYRecon(){
   const pendAll=nyArData().filter(r=>r.d && r.d>maxInvD);
   const pend=q?pendAll.filter(r=>r.c.toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)):pendAll;
   const pendSum=pend.reduce((s,r)=>s+(r.amt||0),0);
-  const pendHtml=pend.length?`<div class="nywf"><div class="nywf-h">New LeafLink orders — awaiting distributor invoicing</div>
-    <table class="ddtable"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Expected due</th><th class="num">Amount</th></tr></thead>
+  // Collapsed by default: this list runs 100+ rows between monthly recons — a one-line summary
+  // carries the signal (count + $), the detail expands on click into a scrolling body.
+  const pendHtml=pend.length?`<div class="nywf nywf-wide"><div class="nywf-h nywf-tgl${NY_PEND_OPEN?' open':''}" id="ny-pend-tgl" title="${NY_PEND_OPEN?'Click to collapse':'Click to expand'}">
+      <span><span class="caret">▶</span>New LeafLink orders — awaiting distributor invoicing</span>
+      <span class="nywf-sum">${pend.length} order${pend.length!==1?'s':''} · ${fmt$(pendSum)}</span></div>
+    <div class="nywf-scroll${NY_PEND_OPEN?'':' hidden'}"><table class="ddtable"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Expected due</th><th class="num">Amount</th></tr></thead>
     <tbody>${pend.map(r=>`<tr><td>${esc(r.c)}</td><td>${esc(r.ref||'—')}</td><td class="num">${fmtD(r.d)}</td><td>${esc(r.terms||'—')}</td><td class="num">${fmtD(r.due)}</td><td class="num money">${fmt$(r.amt||0)}</td></tr>`).join('')}</tbody>
-    <tfoot><tr class="totals"><td colspan="5">${pend.length} order${pend.length!==1?'s':''}</td><td class="num money">${fmt$(pendSum)}</td></tr></tfoot></table>
-    <div class="nywf-n">Orders shipped in LeafLink after the last recon invoice (${fmtD(maxInvD)}). The distributor hasn't invoiced them yet, so they're not in the receivables table below — they move down there (with real paid/outstanding) when the next monthly recon workbook is ingested.</div></div>`:'';
+    <tfoot><tr class="totals"><td colspan="5">${pend.length} order${pend.length!==1?'s':''}</td><td class="num money">${fmt$(pendSum)}</td></tr></tfoot></table></div>
+    ${NY_PEND_OPEN?`<div class="nywf-n">Orders shipped in LeafLink after the last recon invoice (${fmtD(maxInvD)}). The distributor hasn't invoiced them yet, so they're not in the receivables table below — they move down there (with real paid/outstanding) when the next monthly recon workbook is ingested.</div>`:''}</div>`:'';
   const statusCell=x=>{ if(x.out<=0.005) return '<span style="color:var(--green)">paid</span>';
     if(x.dpd==null) return '<span class="neg">—</span>';
     if(x.dpd>0) return `<span style="color:var(--red)">overdue ${x.dpd}d</span>`;
@@ -3971,6 +3995,7 @@ function renderArNYRecon(){
   wrap.innerHTML=nyQboSection()+pendHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
   wireNyQbo(wrap);
+  { const tg=wrap.querySelector('#ny-pend-tgl'); if(tg) tg.onclick=()=>{ NY_PEND_OPEN=!NY_PEND_OPEN; renderArNY(); }; }
   wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
   note.innerHTML=`<b>New York receivables</b> — click any invoice for its line items + discount detail. REAL invoice balances from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>): <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed, <b>Discount</b> = invoice-level discount. Wizard Trees is the brand — what you actually receive nets out the 9% NY excise baked into the price and the distributor's 10% fee, and lands as the Drop invoices in the QuickBooks section above. Sales/orders elsewhere on the NY side still come from LeafLink (live); this page is the authoritative money view and updates when a new recon workbook is ingested.`;
 }
