@@ -3743,7 +3743,7 @@ function buildNyEvents(){
   FILES.leaflink.data.forEach(r=>{
     const buyer=String(r['Buyer']||r['Customer']||'').replace(/\s*\([^)]*\)\s*$/,'').trim(); if(!buyer) return;   // strip the trailing "(Licensee LLC)"
     const st=String(r['Status']||'').trim();
-    if(/cancel|reject|declin|draft/i.test(st)) return;
+    if(/cancel|reject|declin|draft|combin/i.test(st)) return;   // "Combined" = merged into a successor order, which carries the merged total — counting both double-books it (and would double-count line items on Tiers / Sales by Type)
     const d=parseDate(r['Ship Date']||r['Order Date']||r['Created Date']); if(!d) return;
     const amt=num(r['Total Amount']!=null?r['Total Amount']:(r['Order Total']!=null?r['Order Total']:r['Total']));
     const cr=Math.abs(num(r['Credits']));   // LeafLink order-level credits/discounts (report column; 0 when none)
@@ -4137,7 +4137,10 @@ document.querySelectorAll('#state-toggle button').forEach(b=>b.onclick=()=>setAp
 function nyTermsDays(t){ const m=String(t||'').match(/net\s*(\d+)/i); if(m) return +m[1]; if(/cod/i.test(String(t||''))) return 0; return null; }   // null = unknown terms
 function nyArData(){
   const now=new Date(); now.setHours(23,59,59,999);
-  return (NY_EVENTS||[]).map(e=>{ const days=nyTermsDays(e.terms);
+  // Defence in depth: buildNyEvents drops "Combined" orders at parse time, but a payload published
+  // BEFORE that fix still carries them — filter here too so no AR view can double-count a merged
+  // order whose successor already holds the full amount.
+  return (NY_EVENTS||[]).filter(e=>!/combin/i.test(e.st||'')).map(e=>{ const days=nyTermsDays(e.terms);
     const due=days==null?null:(e.d+days*86400000);
     const dpd=due==null?null:Math.floor((now.getTime()-due)/86400000);
     return {...e, due, dpd}; }).sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
@@ -4237,6 +4240,7 @@ function renderArNYRecon(){
   const now=new Date(); now.setHours(23,59,59,999);
   const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
   const dpdOf=due=>(due==null?null:Math.floor((now.getTime()-due)/86400000));
+  const shippedSt=st=>/ship|fulfil|complet|deliver/i.test(st||'');   // delivered → collectible; merely "Submitted" is pipeline
   const invRows=(NY_INV||[]).map(x=>({...x, dpd:dpdOf(x.due)}));
   const ordMap=nyInvOrderMap();
   // Un-invoiced LeafLink orders (shipped after the newest recon invoice) fold into the SAME
@@ -4250,7 +4254,7 @@ function renderArNYRecon(){
   const maxInvD=invRows.reduce((m,x)=>(x.d&&x.d<=dCap)?Math.max(m,x.d):m,0);
   const pendRows=(maxInvD?nyArData().filter(r=>r.d && r.d>maxInvD):[]).map(r=>({
     inv:'', so:'', c:r.c, d:r.d, due:r.due, st:'', total:0, paid:0, out:r.amt||0, disc:0, dsum:'',
-    dpd:dpdOf(r.due), _pend:true, _ref:r.ref||'', _terms:r.terms||'' }));
+    dpd:dpdOf(r.due), _pend:true, _ref:r.ref||'', _terms:r.terms||'', _st:r.st||'' }));
   const all=invRows.concat(pendRows)
     .sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
   const view=q?all.filter(x=>x.c.toLowerCase().includes(q)||x.inv.toLowerCase().includes(q)||(x.so||'').toLowerCase().includes(q)
@@ -4259,17 +4263,21 @@ function renderArNYRecon(){
   const vInv=view.filter(x=>!x._pend), vPend=view.filter(x=>x._pend);
   const open=vInv.filter(x=>x.out>0.005), past=open.filter(x=>x.dpd!=null&&x.dpd>0);
   const invoiced=S(vInv,'total'), collected=S(vInv,'paid');
-  const outInv=S(vInv,'out'), outPend=S(vPend,'out'), outstanding=outInv+outPend;
+  const outInv=S(vInv,'out');
+  const vShip=vPend.filter(x=>shippedSt(x._st)), vSub=vPend.filter(x=>!shippedSt(x._st));
+  const outShip=S(vShip,'out'), outSub=S(vSub,'out'), outPend=outShip+outSub, outstanding=outInv+outPend;
   cards.innerHTML=[
     ['Invoiced', fmt$(invoiced), vInv.length+' invoice'+(vInv.length!==1?'s':'')+' (distributor recon)'],
     ['Collected', fmt$(collected), invoiced>0?((collected/invoiced)*100).toFixed(1)+'% of invoiced':'—','var(--green)'],
-    ['Outstanding', fmt$(outstanding), vPend.length?`${fmt$(outInv)} invoiced + ${fmt$(outPend)} not yet invoiced`:open.length+' open','var(--yellow)'],
+    ['Outstanding', fmt$(outstanding), vPend.length?`${fmt$(outInv)} invoiced + ${fmt$(outShip)} shipped${outSub>0.005?` + ${fmt$(outSub)} placed, not shipped`:''}`:open.length+' open','var(--yellow)'],
     ['Past due', fmt$(S(past,'out')), past.length+' invoice'+(past.length!==1?'s':'')+' (invoiced only)','var(--red)'],
   ].map(([l,v,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${v}</div><div class="tc-blurb">${esc(sub)}</div></div>`).join('');
   // (Remittance waterfall removed per Gianni 2026-07-21 — the WTNY QuickBooks section above is now
   // the what-we-receive view. The nyRecon() math survives for the Net PO economics + tests.)
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
-  const statusCell=x=>{ if(x._pend) return '<span style="color:var(--orange)">not yet invoiced</span>';
+  const statusCell=x=>{ if(x._pend) return shippedSt(x._st)
+      ? `<span style="color:var(--orange)">shipped · not invoiced</span>`
+      : `<span class="muted2">${esc((x._st||'placed').toLowerCase())} · not shipped</span>`;
     if(x.out<=0.005) return '<span style="color:var(--green)">paid</span>';
     if(x.dpd==null) return '<span class="neg">—</span>';
     if(x.dpd>0) return `<span style="color:var(--red)">overdue ${x.dpd}d</span>`;
@@ -4288,7 +4296,7 @@ function renderArNYRecon(){
     <tfoot><tr class="totals"><td colspan="6">${vInv.length} invoice${vInv.length!==1?'s':''}${vPend.length?` + ${vPend.length} un-invoiced order${vPend.length!==1?'s':''}`:''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
   wireNyQbo(wrap);
   wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
-  note.innerHTML=`<b>New York receivables</b> — every dollar owed on the NY side, in one list. <b>Invoiced</b> rows come from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>) with REAL balances: <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed; click one for its line items + discount detail. Rows marked <span style="color:var(--orange)">not yet invoiced</span> are LeafLink orders shipped after the last recon invoice (${fmtD(maxInvD)}) — the distributor hasn't billed them yet, so they show the <b>order #</b> and an estimated due date from LeafLink terms, and their <b>gross order total</b> (before discounts, so they typically invoice slightly lower) counts in Outstanding only. They convert to real invoices when the next monthly recon workbook is ingested. Wizard Trees is the brand — what you actually receive nets out the 9% NY excise baked into the price and the distributor's 10% fee, and lands as the Drop invoices in the QuickBooks section above.`
+  note.innerHTML=`<b>New York receivables</b> — every dollar owed on the NY side, in one list. <b>Invoiced</b> rows come from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>) with REAL balances: <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed; click one for its line items + discount detail. Rows marked <span style="color:var(--orange)">not yet invoiced</span> are LeafLink orders placed after the last recon invoice (${fmtD(maxInvD)}) — the distributor hasn't billed them yet, so they show the <b>order #</b> and an estimated due date from LeafLink terms, and their <b>gross order total</b> (before discounts, so they typically invoice slightly lower) counts in Outstanding only. Each row states whether it has <b>shipped</b> or is only <b>placed</b> (the Outstanding card splits the two — placed-but-unshipped orders aren't collectible yet). Orders LeafLink marks <b>Combined</b> are excluded: they're merged into a successor order that carries the merged total. They convert to real invoices when the next monthly recon workbook is ingested. Wizard Trees is the brand — what you actually receive nets out the 9% NY excise baked into the price and the distributor's 10% fee, and lands as the Drop invoices in the QuickBooks section above.`
 }
 function renderArNY(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note'); if(!wrap) return;
