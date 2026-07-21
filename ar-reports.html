@@ -436,6 +436,7 @@
       <div class="tab" data-tab="tiers">Customer Tiers</div>
       <div class="tab" data-tab="reports">Reports</div>
       <div class="tab hidden" data-tab="credits">Credits/Discount Tracker</div>
+      <div class="tab hidden" data-tab="hmops">HM OPS Tracker</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -1429,6 +1430,7 @@ function applyShared(d){
     if(data.nyInv && data.nyInv.length){ NY_INV=nyInvFromWire(data.nyInv); any=true; }   // NY recon invoices (real paid/outstanding/discounts)
     if(data.nyQbo && data.nyQbo.length){ NY_QBO=nyQboFromWire(data.nyQbo); any=true; }   // WTNY QuickBooks invoices (our receivables)
     if(data.nyQboPay && data.nyQboPay.length){ NY_QBO_PAY=nyQboPayFromWire(data.nyQboPay); any=true; }
+    if(data.nyQboAsOf) NY_QBO_ASOF=data.nyQboAsOf;   // when the QBO data was actually pulled (staleness badge)
     if(data.nyRItems && data.nyRItems.length){ NY_RITEMS=nyRItemsFromWire(data.nyRItems); any=true; }   // NY recon line items (invoice drill-down)
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
@@ -1491,6 +1493,9 @@ async function publishToTeam(){
     if(FRESH.has('nyInv') && NY_INV && NY_INV.length) cur.nyInv=nyInvToWire(NY_INV);                          // additive; NY recon invoices (paid/outstanding/discounts)
     if(FRESH.has('nyQbo') && NY_QBO && NY_QBO.length) cur.nyQbo=nyQboToWire(NY_QBO);                          // additive; WTNY QuickBooks invoices (our receivables)
     if(FRESH.has('nyQboPay') && NY_QBO_PAY && NY_QBO_PAY.length) cur.nyQboPay=nyQboPayToWire(NY_QBO_PAY);        // additive; payments applied to those invoices
+    // Freshness stamp: new timestamp ONLY when this publish actually loaded the QBO files; a
+    // carried-forward payload keeps its old stamp so a dead feed shows its true age (STALE badge).
+    if(FRESH.has('nyQbo')) cur.nyQboAsOf=new Date().toISOString(); else if(NY_QBO_ASOF) cur.nyQboAsOf=NY_QBO_ASOF;
     if(FRESH.has('nyRItems') && NY_RITEMS && NY_RITEMS.length) cur.nyRItems=nyRItemsToWire(NY_RITEMS);            // additive; NY recon line items (invoice drill-down)
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
@@ -3601,6 +3606,7 @@ function nyInvFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),so:Strin
 // the dispensary-side money view; this is what is owed TO Wizard Trees.
 let NY_QBO=[];      // {inv, c, d, due, memo, total, bal}
 let NY_QBO_PAY=[];  // {d, amt, c, inv}
+let NY_QBO_ASOF=null;   // ISO timestamp of the last successful QBO pull (from the payload) — drives the as-of / STALE badge
 function buildNyQbo(){
   if(!FILES.ny_qbo_inv) return [];
   return FILES.ny_qbo_inv.data.map(r=>{
@@ -3800,7 +3806,7 @@ function nyQboSection(){
   const open=rows.filter(x=>x.bal>0.005), overdue=open.filter(x=>x.dpd!=null&&x.dpd>0);
   const status=x=>{ if(x.bal<=0.005) return '<span style="color:var(--green)">paid</span>';
     const part=x.paid>0.005?' · partial':'';
-    if(x.dpd==null) return '<span class="neg">—</span>';
+    if(x.dpd==null) return part?'<span style="color:var(--yellow)">partial</span>':'<span class="neg">—</span>';
     if(x.dpd>0) return `<span style="color:var(--red)">overdue ${x.dpd}d${part}</span>`;
     if(x.dpd===0) return `<span style="color:var(--yellow)">due today${part}</span>`;
     return `<span style="color:${x.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-x.dpd}d${part}</span>`; };
@@ -3810,7 +3816,13 @@ function nyQboSection(){
     <td class="num money">${fmt$(x.total)}</td>
     <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${x.bal>0.005?fmt$(x.bal):'<span class="neg">—</span>'}</td></tr>`).join('');
-  return `<div class="nywf"><div class="nywf-h">Our invoices — Wizard Trees NY (QuickBooks) · live balances</div>
+  // As-of / staleness: fresh pulls happen hourly, so >6h old means the feed is broken — say so
+  // instead of letting frozen balances masquerade as live.
+  const ageH=NY_QBO_ASOF?(Date.now()-Date.parse(NY_QBO_ASOF))/3.6e6:null;
+  const asOf=ageH==null?'' : ageH>6
+    ? ` · <span style="color:var(--red);font-weight:700">STALE — last updated ${ageH>48?Math.round(ageH/24)+' days':Math.round(ageH)+'h'} ago</span>`
+    : ` · as of ${new Date(NY_QBO_ASOF).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`;
+  return `<div class="nywf"><div class="nywf-h">Our invoices — Wizard Trees NY (QuickBooks)${asOf||' · live balances'}</div>
     <table class="ddtable" id="ny-qbo-table"><thead><tr><th>Invoice #</th><th>Customer</th><th class="num">Date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th></tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${rows.length} invoice${rows.length!==1?'s':''} · ${open.length} open${overdue.length?` · <span style="color:var(--red)">${overdue.length} overdue</span>`:''}</td><td class="num money">${fmt$(S('total'))}</td><td class="num money">${fmt$(S('paid'))}</td><td class="num money">${fmt$(S('bal'))}</td></tr></tfoot></table>
@@ -3822,12 +3834,18 @@ function nyQboDrill(inv){
   const pays=(NY_QBO_PAY||[]).filter(p=>p.inv===inv).sort((a,b)=>(b.d||0)-(a.d||0));
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   const paid=Math.max(0,x.total-x.bal);
+  // The Balance can move by NON-payment settlements too (credit memos, write-offs, deposits) —
+  // surface the difference as its own line so the drill always reconciles to the table's Paid.
+  const appliedSum=pays.reduce((s,p)=>s+p.amt,0);
+  const delta=paid-appliedSum;
+  const rows=pays.map(p=>[fmtD(p.d), p.c||'—', p.amt]);
+  if(Math.abs(delta)>0.01 && (pays.length||paid>0.005)) rows.push(['—','Other settlements (credits / adjustments)',delta]);
   openScModal({ title:`Invoice ${x.inv} — ${x.c}`,
     sub:`invoiced ${fmt$(x.total)}${x.d?` on ${fmtD(x.d)}`:''}${x.due?` · due ${fmtD(x.due)}`:''} · paid ${fmt$(paid)} · balance ${fmt$(x.bal)}`,
     columns:[{l:'Payment date'},{l:'From'},{l:'Applied',num:true,money:true}],
-    rows:pays.map(p=>[fmtD(p.d), p.c||'—', p.amt]),
-    empty:pays.length?undefined:'No payments applied to this invoice yet.',
-    totalLabel:'Applied to date', total:pays.length?pays.reduce((s,p)=>s+p.amt,0):undefined });
+    rows,
+    empty:rows.length?undefined:'No payments applied to this invoice yet.',
+    totalLabel:'Settled to date', total:rows.length?paid:undefined });
 }
 function renderArNYRecon(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note');
@@ -3915,10 +3933,24 @@ function renderArNY(){
   note.innerHTML=`<b>New York expected receivables</b> — a payment <b>schedule</b> from LeafLink order terms (due = ship date + terms; Net 30 / COD), NOT confirmed unpaid balances: LeafLink doesn't report buyer payments yet (LeafLink Payments is enabled but no invoices assigned). When payments start flowing there, this page can upgrade to true paid/outstanding. Cancelled/rejected orders excluded.`;
 }
 { const el=$('#ar-ny-search'); if(el) el.addEventListener('input',renderArNY); }
-{ const el=$('#ar-ny-export'); if(el) el.onclick=()=>{ const rows=nyArData();
-  const out=[['Buyer','Order #','Ship date','Terms','Due date','Days past due','Amount']];
-  rows.forEach(r=>out.push([r.c,r.ref,new Date(r.d).toISOString().slice(0,10),r.terms||'',r.due?new Date(r.due).toISOString().slice(0,10):'',r.dpd==null?'':r.dpd,r.amt.toFixed(2)]));
-  downloadCSV('ny-expected-receivables.csv',out); }; }
+{ const el=$('#ar-ny-export'); if(el) el.onclick=()=>{
+  const out=[];
+  // WTNY QuickBooks section (when present) — export what's on screen, not just the LeafLink schedule
+  if((NY_QBO||[]).length){
+    out.push(['— OUR INVOICES (WTNY QuickBooks) —'],['Invoice #','Customer','Invoice date','Due date','Total','Paid','Balance']);
+    NY_QBO.forEach(x=>out.push([x.inv,x.c,x.d?new Date(x.d).toISOString().slice(0,10):'',x.due?new Date(x.due).toISOString().slice(0,10):'',x.total.toFixed(2),Math.max(0,x.total-x.bal).toFixed(2),x.bal.toFixed(2)]));
+    out.push([]);
+  }
+  // Recon (dispensary-side) when loaded, else the LeafLink terms schedule — matches what renders
+  if((NY_INV||[]).length){
+    out.push(['— DISPENSARY INVOICES (distributor recon) —'],['Dispensary','Invoice #','Invoice date','Due date','Status','Discount','Invoiced','Collected','Outstanding']);
+    NY_INV.forEach(x=>out.push([x.c,x.inv,x.d?new Date(x.d).toISOString().slice(0,10):'',x.due?new Date(x.due).toISOString().slice(0,10):'',x.st,x.disc.toFixed(2),x.total.toFixed(2),x.paid.toFixed(2),x.out.toFixed(2)]));
+  } else {
+    const rows=nyArData();
+    out.push(['— EXPECTED RECEIVABLES (LeafLink terms) —'],['Buyer','Order #','Ship date','Terms','Due date','Days past due','Amount']);
+    rows.forEach(r=>out.push([r.c,r.ref,new Date(r.d).toISOString().slice(0,10),r.terms||'',r.due?new Date(r.due).toISOString().slice(0,10):'',r.dpd==null?'':r.dpd,r.amt.toFixed(2)]));
+  }
+  downloadCSV('ny-receivables.csv',out); }; }
 
 // ── NY Sales by Type: LeafLink line items grouped by product format → strain, with Drop cohorts ──
 let nyDropFilter=0;   // 0 = all drops
