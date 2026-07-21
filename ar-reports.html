@@ -224,11 +224,10 @@
   .nywf-scroll{max-height:380px;overflow:auto;margin-top:10px}
   .nywf-scroll .ddtable thead th{position:sticky;top:0;background:var(--panel2);z-index:2;box-shadow:inset 0 -1px 0 var(--line)}
   .nywf-scroll .ddtable tfoot td{position:sticky;bottom:0;background:var(--panel2);z-index:2;box-shadow:inset 0 1px 0 var(--line)}
-  /* "Our invoices" stays pinned while the receivables list scrolls under it. The receivables
-     header is sticky at top:0 too, so it gets offset by the pinned card's measured height
-     (--qbo-h, set after each render — the card's height changes with the invoice count). */
-  #ar-ny-wrap .nywf-stick{position:sticky;top:0;z-index:6;margin-bottom:0;border-bottom-left-radius:0;border-bottom-right-radius:0;box-shadow:0 6px 18px rgba(0,0,0,.45)}
-  #ar-ny-wrap #ar-ny-table thead th{top:var(--qbo-h,0px);z-index:5}
+  /* "Our invoices" card renders in #ar-ny-qbo, OUTSIDE the tablewrap: the wrap scrolls internally
+     (72vh, both axes), so a sticky card inside it overlapped the rows and clipped/slid away on
+     horizontal scroll (sticky can't pin left inside a client-width containing block). Out here it
+     simply stays put while the table scrolls beneath it — same "pinned" effect, no glitches. */
   /* Credits/Discounts: the whole point of these tables is the % of Gross, but it's the LAST of 10
      columns and scrolled off-screen on narrower windows. Pin it (and its header/footer) to the
      right edge so it's always readable. Direct-child selectors keep this off the nested
@@ -620,6 +619,10 @@
         <button class="btn" id="ar-ny-export">⬇ Export CSV</button>
       </div>
       <div class="tier-cards" id="ar-ny-cards"></div>
+      <!-- QBO card lives OUTSIDE the tablewrap: the wrap scrolls internally (72vh, both axes), so
+           anything sticky inside it overlaps the table and clips on horizontal scroll. Out here the
+           card stays visible while the table scrolls beneath — the "pinned" intent, glitch-free. -->
+      <div id="ar-ny-qbo"></div>
       <div class="tablewrap" id="ar-ny-wrap"></div>
       <div class="notes" id="ar-ny-note"></div>
     </div>
@@ -992,6 +995,11 @@
           <option value="1">Drop 1</option>
           <option value="2">Drop 2</option>
         </select>
+        <div class="seg" id="hmops-terms" title="Payment terms, from the matching LeafLink order">
+          <button class="on" data-terms="all">All</button>
+          <button data-terms="net30">Net 30</button>
+          <button data-terms="cod">COD</button>
+        </div>
         <div class="grow"></div>
         <button class="btn" id="hmops-export">⬇ Export CSV</button>
       </div>
@@ -3921,6 +3929,11 @@ function hmDedupe(list){
 // date) so this page can't drift from the Sales-by-Type drop split: an order already assigned to
 // Drop 1 stays Drop 1; anything newer — or not found in LeafLink at all — is Drop 2.
 function hmDropIndex(){ const m={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(e.ref||'').trim(); if(r && m[r]==null) m[r]=e.d; }); return m; }
+// HM OPS's sheet has no terms column — payment terms come from the matching LeafLink order,
+// the same LL#-join hmDropOf uses for the drop.
+function hmTermsIndex(){ const m={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(e.ref||'').trim(); if(r && !m[r]) m[r]=e.terms||''; }); return m; }
+const hmTermsKind=t=>/cod/i.test(t||'')?'cod':(/net\s*30/i.test(t||'')?'net30':'');
+let hmTermsFilter='all';
 function hmDropOf(ll, idx){
   const ref=String(ll||'').trim(); if(!ref) return 2;
   const d=idx ? idx[ref] : (((NY_EVENTS||[]).find(e=>String(e.ref||'').trim()===ref)||{}).d);
@@ -3935,7 +3948,8 @@ function renderHmOps(){
   const q=(($('#hmops-search')||{}).value||'').trim().toLowerCase();
   const range=(($('#hmops-range')||{}).value)||'week';
   const dropSel=(($('#hmops-drop')||{}).value)||'all';
-  const idx=hmDropIndex();
+  const idx=hmDropIndex(), tIdx=hmTermsIndex();
+  const termsOf=x=>tIdx[String(x.ll||'').trim()]||'';
   // date window, applied to the row's WEEKLY TAB (the sheet's own bucket, Mon–Fri)
   const today=new Date(); today.setHours(0,0,0,0);
   const mon=new Date(today); mon.setDate(today.getDate()-((today.getDay()+6)%7));
@@ -3948,6 +3962,7 @@ function renderHmOps(){
     return true; };
   const view=hmDedupe(all).filter(x=>inRange(x))
     .filter(x=>dropSel==='all' || String(hmDropOf(x.ll,idx))===dropSel)
+    .filter(x=>hmTermsFilter==='all' || hmTermsKind(termsOf(x))===hmTermsFilter)
     .filter(x=>!q || [x.shop,x.ll,x.wk,x.brands,x.notes,x.st].some(v=>String(v).toLowerCase().includes(q)))
     // "This week" reads as a delivery schedule (Mon→Fri); wider ranges read as history (newest first).
     .sort((a,b)=>{ const ta=hmRowDate(a), tb=hmRowDate(b);
@@ -3966,7 +3981,7 @@ function renderHmOps(){
     ['Total value', fmt$(tot), dropsIn.length?('Drop '+dropsIn.join(' + ')):('across '+view.length+' order'+(view.length!==1?'s':''))],
   ].map(([l,v,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${v}</div><div class="tc-blurb">${esc(sub)}</div></div>`).join('');
   if(!view.length){
-    wrap.innerHTML=`<div class="empty">No Wizard Trees orders in <b>${esc(rangeLabel)}</b>${dropSel!=='all'?` for <b>Drop ${esc(dropSel)}</b>`:''}${q?` matching “${esc(q)}”`:''}.<br><span class="muted2">${all.length} order${all.length!==1?'s':''} loaded overall — widen the date range to see them.</span></div>`;
+    wrap.innerHTML=`<div class="empty">No Wizard Trees orders in <b>${esc(rangeLabel)}</b>${dropSel!=='all'?` for <b>Drop ${esc(dropSel)}</b>`:''}${hmTermsFilter!=='all'?` on <b>${hmTermsFilter==='cod'?'COD':'Net 30'}</b> terms`:''}${q?` matching “${esc(q)}”`:''}.<br><span class="muted2">${all.length} order${all.length!==1?'s':''} loaded overall — widen the date range to see them.</span></div>`;
   } else {
   const stCell=x=> hmFlag(x.hold)?`<span style="color:var(--red)">HOLD${x.st?' · '+esc(x.st):''}</span>`
     : isDone(x)?`<span style="color:var(--green)">${esc(x.st)}</span>`
@@ -3976,7 +3991,7 @@ function renderHmOps(){
     hmFlag(x.email)?'<span class="pill" style="color:var(--green)">email sent</span>':'' ].filter(Boolean).join(' ');
   const body=view.map(x=>{ const dn=hmDropOf(x.ll,idx); const dv=hmFmtDeliv(x); return `<tr>
     <td class="num">${dv?`<b>${esc(dv)}</b>`:'<span class="neg">not scheduled</span>'}</td>
-    <td>${esc(x.wk)}</td><td>${esc(x.ll||'—')}</td>
+    <td>${esc(x.wk)}</td><td>${esc(x.ll||'—')}${termsOf(x)?`<div class="rep">${esc(termsOf(x))}</div>`:''}</td>
     <td class="num"><span class="pill" style="color:${dn===1?'var(--purple,#a78bfa)':'var(--green)'}">Drop ${dn}</span></td>
     <td>${esc(x.shop)}</td>
     <td>${stCell(x)}</td><td>${esc(x.brands)}</td>
@@ -4223,7 +4238,7 @@ function nyQboSection(q){
   const asOf=ageH==null?'' : ageH>6
     ? ` · <span style="color:var(--red);font-weight:700">STALE — last updated ${ageH>48?Math.round(ageH/24)+' days':Math.round(ageH)+'h'} ago</span>`
     : ` · as of ${new Date(NY_QBO_ASOF).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`;
-  return `<div class="nywf nywf-wide nywf-stick"><div class="nywf-h">Our invoices — Wizard Trees NY (QuickBooks)${asOf||' · live balances'}</div>
+  return `<div class="nywf nywf-wide"><div class="nywf-h">Our invoices — Wizard Trees NY (QuickBooks)${asOf||' · live balances'}</div>
     <table class="ddtable" id="ny-qbo-table"><thead><tr><th>Invoice #</th><th>Customer</th><th class="num">Date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Total</th><th class="num">Paid</th><th class="num">Balance</th></tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${rows.length} invoice${rows.length!==1?'s':''} · ${open.length} open${overdue.length?` · <span style="color:var(--red)">${overdue.length} overdue</span>`:''}</td><td class="num money">${fmt$(S('total'))}</td><td class="num money">${fmt$(S('paid'))}</td><td class="num money">${fmt$(S('bal'))}</td></tr></tfoot></table>
@@ -4342,12 +4357,9 @@ function renderArNYRecon(){
     <td class="num money">${x._pend?'<span class="neg">—</span>':fmt$(x.total)}</td>
     <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
-  wrap.innerHTML=nyQboSection(q)+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th>Order #</th><th>Drop</th><th class="num">Invoice / order date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
+  const qboEl=$('#ar-ny-qbo'); if(qboEl){ qboEl.innerHTML=nyQboSection(q); wireNyQbo(qboEl); }
+  wrap.innerHTML=`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th>Order #</th><th>Drop</th><th class="num">Invoice / order date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="7">${vInv.length} invoice${vInv.length!==1?'s':''}${vPend.length?` + ${vPend.length} un-invoiced order${vPend.length!==1?'s':''}`:''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
-  wireNyQbo(wrap);
-  { const card=wrap.querySelector('.nywf-stick');   // keep the receivables header just below the pinned card
-    const h=(card && typeof card.getBoundingClientRect==='function')?Math.round(card.getBoundingClientRect().height):0;
-    if(wrap.style && wrap.style.setProperty) wrap.style.setProperty('--qbo-h', h+'px'); }
   wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
   note.innerHTML=`<b>New York receivables</b> — every dollar owed on the NY side, in one list. <b>Invoiced</b> rows come from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>) with REAL balances: <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed; click one for its line items + discount detail. Rows marked <span style="color:var(--orange)">not yet invoiced</span> are LeafLink orders placed after the last recon invoice (${fmtD(maxInvD)}) — the distributor hasn't billed them yet, so they show the <b>order #</b> and an estimated due date from LeafLink terms, and their <b>gross order total</b> (before discounts, so they typically invoice slightly lower) counts in Outstanding only. Each row states whether it has <b>shipped</b> or is only <b>placed</b> (the Outstanding card splits the two — placed-but-unshipped orders aren't collectible yet). Orders LeafLink marks <b>Combined</b> are excluded: they're merged into a successor order that carries the merged total. They convert to real invoices when the next monthly recon workbook is ingested. Wizard Trees is the brand — what you actually receive nets out the 9% NY excise baked into the price and the distributor's 10% fee, and lands as the Drop invoices in the QuickBooks section above.`
 }
@@ -4357,9 +4369,9 @@ function renderArNY(){
   const all=nyArData();
   const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
   if(!all.length){ cards.innerHTML=''; note.innerHTML='';
-    const qbo=nyQboSection(q);
-    wrap.innerHTML=qbo||'<div class="empty">No New York (LeafLink) orders loaded yet.</div>';
-    if(qbo) wireNyQbo(wrap);
+    const qbo=nyQboSection(q), qboEl=$('#ar-ny-qbo');
+    if(qboEl){ qboEl.innerHTML=qbo; if(qbo) wireNyQbo(qboEl); }
+    wrap.innerHTML=qbo?'':'<div class="empty">No New York (LeafLink) orders loaded yet.</div>';
     return; }
   const view=q?all.filter(r=>r.c.toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)):all;
   const tot=view.reduce((s2,r)=>s2+r.amt,0);
@@ -4373,9 +4385,9 @@ function renderArNY(){
     if(r.dpd===0) return '<span style="color:var(--yellow)">due today</span>';
     return `<span style="color:${r.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-r.dpd}d</span>`; };
   const body=view.map(r=>`<tr><td>${esc(r.c)}</td><td>${esc(r.ref||'—')}</td><td class="num">${fmtD(r.d)}</td><td>${esc(r.terms||'—')}</td><td class="num">${fmtD(r.due)}</td><td class="num">${statusCell(r)}</td><td class="num money">${fmt$(r.amt)}</td></tr>`).join('');
-  wrap.innerHTML=nyQboSection(q)+`<table id="ar-ny-table"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Amount</th></tr></thead><tbody>${body}</tbody>
+  { const qboEl=$('#ar-ny-qbo'); if(qboEl){ qboEl.innerHTML=nyQboSection(q); wireNyQbo(qboEl); } }
+  wrap.innerHTML=`<table id="ar-ny-table"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Amount</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="6">${view.length} order${view.length!==1?'s':''}</td><td class="num money">${fmt$(tot)}</td></tr></tfoot></table>`;
-  wireNyQbo(wrap);
   note.innerHTML=`<b>New York expected receivables</b> — a payment <b>schedule</b> from LeafLink order terms (due = ship date + terms; Net 30 / COD), NOT confirmed unpaid balances: LeafLink doesn't report buyer payments yet (LeafLink Payments is enabled but no invoices assigned). When payments start flowing there, this page can upgrade to true paid/outstanding. Cancelled/rejected orders excluded.`;
 }
 { const el=$('#ar-ny-search'); if(el) el.addEventListener('input',renderArNY); }
@@ -4407,6 +4419,10 @@ function renderArNY(){
 { const el=$('#hmops-search'); if(el) el.addEventListener('input',renderHmOps); }
 { const el=$('#hmops-range'); if(el) el.addEventListener('change',renderHmOps); }
 { const el=$('#hmops-drop'); if(el) el.addEventListener('change',renderHmOps); }
+{ const seg=$('#hmops-terms'); if(seg) seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    hmTermsFilter=b.dataset.terms||'all';
+    seg.querySelectorAll('button').forEach(o=>o.classList.toggle('on', o===b));
+    renderHmOps(); }); }
 { const el=$('#hmops-export'); if(el) el.onclick=()=>{
   const idx=hmDropIndex();
   const out=[['Delivery Date','Week','Submitted','LL#','Drop','Shop','Status','Box Count/Brands','PK','MN','Total','5% DISC','STATE OR PAST','HOLD','RETURN PICKUP','DELIVERY EMAIL SENT','Notes']];
