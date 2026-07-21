@@ -1646,7 +1646,7 @@ async function publishToTeam(){
     // Drill detail: only rebuild when item files are loaded; otherwise keep the merge base's
     // detail (fresher than any cache-derived SC_DETAIL) so pN/pD drill lists never blank out.
     const baseDetail = cur.scorecard && cur.scorecard.detail;
-    cur.scorecard = { snaps, detail: (FILES.distru_items||FILES.nabis_detail) ? buildScDetail() : (baseDetail || buildScDetail()) };
+    cur.scorecard = { snaps, detail: (FILES.distru_items||FILES.nabis_detail) ? buildScDetail(baseDetail) : (baseDetail || buildScDetail(baseDetail)) };
     const body=new URLSearchParams({action:'publish',uploadedBy:who,payload:JSON.stringify(cur)});
     await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});   // throws only on real network failure
     // Confirm is best-effort: the POST above is opaque (no-cors), so a failed read-back
@@ -1698,7 +1698,32 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ FILES[x.dataset.clear]=null; renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); buildCustDir(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); buildCustDir(); });
+}
+// Clearing a file chip must also retract its derived state + FRESH mark — otherwise the next
+// publish still sends the removed file's data (the builds skip re-assignment when the file is
+// absent, leaving the old state marked publishable). Multi-source keys (ar/conc/sku/custDir)
+// self-heal: the rebuild right after re-derives + re-marks FRESH if a remaining source file
+// still backs them.
+function clearFileState(t){
+  FILES[t]=null;
+  const U={
+    distru_invoice:()=>{ FRESH.delete('ar'); },
+    nabis_aging:()=>{ FRESH.delete('ar'); },
+    distru_items:()=>{ CONC_EVENTS=[]; SKU_EVENTS=[]; FRESH.delete('conc'); FRESH.delete('sku'); },
+    nabis_detail:()=>{ CONC_EVENTS=[]; SKU_EVENTS=[]; CUST_DIR={}; FRESH.delete('conc'); FRESH.delete('sku'); FRESH.delete('custDir'); },
+    nabis_brand:()=>{ CUST_DIR={}; FRESH.delete('custDir'); },
+    distru_companies:()=>{ CUST_DIR={}; FRESH.delete('custDir'); },
+    visits:()=>{ VISIT_EVENTS=[]; FRESH.delete('visits'); },
+    leaflink:()=>{ NY_EVENTS=[]; FRESH.delete('ny'); },
+    leaflink_items:()=>{ NY_ITEMS=[]; FRESH.delete('nyItems'); },
+    ny_invoices:()=>{ NY_INV=[]; FRESH.delete('nyInv'); },
+    ny_recon_items:()=>{ NY_RITEMS=[]; FRESH.delete('nyRItems'); },
+    ny_qbo_inv:()=>{ NY_QBO=[]; FRESH.delete('nyQbo'); },
+    ny_qbo_pay:()=>{ NY_QBO_PAY=[]; FRESH.delete('nyQboPay'); },
+    hm_ops:()=>{ HM_OPS=[]; FRESH.delete('hmops'); },
+  };
+  (U[t]||(()=>{}))();
 }
 
 /* ============================ Build model ============================ */
@@ -3236,11 +3261,12 @@ function captureScorecardSnap(){
   const onHand = invComplete ? computeOnHandValue() : null;
   // Only capture if we have something worth storing. Skip otherwise so we don't pollute
   // snapshots with all-null entries.
-  // Projected values are only publishable when computed from ACTUAL item files this session —
-  // otherwise they came from the cache/payload (possibly stale) and must not overwrite the snap.
-  const projFresh = !!(FILES.distru_items || FILES.nabis_detail);
+  // Projected values are only publishable when computed from THAT source's ACTUAL item file this
+  // session — per-value, not either-file: a Distru-only drop must not publish projN:null over this
+  // Monday's good Nabis number (the snap merge spreads nulls). Absent key → prior value survives.
   const values={};
-  if(projFresh){ values.projN=pr.projN; values.projD=pr.projD; }
+  if(FILES.nabis_detail) values.projN=pr.projN;
+  if(FILES.distru_items) values.projD=pr.projD;
   if(onHand!=null) values.onHand=onHand;   // omit when incomplete → the snap merge keeps the prior on-hand
   if(!Object.keys(values).length) return null;
   return { date:isoD(currentMon), values };
@@ -3410,22 +3436,26 @@ $('#sc-export').onclick=()=>{
 
 // Slim current-week detail for the shared payload (so the team can drill On Hand / Projected
 // without the raw files). Built from FILES at publish time.
-function buildScDetail(){
+function buildScDetail(baseDetail){
   const now=new Date(); now.setHours(0,0,0,0);
   const currentMon=new Date(now); currentMon.setDate(now.getDate() - ((now.getDay()+6)%7));
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   // Same completeness guard as the snapshot: if an inventory source is missing this run, carry the
   // previously-published breakdown forward rather than publishing a partial (Distru-only) one.
+  // Prefer the JUST-FETCHED merge base (baseDetail, guaranteed fresh at the publish call site)
+  // over SC_DETAIL page state — SC_DETAIL can be null in the publisher (its cache is wiped) or
+  // cache-stale in a browser, and falling back to it published an EMPTY on-hand breakdown when a
+  // flaked inventory export coincided with a failed boot fetch.
   const invComplete = onHandComplete();
   const inv = invComplete
     ? (onHandDetail()||[]).map(x=>({source:x.source,name:x.name,batch:x.batch,qty:x.qty,price:x.price}))
-    : ((SC_DETAIL && SC_DETAIL.inv) || []);
+    : ((baseDetail && baseDetail.inv) || (SC_DETAIL && SC_DETAIL.inv) || []);
   // Full exported inventory (every line, incl. excluded) so team viewers can open the complete
   // Nabis/Distru reports. Same completeness guard as `inv`: carry the prior forward when a source
   // is missing this run rather than publishing a partial breakdown.
   const invFull = invComplete
     ? { Nabis: fullInventoryDetail('Nabis')||[], Distru: fullInventoryDetail('Distru')||[] }
-    : ((SC_DETAIL && SC_DETAIL.invFull) || null);
+    : ((baseDetail && baseDetail.invFull) || (SC_DETAIL && SC_DETAIL.invFull) || null);
   const pd=projectedDetail(currentMon);
   // Slim each projected order for the shared payload: short item keys (s/p/q/lt) keep the
   // line-item drill-down available to team viewers without bloating the published JSON.
@@ -3596,8 +3626,9 @@ function openScModal(spec){
   $('#scm-sub').textContent=spec.sub||'';
   const body=$('#scm-body');
   const head=spec.headHtml?`<div class="scm-head-extra">${spec.headHtml}</div>`:'';   // optional raw-HTML block (e.g. an invoice link) above the table
-  if(spec.empty){ body.innerHTML=head+`<div class="scm-empty">${esc(spec.empty)}</div>`; }
-  else if(!spec.rows||!spec.rows.length){ body.innerHTML=head+'<div class="scm-empty">No line items make up this figure.</div>'; }
+  const after=spec.footHtml?`<div class="scm-head-extra">${spec.footHtml}</div>`:'';  // optional raw-HTML block BELOW the table (e.g. the NY tier drill's recon-discounts section)
+  if(spec.empty){ body.innerHTML=head+`<div class="scm-empty">${esc(spec.empty)}</div>`+after; }
+  else if(!spec.rows||!spec.rows.length){ body.innerHTML=head+'<div class="scm-empty">No line items make up this figure.</div>'+after; }
   else {
     // Optional per-row expandable detail (spec.rowDetails parallel to spec.rows). Rows without a
     // detail render flat — keeps every other drill-down (AR, on-hand, sales) unchanged.
@@ -3612,7 +3643,7 @@ function openScModal(spec){
       return parent+detail;
     }).join('');
     const foot=spec.total!=null?`<tfoot><tr><td colspan="${spec.columns.length-1}">${esc(spec.totalLabel||'Total')}</td><td class="num money">${fmt$(spec.total)}</td></tr></tfoot>`:'';
-    body.innerHTML=head+`<table><thead><tr>${thead}</tr></thead><tbody>${trs}</tbody>${foot}</table>`;
+    body.innerHTML=head+`<table><thead><tr>${thead}</tr></thead><tbody>${trs}</tbody>${foot}</table>`+after;
   }
   $('#sc-modal').classList.remove('hidden');
 }
@@ -3966,10 +3997,21 @@ function nyTierDrill(name){
         `<tr class="totals"><td>Order total</td><td></td><td></td><td class="num money">${fmt$(e.amt)}</td></tr>`
       : `<tr class="totals"><td>Total · ${items.length} line${items.length!==1?'s':''}</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr>`;
     return `<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Price/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`; };
-  openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first · click an order for its line items`,
+  // The tier table's "Disc + Credits" column is INVOICE-level discounts from the distributor's
+  // recon (not LeafLink credits), joined by normalized name — same filter here, so this section's
+  // total ties to the column exactly. Click an invoice # for its line-item + discount detail.
+  const recon=(NY_INV||[]).filter(x=>x.d&&x.d>=start.getTime()&&x.d<=end.getTime()&&tierNorm(x.c)===tierNorm(name)&&(x.disc||0)>0.005)
+    .sort((a,b)=>(b.d||0)-(a.d||0));
+  const reconTot=recon.reduce((s,x)=>s+x.disc,0);
+  const footHtml=recon.length?`<div class="ddhead">Discounts / credits — distributor recon · <span style="color:var(--orange)">-${fmt$(reconTot)}</span> in this window (the tier table's "Disc + Credits")</div>
+    <table class="ddtable invitems"><thead><tr><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Discount</th><th>What it was</th></tr></thead><tbody>`+
+    recon.map(x=>`<tr><td><a class="scm-link" style="padding:2px 8px" href="javascript:void(0)" onclick="nyInvDrill('${esc(x.inv)}')">${esc(x.inv)}</a></td><td class="num">${fmtDt(x.d)}</td><td class="num money" style="color:var(--orange)">-${fmt$(x.disc)}</td><td>${esc(x.dsum||'—')}</td></tr>`).join('')+
+    `</tbody><tfoot><tr class="totals"><td>Total · ${recon.length} invoice${recon.length!==1?'s':''}</td><td></td><td class="num money" style="color:var(--orange)">-${fmt$(reconTot)}</td><td></td></tr></tfoot></table>`:'';
+  openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first · click an order for its line items${recon.length?' · discounts below are from the distributor’s recon invoices':''}`,
     columns:[{l:'Order #'},{l:'Status'},{l:'Drop'},{l:'Date'},{l:'Amount',num:true,money:true}],
     rows:list.map(e=>{ const dr=nyDropOf(e.d); return [e.ref||'—', e.st||'—', dr?('Drop '+dr.n):'—', fmtDt(e.d), e.amt]; }),
     rowDetails:list.map(e=>itemsTable(e)),
+    footHtml,
     totalLabel:'Total', total:list.reduce((s,e)=>s+e.amt,0)});
 }
 // ── CA / NY state toggle ──
@@ -4012,8 +4054,10 @@ function nyArData(){
 // NY AR — REAL invoices from the distributor's recon (paid / outstanding / discounts) plus the
 // remittance waterfall. Falls back to the old LeafLink terms-estimate when no recon is loaded.
 // ── WTNY QuickBooks section — OUR invoices (what's owed TO Wizard Trees), with live balances ──
-function nyQboSection(){
-  const L=NY_QBO||[]; if(!L.length) return '';
+function nyQboSection(q){
+  let L=NY_QBO||[]; if(!L.length) return '';
+  if(q) L=L.filter(x=>x.c.toLowerCase().includes(q)||x.inv.toLowerCase().includes(q));   // honor the page's search box like the other NY AR tables
+  if(!L.length) return '';
   const now=new Date(); now.setHours(23,59,59,999);
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   const rows=L.map(x=>({...x, paid:Math.max(0,x.total-x.bal), dpd:(x.due==null?null:Math.floor((now.getTime()-x.due)/86400000))}))
@@ -4084,7 +4128,7 @@ function renderArNYRecon(){
   const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
   const all=(NY_INV||[]).map(x=>({...x, dpd:(x.due==null?null:Math.floor((now.getTime()-x.due)/86400000))}))
     .sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
-  const view=q?all.filter(x=>x.c.toLowerCase().includes(q)||x.inv.toLowerCase().includes(q)):all;
+  const view=q?all.filter(x=>x.c.toLowerCase().includes(q)||x.inv.toLowerCase().includes(q)||(x.so||'').toLowerCase().includes(q)):all;
   const S=(a,k)=>a.reduce((s,x)=>s+(x[k]||0),0);
   const open=view.filter(x=>x.out>0.005), past=open.filter(x=>x.dpd!=null&&x.dpd>0);
   const invoiced=S(view,'total'), collected=S(view,'paid'), outstanding=S(view,'out');
@@ -4101,8 +4145,12 @@ function renderArNYRecon(){
   // invoice). The recon workbook is monthly — without this the AR page looked frozen between
   // workbooks; new orders now show immediately and graduate into the receivables table (with
   // real paid/outstanding) when the next recon is ingested.
-  const maxInvD=all.reduce((m,x)=>Math.max(m,x.d||0),0);
-  const pendAll=nyArData().filter(r=>r.d && r.d>maxInvD);
+  // maxInvD sanity: count only parseable recon dates that aren't future-dated typos (≤ today+45d)
+  // — an unparseable set would collapse the cutoff to 0 (flooding the section with the whole order
+  // book, double-counting the recon), and one future typo would suppress the section entirely.
+  const dCap=Date.now()+45*86400000;
+  const maxInvD=all.reduce((m,x)=>(x.d&&x.d<=dCap)?Math.max(m,x.d):m,0);
+  const pendAll=maxInvD?nyArData().filter(r=>r.d && r.d>maxInvD):[];
   const pend=q?pendAll.filter(r=>r.c.toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)):pendAll;
   const pendSum=pend.reduce((s,r)=>s+(r.amt||0),0);
   // Collapsed by default: this list runs 100+ rows between monthly recons — a one-line summary
@@ -4110,10 +4158,10 @@ function renderArNYRecon(){
   const pendHtml=pend.length?`<div class="nywf nywf-wide"><div class="nywf-h nywf-tgl${NY_PEND_OPEN?' open':''}" id="ny-pend-tgl" title="${NY_PEND_OPEN?'Click to collapse':'Click to expand'}">
       <span><span class="caret">▶</span>New LeafLink orders — awaiting distributor invoicing</span>
       <span class="nywf-sum">${pend.length} order${pend.length!==1?'s':''} · ${fmt$(pendSum)}</span></div>
-    <div class="nywf-scroll${NY_PEND_OPEN?'':' hidden'}"><table class="ddtable"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Expected due</th><th class="num">Amount</th></tr></thead>
+    <div class="nywf-scroll${NY_PEND_OPEN?'':' hidden'}"><table class="ddtable"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship / order date</th><th>Terms</th><th class="num">Expected due</th><th class="num">Amount</th></tr></thead>
     <tbody>${pend.map(r=>`<tr><td>${esc(r.c)}</td><td>${esc(r.ref||'—')}</td><td class="num">${fmtD(r.d)}</td><td>${esc(r.terms||'—')}</td><td class="num">${fmtD(r.due)}</td><td class="num money">${fmt$(r.amt||0)}</td></tr>`).join('')}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${pend.length} order${pend.length!==1?'s':''}</td><td class="num money">${fmt$(pendSum)}</td></tr></tfoot></table></div>
-    ${NY_PEND_OPEN?`<div class="nywf-n">Orders shipped in LeafLink after the last recon invoice (${fmtD(maxInvD)}). The distributor hasn't invoiced them yet, so they're not in the receivables table below — they move down there (with real paid/outstanding) when the next monthly recon workbook is ingested.</div>`:''}</div>`:'';
+    ${NY_PEND_OPEN?`<div class="nywf-n">LeafLink orders shipped (or placed, if not yet shipped) after the last recon invoice (${fmtD(maxInvD)}). The distributor hasn't invoiced them yet, so they're not in the receivables table below — they move down there (with real paid/outstanding) when the next monthly recon workbook is ingested. Amounts are <b>gross order totals</b> (before any discounts), so they'll typically invoice slightly lower.</div>`:''}</div>`:'';
   const statusCell=x=>{ if(x.out<=0.005) return '<span style="color:var(--green)">paid</span>';
     if(x.dpd==null) return '<span class="neg">—</span>';
     if(x.dpd>0) return `<span style="color:var(--red)">overdue ${x.dpd}d</span>`;
@@ -4126,7 +4174,7 @@ function renderArNYRecon(){
     <td class="num money">${fmt$(x.total)}</td>
     <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
-  wrap.innerHTML=nyQboSection()+pendHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
+  wrap.innerHTML=nyQboSection(q)+pendHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
   wireNyQbo(wrap);
   { const tg=wrap.querySelector('#ny-pend-tgl'); if(tg) tg.onclick=()=>{ NY_PEND_OPEN=!NY_PEND_OPEN; renderArNY(); }; }
@@ -4137,12 +4185,12 @@ function renderArNY(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note'); if(!wrap) return;
   if((NY_INV||[]).length) return renderArNYRecon();   // recon loaded → REAL paid/outstanding/discounts
   const all=nyArData();
+  const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
   if(!all.length){ cards.innerHTML=''; note.innerHTML='';
-    const qbo=nyQboSection();
+    const qbo=nyQboSection(q);
     wrap.innerHTML=qbo||'<div class="empty">No New York (LeafLink) orders loaded yet.</div>';
     if(qbo) wireNyQbo(wrap);
     return; }
-  const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
   const view=q?all.filter(r=>r.c.toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)):all;
   const tot=view.reduce((s2,r)=>s2+r.amt,0);
   const past=view.filter(r=>r.dpd!=null&&r.dpd>0), week=view.filter(r=>r.dpd!=null&&r.dpd<=0&&r.dpd>=-7), later=view.filter(r=>r.dpd!=null&&r.dpd<-7);
@@ -4155,7 +4203,7 @@ function renderArNY(){
     if(r.dpd===0) return '<span style="color:var(--yellow)">due today</span>';
     return `<span style="color:${r.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-r.dpd}d</span>`; };
   const body=view.map(r=>`<tr><td>${esc(r.c)}</td><td>${esc(r.ref||'—')}</td><td class="num">${fmtD(r.d)}</td><td>${esc(r.terms||'—')}</td><td class="num">${fmtD(r.due)}</td><td class="num">${statusCell(r)}</td><td class="num money">${fmt$(r.amt)}</td></tr>`).join('');
-  wrap.innerHTML=nyQboSection()+`<table id="ar-ny-table"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Amount</th></tr></thead><tbody>${body}</tbody>
+  wrap.innerHTML=nyQboSection(q)+`<table id="ar-ny-table"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Amount</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="6">${view.length} order${view.length!==1?'s':''}</td><td class="num money">${fmt$(tot)}</td></tr></tfoot></table>`;
   wireNyQbo(wrap);
   note.innerHTML=`<b>New York expected receivables</b> — a payment <b>schedule</b> from LeafLink order terms (due = ship date + terms; Net 30 / COD), NOT confirmed unpaid balances: LeafLink doesn't report buyer payments yet (LeafLink Payments is enabled but no invoices assigned). When payments start flowing there, this page can upgrade to true paid/outstanding. Cancelled/rejected orders excluded.`;
