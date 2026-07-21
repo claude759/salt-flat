@@ -86,6 +86,13 @@ function doGet(e) {
 // nightly pipeline can read it without the sheet being public. Scans every weekly tab
 // (names like "7/20-7/24") and returns rows whose Box Count/Brands mentions Wizard Trees.
 var HMOPS_SHEET_ID = '1SckEftdpPhT1G-zmEsFKLit0y-32WkmK8kpYV0roVOA';
+// Wizard Trees shows up as "5 Wizard Trees", "1 wizard trees", "2 WIZARD TREES + 3 Minimart" —
+// and is sometimes abbreviated "3 WT". Match the abbreviation only as a WHOLE WORD, so a brand
+// that merely contains those letters (e.g. "Newt") can't slip in.
+function isWizard_(s) {
+  s = String(s == null ? '' : s);
+  return /wizard\s*trees/i.test(s) || /(^|[^A-Za-z0-9])WT([^A-Za-z0-9]|$)/i.test(s);
+}
 function hmops_(e) {
   if (e.parameter.token !== 'wt-health-7f3a9c21') return out_({ ok: false, error: 'bad token' }, e);
   try {
@@ -99,8 +106,8 @@ function hmops_(e) {
       var head = vals[0].map(function (h) { return String(h || '').trim(); });
       var bi = head.indexOf('Box Count/Brands'); if (bi < 0) bi = 4;   // column E if the header ever changes
       for (var r = 1; r < vals.length; r++) {
-        if (!/wizard\s*trees/i.test(String(vals[r][bi] || ''))) continue;
-        var o = { week: name };
+        if (!isWizard_(vals[r][bi])) continue;
+        var o = { week: name, _via: /wizard/i.test(String(vals[r][bi] || '')) ? 'wizard' : 'wt' };
         head.forEach(function (h, i) { if (h) o[h] = String(vals[r][i] == null ? '' : vals[r][i]); });
         rows.push(o);
       }
