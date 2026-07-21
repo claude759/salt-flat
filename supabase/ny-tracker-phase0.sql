@@ -136,28 +136,22 @@ begin
   end loop;
 end $$;
 
--- ---- Roster seed: the Gusto export 2026-07-21 (Kelsey Meyer = team lead,
---      intentionally excluded). Fixed UUIDs make the seed idempotent.
-insert into public.ny_roster (id, last, first, default_company, default_rate, active) values
-  ('bee00001-0000-4000-8000-000000000001', 'Bravo',           'Jaclyn',    'Wizard Trees NY',  22.00, true),
-  ('bee00001-0000-4000-8000-000000000002', 'Browne',          'Madelena',  'Wizard Trees NY',  36.06, true),
-  ('bee00001-0000-4000-8000-000000000003', 'Collins',         'Connor',    'Wizard Trees NY',  40.38, true),
-  ('bee00001-0000-4000-8000-000000000004', 'D''Haiti',        'Murphy',    'Wizard Trees NY',  23.00, true),
-  ('bee00001-0000-4000-8000-000000000005', 'Deely',           'Kevin',     'Wizard Trees NY', 103.85, true),
-  ('bee00001-0000-4000-8000-000000000006', 'Donohoe',         'Angus',     'Wizard Trees NY',  22.00, true),
-  ('bee00001-0000-4000-8000-000000000007', 'Goetzmann',       'Andrew',    'Wizard Trees NY',  22.00, true),
-  ('bee00001-0000-4000-8000-000000000008', 'Gomez-Sarmiento', 'Leslie',    'Wizard Trees NY',  23.00, true),
-  ('bee00001-0000-4000-8000-000000000009', 'Gonzalez',        'Alexander', 'Wizard Trees NY',  22.00, true),
-  ('bee00001-0000-4000-8000-000000000010', 'Gonzalez',        'George',    'Wizard Trees NY',  23.00, true),
-  ('bee00001-0000-4000-8000-000000000011', 'Graham',          'Rachel',    'Wizard Trees NY',  22.00, true),
-  ('bee00001-0000-4000-8000-000000000012', 'Herrera',         'Luis',      'Wizard Trees NY',  23.00, true),
-  ('bee00001-0000-4000-8000-000000000013', 'Hyatt',           'Chandler',  'Wizard Trees NY',  25.00, true),
-  ('bee00001-0000-4000-8000-000000000014', 'Marcial',         'Harry',     'Wizard Trees NY',  23.00, true),
-  ('bee00001-0000-4000-8000-000000000015', 'Neroulias',       'Jeremy',    'Wizard Trees NY',  22.00, true),
-  ('bee00001-0000-4000-8000-000000000016', 'Nixon',           'Terrance',  'Wizard Trees NY',  25.00, true),
-  ('bee00001-0000-4000-8000-000000000017', 'Todd',            'John',      'Wizard Trees NY',  32.50, true),
-  ('bee00001-0000-4000-8000-000000000018', 'Velazquez',       'Irene',     'Wizard Trees NY',  23.00, true)
-on conflict (id) do nothing;
+-- ---- Roster seed: FIRST RUN ONLY -----------------------------------------
+--   The crew lives in ny-roster-distro-crew.sql, which is the file to edit.
+--   This block is deliberately gated on an EMPTY table: an early version seeded
+--   all 18 people from the Gusto rate export, and re-running it to repair
+--   something kept re-inserting people Gianni had deliberately removed. A seed
+--   must never undo a person's edits.
+insert into public.ny_roster (id, last, first, team, default_company, default_rate, active)
+select * from (values
+  ('bee00001-0000-4000-8000-000000000004'::uuid,'D''Haiti',        'Murphy','Packaging Tech',      'Wizard Trees NY', 23.00, true),
+  ('bee00001-0000-4000-8000-000000000008'::uuid,'Gomez-Sarmiento','Leslie','Packaging Tech',      'Wizard Trees NY', 23.00, true),
+  ('bee00001-0000-4000-8000-000000000010'::uuid,'Gonzalez',       'George','Packaging Tech',      'Wizard Trees NY', 23.00, true),
+  ('bee00001-0000-4000-8000-000000000012'::uuid,'Herrera',        'Luis',  'Packaging Tech',      'Wizard Trees NY', 23.00, true),
+  ('bee00001-0000-4000-8000-000000000014'::uuid,'Marcial',        'Harry', 'Packaging Tech',      'Wizard Trees NY', 23.00, true),
+  ('bee00001-0000-4000-8000-000000000018'::uuid,'Velazquez',      'Irene', 'Packaging Tech',      'Wizard Trees NY', 23.00, true)
+) as v(id, last, first, team, default_company, default_rate, active)
+where not exists (select 1 from public.ny_roster);
 
 select 'ny tracker phase 0 ready' as result,
        (select count(*) from public.ny_roster) as roster_rows;
