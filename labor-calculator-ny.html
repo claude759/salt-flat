@@ -965,7 +965,7 @@ function renderRoster(){
     + '<div style="margin-top:10px"><button class="btn sm" id="roster-add">+ Add person</button></div></div>';
   box.querySelector('#roster-add').onclick = () => {
     const p = { id: crypto.randomUUID(), last: '', first: '', team: null,
-      default_company: null, default_rate: null, aliases: [], active: true };
+      default_company: null, default_rate: null, aliases: [], active: true, _saved: false };
     roster.push(p);
     // no sync yet — the first keystroke schedules it, so an accidental click
     // never persists a blank person
@@ -2495,7 +2495,7 @@ async function loadAllData(){
   shifts = (s.data || []).map(shiftToTs);
   tsEntries = shifts;
   lpNotes = {}; for (const x of (n.data || [])) lpNotes[x.work_date] = x.note == null ? '' : x.note;
-  roster = ro.data || [];
+  roster = (ro.data || []).map(x => ({ ...x, _saved: true }));
   lpDays = new Map((lp.data || []).map(x => [x.work_date, lpFromDb(x)]));
   return true;
 }
@@ -2568,7 +2568,7 @@ async function refetch(kind){
     const { data, error } = await fetchAll(SITE.tables.roster, 'last');
     if (error || !data) return;
     if (rosterDirtyNow()){ queueRefetch(kind); return; }
-    roster = data;
+    roster = data.map(x => ({ ...x, _saved: true }));
     renderTimesheets();
   }
 }
@@ -2755,18 +2755,26 @@ async function doSyncRoster(id){
   try{
     const p = roster.find(x => x.id === id);
     if (!p) return;   // gone from the screen — that is not an instruction to delete
-    // never persist an untouched "+ Add person" row — a blank person is noise
-    // on every device (same principle as never inserting a blank task)
+    // never persist an untouched "+ Add person" row — a blank person is noise on
+    // every device (same principle as never inserting a blank task). Only ever
+    // skip a row that was never saved: blanking out a REAL person is an edit, and
+    // silently dropping it would let the old values reappear on the next refresh.
     const blank = !(p.last || '').trim() && !(p.first || '').trim() && !p.team &&
       !p.default_company && (p.default_rate == null || p.default_rate === '') && !(p.aliases || []).length;
-    if (blank) return;
+    if (blank && !p._saved) return;
     const rec = { id: p.id, last: p.last || null, first: p.first || '',
       team: p.team || null, default_company: p.default_company || null,
       default_rate: p.default_rate == null || p.default_rate === '' ? null : +p.default_rate,
       aliases: (p.aliases && p.aliases.length) ? p.aliases : null,
       active: p.active !== false };
-    const { error } = await sb.from(SITE.tables.roster).upsert(rec);
-    if (error) toast('Couldn’t save the roster change — check your connection.', true);
+    // UPDATE, not upsert: if this person was deleted (here or in someone else's
+    // tab) while the save was pending, an upsert would quietly resurrect them.
+    // An update that matches nothing is exactly the right no-op.
+    const { error } = p._saved
+      ? await sb.from(SITE.tables.roster).update(rec).eq('id', p.id)
+      : await sb.from(SITE.tables.roster).insert(rec);
+    if (error){ toast('Couldn’t save the roster change — check your connection.', true); return; }
+    p._saved = true;
   } finally { rosterSyncBusy--; }
 }
 // A phantom day: app-owned rows that are all blank, with no timesheet and no
@@ -3508,7 +3516,7 @@ async function removeRosterPerson(p){
   renderRoster();
   const { error } = await sb.from(SITE.tables.roster).delete().eq('id', p.id);
   if (error){
-    roster.push(p);
+    roster.push(p);   // p keeps _saved, so its next edit still UPDATEs
     roster.sort((a, b) => (a.last || '').localeCompare(b.last || ''));
     renderRoster();
     toast('Couldn’t remove the person — check your connection.', true);
