@@ -939,6 +939,21 @@
       </div>
     </div>
 
+    <!-- ===================== HM OPS Tracker (NY) ===================== -->
+    <!-- Wizard Trees rows from the distributor's "HM OPS Order Queue" Google Sheet (filtered by
+         Box Count/Brands), pulled a few times a day via the reports Apps Script (runs as gianni@,
+         who has view access — the sheet itself stays private). -->
+    <div id="view-hmops" class="hidden">
+      <div class="toolbar">
+        <input type="text" id="hmops-search" placeholder="Search shop / LL# / week…" />
+        <div class="grow"></div>
+        <button class="btn" id="hmops-export">⬇ Export CSV</button>
+      </div>
+      <div class="tier-cards" id="hmops-cards"></div>
+      <div class="tablewrap" id="hmops-wrap"></div>
+      <div class="notes" id="hmops-note"></div>
+    </div>
+
     <!-- ===================== Credits Track (NY) ===================== -->
     <div id="view-credits" class="hidden">
       <div class="cr-bar">
@@ -1149,6 +1164,7 @@ function classify(rows){
     // checked BEFORE distru_invoice/distru_items: it shares their columns, so the 'NY Recon' /
     // recon-economics markers are what tell them apart.
     if(has('Invoice Number','NY Recon'))                 return {type:'ny_invoices',hr:i};
+    if(has('HM OPS Week','Box Count/Brands'))            return {type:'hm_ops',hr:i};       // HM OPS Order Queue — Wizard Trees rows (lib/hmops.mjs)
     if(has('WTNY Invoice #','Open Balance'))             return {type:'ny_qbo_inv',hr:i};   // WTNY QuickBooks invoices — our receivables (lib/qbo-ny.mjs)
     if(has('WTNY Payment Date','Applied To Invoice'))    return {type:'ny_qbo_pay',hr:i};   // WTNY QuickBooks payments applied to those invoices
     if(has('Order Number','Gross Sale','Invoice Discount','Net Product')) return {type:'ny_recon_items',hr:i};
@@ -1202,7 +1218,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, hm_ops:null };
 // Provenance of publishable state: which payload keys were rebuilt from ACTUAL FILES this session.
 // loadShared paints the localStorage cache first (stale-while-revalidate), so state can be
 // cache-derived — publishing that would overwrite the (fresher) live payload with stale data.
@@ -1227,6 +1243,7 @@ const LABELS = {
   ny_invoices:'NY recon invoices (payments/discounts)',
   ny_qbo_inv:'WTNY QuickBooks invoices',
   ny_qbo_pay:'WTNY QuickBooks payments',
+  hm_ops:'HM OPS order queue (Wizard Trees rows)',
   ny_recon_items:'NY recon line items'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
@@ -1431,6 +1448,8 @@ function applyShared(d){
     if(data.nyQbo && data.nyQbo.length){ NY_QBO=nyQboFromWire(data.nyQbo); any=true; }   // WTNY QuickBooks invoices (our receivables)
     if(data.nyQboPay && data.nyQboPay.length){ NY_QBO_PAY=nyQboPayFromWire(data.nyQboPay); any=true; }
     if(data.nyQboAsOf) NY_QBO_ASOF=data.nyQboAsOf;   // when the QBO data was actually pulled (staleness badge)
+    if(data.hmops && data.hmops.length){ HM_OPS=hmOpsFromWire(data.hmops); any=true; }   // HM OPS Order Queue (Wizard Trees rows)
+    if(data.hmopsAsOf) HMOPS_ASOF=data.hmopsAsOf;
     if(data.nyRItems && data.nyRItems.length){ NY_RITEMS=nyRItemsFromWire(data.nyRItems); any=true; }   // NY recon line items (invoice drill-down)
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
@@ -1496,6 +1515,8 @@ async function publishToTeam(){
     // Freshness stamp: new timestamp ONLY when this publish actually loaded the QBO files; a
     // carried-forward payload keeps its old stamp so a dead feed shows its true age (STALE badge).
     if(FRESH.has('nyQbo')) cur.nyQboAsOf=new Date().toISOString(); else if(NY_QBO_ASOF) cur.nyQboAsOf=NY_QBO_ASOF;
+    if(FRESH.has('hmops') && HM_OPS && HM_OPS.length) cur.hmops=hmOpsToWire(HM_OPS);   // additive; HM OPS Order Queue (Wizard Trees rows)
+    if(FRESH.has('hmops')) cur.hmopsAsOf=new Date().toISOString(); else if(HMOPS_ASOF) cur.hmopsAsOf=HMOPS_ASOF;   // same staleness-stamp pattern as nyQboAsOf
     if(FRESH.has('nyRItems') && NY_RITEMS && NY_RITEMS.length) cur.nyRItems=nyRItemsToWire(NY_RITEMS);            // additive; NY recon line items (invoice drill-down)
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
@@ -1553,7 +1574,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_assets','distru_companies','visits','leaflink','leaflink_items','ny_invoices','ny_recon_items','ny_qbo_inv','ny_qbo_pay'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_assets','distru_companies','visits','leaflink','leaflink_items','ny_invoices','ny_recon_items','ny_qbo_inv','ny_qbo_pay','hm_ops'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -3627,6 +3648,60 @@ function nyQboToWire(list){ return (list||[]).map(x=>[x.inv,x.c,x.d,x.due,x.memo
 function nyQboFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),c:String(a[1]||''),d:a[2]||null,due:a[3]||null,memo:String(a[4]||''),total:+a[5]||0,bal:+a[6]||0})); }
 function nyQboPayToWire(list){ return (list||[]).map(x=>[x.d,x.amt,x.c,x.inv]); }
 function nyQboPayFromWire(w){ return (w||[]).map(a=>({d:a[0]||null,amt:+a[1]||0,c:String(a[2]||''),inv:String(a[3]||'')})); }
+// ── HM OPS Tracker — Wizard Trees rows from the distributor's "HM OPS Order Queue" sheet ──
+// Pulled a few times a day by lib/hmops.mjs via the reports Apps Script (runs as gianni@, who has
+// view access; the sheet stays private). Rows are pre-filtered to Box Count/Brands mentioning
+// Wizard Trees; the build re-filters defensively so a feed regression can't flood the page.
+let HM_OPS=[];        // {wk, sub, ll, shop, st, brands, pk, mn, total, notes, disc, sop, hold, ret, email}
+let HMOPS_ASOF=null;  // ISO timestamp of the last successful sheet pull (staleness display)
+function buildHmOps(){
+  if(!FILES.hm_ops) return [];
+  return FILES.hm_ops.data.map(r=>{
+    const brands=(r['Box Count/Brands']||'').trim();
+    if(!/wizard\s*trees/i.test(brands)) return null;
+    return { wk:(r['HM OPS Week']||'').trim(), sub:(r['Submission Date']||'').trim(), ll:(r['LL#']||'').trim(),
+      shop:(r['Shop Name']||'').trim(), st:(r['Status']||'').trim(), brands,
+      pk:(r['PK']||'').trim(), mn:(r['MN']||'').trim(), total:num(r['Total']), notes:(r['Notes']||'').trim(),
+      disc:(r['5% DISC']||'').trim(), sop:(r['STATE OR PAST']||'').trim(), hold:(r['HOLD']||'').trim(),
+      ret:(r['RETURN PICKUP']||'').trim(), email:(r['DELIVERY EMAIL SENT']||'').trim() };
+  }).filter(Boolean);
+}
+function hmOpsToWire(list){ return (list||[]).map(x=>[x.wk,x.sub,x.ll,x.shop,x.st,x.brands,x.pk,x.mn,x.total,x.notes,x.disc,x.sop,x.hold,x.ret,x.email]); }
+function hmOpsFromWire(w){ return (w||[]).map(a=>({wk:String(a[0]||''),sub:String(a[1]||''),ll:String(a[2]||''),shop:String(a[3]||''),st:String(a[4]||''),brands:String(a[5]||''),pk:String(a[6]||''),mn:String(a[7]||''),total:+a[8]||0,notes:String(a[9]||''),disc:String(a[10]||''),sop:String(a[11]||''),hold:String(a[12]||''),ret:String(a[13]||''),email:String(a[14]||'')})); }
+function renderHmOps(){
+  const wrap=$('#hmops-wrap'), cards=$('#hmops-cards'), note=$('#hmops-note'); if(!wrap) return;
+  const all=HM_OPS||[];
+  if(!all.length){ if(cards)cards.innerHTML=''; if(note)note.innerHTML='';
+    wrap.innerHTML='<div class="empty">No HM OPS data yet — the tracker fills in after the next scheduled sheet pull.</div>'; return; }
+  const q=(($('#hmops-search')||{}).value||'').trim().toLowerCase();
+  const view=q?all.filter(x=>[x.shop,x.ll,x.wk,x.brands,x.notes,x.st].some(v=>v.toLowerCase().includes(q))):all;
+  const isDone=x=>/fulfil|deliver|complete|done/i.test(x.st);
+  const open=view.filter(x=>!isDone(x)), held=view.filter(x=>x.hold), tot=view.reduce((s,x)=>s+x.total,0);
+  if(cards) cards.innerHTML=[
+    ['Wizard Trees orders', String(view.length), (new Set(view.map(x=>x.wk))).size+' week'+((new Set(view.map(x=>x.wk))).size!==1?'s':'')],
+    ['Open (not fulfilled)', String(open.length), open.length?('worth '+fmt$(open.reduce((s,x)=>s+x.total,0))):'all fulfilled', open.length?'var(--yellow)':'var(--green)'],
+    ['On hold / returns', String(held.length+view.filter(x=>x.ret).length), held.length?'HOLD flagged':'—', (held.length||view.some(x=>x.ret))?'var(--red)':'var(--text)'],
+    ['Total value', fmt$(tot), 'across '+view.length+' order'+(view.length!==1?'s':'')],
+  ].map(([l,v,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${v}</div><div class="tc-blurb">${esc(sub)}</div></div>`).join('');
+  const stCell=x=> x.hold?`<span style="color:var(--red)">HOLD${x.st?' · '+esc(x.st):''}</span>`
+    : isDone(x)?`<span style="color:var(--green)">${esc(x.st)}</span>`
+    : `<span style="color:var(--yellow)">${esc(x.st||'—')}</span>`;
+  const flags=x=>[ x.ret?'<span class="pill" style="color:var(--orange)">return pickup</span>':'',
+    x.disc?'<span class="pill">5% disc</span>':'', x.sop?'<span class="pill">'+esc(x.sop)+'</span>':'',
+    x.email?'<span class="pill" style="color:var(--green)">email sent</span>':'' ].filter(Boolean).join(' ');
+  const body=view.map(x=>`<tr>
+    <td>${esc(x.wk)}</td><td class="num">${esc(x.sub||'—')}</td><td>${esc(x.ll||'—')}</td><td>${esc(x.shop)}</td>
+    <td>${stCell(x)}</td><td>${esc(x.brands)}</td>
+    <td class="num money">${x.total>0.005?fmt$(x.total):'<span class="neg">—</span>'}</td>
+    <td>${flags(x)||'<span class="neg">—</span>'}</td>
+    <td>${x.notes?esc(x.notes):'<span class="neg">—</span>'}</td></tr>`).join('');
+  wrap.innerHTML=`<table id="hmops-table"><thead><tr><th>Week</th><th class="num">Submitted</th><th>LL#</th><th>Shop</th><th>Status</th><th>Box Count/Brands</th><th class="num">Total</th><th>Flags</th><th>Notes</th></tr></thead>
+    <tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="6">${view.length} order${view.length!==1?'s':''}${open.length?` · ${open.length} open`:''}</td><td class="num money">${fmt$(tot)}</td><td colspan="2"></td></tr></tfoot></table>`;
+  if(note){ const asOf=HMOPS_ASOF?new Date(HMOPS_ASOF):null;
+    const age=asOf?Math.round((Date.now()-asOf.getTime())/36e5):null;
+    note.innerHTML=`<b>HM OPS Order Queue — Wizard Trees only.</b> Rows from the distributor's shared logistics sheet whose <b>Box Count/Brands</b> mentions Wizard Trees, across every weekly tab. Pulled a few times a day through the reports backend (the sheet stays private — no public sharing needed).${asOf?` Sheet last read <b>${asOf.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</b>${age>=12?` <span style="color:var(--red)">(${age}h ago — feed may be stale)</span>`:''}.`:''} <b>LL#</b> matches the LeafLink order number on the other NY pages.`; }
+}
 // NY recon LINE ITEMS — what an invoice is actually made of (product, units, price, per-line discount).
 let NY_RITEMS=[];   // {inv, c, product, qty, price, gross, disc}
 function buildNyRItems(){
@@ -3679,7 +3754,8 @@ function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny
   if(FILES.ny_recon_items){ NY_RITEMS=buildNyRItems(); FRESH.add('nyRItems'); }
   if(FILES.ny_qbo_inv){ NY_QBO=buildNyQbo(); FRESH.add('nyQbo'); }
   if(FILES.ny_qbo_pay){ NY_QBO_PAY=buildNyQboPay(); FRESH.add('nyQboPay'); }
-  if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); } }
+  if(FILES.hm_ops){ HM_OPS=buildHmOps(); FRESH.add('hmops'); }
+  if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); renderHmOps(); } }
 function tierDataNY(){
   const months=Math.max(1,+(($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
@@ -3762,7 +3838,7 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
   // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the
   // NY-only tabs. (Access is by STATE now — applyStateAccess gates which states you can reach.)
-  const NY_TABS=['ar','sku','tiers','reports','credits'], NY_ONLY=['credits'];
+  const NY_TABS=['ar','sku','tiers','reports','credits','hmops'], NY_ONLY=['credits','hmops'];
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
     t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary (the others are CA-only data)
@@ -3849,7 +3925,6 @@ function nyQboDrill(inv){
 }
 function renderArNYRecon(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note');
-  const R=nyRecon(); if(!R) return;
   const now=new Date(); now.setHours(23,59,59,999);
   const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
   const all=(NY_INV||[]).map(x=>({...x, dpd:(x.due==null?null:Math.floor((now.getTime()-x.due)/86400000))}))
@@ -3864,15 +3939,8 @@ function renderArNYRecon(){
     ['Outstanding', fmt$(outstanding), open.length+' open','var(--yellow)'],
     ['Past due', fmt$(S(past,'out')), past.length+' invoice'+(past.length!==1?'s':''),'var(--red)'],
   ].map(([l,v,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${v}</div><div class="tc-blurb">${esc(sub)}</div></div>`).join('');
-  // Remittance waterfall — what dispensaries owe → what Wizard Trees actually receives
-  const wf=[['Gross sales',R.gross,''],['Discounts',-R.discounts,'neg'],['Product delivered (invoiced)',R.delivered,'sub'],
-    ['NY excise (9%, included in price)',-R.excise,'neg'],['Net product',R.netProduct,'sub'],
-    ['Distributor fee (10%)',-R.distroFee,'neg'],['Net PO — Wizard Trees receives',R.netPO,'tot']];
-  const wfHtml=`<div class="nywf"><div class="nywf-h">Remittance — from gross sales to what Wizard Trees receives</div>
-    <table class="ddtable">${wf.map(([l,v,cls])=>`<tr class="${cls==='tot'?'totals':''}">
-      <td${cls==='sub'?' style="font-weight:700"':''}>${esc(l)}</td>
-      <td class="num money"${cls==='neg'?' style="color:var(--red)"':(cls==='tot'?' style="color:var(--green);font-weight:800"':'')}>${fmt$(v)}</td></tr>`).join('')}</table>
-    <div class="nywf-n">Collected from dispensaries so far: <b>${fmt$(R.collected)}</b> of ${fmt$(R.delivered)} — so <b>${fmt$(R.collectedNetPO)}</b> of the ${fmt$(R.netPO)} Net PO has been remitted. The rest follows as invoices are paid.</div></div>`;
+  // (Remittance waterfall removed per Gianni 2026-07-21 — the WTNY QuickBooks section above is now
+  // the what-we-receive view. The nyRecon() math survives for the Net PO economics + tests.)
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   // New LeafLink orders the distributor hasn't invoiced yet (shipped after the newest recon
   // invoice). The recon workbook is monthly — without this the AR page looked frozen between
@@ -3899,11 +3967,11 @@ function renderArNYRecon(){
     <td class="num money">${fmt$(x.total)}</td>
     <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
-  wrap.innerHTML=nyQboSection()+pendHtml+wfHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
+  wrap.innerHTML=nyQboSection()+pendHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="5">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
   wireNyQbo(wrap);
   wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
-  note.innerHTML=`<b>New York receivables</b> — click any invoice for its line items + discount detail. REAL invoice balances from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>): <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed, <b>Discount</b> = invoice-level discount. Wizard Trees is the brand, so what you actually receive is the <b>Net PO</b> above (after the 9% NY excise baked into the price and the distributor's 10% fee). Sales/orders elsewhere on the NY side still come from LeafLink (live); this page is the authoritative money view and updates when a new recon workbook is ingested.`;
+  note.innerHTML=`<b>New York receivables</b> — click any invoice for its line items + discount detail. REAL invoice balances from the distributor's monthly recon (their Distru, <span class="muted2">OCM-DIST</span>): <b>Collected</b> = paid by the dispensary, <b>Outstanding</b> = still owed, <b>Discount</b> = invoice-level discount. Wizard Trees is the brand — what you actually receive nets out the 9% NY excise baked into the price and the distributor's 10% fee, and lands as the Drop invoices in the QuickBooks section above. Sales/orders elsewhere on the NY side still come from LeafLink (live); this page is the authoritative money view and updates when a new recon workbook is ingested.`;
 }
 function renderArNY(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note'); if(!wrap) return;
@@ -3951,6 +4019,11 @@ function renderArNY(){
     rows.forEach(r=>out.push([r.c,r.ref,new Date(r.d).toISOString().slice(0,10),r.terms||'',r.due?new Date(r.due).toISOString().slice(0,10):'',r.dpd==null?'':r.dpd,r.amt.toFixed(2)]));
   }
   downloadCSV('ny-receivables.csv',out); }; }
+{ const el=$('#hmops-search'); if(el) el.addEventListener('input',renderHmOps); }
+{ const el=$('#hmops-export'); if(el) el.onclick=()=>{
+  const out=[['Week','Submitted','LL#','Shop','Status','Box Count/Brands','PK','MN','Total','5% DISC','STATE OR PAST','HOLD','RETURN PICKUP','DELIVERY EMAIL SENT','Notes']];
+  (HM_OPS||[]).forEach(x=>out.push([x.wk,x.sub,x.ll,x.shop,x.st,x.brands,x.pk,x.mn,x.total.toFixed(2),x.disc,x.sop,x.hold,x.ret,x.email,x.notes]));
+  downloadCSV('hm-ops-wizard-trees.csv',out); }; }
 
 // ── NY Sales by Type: LeafLink line items grouped by product format → strain, with Drop cohorts ──
 let nyDropFilter=0;   // 0 = all drops
@@ -5499,6 +5572,8 @@ function activateTab(tab, fromHash){
     else renderRepMode(); }
   $('#view-credits').classList.toggle('hidden',tab!=='credits');
   if(tab==='credits') renderCredits();
+  $('#view-hmops').classList.toggle('hidden',tab!=='hmops');
+  if(tab==='hmops') renderHmOps();
   $('#conc-controls').classList.toggle('hidden', tab!=='cd');
   if(!fromHash){ try{ history.replaceState(null,'','#'+tab); }catch(e){ location.hash=tab; } }
   return true;
