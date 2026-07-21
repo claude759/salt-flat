@@ -675,47 +675,6 @@ const PRODUCTS = [
   {name:'5pk .7g Pre-roll',   match:'5pk',                grams:3.5},
 ];
 
-/* ---- size corrections ----
-   The Apr\u2013Jul 2026 daily-log emails show 1g pre-roll production started 4/28
-   (Black Light / Blue Magic / Tea Party), while the tracker kept logging "1.5g".
-   Genuine 1.5g batches (Zangbanger 477, Black Magic 358) ran through 6/1, so:
-   - 4/29 produced 400 = Tidebanger 1g (per 4/29 log) \u2192 renamed
-   - 4/28 produced 952 = mixed: 475 \u00D7 1g + 477 \u00D7 1.5g Zangbanger \u2192 split pro-rata
-   - every "1.5g pre-roll" row on/after 6/2 is 1g (Tide/M8/Bluebanger/Wizard OG/
-     Riptide batches; unit counts all reconcile with the logs) \u2192 renamed
-   Budtender samples are genuinely 1.5g and are left alone. Applied to every data
-   source (snapshot, sheet sync, file drop) and idempotent, so an already-corrected
-   sheet passes through unchanged. */
-const FIX_FROM = '2026-06-02';
-const FIX_NOTE = 'Logged as 1.5g in the sheet; actually 1g per the daily-log emails';
-function fixSize(r, note){
-  const task = r.task.replace('1.5g', '1g');
-  return {...r, task, lo:task.toLowerCase(), note: note || FIX_NOTE};
-}
-function applyCorrections(list){
-  const out = [];
-  for (const r of list){
-    if (r.lo.includes('1.5g pre-roll')){
-      if (r.date >= FIX_FROM ||
-          (r.date === '2026-04-29' && r.lo.includes('produced') && r.packaged === 400)){
-        out.push(fixSize(r)); continue;
-      }
-      if (r.date === '2026-04-28' && r.lo.includes('produced') && r.packaged === 952){
-        const f = 475 / 952;
-        const hoursA = +(r.hours * f).toFixed(2), costA = +(r.cost * f).toFixed(2),
-              secsA = Math.round((r.seconds || 0) * f);
-        out.push(fixSize({...r, begin:'', end:'', packaged:475, hours:hoursA, cost:costA, seconds:secsA},
-          'Split from the mixed 4/28 batch (952 units): 475 \u00D7 1g (Black Light + Blue Magic + Tea Party) per the daily-log emails; hours & cost pro-rata'));
-        out.push({...r, begin:'', end:'', packaged:477, hours:+(r.hours - hoursA).toFixed(2),
-          cost:+(r.cost - costA).toFixed(2), seconds:(r.seconds || 0) - secsA,
-          note:'Split from the mixed 4/28 batch (952 units): 477 \u00D7 1.5g (Zangbanger) per the daily-log emails; hours & cost pro-rata'});
-        continue;
-      }
-    }
-    out.push(r);
-  }
-  return out;
-}
 
 function mkClass(){ return ''; }   // NY doesn't split rec from void, so nothing is colour-coded
 
@@ -3405,14 +3364,6 @@ function lpApplyEdit(date, col, val){
 /* Split the sheet's combined "1.5g/1.0g pre-roll" columns into 1.5g vs 1g,
    using the same email-derived rules as the Tasks-page corrections. Values
    stay the sheet's own \u2014 only the column they land in changes. */
-function lpSplitPreroll(date, prod, pre, post){
-  const z = v => v || null;
-  if (date >= FIX_FROM) return [null, null, null, z(prod), z(pre), z(post)];
-  if (date === '2026-04-28' && prod === 952) return [477, z(pre), z(post), 475, null, null];
-  if (date === '2026-04-29') return [null, pre === 877 ? 477 : z(pre), z(post), z(prod), pre === 877 ? 400 : null, null];
-  if (date === '2026-05-06') return [z(prod), null, z(post), null, z(pre), null];
-  return [z(prod), z(pre), z(post), null, null, null];
-}
 
 /* ---- auto-fill from the Tasks data ----
    Days after the sheet's last row are derived from the (corrected) tracker rows:
@@ -3700,10 +3651,9 @@ function lpImportRows(blocks){
     lbs_pack:24, lbs_label:25 };
   for (const b of blocks) for (const day of b.days){
     const date = day[0];
-    const pr = lpSplitPreroll(date, day[1], day[2], day[3]);
     const d = { work_date: date, note: day[28] || null };
-    // NY runs 1g pre-rolls only: both size columns of a dropped sheet land on 1g
-    ['p10_prod','p10_pre','p10_post'].forEach((c, i) => d[c] = (pr[i] || 0) + (pr[i + 3] || 0) || null);
+    // NY runs 1g pre-rolls only, so the sheet's pre-roll group lands there whole
+    d.p10_prod = day[1] || null; d.p10_pre = day[2] || null; d.p10_post = day[3] || null;
     for (const c in map) d[c] = day[map[c]] == null ? null : day[map[c]];
     byDate.set(date, d);
   }
@@ -3855,7 +3805,7 @@ function gridToRows(grid, dateFn){
       seconds: cTime === -1 ? null : parseDur(g[cTime]),
       hours:num(g[cHrs]), packaged:num(g[cPack]), labeled:num(g[cLab]), cost:num(g[cCost])});
   }
-  return applyCorrections(out);
+  return out;
 }
 
 /* ================= boot ================= */
