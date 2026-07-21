@@ -107,6 +107,22 @@
   .seg.big{border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.25)}
   .seg.big button{padding:11px 30px;font-size:14px;letter-spacing:.2px}
   .seg.big button.on{box-shadow:inset 0 0 0 1px var(--accent)}
+  /* Admin (access control) button — sits right of the state toggle; admins only */
+  .admin-btn{background:var(--panel2);border:1px solid var(--line);border-radius:12px;color:var(--muted);
+    padding:11px 16px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;margin-left:10px;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+  .admin-btn:hover{color:var(--text);border-color:var(--accent2)}
+  /* Admin panel rows */
+  .adm-table{width:100%;border-collapse:collapse;font-size:13px}
+  .adm-table th{text-align:left;color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.4px;padding:8px 10px;border-bottom:1px solid var(--line)}
+  .adm-table td{padding:8px 10px;border-bottom:1px solid var(--line)}
+  .adm-table select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 8px;font:inherit;font-size:12.5px}
+  .adm-x{background:none;border:1px solid var(--line);border-radius:8px;color:var(--red);width:26px;height:26px;cursor:pointer;font-size:13px;line-height:1}
+  .adm-x:hover{border-color:var(--red)}
+  .adm-add{display:flex;gap:8px;margin-top:14px;align-items:center;flex-wrap:wrap}
+  .adm-add input{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px 10px;font:inherit;font-size:13px;min-width:260px}
+  .adm-add select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:8px;font:inherit;font-size:13px}
+  .adm-add .btn{padding:8px 14px}
+  .adm-err{color:var(--red);font-size:12.5px;margin-top:8px;min-height:16px}
   /* Month over Month */
   #mom-table .mom-grp td{background:var(--panel2);font-weight:800;text-transform:uppercase;font-size:11px;letter-spacing:.5px;color:var(--accent2)}
   #mom-table .mom-sub td{font-weight:700;border-top:1px solid var(--line);color:var(--text)}
@@ -401,6 +417,7 @@
       <button class="on" data-state="CA">California</button>
       <button data-state="NY">New York</button>
     </div>
+    <button class="admin-btn hidden" id="admin-btn" title="Access control — who can see what">⚙ Admin</button>
     <div class="asof">
       <span>As of</span>
       <input type="date" id="asof" />
@@ -1022,6 +1039,18 @@
   </div>
 </div>
 
+<!-- Admin: access control (who can see CA / NY). Button next to the state toggle; admins only. -->
+<div id="admin-modal" class="scm hidden" style="z-index:1200">
+  <div class="scm-backdrop"></div>
+  <div class="scm-panel" role="dialog" aria-modal="true">
+    <div class="scm-head">
+      <div><div class="scm-title">Access control</div><div class="scm-sub">Who can sign in, and which states they see. Changes take effect the next time the person loads the app.</div></div>
+      <button class="scm-x" id="admin-close" title="Close (Esc)">✕</button>
+    </div>
+    <div class="scm-body" id="admin-body"></div>
+  </div>
+</div>
+
 <!-- Supabase JS (auth: Google sign-in gate). GitHub Pages allows external scripts; pinned major. -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
@@ -1040,8 +1069,9 @@ const SUPABASE_URL='https://dhiqhgtmelxwelyoowle.supabase.co';
 const SUPABASE_KEY='sb_publishable_FtScmtn1C0tE1bwUsavJFg_koiVEu14';
 const AUTH_ENABLED=true;
 // Per-person access, by STATE. Value: 'all' = both CA + NY · 'CA' = California only · 'NY' = New
-// York only. Anyone signed in with @wizardtrees.com but NOT listed here gets a "contact the admin"
-// screen (no access). To change someone, edit this map + redeploy.
+// York only. LIVE source of truth = the Supabase `app_access` table, managed from the ⚙ Admin
+// button (writes RLS-locked to the admin). This map is the FALLBACK when the table can't be
+// fetched (Supabase down/unreachable) so the app still works — keep it roughly in sync.
 const STATE_ACCESS={
   'gianni@wizardtrees.com':'all',
   'victoria@wizardtrees.com':'all',
@@ -1069,7 +1099,26 @@ function agentBypass(){ try{ return !!localStorage.getItem('salesAppAgent'); }ca
 function clearReportCache(){ try{ localStorage.removeItem(SHARED_CACHE_KEY); }catch(e){} }
 let _sbAuth=null;
 function sbAuth(){ if(_sbAuth) return _sbAuth; if(window.supabase&&window.supabase.createClient){ _sbAuth=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}}); } return _sbAuth; }
-function statesFor(email){ const a=STATE_ACCESS[email]; if(a===undefined) return null; return a==='all'?['CA','NY']:[a]; }   // null = not granted any access
+// Admins: always full access + the ⚙ Admin button, regardless of the table — so the admin can
+// never lock themselves out. (Server-side, the app_access RLS write policy names the same email.)
+const ADMIN_EMAILS=['gianni@wizardtrees.com'];
+const isAdmin=()=>!!(AUTH_USER&&ADMIN_EMAILS.includes(AUTH_USER.email));
+let ACCESS_TABLE=null;   // Map(email → 'all'|'CA'|'NY') from Supabase app_access; null = not loaded (fall back to STATE_ACCESS)
+async function loadAccessTable(){
+  const c=sbAuth(); if(!c) return false;
+  try{
+    const {data,error}=await c.from('app_access').select('email,states').abortSignal(AbortSignal.timeout(8000));
+    if(error||!Array.isArray(data)) return false;
+    ACCESS_TABLE=new Map(data.map(r=>[String(r.email||'').toLowerCase(), r.states]));
+    return true;
+  }catch(e){ return false; }
+}
+function statesFor(email){
+  if(ADMIN_EMAILS.includes(email)) return ['CA','NY'];
+  const a = ACCESS_TABLE ? ACCESS_TABLE.get(email) : STATE_ACCESS[email];
+  if(a===undefined||a===null) return null;   // null = not granted any access
+  return a==='all'?['CA','NY']:[a];
+}
 function stateAllowed(st){ return AUTH_STATES.includes(st); }
 
 async function initAuth(){
@@ -1086,6 +1135,7 @@ async function initAuth(){
   if(!session){ showLogin('signin'); return; }
   const email=((session.user&&session.user.email)||'').toLowerCase();
   if(!email.endsWith('@wizardtrees.com')){ try{ await c.auth.signOut(); }catch(e){} showLogin('denied', email); return; }
+  await loadAccessTable();   // live access rules (admin-managed); on failure statesFor falls back to the hardcoded map
   const states=statesFor(email);
   if(!states){ showLogin('noaccess', email); return; }   // valid @wizardtrees.com but not granted any pages
   AUTH_USER={email}; AUTH_STATES=states;
@@ -1122,7 +1172,58 @@ function renderAuthChip(){ const el=$('#authchip'); if(!el||!AUTH_USER||AUTH_USE
 function applyStateAccess(){
   document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('hidden', !stateAllowed(b.dataset.state)));
   const tog=$('#state-toggle'); if(tog) tog.classList.toggle('hidden', AUTH_STATES.length<2);
+  const ab=$('#admin-btn'); if(ab) ab.classList.toggle('hidden', !isAdmin());   // ⚙ Admin — admins only
   setAppState(stateAllowed(APP_STATE) ? APP_STATE : AUTH_STATES[0]);
+}
+
+/* ── Admin: access control panel (⚙ button right of the state toggle; admins only) ──────────────
+   Reads/writes the Supabase app_access table. Writes ride the signed-in admin's JWT, and RLS
+   only accepts them from the admin email — the panel is convenience, the table is the gate. */
+const ADMIN_LEVELS=[['all','All (CA + NY)'],['CA','California only'],['NY','New York only']];
+function openAdmin(){ if(!isAdmin()) return; $('#admin-modal').classList.remove('hidden'); renderAdmin(); }
+function closeAdmin(){ $('#admin-modal').classList.add('hidden'); }
+function renderAdmin(msg){
+  const body=$('#admin-body'); if(!body) return;
+  if(!ACCESS_TABLE){
+    body.innerHTML=`<div class="scm-empty">Couldn't load the live access list from Supabase — the app is running on its built-in fallback list, which can only be changed by editing the code.<br><br><button class="btn" id="adm-retry">Retry</button></div>`;
+    const r=$('#adm-retry'); if(r) r.onclick=async()=>{ await loadAccessTable(); renderAdmin(); };
+    return;
+  }
+  const rows=[...ACCESS_TABLE.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
+  const opt=(sel)=>ADMIN_LEVELS.map(([v,l])=>`<option value="${v}"${v===sel?' selected':''}>${l}</option>`).join('');
+  const tr=([email,states])=>{
+    const admin=ADMIN_EMAILS.includes(email);
+    return `<tr><td>${esc(email)}${admin?' <span class="pill live" style="font-size:9.5px;margin-left:4px">admin</span>':''}</td>
+      <td>${admin?'<span class="muted2">All (admin — always full access)</span>':`<select data-adm-set="${esc(email)}">${opt(states)}</select>`}</td>
+      <td style="text-align:right">${admin?'':`<button class="adm-x" data-adm-del="${esc(email)}" title="Remove ${esc(email)}'s access">✕</button>`}</td></tr>`;
+  };
+  body.innerHTML=`<table class="adm-table"><thead><tr><th>Person</th><th>Can see</th><th></th></tr></thead>
+    <tbody>${rows.map(tr).join('')}</tbody></table>
+    <div class="adm-add">
+      <input type="email" id="adm-email" placeholder="name@wizardtrees.com" autocomplete="off" />
+      <select id="adm-states">${opt('CA')}</select>
+      <button class="btn primary" id="adm-grant">Grant access</button>
+    </div>
+    <div class="adm-err" id="adm-err">${msg?esc(msg):''}</div>
+    <div class="notes" style="margin-top:6px">Anyone signed in with <b>@wizardtrees.com</b> who is <b>not listed</b> gets a "contact your admin" screen. Removing someone here blocks them on their next page load — it does not end a session they already have open. The hourly auto-publisher is unaffected.</div>`;
+  body.querySelectorAll('[data-adm-set]').forEach(s=>s.onchange=()=>adminSet(s.getAttribute('data-adm-set'), s.value));
+  body.querySelectorAll('[data-adm-del]').forEach(b=>b.onclick=()=>adminRemove(b.getAttribute('data-adm-del')));
+  const g=$('#adm-grant'); if(g) g.onclick=()=>{ const em=(($('#adm-email')||{}).value||'').trim().toLowerCase();
+    if(!/^[^@\s]+@wizardtrees\.com$/.test(em)){ renderAdmin('Enter a full @wizardtrees.com address.'); const i=$('#adm-email'); if(i){ i.value=em; i.focus(); } return; }
+    adminSet(em, ($('#adm-states')||{}).value||'CA'); };
+}
+async function adminSet(email,states){
+  const c=sbAuth(); if(!c) return;
+  const {error}=await c.from('app_access').upsert({email, states, updated_by:(AUTH_USER&&AUTH_USER.email)||'', updated_at:new Date().toISOString()});
+  if(error){ renderAdmin('Save failed: '+(error.message||'unknown error')); return; }
+  await loadAccessTable(); renderAdmin();
+}
+async function adminRemove(email){
+  if(!confirm(`Remove ${email}'s access? They'll get the "contact your admin" screen on their next visit.`)) return;
+  const c=sbAuth(); if(!c) return;
+  const {error}=await c.from('app_access').delete().eq('email',email);
+  if(error){ renderAdmin('Remove failed: '+(error.message||'unknown error')); return; }
+  await loadAccessTable(); renderAdmin();
 }
 // Filifera sells to Nabis (the distributor) THROUGH Distru, so Distru has orders with
 // Customer/Company = "Nabis". That product is tracked downstream in the Nabis system, so
@@ -1178,6 +1279,7 @@ function classify(rows){
     if(has('HM OPS Week','Box Count/Brands'))            return {type:'hm_ops',hr:i};       // HM OPS Order Queue — Wizard Trees rows (lib/hmops.mjs)
     if(has('WTNY Invoice #','Open Balance'))             return {type:'ny_qbo_inv',hr:i};   // WTNY QuickBooks invoices — our receivables (lib/qbo-ny.mjs)
     if(has('WTNY Payment Date','Applied To Invoice'))    return {type:'ny_qbo_pay',hr:i};   // WTNY QuickBooks payments applied to those invoices
+    if(has('WTNY Item Invoice #','Rate'))                return {type:'ny_qbo_items',hr:i};  // WTNY QuickBooks invoice line items (drill detail)
     if(has('Order Number','Gross Sale','Invoice Discount','Net Product')) return {type:'ny_recon_items',hr:i};
     if(has('Payment #','Credits Applied Amount'))        return {type:'distru_payments',hr:i};
     if(has('Invoice Number','Outstanding'))             return {type:'distru_invoice',hr:i};
@@ -1229,7 +1331,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, hm_ops:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
 // Provenance of publishable state: which payload keys were rebuilt from ACTUAL FILES this session.
 // loadShared paints the localStorage cache first (stale-while-revalidate), so state can be
 // cache-derived — publishing that would overwrite the (fresher) live payload with stale data.
@@ -1253,6 +1355,7 @@ const LABELS = {
   leaflink_items:'LeafLink line items (NY)',
   ny_invoices:'NY recon invoices (payments/discounts)',
   ny_qbo_inv:'WTNY QuickBooks invoices',
+  ny_qbo_items:'WTNY QuickBooks invoice items',
   ny_qbo_pay:'WTNY QuickBooks payments',
   hm_ops:'HM OPS order queue (Wizard Trees rows)',
   ny_recon_items:'NY recon line items'
@@ -1459,6 +1562,7 @@ function applyShared(d){
     if(data.nyQbo && data.nyQbo.length){ NY_QBO=nyQboFromWire(data.nyQbo); any=true; }   // WTNY QuickBooks invoices (our receivables)
     if(data.nyQboPay && data.nyQboPay.length){ NY_QBO_PAY=nyQboPayFromWire(data.nyQboPay); any=true; }
     if(data.nyQboAsOf) NY_QBO_ASOF=data.nyQboAsOf;   // when the QBO data was actually pulled (staleness badge)
+    if(data.nyQboItems && data.nyQboItems.length){ NY_QBO_ITEMS=nyQboItemsFromWire(data.nyQboItems); any=true; }
     if(data.hmops && data.hmops.length){ HM_OPS=hmOpsFromWire(data.hmops); any=true; }   // HM OPS Order Queue (Wizard Trees rows)
     if(data.hmopsAsOf) HMOPS_ASOF=data.hmopsAsOf;
     if(data.nyRItems && data.nyRItems.length){ NY_RITEMS=nyRItemsFromWire(data.nyRItems); any=true; }   // NY recon line items (invoice drill-down)
@@ -1523,6 +1627,7 @@ async function publishToTeam(){
     if(FRESH.has('nyInv') && NY_INV && NY_INV.length) cur.nyInv=nyInvToWire(NY_INV);                          // additive; NY recon invoices (paid/outstanding/discounts)
     if(FRESH.has('nyQbo') && NY_QBO && NY_QBO.length) cur.nyQbo=nyQboToWire(NY_QBO);                          // additive; WTNY QuickBooks invoices (our receivables)
     if(FRESH.has('nyQboPay') && NY_QBO_PAY && NY_QBO_PAY.length) cur.nyQboPay=nyQboPayToWire(NY_QBO_PAY);        // additive; payments applied to those invoices
+    if(FRESH.has('nyQboItems') && NY_QBO_ITEMS && NY_QBO_ITEMS.length) cur.nyQboItems=nyQboItemsToWire(NY_QBO_ITEMS);  // additive; invoice line detail for the drill
     // Freshness stamp: new timestamp ONLY when this publish actually loaded the QBO files; a
     // carried-forward payload keeps its old stamp so a dead feed shows its true age (STALE badge).
     if(FRESH.has('nyQbo')) cur.nyQboAsOf=new Date().toISOString(); else if(NY_QBO_ASOF) cur.nyQboAsOf=NY_QBO_ASOF;
@@ -1585,7 +1690,7 @@ function handleFiles(fileList){
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_assets','distru_companies','visits','leaflink','leaflink_items','ny_invoices','ny_recon_items','ny_qbo_inv','ny_qbo_pay','hm_ops'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_assets','distru_companies','visits','leaflink','leaflink_items','ny_invoices','ny_recon_items','ny_qbo_inv','ny_qbo_pay','ny_qbo_items','hm_ops'];
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -3500,7 +3605,7 @@ function openScModal(spec){
     const thead=spec.columns.map(c=>`<th class="${c.num?'num':''}">${esc(c.l)}</th>`).join('');
     const trs=spec.rows.map((r,ri)=>{
       const det=hasDet?spec.rowDetails[ri]:null;
-      const cells=r.map((v,j)=>{const c=spec.columns[j]; const val=c.money?fmt$(+v||0):esc(String(v));
+      const cells=r.map((v,j)=>{const c=spec.columns[j]; const val=c.money?((v===''||v==null)?'':fmt$(+v||0)):esc(String(v));   // blank money cells stay blank (divider/adjustment rows), not $0.00
         return `<td class="${c.num?'num money':''}">${(j===0&&det)?`<span class="caret">▶</span> ${val}`:val}</td>`;}).join('');
       const parent=`<tr class="${det?'parent':''}">${cells}</tr>`;
       const detail=det?`<tr class="detail hidden"><td colspan="${spec.columns.length}"><div class="detailbox invdetail">${det}</div></td></tr>`:'';
@@ -3552,9 +3657,14 @@ $('#scm-body').onclick=(ev)=>{
   if(btn){ openInvReport(btn.getAttribute('data-invsrc')); return; }
   const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr) return;
   const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } };
-// Esc closes the top-most popup first (full report), then the drill modal.
+// Esc closes the top-most popup first (admin panel → full report → the drill modal).
 document.addEventListener('keydown',e=>{ if(e.key!=='Escape') return;
+  const ma=$('#admin-modal'); if(ma && !ma.classList.contains('hidden')){ closeAdmin(); return; }
   const m2=$('#sc-modal2'); if(m2 && !m2.classList.contains('hidden')) closeInvReport(); else closeScModal(); });
+// Admin (access control) panel wiring
+{ const b=$('#admin-btn'); if(b) b.onclick=openAdmin;
+  const x=$('#admin-close'); if(x) x.onclick=closeAdmin;
+  const bd=document.querySelector('#admin-modal .scm-backdrop'); if(bd) bd.onclick=closeAdmin; }
 
 /* ============================ New York (LeafLink) ============================ */
 // NY sells through LeafLink (BME "Wizard Trees", Astoria NY). For now NY has ONE page — Customer
@@ -3640,6 +3750,7 @@ function nyInvFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),so:Strin
 let NY_QBO=[];      // {inv, c, d, due, memo, total, bal}
 let NY_QBO_PAY=[];  // {d, amt, c, inv}
 let NY_QBO_ASOF=null;   // ISO timestamp of the last successful QBO pull (from the payload) — drives the as-of / STALE badge
+let NY_QBO_ITEMS=[];// {inv, item, desc, qty, rate, amt} — QBO invoice line detail for the drill
 let NY_PEND_OPEN=false; // "New LeafLink orders" card expanded? (collapsed by default — the list runs 100+ rows; state survives re-renders from search typing)
 function buildNyQbo(){
   if(!FILES.ny_qbo_inv) return [];
@@ -3661,6 +3772,14 @@ function nyQboToWire(list){ return (list||[]).map(x=>[x.inv,x.c,x.d,x.due,x.memo
 function nyQboFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),c:String(a[1]||''),d:a[2]||null,due:a[3]||null,memo:String(a[4]||''),total:+a[5]||0,bal:+a[6]||0})); }
 function nyQboPayToWire(list){ return (list||[]).map(x=>[x.d,x.amt,x.c,x.inv]); }
 function nyQboPayFromWire(w){ return (w||[]).map(a=>({d:a[0]||null,amt:+a[1]||0,c:String(a[2]||''),inv:String(a[3]||'')})); }
+function buildNyQboItems(){
+  if(!FILES.ny_qbo_items) return [];
+  return FILES.ny_qbo_items.data.map(r=>({ inv:(r['WTNY Item Invoice #']||'').trim(), item:(r['Item']||'').trim(),
+    desc:(r['Description']||'').trim(), qty:num(r['Qty']), rate:num(r['Rate']), amt:num(r['Amount']) }))
+    .filter(x=>x.inv && x.item);
+}
+function nyQboItemsToWire(list){ return (list||[]).map(x=>[x.inv,x.item,x.desc,x.qty,x.rate,x.amt]); }
+function nyQboItemsFromWire(w){ return (w||[]).map(a=>({inv:String(a[0]||''),item:String(a[1]||''),desc:String(a[2]||''),qty:+a[3]||0,rate:+a[4]||0,amt:+a[5]||0})); }
 // ── HM OPS Tracker — Wizard Trees rows from the distributor's "HM OPS Order Queue" sheet ──
 // Pulled a few times a day by lib/hmops.mjs via the reports Apps Script (runs as gianni@, who has
 // view access; the sheet stays private). Rows are pre-filtered to Box Count/Brands mentioning
@@ -3767,6 +3886,7 @@ function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny
   if(FILES.ny_recon_items){ NY_RITEMS=buildNyRItems(); FRESH.add('nyRItems'); }
   if(FILES.ny_qbo_inv){ NY_QBO=buildNyQbo(); FRESH.add('nyQbo'); }
   if(FILES.ny_qbo_pay){ NY_QBO_PAY=buildNyQboPay(); FRESH.add('nyQboPay'); }
+  if(FILES.ny_qbo_items){ NY_QBO_ITEMS=buildNyQboItems(); FRESH.add('nyQboItems'); }
   if(FILES.hm_ops){ HM_OPS=buildHmOps(); FRESH.add('hmops'); }
   if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); renderHmOps(); } }
 function tierDataNY(){
@@ -5304,6 +5424,12 @@ $('#mom-export').onclick=()=>{ const {months,acc,dc,SRCS}=momData(); const isSal
 
 /* ============================ Wiring ============================ */
 $('#uploadToggle').onclick=()=>{ $('#uploadBody').classList.toggle('hidden'); $('#uploadToggle').classList.toggle('open'); };
+// Publishing is fully automated (hourly pipeline), so humans don't see the manual upload box or
+// the name/Publish controls — just the status line + Refresh. The elements STAY in the DOM: the
+// headless auto-publisher (localStorage salesAppAgent, lib/publish.mjs) drops CSVs into #fileInput
+// and clicks #sb-publish, so only the agent session shows them. Escape hatch for a one-off manual
+// upload: run localStorage.setItem('salesAppAgent','1') in the console and reload (then remove it).
+if(!agentBypass()){ ['#uploadCard','#sb-name','#sb-publish'].forEach(s=>{ const el=$(s); if(el) el.classList.add('hidden'); }); }
 const drop=$('#drop'),fi=$('#fileInput');
 drop.onclick=()=>fi.click();
 fi.onchange=e=>handleFiles(e.target.files);
