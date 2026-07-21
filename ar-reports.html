@@ -4048,21 +4048,35 @@ function nyQboSection(){
 function wireNyQbo(wrap){ wrap.querySelectorAll('#ny-qbo-table tbody tr.qbo-row').forEach(tr=>tr.onclick=()=>nyQboDrill(tr.dataset.inv)); }
 function nyQboDrill(inv){
   const x=(NY_QBO||[]).find(i=>i.inv===inv); if(!x) return;
-  const pays=(NY_QBO_PAY||[]).filter(p=>p.inv===inv).sort((a,b)=>(b.d||0)-(a.d||0));
+  const pays=(NY_QBO_PAY||[]).filter(p=>p.inv===inv).sort((a,b)=>(a.d||0)-(b.d||0));   // oldest → newest
+  const items=(NY_QBO_ITEMS||[]).filter(t=>t.inv===inv);
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   const paid=Math.max(0,x.total-x.bal);
-  // The Balance can move by NON-payment settlements too (credit memos, write-offs, deposits) —
-  // surface the difference as its own line so the drill always reconciles to the table's Paid.
+  // Item label: QBO names are "Category:Product" ("3.5g Jars:Dark Matter Flower", "Trim:Trim");
+  // show the product with the category after a dash, plus the description (strain / "9%" etc.).
+  const itemLabel=t=>{ const parts=t.item.split(':'); const child=(parts.pop()||'').trim(), cat=parts.join(':').trim();
+    let s=child; if(cat && cat!==child) s+=' — '+cat; if(t.desc) s+=' ('+t.desc+')'; return s; };
+  const rows=[];
+  // 1) Line items as invoiced — product lines plus the negative adjustment lines QBO models as
+  //    items (Discounts / Excise Tax / Service Fee). Blank money cells render blank (not $0.00).
+  items.forEach(t=>rows.push([itemLabel(t), t.qty?(Math.round(t.qty*100)/100).toLocaleString():'', t.rate||'', t.amt]));
+  const itemSum=items.reduce((s,t)=>s+t.amt,0);
+  if(items.length && Math.abs(itemSum-x.total)>0.01) rows.push(['(other invoice lines)','','',x.total-itemSum]);
+  // 2) Payments — dated, oldest first, then non-payment settlements (credit memos etc.), so
+  //    items − payments − settlements = the Balance-due footer.
   const appliedSum=pays.reduce((s,p)=>s+p.amt,0);
   const delta=paid-appliedSum;
-  const rows=pays.map(p=>[fmtD(p.d), p.c||'—', p.amt]);
-  if(Math.abs(delta)>0.01 && (pays.length||paid>0.005)) rows.push(['—','Other settlements (credits / adjustments)',delta]);
+  if(pays.length||paid>0.005){
+    rows.push(['— PAYMENTS —','','','']);
+    pays.forEach(p=>rows.push([`Payment received · ${fmtD(p.d)}`, '', '', -p.amt]));
+    if(Math.abs(delta)>0.01) rows.push(['Other settlements (credits / adjustments)','','',-delta]);
+  }
   openScModal({ title:`Invoice ${x.inv} — ${x.c}`,
     sub:`invoiced ${fmt$(x.total)}${x.d?` on ${fmtD(x.d)}`:''}${x.due?` · due ${fmtD(x.due)}`:''} · paid ${fmt$(paid)} · balance ${fmt$(x.bal)}`,
-    columns:[{l:'Payment date'},{l:'From'},{l:'Applied',num:true,money:true}],
+    columns:[{l:'Item'},{l:'Qty',num:true},{l:'Rate',num:true,money:true},{l:'Amount',num:true,money:true}],
     rows,
-    empty:rows.length?undefined:'No payments applied to this invoice yet.',
-    totalLabel:'Settled to date', total:rows.length?paid:undefined });
+    empty:rows.length?undefined:'No line detail available for this invoice yet (publishes with the next hourly refresh).',
+    totalLabel:'Balance due', total:rows.length?x.bal:undefined });
 }
 function renderArNYRecon(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note');
