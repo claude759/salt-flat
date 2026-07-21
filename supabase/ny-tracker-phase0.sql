@@ -82,7 +82,9 @@ begin
 end $$;
 
 -- own copy of the pay math so NY can diverge from CA later without coupling:
--- overnight guard on the raw span -> subtract break -> floor at 0
+-- overnight guard on the raw span -> subtract break -> floor at 0.
+-- KEEP THIS BODY IN SYNC WITH ny-tracker-gusto.sql — both files define this
+-- function, so whichever runs last wins.
 create or replace function public.ny_shift_calc()
 returns trigger language plpgsql as $$
 declare mins int;
@@ -93,6 +95,8 @@ begin
     mins := mins - coalesce(new.break_minutes, 0);
     if mins < 0 then mins := 0; end if;
     new.hours := round(mins / 60.0, 3);
+  elsif new.source = 'import' then
+    new.hours := coalesce(new.hours, 0);   -- paid leave has no punches; the importer's number stands
   else
     new.hours := 0;
   end if;
