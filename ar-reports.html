@@ -3978,26 +3978,28 @@ function renderTiersNY(){
   let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(av==null)av=-Infinity; if(bv==null)bv=-Infinity; if(typeof av==='string'){av=av.toLowerCase();bv=(''+bv).toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
-  const cols=[['tier','Tier',0],['name','Account',0],['rev','Revenue ('+months+'mo)',1],['orders','Orders',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['last','Last order',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],['rev','Gross Sales ('+months+'mo)',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['net','Net Sales',1],['orders','# of Orders',1],['last','Last order',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click to see this account's orders">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
     <td>${esc(r.name)}</td>
     <td class="num money">${fmt$(r.rev)}</td>
-    <td class="num">${r.orders}</td>
     <td class="num money">${r.totalConc>0.005?`<span style="color:var(--orange)">${fmt$(r.totalConc)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num">${r.pctDC==null?'<span class="neg">—</span>':(r.pctDC>0.00005?`<span style="color:${r.pctDC>=0.1?'var(--red)':r.pctDC>=0.05?'var(--yellow)':'var(--muted)'}">${(r.pctDC*100).toFixed(1)}%</span>`:'<span class="neg">—</span>')}</td>
+    <td class="num money">${fmt$(r.net)}</td>
+    <td class="num">${r.orders}</td>
     <td class="num">${fmtD(r.last)}</td></tr>`).join('');
-  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,conc:a.conc+(r.totalConc||0)}),{rev:0,orders:0,conc:0});
+  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,conc:a.conc+(r.totalConc||0),net:a.net+(r.net||0)}),{rev:0,orders:0,conc:0,net:0});
   wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="2">${view.length} account${view.length!==1?'s':''}</td>
-    <td class="num money">${fmt$(tot.rev)}</td><td class="num">${tot.orders}</td>
+    <td class="num money">${fmt$(tot.rev)}</td>
     <td class="num money">${tot.conc>0.005?fmt$(tot.conc):'—'}</td>
     <td class="num">${tot.rev>0.005&&tot.conc>0.005?((tot.conc/tot.rev)*100).toFixed(1)+'%':'—'}</td>
+    <td class="num money">${fmt$(tot.net)}</td><td class="num">${tot.orders}</td>
     <td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:key==='name'?1:-1}; renderTiers(); });
-  note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (order totals; cancelled/rejected orders excluded). Same editable thresholds as California. Click a row for the account's orders. <b>Disc + Credits</b> = invoice-level discounts from the distributor's recon, joined to the account by name; <b>% of Sales</b> = that ÷ revenue (LeafLink order totals are gross, so the two are the same basis). Visits/AR aren't tracked per-account for NY yet.`;
+  note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (cancelled/rejected orders excluded). Same editable thresholds as California; tiers rank by Gross Sales. <b>Gross Sales</b> = LeafLink order totals. <b>Disc + Credits</b> = invoice-level discounts from the distributor's recon, joined to the account by name; <b>% of Sales</b> = that ÷ gross; <b>Net Sales</b> = gross − discounts/credits. Click a row for the account's orders — each discount there shows the order it was used on. Visits/AR aren't tracked per-account for NY yet.`;
 }
 function nyTierDrill(name){
   const {start,end,months}=tierDataNY();
@@ -4026,10 +4028,18 @@ function nyTierDrill(name){
   const recon=(NY_INV||[]).filter(x=>x.d&&x.d>=start.getTime()&&x.d<=end.getTime()&&tierNorm(x.c)===tierNorm(name)&&(x.disc||0)>0.005)
     .sort((a,b)=>(b.d||0)-(a.d||0));
   const reconTot=recon.reduce((s,x)=>s+x.disc,0);
+  // Which LeafLink order a recon discount was used on: the recon carries no LL-#, but its gross
+  // (invoice Total + discount) equals the order's gross Amount — matched within the account's own
+  // orders, closest date wins on a tie. Validated against all 14 discounted invoices (Jul 2026):
+  // every one resolves to exactly one order. '—' if nothing matches (e.g. order predates LeafLink).
+  const usedOn=x=>{ const gross=(x.total||0)+(x.disc||0);
+    const cands=(NY_EVENTS||[]).filter(e=>tierNorm(e.c)===tierNorm(x.c)&&Math.abs((e.amt||0)-gross)<0.01);
+    if(cands.length>1){ const t=x.d||0; cands.sort((a,b)=>Math.abs((a.d||0)-t)-Math.abs((b.d||0)-t)); }
+    return cands.length?(cands[0].ref||''):''; };
   const footHtml=recon.length?`<div class="ddhead">Discounts / credits — distributor recon · <span style="color:var(--orange)">-${fmt$(reconTot)}</span> in this window (the tier table's "Disc + Credits")</div>
-    <table class="ddtable invitems"><thead><tr><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Discount</th><th>What it was</th></tr></thead><tbody>`+
-    recon.map(x=>`<tr><td><a class="scm-link" style="padding:2px 8px" href="javascript:void(0)" onclick="nyInvDrill('${esc(x.inv)}')">${esc(x.inv)}</a></td><td class="num">${fmtDt(x.d)}</td><td class="num money" style="color:var(--orange)">-${fmt$(x.disc)}</td><td>${esc(x.dsum||'—')}</td></tr>`).join('')+
-    `</tbody><tfoot><tr class="totals"><td>Total · ${recon.length} invoice${recon.length!==1?'s':''}</td><td></td><td class="num money" style="color:var(--orange)">-${fmt$(reconTot)}</td><td></td></tr></tfoot></table>`:'';
+    <table class="ddtable invitems"><thead><tr><th>Invoice #</th><th>Used on order</th><th class="num">Invoice date</th><th class="num">Discount</th><th>What it was</th></tr></thead><tbody>`+
+    recon.map(x=>{ const ord=usedOn(x); return `<tr><td><a class="scm-link" style="padding:2px 8px" href="javascript:void(0)" onclick="nyInvDrill('${esc(x.inv)}')">${esc(x.inv)}</a></td><td>${ord?`<b>${esc(ord)}</b>`:'<span class="neg">—</span>'}</td><td class="num">${fmtDt(x.d)}</td><td class="num money" style="color:var(--orange)">-${fmt$(x.disc)}</td><td>${esc(x.dsum||'—')}</td></tr>`; }).join('')+
+    `</tbody><tfoot><tr class="totals"><td>Total · ${recon.length} invoice${recon.length!==1?'s':''}</td><td></td><td></td><td class="num money" style="color:var(--orange)">-${fmt$(reconTot)}</td><td></td></tr></tfoot></table>`:'';
   openScModal({title:`${name} — LeafLink orders`, sub:`${list.length} order${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · newest first · click an order for its line items${recon.length?' · discounts below are from the distributor’s recon invoices':''}`,
     columns:[{l:'Order #'},{l:'Status'},{l:'Drop'},{l:'Date'},{l:'Amount',num:true,money:true}],
     rows:list.map(e=>{ const dr=nyDropOf(e.d); return [e.ref||'—', e.st||'—', dr?('Drop '+dr.n):'—', fmtDt(e.d), e.amt]; }),
@@ -4473,8 +4483,8 @@ $('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr
 ['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
 $('#tier-export').onclick=()=>{
   if(APP_STATE==='NY'){ const {rows,months}=tierDataNY();
-    const out=[['Tier','Account',`Revenue (${months}mo)`,'Orders','Disc + Credits','% of Sales','Last order']];
-    tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.rev.toFixed(2),r.orders,(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'']));
+    const out=[['Tier','Account',`Gross Sales (${months}mo)`,'Disc + Credits','% of Sales','Net Sales','# of Orders','Last order']];
+    tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.rev.toFixed(2),(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',(r.net||0).toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'']));
     downloadCSV('customer-tiers-ny.csv',out); return; }
   const {rows,months}=tierData();
   const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Disc + Credits','% of Sales','Last order','Visits','AR Outstanding','Overdue','Avg Days Late']];
