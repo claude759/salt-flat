@@ -4156,13 +4156,33 @@ function nyQboDrill(inv){
     empty:rows.length?undefined:'No line detail available for this invoice yet (publishes with the next hourly refresh).',
     totalLabel:'Balance due', total:rows.length?x.bal:undefined });
 }
+// Tie each recon invoice back to the LeafLink order it came from. The distributor's Distru
+// (SOWT-#### orders → INVWT#### invoices) and LeafLink (LL-####) share no key, so match on
+// customer + GROSS order total (recon Total is net of discounts; Gross Sale is the order value),
+// disambiguating same-customer/same-amount repeats by order-date proximity. ~96% resolve to
+// exactly one order; the rest fall back to showing the distributor's own sales-order number.
+function nyInvOrderMap(){
+  const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+t.gross; });
+  const idx={}; (NY_EVENTS||[]).forEach(e=>{ const k=String(e.c||'').toLowerCase()+'|'+Math.round((e.amt||0)*100); (idx[k]||(idx[k]=[])).push(e); });
+  const out={};
+  (NY_INV||[]).forEach(x=>{
+    const g=gross[x.inv]; if(g==null) return;
+    const cands=idx[String(x.c||'').toLowerCase()+'|'+Math.round(g*100)];
+    if(!cands||!cands.length) return;
+    out[x.inv]=(cands.length===1?cands[0]
+      :cands.slice().sort((a,b)=>Math.abs((a.d||0)-(x.d||0))-Math.abs((b.d||0)-(x.d||0)))[0]).ref;
+  });
+  return out;
+}
 function renderArNYRecon(){
   const wrap=$('#ar-ny-wrap'), cards=$('#ar-ny-cards'), note=$('#ar-ny-note');
   const now=new Date(); now.setHours(23,59,59,999);
   const q=(($('#ar-ny-search')||{}).value||'').trim().toLowerCase();
   const all=(NY_INV||[]).map(x=>({...x, dpd:(x.due==null?null:Math.floor((now.getTime()-x.due)/86400000))}))
     .sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
-  const view=q?all.filter(x=>x.c.toLowerCase().includes(q)||x.inv.toLowerCase().includes(q)||(x.so||'').toLowerCase().includes(q)):all;
+  const ordMap=nyInvOrderMap();
+  const view=q?all.filter(x=>x.c.toLowerCase().includes(q)||x.inv.toLowerCase().includes(q)||(x.so||'').toLowerCase().includes(q)
+    ||String(ordMap[x.inv]||'').toLowerCase().includes(q)):all;
   const S=(a,k)=>a.reduce((s,x)=>s+(x[k]||0),0);
   const open=view.filter(x=>x.out>0.005), past=open.filter(x=>x.dpd!=null&&x.dpd>0);
   const invoiced=S(view,'total'), collected=S(view,'paid'), outstanding=S(view,'out');
@@ -4202,14 +4222,16 @@ function renderArNYRecon(){
     if(x.dpd===0) return '<span style="color:var(--yellow)">due today</span>';
     return `<span style="color:${x.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-x.dpd}d</span>`; };
   const body=view.map(x=>`<tr class="clickrow" data-inv="${esc(x.inv)}" title="Click for line items + discount detail">
-    <td>${esc(x.c)}</td><td>${esc(x.inv)}</td><td class="num">${fmtD(x.d)}</td><td class="num">${fmtD(x.due)}</td>
+    <td>${esc(x.c)}</td><td>${esc(x.inv)}</td>
+    <td>${ordMap[x.inv]?`${esc(ordMap[x.inv])}${x.so?`<div class="rep">${esc(x.so)}</div>`:''}`:(x.so?`<span class="muted2">${esc(x.so)}</span>`:'<span class="neg">—</span>')}</td>
+    <td class="num">${fmtD(x.d)}</td><td class="num">${fmtD(x.due)}</td>
     <td class="num">${statusCell(x)}</td>
     <td class="num money">${x.disc>0.005?`<span style="color:var(--orange)">-${fmt$(x.disc)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${fmt$(x.total)}</td>
     <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
-  wrap.innerHTML=nyQboSection(q)+pendHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td colspan="5">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
+  wrap.innerHTML=nyQboSection(q)+pendHtml+`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th>Order #</th><th class="num">Invoice date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="6">${view.length} invoice${view.length!==1?'s':''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
   wireNyQbo(wrap);
   { const tg=wrap.querySelector('#ny-pend-tgl'); if(tg) tg.onclick=()=>{ NY_PEND_OPEN=!NY_PEND_OPEN; renderArNY(); }; }
   wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
@@ -4253,8 +4275,9 @@ function renderArNY(){
   }
   // Recon (dispensary-side) when loaded, else the LeafLink terms schedule — matches what renders
   if((NY_INV||[]).length){
-    out.push(['— DISPENSARY INVOICES (distributor recon) —'],['Dispensary','Invoice #','Invoice date','Due date','Status','Discount','Invoiced','Collected','Outstanding']);
-    NY_INV.forEach(x=>out.push([x.c,x.inv,x.d?new Date(x.d).toISOString().slice(0,10):'',x.due?new Date(x.due).toISOString().slice(0,10):'',x.st,x.disc.toFixed(2),x.total.toFixed(2),x.paid.toFixed(2),x.out.toFixed(2)]));
+    const om=nyInvOrderMap();
+    out.push(['— DISPENSARY INVOICES (distributor recon) —'],['Dispensary','Invoice #','LeafLink order #','Distributor SO #','Invoice date','Due date','Status','Discount','Invoiced','Collected','Outstanding']);
+    NY_INV.forEach(x=>out.push([x.c,x.inv,om[x.inv]||'',x.so||'',x.d?new Date(x.d).toISOString().slice(0,10):'',x.due?new Date(x.due).toISOString().slice(0,10):'',x.st,x.disc.toFixed(2),x.total.toFixed(2),x.paid.toFixed(2),x.out.toFixed(2)]));
   } else {
     const rows=nyArData();
     out.push(['— EXPECTED RECEIVABLES (LeafLink terms) —'],['Buyer','Order #','Ship date','Terms','Due date','Days past due','Amount']);
