@@ -1004,11 +1004,14 @@
     <div id="view-hmops" class="hidden">
       <div class="toolbar">
         <input type="text" id="hmops-search" placeholder="Search shop / LL# / week…" />
-        <select id="hmops-range" title="Which weeks to show (by the sheet's weekly tab)">
+        <select id="hmops-range" title="Which deliveries to show (by delivery date, weekly tab as fallback)">
           <option value="week" selected>This week</option>
           <option value="3m">Last 3 months</option>
           <option value="all">All time</option>
+          <option value="custom">Custom range…</option>
         </select>
+        <label class="dt">From <input type="date" id="hmops-from" /></label>
+        <label class="dt">To <input type="date" id="hmops-to" /></label>
         <select id="hmops-drop" title="Harvest drop — Drop 1 = the orders already assigned to it; everything newer is Drop 2">
           <option value="all" selected>All drops</option>
           <option value="1">Drop 1</option>
@@ -3970,35 +3973,55 @@ function hmDropOf(ll, idx){
   if(d==null) return 2;
   const x=nyDropOf(d); return x ? x.n : 2;
 }
-function renderHmOps(){
-  const wrap=$('#hmops-wrap'), cards=$('#hmops-cards'), note=$('#hmops-note'); if(!wrap) return;
-  const all=HM_OPS||[];
-  if(!all.length){ if(cards)cards.innerHTML=''; if(note)note.innerHTML='';
-    wrap.innerHTML='<div class="empty">No HM OPS data yet — the tracker fills in after the next scheduled sheet pull.</div>'; return; }
+// The toolbar's filter set + the rows it selects, in ONE place — the table, the summary cards and
+// the CSV export all read from here, so what you export is always what you're looking at.
+function hmFilterState(){
   const q=(($('#hmops-search')||{}).value||'').trim().toLowerCase();
   const range=(($('#hmops-range')||{}).value)||'week';
   const dropSel=(($('#hmops-drop')||{}).value)||'all';
   const idx=hmDropIndex(), tIdx=hmTermsIndex();
   const termsOf=x=>tIdx[String(x.ll||'').trim()]||'';
-  // date window, applied to the row's WEEKLY TAB (the sheet's own bucket, Mon–Fri)
+  // date window, applied to the row's DELIVERY date (weekly tab as fallback — see hmRowDate)
   const today=new Date(); today.setHours(0,0,0,0);
   const mon=new Date(today); mon.setDate(today.getDate()-((today.getDay()+6)%7));
   const sun=new Date(mon); sun.setDate(mon.getDate()+6); sun.setHours(23,59,59,999);
   const cut3=new Date(today); cut3.setMonth(today.getMonth()-3);
-  const inRange=x=>{ const t=hmRowDate(x);                              // delivery date first, week tab as fallback
+  // Custom window: either bound may be left blank (open-ended). Parsed as LOCAL dates so a
+  // delivery ON the end date is included (a bare yyyy-mm-dd through Date() lands at UTC
+  // midnight and would drop that whole day west of Greenwich).
+  const dnum=v=>{ const m=String(v||'').match(/^(\d{4})-(\d\d)-(\d\d)$/); return m?new Date(+m[1],+m[2]-1,+m[3]):null; };
+  const cFrom=dnum(($('#hmops-from')||{}).value), cToRaw=dnum(($('#hmops-to')||{}).value);
+  const cTo=cToRaw?new Date(cToRaw.getFullYear(),cToRaw.getMonth(),cToRaw.getDate(),23,59,59,999):null;
+  const inRange=x=>{ const t=hmRowDate(x);
+    if(range==='custom'){ if(t==null) return false;                     // undatable row can't be placed in an explicit window
+      return (!cFrom || t>=cFrom.getTime()) && (!cTo || t<=cTo.getTime()); }
     if(t==null) return range==='all';                                   // undatable row: only "All time" shows it
     if(range==='week') return t>=mon.getTime() && t<=sun.getTime();
     if(range==='3m')  return t>=cut3.getTime();
     return true; };
-  const view=hmDedupe(all).filter(x=>inRange(x))
-    .filter(x=>dropSel==='all' || String(hmDropOf(x.ll,idx))===dropSel)
-    .filter(x=>hmTermsFilter==='all' || hmTermsKind(termsOf(x))===hmTermsFilter)
-    .filter(x=>!q || [x.shop,x.ll,x.wk,x.brands,x.notes,x.st].some(v=>String(v).toLowerCase().includes(q)))
+  const fmtDshort=dt=>dt?dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}):'';
+  const rangeLabel=range==='custom'
+    ? ((cFrom||cTo)?`${cFrom?fmtDshort(cFrom):'the start'} – ${cTo?fmtDshort(cTo):'today'}`:'a custom range (no dates set)')
+    : (range==='week'?'this week':(range==='3m'?'the last 3 months':'all time'));
+  return { q, range, dropSel, idx, tIdx, termsOf, inRange, rangeLabel, cFrom, cTo };
+}
+function hmViewRows(F){ F=F||hmFilterState();
+  return hmDedupe(HM_OPS||[]).filter(x=>F.inRange(x))
+    .filter(x=>F.dropSel==='all' || String(hmDropOf(x.ll,F.idx))===F.dropSel)
+    .filter(x=>hmTermsFilter==='all' || hmTermsKind(F.termsOf(x))===hmTermsFilter)
+    .filter(x=>!F.q || [x.shop,x.ll,x.wk,x.brands,x.notes,x.st].some(v=>String(v).toLowerCase().includes(F.q)))
     // "This week" reads as a delivery schedule (Mon→Fri); wider ranges read as history (newest first).
     .sort((a,b)=>{ const ta=hmRowDate(a), tb=hmRowDate(b);
       if(ta==null&&tb==null) return 0; if(ta==null) return 1; if(tb==null) return -1;
-      return range==='week' ? ta-tb : tb-ta; });
-  const rangeLabel=range==='week'?'this week':(range==='3m'?'the last 3 months':'all time');
+      return F.range==='week' ? ta-tb : tb-ta; });
+}
+function renderHmOps(){
+  const wrap=$('#hmops-wrap'), cards=$('#hmops-cards'), note=$('#hmops-note'); if(!wrap) return;
+  const all=HM_OPS||[];
+  if(!all.length){ if(cards)cards.innerHTML=''; if(note)note.innerHTML='';
+    wrap.innerHTML='<div class="empty">No HM OPS data yet — the tracker fills in after the next scheduled sheet pull.</div>'; return; }
+  const F=hmFilterState(), { q, range, dropSel, idx, termsOf, rangeLabel } = F;
+  const view=hmViewRows(F);
   const isDone=x=>/fulfil|deliver|complete|done/i.test(x.st);
   const open=view.filter(x=>!isDone(x)), held=view.filter(x=>hmFlag(x.hold)), rets=view.filter(x=>hmFlag(x.ret));
   const tot=view.reduce((s,x)=>s+x.total,0);
@@ -4467,17 +4490,31 @@ function renderArNY(){
   }
   downloadCSV('ny-receivables.csv',out); }; }
 { const el=$('#hmops-search'); if(el) el.addEventListener('input',renderHmOps); }
-{ const el=$('#hmops-range'); if(el) el.addEventListener('change',renderHmOps); }
+// Presets fill the From/To boxes (so the window is always visible + tweakable); editing either
+// box flips the select to Custom — same interaction as Sales by Type.
+function applyHmPreset(p){
+  const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const d=new Date(); let s=null,e=null;
+  if(p==='week'){ const mon=new Date(d); mon.setDate(d.getDate()-((d.getDay()+6)%7)); const sun=new Date(mon); sun.setDate(mon.getDate()+6); s=isoD(mon); e=isoD(sun); }
+  else if(p==='3m'){ const t=new Date(d); t.setMonth(d.getMonth()-3); s=isoD(t); e=isoD(d); }
+  else if(p==='all'){ s=''; e=''; }
+  else return;                                    // 'custom' → leave whatever is in the boxes
+  if($('#hmops-from')) $('#hmops-from').value=s;
+  if($('#hmops-to')) $('#hmops-to').value=e;
+}
+{ const el=$('#hmops-range'); if(el) el.addEventListener('change',ev=>{ applyHmPreset(ev.target.value); renderHmOps(); }); }
+['hmops-from','hmops-to'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('change',()=>{
+  const sel=$('#hmops-range'); if(sel) sel.value='custom'; renderHmOps(); }); });
+applyHmPreset('week');   // show the active window in the boxes from the start (default preset)
 { const el=$('#hmops-drop'); if(el) el.addEventListener('change',renderHmOps); }
 { const seg=$('#hmops-terms'); if(seg) seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{
     hmTermsFilter=b.dataset.terms||'all';
     seg.querySelectorAll('button').forEach(o=>o.classList.toggle('on', o===b));
     renderHmOps(); }); }
 { const el=$('#hmops-export'); if(el) el.onclick=()=>{
-  const idx=hmDropIndex();
-  const out=[['Delivery Date','Week','Submitted','LL#','Drop','Shop','Status','Box Count/Brands','PK','MN','Total','5% DISC','STATE OR PAST','HOLD','RETURN PICKUP','DELIVERY EMAIL SENT','Notes']];
-  hmDedupe(HM_OPS||[]).sort((a,b)=>(hmRowDate(b)||0)-(hmRowDate(a)||0))
-    .forEach(x=>out.push([x.dl,x.wk,x.sub,x.ll,hmDropOf(x.ll,idx),x.shop,x.st,x.brands,x.pk,x.mn,x.total.toFixed(2),x.disc,x.sop,x.hold,x.ret,x.email,x.notes]));
+  const F=hmFilterState();   // export exactly what the toolbar is showing (date range, drop, terms, search)
+  const out=[['Delivery Date','Week','Submitted','LL#','Drop','Terms','Shop','Status','Box Count/Brands','PK','MN','Total','5% DISC','STATE OR PAST','HOLD','RETURN PICKUP','DELIVERY EMAIL SENT','Notes']];
+  hmViewRows(F).forEach(x=>out.push([x.dl,x.wk,x.sub,x.ll,hmDropOf(x.ll,F.idx),F.termsOf(x),x.shop,x.st,x.brands,x.pk,x.mn,x.total.toFixed(2),x.disc,x.sop,x.hold,x.ret,x.email,x.notes]));
   downloadCSV('hm-ops-wizard-trees.csv',out); }; }
 
 // ── NY Sales by Type: LeafLink line items grouped by product format → strain, with Drop cohorts ──
