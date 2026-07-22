@@ -627,9 +627,19 @@ function paymentsMeta(m){
 }
 
 /* the adjusted view: app re-ascriptions override the sheet's split per payment */
+const VAPE_TYPE = 'Vapes (AIO)';
+const isVape = t => t === VAPE_TYPE;
+
 function computeAdjust(m, stateKey){
   const groups = {};
-  for(const a of state.asc) if(a.state === stateKey) (groups[a.payment_key] ??= []).push(a);
+  const bucketEntries = [];
+  for(const a of state.asc) if(a.state === stateKey){
+    if(a.mode === 'bucket') bucketEntries.push(a);
+    else (groups[a.payment_key] ??= []).push(a);
+  }
+  // net payment $ the user has re-attributed from Non-vape onto the Vape bucket
+  let netToVape = 0;
+  for(const a of bucketEntries) netToVape += (a.invoice_no === '__vape__' ? 1 : -1) * (+a.amount);
   const meta = paymentsMeta(m);
   const metaByKey = Object.fromEntries(meta.map(p=>[p.key, p]));
   const invCol = m.cols.find(c => c.header.toLowerCase() === 'invoice no.');
@@ -679,7 +689,23 @@ function computeAdjust(m, stateKey){
   }
   for(const src in removed) bump(src, -removed[src].reduce((a,x)=>a+x.amt,0));
   for(const src in added)   bump(src, +added[src].reduce((a,x)=>a+x.amt,0));
-  return { meta, metaByKey, groups, restated, removed, added, delta, overall, orphans, moves };
+  return { meta, metaByKey, groups, restated, removed, added, delta, overall, orphans, moves,
+           netToVape, bucketEntries };
+}
+
+/* open balance split into the Vape (AIO hardware) bucket and everything else, with the
+   user's payment attributions (netToVape) shifted between the two. Totals are conserved. */
+function bucketBalances(m, adj){
+  const dueCol = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'due');
+  const nydCol = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'not yet due');
+  let vape = 0, nonvape = 0;
+  for(const r of m.rows){
+    const open = (dueCol ? (money(r.c[dueCol.i])||0) : 0) - (adj.delta[r.src]||0)
+               + (nydCol ? (money(r.c[nydCol.i])||0) : 0);
+    if(isVape(r.type)) vape += open; else nonvape += open;
+  }
+  return { vape: vape - adj.netToVape, nonvape: nonvape + adj.netToVape,
+           vapeSheet: vape, nonvapeSheet: nonvape, netToVape: adj.netToVape };
 }
 
 /* ---------- Supabase I/O ---------- */
@@ -694,6 +720,7 @@ async function ascWrite(doIt){
     state.asc = await fetchAsc();
     state.ascSig = JSON.stringify(state.asc);
     state.ascFailed = false;
+    const b = $('#banner'); b.className = 'banner'; b.textContent = '';   // clear any stale error
   }catch(e){
     state.ascFailed = true;
     const b = $('#banner');
@@ -959,12 +986,16 @@ function renderOverview(){
     const dSum = Object.values(adj.delta).reduce((a,d)=>a+d,0);
     s.adjDue = s.due - dSum; s.adjPaid = s.paid + dSum;
     s.overall = adj.overall; s.hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005;
+    const b = bucketBalances(m, adj);
+    s.vape = b.vape; s.nonvape = b.nonvape; s.vapeSheet = b.vapeSheet; s.nonvapeSheet = b.nonvapeSheet;
+    s.netToVape = b.netToVape;
     t[k] = s;
   }
   const g = Object.values(t).reduce((a,s)=>({n:a.n+s.n,total:a.total+s.total,paid:a.paid+s.paid,due:a.due+s.due,
       nyd:a.nyd+s.nyd,adjDue:a.adjDue+s.adjDue,adjPaid:a.adjPaid+s.adjPaid,overall:a.overall+s.overall,
-      hasAdj:a.hasAdj||s.hasAdj}),
-    {n:0,total:0,paid:0,due:0,nyd:0,adjDue:0,adjPaid:0,overall:0,hasAdj:false});
+      vape:a.vape+s.vape,nonvape:a.nonvape+s.nonvape,vapeSheet:a.vapeSheet+s.vapeSheet,
+      nonvapeSheet:a.nonvapeSheet+s.nonvapeSheet,netToVape:a.netToVape+s.netToVape,hasAdj:a.hasAdj||s.hasAdj}),
+    {n:0,total:0,paid:0,due:0,nyd:0,adjDue:0,adjPaid:0,overall:0,vape:0,nonvape:0,vapeSheet:0,nonvapeSheet:0,netToVape:0,hasAdj:false});
 
   /* scope buttons */
   const scope = state.ovScope;
@@ -1005,7 +1036,24 @@ function renderOverview(){
     `<td class="num" style="color:var(--orange)">${fmtUSD(s.adjDue)}${adjMark(s)}</td>` +
     `<td class="num" style="color:var(--blue)">${fmtUSD(s.nyd)}</td>` +
     `<td class="go">${cls==='st-row'?'open →':''}</td></tr>`;
-  cardsEl.innerHTML = `<div class="tblbox">` +
+
+  /* Vape vs Non-vape open balance (scope-aware), reflecting payment attributions */
+  const bs = scope === 'all' ? g : t[scope];
+  const shifted = Math.abs(bs.netToVape) > 0.005;
+  const bsub = (v, sheet) => shifted ? `<div class="sub">sheet: ${fmtUSD(sheet)}</div>` : '';
+  const bucketCards =
+    `<div class="cards" style="padding:0 0 14px">` +
+    `<div class="card big"><div class="lbl">💨 Vape balance <span class="faint">(AIO hardware)</span></div>` +
+      `<div class="val" style="color:var(--accent2)">${fmtUSD(bs.vape)}</div>${bsub(bs.vape, bs.vapeSheet)}</div>` +
+    `<div class="card big"><div class="lbl">Non-vape balance</div>` +
+      `<div class="val">${fmtUSD(bs.nonvape)}</div>${bsub(bs.nonvape, bs.nonvapeSheet)}</div>` +
+    `</div>` +
+    (shifted ? `<div style="padding:0 2px 12px;font-size:11.5px;color:var(--faint)">` +
+      `${fmtUSD(Math.abs(bs.netToVape))} of payments attributed ${bs.netToVape>0?'to vapes':'to non-vape'} in this app · ` +
+      `manage on the CA/NY page → 💸 Payments → “Attribute to a bucket”.</div>` : '');
+
+  cardsEl.innerHTML = bucketCards +
+    `<div class="tblbox">` +
     `<table class="stateTbl"><thead><tr><th>State</th><th class="num">Orders</th><th class="num">Open balance</th>` +
     `<th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
     row('ca', t.ca, 'st-row', 'CA') + row('ny', t.ny, 'st-row', 'NY') + row('', g, 'grand', 'Total') +
@@ -1369,12 +1417,37 @@ function renderPayPanel(m, adj){
       `</td></tr>`;
   }
 
+  /* bucket attribution — split payments between the Vape and Non-vape balances */
+  const bb = bucketBalances(m, adj);
+  const bucketRows = (adj.bucketEntries||[]).map(a =>
+    `<div class="entry"><span><b>${a.invoice_no==='__vape__'?'→ Vapes':'→ Non-vape'}</b>` +
+    (a.note?` <span class="note">· ${esc(a.note)}</span>`:'') + `</span>` +
+    `<span class="amt">${fmtUSD(+a.amount)}</span>` +
+    `<button class="del" data-del="${a.id}" title="Remove">✕</button></div>`).join('');
+  const bucketPanel = `<div class="panel" style="margin-bottom:10px">` +
+    `<div class="ptitle">Attribute payments — Vapes vs Non-vape · ${stateKey.toUpperCase()}</div>` +
+    `<div class="mrow" style="margin-bottom:10px">` +
+      `<div class="mitem"><div class="fl">💨 Vape balance</div><div class="fv" style="color:var(--accent2)">${fmtUSD(bb.vape)}</div></div>` +
+      `<div class="mitem"><div class="fl">Non-vape balance</div><div class="fv">${fmtUSD(bb.nonvape)}</div></div>` +
+    `</div>` +
+    bucketRows +
+    `<div class="addform" data-mode="bucket">` +
+      `<span class="faint" style="font-size:12px">Attribute</span>` +
+      `<input class="amt" placeholder="Amount" inputmode="decimal" data-f="amt">` +
+      `<span class="faint" style="font-size:12px">of payments to</span>` +
+      `<select class="src" data-f="bucket"><option value="__vape__">💨 Vapes</option><option value="__nonvape__">Non-vape</option></select>` +
+      `<input class="nt" placeholder="Note (e.g. INV-1786)" data-f="nt">` +
+      `<button class="btn primary" data-bucket="1" style="padding:6px 12px;font-size:12.5px">Attribute</button>` +
+      `<span class="hint">Shifts that amount of payment credit between the two balances (Vape ⇄ Non-vape). Totals stay the same; only which bucket is considered paid changes. Use this when a wire really paid for vape hardware but the sheet spread it across other invoices.</span>` +
+    `</div></div>`;
+
   panel.style.display = '';
-  panel.innerHTML = `<div class="panel"><div class="ptitle">Payments (wires) — ${stateKey.toUpperCase()} · click one to re-ascribe</div>` +
+  panel.innerHTML = `<div class="panel-wrap">` + bucketPanel +
+    `<div class="panel"><div class="ptitle">Payments (wires) — ${stateKey.toUpperCase()} · click one to re-ascribe by invoice</div>` +
     `<datalist id="invList">${invoices.map(i=>`<option value="${esc(i)}">`).join('')}</datalist>` +
     `<div style="overflow-x:auto"><table class="payTbl"><thead><tr><th>Payment</th><th class="num">Wire</th>` +
     `<th class="num">Ascribed in sheet</th><th class="num">Sheet Δ</th><th></th><th></th></tr></thead>` +
-    `<tbody>${rowsHtml}</tbody></table></div></div>`;
+    `<tbody>${rowsHtml}</tbody></table></div></div></div>`;
 
   panel.querySelectorAll('tr.prow').forEach(tr => tr.addEventListener('click', () => {
     const k = tr.dataset.key;
@@ -1396,6 +1469,16 @@ function renderPayPanel(m, adj){
     if(amt===null || amt<0){ form.querySelector('[data-f=amt]').focus(); return; }
     if(inv && !invoices.includes(inv) && !confirm(`"${inv}" doesn't match any invoice on this page — save anyway?`)) return;
     ascAdd({ state: stateKey, payment_key: b.dataset.add, mode:'replace', invoice_no: inv || null, amount: amt, note: nt || null });
+  }));
+  panel.querySelectorAll('[data-bucket]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const form = b.closest('.addform');
+    const amt = money(form.querySelector('[data-f=amt]').value);
+    const bucket = form.querySelector('[data-f=bucket]').value;
+    const nt = form.querySelector('[data-f=nt]').value.trim();
+    if(amt===null || amt<=0){ form.querySelector('[data-f=amt]').focus(); return; }
+    ascAdd({ state: stateKey, payment_key: '__bucket__', mode:'bucket',
+             invoice_no: bucket, amount: amt, note: nt || null });
   }));
   panel.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', e => {
     e.stopPropagation();
