@@ -66,6 +66,13 @@
   .card.big .lbl{font-size:12px}
   .card.big .val{font-size:clamp(19px,4.2vw,30px);margin-top:6px}
 
+  /* ---- overview purchases report ---- */
+  .mrow{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-end}
+  .mrow .mitem .fl{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--faint)}
+  .mrow .mitem .fv{margin-top:2px;font-weight:700;font-size:16px;font-variant-numeric:tabular-nums}
+  .mrow .mitem.avg{padding-left:22px;border-left:1px solid var(--line)}
+  .mrow .mitem.avg .fv{color:var(--accent2);font-size:21px;font-weight:800}
+
   /* ---- overview state table ---- */
   .stateTbl{width:100%;font-size:13.5px}
   .stateTbl th{cursor:default}
@@ -278,6 +285,7 @@ const state = {
   ascFailed: false,
   payOpen: { ca:false, ny:false },              // payments panel visible?
   payExpanded: { ca:new Set(), ny:new Set() },  // payment_keys expanded in the panel
+  ovScope: 'all',                               // overview scope: all | ca | ny
   lastSync: null,
   fetching: false,
   failed: false,
@@ -598,11 +606,35 @@ function stateTotals(m){
            paid: sum(find('paid to date')), due: sum(find('due')), nyd: sum(find('not yet due')) };
 }
 
+function purchasesReport(scope){
+  const src = scope === 'all' ? ['ca','ny'] : [scope];
+  const now = new Date();
+  const months = [];
+  for(let k=3;k>=1;k--){
+    const d = new Date(now.getFullYear(), now.getMonth()-k, 1);
+    months.push({ y:d.getFullYear(), m:d.getMonth(),
+                  label: d.toLocaleString('en-US',{month:'short'})+' '+d.getFullYear(), sum:0 });
+  }
+  for(const key of src){
+    const m = state.data[key]; if(!m) continue;
+    const tc = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'total including freight');
+    if(!tc) continue;
+    for(const r of m.rows){
+      if(r.date == null) continue;
+      const d = new Date(r.date);
+      const slot = months.find(x => x.y===d.getFullYear() && x.m===d.getMonth());
+      if(slot) slot.sum += money(r.c[tc.i]) || 0;
+    }
+  }
+  return { months, avg: months.reduce((a,x)=>a+x.sum,0) / months.length };
+}
+
 function renderOverview(){
   $('#openSheet').href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
-  $('#toolbar').innerHTML = '';
-  const pp = $('#payPanel'); pp.style.display='none'; pp.innerHTML='';
+  const pp = $('#payPanel');
   if(!state.data.ca || !state.data.ny){
+    $('#toolbar').innerHTML = '';
+    pp.style.display='none'; pp.innerHTML='';
     $('#cards').innerHTML = '';
     $('#tblbox').innerHTML = '<div class="loading">Loading order data…</div>';
     return;
@@ -619,12 +651,31 @@ function renderOverview(){
       nyd:a.nyd+s.nyd,adjDue:a.adjDue+s.adjDue,adjPaid:a.adjPaid+s.adjPaid,overall:a.overall+s.overall,
       hasAdj:a.hasAdj||s.hasAdj}),
     {n:0,total:0,paid:0,due:0,nyd:0,adjDue:0,adjPaid:0,overall:0,hasAdj:false});
-  const sheetSub = (a,b) => g.hasAdj && Math.abs(a-b)>0.005 ? `<div class="sub">sheet: ${fmtUSD(b)}</div>` : '';
+
+  /* scope buttons */
+  const scope = state.ovScope;
+  $('#toolbar').innerHTML = `<div class="seg">` +
+    [['all','All'],['ca','CA'],['ny','NY']].map(([k,l]) =>
+      `<button data-scope="${k}" class="${scope===k?'on':''}">${l}</button>`).join('') + `</div>`;
+  document.querySelectorAll('#toolbar [data-scope]').forEach(b =>
+    b.addEventListener('click', () => { state.ovScope = b.dataset.scope; render(); }));
+
+  const s = scope === 'all' ? g : t[scope];
+  const sheetSub = (a,b) => s.hasAdj && Math.abs(a-b)>0.005 ? `<div class="sub">sheet: ${fmtUSD(b)}</div>` : '';
   $('#cards').innerHTML =
-    `<div class="card big"><div class="lbl">Total balance <span class="faint">(due + not yet due)</span></div><div class="val">${fmtUSD(g.adjDue+g.nyd)}</div>${sheetSub(g.adjDue+g.nyd, g.due+g.nyd)}</div>` +
-    `<div class="card big due"><div class="lbl">Total due</div><div class="val">${fmtUSD(g.adjDue)}</div>${sheetSub(g.adjDue, g.due)}</div>` +
-    `<div class="card big nyd"><div class="lbl">Total not yet due</div><div class="val">${fmtUSD(g.nyd)}</div></div>` +
-    (g.overall > 0.005 ? `<div class="card big"><div class="lbl">On overall balance</div><div class="val">${fmtUSD(g.overall)}</div><div class="sub">re-ascribed, not on an invoice</div></div>` : '');
+    `<div class="card big"><div class="lbl">Total balance <span class="faint">(due + not yet due)</span></div><div class="val">${fmtUSD(s.adjDue+s.nyd)}</div>${sheetSub(s.adjDue+s.nyd, s.due+s.nyd)}</div>` +
+    `<div class="card big due"><div class="lbl">Total due</div><div class="val">${fmtUSD(s.adjDue)}</div>${sheetSub(s.adjDue, s.due)}</div>` +
+    `<div class="card big nyd"><div class="lbl">Total not yet due</div><div class="val">${fmtUSD(s.nyd)}</div></div>` +
+    (s.overall > 0.005 ? `<div class="card big"><div class="lbl">On overall balance</div><div class="val">${fmtUSD(s.overall)}</div><div class="sub">re-ascribed, not on an invoice</div></div>` : '');
+
+  /* purchases report */
+  const rep = purchasesReport(scope);
+  pp.style.display = '';
+  pp.innerHTML = `<div class="panel"><div class="ptitle">Average monthly purchases · ${scope==='all'?'CA + NY':scope.toUpperCase()} · last 3 full months (by ship date)</div>` +
+    `<div class="mrow">` +
+    rep.months.map(x => `<div class="mitem"><div class="fl">${esc(x.label)}</div><div class="fv">${fmtUSD(x.sum)}</div></div>`).join('') +
+    `<div class="mitem avg"><div class="fl">Monthly average</div><div class="fv">${fmtUSD(rep.avg)}</div></div>` +
+    `</div></div>`;
 
   const adjMark = s => s.hasAdj ? '<span class="adjmark" title="Includes app re-ascriptions">✱</span>' : '';
   const row = (k, s, cls, name) =>
