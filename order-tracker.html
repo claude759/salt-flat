@@ -213,6 +213,13 @@
     padding:6px 9px;font:inherit;font-size:12.5px;outline:none}
   .addform input:focus{border-color:var(--accent)}
   .addform input.inv{width:150px} .addform input.amt{width:110px;text-align:right} .addform input.nt{flex:1;min-width:130px}
+  .addform select.src{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:9px;
+    padding:6px 9px;font:inherit;font-size:12.5px;outline:none;max-width:220px}
+  .addform select.src:focus{border-color:var(--accent)}
+  .restate-box{margin-top:10px}
+  .restate-box summary{font-size:12px;color:var(--faint);cursor:pointer;user-select:none;padding:2px 0}
+  .restate-box summary:hover{color:var(--muted)}
+  .restate-box[open] summary{color:var(--muted);margin-bottom:4px}
   .addform .hint{flex-basis:100%;font-size:11px;color:var(--faint)}
 
   /* re-ascribed / app payment sub-rows */
@@ -629,27 +636,50 @@ function computeAdjust(m, stateKey){
   const invToSrc = {};
   for(const r of m.rows){ const inv=(r.c[invCol.i]||'').trim(); if(inv && !(inv in invToSrc)) invToSrc[inv]=r.src; }
 
-  const removed = {}, added = {}, orphans = [];
+  const removed = {}, added = {}, orphans = [], moves = {};
   let overall = 0;
   const restated = new Set();
+  const delta = {};                                      // src -> paid delta (due moves opposite)
+  const bump = (src, d) => { if(src != null) delta[src] = (delta[src]||0) + d; };
+
   for(const key in groups){
     const pm = metaByKey[key];
     if(!pm){ orphans.push(...groups[key]); continue; }   // payment no longer in sheet
-    restated.add(key);
-    let toInvoices = 0;
-    for(const a of groups[key]){
-      if(!a.invoice_no) continue;                        // explicit overall slice
-      const src = invToSrc[a.invoice_no.trim()];
-      if(src){ (added[src] ??= []).push({key, amt:+a.amount, note:a.note, id:a.id}); toInvoices += +a.amount; }
-      else orphans.push(a);
+    const moveList = groups[key].filter(a => a.mode === 'move');
+    const replList = groups[key].filter(a => a.mode !== 'move');
+
+    /* MOVE: reallocate within the wire — credit shifts from a source invoice (or the
+       unallocated remainder) to a target. The sheet split stays the baseline; only the
+       two named invoices move, so the wire total and every other line are untouched. */
+    for(const a of moveList){
+      const tgt    = a.invoice_no    ? invToSrc[a.invoice_no.trim()]    : undefined;
+      const srcInv = a.source_invoice ? invToSrc[a.source_invoice.trim()] : undefined;
+      if((a.invoice_no && tgt === undefined) || (a.source_invoice && srcInv === undefined)){ orphans.push(a); continue; }
+      const amt = +a.amount;
+      bump(tgt, +amt);
+      if(a.source_invoice) bump(srcInv, -amt);           // taken off another invoice: open balance unchanged
+      else overall -= amt;                               // taken off the unallocated remainder
+      (moves[key] ??= []).push({ id:a.id, amount:amt, note:a.note,
+        target:a.invoice_no || null, source:a.source_invoice || null });
     }
-    for(const c of pm.cells) (removed[c.src] ??= []).push({key, amt:c.amt});
-    overall += (pm.wire ?? pm.sheetSum) - toInvoices;
+
+    /* REPLACE: restate the whole wire — its sheet split is dropped and rebuilt from the entries. */
+    if(replList.length){
+      restated.add(key);
+      let toInvoices = 0;
+      for(const a of replList){
+        if(!a.invoice_no) continue;                      // explicit overall slice
+        const src = invToSrc[a.invoice_no.trim()];
+        if(src){ (added[src] ??= []).push({key, amt:+a.amount, note:a.note, id:a.id}); toInvoices += +a.amount; }
+        else orphans.push(a);
+      }
+      for(const c of pm.cells) (removed[c.src] ??= []).push({key, amt:c.amt});
+      overall += (pm.wire ?? pm.sheetSum) - toInvoices;
+    }
   }
-  const delta = {};                                      // src -> paid delta (due moves opposite)
-  for(const src in removed) delta[src] = (delta[src]||0) - removed[src].reduce((a,x)=>a+x.amt,0);
-  for(const src in added)   delta[src] = (delta[src]||0) + added[src].reduce((a,x)=>a+x.amt,0);
-  return { meta, metaByKey, groups, restated, removed, added, delta, overall, orphans };
+  for(const src in removed) bump(src, -removed[src].reduce((a,x)=>a+x.amt,0));
+  for(const src in added)   bump(src, +added[src].reduce((a,x)=>a+x.amt,0));
+  return { meta, metaByKey, groups, restated, removed, added, delta, overall, orphans, moves };
 }
 
 /* ---------- Supabase I/O ---------- */
@@ -928,7 +958,7 @@ function renderOverview(){
     const m = state.data[k], s = stateTotals(m), adj = computeAdjust(m, k);
     const dSum = Object.values(adj.delta).reduce((a,d)=>a+d,0);
     s.adjDue = s.due - dSum; s.adjPaid = s.paid + dSum;
-    s.overall = adj.overall; s.hasAdj = adj.restated.size > 0;
+    s.overall = adj.overall; s.hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005;
     t[k] = s;
   }
   const g = Object.values(t).reduce((a,s)=>({n:a.n+s.n,total:a.total+s.total,paid:a.paid+s.paid,due:a.due+s.due,
@@ -1000,7 +1030,7 @@ function render(){
   const rows = filteredRows(m);
   const f = state.filters[state.page];
   const adj = computeAdjust(m, state.page);
-  const hasAdj = adj.restated.size > 0;
+  const hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005;
 
   /* cards */
   const findCol = name => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === name);
@@ -1017,6 +1047,8 @@ function render(){
   ];
   if(adj.overall > 0.005)
     cardDefs.push({ lbl:'On overall balance', val: adj.overall, cls:'', usd:true, sub:'re-ascribed, not on an invoice' });
+  else if(adj.overall < -0.005)
+    cardDefs.push({ lbl:'Over-attributed', val: -adj.overall, cls:'due', usd:true, sub:'credited to invoices beyond the wires — open balance is lower by this' });
   $('#cards').innerHTML = cardDefs.filter(c=>c.val!==null).map(c =>
     `<div class="card ${c.cls}"><div class="lbl">${esc(c.lbl)}</div><div class="val">${c.usd?fmtUSD(c.val):c.val}</div>` +
     (c.sheet!=null && Math.abs(c.sheet-c.val)>0.005 ? `<div class="sub">sheet: ${fmtUSD(c.sheet)}</div>` : '') +
@@ -1149,13 +1181,15 @@ function render(){
     const nm = (adj.metaByKey[ev.payKey] || {}).name || ev.payKey;
     const isOpen = payOpen.has(ev.payKey);
     const n = ev.apps.length;
+    const wireMoves = adj.moves[ev.payKey] || [];
     body += `<tr class="pay${isOpen?' open':''}" data-pay="${esc(ev.payKey)}">` +
       `<td class="sticky s1"><span class="${d.exact?'':'inferred'}" title="${esc(d.label ? (d.exact ? d.label : d.label+' — year inferred from the payment order; the sheet gives no year') : 'this payment column has no date in the sheet; placed by its column position')}">${esc(d.label || '—')}</span></td>` +
       `<td class="sticky s2"><span class="chev">▶</span>${esc(nm)}</td>` +
       `<td class="num pay-amt">−${fmtUSD(-ev.amt)}</td>` +
       `<td class="num balcell">${fmtUSD(ev.bal)}</td>` +
       (restCols ? `<td colspan="${restCols}">applied to ${n} invoice${n===1?'':'s'}` +
-        (ev.re ? '<span class="retag">re-ascribed in app</span>' : '') + '</td>' : '') +
+        (ev.re ? '<span class="retag">re-ascribed in app</span>'
+               : wireMoves.length ? `<span class="retag">${wireMoves.length} reallocated ⇄</span>` : '') + '</td>' : '') +
       '</tr>';
 
     if(isOpen) body += `<tr class="paydetail"><td colspan="${nCols}"><div class="dbox">` +
@@ -1167,6 +1201,11 @@ function render(){
             `<td class="num" style="color:var(--green);font-weight:800">${fmtUSD(a.amt)}</td></tr>`).join('') +
           `</tbody></table>`
         : '<div class="nolink">None of this wire is ascribed to an invoice — it sits on the overall balance.</div>') +
+      (wireMoves.length ? `<div class="msec">Reallocated in this app</div>` +
+          wireMoves.map(mv => `<div class="entry"><span><b>${esc(mv.target||'—')}</b> ← ` +
+            `${mv.source ? esc(mv.source) : 'unallocated remainder'}` +
+            (mv.note?` <span class="note">· ${esc(mv.note)}</span>`:'') + `</span>` +
+            `<span class="amt">${fmtUSD(mv.amount)}</span></div>`).join('') : '') +
       (ev.superseded.length ? `<div class="msec">Superseded sheet split</div><div class="split dim">` +
           ev.superseded.map(a => `<span class="sp">${esc(a.inv||'?')} <b>${fmtUSD(a.amt)}</b></span>`).join('') + `</div>` : '') +
       `</div></td></tr>`;
@@ -1260,38 +1299,73 @@ function renderPayPanel(m, adj){
     const re = adj.restated.has(pm.key);
     const isExp = expanded.has(pm.key);
     const entries = (adj.groups[pm.key]||[]);
+    const moveEntries = entries.filter(a => a.mode === 'move');
+    const replEntries = entries.filter(a => a.mode !== 'move');
     const sheetGap = (pm.wire ?? pm.sheetSum) - pm.sheetSum;
+    const badge = re ? '<span class="badge info">restated ✎</span>'
+                     : moveEntries.length ? `<span class="badge info">${moveEntries.length} reallocation${moveEntries.length===1?'':'s'} ⇄</span>` : '';
     rowsHtml += `<tr class="prow" data-key="${esc(pm.key)}">` +
       `<td><b>${esc(pm.key)}</b>${pm.sub?`<span class="psub">${esc(pm.sub)}</span>`:''}</td>` +
       `<td class="num">${pm.wire!=null?fmtUSD(pm.wire):'<span class="faint">—</span>'}</td>` +
       `<td class="num">${fmtUSD(pm.sheetSum)}</td>` +
       `<td class="num">${Math.abs(sheetGap)>0.005?`<span class="badge warn">${fmtUSD(sheetGap)} unascribed</span>`:'<span class="faint">—</span>'}</td>` +
-      `<td>${re?'<span class="badge info">re-ascribed ✎</span>':''}</td>` +
+      `<td>${badge}</td>` +
       `<td class="num faint">${isExp?'▾':'▸'}</td></tr>`;
     if(!isExp) continue;
 
-    const toInvoices = entries.filter(a=>a.invoice_no).reduce((a,x)=>a+ +x.amount,0);
-    const remainder = (pm.wire ?? pm.sheetSum) - toInvoices;
+    // effective per-invoice credit after moves — what this wire now puts on each invoice
+    const eff = {};
+    for(const c of pm.cells) eff[c.invoice] = (eff[c.invoice]||0) + c.amt;
+    for(const mv of moveEntries){
+      if(mv.invoice_no) eff[mv.invoice_no.trim()] = (eff[mv.invoice_no.trim()]||0) + (+mv.amount);
+      if(mv.source_invoice) eff[mv.source_invoice.trim()] = (eff[mv.source_invoice.trim()]||0) - (+mv.amount);
+    }
+    // sources are the wire's own invoices (a true reallocation conserves the open balance);
+    // an unallocated remainder, if any, is handled through "restate" instead
+    const srcOpts = pm.cells.map(c => `<option value="${esc(c.invoice)}">${esc(c.invoice)} (has ${fmtUSD(c.amt)})</option>`).join('');
+
     rowsHtml += `<tr class="pexp"><td colspan="6">` +
-      `<div class="msec" style="margin-top:0">Sheet's split</div>` +
+      `<div class="msec" style="margin-top:0">Sheet's split${re?' (restated — struck out below)':''}</div>` +
       `<div class="split${re?' dim':''}">` +
         (pm.cells.length ? pm.cells.map(c=>`<span class="sp">${esc(c.invoice||'?')} <b>${fmtUSD(c.amt)}</b></span>`).join('')
                          : '<span class="faint">none — not ascribed to any invoice in the sheet</span>') +
       `</div>` +
-      (re ? `<div class="msec">App re-ascription <button class="btn" style="padding:2px 9px;font-size:11px;margin-left:8px" data-clear="${esc(pm.key)}">clear — revert to sheet</button></div>` : '') +
-      entries.map(a =>
-        `<div class="entry${a.invoice_no?'':' rest'}"><span>${a.invoice_no?esc(a.invoice_no):'Overall balance'}</span>` +
-        (a.note?`<span class="note">${esc(a.note)}</span>`:'') +
-        `<span class="amt">${fmtUSD(+a.amount)}</span>` +
-        `<button class="del" data-del="${a.id}" title="Remove">✕</button></div>`).join('') +
-      (re && Math.abs(remainder)>0.005 ? `<div class="entry rest"><span>→ Overall balance (remainder of wire)</span><span class="amt">${fmtUSD(remainder)}</span></div>` : '') +
-      `<div class="addform">` +
+
+      (moveEntries.length ? `<div class="msec">Reallocations (this app)</div>` +
+        moveEntries.map(a =>
+          `<div class="entry"><span><b>${esc(a.invoice_no||'—')}</b> ← ` +
+          `${a.source_invoice ? esc(a.source_invoice) : 'unallocated remainder'}` +
+          (a.note?` <span class="note">· ${esc(a.note)}</span>`:'') + `</span>` +
+          `<span class="amt">${fmtUSD(+a.amount)}</span>` +
+          `<button class="del" data-del="${a.id}" title="Remove">✕</button></div>`).join('') : '') +
+
+      (re ? `<div class="msec">Restatement <button class="btn" style="padding:2px 9px;font-size:11px;margin-left:8px" data-clear="${esc(pm.key)}">clear — revert to sheet</button></div>` +
+        replEntries.map(a =>
+          `<div class="entry${a.invoice_no?'':' rest'}"><span>${a.invoice_no?esc(a.invoice_no):'Overall balance'}</span>` +
+          (a.note?`<span class="note">${esc(a.note)}</span>`:'') +
+          `<span class="amt">${fmtUSD(+a.amount)}</span>` +
+          `<button class="del" data-del="${a.id}" title="Remove">✕</button></div>`).join('') : '') +
+
+      `<div class="msec">Reallocate — move part of this wire onto another invoice</div>` +
+      `<div class="addform" data-mode="move">` +
+        `<input class="amt" placeholder="Amount" inputmode="decimal" data-f="amt">` +
+        `<span class="faint" style="font-size:12px">onto</span>` +
+        `<input class="inv" list="invList" placeholder="Target invoice" data-f="inv">` +
+        `<span class="faint" style="font-size:12px">from</span>` +
+        `<select class="src" data-f="src"><option value="__none__">choose source…</option>${srcOpts}</select>` +
+        `<input class="nt" placeholder="Note (optional)" data-f="nt">` +
+        `<button class="btn primary" data-move="${esc(pm.key)}" style="padding:6px 12px;font-size:12.5px">Reallocate</button>` +
+        `<span class="hint">Moves the amount from the source invoice onto the target, within this wire. Only those two invoices change; the wire total and every other line stay put, so the state's open balance is unchanged.</span>` +
+      `</div>` +
+
+      `<details class="restate-box"><summary>Restate the whole wire instead…</summary>` +
+      `<div class="addform" data-mode="replace">` +
         `<input class="inv" list="invList" placeholder="Invoice (blank = overall)" data-f="inv">` +
         `<input class="amt" placeholder="Amount" inputmode="decimal" data-f="amt">` +
         `<input class="nt" placeholder="Note (optional)" data-f="nt">` +
-        `<button class="btn primary" data-add="${esc(pm.key)}" style="padding:6px 12px;font-size:12.5px">Ascribe</button>` +
-        `<span class="hint">Ascribing overrides the sheet's split for this payment — its cells above get struck out and your entries apply instead; any unascribed remainder of the wire falls to the overall balance.</span>` +
-      `</div>` +
+        `<button class="btn" data-add="${esc(pm.key)}" style="padding:6px 12px;font-size:12.5px">Ascribe (restate)</button>` +
+        `<span class="hint">Restating DROPS the sheet's whole split for this wire and rebuilds it from your entries — every other invoice above loses its credit. Use only when the supplier's split is wrong across the board.</span>` +
+      `</div></details>` +
       `</td></tr>`;
   }
 
@@ -1321,7 +1395,23 @@ function renderPayPanel(m, adj){
     const nt  = form.querySelector('[data-f=nt]').value.trim();
     if(amt===null || amt<0){ form.querySelector('[data-f=amt]').focus(); return; }
     if(inv && !invoices.includes(inv) && !confirm(`"${inv}" doesn't match any invoice on this page — save anyway?`)) return;
-    ascAdd({ state: stateKey, payment_key: b.dataset.add, invoice_no: inv || null, amount: amt, note: nt || null });
+    ascAdd({ state: stateKey, payment_key: b.dataset.add, mode:'replace', invoice_no: inv || null, amount: amt, note: nt || null });
+  }));
+  panel.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const form = b.closest('.addform');
+    const inv = form.querySelector('[data-f=inv]').value.trim();
+    const amt = money(form.querySelector('[data-f=amt]').value);
+    const src = form.querySelector('[data-f=src]').value;
+    const nt  = form.querySelector('[data-f=nt]').value.trim();
+    const amtEl = form.querySelector('[data-f=amt]');
+    if(amt===null || amt<=0){ amtEl.focus(); return; }
+    if(!inv){ form.querySelector('[data-f=inv]').focus(); return; }
+    if(src === '__none__' || !src){ form.querySelector('[data-f=src]').focus(); return; }
+    if(src === inv){ alert('Source and target are the same invoice.'); return; }
+    if(!invoices.includes(inv) && !confirm(`"${inv}" doesn't match any invoice on this page — save anyway?`)) return;
+    ascAdd({ state: stateKey, payment_key: b.dataset.move, mode:'move',
+             invoice_no: inv, source_invoice: src, amount: amt, note: nt || null });
   }));
   panel.querySelectorAll('.addform input').forEach(inp => inp.addEventListener('keydown', e => {
     if(e.key === 'Enter') inp.closest('.addform').querySelector('[data-add]').click();
