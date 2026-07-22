@@ -145,6 +145,10 @@
   tr.pay:hover td{background:rgba(47,191,113,.14)}
   tr.pay:hover td.sticky{background:#193527}
   tr.pay .pay-amt{font-weight:800;color:var(--green)}
+  tr.pay .chev{color:#4e9b74}
+  tr.pay.open .chev{transform:rotate(90deg);color:var(--green)}
+  tr.paydetail>td{background:#101a15;padding:0;border-bottom:1px solid rgba(47,191,113,.18)}
+  tr.paydetail .msec{color:#5f9d7e}
 
   .st{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:700;
     border:1px solid transparent;white-space:nowrap}
@@ -323,6 +327,7 @@ const state = {
   payExpanded: { ca:new Set(), ny:new Set() },  // payment_keys expanded in the panel
   ovScope: 'all',                               // overview scope: all | ca | ny
   ovCat: new Set(),                             // category names expanded on the overview
+  ledgerPay: { ca:new Set(), ny:new Set() },    // wires expanded in the ledger
   lastSync: null,
   fetching: false,
   failed: false,
@@ -565,20 +570,34 @@ function payDates(m, nowMs){
    consistently even where several events share a date. */
 function ledger(m, adj, pdates){
   const totC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'total including freight');
+  const invC = m.cols.find(c => c.header.toLowerCase() === 'invoice no.');
+  const descC = m.cols.find(c => /^desc/i.test(c.header));
+  const cell = (r,c) => c ? (r.c[c.i]||'').trim() : '';
   const evs = [];
+
+  /* a wire is ONE event, however many invoices it was split across */
+  const wires = new Map();
+  const wire = key => {
+    if(!wires.has(key)) wires.set(key, { key, apps:[], superseded:[] });
+    return wires.get(key);
+  };
   for(const r of m.rows){
     evs.push({ kind:'order', r, key:'o'+r.src, date:r.date, amt: totC ? (money(r.c[totC.i])||0) : 0 });
+    const app = (amt, note) => ({ r, src:r.src, amt, note, inv: cell(r,invC), desc: cell(r,descC) });
     for(const p of paymentsOf(m, r)){
-      const re = adj.restated.has(p.key);                // superseded: shown, but moves nothing
-      evs.push({ kind:'pay', r, p, re, key:'p'+r.src+'|'+p.key,
-                 date:(pdates[p.key]||{}).ts, amt: re ? 0 : -(money(p.val)||0) });
+      const w = wire(p.key);
+      (adj.restated.has(p.key) ? w.superseded : w.apps).push(app(money(p.val)||0));
     }
-    for(const e of adj.added[r.src] || [])
-      evs.push({ kind:'app', r, e, key:'a'+e.id, date:(pdates[e.key]||{}).ts, amt: -e.amt });
+    for(const e of adj.added[r.src] || []) wire(e.key).apps.push(app(e.amt, e.note));
   }
+  for(const w of wires.values())
+    evs.push({ kind:'pay', payKey:w.key, key:'P'+w.key, date:(pdates[w.key]||{}).ts,
+               amt: -w.apps.reduce((a,x)=>a+x.amt,0), apps:w.apps, superseded:w.superseded,
+               re: adj.restated.has(w.key) });
+
   evs.sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
   let run = 0;
-  evs.forEach(ev => { run += ev.amt; ev.bal = ev.re ? null : run; });
+  evs.forEach(ev => { run += ev.amt; ev.bal = run; });
   return evs;
 }
 
@@ -1080,14 +1099,17 @@ function render(){
   const dateOf = key => (pdates[key] || {});
 
   const visible = new Set(rows.map(r => r.src));
-  const events = ledger(m, adj, pdates).filter(ev => visible.has(ev.r.src)).reverse();
+  const events = ledger(m, adj, pdates).filter(ev => ev.kind === 'order'
+    ? visible.has(ev.r.src)
+    : ev.apps.concat(ev.superseded).some(a => visible.has(a.src))).reverse();
 
   const open = state.expanded[state.page];
+  const payOpen = state.ledgerPay[state.page];
   const restCols = Math.max(0, nCols - 4);
   let body = '';
   for(const ev of events){
-    const r = ev.r;
     if(ev.kind === 'order'){
+      const r = ev.r;
       const hasLink = !!linkFor(state.page, r.src);
       const isOpen = open.has(r.src);
       const delta = adj.delta[r.src] || 0;
@@ -1122,24 +1144,32 @@ function render(){
       continue;
     }
 
-    /* payment line — dated by the payment, applied to this invoice */
-    const inv = invCol ? (r.c[invCol.i]||'').trim() : '';
-    const isApp = ev.kind === 'app';
-    const key = isApp ? ev.e.key : ev.p.key;
-    const d = dateOf(key);
-    const amt = isApp ? ev.e.amt : (money(ev.p.val) || 0);
-    const nm = isApp ? (adj.metaByKey[key]||{}).name || key : ev.p.name;
-    const note = isApp ? ev.e.note : '';
-    const dim = !isApp && ev.re;
-    body += `<tr class="pay${isApp?' app':''}${dim?' dim':''}" data-src="${r.src}" data-jump="${r.src}">` +
+    /* one line per wire — click it to see the invoices it was applied to */
+    const d = dateOf(ev.payKey);
+    const nm = (adj.metaByKey[ev.payKey] || {}).name || ev.payKey;
+    const isOpen = payOpen.has(ev.payKey);
+    const n = ev.apps.length;
+    body += `<tr class="pay${isOpen?' open':''}" data-pay="${esc(ev.payKey)}">` +
       `<td class="sticky s1"><span class="${d.exact?'':'inferred'}" title="${esc(d.label ? (d.exact ? d.label : d.label+' — year inferred from the payment order; the sheet gives no year') : 'this payment column has no date in the sheet; placed by its column position')}">${esc(d.label || '—')}</span></td>` +
-      `<td class="sticky s2">↳ ${esc(inv || '—')}</td>` +
-      `<td class="num pay-amt">−${fmtUSD(amt)}</td>` +
-      (ev.bal == null ? '<td class="balcell"></td>' : `<td class="num balcell">${fmtUSD(ev.bal)}</td>`) +
-      (restCols ? `<td colspan="${restCols}">${isApp?'✎ ':''}${esc(nm)}` +
-        (dim ? '<span class="retag">re-ascribed in app</span>' : '') +
-        (note ? ` <span class="retag">${esc(note)}</span>` : '') + '</td>' : '') +
+      `<td class="sticky s2"><span class="chev">▶</span>${esc(nm)}</td>` +
+      `<td class="num pay-amt">−${fmtUSD(-ev.amt)}</td>` +
+      `<td class="num balcell">${fmtUSD(ev.bal)}</td>` +
+      (restCols ? `<td colspan="${restCols}">applied to ${n} invoice${n===1?'':'s'}` +
+        (ev.re ? '<span class="retag">re-ascribed in app</span>' : '') + '</td>' : '') +
       '</tr>';
+
+    if(isOpen) body += `<tr class="paydetail"><td colspan="${nCols}"><div class="dbox">` +
+      `<div class="msec" style="margin-top:0">Applied to${ev.re?' (as re-ascribed in this app)':''}</div>` +
+      (n ? `<table class="subTbl"><tbody>` + ev.apps.map(a =>
+            `<tr data-gosrc="${a.src}"><td><b>${esc(a.inv||'—')}</b></td>` +
+            `<td class="desc" title="${esc(a.desc)}">${esc(a.desc||'')}</td>` +
+            (a.note ? `<td class="faint">${esc(a.note)}</td>` : '<td></td>') +
+            `<td class="num" style="color:var(--green);font-weight:800">${fmtUSD(a.amt)}</td></tr>`).join('') +
+          `</tbody></table>`
+        : '<div class="nolink">None of this wire is ascribed to an invoice — it sits on the overall balance.</div>') +
+      (ev.superseded.length ? `<div class="msec">Superseded sheet split</div><div class="split dim">` +
+          ev.superseded.map(a => `<span class="sp">${esc(a.inv||'?')} <b>${fmtUSD(a.amt)}</b></span>`).join('') + `</div>` : '') +
+      `</div></td></tr>`;
   }
 
   box.innerHTML = rows.length || m.totals.length
@@ -1147,18 +1177,27 @@ function render(){
     : '<div class="empty">No orders match.</div>';
   box.scrollLeft = keepScroll.x; box.scrollTop = keepScroll.y;
 
-  box.querySelectorAll('tr.order, tr.pay').forEach(tr =>
+  box.querySelectorAll('tr.order').forEach(tr =>
     tr.addEventListener('click', e => {
       if(e.target.closest('a')) return;               // let links work
       const src = parseInt(tr.dataset.src,10);
-      const fromPay = tr.classList.contains('pay');
-      if(fromPay) open.add(src);                      // a payment always opens its invoice, never closes it
-      else open.has(src) ? open.delete(src) : open.add(src);
+      open.has(src) ? open.delete(src) : open.add(src);
       render();
-      if(fromPay){                                    // the invoice now sits at its own date
-        const el = box.querySelector(`tr.order[data-src="${src}"]`);
-        if(el) el.scrollIntoView({block:'center', behavior:'smooth'});
-      }
+    }));
+  box.querySelectorAll('tr.pay[data-pay]').forEach(tr =>
+    tr.addEventListener('click', () => {
+      const k = tr.dataset.pay;
+      payOpen.has(k) ? payOpen.delete(k) : payOpen.add(k);
+      render();
+    }));
+  box.querySelectorAll('tr.paydetail [data-gosrc]').forEach(tr =>
+    tr.addEventListener('click', e => {              // jump to the invoice this wire paid
+      e.stopPropagation();
+      const src = parseInt(tr.dataset.gosrc,10);
+      open.add(src);
+      render();
+      const el = box.querySelector(`tr.order[data-src="${src}"]`);
+      if(el) el.scrollIntoView({block:'center', behavior:'smooth'});
     }));
 }
 
