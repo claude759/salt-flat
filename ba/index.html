@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.66';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.67';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -654,10 +654,19 @@ async function compress(file, max=1600, q=0.7){
     return await new Promise(r=>c.toBlob(r,'image/jpeg',q));
   }catch(e){ return file; } // fall back to original if decode fails
 }
+// Receipts may be photos OR PDFs (emailed Uber/airline receipts etc.). PDFs skip the
+// canvas compressor (it can't decode them) and upload as-is; images compress to JPEG.
+const isPdfFile = f => !!f && (f.type==='application/pdf' || /\.pdf$/i.test(f.name||''));
+const isPdfPath = p => /\.pdf$/i.test(p||'');
+// stand-in thumbnail for PDF receipts — <img> can't render a PDF
+const PDF_THUMB = 'data:image/svg+xml;utf8,'+encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="120" height="120" rx="14" fill="#232838"/><text x="60" y="54" font-size="34" text-anchor="middle">📄</text><text x="60" y="88" font-size="17" fill="#9aa3b5" font-family="-apple-system,system-ui" text-anchor="middle" font-weight="700">PDF</text></svg>');
 async function uploadPhoto(bucket, file){
-  const blob = await compress(file);
-  const path = `${state.session.user.id}/${crypto.randomUUID()}.jpg`;
-  const { error } = await supabase.storage.from(bucket).upload(path, blob, { contentType:'image/jpeg', upsert:false });
+  const pdf = isPdfFile(file);
+  if(pdf && file.size > 15*1024*1024) throw new Error('PDF too large — 15 MB max');
+  const blob = pdf ? file : await compress(file);
+  const path = `${state.session.user.id}/${crypto.randomUUID()}.${pdf?'pdf':'jpg'}`;
+  const { error } = await supabase.storage.from(bucket).upload(path, blob, { contentType: pdf?'application/pdf':'image/jpeg', upsert:false });
   if(error) throw error;
   return path;
 }
@@ -1420,7 +1429,7 @@ function fixExpenseSheet(x){
     <h3>Edit this expense</h3>
     <div class="small muted" style="margin-top:2px">${iss.length?`Still needs ${iss.join(', ')}.`:'Change anything below.'}</div>
     <label class="fl">Date</label><input id="fEDate" type="date" value="${x.expense_date||''}">
-    <label class="btn ${needRec?'primary':'ghost'} block" style="margin-top:6px">📷 ${x.receipt_path?'Replace receipt':'Snap or upload receipt'}<input id="fRec" type="file" accept="image/*" hidden></label>
+    <label class="btn ${needRec?'primary':'ghost'} block" style="margin-top:6px">📷 ${x.receipt_path?'Replace receipt':'Snap or upload receipt (image or PDF)'}<input id="fRec" type="file" accept="image/*,application/pdf" hidden></label>
     <div id="fThumbWrap" class="${x.receipt_path?'':'hide'}" style="margin-top:8px;text-align:center"><img id="fThumb" class="thumb" style="width:110px;height:110px"></div>
     <div id="fOcr" class="small muted" style="margin-top:4px"></div>
     <label class="fl">Vendor</label><input id="fVendor" placeholder="e.g. Chevron" value="${esc(x.vendor||'')}">
@@ -1449,11 +1458,11 @@ function fixExpenseSheet(x){
     refreshItems(); refreshTotals(); renderGrid();
   };
   let receiptPath=x.receipt_path||null, ocr=x.ocr_raw||null, recChanged=false;
-  if(x.receipt_path) signedUrl('receipts',x.receipt_path).then(u=>{ if(u){ const t=$('#fThumb'); if(t) t.src=u; } });
+  if(x.receipt_path){ if(isPdfPath(x.receipt_path)){ const t=$('#fThumb'); if(t) t.src=PDF_THUMB; } else signedUrl('receipts',x.receipt_path).then(u=>{ if(u){ const t=$('#fThumb'); if(t) t.src=u; } }); }
   { const el=$('#fAmt'); if(el) el.addEventListener('input',()=>{ el.classList.remove('needs'); $('#fMsg').textContent=''; }); }
   const fRec=$('#fRec'); if(fRec) fRec.onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
-    $('#fThumbWrap').classList.remove('hide'); $('#fThumb').src=URL.createObjectURL(f);
+    $('#fThumbWrap').classList.remove('hide'); $('#fThumb').src=isPdfFile(f)?PDF_THUMB:URL.createObjectURL(f);
     $('#fOcr').innerHTML='<span class="spin"></span> Uploading…';
     try{ receiptPath=await uploadPhoto('receipts',f); recChanged=true; ocr=null; }   // new image → any prior OCR no longer describes it
     catch(err){ $('#fOcr').textContent='Upload failed — try again.'; return; }
@@ -1578,8 +1587,8 @@ function gridRowHtml(mode, it, today, pay, opts={}){
   const rowPay = it ? (it.payment||'reimbursement') : (pay||'reimbursement');
   const cats=catOptions(it&&it.category);
   const rcell = it&&it.receipt_path
-    ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span>${ro?'':`<label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-receipt" hidden></label>`}</div>`
-    : `<div class="rcell">${ro?'<span class="muted small">—</span>':`<label class="rchip">📎 add<input type="file" accept="image/*" class="g-receipt" hidden></label>`}</div>`;
+    ? `<div class="rcell"><span class="rchip" data-view="1">📄 view</span>${ro?'':`<label class="rrepl" title="replace">✎<input type="file" accept="image/*,application/pdf" class="g-receipt" hidden></label>`}</div>`
+    : `<div class="rcell">${ro?'<span class="muted small">—</span>':`<label class="rchip">📎 add<input type="file" accept="image/*,application/pdf" class="g-receipt" hidden></label>`}</div>`;
   const needDesc = (!ro && it && !((it.vendor||'').trim())) ? ' needs' : '';   // incomplete capture-fast drafts get red cells
   const needAmt  = (!ro && it && !(Number(it.amount)>0))     ? ' needs' : '';
   const needDispE = (!ro && it && dispIds(it).length===0);          // every expense must link to a dispensary
@@ -1600,8 +1609,8 @@ async function gridReceiptRow(e, tr, mode){
   try{
     const path=await uploadPhoto('receipts', f); tr.dataset.rpath=path;
     const url=URL.createObjectURL(f);
-    cell.innerHTML=`<img class="rthumb" title="view"><label class="rrepl" title="replace">✎<input type="file" accept="image/*" class="g-receipt" hidden></label>`;
-    const img=cell.querySelector('.rthumb'); img.src=url; img.onclick=()=>window.open(url,'_blank');
+    cell.innerHTML=`<img class="rthumb" title="view"><label class="rrepl" title="replace">✎<input type="file" accept="image/*,application/pdf" class="g-receipt" hidden></label>`;
+    const img=cell.querySelector('.rthumb'); img.src=isPdfFile(f)?PDF_THUMB:url; img.onclick=()=>window.open(url,'_blank');
     cell.querySelector('.g-receipt').onchange=ev=>gridReceiptRow(ev,tr,mode);
     scheduleAutosave(tr, mode);
   }catch(err){ toast('Receipt upload failed','err'); cell.innerHTML=prev;
@@ -2727,7 +2736,7 @@ function expenseSheet(presetDate){
   const cats=EXPENSE_CATEGORIES;
   openSheet(`
     <h3>Add an expense</h3>
-    <label class="btn primary block" style="margin-top:4px">📷 Snap or upload receipt<input id="eFile" type="file" accept="image/*" hidden></label>
+    <label class="btn primary block" style="margin-top:4px">📷 Snap a photo or upload an image/PDF<input id="eFile" type="file" accept="image/*,application/pdf" hidden></label>
     <div class="small muted center" style="margin-top:4px">Snap it and you're back home instantly — the receipt details fill in on their own; finish any red fields on the worksheet.</div>
     <div id="eThumbWrap" class="hide" style="margin-top:10px;text-align:center"><img id="eThumb" class="thumb" style="width:120px;height:120px"></div>
     <div id="eOcr" class="small muted" style="margin-top:6px"></div>
@@ -2772,7 +2781,7 @@ function expenseSheet(presetDate){
   // Snap → upload → save instantly → home. OCR then fills the row in the background.
   $('#eFile').onchange=async e=>{
     const f=e.target.files[0]; if(!f) return;
-    $('#eThumbWrap').classList.remove('hide'); $('#eThumb').src=URL.createObjectURL(f);
+    $('#eThumbWrap').classList.remove('hide'); $('#eThumb').src=isPdfFile(f)?PDF_THUMB:URL.createObjectURL(f);
     $('#eOcr').innerHTML='<span class="spin"></span> Uploading…';
     try{ receiptPath=await uploadPhoto('receipts',f); }
     catch(err){ $('#eOcr').textContent='Upload failed — try again, or enter it manually below.'; return; }

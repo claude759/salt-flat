@@ -61,9 +61,12 @@ export async function downloadImage(bucket: string, path: string) {
   const { data, error } = await admin().storage.from(bucket).download(path);
   if (error || !data) throw new Error(`download failed: ${error?.message}`);
   const buf = new Uint8Array(await data.arrayBuffer());
-  const mime = data.type && data.type.startsWith("image/")
+  const lower = path.toLowerCase();
+  const mime = (data.type === "application/pdf" || lower.endsWith(".pdf"))
+    ? "application/pdf"
+    : data.type && data.type.startsWith("image/")
     ? data.type
-    : (path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
+    : (lower.endsWith(".png") ? "image/png" : "image/jpeg");
   return { base64: encodeBase64(buf), mime };
 }
 
@@ -100,7 +103,9 @@ export async function claudeVision(
       messages: [{
         role: "user",
         content: [
-          { type: "image", source: { type: "base64", media_type: mime, data: base64 } },
+          // PDFs go up as a document block (Claude reads them natively); images as before
+          { type: mime === "application/pdf" ? "document" : "image",
+            source: { type: "base64", media_type: mime, data: base64 } },
           { type: "text", text: instruction },
         ],
       }],
