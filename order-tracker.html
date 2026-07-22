@@ -93,6 +93,10 @@
   tbody tr.order:hover td.sticky{background:#1a1730}
   td.sticky{font-weight:700}
   .doc{opacity:.65;font-size:11px;margin-left:5px}
+  .chev{display:inline-block;width:13px;color:var(--faint);font-size:10px;transition:transform .15s ease;vertical-align:1px}
+  tr.order.open .chev{transform:rotate(90deg);color:var(--accent2)}
+  tr.order.open td{background:rgba(124,92,255,.06)}
+  tr.order.open td.sticky{background:#1a1730}
 
   tr.totals td{background:#131722;font-weight:800;color:var(--accent2);border-bottom:2px solid var(--line)}
   tr.totals td.sticky{background:#131722}
@@ -125,19 +129,11 @@
   .empty{padding:40px 20px;text-align:center;color:var(--faint)}
   footer{padding:10px 16px 16px;font-size:11.5px;color:var(--faint)}
 
-  /* ---- detail modal ---- */
-  .overlay{position:fixed;inset:0;background:rgba(8,9,12,.66);backdrop-filter:blur(3px);z-index:80;
-    display:none;align-items:flex-start;justify-content:center;padding:40px 16px}
-  .overlay.open{display:flex}
-  .modal{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);
-    width:min(680px,100%);max-height:calc(100vh - 80px);overflow:auto}
-  .mhead{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--line);
-    position:sticky;top:0;background:var(--panel);z-index:2;flex-wrap:wrap}
-  .mhead b{font-size:17px}
-  .mclose{margin-left:auto;background:var(--panel2);border:1px solid var(--line);color:var(--muted);
-    border-radius:9px;width:30px;height:30px;font-size:15px;cursor:pointer;flex:none}
-  .mclose:hover{border-color:var(--accent);color:var(--text)}
-  .mbody{padding:14px 18px 18px}
+  /* ---- inline expanded detail ---- */
+  tr.detail>td{padding:0;background:#141824;border-bottom:1px solid var(--line)}
+  .dbox{position:sticky;left:0;box-sizing:border-box;max-width:min(880px,calc(100vw - 66px));
+    padding:14px 16px 16px}
+  .dhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}
   .fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px 16px}
   .fitem .fl{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--faint)}
   .fitem .fv{margin-top:2px;font-weight:600;overflow-wrap:break-word}
@@ -153,7 +149,7 @@
     input[type=search]{width:140px}
     .tblbox{max-height:none}
     .card .val{font-size:16px}
-    .overlay{padding:12px}
+    .dbox{max-width:calc(100vw - 34px)}
   }
 </style>
 </head>
@@ -178,9 +174,7 @@
 <div class="cards" id="cards"></div>
 <div class="toolbar" id="toolbar"></div>
 <div class="wrap"><div class="tblbox" id="tblbox"><div class="loading">Loading order data…</div></div></div>
-<footer>Read-only mirror of the shared supplier sheet · auto-syncs every 60s · click an order for full detail · edits happen in the Google Sheet.</footer>
-
-<div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
+<footer>Read-only mirror of the shared supplier sheet · auto-syncs every 60s · click an order to expand its detail · edits happen in the Google Sheet.</footer>
 
 <script>
 'use strict';
@@ -200,6 +194,7 @@ const state = {
   links: {},                      // key -> {sheetRowNumber: driveUrl}
   linksSig: '',
   filters: { ca:{q:'', st:new Set()}, ny:{q:'', st:new Set()} },
+  expanded: { ca:new Set(), ny:new Set() },     // sheet row numbers with open detail
   lastSync: null,
   fetching: false,
   failed: false,
@@ -470,17 +465,24 @@ function render(){
     }).join('') + '</tr>'
   ).join('');
 
+  const open = state.expanded[state.page];
   let body = '';
   for(const r of rows){
     const hasLink = !!linkFor(state.page, r.src);
-    body += '<tr class="order" data-src="'+r.src+'">' + m.cols.map((c,idx) => {
+    const isOpen = open.has(r.src);
+    body += `<tr class="order${isOpen?' open':''}" data-src="${r.src}">` + m.cols.map((c,idx) => {
       const v = (r.c[c.i]||'').trim();
       let cell = esc(v);
       if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
-      if(idx===0 && hasLink) cell += '<span class="doc" title="Invoice PDF linked">📄</span>';
+      if(idx===0){
+        cell = `<span class="chev">▶</span>` + cell;
+        if(hasLink) cell += '<span class="doc" title="Invoice PDF linked">📄</span>';
+      }
       const cls = [c.num?'num':'', c.wide?'wide':'', idx===0?'sticky':''].filter(Boolean).join(' ');
       return `<td${cls?` class="${cls}"`:''}>${cell}</td>`;
     }).join('') + '</tr>';
+
+    if(isOpen) body += `<tr class="detail"><td colspan="${nCols}">${detailHtml(m, r)}</td></tr>`;
 
     for(const p of paymentsOf(m, r)){
       const before = paidIdx - 1, after = nCols - paidIdx - 1;
@@ -499,17 +501,18 @@ function render(){
   box.scrollLeft = keepScroll.x; box.scrollTop = keepScroll.y;
 
   box.querySelectorAll('tr.order, tr.pay').forEach(tr =>
-    tr.addEventListener('click', () => openDetail(parseInt(tr.dataset.src,10))));
+    tr.addEventListener('click', e => {
+      if(e.target.closest('a')) return;               // let links work
+      const src = parseInt(tr.dataset.src,10);
+      open.has(src) ? open.delete(src) : open.add(src);
+      render();
+    }));
 }
 
-/* ---------- detail modal ---------- */
-function openDetail(src){
-  const m = currentModel();
-  const r = m.rows.find(x => x.src === src);
-  if(!r) return;
+/* ---------- inline detail ---------- */
+function detailHtml(m, r){
   const get = name => { const c = m.cols.find(c=>c.header.toLowerCase()===name); return c ? (r.c[c.i]||'').trim() : ''; };
-  const inv = get('invoice no.') || '(no invoice #)';
-  const url = linkFor(state.page, src);
+  const url = linkFor(state.page, r.src);
   const pays = paymentsOf(m, r);
 
   const chips = ['order status','freight status'].map(n => {
@@ -531,19 +534,11 @@ function openDetail(src){
         `<div class="payline"><span>${esc(p.label)}</span><span class="amt">${esc(p.val)}</span></div>`).join('')
     : '';
 
-  $('#modal').innerHTML =
-    `<div class="mhead"><b>${esc(inv)}</b>${chips}` +
-    (url ? `<a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener">Invoice PDF ↗</a>` : '') +
-    `<button class="mclose" id="mclose">✕</button></div>` +
-    `<div class="mbody"><div class="fgrid">${fitems}</div>${payHtml}` +
-    (url ? '' : '<div class="nolink">No invoice file is linked on this row in the sheet.</div>') +
-    `</div>`;
-  $('#overlay').classList.add('open');
-  $('#mclose').addEventListener('click', closeDetail);
+  return `<div class="dbox"><div class="dhead">${chips}` +
+    (url ? `<a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener">Invoice PDF ↗</a>`
+         : `<span class="nolink">No invoice file is linked on this row in the sheet.</span>`) +
+    `</div><div class="fgrid">${fitems}</div>${payHtml}</div>`;
 }
-function closeDetail(){ $('#overlay').classList.remove('open'); }
-$('#overlay').addEventListener('click', e => { if(e.target === e.currentTarget) closeDetail(); });
-document.addEventListener('keydown', e => { if(e.key === 'Escape') closeDetail(); });
 
 /* ---------- sync ---------- */
 async function sync(){
