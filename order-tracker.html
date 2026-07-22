@@ -224,6 +224,12 @@
   tr.pay.app .pay-amt{color:var(--accent2)}
   .retag{font-size:10px;font-weight:700;letter-spacing:.3px;margin-left:7px;opacity:.9}
 
+  /* running balance reads as its own strip */
+  th.balcell,td.balcell{border-left:1px solid rgba(124,92,255,.22);border-right:1px solid rgba(124,92,255,.22)}
+  td.balcell{font-weight:800;color:#cfd6e6;background:rgba(124,92,255,.05)}
+  tr.pay td.balcell{color:#a9e0c2}
+
+  .inferred{border-bottom:1px dotted currentColor;cursor:help}
   .adjmark{color:var(--accent2);font-weight:800;margin-left:3px;cursor:help}
   .card .sub{font-size:10.5px;color:var(--faint);margin-top:2px}
 
@@ -415,7 +421,12 @@ function buildModel(raw){
   for(const r of rows) r.type = typeOf(descIdx>=0 ? r.c[descIdx] : '', catIdx>=0 ? r.c[catIdx] : '');
   const catPos = cols.findIndex(c => c.header.toLowerCase() === 'category');
   cols.splice((catPos>=0 ? catPos : 1) + 1, 0,
-    { virtual:true, i:-1, header:'Type', num:false, wide:false, status:false, orderStatus:false });
+    { virtual:'type', i:-1, header:'Type', num:false, wide:false, status:false, orderStatus:false });
+
+  // ledger columns: what this line did to the account, and the balance after it
+  cols.splice(2, 0,
+    { virtual:'amount',  i:-1, header:'Amount',  num:true, wide:false, status:false, orderStatus:false },
+    { virtual:'balance', i:-1, header:'Balance\nwhole account', num:true, wide:false, status:false, orderStatus:false });
 
   const paidIdx = cols.findIndex(c => c.header.toLowerCase() === 'paid to date');
 
@@ -444,8 +455,8 @@ const payKeyOf = h => h.split('\n')[0].trim();
 function paySplit(header){
   const lines = header.split('\n').map(s=>s.trim()).filter(Boolean);
   let name = lines[0] || '', date = lines.slice(1).join(' ');
-  if(!date){
-    const m = /^(payment\s*\d+)\s*[-–—:]\s*(.+)$/i.exec(name);
+  if(!date){                       // separator is optional: "Payment 2 Wire 22nd July 2026" also parses
+    const m = /^(payment\s*\d+[a-z]?)\s*[-–—:]?\s+(.+)$/i.exec(name);
     if(m){ name = m[1]; date = m[2]; }
   }
   return { name, date: date.replace(/^wire\s+/i,'').trim() };
@@ -490,11 +501,85 @@ function paymentsOf(m, r){
     const v = (r.c[pc.i]||'').trim();
     if(!v) continue;
     const amt = money(v);
-    if(amt !== null && amt <= 0) continue;         // skip $0.00 placeholders
+    if(amt === null || amt <= 0) continue;         // skip $0.00 placeholders and non-numeric notes
     out.push({ key: payKeyOf(pc.header), ...paySplit(pc.header),
                label: pc.header.split('\n').map(s=>s.trim()).filter(Boolean).join(' · '), val: v });
   }
   return out;
+}
+
+const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+/* Payment headers carry a day + month but usually no year (CA writes "11th May").
+   The columns run in chronological order, so walk them newest -> oldest and step the
+   year back whenever the calendar date moves forward. Undated columns ("Payment 14")
+   inherit a slot just after the dated payment to their left, keeping sheet order. */
+function payDates(m, nowMs){
+  const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const parse = s => {
+    const t = (s||'').toLowerCase();
+    let d, mo, x = /(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3,9})/.exec(t);
+    if(x && MON[x[2].slice(0,3)] !== undefined){ d = +x[1]; mo = MON[x[2].slice(0,3)]; }
+    else {
+      x = /([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?/.exec(t);
+      if(x && MON[x[1].slice(0,3)] !== undefined){ mo = MON[x[1].slice(0,3)]; d = +x[2]; }
+    }
+    if(d === undefined) return null;
+    const y = /\b(20\d{2})\b/.exec(t);
+    return { d, mo, year: y ? +y[1] : null };
+  };
+  const GRACE = 45 * 864e5;      // a wire may be stamped a little ahead of when it clears
+  const STEP  = 60 * 864e5;      // a real year boundary jumps ~9-12 months; a typo jumps days
+
+  /* Anchor the newest payment to the sheet's own newest activity, not just to today —
+     otherwise a sheet nobody touches for a year drags every payment forward with the clock. */
+  let newest = null;
+  for(const r of m.rows) if(r.date != null) newest = newest == null ? r.date : Math.max(newest, r.date);
+  const cap = Math.min(nowMs, newest ?? nowMs) + GRACE;
+
+  const out = {};
+  let year = null, prev = null, pending = [];
+  for(let i = m.payCols.length - 1; i >= 0; i--){
+    const pc = m.payCols[i], key = payKeyOf(pc.header);
+    const p = parse(paySplit(pc.header).date);
+    if(!p){ pending.push(key); continue; }
+    if(p.year != null) year = p.year;
+    else if(year == null){                       // newest payment: latest year that isn't beyond the cap
+      year = new Date(cap).getFullYear();
+      if(new Date(year, p.mo, p.d).getTime() > cap) year--;
+    } else if(prev && new Date(year, p.mo, p.d).getTime() - prev.ts > STEP) year--;
+    const ts = new Date(year, p.mo, p.d).getTime();
+    out[key] = { ts, label: `${p.d} ${MONS[p.mo]} ${year}`, exact: p.year != null };
+    pending.forEach((k,n) => out[k] = { ts: ts + (pending.length - n), label: null, exact: false });
+    pending = [];
+    prev = { ts };
+  }
+  const oldest = Object.values(out).reduce((a,v) => Math.min(a, v.ts), Infinity);
+  pending.forEach((k,n) => out[k] = { ts: (isFinite(oldest) ? oldest : nowMs) - n - 1, label: null, exact: false });
+  return out;
+}
+
+/* The whole account as one dated event list, oldest -> newest: invoices add their
+   total, payments subtract, and each event carries the balance left after it. This is
+   the single ordering the table renders (reversed), so the balance column always reads
+   consistently even where several events share a date. */
+function ledger(m, adj, pdates){
+  const totC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'total including freight');
+  const evs = [];
+  for(const r of m.rows){
+    evs.push({ kind:'order', r, key:'o'+r.src, date:r.date, amt: totC ? (money(r.c[totC.i])||0) : 0 });
+    for(const p of paymentsOf(m, r)){
+      const re = adj.restated.has(p.key);                // superseded: shown, but moves nothing
+      evs.push({ kind:'pay', r, p, re, key:'p'+r.src+'|'+p.key,
+                 date:(pdates[p.key]||{}).ts, amt: re ? 0 : -(money(p.val)||0) });
+    }
+    for(const e of adj.added[r.src] || [])
+      evs.push({ kind:'app', r, e, key:'a'+e.id, date:(pdates[e.key]||{}).ts, amt: -e.amt });
+  }
+  evs.sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
+  let run = 0;
+  evs.forEach(ev => { run += ev.amt; ev.bal = ev.re ? null : run; });
+  return evs;
 }
 
 /* per-payment-column metadata: the wire total (totals row) vs the sheet's split */
@@ -906,7 +991,7 @@ function render(){
   const dueVal = hasAdj ? sumAdj(dueCol, -1) : sum(dueCol);
   const nydVal = sum(nydCol);
   const cardDefs = [
-    { lbl:'Orders' + (f.q||f.st.size?' (filtered)':''), val: rows.length, cls:'' },
+    { lbl:'Orders' + (f.q||f.st.size||f.ty.size?' (filtered)':''), val: rows.length, cls:'' },
     { lbl:'Open balance', val: (dueVal??0) + (nydVal??0), sheet: hasAdj ? (sum(dueCol)??0)+(nydVal??0) : null, cls:'', usd:true },
     { lbl:'Due', val: dueVal, sheet: hasAdj ? sum(dueCol) : null, cls:'due', usd:true },
     { lbl:'Not yet due', val: nydVal, cls:'nyd', usd:true },
@@ -943,7 +1028,8 @@ function render(){
 
   $('#toolbar').innerHTML = chips +
     `<span class="chip payChip ${state.payOpen[state.page]?'on':''}">💸 Payments <span class="n">${m.payCols.length}</span></span>` +
-    `<span class="count">${rows.length} of ${m.rows.length} orders</span>` +
+    `<span class="count">${rows.length} of ${m.rows.length} orders` +
+      ((f.q||f.st.size||f.ty.size) ? ' · Balance stays whole-account' : '') + `</span>` +
     tyChips;
   document.querySelectorAll('#toolbar .chip').forEach(ch => ch.addEventListener('click', () => {
     if(ch.classList.contains('payChip')){
@@ -975,7 +1061,7 @@ function render(){
   const thead = '<tr>' + m.cols.map((c,idx) => {
     const parts = c.header.split('\n');
     const label = esc(parts[0]) + parts.slice(1).map(p=>`<span class="hsub">${esc(p)}</span>`).join('');
-    return `<th class="${c.num&&idx>1?'num ':''}${stickyCls(idx)}">${label}</th>`;
+    return `<th class="${c.num&&idx>1?'num ':''}${stickyCls(idx)}${c.virtual==='balance'?' balcell':''}">${label}</th>`;
   }).join('') + '</tr>';
 
   const totalRows = m.totals.map(tr =>
@@ -985,49 +1071,75 @@ function render(){
     }).join('') + '</tr>'
   ).join('');
 
+  /* one dated ledger: invoices and payments each sit at their OWN date, and every
+     payment still names the invoice it was applied to. Balances come from the full
+     (unfiltered) ledger, so they stay true even when chips hide rows. */
+  const pdates = payDates(m, Date.now());
+  const totCol = findCol('total including freight');
+  const invCol = m.cols.find(c => c.header.toLowerCase() === 'invoice no.');
+  const dateOf = key => (pdates[key] || {});
+
+  const visible = new Set(rows.map(r => r.src));
+  const events = ledger(m, adj, pdates).filter(ev => visible.has(ev.r.src)).reverse();
+
   const open = state.expanded[state.page];
+  const restCols = Math.max(0, nCols - 4);
   let body = '';
-  for(const r of rows){
-    const hasLink = !!linkFor(state.page, r.src);
-    const isOpen = open.has(r.src);
-    const delta = adj.delta[r.src] || 0;
-    body += `<tr class="order${isOpen?' open':''}" data-src="${r.src}">` + m.cols.map((c,idx) => {
-      const v = (r.c[c.i]||'').trim();
-      let cell = esc(v);
-      if(c.virtual) cell = r.type ? tyChip(r.type) : '';
-      if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
-      if(delta && (c===paidCol || c===dueCol)){
-        const sheetVal = money(v) || 0;
-        const adjVal = c===paidCol ? sheetVal + delta : sheetVal - delta;
-        cell = `${fmtUSD(adjVal)}<span class="adjmark" title="Sheet value: ${fmtUSD(sheetVal)} — adjusted by app re-ascriptions">✱</span>`;
-      }
-      if(idx===0) cell = `<span class="chev">▶</span>` + cell;
-      if(idx===1 && hasLink) cell += '<span class="doc" title="Invoice PDF linked">📄</span>';
-      const cls = [c.num&&idx>1?'num':'', c.wide?'wide':'', stickyCls(idx)].filter(Boolean).join(' ');
-      return `<td${cls?` class="${cls}"`:''}>${cell}</td>`;
-    }).join('') + '</tr>';
-
-    if(isOpen) body += `<tr class="detail"><td colspan="${nCols}">${detailHtml(m, r, adj)}</td></tr>`;
-
-    const restCols = Math.max(0, nCols - 3);
-    for(const p of paymentsOf(m, r)){
-      const re = adj.restated.has(p.key);
-      body += `<tr class="pay${re?' dim':''}" data-src="${r.src}">` +
-        `<td class="sticky s1" title="${esc(p.label)}">${esc(p.date || '—')}</td>` +
-        `<td class="sticky s2">↳ ${esc(p.name)}</td>` +
-        `<td class="num pay-amt">${esc(p.val)}</td>` +
-        (restCols ? `<td colspan="${restCols}">${re?'<span class="retag">re-ascribed in app</span>':''}</td>` : '') +
-        '</tr>';
+  for(const ev of events){
+    const r = ev.r;
+    if(ev.kind === 'order'){
+      const hasLink = !!linkFor(state.page, r.src);
+      const isOpen = open.has(r.src);
+      const delta = adj.delta[r.src] || 0;
+      body += `<tr class="order${isOpen?' open':''}" data-src="${r.src}">` + m.cols.map((c,idx) => {
+        const v = (r.c[c.i]||'').trim();
+        let cell = esc(v);
+        if(c.virtual === 'type') cell = r.type ? tyChip(r.type) : '';
+        else if(c.virtual === 'amount') cell = totCol ? fmtUSD(money(r.c[totCol.i])||0) : '';
+        else if(c.virtual === 'balance') cell = ev.bal == null ? '' : fmtUSD(ev.bal);
+        if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
+        if(delta && (c===paidCol || c===dueCol)){
+          const sheetVal = money(v) || 0;
+          const adjVal = c===paidCol ? sheetVal + delta : sheetVal - delta;
+          cell = `${fmtUSD(adjVal)}<span class="adjmark" title="Sheet value: ${fmtUSD(sheetVal)} — adjusted by app re-ascriptions">✱</span>`;
+        }
+        if(idx===0){
+          // the ledger may have placed this row by its delivery/due date — show what it used,
+          // so the date column can never disagree with the row's position
+          if(!v && r.date != null){
+            const dt = new Date(r.date);
+            cell = `<span class="inferred" title="No ship date — placed by its delivery/due date">` +
+                   `${dt.getMonth()+1}/${dt.getDate()}/${dt.getFullYear()}</span>`;
+          }
+          cell = `<span class="chev">▶</span>` + cell;
+        }
+        if(idx===1 && hasLink) cell += '<span class="doc" title="Invoice PDF linked">📄</span>';
+        const cls = [c.num&&idx>1?'num':'', c.wide?'wide':'', stickyCls(idx),
+                     c.virtual==='balance'?'balcell':''].filter(Boolean).join(' ');
+        return `<td${cls?` class="${cls}"`:''}>${cell}</td>`;
+      }).join('') + '</tr>';
+      if(isOpen) body += `<tr class="detail"><td colspan="${nCols}">${detailHtml(m, r, adj)}</td></tr>`;
+      continue;
     }
-    for(const e of adj.added[r.src] || []){
-      const pm = adj.metaByKey[e.key] || {};
-      body += `<tr class="pay app" data-src="${r.src}">` +
-        `<td class="sticky s1" title="${esc(e.key)}">${esc(pm.date || '—')}</td>` +
-        `<td class="sticky s2">✎ ${esc(pm.name || e.key)}</td>` +
-        `<td class="num pay-amt">${fmtUSD(e.amt)}</td>` +
-        (restCols ? `<td colspan="${restCols}">${e.note?`<span class="retag">${esc(e.note)}</span>`:''}</td>` : '') +
-        '</tr>';
-    }
+
+    /* payment line — dated by the payment, applied to this invoice */
+    const inv = invCol ? (r.c[invCol.i]||'').trim() : '';
+    const isApp = ev.kind === 'app';
+    const key = isApp ? ev.e.key : ev.p.key;
+    const d = dateOf(key);
+    const amt = isApp ? ev.e.amt : (money(ev.p.val) || 0);
+    const nm = isApp ? (adj.metaByKey[key]||{}).name || key : ev.p.name;
+    const note = isApp ? ev.e.note : '';
+    const dim = !isApp && ev.re;
+    body += `<tr class="pay${isApp?' app':''}${dim?' dim':''}" data-src="${r.src}" data-jump="${r.src}">` +
+      `<td class="sticky s1"><span class="${d.exact?'':'inferred'}" title="${esc(d.label ? (d.exact ? d.label : d.label+' — year inferred from the payment order; the sheet gives no year') : 'this payment column has no date in the sheet; placed by its column position')}">${esc(d.label || '—')}</span></td>` +
+      `<td class="sticky s2">↳ ${esc(inv || '—')}</td>` +
+      `<td class="num pay-amt">−${fmtUSD(amt)}</td>` +
+      (ev.bal == null ? '<td class="balcell"></td>' : `<td class="num balcell">${fmtUSD(ev.bal)}</td>`) +
+      (restCols ? `<td colspan="${restCols}">${isApp?'✎ ':''}${esc(nm)}` +
+        (dim ? '<span class="retag">re-ascribed in app</span>' : '') +
+        (note ? ` <span class="retag">${esc(note)}</span>` : '') + '</td>' : '') +
+      '</tr>';
   }
 
   box.innerHTML = rows.length || m.totals.length
@@ -1039,8 +1151,14 @@ function render(){
     tr.addEventListener('click', e => {
       if(e.target.closest('a')) return;               // let links work
       const src = parseInt(tr.dataset.src,10);
-      open.has(src) ? open.delete(src) : open.add(src);
+      const fromPay = tr.classList.contains('pay');
+      if(fromPay) open.add(src);                      // a payment always opens its invoice, never closes it
+      else open.has(src) ? open.delete(src) : open.add(src);
       render();
+      if(fromPay){                                    // the invoice now sits at its own date
+        const el = box.querySelector(`tr.order[data-src="${src}"]`);
+        if(el) el.scrollIntoView({block:'center', behavior:'smooth'});
+      }
     }));
 }
 
