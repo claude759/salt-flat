@@ -778,8 +778,14 @@
           <button data-rep="payments">Payments</button>
           <button data-rep="mom">Month over Month</button>
           <button data-rep="time">Sales Over Time</button>
+          <button data-rep="nysku" class="hidden">Sales by Type</button>
         </div>
       </div>
+
+      <!-- NY: Sales by Type lives INSIDE Reports (per Gianni 2026-07-21). The #view-sku node is
+           ADOPTED into this slot when the mode is active (and re-docked to top level for CA's
+           standalone tab), so one set of controls/renderers serves both states. -->
+      <div id="rep-nysku" class="hidden"></div>
 
       <div id="rep-visits" class="hidden">
         <div class="seg-wrap"><div class="seg" id="repv-toggle">
@@ -4186,13 +4192,15 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
   // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the
   // NY-only tabs. (Access is by STATE now — applyStateAccess gates which states you can reach.)
-  const NY_TABS=['ar','sku','tiers','reports','credits','hmops'], NY_ONLY=['credits','hmops'];
+  const NY_TABS=['ar','tiers','reports','credits','hmops'], NY_ONLY=['credits','hmops'];   // Sales by Type is a Reports mode in NY (2026-07-21), a standalone tab in CA
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
     t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
-  // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary (the others are CA-only data)
-  const NY_REPORTS=['customers','newcust','sales','bydisp'];
-  document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('hidden', APP_STATE==='NY'&&!NY_REPORTS.includes(b.dataset.rep)));
+  // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary / Sales by Type
+  const NY_REPORTS=['customers','newcust','sales','bydisp','nysku'], NY_ONLY_REPORTS=['nysku'];
+  document.querySelectorAll('#rep-toggle button').forEach(b=>{ const rb=b.dataset.rep;
+    b.classList.toggle('hidden', APP_STATE==='NY' ? !NY_REPORTS.includes(rb) : NY_ONLY_REPORTS.includes(rb)); });
   if(APP_STATE==='NY'&&!NY_REPORTS.includes(repMode)) setRepMode('customers');
+  if(APP_STATE!=='NY'&&repMode==='nysku') setRepMode('newcust');   // never leave CA parked on a NY-only mode
   if(APP_STATE!==was){
     // sku date range: NY defaults to ALL TIME (its orders predate CA's "last week" default);
     // returning to CA restores the last-week preset.
@@ -4864,8 +4872,17 @@ $('#repv-date-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closes
 // The Reports tab hosts several reports, picked by the #rep-toggle seg:
 // visits (PAD/EDU) · mom (Month over Month) · time (Sales Over Time).
 let repMode='newcust';   // New Customers is the default report on the Reports tab
-const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','mom','time'];
-function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,mom:renderMom,time:renderTimeSeries}[repMode]||renderReports)(); }
+const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','mom','time','nysku'];
+// NY Sales by Type as a report mode: adopt the #view-sku node into the Reports pane and render.
+// (activateTab('sku') docks it back to top level for CA's standalone tab — see skuDock.)
+let SKU_HOME=null;
+function skuDock(where){ const v=$('#view-sku'); if(!v) return;
+  if(!SKU_HOME) SKU_HOME={parent:v.parentElement, next:v.nextElementSibling};
+  if(where==='reports'){ const slot=$('#rep-nysku'); if(slot && v.parentElement!==slot) slot.appendChild(v); }
+  else if(SKU_HOME.parent && v.parentElement!==SKU_HOME.parent) SKU_HOME.parent.insertBefore(v, SKU_HOME.next);
+}
+function renderRepNySku(){ skuDock('reports'); const v=$('#view-sku'); if(v) v.classList.remove('hidden'); renderSku(); }
+function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,mom:renderMom,time:renderTimeSeries,nysku:renderRepNySku}[repMode]||renderReports)(); }
 function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.rep===repMode));
   $('#rep-visits').classList.toggle('hidden', repMode!=='visits');
@@ -4877,6 +4894,7 @@ function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   $('#rep-payments').classList.toggle('hidden', repMode!=='payments');
   $('#view-mom').classList.toggle('hidden', repMode!=='mom');
   $('#view-time').classList.toggle('hidden', repMode!=='time');
+  $('#rep-nysku').classList.toggle('hidden', repMode!=='nysku');
   renderRepMode(); }
 document.querySelectorAll('#rep-toggle button').forEach(b=>b.onclick=()=>setRepMode(b.dataset.rep));
 ['rep-months','rep-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderReports); });
@@ -5994,6 +6012,12 @@ function activateTab(tab, fromHash){
   else if(tab==='ar'){ if(fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='invoice'||h==='dispensary'||h==='brand') setArMode(h); } freezeInvCols(); }   // honor legacy #invoice/#dispensary/#brand; measure sticky cols if Invoice mode visible
   $('#view-cd').classList.toggle('hidden',tab!=='cd');
   if(tab==='cd' && fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='cd-disp'||h==='cd-brand') setCdMode(h==='cd-brand'?'brand':'disp'); }   // honor legacy #cd-disp/#cd-brand links
+  if(tab==='sku'&&APP_STATE==='NY'){   // NY: Sales by Type lives on the Reports tab now
+    const m=fromHash ? (location.hash||'').match(/^#sku~(\d{4}-\d\d-\d\d)~(\d{4}-\d\d-\d\d)$/) : null;
+    if(m && $('#sku-start') && $('#sku-end')){ $('#sku-start').value=m[1]; $('#sku-end').value=m[2]; if($('#sku-preset')) $('#sku-preset').value='custom'; }
+    const r=activateTab('reports', fromHash); if(r) setRepMode('nysku'); return r;
+  }
+  if(tab==='sku') skuDock('main');   // CA standalone tab: make sure the view is back at top level
   $('#view-sku').classList.toggle('hidden',tab!=='sku');
   if(tab==='sku'){   // re-render on open (also dispatches to the NY view)
     // Deep link #sku~<start>~<end> (e.g. from the weekly email) → pin that exact week, not "last week".
