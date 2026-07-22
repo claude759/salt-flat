@@ -12,6 +12,7 @@
     --accent:#7c5cff; --accent2:#9d86ff;
     --green:#2fbf71; --yellow:#e7b416; --orange:#f08a24; --red:#ef4d56; --blue:#4da3ff;
     --shadow:0 6px 24px rgba(0,0,0,.35);
+    --c1:126px;            /* date column: width AND the sticky offset of column 2 */
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
@@ -108,8 +109,8 @@
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   td.wide{white-space:pre-wrap;min-width:240px;max-width:420px;overflow-wrap:break-word}
   th.sticky,td.sticky{position:sticky;z-index:2;background:var(--panel)}
-  th.s1,td.s1{left:0;width:112px;min-width:112px;max-width:112px;overflow:hidden;text-overflow:ellipsis}
-  th.s2,td.s2{left:112px;font-weight:700}
+  th.s1,td.s1{left:0;width:var(--c1);min-width:var(--c1);max-width:var(--c1);overflow:hidden;text-overflow:ellipsis}
+  th.s2,td.s2{left:var(--c1);font-weight:700}
   thead th.sticky{z-index:4;background:var(--panel2)}
   tbody tr.order:hover td.sticky{background:#1a1730}
   .doc{opacity:.65;font-size:11px;margin-left:5px}
@@ -185,7 +186,10 @@
   .addform .hint{flex-basis:100%;font-size:11px;color:var(--faint)}
 
   /* re-ascribed / app payment sub-rows */
-  tr.pay.dim td{opacity:.5}
+  /* the sticky pair must stay fully opaque — translucent cells let the row's own
+     scrolled-under content print through them */
+  tr.pay.dim td:not(.sticky){opacity:.5}
+  tr.pay.dim td.sticky{background:#101a15;color:#3d8a63}
   tr.pay.dim .pay-amt{text-decoration:line-through}
   tr.pay.app td{background:rgba(124,92,255,.09);color:#b9a8ff;border-bottom-color:rgba(124,92,255,.14)}
   tr.pay.app td.sticky{background:#1d1836;color:var(--accent2)}
@@ -408,6 +412,18 @@ function buildModel(raw){
 
 const payKeyOf = h => h.split('\n')[0].trim();
 
+/* display split of a payment header: CA is two lines ("Payment 30" / "11th May"),
+   NY is one ("Payment 1 - Wire 29th May 2026"). Never used as a storage key. */
+function paySplit(header){
+  const lines = header.split('\n').map(s=>s.trim()).filter(Boolean);
+  let name = lines[0] || '', date = lines.slice(1).join(' ');
+  if(!date){
+    const m = /^(payment\s*\d+)\s*[-–—:]\s*(.+)$/i.exec(name);
+    if(m){ name = m[1]; date = m[2]; }
+  }
+  return { name, date: date.replace(/^wire\s+/i,'').trim() };
+}
+
 /* generic product type derived from the description (first match wins) */
 function typeOf(desc, cat){
   const d = (desc||'').toLowerCase().replace(/\s+/g,' ').trim();
@@ -445,7 +461,7 @@ function paymentsOf(m, r){
     if(!v) continue;
     const amt = money(v);
     if(amt !== null && amt <= 0) continue;         // skip $0.00 placeholders
-    out.push({ key: payKeyOf(pc.header),
+    out.push({ key: payKeyOf(pc.header), ...paySplit(pc.header),
                label: pc.header.split('\n').map(s=>s.trim()).filter(Boolean).join(' · '), val: v });
   }
   return out;
@@ -464,7 +480,8 @@ function paymentsMeta(m){
       if(amt) cells.push({ src: r.src, invoice: (r.c[invCol.i]||'').trim(), amt });
     }
     const sheetSum = cells.reduce((a,c)=>a+c.amt,0);
-    return { key: lines[0], sub: lines.slice(1).join(' · '), i: pc.i, wire, cells, sheetSum };
+    return { key: lines[0], sub: lines.slice(1).join(' · '), ...paySplit(pc.header),
+             i: pc.i, wire, cells, sheetSum };
   });
 }
 
@@ -820,7 +837,6 @@ function render(){
   const box = $('#tblbox');
   const keepScroll = {x: box.scrollLeft, y: box.scrollTop};
   const nCols = m.cols.length;
-  const paidIdx = m.paidIdx >= 0 ? m.paidIdx : nCols - 1;
 
   const stickyCls = idx => idx===0 ? 'sticky s1' : idx===1 ? 'sticky s2' : '';
 
@@ -861,22 +877,23 @@ function render(){
 
     if(isOpen) body += `<tr class="detail"><td colspan="${nCols}">${detailHtml(m, r, adj)}</td></tr>`;
 
-    const before = paidIdx - 2, after = nCols - paidIdx - 1;
+    const restCols = Math.max(0, nCols - 3);
     for(const p of paymentsOf(m, r)){
       const re = adj.restated.has(p.key);
       body += `<tr class="pay${re?' dim':''}" data-src="${r.src}">` +
-        '<td class="sticky s1" colspan="2">↳ payment</td>' +
-        (before > 0 ? `<td colspan="${before}">${esc(p.label)}${re?'<span class="retag">re-ascribed in app</span>':''}</td>` : '') +
+        `<td class="sticky s1" title="${esc(p.label)}">${esc(p.date || '—')}</td>` +
+        `<td class="sticky s2">↳ ${esc(p.name)}</td>` +
         `<td class="num pay-amt">${esc(p.val)}</td>` +
-        (after > 0 ? `<td colspan="${after}"></td>` : '') +
+        (restCols ? `<td colspan="${restCols}">${re?'<span class="retag">re-ascribed in app</span>':''}</td>` : '') +
         '</tr>';
     }
     for(const e of adj.added[r.src] || []){
+      const pm = adj.metaByKey[e.key] || {};
       body += `<tr class="pay app" data-src="${r.src}">` +
-        '<td class="sticky s1" colspan="2">↳ ascribed</td>' +
-        (before > 0 ? `<td colspan="${before}">✎ ${esc(e.key)}${e.note?` <span class="retag">${esc(e.note)}</span>`:''}</td>` : '') +
+        `<td class="sticky s1" title="${esc(e.key)}">${esc(pm.date || '—')}</td>` +
+        `<td class="sticky s2">✎ ${esc(pm.name || e.key)}</td>` +
         `<td class="num pay-amt">${fmtUSD(e.amt)}</td>` +
-        (after > 0 ? `<td colspan="${after}"></td>` : '') +
+        (restCols ? `<td colspan="${restCols}">${e.note?`<span class="retag">${esc(e.note)}</span>`:''}</td>` : '') +
         '</tr>';
     }
   }
