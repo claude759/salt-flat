@@ -278,7 +278,7 @@ const state = {
   data: {},                       // key -> model
   links: {},                      // key -> {sheetRowNumber: driveUrl}
   linksSig: '',
-  filters: { ca:{q:'', st:new Set()}, ny:{q:'', st:new Set()} },
+  filters: { ca:{q:'', st:new Set(), ty:new Set()}, ny:{q:'', st:new Set(), ty:new Set()} },
   expanded: { ca:new Set(), ny:new Set() },     // sheet row numbers with open detail
   asc: [],                                      // payment re-ascription rows from Supabase
   ascSig: '',
@@ -377,6 +377,15 @@ function buildModel(raw){
   // ship date leads the table
   const sdPos = cols.findIndex(c => c.header.toLowerCase() === 'ship date');
   if(sdPos > 0) cols.unshift(cols.splice(sdPos,1)[0]);
+
+  // derived product type: virtual column right after Category
+  const descIdx = headers.findIndex(h => /^desc/i.test(h));
+  const catIdx  = headers.findIndex(h => h.toLowerCase() === 'category');
+  for(const r of rows) r.type = typeOf(descIdx>=0 ? r.c[descIdx] : '', catIdx>=0 ? r.c[catIdx] : '');
+  const catPos = cols.findIndex(c => c.header.toLowerCase() === 'category');
+  cols.splice((catPos>=0 ? catPos : 1) + 1, 0,
+    { virtual:true, i:-1, header:'Type', num:false, wide:false, status:false, orderStatus:false });
+
   const paidIdx = cols.findIndex(c => c.header.toLowerCase() === 'paid to date');
 
   // sort newest -> oldest by ship date (fall back to delivery/due date); undated last
@@ -398,6 +407,36 @@ function buildModel(raw){
 }
 
 const payKeyOf = h => h.split('\n')[0].trim();
+
+/* generic product type derived from the description (first match wins) */
+function typeOf(desc, cat){
+  const d = (desc||'').toLowerCase().replace(/\s+/g,' ').trim();
+  const c = (cat||'').trim().toLowerCase();
+  if(c === 'freight' || /^(additional |ocean |air |ups )?(freight|handling fee)/.test(d)) return 'Shipping';
+  if(/machine/.test(d)) return 'Equipment';
+  const ds = d.replace(/with labels?|w\/ labels?|with plastic insert|w\/ plastic insert/g,'');
+  if(/label|sticker|seal\b|ribbon|\bqr\b/.test(ds)) return 'Labels & stickers';
+  if(/\ba[il]o\b|vape|cartridge|\b510\b/.test(ds)) return 'Vapes (AIO)';   // "AlO" = supplier typo for AIO
+  if(/mylar|pouch/.test(ds)) return 'Mylar bags';
+  if(/rolling tray|lanyard|\bpin\b|koozie|lighter|leash|leesh|promotional|plastic cup|\btray\b/.test(ds)) return 'Merch & promo';
+  if(/jar|bottle|purple flower|flower purple/.test(ds)){
+    const m = /(\d+(?:\.\d+)?)\s*g\b/.exec(ds);
+    if(m){ const v = parseFloat(m[1]); return (v < 1 ? String(v).replace('0.','.') : String(v)) + 'g jars'; }
+    return 'Jars';
+  }
+  if(/tube/.test(ds)) return 'Pre-roll tubes';
+  if(/booklet|catalog/.test(ds)) return 'Booklets & print';
+  if(/display|\bstand\b|\bsign\b|light box|flyer/.test(ds)) return 'Displays & signage';
+  if(/pre ?-?roll/.test(ds)) return 'Pre-roll packaging';
+  if(/bag/.test(ds)) return 'Bags';
+  if(/\bbox|master case/.test(ds)) return 'Cases & boxes';
+  return cat ? cat.trim() : 'Other';
+}
+function tyHue(t){ let h=0; for(const ch of t) h=(h*31+ch.charCodeAt(0))%360; return h; }
+function tyChip(t){
+  const h = tyHue(t);
+  return `<span class="st" style="background:hsla(${h},55%,55%,.13);color:hsl(${h},60%,72%);border-color:hsla(${h},55%,55%,.32)">${esc(t)}</span>`;
+}
 
 function paymentsOf(m, r){
   const out = [];
@@ -592,9 +631,10 @@ function filteredRows(m){
   const osCol = m.cols.find(c=>c.orderStatus);
   let rows = m.rows;
   if(f.st.size && osCol) rows = rows.filter(r => f.st.has((r.c[osCol.i]||'').trim()));
+  if(f.ty.size) rows = rows.filter(r => f.ty.has(r.type));
   if(f.q){
     const q = f.q.toLowerCase();
-    rows = rows.filter(r => r.c.some(v => (v||'').toLowerCase().includes(q)));
+    rows = rows.filter(r => (r.type||'').toLowerCase().includes(q) || r.c.some(v => (v||'').toLowerCase().includes(q)));
   }
   return rows;
 }
@@ -742,18 +782,35 @@ function render(){
         `<span class="chip ${f.st.has(v)?'on':''}" data-st="${esc(v)}">${esc(v)} <span class="n">${n}</span></span>`
       ).join('');
   }
+  /* type filter chips */
+  const tyCounts = {};
+  m.rows.forEach(r => { if(r.type) tyCounts[r.type]=(tyCounts[r.type]||0)+1; });
+  const tyChips = `<span style="flex-basis:100%"></span>` +
+    `<span class="chip ${f.ty.size?'':'on'}" data-ty="">All types</span>` +
+    Object.entries(tyCounts).sort((a,b)=>b[1]-a[1]).map(([v,n]) =>
+      `<span class="chip ${f.ty.has(v)?'on':''}" data-ty="${esc(v)}">` +
+      `<span class="dot" style="background:hsl(${tyHue(v)},60%,62%)"></span>${esc(v)} <span class="n">${n}</span></span>`
+    ).join('');
+
   $('#toolbar').innerHTML = chips +
     `<span class="chip payChip ${state.payOpen[state.page]?'on':''}">💸 Payments <span class="n">${m.payCols.length}</span></span>` +
-    `<span class="count">${rows.length} of ${m.rows.length} orders</span>`;
+    `<span class="count">${rows.length} of ${m.rows.length} orders</span>` +
+    tyChips;
   document.querySelectorAll('#toolbar .chip').forEach(ch => ch.addEventListener('click', () => {
     if(ch.classList.contains('payChip')){
       state.payOpen[state.page] = !state.payOpen[state.page];
       render();
       return;
     }
-    const v = ch.dataset.st;
-    if(!v) f.st.clear();
-    else f.st.has(v) ? f.st.delete(v) : f.st.add(v);
+    if(ch.dataset.ty !== undefined){
+      const v = ch.dataset.ty;
+      if(!v) f.ty.clear();
+      else f.ty.has(v) ? f.ty.delete(v) : f.ty.add(v);
+    }else{
+      const v = ch.dataset.st;
+      if(!v) f.st.clear();
+      else f.st.has(v) ? f.st.delete(v) : f.st.add(v);
+    }
     render();
   }));
 
@@ -789,6 +846,7 @@ function render(){
     body += `<tr class="order${isOpen?' open':''}" data-src="${r.src}">` + m.cols.map((c,idx) => {
       const v = (r.c[c.i]||'').trim();
       let cell = esc(v);
+      if(c.virtual) cell = r.type ? tyChip(r.type) : '';
       if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
       if(delta && (c===paidCol || c===dueCol)){
         const sheetVal = money(v) || 0;
@@ -845,7 +903,7 @@ function detailHtml(m, r, adj){
   const delta = (adj && adj.delta[r.src]) || 0;
   const appPays = (adj && adj.added[r.src]) || [];
 
-  const chips = ['order status','freight status'].map(n => {
+  const chips = (r.type ? tyChip(r.type)+' ' : '') + ['order status','freight status'].map(n => {
     const v = get(n);
     return v ? `<span class="st ${statusClass(v)}">${esc(v)}</span>` : '';
   }).join(' ');
