@@ -635,7 +635,7 @@
            anything sticky inside it overlaps the table and clips on horizontal scroll. Out here the
            card stays visible while the table scrolls beneath — the "pinned" intent, glitch-free. -->
       <div id="ar-ny-qbo"></div>
-      <div id="ar-ny-hmops-h" class="ar-sec-h hidden">HM OPS AR</div>
+      <div id="ar-ny-hmops-h" class="ar-sec-h hidden">HM OPS AR<span class="sub" id="ar-ny-ll-asof"></span></div>
       <div class="tablewrap" id="ar-ny-wrap"></div>
       <div class="notes" id="ar-ny-note"></div>
     </div>
@@ -1627,6 +1627,11 @@ function applyShared(d){
     if(data.nyQbo && data.nyQbo.length){ NY_QBO=nyQboFromWire(data.nyQbo); any=true; }   // WTNY QuickBooks invoices (our receivables)
     if(data.nyQboPay && data.nyQboPay.length){ NY_QBO_PAY=nyQboPayFromWire(data.nyQboPay); any=true; }
     if(data.nyQboAsOf) NY_QBO_ASOF=data.nyQboAsOf;   // when the QBO data was actually pulled (staleness badge)
+    if(data.nyAsOf) NY_ASOF=data.nyAsOf;             // when LeafLink orders were last scraped
+    // Repaint whichever NY view is on screen — without this, a payload landing (or Refresh)
+    // while NY AR / HM OPS is open left stale or blank content until a manual tab switch.
+    try{ if(APP_STATE==='NY'){ const at=(document.querySelector('.tab.active')||{}).dataset||{};
+      if(at.tab==='ar') renderArNY(); else if(at.tab==='hmops') renderHmOps(); }}catch(e){}
     if(data.nyQboItems && data.nyQboItems.length){ NY_QBO_ITEMS=nyQboItemsFromWire(data.nyQboItems); any=true; }
     if(data.hmops && data.hmops.length){ HM_OPS=hmOpsFromWire(data.hmops); any=true; }   // HM OPS Order Queue (Wizard Trees rows)
     if(data.hmopsAsOf) HMOPS_ASOF=data.hmopsAsOf;
@@ -1695,9 +1700,11 @@ async function publishToTeam(){
     if(FRESH.has('nyQboItems') && NY_QBO_ITEMS && NY_QBO_ITEMS.length) cur.nyQboItems=nyQboItemsToWire(NY_QBO_ITEMS);  // additive; invoice line detail for the drill
     // Freshness stamp: new timestamp ONLY when this publish actually loaded the QBO files; a
     // carried-forward payload keeps its old stamp so a dead feed shows its true age (STALE badge).
-    if(FRESH.has('nyQbo')) cur.nyQboAsOf=new Date().toISOString(); else if(NY_QBO_ASOF) cur.nyQboAsOf=NY_QBO_ASOF;
+    if(FRESH.has('nyQbo') && NY_QBO && NY_QBO.length) cur.nyQboAsOf=new Date().toISOString(); else if(NY_QBO_ASOF) cur.nyQboAsOf=NY_QBO_ASOF;   // stamp only when rows actually survived the parse
     if(FRESH.has('hmops') && HM_OPS && HM_OPS.length) cur.hmops=hmOpsToWire(HM_OPS);   // additive; HM OPS Order Queue (Wizard Trees rows)
-    if(FRESH.has('hmops')) cur.hmopsAsOf=new Date().toISOString(); else if(HMOPS_ASOF) cur.hmopsAsOf=HMOPS_ASOF;   // same staleness-stamp pattern as nyQboAsOf
+    if(FRESH.has('hmops') && HM_OPS && HM_OPS.length) cur.hmopsAsOf=new Date().toISOString(); else if(HMOPS_ASOF) cur.hmopsAsOf=HMOPS_ASOF;   // same staleness-stamp pattern as nyQboAsOf (rows must survive the parse)
+    // LeafLink orders staleness stamp — the primary NY feed finally gets the same treatment
+    if(FRESH.has('ny') && NY_EVENTS && NY_EVENTS.length) cur.nyAsOf=new Date().toISOString(); else if(NY_ASOF) cur.nyAsOf=NY_ASOF;
     if(FRESH.has('nyRItems') && NY_RITEMS && NY_RITEMS.length) cur.nyRItems=nyRItemsToWire(NY_RITEMS);            // additive; NY recon line items (invoice drill-down)
     // Scorecard snapshots: preserve all prior Mondays' captures, then update THIS Monday's
     // capture with currently-computed Projected Sales / On-Hand. Each publish locks in the
@@ -1786,6 +1793,7 @@ function clearFileState(t){
     ny_recon_items:()=>{ NY_RITEMS=[]; FRESH.delete('nyRItems'); },
     ny_qbo_inv:()=>{ NY_QBO=[]; FRESH.delete('nyQbo'); },
     ny_qbo_pay:()=>{ NY_QBO_PAY=[]; FRESH.delete('nyQboPay'); },
+    ny_qbo_items:()=>{ NY_QBO_ITEMS=[]; FRESH.delete('nyQboItems'); },
     hm_ops:()=>{ HM_OPS=[]; FRESH.delete('hmops'); },
   };
   (U[t]||(()=>{}))();
@@ -3847,6 +3855,7 @@ let NY_QBO=[];      // {inv, c, d, due, memo, total, bal}
 let NY_QBO_PAY=[];  // {d, amt, c, inv}
 let NY_QBO_ASOF=null;   // ISO timestamp of the last successful QBO pull (from the payload) — drives the as-of / STALE badge
 let NY_QBO_ITEMS=[];// {inv, item, desc, qty, rate, amt} — QBO invoice line detail for the drill
+let NY_ASOF=null;       // ISO timestamp of the last successful LeafLink orders scrape (payload nyAsOf) — the primary NY feed's staleness badge
 let NY_PEND_OPEN=false; // "New LeafLink orders" card expanded? (collapsed by default — the list runs 100+ rows; state survives re-renders from search typing)
 function buildNyQbo(){
   if(!FILES.ny_qbo_inv) return [];
@@ -3914,14 +3923,16 @@ const hmFlag=v=>{ const s=String(v==null?'':v).trim();
 function hmWeekStart(wk){
   const m=String(wk||'').match(/^\s*(\d{1,2})\/(\d{1,2})/); if(!m) return null;
   const now=new Date(); const d=new Date(now.getFullYear(), +m[1]-1, +m[2]);
-  if(d.getTime()-now.getTime() > 60*86400000) d.setFullYear(now.getFullYear()-1);
+  if(d.getTime()-now.getTime() > 60*86400000) d.setFullYear(now.getFullYear()-1);        // far future → last year
+  else if(now.getTime()-d.getTime() > 300*86400000) d.setFullYear(now.getFullYear()+1);  // far past → next year (Jan tabs read in Dec)
   d.setHours(0,0,0,0); return d.getTime();
 }
 // DELIVERY DATE reads "Tue 7/21" — weekday label + M/D, no year (same year inference as the tabs).
 function hmDelivTs(s){
   const m=String(s||'').match(/(\d{1,2})\/(\d{1,2})/); if(!m) return null;
   const now=new Date(); const d=new Date(now.getFullYear(), +m[1]-1, +m[2]);
-  if(d.getTime()-now.getTime() > 60*86400000) d.setFullYear(now.getFullYear()-1);
+  if(d.getTime()-now.getTime() > 60*86400000) d.setFullYear(now.getFullYear()-1);        // far future → last year
+  else if(now.getTime()-d.getTime() > 300*86400000) d.setFullYear(now.getFullYear()+1);  // far past → next year (Jan tabs read in Dec)
   d.setHours(0,0,0,0); return d.getTime();
 }
 // The page's PRIMARY date: the actual delivery date, falling back to the weekly tab when the
@@ -4304,6 +4315,14 @@ function nyQboDrill(inv){
 // customer + GROSS order total (recon Total is net of discounts; Gross Sale is the order value),
 // disambiguating same-customer/same-amount repeats by order-date proximity. ~96% resolve to
 // exactly one order; the rest fall back to showing the distributor's own sales-order number.
+// The invoiced/un-invoiced boundary, in ONE place: render, export, and any future fix (e.g. the
+// planned match-based cutoff when the July workbook lands) all flow through these two helpers.
+// maxInvD counts only parseable recon dates ≤ today+45d (a future-dated typo can't suppress the
+// pending rows; an unparseable set can't collapse the cutoff to 0 and double-count the recon).
+function nyPendCutoff(){ const dCap=Date.now()+45*86400000;
+  return (NY_INV||[]).reduce((m,x)=>(x.d&&x.d<=dCap)?Math.max(m,x.d):m,0); }
+function nyPendOrders(maxInvD){ if(maxInvD==null) maxInvD=nyPendCutoff();
+  return maxInvD?nyArData().filter(r=>r.d && r.d>maxInvD):[]; }
 function nyInvOrderMap(){
   const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+t.gross; });
   const idx={}; (NY_EVENTS||[]).forEach(e=>{ const k=String(e.c||'').toLowerCase()+'|'+Math.round((e.amt||0)*100); (idx[k]||(idx[k]=[])).push(e); });
@@ -4335,9 +4354,8 @@ function renderArNYRecon(){
   // maxInvD sanity: count only parseable recon dates that aren't future-dated typos (≤ today+45d)
   // — an unparseable set would collapse the cutoff to 0 (folding in the whole order book and
   // double-counting the recon), and one future typo would suppress these rows entirely.
-  const dCap=Date.now()+45*86400000;
-  const maxInvD=invRows.reduce((m,x)=>(x.d&&x.d<=dCap)?Math.max(m,x.d):m,0);
-  const pendRows=(maxInvD?nyArData().filter(r=>r.d && r.d>maxInvD):[]).map(r=>({
+  const maxInvD=nyPendCutoff();
+  const pendRows=nyPendOrders(maxInvD).map(r=>({
     inv:'', so:'', c:r.c, d:r.d, due:r.due, st:'', total:0, paid:0, out:r.amt||0, disc:0, dsum:'',
     dpd:dpdOf(r.due), _pend:true, _ref:r.ref||'', _terms:r.terms||'', _st:r.st||'' }));
   const all=invRows.concat(pendRows)
@@ -4379,7 +4397,12 @@ function renderArNYRecon(){
     <td class="num money">${x.paid>0.005?`<span style="color:var(--green)">${fmt$(x.paid)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
   const qboEl=$('#ar-ny-qbo'); if(qboEl){ qboEl.innerHTML=nyQboSection(q); wireNyQbo(qboEl); }
-  { const h=$('#ar-ny-hmops-h'); if(h) h.classList.remove('hidden'); }   // label the receivables table below the WT NY AR card
+  { const h=$('#ar-ny-hmops-h'); if(h) h.classList.remove('hidden');
+    const a=$('#ar-ny-ll-asof');   // LeafLink is the source of the un-invoiced rows — surface its age (scraped hourly; >6h = broken feed)
+    if(a){ const ageH=NY_ASOF?(Date.now()-Date.parse(NY_ASOF))/3.6e6:null;
+      a.innerHTML=ageH==null?'' : ageH>6
+        ? ` · <span style="color:var(--red);font-weight:700">LeafLink STALE — last scraped ${ageH>48?Math.round(ageH/24)+' days':Math.round(ageH)+'h'} ago</span>`
+        : ` · LeafLink as of ${new Date(NY_ASOF).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`; } }
   wrap.innerHTML=`<table id="ar-ny-table"><thead><tr><th>Dispensary</th><th>Invoice #</th><th>Order #</th><th>Drop</th><th class="num">Invoice / order date</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Discount</th><th class="num">Invoiced</th><th class="num">Collected</th><th class="num">Outstanding</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="7">${vInv.length} invoice${vInv.length!==1?'s':''}${vPend.length?` + ${vPend.length} un-invoiced order${vPend.length!==1?'s':''}`:''}</td><td class="num money">${S(view,'disc')>0.005?('-'+fmt$(S(view,'disc'))):'—'}</td><td class="num money">${fmt$(invoiced)}</td><td class="num money">${fmt$(collected)}</td><td class="num money">${fmt$(outstanding)}</td></tr></tfoot></table>`;
   wrap.querySelectorAll('#ar-ny-table tbody tr.clickrow').forEach(tr=>tr.onclick=()=>nyInvDrill(tr.dataset.inv));
@@ -4409,7 +4432,12 @@ function renderArNY(){
     return `<span style="color:${r.dpd>=-7?'var(--yellow)':'var(--green)'}">due in ${-r.dpd}d</span>`; };
   const body=view.map(r=>`<tr><td>${esc(r.c)}</td><td>${esc(r.ref||'—')}</td><td class="num">${fmtD(r.d)}</td><td>${esc(r.terms||'—')}</td><td class="num">${fmtD(r.due)}</td><td class="num">${statusCell(r)}</td><td class="num money">${fmt$(r.amt)}</td></tr>`).join('');
   { const qboEl=$('#ar-ny-qbo'); if(qboEl){ qboEl.innerHTML=nyQboSection(q); wireNyQbo(qboEl); } }
-  { const h=$('#ar-ny-hmops-h'); if(h) h.classList.remove('hidden'); }   // label the receivables table below the WT NY AR card
+  { const h=$('#ar-ny-hmops-h'); if(h) h.classList.remove('hidden');
+    const a=$('#ar-ny-ll-asof');   // LeafLink is the source of the un-invoiced rows — surface its age (scraped hourly; >6h = broken feed)
+    if(a){ const ageH=NY_ASOF?(Date.now()-Date.parse(NY_ASOF))/3.6e6:null;
+      a.innerHTML=ageH==null?'' : ageH>6
+        ? ` · <span style="color:var(--red);font-weight:700">LeafLink STALE — last scraped ${ageH>48?Math.round(ageH/24)+' days':Math.round(ageH)+'h'} ago</span>`
+        : ` · LeafLink as of ${new Date(NY_ASOF).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`; } }
   wrap.innerHTML=`<table id="ar-ny-table"><thead><tr><th>Buyer</th><th>Order #</th><th class="num">Ship date</th><th>Terms</th><th class="num">Due date</th><th class="num">Status</th><th class="num">Amount</th></tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="6">${view.length} order${view.length!==1?'s':''}</td><td class="num money">${fmt$(tot)}</td></tr></tfoot></table>`;
   note.innerHTML=`<b>New York expected receivables</b> — a payment <b>schedule</b> from LeafLink order terms (due = ship date + terms; Net 30 / COD), NOT confirmed unpaid balances: LeafLink doesn't report buyer payments yet (LeafLink Payments is enabled but no invoices assigned). When payments start flowing there, this page can upgrade to true paid/outstanding. Cancelled/rejected orders excluded.`;
@@ -4431,9 +4459,7 @@ function renderArNY(){
     out.push(['— NY RECEIVABLES —'],['Dispensary','Invoice #','LeafLink order #','Distributor SO #','Drop','Invoice / order date','Due date','Status','Discount','Invoiced','Collected','Outstanding']);
     NY_INV.forEach(x=>out.push([x.c,x.inv,om[x.inv]||'',x.so||'',drop(rd[om[x.inv]]!=null?rd[om[x.inv]]:x.d),iso(x.d),iso(x.due),x.st,x.disc.toFixed(2),x.total.toFixed(2),x.paid.toFixed(2),x.out.toFixed(2)]));
     // un-invoiced LeafLink orders, same basis as the on-screen table
-    const cap=Date.now()+45*86400000;
-    const mx=(NY_INV||[]).reduce((m,x)=>(x.d&&x.d<=cap)?Math.max(m,x.d):m,0);
-    (mx?nyArData().filter(r=>r.d&&r.d>mx):[]).forEach(r=>out.push([r.c,'',r.ref||'','',drop(r.d),iso(r.d),iso(r.due),/ship|fulfil|complet|deliver/i.test(r.st||'')?'shipped · not invoiced':((r.st||'placed').toLowerCase()+' · not shipped'),'','','',(r.amt||0).toFixed(2)]));
+    nyPendOrders().forEach(r=>out.push([r.c,'',r.ref||'','',drop(r.d),iso(r.d),iso(r.due),/ship|fulfil|complet|deliver/i.test(r.st||'')?'shipped · not invoiced':((r.st||'placed').toLowerCase()+' · not shipped'),'','','',(r.amt||0).toFixed(2)]));
   } else {
     const rows=nyArData();
     out.push(['— EXPECTED RECEIVABLES (LeafLink terms) —'],['Buyer','Order #','Ship date','Terms','Due date','Days past due','Amount']);
@@ -5996,6 +6022,11 @@ $('#cr-add') && ($('#cr-add').onclick=async ()=>{
 });
 
 function activateTab(tab, fromHash){
+  if(tab==='sku'&&APP_STATE==='NY'){   // NY: Sales by Type lives on the Reports tab — reroute BEFORE the access guard (the sku tab is always hidden in NY, so the guard would bounce to AR)
+    const m=fromHash ? (location.hash||'').match(/^#sku~(\d{4}-\d\d-\d\d)~(\d{4}-\d\d-\d\d)$/) : null;
+    if(m && $('#sku-start') && $('#sku-end')){ $('#sku-start').value=m[1]; $('#sku-end').value=m[2]; if($('#sku-preset')) $('#sku-preset').value='custom'; }
+    const r=activateTab('reports', fromHash); if(r) setRepMode('nysku'); return r;
+  }
   const t=document.querySelector('.tab[data-tab="'+tab+'"]'); if(!t) return false;
   // Access guard: a tab hidden for the current state / the signed-in user's grants must not be
   // reachable via a #hash deep-link. If asked for one, fall back to the first visible tab.
@@ -6012,11 +6043,6 @@ function activateTab(tab, fromHash){
   else if(tab==='ar'){ if(fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='invoice'||h==='dispensary'||h==='brand') setArMode(h); } freezeInvCols(); }   // honor legacy #invoice/#dispensary/#brand; measure sticky cols if Invoice mode visible
   $('#view-cd').classList.toggle('hidden',tab!=='cd');
   if(tab==='cd' && fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='cd-disp'||h==='cd-brand') setCdMode(h==='cd-brand'?'brand':'disp'); }   // honor legacy #cd-disp/#cd-brand links
-  if(tab==='sku'&&APP_STATE==='NY'){   // NY: Sales by Type lives on the Reports tab now
-    const m=fromHash ? (location.hash||'').match(/^#sku~(\d{4}-\d\d-\d\d)~(\d{4}-\d\d-\d\d)$/) : null;
-    if(m && $('#sku-start') && $('#sku-end')){ $('#sku-start').value=m[1]; $('#sku-end').value=m[2]; if($('#sku-preset')) $('#sku-preset').value='custom'; }
-    const r=activateTab('reports', fromHash); if(r) setRepMode('nysku'); return r;
-  }
   if(tab==='sku') skuDock('main');   // CA standalone tab: make sure the view is back at top level
   $('#view-sku').classList.toggle('hidden',tab!=='sku');
   if(tab==='sku'){   // re-render on open (also dispatches to the NY view)
