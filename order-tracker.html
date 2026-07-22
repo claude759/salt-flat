@@ -74,6 +74,20 @@
   .mrow .mitem.avg{padding-left:22px;border-left:1px solid var(--line)}
   .mrow .mitem.avg .fv{color:var(--accent2);font-size:21px;font-weight:800}
 
+  /* ---- overview category report ---- */
+  tr.catx>td{background:#131722;padding:9px 12px 11px}
+  .subTbl{width:100%;border-collapse:collapse;font-size:12.5px}
+  .subTbl th{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--faint);
+    text-align:left;padding:4px 8px;font-weight:700}
+  .subTbl td{padding:5px 8px;border-top:1px solid rgba(42,47,58,.5)}
+  .subTbl tbody tr{cursor:pointer}
+  .subTbl tbody tr:hover td{background:rgba(124,92,255,.08)}
+  .subTbl .desc{color:var(--muted);max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .stbadge{display:inline-block;padding:0 6px;border-radius:6px;font-size:10px;font-weight:800;
+    background:var(--panel2);border:1px solid var(--line);color:var(--muted);margin-right:6px}
+  .catbtns{display:flex;gap:6px;margin:0 0 8px;flex-wrap:wrap;align-items:center}
+  .catbtns .lbl{font-size:11px;color:var(--faint);font-weight:700}
+
   /* ---- overview state table ---- */
   .stateTbl{width:100%;font-size:13.5px}
   .stateTbl th{cursor:default}
@@ -290,6 +304,7 @@ const state = {
   payOpen: { ca:false, ny:false },              // payments panel visible?
   payExpanded: { ca:new Set(), ny:new Set() },  // payment_keys expanded in the panel
   ovScope: 'all',                               // overview scope: all | ca | ny
+  ovCat: new Set(),                             // category names expanded on the overview
   lastSync: null,
   fetching: false,
   failed: false,
@@ -430,7 +445,10 @@ function typeOf(desc, cat){
   const c = (cat||'').trim().toLowerCase();
   if(c === 'freight' || /^(additional |ocean |air |ups )?(freight|handling fee)/.test(d)) return 'Shipping';
   if(/machine/.test(d)) return 'Equipment';
-  const ds = d.replace(/with labels?|w\/ labels?|with plastic insert|w\/ plastic insert/g,'');
+  // parenthetical asides are qualifiers, not the product — "(No Sticker)" on an AIO order
+  // must not out-vote "AIO", and "(Verification stickers required)" must not beat "Mylar Pouch"
+  const ds = d.replace(/with labels?|w\/ labels?|with plastic insert|w\/ plastic insert/g,'')
+              .replace(/\([^)]*\)/g,' ');
   if(/label|sticker|seal\b|ribbon|\bqr\b/.test(ds)) return 'Labels & stickers';
   if(/\ba[il]o\b|vape|cartridge|\b510\b/.test(ds)) return 'Vapes (AIO)';   // "AlO" = supplier typo for AIO
   if(/mylar|pouch/.test(ds)) return 'Mylar bags';
@@ -686,6 +704,97 @@ function purchasesReport(scope){
   return { months, avg: months.reduce((a,x)=>a+x.sum,0) / months.length };
 }
 
+/* per-category open balance, due and not-yet-due (adjusted for re-ascriptions) */
+function categoryReport(scope){
+  const keys = scope === 'all' ? ['ca','ny'] : [scope];
+  const cats = new Map();
+  for(const k of keys){
+    const m = state.data[k]; if(!m) continue;
+    const adj = computeAdjust(m, k);
+    const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+    const dueC = find('due'), nydC = find('not yet due'), invC = find('invoice no.'),
+          shipC = find('ship date'), descC = m.cols.find(c => /^desc/i.test(c.header));
+    for(const r of m.rows){
+      const t = r.type || 'Other';
+      const due = (dueC ? (money(r.c[dueC.i])||0) : 0) - (adj.delta[r.src]||0);
+      const nyd = nydC ? (money(r.c[nydC.i])||0) : 0;
+      let c = cats.get(t);
+      if(!c){ c = { type:t, n:0, due:0, nyd:0, rows:[], states:new Set() }; cats.set(t, c); }
+      c.n++; c.due += due; c.nyd += nyd; c.states.add(k);
+      c.rows.push({ state:k, src:r.src, adj: !!adj.delta[r.src], due, nyd, open: due+nyd,
+                    inv: invC ? (r.c[invC.i]||'').trim() : '',
+                    date: shipC ? (r.c[shipC.i]||'').trim() : '',
+                    desc: descC ? (r.c[descC.i]||'').trim().replace(/\s+/g,' ') : '' });
+    }
+  }
+  const list = [...cats.values()].map(c => ({ ...c, open: c.due + c.nyd }));
+  list.forEach(c => c.rows.sort((a,b) => b.open - a.open || b.due - a.due));
+  list.sort((a,b) => b.open - a.open || b.n - a.n || a.type.localeCompare(b.type));
+  return list;
+}
+
+function catReportHtml(scope){
+  const list = categoryReport(scope);
+  if(!list.length) return '';
+  const tot = list.reduce((a,c)=>({n:a.n+c.n, due:a.due+c.due, nyd:a.nyd+c.nyd, open:a.open+c.open}),
+                          {n:0,due:0,nyd:0,open:0});
+  const showState = scope === 'all';
+
+  let rows = '';
+  for(const c of list){
+    const isOpen = state.ovCat.has(c.type);
+    rows += `<tr class="prow" data-cat="${esc(c.type)}">` +
+      `<td>${tyChip(c.type)}</td>` +
+      `<td class="num">${c.n}</td>` +
+      `<td class="num"><b>${fmtUSD(c.open)}</b></td>` +
+      `<td class="num" style="color:var(--orange)">${fmtUSD(c.due)}</td>` +
+      `<td class="num" style="color:var(--blue)">${fmtUSD(c.nyd)}</td>` +
+      `<td class="num faint">${isOpen?'▾':'▸'}</td></tr>`;
+    if(!isOpen) continue;
+    rows += `<tr class="catx"><td colspan="6">` +
+      `<div class="catbtns"><span class="lbl">${c.n} order${c.n===1?'':'s'} · click one to open it</span>` +
+      [...c.states].map(k => `<button class="btn" style="padding:3px 10px;font-size:11.5px" ` +
+        `data-goty="${esc(c.type)}" data-gost="${k}">filter the ${k.toUpperCase()} page ↗</button>`).join('') +
+      `</div><div style="overflow-x:auto"><table class="subTbl"><thead><tr>` +
+      `<th>Ship date</th><th>Invoice</th><th>Description</th>` +
+      `<th class="num">Open</th><th class="num">Due</th><th class="num">Not yet due</th></tr></thead><tbody>` +
+      c.rows.map(r =>
+        `<tr data-gost="${r.state}" data-gosrc="${r.src}">` +
+        `<td class="faint">${esc(r.date||'—')}</td>` +
+        `<td><b>${showState?`<span class="stbadge">${r.state.toUpperCase()}</span>`:''}${esc(r.inv||'—')}</b></td>` +
+        `<td class="desc" title="${esc(r.desc)}">${esc(r.desc||'—')}</td>` +
+        `<td class="num">${fmtUSD(r.open)}${r.adj?'<span class="adjmark" title="adjusted by app re-ascriptions">✱</span>':''}</td>` +
+        `<td class="num" style="color:var(--orange)">${fmtUSD(r.due)}</td>` +
+        `<td class="num" style="color:var(--blue)">${fmtUSD(r.nyd)}</td></tr>`).join('') +
+      `</tbody></table></div></td></tr>`;
+  }
+
+  return `<div class="panel"><div class="ptitle">Open balance by category · ${scope==='all'?'CA + NY':scope.toUpperCase()} · ${list.length} categories</div>` +
+    `<div style="overflow-x:auto"><table class="payTbl"><thead><tr><th>Category</th><th class="num">Orders</th>` +
+    `<th class="num">Open balance</th><th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
+    rows +
+    `<tr class="grand"><td><b>Total</b></td><td class="num">${tot.n}</td><td class="num"><b>${fmtUSD(tot.open)}</b></td>` +
+    `<td class="num">${fmtUSD(tot.due)}</td><td class="num">${fmtUSD(tot.nyd)}</td><td></td></tr>` +
+    `</tbody></table></div></div>`;
+}
+
+/* jump from the overview into a specific order / a filtered state page */
+function gotoOrder(stateKey, src){
+  const f = state.filters[stateKey];
+  f.q = ''; f.st.clear(); f.ty.clear();
+  state.expanded[stateKey].add(src);
+  goPage(stateKey);
+  setTimeout(() => {
+    const el = document.querySelector(`tr.order[data-src="${src}"]`);
+    if(el) el.scrollIntoView({block:'center'});
+  }, 30);
+}
+function gotoType(stateKey, type){
+  const f = state.filters[stateKey];
+  f.q = ''; f.st.clear(); f.ty.clear(); f.ty.add(type);
+  goPage(stateKey);
+}
+
 function renderOverview(){
   $('#openSheet').href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
   const pp = $('#payPanel');
@@ -732,7 +841,20 @@ function renderOverview(){
     `<div class="mrow">` +
     rep.months.map(x => `<div class="mitem"><div class="fl">${esc(x.label)}</div><div class="fv">${fmtUSD(x.sum)}</div></div>`).join('') +
     `<div class="mitem avg"><div class="fl">Monthly average</div><div class="fv">${fmtUSD(rep.avg)}</div></div>` +
-    `</div></div>`;
+    `</div></div>` +
+    catReportHtml(scope);
+
+  pp.querySelectorAll('tr.prow[data-cat]').forEach(tr => tr.addEventListener('click', () => {
+    const c = tr.dataset.cat;
+    state.ovCat.has(c) ? state.ovCat.delete(c) : state.ovCat.add(c);
+    render();
+  }));
+  pp.querySelectorAll('[data-goty]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation(); gotoType(b.dataset.gost, b.dataset.goty);
+  }));
+  pp.querySelectorAll('.subTbl tbody tr[data-gosrc]').forEach(tr => tr.addEventListener('click', e => {
+    e.stopPropagation(); gotoOrder(tr.dataset.gost, parseInt(tr.dataset.gosrc,10));
+  }));
 
   const adjMark = s => s.hasAdj ? '<span class="adjmark" title="Includes app re-ascriptions">✱</span>' : '';
   const row = (k, s, cls, name) =>
