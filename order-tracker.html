@@ -62,6 +62,18 @@
   .card.due .val{color:var(--orange)}
   .card.paid .val{color:var(--green)}
   .card.nyd .val{color:var(--blue)}
+  .card.big{padding:18px 20px}
+  .card.big .lbl{font-size:12px}
+  .card.big .val{font-size:clamp(19px,4.2vw,30px);margin-top:6px}
+
+  /* ---- overview state table ---- */
+  .stateTbl{width:100%;font-size:13.5px}
+  .stateTbl th{cursor:default}
+  .stateTbl td:first-child,.stateTbl th:first-child{padding-left:16px}
+  .stateTbl tbody tr.st-row{cursor:pointer}
+  .stateTbl tbody tr.st-row:hover td{background:rgba(124,92,255,.07)}
+  .stateTbl tr.grand td{font-weight:800;color:var(--accent2);background:#131722;border-bottom:0}
+  .stateTbl .go{color:var(--faint);font-size:11px}
 
   /* ---- toolbar ---- */
   .toolbar{display:flex;align-items:center;gap:8px;padding:10px 16px;flex-wrap:wrap}
@@ -88,10 +100,11 @@
   tbody tr.order:hover td{background:rgba(124,92,255,.07)}
   td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
   td.wide{white-space:pre-wrap;min-width:240px;max-width:420px;overflow-wrap:break-word}
-  th.sticky,td.sticky{position:sticky;left:0;z-index:2;background:var(--panel)}
+  th.sticky,td.sticky{position:sticky;z-index:2;background:var(--panel)}
+  th.s1,td.s1{left:0;width:112px;min-width:112px;max-width:112px;overflow:hidden;text-overflow:ellipsis}
+  th.s2,td.s2{left:112px;font-weight:700}
   thead th.sticky{z-index:4;background:var(--panel2)}
   tbody tr.order:hover td.sticky{background:#1a1730}
-  td.sticky{font-weight:700}
   .doc{opacity:.65;font-size:11px;margin-left:5px}
   .chev{display:inline-block;width:13px;color:var(--faint);font-size:10px;transition:transform .15s ease;vertical-align:1px}
   tr.order.open .chev{transform:rotate(90deg);color:var(--accent2)}
@@ -188,8 +201,14 @@ const POLL_MS = 60000;
 
 const $ = s => document.querySelector(s);
 
+const PAGE_KEYS = ['overview','ca','ny'];
+const hashPage = () => {
+  const k = location.hash.replace('#','').toLowerCase();
+  return PAGE_KEYS.includes(k) ? k : 'overview';
+};
+
 const state = {
-  page: (location.hash.replace('#','').toLowerCase() === 'ny') ? 'ny' : 'ca',
+  page: hashPage(),
   data: {},                       // key -> model
   links: {},                      // key -> {sheetRowNumber: driveUrl}
   linksSig: '',
@@ -282,7 +301,27 @@ function buildModel(raw){
   });
   const cols = all.filter(c => !c.payment);        // shown as table columns
   const payCols = all.filter(c => c.payment);      // shown as green sub-rows
+
+  // ship date leads the table
+  const sdPos = cols.findIndex(c => c.header.toLowerCase() === 'ship date');
+  if(sdPos > 0) cols.unshift(cols.splice(sdPos,1)[0]);
   const paidIdx = cols.findIndex(c => c.header.toLowerCase() === 'paid to date');
+
+  // sort newest -> oldest by ship date (fall back to delivery/due date); undated last
+  const colIdx = name => { const c = cols.find(c=>c.header.toLowerCase()===name); return c ? c.i : -1; };
+  const dateIdxs = ['ship date','delivery date','due date'].map(colIdx).filter(i=>i>=0);
+  const parseDate = v => {
+    const m = /(\d{1,2})\/{1,2}(\d{1,2})\/(\d{2,4})/.exec(v||'');
+    if(!m) return null;
+    const y = m[3].length===2 ? 2000+ +m[3] : +m[3];
+    return new Date(y, +m[1]-1, +m[2]).getTime();
+  };
+  for(const r of rows){
+    r.date = null;
+    for(const di of dateIdxs){ r.date = parseDate(r.c[di]); if(r.date!==null) break; }
+  }
+  rows.sort((a,b) => (b.date ?? -Infinity) - (a.date ?? -Infinity));
+
   return { raw, headers, totals, rows, cols, payCols, paidIdx };
 }
 
@@ -401,9 +440,51 @@ function filteredRows(m){
   return rows;
 }
 
+function stateTotals(m){
+  const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+  const sum = c => c ? m.rows.reduce((a,r)=>a+(money(r.c[c.i])||0),0) : 0;
+  return { n: m.rows.length, total: sum(find('total including freight')),
+           paid: sum(find('paid to date')), due: sum(find('due')), nyd: sum(find('not yet due')) };
+}
+
+function renderOverview(){
+  $('#openSheet').href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
+  $('#toolbar').innerHTML = '';
+  if(!state.data.ca || !state.data.ny){
+    $('#cards').innerHTML = '';
+    $('#tblbox').innerHTML = '<div class="loading">Loading order data…</div>';
+    return;
+  }
+  const t = { ca: stateTotals(state.data.ca), ny: stateTotals(state.data.ny) };
+  const g = Object.values(t).reduce((a,s)=>({n:a.n+s.n,total:a.total+s.total,paid:a.paid+s.paid,due:a.due+s.due,nyd:a.nyd+s.nyd}),
+                                    {n:0,total:0,paid:0,due:0,nyd:0});
+  $('#cards').innerHTML =
+    `<div class="card big"><div class="lbl">Total balance <span class="faint">(due + not yet due)</span></div><div class="val">${fmtUSD(g.due+g.nyd)}</div></div>` +
+    `<div class="card big due"><div class="lbl">Total due</div><div class="val">${fmtUSD(g.due)}</div></div>` +
+    `<div class="card big nyd"><div class="lbl">Total not yet due</div><div class="val">${fmtUSD(g.nyd)}</div></div>`;
+
+  const row = (k, s, cls, name) =>
+    `<tr class="${cls}" ${cls==='st-row'?`data-page="${k}"`:''}><td><b>${name}</b></td>` +
+    `<td class="num">${s.n}</td><td class="num">${fmtUSD(s.total)}</td>` +
+    `<td class="num" style="color:var(--green)">${fmtUSD(s.paid)}</td>` +
+    `<td class="num" style="color:var(--orange)">${fmtUSD(s.due)}</td>` +
+    `<td class="num" style="color:var(--blue)">${fmtUSD(s.nyd)}</td>` +
+    `<td class="num"><b>${fmtUSD(s.due+s.nyd)}</b></td>` +
+    `<td class="go">${cls==='st-row'?'open →':''}</td></tr>`;
+  $('#tblbox').innerHTML =
+    `<table class="stateTbl"><thead><tr><th>State</th><th class="num">Orders</th><th class="num">Total incl. freight</th>` +
+    `<th class="num">Paid to date</th><th class="num">Due</th><th class="num">Not yet due</th><th class="num">Balance</th><th></th></tr></thead><tbody>` +
+    row('ca', t.ca, 'st-row', 'CA') + row('ny', t.ny, 'st-row', 'NY') + row('', g, 'grand', 'Total') +
+    `</tbody></table>`;
+  $('#tblbox').querySelectorAll('tr.st-row').forEach(tr =>
+    tr.addEventListener('click', () => goPage(tr.dataset.page)));
+}
+
 function render(){
-  const m = currentModel();
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===state.page));
+  $('#q').style.display = state.page==='overview' ? 'none' : '';
+  if(state.page === 'overview'){ renderOverview(); return; }
+  const m = currentModel();
   const tab = TABS.find(t=>t.key===state.page);
   $('#openSheet').href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=${tab.gid}`;
   if(!m){ $('#tblbox').innerHTML = '<div class="loading">Loading order data…</div>'; return; }
@@ -451,17 +532,18 @@ function render(){
   const nCols = m.cols.length;
   const paidIdx = m.paidIdx >= 0 ? m.paidIdx : nCols - 1;
 
+  const stickyCls = idx => idx===0 ? 'sticky s1' : idx===1 ? 'sticky s2' : '';
+
   const thead = '<tr>' + m.cols.map((c,idx) => {
     const parts = c.header.split('\n');
     const label = esc(parts[0]) + parts.slice(1).map(p=>`<span class="hsub">${esc(p)}</span>`).join('');
-    return `<th class="${c.num?'num ':''}${idx===0?'sticky':''}">${label}</th>`;
+    return `<th class="${c.num&&idx>1?'num ':''}${stickyCls(idx)}">${label}</th>`;
   }).join('') + '</tr>';
 
   const totalRows = m.totals.map(tr =>
-    '<tr class="totals">' + m.cols.map((c,idx) => {
+    '<tr class="totals"><td class="sticky s1" colspan="2">Sheet totals</td>' + m.cols.slice(2).map(c => {
       const v = (tr[c.i]||'').trim();
-      const cell = idx===0 && !v ? 'Sheet totals' : v;
-      return `<td class="${c.num?'num ':''}${idx===0?'sticky':''}">${esc(cell)}</td>`;
+      return `<td class="${c.num?'num':''}">${esc(v)}</td>`;
     }).join('') + '</tr>'
   ).join('');
 
@@ -474,20 +556,18 @@ function render(){
       const v = (r.c[c.i]||'').trim();
       let cell = esc(v);
       if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
-      if(idx===0){
-        cell = `<span class="chev">▶</span>` + cell;
-        if(hasLink) cell += '<span class="doc" title="Invoice PDF linked">📄</span>';
-      }
-      const cls = [c.num?'num':'', c.wide?'wide':'', idx===0?'sticky':''].filter(Boolean).join(' ');
+      if(idx===0) cell = `<span class="chev">▶</span>` + cell;
+      if(idx===1 && hasLink) cell += '<span class="doc" title="Invoice PDF linked">📄</span>';
+      const cls = [c.num&&idx>1?'num':'', c.wide?'wide':'', stickyCls(idx)].filter(Boolean).join(' ');
       return `<td${cls?` class="${cls}"`:''}>${cell}</td>`;
     }).join('') + '</tr>';
 
     if(isOpen) body += `<tr class="detail"><td colspan="${nCols}">${detailHtml(m, r)}</td></tr>`;
 
     for(const p of paymentsOf(m, r)){
-      const before = paidIdx - 1, after = nCols - paidIdx - 1;
+      const before = paidIdx - 2, after = nCols - paidIdx - 1;
       body += `<tr class="pay" data-src="${r.src}">` +
-        '<td class="sticky">↳ payment</td>' +
+        '<td class="sticky s1" colspan="2">↳ payment</td>' +
         (before > 0 ? `<td colspan="${before}">${esc(p.label)}</td>` : '') +
         `<td class="num pay-amt">${esc(p.val)}</td>` +
         (after > 0 ? `<td colspan="${after}"></td>` : '') +
@@ -592,19 +672,21 @@ function tickSyncLabel(){
 }
 
 /* ---------- wiring ---------- */
-$('#seg').innerHTML = TABS.map(t => `<button data-key="${t.key}">${t.label}</button>`).join('');
-document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => {
-  state.page = b.dataset.key;
-  history.replaceState(null,'','#'+state.page);
-  $('#q').value = state.filters[state.page].q;
+function goPage(k){
+  state.page = k;
+  history.replaceState(null,'','#'+k);
+  $('#q').value = state.filters[k] ? state.filters[k].q : '';
   render();
-}));
-window.addEventListener('hashchange', () => {
-  const k = location.hash.replace('#','').toLowerCase();
-  if(TABS.some(t=>t.key===k) && k!==state.page){ state.page=k; $('#q').value=state.filters[k].q; render(); }
-});
+}
+$('#seg').innerHTML = [{key:'overview',label:'Overview'},...TABS].map(t =>
+  `<button data-key="${t.key}">${t.label}</button>`).join('');
+document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => goPage(b.dataset.key)));
+window.addEventListener('hashchange', () => { const k = hashPage(); if(k !== state.page) goPage(k); });
 
-$('#q').addEventListener('input', e => { state.filters[state.page].q = e.target.value.trim(); render(); });
+$('#q').addEventListener('input', e => {
+  if(!state.filters[state.page]) return;
+  state.filters[state.page].q = e.target.value.trim(); render();
+});
 $('#refreshBtn').addEventListener('click', sync);
 document.addEventListener('visibilitychange', () => {
   if(!document.hidden && state.lastSync && Date.now()-state.lastSync.getTime() > 15000) sync();
