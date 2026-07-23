@@ -637,20 +637,35 @@ function computeAdjust(m, stateKey){
     if(a.mode === 'bucket') bucketEntries.push(a);
     else (groups[a.payment_key] ??= []).push(a);
   }
-  // net payment $ the user has re-attributed from Non-vape onto the Vape bucket
-  let netToVape = 0;
-  for(const a of bucketEntries) netToVape += (a.invoice_no === '__vape__' ? 1 : -1) * (+a.amount);
   const meta = paymentsMeta(m);
   const metaByKey = Object.fromEntries(meta.map(p=>[p.key, p]));
   const invCol = m.cols.find(c => c.header.toLowerCase() === 'invoice no.');
-  const invToSrc = {};
-  for(const r of m.rows){ const inv=(r.c[invCol.i]||'').trim(); if(inv && !(inv in invToSrc)) invToSrc[inv]=r.src; }
+  const invToSrc = {}, srcType = {};
+  for(const r of m.rows){ const inv=(r.c[invCol.i]||'').trim(); if(inv && !(inv in invToSrc)) invToSrc[inv]=r.src; srcType[r.src]=r.type; }
 
   const removed = {}, added = {}, orphans = [], moves = {};
   let overall = 0;
   const restated = new Set();
   const delta = {};                                      // src -> paid delta (due moves opposite)
   const bump = (src, d) => { if(src != null) delta[src] = (delta[src]||0) + d; };
+
+  /* bucket attribution — split payments between the Vape (AIO) and Non-vape balances.
+     '__vape__'/'__nonvape__' shift the buckets at roll-up level only; a real invoice number
+     pays that invoice down (invoice-level, shows on its row) sourced from the OTHER bucket,
+     so the grand total stays conserved. payToInv holds those offsets. */
+  let netToVape = 0;
+  const payToInv = { vape: 0, nonvape: 0 };
+  for(const a of bucketEntries){
+    const amt = +a.amount;
+    if(a.invoice_no === '__vape__') netToVape += amt;
+    else if(a.invoice_no === '__nonvape__') netToVape -= amt;
+    else {
+      const src = a.invoice_no ? invToSrc[a.invoice_no.trim()] : undefined;
+      if(src == null){ orphans.push(a); continue; }
+      bump(src, +amt);                                   // pay this invoice down
+      if(isVape(srcType[src])) payToInv.vape += amt; else payToInv.nonvape += amt;
+    }
+  }
 
   for(const key in groups){
     const pm = metaByKey[key];
@@ -690,7 +705,7 @@ function computeAdjust(m, stateKey){
   for(const src in removed) bump(src, -removed[src].reduce((a,x)=>a+x.amt,0));
   for(const src in added)   bump(src, +added[src].reduce((a,x)=>a+x.amt,0));
   return { meta, metaByKey, groups, restated, removed, added, delta, overall, orphans, moves,
-           netToVape, bucketEntries };
+           netToVape, payToInv, bucketEntries };
 }
 
 /* open balance split into the Vape (AIO hardware) bucket and everything else, with the
@@ -698,14 +713,19 @@ function computeAdjust(m, stateKey){
 function bucketBalances(m, adj){
   const dueCol = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'due');
   const nydCol = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'not yet due');
-  let vape = 0, nonvape = 0;
+  let vape = 0, nonvape = 0, vapeSheet0 = 0, nonvapeSheet0 = 0;
   for(const r of m.rows){
-    const open = (dueCol ? (money(r.c[dueCol.i])||0) : 0) - (adj.delta[r.src]||0)
-               + (nydCol ? (money(r.c[nydCol.i])||0) : 0);
-    if(isVape(r.type)) vape += open; else nonvape += open;
+    const sheetOpen = (dueCol ? (money(r.c[dueCol.i])||0) : 0) + (nydCol ? (money(r.c[nydCol.i])||0) : 0);
+    const open = sheetOpen - (adj.delta[r.src]||0);
+    if(isVape(r.type)){ vape += open; vapeSheet0 += sheetOpen; } else { nonvape += open; nonvapeSheet0 += sheetOpen; }
   }
-  return { vape: vape - adj.netToVape, nonvape: nonvape + adj.netToVape,
-           vapeSheet: vape, nonvapeSheet: nonvape, netToVape: adj.netToVape };
+  const p = adj.payToInv || {vape:0, nonvape:0};
+  // a bucket-pay to an invoice already dropped that invoice's `open` (via delta); the offset
+  // rides on the OPPOSITE bucket so the two balances still sum to the true total
+  return { vape: vape - adj.netToVape + p.nonvape,
+           nonvape: nonvape + adj.netToVape + p.vape,
+           vapeSheet: vapeSheet0, nonvapeSheet: nonvapeSheet0,
+           netToVape: adj.netToVape, payToInv: p };
 }
 
 /* ---------- Supabase I/O ---------- */
@@ -983,8 +1003,11 @@ function renderOverview(){
   const t = {};
   for(const k of ['ca','ny']){
     const m = state.data[k], s = stateTotals(m), adj = computeAdjust(m, k);
+    const payTotal = (adj.payToInv.vape || 0) + (adj.payToInv.nonvape || 0);
     const dSum = Object.values(adj.delta).reduce((a,d)=>a+d,0);
-    s.adjDue = s.due - dSum; s.adjPaid = s.paid + dSum;
+    // a bucket-pay reduces an invoice's due but its offset rides the opposite bucket, so add
+    // payTotal back into the state total — the reallocation conserves total due
+    s.adjDue = s.due - dSum + payTotal; s.adjPaid = s.paid + dSum - payTotal;
     s.overall = adj.overall; s.hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005;
     const b = bucketBalances(m, adj);
     s.vape = b.vape; s.nonvape = b.nonvape; s.vapeSheet = b.vapeSheet; s.nonvapeSheet = b.nonvapeSheet;
@@ -1039,7 +1062,7 @@ function renderOverview(){
 
   /* Vape vs Non-vape open balance (scope-aware), reflecting payment attributions */
   const bs = scope === 'all' ? g : t[scope];
-  const shifted = Math.abs(bs.netToVape) > 0.005;
+  const shifted = Math.abs((bs.vapeSheet||0) - (bs.vape||0)) > 0.005;
   const bsub = (v, sheet) => shifted ? `<div class="sub">sheet: ${fmtUSD(sheet)}</div>` : '';
   const bucketCards =
     `<div class="cards" style="padding:0 0 14px">` +
@@ -1049,8 +1072,8 @@ function renderOverview(){
       `<div class="val">${fmtUSD(bs.nonvape)}</div>${bsub(bs.nonvape, bs.nonvapeSheet)}</div>` +
     `</div>` +
     (shifted ? `<div style="padding:0 2px 12px;font-size:11.5px;color:var(--faint)">` +
-      `${fmtUSD(Math.abs(bs.netToVape))} of payments attributed ${bs.netToVape>0?'to vapes':'to non-vape'} in this app · ` +
-      `manage on the CA/NY page → 💸 Payments → “Attribute to a bucket”.</div>` : '');
+      `${fmtUSD((bs.vapeSheet||0) - (bs.vape||0))} of payments attributed to vapes in this app · ` +
+      `manage on the CA/NY page → 💸 Payments → “Attribute payments”.</div>` : '');
 
   cardsEl.innerHTML = bucketCards +
     `<div class="tblbox">` +
@@ -1085,8 +1108,14 @@ function render(){
   const sum = col => col ? rows.reduce((a,r)=>a+(money(r.c[col.i])||0),0) : null;
   const sumAdj = (col, sign) => col ? rows.reduce((a,r)=>a+(money(r.c[col.i])||0)+sign*(adj.delta[r.src]||0),0) : null;
   const paidCol = findCol('paid to date'), dueCol = findCol('due'), nydCol = findCol('not yet due');
-  const dueVal = hasAdj ? sumAdj(dueCol, -1) : sum(dueCol);
   const nydVal = sum(nydCol);
+  // bucket-attribution offsets ride the OPPOSITE bucket from the invoice they paid, so add
+  // them back for whichever buckets the filtered rows represent (keeps the total conserved
+  // unfiltered, and shows the true vape/non-vape total when filtered to one)
+  const hasVapeRow = rows.some(r => isVape(r.type)), hasNonvapeRow = rows.some(r => !isVape(r.type));
+  const bucketOffset = (hasVapeRow ? (adj.payToInv.nonvape - adj.netToVape) : 0)
+                     + (hasNonvapeRow ? (adj.payToInv.vape + adj.netToVape) : 0);
+  const dueVal = hasAdj ? sumAdj(dueCol, -1) + bucketOffset : sum(dueCol);
   const cardDefs = [
     { lbl:'Orders' + (f.q||f.st.size||f.ty.size?' (filtered)':''), val: rows.length, cls:'' },
     { lbl:'Open balance', val: (dueVal??0) + (nydVal??0), sheet: hasAdj ? (sum(dueCol)??0)+(nydVal??0) : null, cls:'', usd:true },
@@ -1419,8 +1448,13 @@ function renderPayPanel(m, adj){
 
   /* bucket attribution — split payments between the Vape and Non-vape balances */
   const bb = bucketBalances(m, adj);
+  const bLabel = a => {
+    if(a.invoice_no === '__vape__') return '→ Vapes balance';
+    if(a.invoice_no === '__nonvape__') return '→ Non-vape balance';
+    return `→ ${esc(a.invoice_no)}`;                    // paid a specific invoice down
+  };
   const bucketRows = (adj.bucketEntries||[]).map(a =>
-    `<div class="entry"><span><b>${a.invoice_no==='__vape__'?'→ Vapes':'→ Non-vape'}</b>` +
+    `<div class="entry"><span><b>${bLabel(a)}</b>` +
     (a.note?` <span class="note">· ${esc(a.note)}</span>`:'') + `</span>` +
     `<span class="amt">${fmtUSD(+a.amount)}</span>` +
     `<button class="del" data-del="${a.id}" title="Remove">✕</button></div>`).join('');
@@ -1435,10 +1469,11 @@ function renderPayPanel(m, adj){
       `<span class="faint" style="font-size:12px">Attribute</span>` +
       `<input class="amt" placeholder="Amount" inputmode="decimal" data-f="amt">` +
       `<span class="faint" style="font-size:12px">of payments to</span>` +
-      `<select class="src" data-f="bucket"><option value="__vape__">💨 Vapes</option><option value="__nonvape__">Non-vape</option></select>` +
-      `<input class="nt" placeholder="Note (e.g. INV-1786)" data-f="nt">` +
+      `<select class="src" data-f="bucket"><option value="__vape__">💨 Vapes balance</option><option value="__nonvape__">Non-vape balance</option><option value="__inv__">a specific invoice…</option></select>` +
+      `<input class="inv" list="invList" placeholder="Invoice (if chosen)" data-f="inv" style="display:none">` +
+      `<input class="nt" placeholder="Note (optional)" data-f="nt">` +
       `<button class="btn primary" data-bucket="1" style="padding:6px 12px;font-size:12.5px">Attribute</button>` +
-      `<span class="hint">Shifts that amount of payment credit between the two balances (Vape ⇄ Non-vape). Totals stay the same; only which bucket is considered paid changes. Use this when a wire really paid for vape hardware but the sheet spread it across other invoices.</span>` +
+      `<span class="hint">Moves that amount of payment credit toward vapes (from non-vape). Pick “a specific invoice” to pay one invoice down so it shows on its row (e.g. INV-1937); otherwise it adjusts the Vape/Non-vape totals only. Either way the grand total is unchanged — the sheet isn’t touched.</span>` +
     `</div></div>`;
 
   panel.style.display = '';
@@ -1470,6 +1505,11 @@ function renderPayPanel(m, adj){
     if(inv && !invoices.includes(inv) && !confirm(`"${inv}" doesn't match any invoice on this page — save anyway?`)) return;
     ascAdd({ state: stateKey, payment_key: b.dataset.add, mode:'replace', invoice_no: inv || null, amount: amt, note: nt || null });
   }));
+  panel.querySelectorAll('[data-f=bucket]').forEach(sel => sel.addEventListener('change', e => {
+    const inv = sel.closest('.addform').querySelector('[data-f=inv]');
+    inv.style.display = sel.value === '__inv__' ? '' : 'none';
+    if(sel.value === '__inv__') inv.focus();
+  }));
   panel.querySelectorAll('[data-bucket]').forEach(b => b.addEventListener('click', e => {
     e.stopPropagation();
     const form = b.closest('.addform');
@@ -1477,8 +1517,14 @@ function renderPayPanel(m, adj){
     const bucket = form.querySelector('[data-f=bucket]').value;
     const nt = form.querySelector('[data-f=nt]').value.trim();
     if(amt===null || amt<=0){ form.querySelector('[data-f=amt]').focus(); return; }
+    let target = bucket;
+    if(bucket === '__inv__'){
+      target = form.querySelector('[data-f=inv]').value.trim();
+      if(!target){ form.querySelector('[data-f=inv]').focus(); return; }
+      if(!invoices.includes(target) && !confirm(`"${target}" doesn't match any invoice on this page — save anyway?`)) return;
+    }
     ascAdd({ state: stateKey, payment_key: '__bucket__', mode:'bucket',
-             invoice_no: bucket, amount: amt, note: nt || null });
+             invoice_no: target, amount: amt, note: nt || null });
   }));
   panel.querySelectorAll('[data-move]').forEach(b => b.addEventListener('click', e => {
     e.stopPropagation();
