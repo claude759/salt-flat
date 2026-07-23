@@ -1223,12 +1223,6 @@ function render(){
 
   const stickyCls = idx => idx===0 ? 'sticky s1' : idx===1 ? 'sticky s2' : '';
 
-  const thead = '<tr>' + m.cols.map((c,idx) => {
-    const parts = c.header.split('\n');
-    const label = esc(parts[0]) + parts.slice(1).map(p=>`<span class="hsub">${esc(p)}</span>`).join('');
-    return `<th class="${c.num&&idx>1?'num ':''}${stickyCls(idx)}${c.virtual==='balance'?' balcell':''}">${label}</th>`;
-  }).join('') + '</tr>';
-
   const totalRows = m.totals.map(tr =>
     '<tr class="totals"><td class="sticky s1" colspan="2">Sheet totals</td>' + m.cols.slice(2).map(c => {
       const v = (tr[c.i]||'').trim();
@@ -1246,11 +1240,34 @@ function render(){
 
   const visible = new Set(rows.map(r => r.src));
   const anyFilter = !!(f.q || f.st.size || f.ty.size);
-  // a payment shows unfiltered, or when one of its (re-sliced) applications is in view —
-  // so with payments defaulted to Non-vape, no payment appears in the vape account
-  const events = ledger(m, adj, pdates).filter(ev => ev.kind === 'order'
-    ? visible.has(ev.r.src)
-    : (!anyFilter || ev.apps.concat(ev.superseded).some(a => visible.has(a.src)))).reverse();
+  const rawEvents = ledger(m, adj, pdates);
+  const orderEvts = rawEvents.filter(ev => ev.kind === 'order' && visible.has(ev.r.src));
+  // "vape account" view: filtered so only vape invoices show. Render it as a statement —
+  // invoices are charges, bucket attributions to vapes are payments, balance = vape account.
+  const vapeView = anyFilter && orderEvts.length > 0 && orderEvts.every(ev => isVape(ev.r.type));
+  let events, balField = 'bal';
+  if(vapeView){
+    const bucketpays = state.asc
+      .filter(a => a.state === state.page && a.mode === 'bucket' && a.invoice_no === '__vape__')
+      .map(a => ({ kind:'bucketpay', key:'B'+a.id, date: Date.now(), amt: -(+a.amount), note:a.note }));
+    const combined = [...orderEvts, ...bucketpays].sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
+    let run = 0; combined.forEach(ev => { run += ev.amt; ev.vbal = run; });
+    events = combined.reverse();
+    balField = 'vbal';
+  } else {
+    // a payment shows unfiltered, or when one of its (re-sliced) applications is in view —
+    // so with payments defaulted to Non-vape, no payment appears in the vape account
+    events = rawEvents.filter(ev => ev.kind === 'order'
+      ? visible.has(ev.r.src)
+      : (!anyFilter || ev.apps.concat(ev.superseded).some(a => visible.has(a.src)))).reverse();
+  }
+
+  const thead = '<tr>' + m.cols.map((c,idx) => {
+    let parts = c.header.split('\n');
+    if(c.virtual === 'balance' && vapeView) parts = ['Balance', 'vape account'];
+    const label = esc(parts[0]) + parts.slice(1).map(p=>`<span class="hsub">${esc(p)}</span>`).join('');
+    return `<th class="${c.num&&idx>1?'num ':''}${stickyCls(idx)}${c.virtual==='balance'?' balcell':''}">${label}</th>`;
+  }).join('') + '</tr>';
 
   const open = state.expanded[state.page];
   const payOpen = state.ledgerPay[state.page];
@@ -1267,7 +1284,7 @@ function render(){
         let cell = esc(v);
         if(c.virtual === 'type') cell = r.type ? tyChip(r.type) : '';
         else if(c.virtual === 'amount') cell = totCol ? fmtUSD(money(r.c[totCol.i])||0) : '';
-        else if(c.virtual === 'balance') cell = ev.bal == null ? '' : fmtUSD(ev.bal);
+        else if(c.virtual === 'balance') cell = ev[balField] == null ? '' : fmtUSD(ev[balField]);
         if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
         if(delta && (c===paidCol || c===dueCol)){
           const sheetVal = money(v) || 0;
@@ -1290,6 +1307,19 @@ function render(){
         return `<td${cls?` class="${cls}"`:''}>${cell}</td>`;
       }).join('') + '</tr>';
       if(isOpen) body += `<tr class="detail"><td colspan="${nCols}">${detailHtml(m, r, adj)}</td></tr>`;
+      continue;
+    }
+
+    if(ev.kind === 'bucketpay'){
+      // a payment reallocated onto the vape account (shown only in the vape statement)
+      const dt = new Date(ev.date);
+      body += `<tr class="pay app">` +
+        `<td class="sticky s1">${dt.getMonth()+1}/${dt.getDate()}/${dt.getFullYear()}</td>` +
+        `<td class="sticky s2">↳ payment toward vapes</td>` +
+        `<td class="num pay-amt">−${fmtUSD(-ev.amt)}</td>` +
+        `<td class="num balcell">${fmtUSD(ev.vbal)}</td>` +
+        (restCols ? `<td colspan="${restCols}">${esc(ev.note || 'reallocated toward vapes')}</td>` : '') +
+        '</tr>';
       continue;
     }
 
