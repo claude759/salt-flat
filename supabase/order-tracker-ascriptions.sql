@@ -7,8 +7,12 @@
 --   mode='replace' restate a whole wire: drop its sheet split, rebuild from entries
 --                  (invoice_no NULL = overall slice; remainder → overall balance).
 --   mode='bucket'  attribute `amount` of payments to a balance bucket:
---                  invoice_no '__vape__' or '__nonvape__' (payment_key '__bucket__').
---                  Shifts open balance between the Vape (AIO) and Non-vape buckets.
+--                  invoice_no '__vape__'/'__nonvape__' shifts the Vape/Non-vape buckets at
+--                  roll-up level; a REAL invoice_no pays that invoice down (invoice-level),
+--                  offset riding the opposite bucket so the grand total is conserved.
+--   mode='config'  a global setting (payment_key '__config__'). invoice_no='default_nonvape'
+--                  = treat every payment as paying Non-vape: un-credit each vape (AIO) invoice's
+--                  sheet payment so vape hardware shows its full amount owed until attributed.
 --
 -- Access: same anon-open pattern as ny_credits (internal click-to-edit tool).
 
@@ -19,7 +23,7 @@ create table if not exists public.order_payment_ascriptions (
   invoice_no     text,                 -- target invoice; NULL overall slice; '__vape__'/'__nonvape__' for bucket mode
   amount         numeric not null default 0 check (amount >= 0),
   note           text,
-  mode           text not null default 'replace' check (mode in ('replace','move','bucket')),
+  mode           text not null default 'replace' check (mode in ('replace','move','bucket','config')),
   source_invoice text,                 -- move mode: the invoice the amount is taken off
   created_at     timestamptz not null default now()
 );
