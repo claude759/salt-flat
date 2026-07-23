@@ -220,6 +220,8 @@
   .restate-box summary{font-size:12px;color:var(--faint);cursor:pointer;user-select:none;padding:2px 0}
   .restate-box summary:hover{color:var(--muted)}
   .restate-box[open] summary{color:var(--muted);margin-bottom:4px}
+  .dflt{display:flex;align-items:baseline;gap:7px;font-size:12.5px;padding:8px 0;cursor:pointer;flex-wrap:wrap}
+  .dflt input{margin:0;position:relative;top:1px}
   .addform .hint{flex-basis:100%;font-size:11px;color:var(--faint)}
 
   /* re-ascribed / app payment sub-rows */
@@ -634,9 +636,11 @@ function computeAdjust(m, stateKey){
   const groups = {};
   const bucketEntries = [];
   for(const a of state.asc) if(a.state === stateKey){
+    if(a.mode === 'config') continue;                  // global settings, handled below
     if(a.mode === 'bucket') bucketEntries.push(a);
     else (groups[a.payment_key] ??= []).push(a);
   }
+  const defaultNonvape = state.asc.some(a => a.mode === 'config' && a.invoice_no === 'default_nonvape');
   const meta = paymentsMeta(m);
   const metaByKey = Object.fromEntries(meta.map(p=>[p.key, p]));
   const invCol = m.cols.find(c => c.header.toLowerCase() === 'invoice no.');
@@ -664,6 +668,22 @@ function computeAdjust(m, stateKey){
       if(src == null){ orphans.push(a); continue; }
       bump(src, +amt);                                   // pay this invoice down
       if(isVape(srcType[src])) payToInv.vape += amt; else payToInv.nonvape += amt;
+    }
+  }
+
+  /* default: treat every payment as paying Non-vape — un-credit each vape invoice's sheet
+     payment so vape hardware shows its FULL amount owed until a payment is attributed to it.
+     Reuses the payToInv machinery (a negative pay to vape), so the grand total is conserved. */
+  if(defaultNonvape){
+    const totC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'total including freight');
+    const dueC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'due');
+    const nydC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'not yet due');
+    for(const r of m.rows){
+      if(!isVape(r.type)) continue;
+      const tot = totC ? (money(r.c[totC.i])||0) : 0;
+      const open = (dueC ? (money(r.c[dueC.i])||0) : 0) + (nydC ? (money(r.c[nydC.i])||0) : 0);
+      const paid = tot - open;                           // the sheet's payment on this vape invoice
+      if(paid > 0.005){ bump(r.src, -paid); payToInv.vape -= paid; }   // explicit attributions still add on top
     }
   }
 
@@ -1458,12 +1478,16 @@ function renderPayPanel(m, adj){
     (a.note?` <span class="note">· ${esc(a.note)}</span>`:'') + `</span>` +
     `<span class="amt">${fmtUSD(+a.amount)}</span>` +
     `<button class="del" data-del="${a.id}" title="Remove">✕</button></div>`).join('');
+  const defaultNonvape = state.asc.some(a => a.mode === 'config' && a.invoice_no === 'default_nonvape');
   const bucketPanel = `<div class="panel" style="margin-bottom:10px">` +
     `<div class="ptitle">Attribute payments — Vapes vs Non-vape · ${stateKey.toUpperCase()}</div>` +
     `<div class="mrow" style="margin-bottom:10px">` +
       `<div class="mitem"><div class="fl">💨 Vape balance</div><div class="fv" style="color:var(--accent2)">${fmtUSD(bb.vape)}</div></div>` +
       `<div class="mitem"><div class="fl">Non-vape balance</div><div class="fv">${fmtUSD(bb.nonvape)}</div></div>` +
     `</div>` +
+    `<label class="dflt"><input type="checkbox" id="dfltNonvape"${defaultNonvape?' checked':''}> ` +
+      `Attribute all payments to <b>Non-vape</b> by default ` +
+      `<span class="faint">— vape (AIO) invoices show their full amount owed until you attribute a payment to them</span></label>` +
     bucketRows +
     `<div class="addform" data-mode="bucket">` +
       `<span class="faint" style="font-size:12px">Attribute</span>` +
@@ -1505,6 +1529,16 @@ function renderPayPanel(m, adj){
     if(inv && !invoices.includes(inv) && !confirm(`"${inv}" doesn't match any invoice on this page — save anyway?`)) return;
     ascAdd({ state: stateKey, payment_key: b.dataset.add, mode:'replace', invoice_no: inv || null, amount: amt, note: nt || null });
   }));
+  const dflt = panel.querySelector('#dfltNonvape');
+  if(dflt) dflt.addEventListener('change', () => {
+    if(dflt.checked)
+      ascAdd({ state:'ca', payment_key:'__config__', mode:'config', invoice_no:'default_nonvape', amount:1,
+               note:'all payments default to non-vape' });
+    else {
+      const cfg = state.asc.find(a => a.mode==='config' && a.invoice_no==='default_nonvape');
+      if(cfg) ascDel(cfg.id);
+    }
+  });
   panel.querySelectorAll('[data-f=bucket]').forEach(sel => sel.addEventListener('change', e => {
     const inv = sel.closest('.addform').querySelector('[data-f=inv]');
     inv.style.display = sel.value === '__inv__' ? '' : 'none';
