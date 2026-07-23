@@ -599,9 +599,21 @@ function ledger(m, adj, pdates){
     }
     for(const e of adj.added[r.src] || []) wire(e.key).apps.push(app(e.amt, e.note));
   }
+  // when payments default to Non-vape, a wire's payment to a vape invoice is treated as
+  // paying Non-vape instead — so vape invoices show their full balance and NO payment
+  // appears against them. The wire total is unchanged; the vape slice is shown as one
+  // "moved to Non-vape" line and no longer counts as a vape application.
+  const defaultNonvape = state.asc.some(a => a.mode === 'config' && a.invoice_no === 'default_nonvape');
+  const reslice = list => {
+    if(!defaultNonvape) return list;
+    const keep = list.filter(a => !isVape(a.r.type));
+    const vapeAmt = list.filter(a => isVape(a.r.type)).reduce((s,a)=>s+a.amt, 0);
+    if(vapeAmt > 0.005) keep.push({ r:null, src:null, amt:vapeAmt, note:'', inv:'→ Non-vape (was vape)', desc:'' });
+    return keep;
+  };
   for(const w of wires.values())
     evs.push({ kind:'pay', payKey:w.key, key:'P'+w.key, date:(pdates[w.key]||{}).ts,
-               amt: -w.apps.reduce((a,x)=>a+x.amt,0), apps:w.apps, superseded:w.superseded,
+               amt: -w.apps.reduce((a,x)=>a+x.amt,0), apps:reslice(w.apps), superseded:reslice(w.superseded),
                re: adj.restated.has(w.key) });
 
   evs.sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
@@ -1233,9 +1245,12 @@ function render(){
   const dateOf = key => (pdates[key] || {});
 
   const visible = new Set(rows.map(r => r.src));
+  const anyFilter = !!(f.q || f.st.size || f.ty.size);
+  // a payment shows unfiltered, or when one of its (re-sliced) applications is in view —
+  // so with payments defaulted to Non-vape, no payment appears in the vape account
   const events = ledger(m, adj, pdates).filter(ev => ev.kind === 'order'
     ? visible.has(ev.r.src)
-    : ev.apps.concat(ev.superseded).some(a => visible.has(a.src))).reverse();
+    : (!anyFilter || ev.apps.concat(ev.superseded).some(a => visible.has(a.src)))).reverse();
 
   const open = state.expanded[state.page];
   const payOpen = state.ledgerPay[state.page];
