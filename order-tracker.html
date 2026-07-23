@@ -953,17 +953,35 @@ function categoryReport(scope){
     }
   }
   const list = [...cats.values()].map(c => ({ ...c, open: c.due + c.nyd }));
+
+  // Vapes is its own account with a payment system — override its line to the vape
+  // BALANCE (which the bucket attributions live at), and reconcile the difference (the
+  // payments re-ascribed to vapes, owed on non-vape but not tied to a category).
+  let vapeBal = 0, stateOpen = 0, vapeShifted = false;
+  for(const k of keys){
+    const m = state.data[k]; if(!m) continue;
+    const adj = computeAdjust(m, k), b = bucketBalances(m, adj), st = stateTotals(m);
+    vapeBal += b.vape; stateOpen += st.due + st.nyd;
+    if(Math.abs(b.vapeSheet - b.vape) > 0.005) vapeShifted = true;
+  }
+  const vapeCat = list.find(c => c.type === VAPE_TYPE);
+  if(vapeCat && vapeShifted){ vapeCat.open = vapeBal; vapeCat.due = vapeBal - vapeCat.nyd; vapeCat.adjusted = true; }
+
   list.forEach(c => c.rows.sort((a,b) => b.open - a.open || b.due - a.due));
   list.sort((a,b) => b.open - a.open || b.n - a.n || a.type.localeCompare(b.type));
-  return list;
+  const reconcile = stateOpen - list.reduce((a,c) => a + c.open, 0);
+  return { list, reconcile };
 }
 
 function catReportHtml(scope){
-  const list = categoryReport(scope);
+  const { list, reconcile } = categoryReport(scope);
   if(!list.length) return '';
   const tot = list.reduce((a,c)=>({n:a.n+c.n, due:a.due+c.due, nyd:a.nyd+c.nyd, open:a.open+c.open}),
                           {n:0,due:0,nyd:0,open:0});
+  const hasRec = Math.abs(reconcile) > 0.005;
+  if(hasRec){ tot.open += reconcile; tot.due += reconcile; }
   const showState = scope === 'all';
+  const adjMark = '<span class="adjmark" title="the Vapes account balance, after payment attributions (see the Payments panel)">✱</span>';
 
   let rows = '';
   for(const c of list){
@@ -971,11 +989,13 @@ function catReportHtml(scope){
     rows += `<tr class="prow" data-cat="${esc(c.type)}">` +
       `<td>${tyChip(c.type)}</td>` +
       `<td class="num">${c.n}</td>` +
-      `<td class="num"><b>${fmtUSD(c.open)}</b></td>` +
+      `<td class="num"><b>${fmtUSD(c.open)}</b>${c.adjusted?adjMark:''}</td>` +
       `<td class="num" style="color:var(--orange)">${fmtUSD(c.due)}</td>` +
       `<td class="num" style="color:var(--blue)">${fmtUSD(c.nyd)}</td>` +
       `<td class="num faint">${isOpen?'▾':'▸'}</td></tr>`;
     if(!isOpen) continue;
+    if(c.adjusted) rows += `<tr class="catx"><td colspan="6"><div class="nolink" style="padding:2px 0">` +
+      `Invoices below are the full vape charges; the ${fmtUSD(c.open)} balance is after the payments attributed to vapes (shown as a statement on the CA page → filter Vapes).</div></td></tr>`;
     rows += `<tr class="catx"><td colspan="6">` +
       `<div class="catbtns"><span class="lbl">${c.n} order${c.n===1?'':'s'} · click one to open it</span>` +
       [...c.states].map(k => `<button class="btn" style="padding:3px 10px;font-size:11.5px" ` +
@@ -999,6 +1019,11 @@ function catReportHtml(scope){
     `<div style="overflow-x:auto"><table class="payTbl"><thead><tr><th>Category</th><th class="num">Orders</th>` +
     `<th class="num">Open balance</th><th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
     rows +
+    (hasRec ? `<tr class="prow" style="cursor:default"><td colspan="2"><span class="faint">Payments re-ascribed to vapes</span>` +
+        `<span class="psub">owed on non-vape, not tied to a category</span></td>` +
+        `<td class="num"><b>${fmtUSD(reconcile)}</b></td>` +
+        `<td class="num" style="color:var(--orange)">${fmtUSD(reconcile)}</td>` +
+        `<td class="num" style="color:var(--blue)">${fmtUSD(0)}</td><td></td></tr>` : '') +
     `<tr class="grand"><td><b>Total</b></td><td class="num">${tot.n}</td><td class="num"><b>${fmtUSD(tot.open)}</b></td>` +
     `<td class="num">${fmtUSD(tot.due)}</td><td class="num">${fmtUSD(tot.nyd)}</td><td></td></tr>` +
     `</tbody></table></div></div>`;
