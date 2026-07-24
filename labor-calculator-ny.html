@@ -317,7 +317,22 @@
   .login-spin{color:var(--faint);font-size:13px;padding:11px}
   .login-err{color:var(--red);font-size:12.5px;margin-top:14px;min-height:16px;line-height:1.4}
   .login-note{color:var(--faint);font-size:12px;margin-top:22px;line-height:1.5}
-  .login-note b{color:var(--muted)}  #ts-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .login-note b{color:var(--muted)}
+  .ts-drop{border:2px dashed var(--line);border-radius:14px;background:var(--panel);text-align:center;
+    padding:26px 16px;margin-bottom:14px;cursor:pointer;transition:border-color .15s, background .15s}
+  .ts-drop:hover,.ts-drop.hot{border-color:var(--accent);background:var(--panel2)}
+  .ts-drop .big{font-size:16px;font-weight:650}
+  .ts-drop .small{color:var(--muted);font-size:12.5px;margin-top:4px}
+  .ts-drop .loading{color:var(--muted);font-size:14px;padding:8px}
+  #photo-choose{position:fixed;inset:0;background:rgba(8,10,14,.62);display:flex;align-items:center;justify-content:center;z-index:90}
+  #photo-choose[hidden]{display:none}
+  #photo-choose .pc-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 18px 12px;width:min(320px,86vw);text-align:center;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+  #photo-choose h4{margin:0 0 12px;font-size:15px;color:var(--text)}
+  #photo-choose button.pc-opt{display:block;width:100%;margin:8px 0;padding:14px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:12px;color:var(--text);font:inherit;font-size:15px;cursor:pointer}
+  #photo-choose button.pc-opt:hover{border-color:var(--accent)}
+  #photo-choose button.pc-cancel{background:none;border:0;color:var(--muted);font:inherit;font-size:13px;margin-top:4px;padding:8px;cursor:pointer}
+  #ts-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
   .ts-toolbar{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:12px}
   .ts-filters{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;flex:1}
   .ts-actions{display:flex;gap:8px}
@@ -545,6 +560,12 @@
   <!-- ============ Timesheets (embeds the Distro Hours app) ============ -->
   <div id="view-timesheets" hidden>
     <div class="seg" id="ts-catseg" style="margin-bottom:12px"></div>
+    <div class="ts-drop" id="ts-drop">
+      <div class="big">📸 Upload a shift photo</div>
+      <div class="small">for anyone not on Gusto — Claude reads the rows, you review, then save.</div>
+      <input type="file" id="ts-photo" accept="image/*" hidden>
+      <input type="file" id="ts-photo-cam" accept="image/*" capture="environment" hidden>
+    </div>
     <div id="ts-review"></div>
     <div id="ts-roster" hidden></div>
     <div id="ts-compare" hidden></div>
@@ -567,6 +588,13 @@
 
 <div id="drop"><div class="box">Drop a sheet export to update the data<div class="sub">Labor / Packaging Units export — .xlsx or .csv (imports into the shared data)</div></div></div>
 
+<!-- tap-to-add photo chooser: camera or photo library (esp. for phones) -->
+<div id="photo-choose" hidden><div class="pc-card">
+  <h4>Add a photo</h4>
+  <button class="pc-opt" id="pc-snap">📷&nbsp; Snap a pic</button>
+  <button class="pc-opt" id="pc-upload">🖼️&nbsp; Upload a pic</button>
+  <button class="pc-cancel" id="pc-cancel">Cancel</button>
+</div></div>
 <div id="toast"></div>
 
 <script>
@@ -873,6 +901,7 @@ function renderTimesheets(){
   renderTsCatseg();
   const isRoster = tsState.category === 'roster', isCompare = tsState.category === 'compare';
   const hideMain = isRoster || isCompare;
+  document.getElementById('ts-drop').style.display = hideMain ? 'none' : '';
   document.getElementById('ts-review').style.display = hideMain ? 'none' : '';
   document.getElementById('ts-card').style.display = hideMain ? 'none' : '';
   document.getElementById('ts-roster').hidden = !isRoster;
@@ -891,6 +920,11 @@ function renderTsCatseg(){
     tsState.category = b.dataset.cat;
     saveTsView(); renderTimesheets();
   });
+  const drop = document.getElementById('ts-drop');
+  if (drop){
+    drop.querySelector('.big').textContent = '📸 Upload a shift photo';
+    drop.querySelector('.small').textContent = 'Gusto fills the crew’s hours automatically — upload a photo here for anyone not on Gusto. Claude reads it, you review, then save.';
+  }
 }
 /* ---- Roster page: manage the NY crew (ny_roster) ----
    Names auto-fill timesheet rows; aliases catch OCR misreadings; rate/team/
@@ -1490,6 +1524,35 @@ function tsTotbar(items){
 }
 
 /* ---- the four views -------------------------------------------------------- */
+// Uploaded (photo) hours are for people NOT on Gusto, so they normally sit apart
+// from the import. But if two rows for the SAME person on the SAME day overlap in
+// clock time — an upload duplicating a Gusto shift, say — that day would be paid
+// twice. Flag those rows and offer keep-both (sets overlap_ok, like the old app).
+function distroOverlaps(rows){
+  const flagged = new Set(), byDate = new Map(), byPerson = new Map();
+  for (const s of rows){
+    if (s.overlap_ok) continue;
+    const a = toMin(s.clock_in), b0 = toMin(s.clock_out);
+    if (a == null || b0 == null) continue;          // punchless rows (paid leave) can't double a shift
+    const b = b0 < a ? b0 + 1440 : b0;
+    const key = ((s.last||'')+'|'+(s.first||'')).toLowerCase().trim() + '@' + (s.work_date||'');
+    if (!byPerson.has(key)) byPerson.set(key, []);
+    byPerson.get(key).push({ s, a, b });
+  }
+  for (const list of byPerson.values()){
+    if (list.length < 2) continue;
+    const involved = new Set();
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++)
+      if (list[i].a < list[j].b && list[j].a < list[i].b){ involved.add(list[i].s); involved.add(list[j].s); }
+    if (!involved.size) continue;
+    const arr = [...involved]; arr.forEach(s => flagged.add(s.id));
+    const date = arr[0].work_date || '';
+    const mixed = new Set(arr.map(s => s.source === 'import' ? 'g' : 'u')).size > 1;
+    if (!byDate.has(date)) byDate.set(date, []);
+    byDate.get(date).push({ name: tsFullName(arr[0]) || 'Someone', ids: arr.map(s => s.id), mixed });
+  }
+  return { flagged, byDate };
+}
 function renderTsLog(){
   const vb = document.getElementById('ts-viewbar'); if (vb) vb.innerHTML = '';
   if (tsState.category !== 'harvest'){
@@ -1502,6 +1565,11 @@ function renderTsLog(){
     if (x!==y) return x<y?1:-1;
     return (a.id<b.id?-1:1);
   });
+  const { flagged: overlapIds, byDate: overlapByDate } = distroOverlaps(rows);
+  const warnRow = w => '<tr class="warnrow"><td colspan="'+NC+'">⚠ ' + esc(w.name)
+    + ' has overlapping hours on this day' + (w.mixed ? ' (uploaded + Gusto)' : '')
+    + ' — delete one so it isn’t counted twice, or '
+    + '<button class="pbtn warndismiss" data-ids="'+esc(w.ids.join(','))+'">keep both</button></td></tr>';
   let th=0, tt=0; for (const s of rows){ th += +s.hours||0; tt += +s.total||0; }
   tsTotbar([['Rows', rows.length], ['Total hours', tsNum(th)], ['Gross pay', tsMoney(tt), 'sum']]);
   const tbl = document.getElementById('tsTable');
@@ -1530,6 +1598,7 @@ function renderTsLog(){
     const picBtns = pics.map(p => ' <img class="pthumb" data-path="'+esc(p)+'" title="View the uploaded sheet" src="'+TS_THUMB_PLACEHOLDER+'">').join('');
     body += '<tr class="datehead"><td colspan="'+NC+'">'+groupHead(d)+picBtns
       + ' <button class="pbtn gadd" data-key="'+esc(d)+'" title="Add a blank row to this day">+ row</button></td></tr>';
+    for (const w of (overlapByDate.get(d) || [])) body += warnRow(w);
     body += colHead;
     for (const s of es){
       gh += (+s.hours||0)*(isH?(+s.people||1):1); gt += (+s.total||0);
@@ -1540,7 +1609,7 @@ function renderTsLog(){
       // company and team still ride along on the row (the Gusto import writes the job it
       // was worked under into team) — they're just not columns worth a one-company tracker
       const teamTd = isH ? '<td><input data-f="team" value="'+esc(s.team||'')+'" class="nm"></td>' : '';
-      body += '<tr data-id="'+s.id+'" class="'+carried.trim()+'" title="'+rowTitle+'">'
+      body += '<tr data-id="'+s.id+'" class="'+(carried.trim()+(overlapIds.has(s.id)?' overlap':'')).trim()+'" title="'+rowTitle+'">'
         + (isH ? '<td><select data-f="company">'+coOpts(s.company)+'</select></td>' : '')
         + '<td><input data-f="work_date" type="date" value="'+esc(s.work_date||'')+'" class="t"></td>'
         + '<td><input data-f="last" class="nm" value="'+esc(s.last||'')+'"></td>'
@@ -1704,6 +1773,25 @@ async function hydrateTsThumbs(){
    no dropzone, no camera/library chooser and no image paste. The reader itself
    (handleTsPhoto / openTsReview) is left in place, simply unreferenced. ---- */
 function wireTsShell(){
+  const drop = document.getElementById('ts-drop');
+  const fi = document.getElementById('ts-photo');
+  const fiCam = document.getElementById('ts-photo-cam');
+  const chooser = document.getElementById('photo-choose');
+  if (drop && fi && fiCam && chooser){
+    drop.onclick = showPhotoChooser;
+    // "Snap a pic" opens the camera (capture input); "Upload a pic" opens the photo
+    // library — both .click()s stay inside the tap's user-gesture so iOS honors them
+    document.getElementById('pc-snap').onclick = () => { chooser.hidden = true; fiCam.click(); };
+    document.getElementById('pc-upload').onclick = () => { chooser.hidden = true; fi.click(); };
+    document.getElementById('pc-cancel').onclick = () => { chooser.hidden = true; };
+    chooser.addEventListener('click', e => { if (e.target === chooser) chooser.hidden = true; });
+    fi.onchange = e => { if (e.target.files[0]) handleTsPhoto(e.target.files[0]); fi.value=''; };
+    fiCam.onchange = e => { if (e.target.files[0]) handleTsPhoto(e.target.files[0]); fiCam.value=''; };
+    ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('hot'); }));
+    ['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('hot'); }));
+    drop.addEventListener('drop', e => { const f=[...e.dataTransfer.files].find(f=>f.type.startsWith('image/')); if (f) handleTsPhoto(f); });
+  }
+
   document.getElementById('ts-addrow-top').onclick = () => addShiftRow();
   document.getElementById('ts-csv').onclick = () => exportShifts('csv');
   document.getElementById('ts-xlsx').onclick = () => exportShifts('xlsx');
@@ -1849,37 +1937,26 @@ async function exportShifts(kind){
 /* ---- photo → OCR → review → save ------------------------------------------ */
 async function handleTsPhoto(file){
   const drop = document.getElementById('ts-drop');
-  if (!drop) return;                    // NY has no dropzone — the reader is unreachable
-  const orig = drop.innerHTML;
-  drop.innerHTML = '<div class="loading">Reading “'+esc(file.name)+'” with Claude…</div>';
+  const orig = drop ? drop.innerHTML : '';
+  if (drop) drop.innerHTML = '<div class="loading">Reading “'+esc(file.name)+'” with Claude…</div>';
   try{
     const small = await shrinkImage(file, 2000);
     const path = crypto.randomUUID() + '.jpg';
     const up = await sb.storage.from('timesheets').upload(path, small, { contentType: 'image/jpeg' });
     if (up.error) throw new Error('upload failed: ' + up.error.message);
-    if (tsState.category === 'harvest'){
-      const { data: res, error: fnErr } = await sb.functions.invoke('parse-harvest', { body: { path } });
-      if (fnErr || !res || res.ok === false) throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read that photo — try a clearer one.');
-      if (!(res.rows||[]).length){ toast('No harvest entries found in that photo', true); return; }
-      openHarvestReview(res.rows, URL.createObjectURL(small), path);
-      return;
-    }
     const { data: res, error: fnErr } = await sb.functions.invoke('read-timesheet', { body: { path } });
     if (fnErr || !res || res.ok === false) throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read the sheet — try a clearer photo or add the rows manually.');
     if (!(res.rows||[]).length){ toast('No rows found on that sheet — try a clearer photo or add them manually', true); return; }
     openTsReview(res, URL.createObjectURL(small), path);
   }catch(err){ toast(err.message || 'Failed to read photo', true); }
-  finally{
-    drop.innerHTML = orig;
-    drop.onclick = showPhotoChooser;
-  }
+  finally{ if (drop){ drop.innerHTML = orig; drop.onclick = showPhotoChooser; } }
 }
 function showPhotoChooser(){
   const c = document.getElementById('photo-choose');
   if (c) c.hidden = false;              // NY has no chooser
 }
 function openTsReview(res, dataUrl, path){
-  const company = res.company || tsState.filter.company || '';
+  const company = res.company || SITE.defaultCompany;
   const counts = {}; (res.rows||[]).forEach(r => { if (r.date) counts[r.date]=(counts[r.date]||0)+1; });
   let sheetDate = res.sheet_date || todayISO(), best = 0;
   Object.keys(counts).forEach(d => { if (counts[d] > best){ best = counts[d]; sheetDate = d; } });
@@ -1887,7 +1964,7 @@ function openTsReview(res, dataUrl, path){
     const m = rosterMatch(r.last, r.first);
     return {
       include: true,
-      company: company || (m && m.default_company) || '',
+      company: company || (m && m.default_company) || SITE.defaultCompany,
       work_date: sheetDate,
       last: m ? m.last : (r.last||''), first: m ? m.first : (r.first||''),
       team: teamForName(m, r.last, r.first),
@@ -1978,7 +2055,7 @@ function drawTsReview(){
         work_date: r.work_date || rv.sheet_date, company: r.company || null,
         last: r.last || null, first: r.first || null, team: r.team || null,
         roster_id: r.roster_id || null, clock_in: r.clock_in || null, clock_out: r.clock_out || null,
-        break_minutes: r.break_minutes || 0, rate: r.rate == null ? 20 : r.rate,
+        break_minutes: r.break_minutes || 0, rate: r.rate == null ? 0 : r.rate,
         source: 'ocr', photo_path: rv.path || null,
       });
       if (ok) added++; else failed.push(r);
@@ -3490,29 +3567,50 @@ function toast(msg, isErr, onClick){
 }
 
 /* ================= data updating (drag-drop a .xlsx / .csv export) ================= */
-// Drag-drop routing. NY reads no photos, so a dropped file is only ever a
-// Labor/Packaging sheet export. Navigation is always blocked, so an off-target
-// drop can never replace the page with the file.
+// Drag-drop routing. On the Timesheets tab an image goes to the photo reader
+// (the dropzone lights up); everywhere else a dropped file is a Labor/Packaging
+// sheet export. Navigation is always blocked, so an off-target drop can never
+// replace the page with the file.
 const tsTabOpen = () => !document.getElementById('view-timesheets').hidden;
+const tsPhotoOK = () => tsState.category !== 'compare' && tsState.category !== 'roster';
 let dragDepth = 0;
 window.addEventListener('dragenter', e => {
   e.preventDefault(); dragDepth++;
-  if (tsTabOpen()) return;
+  if (tsTabOpen()){ const z = document.getElementById('ts-drop'); if (z) z.classList.add('hot'); return; }
   document.getElementById('drop').classList.add('on');
 });
 window.addEventListener('dragover', e => e.preventDefault());
 window.addEventListener('dragleave', e => {
   e.preventDefault();
-  if (--dragDepth <= 0){ dragDepth = 0; document.getElementById('drop').classList.remove('on'); }
+  if (--dragDepth <= 0){
+    dragDepth = 0;
+    document.getElementById('drop').classList.remove('on');
+    const z = document.getElementById('ts-drop'); if (z) z.classList.remove('hot');
+  }
 });
 window.addEventListener('drop', e => {
   e.preventDefault(); dragDepth = 0;
   document.getElementById('drop').classList.remove('on');
+  const z = document.getElementById('ts-drop'); if (z) z.classList.remove('hot');
   const f = e.dataTransfer.files[0];
-  if (!f || tsTabOpen()) return;
+  if (!f) return;
+  if (tsTabOpen()){
+    if (!tsPhotoOK()){ toast('Open the Hours page first, then drop the photo.', true); return; }
+    if (f.type.startsWith('image/')) handleTsPhoto(f);
+    else toast('Drop a photo of the sheet here (images only on this tab).', true);
+    return;
+  }
   loadFile(f);
 });
-// (NY reads no photos, so pasting a screenshot does nothing special)
+// pasting a screenshot (Ctrl/Cmd+V) works like dropping it onto the Hours page
+document.addEventListener('paste', e => {
+  const item = [...((e.clipboardData && e.clipboardData.items) || [])].find(it => it.type && it.type.startsWith('image/'));
+  if (!item) return;
+  const f = item.getAsFile(); if (!f) return;
+  if (!tsTabOpen()){ toast('Photos are read on the Timesheets tab — open Hours and paste again.', true); return; }
+  if (!tsPhotoOK()){ toast('Open the Hours page first, then paste the photo.', true); return; }
+  e.preventDefault(); handleTsPhoto(f);
+});
 
 async function loadFile(file){
   try{
