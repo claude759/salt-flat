@@ -6,7 +6,7 @@ import { caller, claudeVision, downloadImage, json, ownsPath, parseJsonLoose, pr
 
 // mirror EXPENSE_CATEGORIES in ba/index.html — a category outside the app's list
 // renders as an un-categorized "Other" row in every report
-const CATEGORIES = ["Travel/Parking/Tolls", "Meals", "Food for retailer", "Flights", "Lodging", "Displays", "Supplies", "Other"];
+const CATEGORIES = ["Travel/Parking/Tolls", "Meals", "Food for retailer", "Flights", "Lodging", "Displays", "Events", "Supplies", "Other"];
 const BUCKET = "receipts"; // pinned — never trust a client-supplied bucket
 
 Deno.serve(async (req) => {
@@ -30,7 +30,7 @@ Deno.serve(async (req) => {
 {"vendor": string|null, "total": number|null, "date": "YYYY-MM-DD"|null, "category": one of ${JSON.stringify(CATEGORIES)}}
 - "total" is the final amount paid (grand total incl. tax/tip), as a plain number.
 - "date" is the transaction date. If unreadable use null.
-- Pick the single best "category". Gas/fuel, parking, and toll receipts are all "Travel/Parking/Tolls". If unsure use "Other".`,
+- Pick the single best "category". Gas/fuel, parking, and toll receipts are all "Travel/Parking/Tolls". Booth/table/vendor fees, event tickets, and event-specific costs are "Events". If unsure use "Other".`,
     );
     const parsed = parseJsonLoose(text) ?? {};
     const total = typeof parsed.total === "number"
