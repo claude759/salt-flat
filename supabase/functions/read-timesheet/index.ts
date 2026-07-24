@@ -23,22 +23,26 @@ const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const BUCKET = "timesheets"; // pinned — never trust a client-supplied bucket
 
 const OCR_INSTRUCTION =
-  'You are reading a photo of a paper EMPLOYEE TIME SHEET (a sign-in sheet). It has a title header ' +
-  'naming a company/LLC, then a table: LAST NAME | FIRST NAME | DATE | TIME IN | TIME OUT | LUNCH | SIGNATURE.\n' +
+  'You are reading a photo or PDF of a paper EMPLOYEE TIME SHEET / sign-in sheet. It has a title header ' +
+  '(a company/LLC such as Filifera/Slane/Portal, or a location/crew name such as "New York — Temp Crew ' +
+  'Sign In"), often a "Date:" field near the top, then a numbered table: ' +
+  '# | LAST NAME | FIRST NAME | DATE | TIME IN | TIME OUT | LUNCH | SIGNATURE.\n' +
   'Return ONLY a JSON object, no prose:\n' +
   '{"company": string|null, "sheet_date": "YYYY-MM-DD"|null, "rows": [{"last": string|null, "first": string|null, ' +
   '"date": "YYYY-MM-DD"|null, "time_in": "HH:MM"|null, "time_out": "HH:MM"|null, "break_minutes": number|null}]}\n' +
-  '- company: from the TITLE header, usually Filifera/Slane/Portal (drop ", LLC" + license numbers).\n' +
-  '- Ignore the SIGNATURE column. One object per named data row; skip blanks + the header.\n' +
+  '- company: from the TITLE header ONLY when it names a company/LLC (drop ", LLC" + license numbers); if ' +
+  'the title is only a location or crew name, set company to null.\n' +
+  '- Ignore the leading "#" row-number column and the SIGNATURE column. One object per NAMED data row; ' +
+  'skip rows with no name written, and skip the header.\n' +
   '- 24-hour "HH:MM"; infer AM/PM from an 8am-6pm workday ("8:00" in = 08:00, "5:00" out = 17:00).\n' +
   '- CARRY-DOWN: a ditto mark ("), a blank cell inside a bracket, or a vertical line/brace/arrow drawn ' +
   'down a column all mean "same value as the row above". Apply the carried value to EVERY row the mark ' +
   'or line spans - this applies to TIME IN, TIME OUT, LUNCH and DATE alike. Only leave a value null when ' +
   'the cell is truly empty with no mark or line through it.\n' +
-  '- break_minutes from the LUNCH column: "12-1" = 60; "12-12:30" = 30; blank with no mark = 0.\n' +
-  '- ONE SHEET = ONE DAY: every row on the sheet is the same work date. Determine the sheet date from the ' +
-  'clearest/majority DATE entry (assume 2026 if no year; ignore an obviously miswritten outlier) and use ' +
-  'it for sheet_date AND for every row date.\n' +
+  '- break_minutes from the LUNCH column: "12-1" = 60; "12-12:30" = 30; "30" = 30; blank with no mark = 0.\n' +
+  '- ONE SHEET = ONE DAY: every row on the sheet is the same work date. Use the top "Date:" field if it is ' +
+  'filled in; otherwise the clearest/majority DATE-column entry (assume the year is {{YEAR}} if none is ' +
+  'written; ignore an obviously miswritten outlier). Use it for sheet_date AND for every row date.\n' +
   '- Preserve names exactly as handwritten.';
 
 async function staffCaller(req: Request) {
@@ -92,19 +96,31 @@ Deno.serve(async (req) => {
     const { data: blob, error: dlErr } = await admin.storage.from(BUCKET).download(String(path));
     if (dlErr || !blob) return json({ ok: false, error: "download failed: " + (dlErr?.message ?? "no data") }, 400);
     const buf = new Uint8Array(await blob.arrayBuffer());
-    const mime = blob.type?.startsWith("image/") ? blob.type
-      : (String(path).toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
+    const lower = String(path).toLowerCase();
+    // NY sign-in sheets arrive as PDFs; CA sheets as photos. A PDF goes to Claude
+    // as a `document` block (media_type application/pdf); an image as an `image`
+    // block. Either way the OCR instruction is the same.
+    const isPdf = blob.type === "application/pdf" || lower.endsWith(".pdf");
+    const b64 = encodeBase64(buf);
+    const contentBlock = isPdf
+      ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } }
+      : { type: "image", source: { type: "base64",
+          media_type: blob.type?.startsWith("image/") ? blob.type : (lower.endsWith(".png") ? "image/png" : "image/jpeg"),
+          data: b64 } };
 
     const key = Deno.env.get("ANTHROPIC_API_KEY")!;
     const model = Deno.env.get("OCR_MODEL") ?? "claude-opus-4-8";
+    // pin the "no year written" fallback to the real current year, deterministically —
+    // never let the model guess a year from its training prior (that put rows in 2025).
+    const instruction = OCR_INSTRUCTION.replace("{{YEAR}}", String(new Date().getFullYear()));
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
       body: JSON.stringify({
         model, max_tokens: 3000,
         messages: [{ role: "user", content: [
-          { type: "image", source: { type: "base64", media_type: mime, data: encodeBase64(buf) } },
-          { type: "text", text: OCR_INSTRUCTION },
+          contentBlock,
+          { type: "text", text: instruction },
         ] }],
       }),
     });
