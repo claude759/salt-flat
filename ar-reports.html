@@ -1624,7 +1624,7 @@ function applyShared(d){
     }
     if(data.visits && data.visits.length){ VISIT_EVENTS=visitsFromWire(data.visits); any=true; }
     if(data.custDir) CUST_DIR=custDirFromWire(data.custDir);   // customer directory (legal name / address / license)
-    if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); any=true; }
+    if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); buildNyLegal(); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
     if(data.nyInv && data.nyInv.length){ NY_INV=nyInvFromWire(data.nyInv); any=true; }   // NY recon invoices (real paid/outstanding/discounts)
     if(data.nyQbo && data.nyQbo.length){ NY_QBO=nyQboFromWire(data.nyQbo); any=true; }   // WTNY QuickBooks invoices (our receivables)
@@ -3790,19 +3790,21 @@ function buildNyEvents(){
   if(!FILES.leaflink) return [];
   const out=[];
   FILES.leaflink.data.forEach(r=>{
-    const buyer=String(r['Buyer']||r['Customer']||'').replace(/\s*\([^)]*\)\s*$/,'').trim(); if(!buyer) return;   // strip the trailing "(Licensee LLC)"
+    const raw=String(r['Buyer']||r['Customer']||'');
+    const buyer=raw.replace(/\s*\([^)]*\)\s*$/,'').trim(); if(!buyer) return;   // trade/DBA name
+    const legal=(raw.match(/\(([^)]*)\)\s*$/)||[])[1]||'';                        // LeafLink puts the legal LLC in the trailing (parens)
     const st=String(r['Status']||'').trim();
     if(/cancel|reject|declin|draft|combin/i.test(st)) return;   // "Combined" = merged into a successor order, which carries the merged total — counting both double-books it (and would double-count line items on Tiers / Sales by Type)
     const d=parseDate(r['Ship Date']||r['Order Date']||r['Created Date']); if(!d) return;
     const amt=num(r['Total Amount']!=null?r['Total Amount']:(r['Order Total']!=null?r['Order Total']:r['Total']));
     const cr=Math.abs(num(r['Credits']));   // LeafLink order-level credits/discounts (report column; 0 when none)
-    out.push({d:d.getTime(), c:buyer, amt, cr, ref:String(r['Order']||r['Order Number']||r['Order ID']||'').trim(), st, terms:String(r['Payment Terms']||'').trim()});
+    out.push({d:d.getTime(), c:buyer, legal, amt, cr, ref:String(r['Order']||r['Order Number']||r['Order ID']||'').trim(), st, terms:String(r['Payment Terms']||'').trim()});
   });
   return out.sort((a,b)=>a.d-b.d);
 }
 // Shared-payload wire (additive key `ny`): [d, buyer, amt, order #, status, terms, credits] per order.
-function nyToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, Math.round((e.amt||0)*100)/100, e.ref||'', e.st||'', e.terms||'', Math.round((e.cr||0)*100)/100]); }
-function nyFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), amt:+a[2]||0, ref:String(a[3]||''), st:String(a[4]||''), terms:String(a[5]||''), cr:+a[6]||0})); }   // a[6] absent in pre-credits payloads → 0
+function nyToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, Math.round((e.amt||0)*100)/100, e.ref||'', e.st||'', e.terms||'', Math.round((e.cr||0)*100)/100, e.legal||'']); }
+function nyFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), amt:+a[2]||0, ref:String(a[3]||''), st:String(a[4]||''), terms:String(a[5]||''), cr:+a[6]||0, legal:String(a[7]||'')})); }   // a[6]/a[7] absent in older payloads → 0/''
 // ── NY Drops: harvest cohorts, assigned by ORDER DATE (editable boundaries). All sales so far
 //    = Drop 1 (Harvest 1). Harvest 2 finishes packaging ~Jul 10 2026 → orders from then = Drop 2.
 //    NOTE date-based is approximate if old-drop inventory keeps selling — switch to SKU/batch
@@ -4113,7 +4115,7 @@ function nyRecon(){
   return {n:L.length, gross, discounts, delivered, excise, netProduct, distroFee, netPO, collected, outstanding, collectedNetPO};
 }
 
-function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny'); } if(FILES.leaflink_items){ NY_ITEMS=buildNyItemEvents(); FRESH.add('nyItems'); }
+function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny'); buildNyLegal(); } if(FILES.leaflink_items){ NY_ITEMS=buildNyItemEvents(); FRESH.add('nyItems'); }
   if(FILES.ny_invoices){ NY_INV=buildNyInv(); FRESH.add('nyInv'); }
   if(FILES.ny_recon_items){ NY_RITEMS=buildNyRItems(); FRESH.add('nyRItems'); }
   if(FILES.ny_qbo_inv){ NY_QBO=buildNyQbo(); FRESH.add('nyQbo'); }
@@ -5040,8 +5042,9 @@ function customersData(){
   return {start,end,rows:Object.values(acc).filter(g=>Math.abs(g.net)>0.005).map(g=>{
     const name=Object.entries(g.names).sort((a,b)=>b[1]-a[1])[0][0];
     const info=custInfo(name);   // legal name / address / license / region (Nabis-sourced; blank for Distru-only)
+    const ny=APP_STATE==='NY';
     return {
-      name, legal:info.legal||'', address:info.address||'', license:info.license||'', region:info.region||'',
+      name, legal:ny?nyLegalFor(name):(info.legal||''), address:ny?nyAddrFor(name):(info.address||''), license:info.license||'', region:info.region||'',
       channel:g.src.LeafLink?'LeafLink':(g.src.Distru&&g.src.Nabis?'Distru + Nabis':g.src.Distru?'Distru':'Nabis'),
       orders:g.orders, net:g.net, first:g.first, last:g.last }; })};
 }
@@ -5052,6 +5055,11 @@ function customersData(){
 let NY_ADDR={}, NY_ADDR_LOADED=false;
 const nyAddrNorm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 const nyAddrFor=name=>NY_ADDR[nyAddrNorm(name)]||'';
+// Legal name comes straight from the LeafLink buyer parenthetical (captured in buildNyEvents) —
+// ~100% coverage, no directory lookup needed. Map trade name → legal, rebuilt when NY_EVENTS changes.
+let NY_LEGAL={};
+function buildNyLegal(){ NY_LEGAL={}; (NY_EVENTS||[]).forEach(e=>{ const k=nyAddrNorm(e.c); if(k && e.legal && !NY_LEGAL[k]) NY_LEGAL[k]=e.legal; }); }
+const nyLegalFor=name=>NY_LEGAL[nyAddrNorm(name)]||'';
 async function loadNyAddr(){
   if(NY_ADDR_LOADED) return; NY_ADDR_LOADED=true;   // one-shot; set first so we don't double-fetch
   try{ const rows=await sbNyAddr(); (rows||[]).forEach(x=>{ const k=nyAddrNorm(x.name); if(k && x.address) NY_ADDR[k]=x.address; });
@@ -5069,33 +5077,33 @@ function renderCustomers(){
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.net-a.net); });
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   const cols=APP_STATE==='NY'
-    ? [['name','Customer',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]]
+    ? [['name','Customer (DBA)',0],['legal','Legal name',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]]
     : [['name','Customer',0],['legal','Legal name (DBA)',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]];
   const showDir=APP_STATE!=='NY';
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
-  const addrTd=r=>APP_STATE==='NY' ? `<td class="addr">${esc(nyAddrFor(r.name)||'—')}</td>` : (showDir?`<td>${esc(r.legal||'—')}</td><td class="addr">${esc(r.address||'—')}</td>`:'');
-  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders + contents"><td>${esc(r.name)}</td>${addrTd(r)}<td><span class="src ${r.channel.replace(/[^A-Za-z]/g,'')}">${esc(r.channel)}</span></td>
+  const dirCols=APP_STATE==='NY'||showDir;   // both states show Legal name + Address now
+  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders + contents"><td>${esc(r.name)}</td>${dirCols?`<td>${esc(r.legal||'—')}</td><td class="addr">${esc(r.address||'—')}</td>`:''}<td><span class="src ${r.channel.replace(/[^A-Za-z]/g,'')}">${esc(r.channel)}</span></td>
     <td class="num">${r.orders}</td><td class="num money">${fmt$(r.net)}</td><td class="num">${fmtD(r.first)}</td><td class="num">${fmtD(r.last)}</td></tr>`).join('');
   const tot=view.reduce((a,r)=>({net:a.net+r.net,orders:a.orders+r.orders}),{net:0,orders:0});
   const nD=view.filter(r=>r.channel==='Distru').length, nN=view.filter(r=>r.channel==='Nabis').length, nB=view.filter(r=>r.channel==='Distru + Nabis').length;
   wrap.innerHTML=`<table id="cust-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td colspan="${APP_STATE==='NY'?3:4}">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
+    <tfoot><tr class="totals"><td colspan="4">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(custSort.key===key) custSort.dir*=-1; else custSort={key,dir:(['name','legal','address','channel'].includes(key))?1:-1}; renderCustomers(); });
   note.innerHTML=APP_STATE==='NY'
-    ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). <b>Address</b> comes from the NY dispensary directory (OCM license + workbook); a store with no directory match shows “—”. Click a row for the customer's orders and contents.`
+    ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). <b>Customer (DBA)</b> and <b>Legal name</b> are the two halves of the LeafLink buyer name (trade name + the legal LLC in parentheses). <b>Address</b> comes from the NY dispensary directory (OCM license + workbook); a store with no directory match shows “—”. Click a row for the customer's orders and contents.`
     : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name.`;
 }
 $('#cust-export').onclick=()=>{
   const {rows}=customersData(); const q=(($('#cust-search')||{}).value||'').trim().toLowerCase();
   const ny=APP_STATE==='NY';
   const out=[ny
-    ? ['Customer','Address','Channel','Orders','Net Revenue','First order','Last order']
+    ? ['Customer (DBA)','Legal name','Address','Channel','Orders','Net Revenue','First order','Last order']
     : ['Customer (DBA)','Legal name','Address','Retailer License','Region','Channel','Orders','Net Revenue','First order','Last order']];
   (q?rows.filter(r=>r.name.toLowerCase().includes(q)):rows).sort((a,b)=>b.net-a.net)
     .forEach(r=>{ const d=r.first?new Date(r.first).toISOString().slice(0,10):'', l=r.last?new Date(r.last).toISOString().slice(0,10):'';
       out.push(ny
-        ? [r.name,nyAddrFor(r.name),r.channel,r.orders,r.net.toFixed(2),d,l]
+        ? [r.name,nyLegalFor(r.name),nyAddrFor(r.name),r.channel,r.orders,r.net.toFixed(2),d,l]
         : [r.name,r.legal||'',r.address||'',r.license||'',r.region||'',r.channel,r.orders,r.net.toFixed(2),d,l]); });
   downloadCSV('customers-by-channel.csv',out);
 };
