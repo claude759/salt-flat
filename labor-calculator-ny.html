@@ -213,6 +213,8 @@
   #combinedTable tr.dayhead.editday td{border-top:1px solid var(--accent)}
   .editbadge{margin-left:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
     color:var(--accent2);border:1px solid var(--accent);border-radius:999px;padding:1px 8px;vertical-align:1px}
+  .todaybadge{margin-left:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+    color:#fff;background:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:1px 8px;vertical-align:1px}
   .pplbadge{margin-left:8px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
     color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px;vertical-align:1px;white-space:nowrap}
   .pplbadge b{color:var(--text);font-weight:800}
@@ -2568,8 +2570,14 @@ async function refetch(kind){
     const { data, error } = await fetchAll(SITE.tables.tasks, 'work_date');
     if (error || !data) return;
     if (tasksDirtyNow()){ queueRefetch(kind); return; }   // changed while the select was in flight
+    // Rows the user has staged but not filled in yet carry no _id (a blank row is
+    // deliberately never inserted), so a rebuild straight from the database would
+    // make them vanish under her cursor. Carry them across.
+    const staged = {};
+    for (const d in lcEdits){ const keep = lcEdits[d].filter(r => !r._id); if (keep.length) staged[d] = keep; }
     lcEdits = {};
     for (const x of data){ const r = taskToRow(x); (lcEdits[r.date] = lcEdits[r.date] || []).push(r); }
+    for (const d in staged) (lcEdits[d] = lcEdits[d] || []).push(...staged[d]);
     Object.values(lcEdits).forEach(arr => arr.sort(taskCmp));
     renderCombined(); scheduleDerivedRender();
   } else if (kind === 'shifts'){
@@ -2640,6 +2648,14 @@ async function doSyncTaskDay(date){
       if (error){ dels.forEach(d => pendingTaskDeletes.add(d)); toast('Couldn’t delete the task — will retry on the next change.', true); }
     }
     for (const r of (lcEdits[date] || [])){
+      // never persist an untouched "+ add task" row — the same rule the roster and
+      // the timesheet log already follow. Now that every day of the week is on the
+      // board with its own add button, a stray click would otherwise leave a blank
+      // row in ny_tasks forever. Only the INSERT is skipped: a row that was saved
+      // and then cleared is a real edit and must still UPDATE.
+      const blankRow = !String(r.task || '').trim() && !(+r.people) && !r.begin && !r.end
+        && !(+r.packaged) && !(+r.labeled) && !String(r.note || '').trim();
+      if (blankRow && !r._id) continue;
       const rec = { work_date: date, task: r.task || '', people: r.people || 0,
         begin_at: r.begin || null, end_at: r.end || null,
         packaged: r.packaged || 0, labeled: r.labeled || 0,
@@ -2676,6 +2692,24 @@ function flushPendingWrites(){
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushPendingWrites(); });
 window.addEventListener('pagehide', flushPendingWrites);
+
+/* ---- midnight rollover --------------------------------------------------
+   The board is computed from today's date, so a tab left open overnight would
+   otherwise keep showing yesterday's — and on a Sunday that means the new week
+   never appears, which is exactly the promise. Re-render when the calendar day
+   changes: on refocus, and on a cheap once-a-minute tick for a tab left in view.
+   Never mid-edit — the same dirty guard the realtime refetch uses. */
+let lastRenderedDay = todayISO();
+function checkDayRollover(){
+  const d = todayISO();
+  if (d === lastRenderedDay) return;
+  if (tasksDirtyNow()) return;          // someone is typing; catch it on the next tick
+  lastRenderedDay = d;
+  renderAll(); renderTimesheets();
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkDayRollover(); });
+window.addEventListener('focus', checkDayRollover);
+setInterval(checkDayRollover, 60000);
 // task edits flow into Labor/Packaging + Reports without a reload
 let derivedTimer = null;
 function scheduleDerivedRender(){
@@ -3021,6 +3055,9 @@ function renderCombined(){
     if (t.work_date && isEditable(t.work_date) && (t.category || 'distro') === 'distro') dateSet.add(t.work_date);
   }
   for (const d of [...dateSet]) if (isEmptyDay(d)) dateSet.delete(d);   // hide phantom all-blank days
+  // ...then this week goes on the board unconditionally (after the purge, so an
+  // untouched day the crew hasn't worked yet still gets its slot)
+  for (const d of currentWeekDays()) dateSet.add(d);
   const dates = [...dateSet].sort((a,b) => a<b ? 1 : -1);   // newest first
   const body = document.querySelector('#combinedTable tbody');
   let html = '', shownCount = 0;
@@ -3030,7 +3067,10 @@ function renderCombined(){
     const editable = isEditable(date);
     const ppl = tsPeople(date);
     const pplBadge = ppl ? `<span class="pplbadge" title="Total people on the timesheet for this day (unique names)">Total PPL <b>${ppl}</b></span>` : '';
-    const label = `<span class="dh-label">${fDayMDY(date)}<span class="wd">${wd}</span>${editable?'<span class="editbadge">editable</span>':''}${pplBadge}</span>`;
+    // the board now carries the days AHEAD of today too, so mark today itself —
+    // otherwise the eye lands on Saturday, which sorts to the top
+    const todayBadge = date === todayISO() ? '<span class="todaybadge">today</span>' : '';
+    const label = `<span class="dh-label">${fDayMDY(date)}<span class="wd">${wd}</span>${todayBadge}${editable?'<span class="editbadge">editable</span>':''}${pplBadge}</span>`;
     if (editable){
       const es = dayEntries(date);
       html += `<tr class="dayhead editday"><td colspan="${NCOLS}"><div class="dh-flex">${label}${tlWrap(date, es)}</div></td></tr>`;
@@ -3407,6 +3447,21 @@ function lpApplyEdit(date, col, val){
    Days after the sheet's last row are derived from the (corrected) tracker rows:
    units pivoted by task name; Hours = sum of task hours x people (task time,
    packaging work only); Ppl = biggest task crew; lbs via per-product weights. */
+// The Tasks board always carries the CURRENT WEEK, Sunday through Saturday, even
+// before anyone has clocked in or typed a task against it. That is what makes a
+// new week "appear" every Sunday: it is computed from today's date, so there is no
+// scheduled job to fail and NO placeholder rows in the database — a day becomes a
+// real row only when someone actually types a task into it.
+function sundayOf(iso){
+  const [y,m,d] = iso.split('-').map(Number);
+  const dt = new Date(y, m-1, d);
+  dt.setDate(dt.getDate() - dt.getDay());          // getDay(): 0 = Sunday
+  return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+}
+function currentWeekDays(){
+  const s = sundayOf(todayISO());
+  return Array.from({ length: 7 }, (_, i) => addDaysISO(s, i));
+}
 function mondayOf(iso){
   const [y,m,d] = iso.split('-').map(Number);
   const dt = new Date(y, m-1, d);
@@ -3453,6 +3508,7 @@ function lpDerivedDays(){
     // note-only row (all nulls — it exists for its note) never blocks the
     // live Tasks-derived values
     if (st && (st.source === 'edit' || LP_ALL_COLS.some(c => +st[c]))) continue;
+    if (isEmptyDay(r.date)) continue;   // an all-blank day is hidden on Tasks; don't resurrect it here
     let d = map.get(r.date);
     if (!d){ d = { work_date: r.date, source: 'derived' }; map.set(r.date, d); }
     const col = lpColFor(r.lo);
