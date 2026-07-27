@@ -5045,7 +5045,21 @@ function customersData(){
       channel:g.src.LeafLink?'LeafLink':(g.src.Distru&&g.src.Nabis?'Distru + Nabis':g.src.Distru?'Distru':'Nabis'),
       orders:g.orders, net:g.net, first:g.first, last:g.last }; })};
 }
+// NY dispensary addresses — client-side read (like ny_credits) from the ny_dispensary_addresses
+// view (see supabase/ny-dispensary-addresses.sql). Names match the LeafLink trade names the report
+// already uses, so a normalized lookup fills the Address column. Until the view is exposed the
+// fetch just fails quietly and addresses show as “—”.
+let NY_ADDR={}, NY_ADDR_LOADED=false;
+const nyAddrNorm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const nyAddrFor=name=>NY_ADDR[nyAddrNorm(name)]||'';
+async function loadNyAddr(){
+  if(NY_ADDR_LOADED) return; NY_ADDR_LOADED=true;   // one-shot; set first so we don't double-fetch
+  try{ const rows=await sbNyAddr(); (rows||[]).forEach(x=>{ const k=nyAddrNorm(x.name); if(k && x.address) NY_ADDR[k]=x.address; });
+    if(APP_STATE==='NY' && repMode==='customers') renderCustomers();   // repaint once addresses arrive
+  }catch(e){ NY_ADDR_LOADED=false; /* view not exposed yet — retry next time the report opens */ }
+}
 function renderCustomers(){
+  if(APP_STATE==='NY' && !NY_ADDR_LOADED) loadNyAddr();
   const wrap=$('#cust-wrap'), note=$('#cust-note'); if(!wrap) return;
   const {rows,start,end}=customersData();
   if(!rows.length){ note.innerHTML=''; wrap.innerHTML=`<div class="empty">No customers with sales in ${fmtRangeLabel(start,end)}.</div>`; return; }
@@ -5055,32 +5069,33 @@ function renderCustomers(){
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.net-a.net); });
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   const cols=APP_STATE==='NY'
-    ? [['name','Customer',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]]
+    ? [['name','Customer',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]]
     : [['name','Customer',0],['legal','Legal name (DBA)',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]];
   const showDir=APP_STATE!=='NY';
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
-  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders + contents"><td>${esc(r.name)}</td>${showDir?`<td>${esc(r.legal||'—')}</td><td class="addr">${esc(r.address||'—')}</td>`:''}<td><span class="src ${r.channel.replace(/[^A-Za-z]/g,'')}">${esc(r.channel)}</span></td>
+  const addrTd=r=>APP_STATE==='NY' ? `<td class="addr">${esc(nyAddrFor(r.name)||'—')}</td>` : (showDir?`<td>${esc(r.legal||'—')}</td><td class="addr">${esc(r.address||'—')}</td>`:'');
+  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders + contents"><td>${esc(r.name)}</td>${addrTd(r)}<td><span class="src ${r.channel.replace(/[^A-Za-z]/g,'')}">${esc(r.channel)}</span></td>
     <td class="num">${r.orders}</td><td class="num money">${fmt$(r.net)}</td><td class="num">${fmtD(r.first)}</td><td class="num">${fmtD(r.last)}</td></tr>`).join('');
   const tot=view.reduce((a,r)=>({net:a.net+r.net,orders:a.orders+r.orders}),{net:0,orders:0});
   const nD=view.filter(r=>r.channel==='Distru').length, nN=view.filter(r=>r.channel==='Nabis').length, nB=view.filter(r=>r.channel==='Distru + Nabis').length;
   wrap.innerHTML=`<table id="cust-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td colspan="${showDir?4:2}">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
+    <tfoot><tr class="totals"><td colspan="${APP_STATE==='NY'?3:4}">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(custSort.key===key) custSort.dir*=-1; else custSort={key,dir:(['name','legal','address','channel'].includes(key))?1:-1}; renderCustomers(); });
   note.innerHTML=APP_STATE==='NY'
-    ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). Click a row for the customer's orders and contents.`
+    ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). <b>Address</b> comes from the NY dispensary directory (OCM license + workbook); a store with no directory match shows “—”. Click a row for the customer's orders and contents.`
     : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name.`;
 }
 $('#cust-export').onclick=()=>{
   const {rows}=customersData(); const q=(($('#cust-search')||{}).value||'').trim().toLowerCase();
   const ny=APP_STATE==='NY';
   const out=[ny
-    ? ['Customer','Channel','Orders','Net Revenue','First order','Last order']
+    ? ['Customer','Address','Channel','Orders','Net Revenue','First order','Last order']
     : ['Customer (DBA)','Legal name','Address','Retailer License','Region','Channel','Orders','Net Revenue','First order','Last order']];
   (q?rows.filter(r=>r.name.toLowerCase().includes(q)):rows).sort((a,b)=>b.net-a.net)
     .forEach(r=>{ const d=r.first?new Date(r.first).toISOString().slice(0,10):'', l=r.last?new Date(r.last).toISOString().slice(0,10):'';
       out.push(ny
-        ? [r.name,r.channel,r.orders,r.net.toFixed(2),d,l]
+        ? [r.name,nyAddrFor(r.name),r.channel,r.orders,r.net.toFixed(2),d,l]
         : [r.name,r.legal||'',r.address||'',r.license||'',r.region||'',r.channel,r.orders,r.net.toFixed(2),d,l]); });
   downloadCSV('customers-by-channel.csv',out);
 };
@@ -5819,6 +5834,7 @@ drop.addEventListener('drop',e=>handleFiles(e.dataTransfer.files));
 // SUPABASE_URL / SUPABASE_KEY are defined up in the Auth gate block.
 const sbHead=extra=>Object.assign({apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY},extra||{});
 async function sbCredits(q){ const r=await fetch(`${SUPABASE_URL}/rest/v1/ny_credits?${q}`,{headers:sbHead()}); if(!r.ok) throw new Error('load '+r.status); return r.json(); }
+async function sbNyAddr(){ const r=await fetch(`${SUPABASE_URL}/rest/v1/ny_dispensary_addresses?select=name,address`,{headers:sbHead()}); if(!r.ok) throw new Error('addr '+r.status); return r.json(); }
 async function sbCreditInsert(row){ const r=await fetch(`${SUPABASE_URL}/rest/v1/ny_credits`,{method:'POST',headers:sbHead({'Content-Type':'application/json','Prefer':'return=representation'}),body:JSON.stringify(row)}); if(!r.ok) throw new Error(await r.text()); return (await r.json())[0]; }
 async function sbCreditUpdate(id,patch){ const r=await fetch(`${SUPABASE_URL}/rest/v1/ny_credits?id=eq.${id}`,{method:'PATCH',headers:sbHead({'Content-Type':'application/json','Prefer':'return=representation'}),body:JSON.stringify(patch)}); if(!r.ok) throw new Error(await r.text()); return (await r.json())[0]; }
 async function sbCreditDelete(id){ const r=await fetch(`${SUPABASE_URL}/rest/v1/ny_credits?id=eq.${id}`,{method:'DELETE',headers:sbHead()}); if(!r.ok) throw new Error(await r.text()); }
