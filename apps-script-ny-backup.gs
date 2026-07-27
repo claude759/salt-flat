@@ -10,16 +10,16 @@
  * WHY THIS EXISTS: on 2026-07-27 a whole-table delete wiped a morning of task
  * entries and there was no way to get them back (PITR off, no restore points).
  *
- * SETUP (once, ~5 minutes)
- *   1. Create a Google Sheet, e.g. "NY Tracker Backup".
- *   2. Extensions → Apps Script, and paste this file in.
- *   3. Project Settings (gear) → Script properties → add two:
- *        SB_EMAIL     = automation@wizardtrees.com
- *        SB_PASSWORD  = (that account's password — same one ~/gusto-sync/.env uses)
- *      Credentials live here, never in the code.
- *   4. Run `backupNow` once and approve the authorization prompt.
- *   5. Triggers (clock icon) → Add trigger → backupNow → Time-driven →
- *      Minutes timer → Every 10 minutes.
+ * SETUP — two steps, the Sheet and this code are already in place:
+ *   1. Project Settings (gear) → Script properties → add ONE property:
+ *        SB_PASSWORD = the automation@wizardtrees.com password
+ *                      (same value as AUTOMATION_PASSWORD in ~/gusto-sync/.env)
+ *      The password stays here, never in the code and never in git.
+ *   2. Pick `setup` in the function dropdown → Run. Approve the authorization
+ *      prompt. That verifies the credential, installs the 10-minute trigger and
+ *      takes the first backup immediately.
+ *
+ *   `setup` is safe to re-run — it replaces its own trigger rather than stacking.
  *
  * TO RESTORE: File → Version history → All versions → pick the moment before
  * the loss, read the rows off the tab, and re-enter them (or ask Claude to
@@ -59,8 +59,11 @@ var TABLES = [
 
 function signIn_() {
   var props = PropertiesService.getScriptProperties();
-  var email = props.getProperty('SB_EMAIL'), pass = props.getProperty('SB_PASSWORD');
-  if (!email || !pass) throw new Error('Set SB_EMAIL and SB_PASSWORD in Script properties first.');
+  // the account is not a secret; only the password is, and it lives in Script
+  // properties so it is never in this file or in git
+  var email = props.getProperty('SB_EMAIL') || 'automation@wizardtrees.com';
+  var pass = props.getProperty('SB_PASSWORD');
+  if (!pass) throw new Error('Add a Script property SB_PASSWORD (the automation@wizardtrees.com password), then run setup again.');
   var res = UrlFetchApp.fetch(SB_URL + '/auth/v1/token?grant_type=password', {
     method: 'post', contentType: 'application/json',
     headers: { apikey: SB_ANON },
@@ -96,6 +99,23 @@ function cell_(v) {
   if (Array.isArray(v)) return v.join(', ');
   if (typeof v === 'object') return JSON.stringify(v);
   return v;
+}
+
+/**
+ * Run this once. Verifies the credential, installs the every-10-minutes trigger
+ * (replacing any previous one so re-running never stacks them up), and takes an
+ * immediate first backup so there is a baseline from minute one.
+ */
+function setup() {
+  signIn_();   // fail fast and loudly if SB_PASSWORD is missing or wrong
+  var existing = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i].getHandlerFunction() === 'backupNow') ScriptApp.deleteTrigger(existing[i]);
+  }
+  ScriptApp.newTrigger('backupNow').timeBased().everyMinutes(10).create();
+  backupNow();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  Logger.log('Backup is live, every 10 minutes → ' + ss.getUrl());
 }
 
 function backupNow() {
