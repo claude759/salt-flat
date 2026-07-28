@@ -384,7 +384,9 @@
   #tsTable input:focus,#tsTable select:focus{outline:1px solid var(--accent);background:var(--panel)}
   #tsTable input.nm{width:92px} #tsTable input.n{width:56px} #tsTable input.t{width:104px}
   #tsTable select.pp,#tsTable select.tm{width:52px}
-  #tsTable tr.carried td{background:rgba(214,164,65,.07)}
+  #tsTable tr.carried td{background:rgba(239,77,86,.10)}
+  #tsTable tr.carried td:first-child{box-shadow:inset 3px 0 0 var(--red)}
+  .misstag{display:inline-block;font-size:9px;font-weight:700;color:#ff9b93;background:rgba(239,77,86,.16);border-radius:999px;padding:1px 6px;margin-left:5px;text-transform:uppercase;letter-spacing:.03em;vertical-align:middle;white-space:nowrap}
   #tsTable tr.warnrow td{background:rgba(239,77,86,.08);color:var(--text);padding:8px 12px;font-size:12.5px}
   #tsTable tr.overlap td{background:rgba(239,77,86,.06)}
   #tsTable .warndismiss{margin-left:10px}
@@ -411,6 +413,13 @@
   #ts-review .mtag{font-size:10px;font-weight:700;border-radius:999px;padding:1px 8px;text-transform:uppercase;letter-spacing:.05em}
   #ts-review .mtag.ok{background:var(--green-soft,rgba(47,191,113,.15));color:var(--green)}
   #ts-review .mtag.new{background:rgba(214,164,65,.15);color:#d6a441}
+  #ts-review .mtag.miss{background:rgba(239,77,86,.16);color:#ff9b93}
+  #ts-review tr.miss td{background:rgba(239,77,86,.10)}
+  #ts-review tr.miss td:first-child{box-shadow:inset 3px 0 0 var(--red)}
+  #ts-review .rvmiss{margin:10px 0 2px;padding:8px 11px;border:1px solid rgba(239,77,86,.5);background:rgba(239,77,86,.10);border-radius:9px;color:#ff9b93;font-size:12.5px}
+  #ts-review .rvmiss b{color:#ffbdb8}
+  #ts-review .rvpp{display:inline-flex;gap:7px;align-items:center;font-size:12px;color:var(--muted);margin-left:auto}
+  #ts-review .rvpp select{width:auto}
   #ts-review .empcell{display:flex;gap:4px;align-items:center}
   #ts-review .empinput{width:150px}
   #ts-review .emppick{width:34px}
@@ -843,6 +852,33 @@ function periodStartOf(dateISO){
   return new Date(anchor.getTime() + idx*PERIOD_LEN*86400000).toISOString().slice(0,10);
 }
 const effPeriodStart = s => s.pay_period || periodStartOf(s.work_date);   // billed period (override wins)
+// compact pay-period label, e.g. "Jul 18–31" or "Jul 28–Aug 10"
+function fPeriodShort(startISO){
+  if (!startISO) return '';
+  const s = new Date(startISO+'T00:00'), e = new Date(s.getTime()+(PERIOD_LEN-1)*86400000);
+  const mo = d => d.toLocaleDateString('en-US',{month:'short'});
+  return mo(s)+' '+s.getDate()+'–'+(s.getMonth()===e.getMonth() ? '' : mo(e)+' ')+e.getDate();
+}
+// on the upload/review card: does this work-date get carried into the current
+// period because the sheet was missed last payroll? (only when "current" is picked)
+function reviewMissed(payTo, workDate){
+  if (payTo !== 'current' || !workDate) return false;
+  const nat = periodStartOf(workDate);
+  return !!nat && nat < periodWindow(0)[0];   // only a PAST period carries forward (never a future date)
+}
+// the pay_period override to save for a reviewed row (null = bill to work date)
+function reviewPayPeriod(payTo, workDate){
+  return reviewMissed(payTo, workDate) ? periodWindow(0)[0] : null;
+}
+// the "Pay period" picker shown in a review card's action bar
+function payPeriodPicker(payTo){
+  const o = (v,t) => '<option value="'+v+'"'+((payTo||'natural')===v?' selected':'')+'>'+t+'</option>';
+  return '<label class="rvpp">Pay period'
+    + '<select class="rvppsel" title="Which pay period these hours are paid in">'
+    + o('natural','When each shift was worked')
+    + o('current','Current · '+esc(fPeriodShort(periodWindow(0)[0]))+' — missed last payroll')
+    + '</select></label>';
+}
 
 const tsState = {
   category: 'distro',   // 'distro' | 'harvest' | 'roster' | 'compare' (labelled "Combined")
@@ -926,9 +962,16 @@ function filteredShifts(){
 async function insertShift(rec){
   shiftSyncBusy++;
   try{
+    // client-generated id: if the INSERT landed but the response was lost, the
+    // caller's retry conflicts on the key instead of quietly double-inserting
+    const id = rec.id || crypto.randomUUID();
     const { data, error } = await sb.from('distro_shifts')
-      .insert({ source:'manual', category:'distro', people:1, break_minutes:0, ...rec, updated_by: myId })
+      .insert({ id, source:'manual', category:'distro', people:1, break_minutes:0, ...rec, updated_by: myId })
       .select('*').single();
+    if (error && error.code === '23505'){
+      const { data: ex } = await sb.from('distro_shifts').select('*').eq('id', id).single();
+      if (ex){ const s0 = shiftToTs(ex); if (!shifts.some(x => x.id === s0.id)) shifts.push(s0); return s0; }
+    }
     if (error){ toast('Couldn’t add the row — check your connection.', true); return null; }
     const s = shiftToTs(data);
     shifts.push(s);
@@ -943,22 +986,53 @@ function syncShift(s){
   shiftSyncChain[s.id] = (shiftSyncChain[s.id] || Promise.resolve()).then(() => doSyncShift(s));
   return shiftSyncChain[s.id];
 }
+// A save writes ONLY the fields this tab actually edited. A full-row write from
+// a tab whose refetch was deferred re-sends its stale copy of every OTHER field
+// over a teammate's newer fix, silently — clock times included, so the trigger
+// recomputes pay from stale data. (LP days always patched only dirty columns.)
+const SHIFT_COL = {
+  company: s => s.company || null, category: s => s.category || 'distro', work_date: s => s.work_date,
+  pay_period: s => s.pay_period || null, team: s => s.team || null,
+  last: s => s.last || null, first: s => s.first || null,
+  clock_in: s => s.clock_in || null, clock_out: s => s.clock_out || null,
+  break_minutes: s => Math.round(s.break_minutes || 0),
+  people: s => Math.max(1, Math.round(s.people || 1)),
+  rate: s => s.rate == null ? 0 : s.rate, roster_id: s => s.roster_id || null,
+};
 async function doSyncShift(s){
+  const dirty = [...(s._dirty || [])].filter(f => SHIFT_COL[f]);
+  if (!dirty.length) return;
   shiftSyncBusy++;
   try{
-    const { data, error } = await sb.from('distro_shifts').update({
-      company: s.company || null, category: s.category || 'distro', work_date: s.work_date,
-      pay_period: s.pay_period || null, team: s.team || null, last: s.last || null, first: s.first || null,
-      clock_in: s.clock_in || null, clock_out: s.clock_out || null,
-      break_minutes: Math.round(s.break_minutes || 0), people: Math.max(1, Math.round(s.people || 1)),
-      rate: s.rate == null ? 0 : s.rate, roster_id: s.roster_id || null, updated_by: myId,
-    }).eq('id', s.id).select('hours,total').single();
-    if (error){ toast('Couldn’t save the timesheet change.', true); return; }
+    const rec = { updated_by: myId };
+    for (const f of dirty) rec[f] = SHIFT_COL[f](s);
+    // clear these fields BEFORE awaiting: if a correction to the same cell lands
+    // while this save is in flight it re-dirties the field, and the ack must not
+    // wipe that fresh flag (else the correction is silently lost). Re-add on any
+    // failure so the value still gets re-sent.
+    dirty.forEach(f => s._dirty && s._dirty.delete(f));
+    const { data, error } = await sb.from('distro_shifts').update(rec)
+      .eq('id', s.id).select('hours,total').single();
+    if (error){
+      dirty.forEach(f => markShiftDirty(s, f));
+      if (error.code === 'PGRST116'){   // 0 rows: deleted in another tab
+        shifts = shifts.filter(x => x.id !== s.id); tsEntries = shifts;
+        renderTsFilters(); renderTsLog(); if (!tasksDirtyNow()) renderCombined();
+        toast('That row was deleted elsewhere — your edit had nowhere to go.', true);
+        return;
+      }
+      s._retries = (s._retries || 0) + 1;
+      if (s._retries <= 5) setTimeout(() => queueShiftSave(s), 4000 * s._retries);
+      else toast('Couldn’t save the timesheet change — check your connection.', true);
+      return;
+    }
+    s._retries = 0;
     s.hours = +data.hours || 0; s.total = +data.total || 0;
     const tr = document.querySelector('#tsTable tr[data-id="'+s.id+'"]');
     if (tr){ const h = tr.querySelector('.c-h'), t = tr.querySelector('.c-t');
       if (h) h.textContent = tsNum(s.hours); if (t) t.textContent = tsMoney(s.total); }
-    renderCombined();   // budgets/timeline follow the timesheet
+    // budgets/timeline follow the timesheet — but never yank the board mid-typing
+    if (!tasksDirtyNow()) renderCombined(); else scheduleDerivedRender();
   } finally { shiftSyncBusy--; }
 }
 function queueShiftSave(s){
@@ -1036,7 +1110,7 @@ function renderRoster(){
     + '</tbody></table></div>'
     + '<div style="margin-top:10px"><button class="btn sm" id="roster-add">+ Add person</button></div></div>';
   box.querySelector('#roster-add').onclick = () => {
-    const p = { id: crypto.randomUUID(), last: '', first: '', team: null,
+    const p = { id: crypto.randomUUID(), _saved: false, last: '', first: '', team: null,
       default_company: null, default_rate: null, aliases: [], active: true };
     roster.push(p);
     // no sync yet — the first keystroke schedules it, so an accidental click
@@ -1064,9 +1138,7 @@ function renderRoster(){
     const p = roster.find(x => x.id === tr.dataset.id); if (!p) return;
     const name = tsFullName(p) || 'this person';
     if (!confirm('Remove ' + name + ' from the roster? Saved timesheet rows keep the name — only the autofill defaults are lost. (Deactivating is usually enough.)')) return;
-    roster = roster.filter(x => x.id !== p.id);
-    markDirtyRoster(p.id);   // its sync sees the id missing and deletes the row
-    renderRoster();
+    removeRosterPerson(p);
   });
 }
 /* ---- Compare page: distro vs harvest/deleaf hours, side by side ----
@@ -1662,13 +1734,13 @@ function renderTsLog(){
     body += colHead;
     for (const s of es){
       gh += (+s.hours||0)*(isH?(+s.people||1):1); gt += (+s.total||0);
-      const carried = (!isH && s.pay_period && s.pay_period !== periodStartOf(s.work_date)) ? ' carried' : '';
+      const carried = (!isH && s.pay_period && periodStartOf(s.work_date) < s.pay_period) ? ' carried' : '';
       const rowTitle = carried ? 'Missed on last payroll — carried into this pay period' : '';
       const peopleTd = isH ? '<td><input data-f="people" type="number" min="1" value="'+(s.people??1)+'" class="n"></td>' : '';
       const ppTd = isH ? '' : '<td>'+ppSelect(s)+'</td>';
       const teamTd = isH ? '<td><input data-f="team" value="'+esc(s.team||'')+'" class="nm"></td>' : '<td>'+teamSelect(s)+'</td>';
       body += '<tr data-id="'+s.id+'" class="'+carried.trim()+'" title="'+rowTitle+'">'
-        + '<td><select data-f="company">'+coOpts(s.company)+'</select></td>'
+        + '<td><select data-f="company">'+coOpts(s.company)+'</select>'+(carried?'<span class="misstag" title="'+esc(rowTitle)+'">missed last PP</span>':'')+'</td>'
         + '<td><input data-f="work_date" type="date" value="'+esc(s.work_date||'')+'" class="t"></td>' + ppTd
         + '<td><input data-f="last" class="nm" value="'+esc(s.last||'')+'"></td>'
         + '<td><input data-f="first" class="nm" value="'+esc(s.first||'')+'"></td>'
@@ -1749,8 +1821,10 @@ function renderHarvestLog(){
     for (const s of es){
       gh += (+s.hours||0)*(+s.people||1); gt += +s.total||0;
       const overlap = ov.flagged.has(s.id) ? ' overlap' : '';
-      body += '<tr data-id="'+s.id+'" class="'+overlap.trim()+'"'+(overlap?' title="Overlaps another shift for this worker on this day"':'')+'>'
-        + '<td><select data-f="company">'+locOpts(s.company)+'</select></td>'
+      const carried = (s.pay_period && periodStartOf(s.work_date) < s.pay_period) ? ' carried' : '';
+      const rowT = carried ? 'Missed on last payroll — carried into this pay period' : (overlap ? 'Overlaps another shift for this worker on this day' : '');
+      body += '<tr data-id="'+s.id+'" class="'+(overlap+carried).trim()+'"'+(rowT?' title="'+esc(rowT)+'"':'')+'>'
+        + '<td><select data-f="company">'+locOpts(s.company)+'</select>'+(carried?'<span class="misstag" title="'+esc(rowT)+'">missed last PP</span>':'')+'</td>'
         + '<td><input data-f="work_date" type="date" value="'+esc(s.work_date||'')+'" class="t"></td>'
         + '<td><input data-f="last" class="nm" value="'+esc(s.last||'')+'"></td>'
         + '<td><input data-f="first" class="nm" value="'+esc(s.first||'')+'"></td>'
@@ -1913,10 +1987,11 @@ function wireTsShell(){
         if (fin && fin !== cell) fin.value = s.first || '';
         if (cell.dataset.f === 'last' && s.last) cell.value = s.last;
         if (cell.dataset.f === 'first' && s.first) cell.value = s.first;
-        if (!s.team) s.team = m.team || teamForName(m, s.last, s.first);
-        if (!s.rate) s.rate = rateForName(m, s.last, s.first);
+        markShiftDirty(s, 'roster_id'); markShiftDirty(s, 'last'); markShiftDirty(s, 'first');
+        if (!s.team){ s.team = m.team || teamForName(m, s.last, s.first); markShiftDirty(s, 'team'); }
+        if (!s.rate){ s.rate = rateForName(m, s.last, s.first); markShiftDirty(s, 'rate'); }
       }
-      else if (!s.team){ s.team = teamForName(null, s.last, s.first); }
+      else if (!s.team){ s.team = teamForName(null, s.last, s.first); markShiftDirty(s, 'team'); }
       const tsel = cell.closest('tr').querySelector('[data-f="team"]'); if (tsel) tsel.value = s.team || '';
     }
     clearTimeout(shiftTimers[s.id]); delete shiftTimers[s.id];
@@ -1958,12 +2033,15 @@ function wireTsShell(){
     }
   });
 }
+function markShiftDirty(s, f){ (s._dirty = s._dirty || new Set()).add(f); }
 function applyShiftField(s, f, v){
-  if (f==='break_minutes') s[f] = +v||0;
-  else if (f==='people') s[f] = +v||1;
-  else if (f==='rate') s[f] = v===''?null:+v;
+  if (f==='work_date'){ if (v){ s[f] = v; markShiftDirty(s, f); } return; }   // an emptied date keeps the stored one (NOT NULL)
+  if (f==='break_minutes') s[f] = Math.max(0, Math.round(+v||0));
+  else if (f==='people') s[f] = Math.max(1, Math.round(+v||1));
+  else if (f==='rate') s[f] = v==='' ? null : Math.max(0, +v||0);
   else if (f==='pay_period') s[f] = v||null;
   else s[f] = v;
+  markShiftDirty(s, f);
 }
 async function addShiftRow(key){
   const isH = tsState.category === 'harvest';
@@ -2052,13 +2130,15 @@ function drawTsReview(){
   if (!rv){ box.innerHTML=''; return; }
   const pickNames = [...new Set(roster.filter(p => p.active !== false).map(tsFullName).concat(shifts.map(tsFullName)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   const pickOpts = '<option value="">▾</option>'+pickNames.map(n => '<option>'+esc(n)+'</option>').join('');
+  const payTo = rv.payTo || 'natural';
   const rowHtml = (r, i) => {
     const h = tsCalcHours(r.clock_in, r.clock_out, r.break_minutes);
     const t = tsCalcTotal(h, r.rate!=null?+r.rate:null);
-    return '<tr data-i="'+i+'" class="'+(r.include?'':'off')+'">'
+    const miss = reviewMissed(payTo, r.work_date || rv.sheet_date);
+    return '<tr data-i="'+i+'" class="'+(r.include?'':'off')+(miss?' miss':'')+'">'
       + '<td><input type="checkbox" data-f="include" '+(r.include?'checked':'')+'></td>'
       + '<td><div class="empcell"><input data-f="empname" value="'+esc(tsFullName(r))+'" placeholder="last first" autocomplete="off" class="empinput"><select data-f="emppick" class="emppick" title="Pick a name from the roster">'+pickOpts+'</select></div></td>'
-      + '<td>'+(r.matched?'<span class="mtag ok">match</span>':'<span class="mtag new">new</span>')+'</td>'
+      + '<td>'+(r.matched?'<span class="mtag ok">match</span>':'<span class="mtag new">new</span>')+(miss?' <span class="mtag miss" title="Paid in the current period">missed last PP</span>':'')+'</td>'
       + '<td><input data-f="company" value="'+esc(r.company)+'" style="width:96px"></td>'
       + '<td><input data-f="work_date" type="date" value="'+esc(r.work_date)+'" class="t" style="width:130px"></td>'
       + '<td><input data-f="clock_in" type="time" value="'+esc(r.clock_in)+'" class="t"></td>'
@@ -2069,15 +2149,21 @@ function drawTsReview(){
       + '<td class="calc money c-t">'+tsMoney(t)+'</td></tr>';
   };
   const inc = rv.rows.filter(r => r.include).length;
+  const missN = rv.rows.filter(r => r.include && reviewMissed(payTo, r.work_date || rv.sheet_date)).length;
+  const missBanner = missN ? '<div class="rvmiss">⚑ '+missN+' shift'+(missN===1?'':'s')+' dated before this period will be paid in the <b>current</b> period ('+esc(fPeriodShort(periodWindow(0)[0]))+') and flagged <b>missed last pay period</b>.</div>' : '';
   box.innerHTML = '<div class="card">'
     + '<h3>Review the sheet — '+esc(rv.company||'?')+' · '+esc(fDayMDY(rv.sheet_date))+'</h3>'
     + '<div class="muted">Claude read '+rv.rows.length+' rows. Fix anything that looks off, untick rows to skip, then save.</div>'
+    + missBanner
     + '<div class="scroll"><table><thead><tr><th></th><th>Name (last first)</th><th></th><th>Company</th><th>Date</th><th>In</th><th>Out</th><th>Break</th><th class="num">Hours</th><th>Rate</th><th class="num">Total</th></tr></thead>'
     + '<tbody>'+rv.rows.map(rowHtml).join('')+'</tbody></table></div>'
     + '<div class="rvbar"><button class="btn primary" id="ts-rv-save">Save '+inc+' row'+(inc===1?'':'s')+'</button>'
-    + '<button class="btn sm" id="ts-rv-cancel">Discard</button></div>'
+    + '<button class="btn sm" id="ts-rv-cancel">Discard</button>'
+    + payPeriodPicker(payTo)+'</div>'
     + (rv.dataUrl ? '<img class="rvpic" src="'+rv.dataUrl+'">' : '')
     + '</div>';
+  const ppSel = box.querySelector('.rvppsel');
+  if (ppSel) ppSel.onchange = () => { rv.payTo = ppSel.value; drawTsReview(); };
   const tbody = box.querySelector('tbody');
   tbody.addEventListener('input', e => {
     const cell = e.target.closest('[data-f]'); if (!cell) return;
@@ -2090,6 +2176,11 @@ function drawTsReview(){
       const m = rosterMatch(r.last, r.first);
       r.matched = !!m; r.roster_id = m ? m.id : null;
       if (m){ r.team = m.team || r.team; r.rate = rateForName(m, r.last, r.first); }
+      return;
+    }
+    if (f === 'work_date'){   // date drives the missed-last-PP flag/banner — redraw so it stays truthful
+      r[f] = cell.value;
+      if ((rv.payTo||'natural') === 'current') drawTsReview();
       return;
     }
     if (f === 'break_minutes') r[f] = +cell.value||0;
@@ -2126,6 +2217,7 @@ function drawTsReview(){
         last: r.last || null, first: r.first || null, team: r.team || null,
         roster_id: r.roster_id || null, clock_in: r.clock_in || null, clock_out: r.clock_out || null,
         break_minutes: r.break_minutes || 0, rate: r.rate == null ? 20 : r.rate,
+        pay_period: reviewPayPeriod(rv.payTo, r.work_date || rv.sheet_date),
         source: 'ocr', photo_path: rv.path || null,
       });
       if (ok) added++; else failed.push(r);
@@ -2199,15 +2291,18 @@ function drawHarvestReview(){
     return ['<option value="">(set '+(r.category==='distro'?'company':'location')+')</option>']
       .concat(opts.map(l => '<option '+(r.location===l?'selected':'')+'>'+esc(l)+'</option>')).join('');
   };
+  const payTo = rv.payTo || 'natural';
   const rowHtml = (r, i) => {
     const h = tsCalcHours(r.clock_in, r.clock_out, r.break_min);
     const t = tsCalcTotal(h, r.rate!=null?+r.rate:null, r.people);
-    return '<tr data-i="'+i+'" class="'+(r.include?'':'off')+'">'
+    const miss = reviewMissed(payTo, r.work_date);
+    return '<tr data-i="'+i+'" class="'+(r.include?'':'off')+(miss?' miss':'')+'">'
       + '<td><input type="checkbox" data-f="include" '+(r.include?'checked':'')+'></td>'
       + '<td><select data-f="category"'+(r.unsure ? ' class="unsure" title="Claude wasn’t sure which page this belongs on — please confirm"' : '')+'>'
         + '<option value="harvest"'+(r.category!=='distro'?' selected':'')+'>Harvest</option>'
         + '<option value="distro"'+(r.category==='distro'?' selected':'')+'>Distro</option></select>'
-        + (r.unsure ? '<span class="mtag new" style="margin-left:4px" title="Confirm the type">?</span>' : '') + '</td>'
+        + (r.unsure ? '<span class="mtag new" style="margin-left:4px" title="Confirm the type">?</span>' : '')
+        + (miss ? '<span class="mtag miss" style="margin-left:4px" title="Paid in the current period">missed last PP</span>' : '') + '</td>'
       + '<td><select data-f="location">'+locOpts(r)+'</select></td>'
       + '<td><input data-f="work_date" type="date" value="'+esc(r.work_date)+'" class="t" style="width:130px"></td>'
       + '<td><input data-f="worker" value="'+esc(r.worker)+'" placeholder="crew" style="width:110px">'
@@ -2226,15 +2321,21 @@ function drawHarvestReview(){
       + '<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc(r.note)+'">'+esc(r.note)+'</td></tr>';
   };
   const inc = rv.rows.filter(r => r.include).length;
+  const missN = rv.rows.filter(r => r.include && reviewMissed(payTo, r.work_date)).length;
+  const missBanner = missN ? '<div class="rvmiss">⚑ '+missN+' shift'+(missN===1?'':'s')+' dated before this period will be paid in the <b>current</b> period ('+esc(fPeriodShort(periodWindow(0)[0]))+') and flagged <b>missed last pay period</b>.</div>' : '';
   box.innerHTML = '<div class="card">'
     + '<h3>Review the parsed hours</h3>'
     + '<div class="muted">Claude parsed '+rv.rows.length+' rows and sorted distro from harvest/deleaf — check the Type column, fix anything off, untick rows to skip, then save. Distro rows land on the Distro Hours page.</div>'
+    + missBanner
     + '<div class="scroll"><table><thead><tr><th></th><th>Type</th><th>Location</th><th>Date</th><th>Worker</th><th>Task</th><th>People</th><th>In</th><th>Out</th><th class="num">Break</th><th class="num">Hours</th><th>Rate</th><th class="num">Total</th><th>Note</th></tr></thead>'
     + '<tbody>'+rv.rows.map(rowHtml).join('')+'</tbody></table></div>'
     + '<div class="rvbar"><button class="btn primary" id="ts-hrv-save">Save '+inc+' row'+(inc===1?'':'s')+'</button>'
-    + '<button class="btn sm" id="ts-hrv-cancel">Discard</button></div>'
+    + '<button class="btn sm" id="ts-hrv-cancel">Discard</button>'
+    + payPeriodPicker(payTo)+'</div>'
     + (rv.dataUrl ? '<img class="rvpic" src="'+rv.dataUrl+'">' : '')
     + '</div>';
+  const ppSel = box.querySelector('.rvppsel');
+  if (ppSel) ppSel.onchange = () => { rv.payTo = ppSel.value; drawHarvestReview(); };
   const tbody = box.querySelector('tbody');
   tbody.addEventListener('input', e => {
     const cell = e.target.closest('[data-f]'); if (!cell) return;
@@ -2248,6 +2349,11 @@ function drawHarvestReview(){
       if (r.category === 'distro') applyDistroDefaults(r);
       if (r.category === 'harvest' && r.location === 'Portal') r.location = '';
       drawHarvestReview(); return;
+    }
+    if (f === 'work_date'){   // date drives the missed-last-PP flag/banner — redraw so it stays truthful
+      r[f] = cell.value;
+      if ((rv.payTo||'natural') === 'current') drawHarvestReview();
+      return;
     }
     if (f === 'people') r[f] = +cell.value||1;
     else if (f === 'rate') r[f] = cell.value===''?null:+cell.value;
@@ -2286,6 +2392,7 @@ function drawHarvestReview(){
         const crew = Math.max(1, Math.round(r.people || 1));
         rec = {
           category: 'distro', work_date: r.work_date || todayISO(),
+          pay_period: reviewPayPeriod(rv.payTo, r.work_date || todayISO()),
           company: TS_COMPANIES.includes(r.location) ? r.location : null,
           last, first, roster_id: m ? m.id : null,
           team: teamForName(m, last, first),
@@ -2303,6 +2410,7 @@ function drawHarvestReview(){
         const { m, first, last } = compareNameMatch(r.worker);
         rec = {
           category: 'harvest', work_date: r.work_date || todayISO(),
+          pay_period: reviewPayPeriod(rv.payTo, r.work_date || todayISO()),
           company: r.location || null,
           first: m ? first : (r.worker || null), last: m ? last : null, roster_id: m ? m.id : null,
           team: r.task || null,
@@ -2370,16 +2478,19 @@ filterEl.onchange = renderCombined;
     const brow = body.querySelector(`tr[data-budgetrow="${date}"]`);
     if (brow){ const tmp = document.createElement('tbody'); tmp.innerHTML = addRowHTML(date, arr); brow.replaceWith(tmp.firstElementChild); }
   }
+  const markTaskDirty = (r, f) => { (r._dirty = r._dirty || new Set()).add(f); };
   body.addEventListener('input', e => {
     const f = e.target.dataset && e.target.dataset.field; if(!f || f==='task') return;
     const ctx = rowOf(e.target); if(!ctx || !ctx.r) return;
     ctx.r[f] = (f==='people'||f==='packaged'||f==='labeled') ? (+e.target.value||0) : e.target.value;
+    markTaskDirty(ctx.r, f);
     refreshDerived(ctx);
   });
   body.addEventListener('change', e => {
     if (e.target.dataset && e.target.dataset.field==='task'){
       const ctx = rowOf(e.target); if(!ctx || !ctx.r) return;
-      ctx.r.task = e.target.value; recomputeRow(ctx.r); saveEdits(); markDirtyDay(ctx.date); renderCombined();  // task change repaints color/rank
+      ctx.r.task = e.target.value; markTaskDirty(ctx.r, 'task');
+      recomputeRow(ctx.r); saveEdits(); markDirtyDay(ctx.date); renderCombined();  // task change repaints color/rank
     }
   });
   body.addEventListener('click', e => {
@@ -2588,7 +2699,7 @@ async function loadAllData(){
   shifts = (s.data || []).map(shiftToTs);
   tsEntries = shifts;
   lpNotes = {}; for (const x of (n.data || [])) lpNotes[x.work_date] = x.note == null ? '' : x.note;
-  roster = ro.data || [];
+  roster = (ro.data || []).map(x => ({ ...x, _saved: true }));
   lpDays = new Map((lp.data || []).map(x => [x.work_date, lpFromDb(x)]));
   return true;
 }
@@ -2596,83 +2707,119 @@ async function loadAllData(){
    Waits out local typing + in-flight saves so nothing is yanked mid-edit. */
 let refetchTimers = {};
 function queueRefetch(kind){ clearTimeout(refetchTimers[kind]); refetchTimers[kind] = setTimeout(() => refetch(kind), 600); }
+// "focus is in the table" only counts as busy while someone is actually typing.
+// A cursor parked in a cell used to defer every refetch indefinitely, so the tab
+// drifted hours stale and then clobbered on its next edit.
+let lastTypedAt = 0;
+document.addEventListener('input', () => { lastTypedAt = Date.now(); }, true);
+document.addEventListener('keydown', () => { lastTypedAt = Date.now(); }, true);
+function recentlyTyping(){ return Date.now() - lastTypedAt < 30000; }
 // A refetch may not clobber local state that changed while its select was in
 // flight — every branch re-checks its guards AFTER the await and re-queues.
 function tasksDirtyNow(){
   const el = document.activeElement;
-  return taskSyncBusy || Object.keys(taskSyncTimers).length ||
-         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review'));
+  return taskSyncBusy || Object.keys(taskSyncTimers).length || pendingTaskDeletes.size ||
+         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review') && recentlyTyping());
 }
 function shiftsDirtyNow(){
   const el = document.activeElement;
   return shiftSyncBusy || Object.keys(shiftTimers).length ||
-         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review, #ts-roster, #ts-compare'));
+         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review, #ts-roster, #ts-compare') && recentlyTyping());
 }
 function notesDirtyNow(){
   const el = document.activeElement;
   return noteSyncBusy || Object.keys(noteSyncTimers).length ||
-         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review'));
+         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review') && recentlyTyping());
 }
 function lpDirtyNow(){
   const el = document.activeElement;
   return lpSyncBusy || Object.keys(lpTimers).length ||
-         (el && el.closest && el.closest('#lpTable'));
+         (el && el.closest && el.closest('#lpTable') && recentlyTyping());
 }
 function rosterDirtyNow(){
   // covers everything the roster refetch re-renders: the roster page AND the
   // timesheet card (renderTimesheets rebuilds its filters + log)
   const el = document.activeElement;
   return rosterSyncBusy || Object.keys(rosterTimers).length ||
-         (el && el.closest && el.closest('#ts-roster, #ts-card, #ts-review'));
+         (el && el.closest && el.closest('#ts-roster, #ts-card, #ts-review') && recentlyTyping());
 }
 async function refetch(kind){
   if (kind === 'tasks'){
     if (tasksDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll('packaging_tasks', 'work_date');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (tasksDirtyNow()){ queueRefetch(kind); return; }   // changed while the select was in flight
+    // rows staged but never inserted (no _id), and rows with UNSAVED dirty fields
+    // awaiting a retry, must survive a rebuild straight from the database
+    const staged = {};
+    for (const d in lcEdits){ const keep = lcEdits[d].filter(r => !r._id); if (keep.length) staged[d] = keep; }
+    const dirtyById = new Map();
+    for (const d in lcEdits) for (const r of lcEdits[d]) if (r._id && r._dirty && r._dirty.size) dirtyById.set(r._id, r);
     lcEdits = {};
-    for (const x of data){ const r = taskToRow(x); (lcEdits[r.date] = lcEdits[r.date] || []).push(r); }
+    for (const x of data){
+      const r = taskToRow(x);
+      const old = dirtyById.get(r._id);
+      if (old){ for (const f of old._dirty) if (f in old) r[f] = old[f]; r._dirty = old._dirty; r._retries = old._retries; recomputeRow(r); }
+      (lcEdits[r.date] = lcEdits[r.date] || []).push(r);
+    }
+    for (const d in staged) (lcEdits[d] = lcEdits[d] || []).push(...staged[d]);
     Object.values(lcEdits).forEach(arr => arr.sort(taskCmp));
     renderCombined(); scheduleDerivedRender();
   } else if (kind === 'shifts'){
     if (shiftsDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll('distro_shifts', 'work_date');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (shiftsDirtyNow()){ queueRefetch(kind); return; }
+    const shiftDirty = new Map(shifts.filter(s => s._dirty && s._dirty.size).map(s => [s.id, s]));
     shifts = data.map(shiftToTs); tsEntries = shifts;
+    for (const s of shifts){
+      const old = shiftDirty.get(s.id);
+      if (old){ for (const f of old._dirty) if (f in old) s[f] = old[f]; s._dirty = old._dirty; s._retries = old._retries; }
+    }
     renderCombined(); renderTimesheets();
   } else if (kind === 'notes'){
     if (notesDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll('packaging_notes');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (notesDirtyNow()){ queueRefetch(kind); return; }
     lpNotes = {}; for (const x of data) lpNotes[x.work_date] = x.note == null ? '' : x.note;
     renderLaborPack();
   } else if (kind === 'lpdays'){
     if (lpDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll('packaging_units_days', 'work_date');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (lpDirtyNow()){ queueRefetch(kind); return; }
     lpDays = new Map(data.map(x => [x.work_date, lpFromDb(x)]));
     renderLaborPack();
   } else if (kind === 'roster'){
     if (rosterDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll('distro_roster', 'last');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (rosterDirtyNow()){ queueRefetch(kind); return; }
-    roster = data;
+    roster = data.map(x => ({ ...x, _saved: true }));
     renderTimesheets();
   }
 }
+let rtStarted = false;
+function refetchAll(){ ['tasks','shifts','notes','lpdays','roster'].forEach(queueRefetch); }
 function startRealtime(){
+  if (rtStarted) return;      // openApp can run twice (retry toast / auth event);
+  rtStarted = true;           // re-subscribing the same topic throws in supabase-js
+  let everSubscribed = false;
   sb.channel('tracker-live')
     .on('postgres_changes', { event:'*', schema:'public', table:'packaging_tasks' }, () => queueRefetch('tasks'))
     .on('postgres_changes', { event:'*', schema:'public', table:'distro_shifts' },  () => queueRefetch('shifts'))
     .on('postgres_changes', { event:'*', schema:'public', table:'packaging_notes' }, () => queueRefetch('notes'))
     .on('postgres_changes', { event:'*', schema:'public', table:'packaging_units_days' }, () => queueRefetch('lpdays'))
     .on('postgres_changes', { event:'*', schema:'public', table:'distro_roster' }, () => queueRefetch('roster'))
-    .subscribe();
+    .subscribe((status) => {
+      // events missed while the socket was down are gone forever — a rejoin must
+      // reconcile from the tables or tabs silently diverge for days
+      if (status === 'SUBSCRIBED'){ if (everSubscribed) refetchAll(); everSubscribed = true; }
+    });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refetchAll();
+  });
 }
 
 /* ---- writes: edits debounce per day, then persist straight to Postgres ----
@@ -2691,38 +2838,90 @@ function syncTaskDay(date){   // serialized per day, same reasoning as syncShift
   taskSyncChain[date] = (taskSyncChain[date] || Promise.resolve()).then(() => doSyncTaskDay(date));
   return taskSyncChain[date];
 }
+// One day's sync used to rewrite EVERY row of the day from this tab's snapshot —
+// a tab that had sat stale would silently revert a teammate's fixes the moment
+// its user touched any one cell. Now only rows this tab edited are written, and
+// only the fields that changed. All writes dispatch in the SAME tick, so a flush
+// on tab-close gets every request onto the wire — awaiting between rows only
+// guaranteed the first one survived unload.
+const TASK_COL = {
+  task: r => r.task || '', people: r => r.people || 0,
+  begin: r => r.begin || null, end: r => r.end || null,
+  packaged: r => r.packaged || 0, labeled: r => r.labeled || 0,
+  note: r => r.note == null ? null : r.note,
+};
+const TASK_COL_NAME = { begin: 'begin_at', end: 'end_at' };
 async function doSyncTaskDay(date){
   taskSyncBusy++;
   try{
+    const ops = [];
     const dels = [...pendingTaskDeletes]; pendingTaskDeletes.clear();
     if (dels.length){
-      const { error } = await sb.from('packaging_tasks').delete().in('id', dels);
-      if (error){ dels.forEach(d => pendingTaskDeletes.add(d)); toast('Couldn’t delete the task — will retry on the next change.', true); }
+      ops.push(sb.from('packaging_tasks').delete().in('id', dels).then(({ error }) => {
+        if (error){
+          dels.forEach(d => pendingTaskDeletes.add(d));
+          setTimeout(() => { if (pendingTaskDeletes.size) syncTaskDay(date); }, 4000);
+          toast('Couldn’t delete the task — retrying.', true);
+        }
+      }));
     }
     for (const r of (lcEdits[date] || [])){
-      const rec = { work_date: date, task: r.task || '', people: r.people || 0,
-        begin_at: r.begin || null, end_at: r.end || null,
-        packaged: r.packaged || 0, labeled: r.labeled || 0,
-        seconds: r.seconds == null ? null : Math.round(r.seconds),
-        hours: r.hours || 0, cost: r.cost || 0,
-        note: r.note == null ? null : r.note, updated_by: myId };
+      // never persist an untouched "+ add task" row — a blank task is noise on
+      // every device. Only the INSERT is skipped: a saved row later cleared is a
+      // real edit and must still UPDATE.
+      const blankRow = !String(r.task || '').trim() && !(+r.people) && !r.begin && !r.end
+        && !(+r.packaged) && !(+r.labeled) && !String(r.note || '').trim();
+      if (blankRow && !r._id) continue;
       if (r._id){
-        const { error } = await sb.from('packaging_tasks').update(rec).eq('id', r._id);
-        if (error) toast('Couldn’t save a task change — check your connection.', true);
+        const dirty = [...(r._dirty || [])].filter(f => TASK_COL[f]);
+        if (!dirty.length) continue;                        // this tab didn't touch this row
+        const rec = { updated_by: myId };
+        for (const f of dirty) rec[TASK_COL_NAME[f] || f] = TASK_COL[f](r);
+        if (dirty.some(f => f==='task' || f==='people' || f==='begin' || f==='end')){
+          rec.seconds = r.seconds == null ? null : Math.round(r.seconds);
+          rec.hours = r.hours || 0; rec.cost = r.cost || 0;
+        }
+        ops.push(sb.from('packaging_tasks').update(rec).eq('id', r._id).select('id').then(({ data, error }) => {
+          if (error){
+            r._retries = (r._retries || 0) + 1;
+            if (r._retries <= 5) setTimeout(() => markDirtyDay(date), 4000 * r._retries);
+            else toast('Couldn’t save a task change — check your connection.', true);
+          } else if (!data || !data.length){
+            const arr = lcEdits[date] || [];
+            const i = arr.indexOf(r); if (i >= 0) arr.splice(i, 1);
+            if (!tasksDirtyNow()) renderCombined();
+            toast('That task was deleted elsewhere — your edit had nowhere to go.', true);
+          } else {
+            r._retries = 0;
+            dirty.forEach(f => r._dirty.delete(f));
+          }
+        }));
       } else if (!r._inserting){
         r._inserting = true;
-        const { data, error } = await sb.from('packaging_tasks').insert(rec).select('id').single();
-        r._inserting = false;
-        if (data){
-          r._id = data.id;
-          // deleted while the insert was in flight: queue the delete now that we have an id
-          if (r._deleted){ pendingTaskDeletes.add(r._id); markDirtyDay(date); }
-        }
-        else if (error) toast('Couldn’t add the task — check your connection.', true);
+        const rec = { work_date: date, task: r.task || '', people: r.people || 0,
+          begin_at: r.begin || null, end_at: r.end || null,
+          packaged: r.packaged || 0, labeled: r.labeled || 0,
+          seconds: r.seconds == null ? null : Math.round(r.seconds),
+          hours: r.hours || 0, cost: r.cost || 0,
+          note: r.note == null ? null : r.note, updated_by: myId };
+        // client-generated id: a retry after a lost RESPONSE conflicts on the key
+        // instead of quietly inserting the same task twice
+        if (!r._cid) r._cid = crypto.randomUUID();
+        rec.id = r._cid;
+        ops.push(sb.from('packaging_tasks').insert(rec).select('id').single().then(({ data, error }) => {
+          r._inserting = false;
+          if (data || (error && error.code === '23505')){
+            r._id = r._cid;
+            if (r._dirty) r._dirty.clear();
+            if (r._deleted){ pendingTaskDeletes.add(r._id); markDirtyDay(date); }
+          }
+          else if (error) toast('Couldn’t add the task — check your connection.', true);
+        }));
       } else {
         markDirtyDay(date);   // a row is mid-insert: re-sync this day once it has its id
       }
     }
+    await Promise.all(ops);
   } finally { taskSyncBusy--; }
 }
 // fire every pending debounced write NOW (tab closing / backgrounded) — the
@@ -2783,7 +2982,14 @@ async function doSyncLpDay(date){
     const dirty = [...(d._dirty || [])];
     d._dirty = new Set();
     const rollups = [...LP_TOT_COLS, 'uph', ...LP_LBS_COLS];
-    const fail = () => { dirty.forEach(c => d._dirty.add(c)); toast('Couldn’t save the Labor/Packaging change — check your connection.', true); };
+    const fail = () => {
+      dirty.forEach(c => d._dirty.add(c));
+      // re-arm the timer: with no timer pending, the next lpdays refetch rebuilds
+      // lpDays wholesale and throws the dirty values away
+      d._retries = (d._retries || 0) + 1;
+      if (d._retries <= 5) setTimeout(() => markDirtyLpDay(date), 4000 * d._retries);
+      else toast('Couldn’t save the Labor/Packaging change — check your connection.', true);
+    };
     const fullRec = () => {
       const rec = { work_date: date, source: d.source === 'derived' ? 'edit' : d.source, updated_by: myId };
       for (const c of LP_ALL_COLS) rec[c] = d[c];
@@ -2810,6 +3016,7 @@ async function doSyncLpDay(date){
       return;
     }
     if (data){
+      d._retries = 0;
       // adopt the server's merged values for cells with no newer local edit,
       // then re-derive the rollups; if the merge changed them, one more pass
       // (convergent — the next response will match) fixes them server-side
@@ -2823,7 +3030,13 @@ async function doSyncLpDay(date){
   } finally { lpSyncBusy--; }
 }
 
-/* ---- roster writes: debounced upsert per person; missing id = delete ---- */
+/* ---- roster writes: debounced save per person ----
+   A save NEVER deletes. It used to: when the pending write couldn't find its id
+   in the `roster` array it took that as "this person was removed" and deleted
+   them in the database — but the array is replaced wholesale by every refetch,
+   so a refetch landing between an edit and its 700ms save could delete someone
+   nobody touched. That cost the NY tracker its roster twice. Removal is now one
+   explicit function, reachable only from the confirmed ✕. ---- */
 let rosterTimers = {}, rosterSyncBusy = 0;
 const rosterSyncChain = {};
 function markDirtyRoster(id){
@@ -2838,31 +3051,55 @@ async function doSyncRoster(id){
   rosterSyncBusy++;
   try{
     const p = roster.find(x => x.id === id);
-    if (!p){
-      const { error } = await sb.from('distro_roster').delete().eq('id', id);
-      if (error){ toast('Couldn’t remove the person — check your connection.', true); return; }
-      // the DB FK nulls roster_id on their shifts — mirror that locally so the
-      // next full-row shift update doesn't re-send a dead reference (FK error)
-      shifts.forEach(s => { if (s.roster_id === id) s.roster_id = null; });
-      const rv = tsState.review, hv = tsState.harvestReview;
-      if (rv && rv.rows) rv.rows.forEach(r => { if (r.roster_id === id) r.roster_id = null; });
-      if (hv && hv.rows) hv.rows.forEach(r => { if (r.roster_id === id) r.roster_id = null; });
-      return;
-    }
+    if (!p) return;   // gone from the screen — that is not an instruction to delete
     // never persist an untouched "+ Add person" row — a blank person is noise
     // on every device (same principle as never inserting a blank task)
     const blank = !(p.last || '').trim() && !(p.first || '').trim() && !p.team &&
       !p.default_company && (p.default_rate == null || p.default_rate === '') && !(p.aliases || []).length;
-    if (blank) return;
+    if (blank && !p._saved) return;
     const rec = { id: p.id, last: p.last || null, first: p.first || '',
       team: p.team || null, default_company: p.default_company || null,
       default_rate: p.default_rate == null || p.default_rate === '' ? null : +p.default_rate,
       aliases: (p.aliases && p.aliases.length) ? p.aliases : null,
       active: p.active !== false };
-    const { error } = await sb.from('distro_roster').upsert(rec);
-    if (error) toast('Couldn’t save the roster change — check your connection.', true);
+    // UPDATE, not upsert: if this person was deleted (here or in another tab)
+    // while the save was pending, an upsert would quietly resurrect them.
+    const doInsert = !p._saved;
+    let { error } = doInsert
+      ? await sb.from('distro_roster').insert(rec)
+      : await sb.from('distro_roster').update(rec).eq('id', p.id);
+    // a lost-response INSERT retry can 23505 (the row already committed): the insert
+    // DID land, so switch to UPDATE so this edit's later fields aren't stranded
+    // (mirrors insertShift's idempotent 23505 handling).
+    if (error && doInsert && error.code === '23505'){
+      p._saved = true;
+      ({ error } = await sb.from('distro_roster').update(rec).eq('id', p.id));
+    }
+    if (error){ toast('Couldn’t save the roster change — check your connection.', true); return; }
+    p._saved = true;
   } finally { rosterSyncBusy--; }
 }
+// the ONLY code that deletes a roster row, and only from the confirmed ✕
+async function removeRosterPerson(p){
+  clearTimeout(rosterTimers[p.id]); delete rosterTimers[p.id];   // no pending save can race it
+  roster = roster.filter(x => x.id !== p.id);
+  renderRoster();
+  const { error } = await sb.from('distro_roster').delete().eq('id', p.id);
+  if (error){
+    roster.push(p);
+    roster.sort((a, b) => (a.last || '').localeCompare(b.last || ''));
+    renderRoster();
+    toast('Couldn’t remove the person — check your connection.', true);
+    return;
+  }
+  // the DB FK nulls roster_id on their shifts — mirror that locally so the next
+  // shift update doesn't re-send a dead reference (FK error)
+  shifts.forEach(s => { if (s.roster_id === p.id) s.roster_id = null; });
+  const rv = tsState.review, hv = tsState.harvestReview;
+  if (rv && rv.rows) rv.rows.forEach(r => { if (r.roster_id === p.id) r.roster_id = null; });
+  if (hv && hv.rows) hv.rows.forEach(r => { if (r.roster_id === p.id) r.roster_id = null; });
+}
+
 // A phantom day: app-owned rows that are all blank, with no timesheet and no
 // synced sheet rows — e.g. a "+ add task" never filled, or a timesheet-first
 // day whose hours were later removed. Not real work; HIDE it at render time.
@@ -3922,15 +4159,30 @@ async function sha256hex(s){
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
   return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2,'0')).join('');
 }
+// a boot failure must leave a way forward ON the gate — a self-dismissing toast
+// is not recovery UI, and dropping the gate before data loads shows an empty but
+// editable app that reads as total data loss
+function gateRetry(msg){
+  const g = document.getElementById('login-gate'); if (g) g.classList.remove('hidden');
+  loginErr(msg);
+  const err = document.getElementById('login-err');
+  if (err && !document.getElementById('login-retry')){
+    const b = document.createElement('button');
+    b.id = 'login-retry'; b.className = 'btn'; b.style.marginTop = '10px';
+    b.textContent = 'Retry';
+    b.onclick = () => { loginErr(''); b.remove(); openApp(); };
+    err.insertAdjacentElement('afterend', b);
+  }
+}
 async function openApp(){
   const { data: staff, error } = await sb.rpc('is_staff');
   if (error){
-    // transient (network/API) — keep the session, offer a retry instead of bouncing
-    toast('Couldn’t reach the database — tap to retry.', true, openApp);
+    // transient (network/API) — keep the session, offer a persistent retry
+    gateRetry('Couldn’t reach the database — check your connection.');
     return;
   }
   if (staff !== true){
-    await sb.auth.signOut();
+    await sb.auth.signOut({ scope: 'local' });
     const g = document.getElementById('login-gate'); if (g) g.classList.remove('hidden');
     loginErr('This account isn\'t authorized — sign in with your @' + AUTH_DOMAIN + ' Google account.');
     showGISButton();   // make sure the gate actually has a sign-in button on this path
@@ -3938,9 +4190,9 @@ async function openApp(){
   }
   const { data: { user } } = await sb.auth.getUser();
   myId = user ? user.id : null;
-  const g = document.getElementById('login-gate'); if (g) g.classList.add('hidden');
   const ok = await loadAllData();
-  if (!ok){ toast('Couldn’t load the data — tap to retry.', true, openApp); return; }
+  if (!ok){ gateRetry('Signed in, but the data didn’t load.'); return; }
+  const g = document.getElementById('login-gate'); if (g) g.classList.add('hidden');
   afterDataLoaded();
   startRealtime();
 }
@@ -3951,7 +4203,9 @@ async function onGoogleCredential(resp){
   openApp();
 }
 function signOut(){
-  sb.auth.signOut().finally(() => {
+  // scope 'local': the button means this device — the default 'global' revoked
+  // every session on the shared project, including the BA app on people's phones
+  sb.auth.signOut({ scope: 'local' }).finally(() => {
     if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     location.reload();
   });
