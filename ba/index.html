@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.69';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.70';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1249,7 +1249,7 @@ async function baReport(m){
   const {start,end}=ensureRepRange();
   const uid=state.session.user.id;
   const [trips,exps,hrs]=await Promise.all([
-    supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
+    supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end),
     supabase.from('hours').select('id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,kind,note,status').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
   ]);
@@ -1285,7 +1285,7 @@ async function baReport(m){
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this range yet.</p>`}
     </div>`;
   // Your visits — same data as discrete (store, day) visits (own data, so no BA name)
-  const visits=buildVisits(trips.data,exps.data,hrs.data,{keep:()=>true, baName:()=>'', dnm:dn});
+  const visits=buildVisits(trips.data,exps.data,hrs.data,{keep:()=>true, baName:()=>'', dnm:dn, homeOf:()=>state.profile?.base_address||''});
   const nvTrips=(trips.data||[]).filter(t=>!t.dispensary_id);
   const nvExps=(exps.data||[]).filter(x=>dispIds(x).length===0);
   const nonVisit={ tripCount:nvTrips.length, tripAmt:nvTrips.reduce((a,t)=>a+Number(t.amount||0),0),
@@ -2924,9 +2924,9 @@ async function adminReport(m){
   await reloadPeriods();
   const {start,end}=ensureRepRange();
   const [{data:profs},{data:disps},trips,exps,hrs]=await Promise.all([
-    supabase.from('profiles').select('id,full_name,region'),
+    supabase.from('profiles').select('id,full_name,region,base_address'),
     supabase.from('dispensaries').select('id,name,state'),
-    supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
+    supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,ba_id,dispensary_id,dispensary_ids,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
     supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,amount,work_date,hours,rate,job,kind,note,status,source').gte('work_date',start).lte('work_date',end),
   ]);
@@ -2978,7 +2978,7 @@ async function adminReport(m){
 
   // Visits: the SAME data reorganized as discrete (BA, store, day) visits — each with
   // its round-trip mileage$, that day's labor$ share, and any expense$ rolled together.
-  const visits=buildVisits(trips.data,exps.data,hrs.data,{keep,baName,dnm});
+  const visits=buildVisits(trips.data,exps.data,hrs.data,{keep,baName,dnm,homeOf:id=>(pById[id]||{}).base_address||''});
   // Not everything is a store visit — trips/expenses with no store linked are legit
   // (general driving, supplies, non-BA time). Tally them so nothing's lost, framed neutrally.
   const nvTrips=(trips.data||[]).filter(t=>inRegion(t.ba_id) && !t.dispensary_id);
@@ -3028,9 +3028,10 @@ async function adminReport(m){
 // don't form a visit (surfaced as a "complete these" nudge instead).
 const isPlaceholderName=n=>/^\*\s/.test(n||'');
 function buildVisits(trips, exps, hrs, ctx){
-  const {keep,baName,dnm}=ctx; const V={};
+  const {keep,baName,dnm,homeOf}=ctx; const V={};
   const ens=(b,d,dt)=>{ const k=`${b}|${d}|${dt}`;
     if(!V[k]) V[k]={key:k,ba_id:b,disp_id:d,date:dt,ba:baName(b),disp:dnm(d)||'(deleted location)',
+      home:(homeOf?homeOf(b):'')||'',
       mile:0,labor:0,exp:0,card:0,miles:0,laborHrs:0,trips:[],hours:[],expenses:[]};
     return V[k]; };
   (trips||[]).forEach(t=>{ if(!t.dispensary_id||!keep(t.ba_id,t.dispensary_id)) return;
@@ -3096,7 +3097,19 @@ function visitSheet(v){
   if(!v){ toast('Visit unavailable — reopen the report','err'); return; }
   const kst='font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700';
   const line=(ic,lbl,val,sub)=>`<div class="row" style="justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid var(--line)"><div><span style="margin-right:7px">${ic}</span>${lbl}${sub?` <span class="muted small">${sub}</span>`:''}</div><div style="font-weight:700;white-space:nowrap">${val}</div></div>`;
-  const tripLines=v.trips.map(t=>`<div class="s" style="padding:3px 0">🚗 ${t.miles!=null?`${t.miles} mi`:''}${t.method?` · ${esc(t.method)}`:''}${t.dest_label?` · ${esc(t.dest_label)}`:''} — <b>${money(t.amount)}</b></div>`).join('');
+  // Each leg reads as a ROUTE (from → to), not just its destination — otherwise the drive
+  // home shows only the home address and looks like a mystery second stop. A label matching
+  // this BA's own base address renders as "Home" (clearer, and keeps addresses out of shared
+  // reports); the leg's kind (Demo / PAD, Travel…) is more useful here than its method.
+  const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const homeN=norm(v.home);
+  const place=l=>{ const t=String(l||'').trim(); if(!t) return '—';
+    return (homeN && norm(t)===homeN) ? '🏠 Home' : esc(t); };
+  const tripLines=v.trips.map(t=>{
+    const route=`${place(t.start_label)} → ${place(t.dest_label)}`;
+    const bits=[t.miles!=null?`${t.miles} mi`:'', t.kind?esc(t.kind):''].filter(Boolean).join(' · ');
+    return `<div class="s" style="padding:4px 0">🚗 ${route}${bits?` <span class="muted">· ${bits}</span>`:''} — <b>${money(t.amount)}</b></div>`;
+  }).join('');
   const hourLines=v.hours.map(h=>`<div class="s" style="padding:3px 0">⏱ ${Math.round((Number(h.row.hours||0)/h.n)*100)/100} hrs${h.row.kind?` · ${esc(h.row.kind)}`:''}${h.n>1?` · split ${h.n} stores`:''}${h.row.source==='salary'?' · salaried':''} — <b>${money(h.share)}</b></div>`).join('');
   const expLines=v.expenses.map(x=>`<div class="s" style="padding:3px 0">🧾 ${esc(x.row.vendor||'Expense')}${x.row.payment==='company'?' · 💳 card':' · 💵 reimburse'}${x.n>1?` · split ${x.n}`:''} — <b>${money(x.share)}</b></div>`).join('');
   openSheet(`
@@ -3107,12 +3120,17 @@ function visitSheet(v){
         <div style="font-size:24px;font-weight:800;color:var(--accent2)">${money(v.total)}</div></div>
       ${line('🚗','Mileage <span class="muted small">up &amp; back</span>',money(v.mile), v.miles?`${Math.round(v.miles*10)/10} mi`:'')}
       ${line('⏱','Labor',money(v.labor), v.laborHrs?`${Math.round(v.laborHrs*100)/100} hrs that day`:'')}
-      ${v.exp>0?line('🧾','Expenses',money(v.exp)):''}
+      ${line('🧾','Expenses', v.exp>0?money(v.exp):'<span class="muted">none logged</span>')}
       ${v.card>0?line('💳','Company card',money(v.card),'not reimbursed'):''}
     </div>
-    ${(tripLines||hourLines||expLines)?`<div class="card"><div class="small muted" style="font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">What made up this visit</div>${tripLines}${hourLines}${expLines}</div>`:''}
-    <button class="btn ghost block" id="vClose" style="margin-top:12px">Close</button>
+    ${(tripLines||hourLines||expLines)?`<div class="card"><div class="small muted" style="font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">What made up this visit</div>${tripLines}${hourLines}${expLines}
+      ${expLines?'':'<div class="s muted" style="padding:4px 0">🧾 No expenses were logged against this visit.</div>'}</div>`:''}
+    <button class="btn block" id="vDay" style="margin-top:12px">🔍 See this whole day</button>
+    <button class="btn ghost block" id="vClose" style="margin-top:8px">Close</button>
   `);
+  // the visit is one store's slice of a day — this opens the BA's ENTIRE day (every leg,
+  // expense and hour, including anything attributed elsewhere) so a number can be audited
+  $('#vDay').onclick=()=>dayAuditSheet(v.ba_id, v.date);
   $('#vClose').onclick=closeSheet;
 }
 
