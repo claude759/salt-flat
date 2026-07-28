@@ -568,7 +568,7 @@
     </section>
 
     <footer>
-      Pounds use per-product unit weights — 3.5g for jars, pouches, budtender samples &amp; 5-packs (5 × 0.7g); 1g for 1g pre-rolls · 454g per lb.<br>
+      Pounds use per-product unit weights — 3.5g for jars &amp; pouches; 1.5g budtender samples; 0.7g per 5pk pre-roll unit; 1g for 1g pre-rolls · 454g per lb (same weights as the Labor/Packaging page).<br>
       Cost per pound: Packaging $/lb = packaging pay ÷ lbs packaged that month; Labeling $/lb = labeling pay ÷ lbs labeled that month; Total $/lb = the two rates added.
     </footer>
   </div>
@@ -684,9 +684,9 @@ const LB = 454; // grams per pound
 const PRODUCTS = [
   {name:'3.5g Jar',           match:'3.5g jar',           grams:3.5},
   {name:'3.5g Pouch',         match:'3.5g pouch',         grams:3.5},
-  {name:'Budtender Samples',  match:'budtender samples',  grams:3.5},
+  {name:'Budtender Samples',  match:'budtender samples',  grams:1.5},
   {name:'1g Pre-roll',        match:'1g pre-roll',        grams:1},
-  {name:'5pk .7g Pre-roll',   match:'5pk',                grams:3.5},
+  {name:'5pk .7g Pre-roll',   match:'5pk',                grams:0.7},   // counted as single 0.7g pre-rolls, same as the LP page
 ];
 
 
@@ -870,9 +870,16 @@ function filteredShifts(){
 async function insertShift(rec){
   shiftSyncBusy++;
   try{
+    // client-generated id: if the INSERT landed but the response was lost, the
+    // caller's retry conflicts on the key instead of quietly double-inserting
+    const id = rec.id || crypto.randomUUID();
     const { data, error } = await sb.from(SITE.tables.shifts)
-      .insert({ source:'manual', category:'distro', people:1, break_minutes:0, ...rec, updated_by: myId })
+      .insert({ id, source:'manual', category:'distro', people:1, break_minutes:0, ...rec, updated_by: myId })
       .select('*').single();
+    if (error && error.code === '23505'){   // the earlier attempt DID land — adopt it
+      const { data: ex } = await sb.from(SITE.tables.shifts).select('*').eq('id', id).single();
+      if (ex){ const s0 = shiftToTs(ex); if (!shifts.some(x => x.id === s0.id)) shifts.push(s0); return s0; }
+    }
     if (error){ toast('Couldn’t add the row — check your connection.', true); return null; }
     const s = shiftToTs(data);
     shifts.push(s);
@@ -887,22 +894,50 @@ function syncShift(s){
   shiftSyncChain[s.id] = (shiftSyncChain[s.id] || Promise.resolve()).then(() => doSyncShift(s));
   return shiftSyncChain[s.id];
 }
+// A save writes ONLY the fields this tab actually edited. Two tabs are open all
+// day here; a full-row write from a tab whose refetch was deferred re-sends its
+// stale copy of every OTHER field over a teammate's newer fix, with no error —
+// pay-affecting fields included, since the trigger recomputes hours from stale
+// times. (LP days always patched only dirty columns; shifts now do too.)
+const SHIFT_COL = {
+  company: s => s.company || null, work_date: s => s.work_date,
+  pay_period: s => s.pay_period || null, team: s => s.team || null,
+  last: s => s.last || null, first: s => s.first || null,
+  clock_in: s => s.clock_in || null, clock_out: s => s.clock_out || null,
+  break_minutes: s => Math.round(s.break_minutes || 0),
+  people: s => Math.max(1, Math.round(s.people || 1)),
+  rate: s => s.rate == null ? 0 : s.rate, roster_id: s => s.roster_id || null,
+};
 async function doSyncShift(s){
+  const dirty = [...(s._dirty || [])].filter(f => SHIFT_COL[f]);
+  if (!dirty.length) return;
   shiftSyncBusy++;
   try{
-    const { data, error } = await sb.from(SITE.tables.shifts).update({
-      company: s.company || null, category: s.category || 'distro', work_date: s.work_date,
-      pay_period: s.pay_period || null, team: s.team || null, last: s.last || null, first: s.first || null,
-      clock_in: s.clock_in || null, clock_out: s.clock_out || null,
-      break_minutes: Math.round(s.break_minutes || 0), people: Math.max(1, Math.round(s.people || 1)),
-      rate: s.rate == null ? 0 : s.rate, roster_id: s.roster_id || null, updated_by: myId,
-    }).eq('id', s.id).select('hours,total').single();
-    if (error){ toast('Couldn’t save the timesheet change.', true); return; }
+    const rec = { updated_by: myId };
+    for (const f of dirty) rec[f] = SHIFT_COL[f](s);
+    const { data, error } = await sb.from(SITE.tables.shifts).update(rec)
+      .eq('id', s.id).select('hours,total').single();
+    if (error){
+      if (error.code === 'PGRST116'){   // 0 rows: the row was deleted in another tab / by the import
+        shifts = shifts.filter(x => x.id !== s.id);
+        renderTsFilters(); renderTsLog(); if (!tasksDirtyNow()) renderCombined();
+        toast('That row was deleted elsewhere — your edit had nowhere to go.', true);
+        return;
+      }
+      // keep the fields dirty and retry on a timer, so a blip doesn't silently eat the edit
+      s._retries = (s._retries || 0) + 1;
+      if (s._retries <= 5) setTimeout(() => queueShiftSave(s), 4000 * s._retries);
+      else toast('Couldn’t save the timesheet change — check your connection.', true);
+      return;
+    }
+    s._retries = 0;
+    dirty.forEach(f => s._dirty.delete(f));
     s.hours = +data.hours || 0; s.total = +data.total || 0;
     const tr = document.querySelector('#tsTable tr[data-id="'+s.id+'"]');
     if (tr){ const h = tr.querySelector('.c-h'), t = tr.querySelector('.c-t');
       if (h) h.textContent = tsNum(s.hours); if (t) t.textContent = tsMoney(s.total); }
-    renderCombined();   // budgets/timeline follow the timesheet
+    // budgets/timeline follow the timesheet — but never yank the board mid-typing
+    if (!tasksDirtyNow()) renderCombined(); else scheduleDerivedRender();
   } finally { shiftSyncBusy--; }
 }
 function queueShiftSave(s){
@@ -1466,7 +1501,8 @@ function renderCompare(){
     const s = shifts.find(x => x.id === tr.dataset.id); if (!s) return;
     if (!confirm('Delete ' + tsFullName(s) + '’s ' + (s.category === 'harvest' ? 'harvest' : 'distro')
       + ' row on ' + fDayMDY(s.work_date) + ' (' + fClock(s.clock_in) + '–' + fClock(s.clock_out) + ')? This removes it from the '
-      + (s.category === 'harvest' ? 'Harvest' : 'Distro') + ' page too.')) return;
+      + (s.category === 'harvest' ? 'Harvest' : 'Distro') + ' page too.'
+      + (s.source === 'import' ? '\n\n⚠ This is a Gusto row — tonight’s import will bring it back unless it’s also fixed in Gusto. To resolve an uploaded duplicate, delete the UPLOADED copy instead.' : ''))) return;
     shiftSyncBusy++;
     const { error } = await sb.from(SITE.tables.shifts).delete().eq('id', s.id);
     shiftSyncBusy--;
@@ -1584,8 +1620,9 @@ function renderTsLog(){
   });
   const { flagged: overlapIds, byDate: overlapByDate } = distroOverlaps(rows);
   const warnRow = w => '<tr class="warnrow"><td colspan="'+NC+'">⚠ ' + esc(w.name)
-    + ' has overlapping hours on this day' + (w.mixed ? ' (uploaded + Gusto)' : '')
-    + ' — delete one so it isn’t counted twice, or '
+    + ' has overlapping hours on this day' + (w.mixed
+      ? ' (uploaded + Gusto) — delete the <b>uploaded</b> copy (deleting the Gusto one just brings it back tonight), or '
+      : ' — delete one so it isn’t counted twice, or ')
     + '<button class="pbtn warndismiss" data-ids="'+esc(w.ids.join(','))+'">keep both</button></td></tr>';
   let th=0, tt=0; for (const s of rows){ th += +s.hours||0; tt += +s.total||0; }
   tsTotbar([['Rows', rows.length], ['Total hours', tsNum(th)], ['Gross pay', tsMoney(tt), 'sum']]);
@@ -1732,11 +1769,16 @@ function renderHarvestLog(){
 }
 function renderTsSimplified(){
   const map = new Map();
+  const { flagged: simpFlagged } = distroOverlaps(filteredShifts());
+  const flaggedKeys = new Set();
+  for (const s of filteredShifts()){
+    if (simpFlagged.has(s.id)) flaggedKeys.add(((s.last||'').trim()+'|'+(s.first||'').trim()).toLowerCase());
+  }
   for (const s of filteredShifts()){
     // key on the PERSON only — team is free text in NY, and two spellings of it
     // must never split one worker into two payroll lines
     const key = ((s.last||'').trim()+'|'+(s.first||'').trim()).toLowerCase();
-    if (!map.has(key)) map.set(key, { last:s.last||'', first:s.first||'', teams:new Set(), hours:0, pay:0, notes:new Set() });
+    if (!map.has(key)) map.set(key, { last:s.last||'', first:s.first||'', teams:new Set(), hours:0, pay:0, notes:new Set(), overlap: flaggedKeys.has(key) });
     const g = map.get(key); g.hours += +s.hours||0; g.pay += +s.total||0;
     if (s.team) g.teams.add(s.team); if (s.note) g.notes.add(s.note);
   }
@@ -1745,13 +1787,15 @@ function renderTsSimplified(){
   tsTotbar([['People', list.length], ['Total hours', tsNum(th)], ['Gross pay', tsMoney(tt), 'sum']]);
   const vb = document.getElementById('ts-viewbar');
   vb.innerHTML = '<button class="btn sm" id="ts-copysimple">📋 Copy for Google Sheets</button>'
-    + ' <span class="faint" style="font-size:12px">select the table &amp; ⌘C, or use the button</span>';
+    + ' <span class="faint" style="font-size:12px">select the table &amp; ⌘C, or use the button</span>'
+    + (list.some(g => g.overlap)
+        ? ' <span class="cmp-flag">⚠ someone below has overlapping rows — totals may double-count; resolve them on the Log view</span>' : '');
   document.getElementById('ts-copysimple').onclick = () => copyTsSimplified(list);
   const cols = ['Last','First','Team','Gross Pay','Total Hours','Decimal','Full Name','Note'];
   const head = '<thead><tr>'+cols.map(c => '<th'+(/Pay|Hours|Decimal/.test(c)?' class="num"':'')+'>'+c+'</th>').join('')+'</tr></thead>';
   const body = list.map(g => {
     const full = [g.first, g.last].filter(Boolean).join(' ');
-    return '<tr><td>'+esc(g.last)+'</td><td>'+esc(g.first)+'</td><td>'+esc(g.team)+'</td>'
+    return '<tr'+(g.overlap?' class="overlap" title="This person has overlapping rows in this window — the totals may double-count"':'')+'><td>'+esc(g.last)+(g.overlap?' ⚠':'')+'</td><td>'+esc(g.first)+'</td><td>'+esc(g.team)+'</td>'
       + '<td class="calc money num">'+tsMoney(g.pay)+'</td><td class="calc num">'+hhmmss(g.hours)+'</td><td class="calc num">'+tsNum(g.hours)+'</td>'
       + '<td>'+esc(full)+'</td><td>'+esc([...g.notes].join('; '))+'</td></tr>'
       + '<tr class="spacer"><td colspan="8" style="height:8px"></td></tr>';
@@ -1762,7 +1806,8 @@ function copyTsSimplified(list){
   const head = ['Last','First','Team','Gross Pay','Total Hours','Decimal','Full Name','Note'];
   const lines = [head.join('\t')];
   list.forEach(g => { const full=[g.first,g.last].filter(Boolean).join(' ');
-    lines.push([g.last,g.first,g.team,(Math.round(g.pay*100)/100).toFixed(2),hhmmss(g.hours),(Math.round(g.hours*100)/100),full,[...g.notes].join('; ')].join('\t'));
+    lines.push([g.last,g.first,g.team,(Math.round(g.pay*100)/100).toFixed(2),hhmmss(g.hours),(Math.round(g.hours*100)/100),full,
+      [(g.overlap?'⚠ OVERLAPPING ROWS — may double-count':''),[...g.notes].join('; ')].filter(Boolean).join(' · ')].join('\t'));
     lines.push(''); });
   const ta = document.createElement('textarea'); ta.value = lines.join('\n');
   ta.style.position='fixed'; ta.style.top='-1000px'; document.body.appendChild(ta); ta.focus(); ta.select();
@@ -1861,10 +1906,11 @@ function wireTsShell(){
         if (fin && fin !== cell) fin.value = s.first || '';
         if (cell.dataset.f === 'last' && s.last) cell.value = s.last;
         if (cell.dataset.f === 'first' && s.first) cell.value = s.first;
-        if (!s.team) s.team = m.team || teamForName(m, s.last, s.first);
-        if (!s.rate) s.rate = rateForName(m, s.last, s.first);
+        markShiftDirty(s, 'roster_id'); markShiftDirty(s, 'last'); markShiftDirty(s, 'first');
+        if (!s.team){ s.team = m.team || teamForName(m, s.last, s.first); markShiftDirty(s, 'team'); }
+        if (!s.rate){ s.rate = rateForName(m, s.last, s.first); markShiftDirty(s, 'rate'); }
       }
-      else if (!s.team){ s.team = teamForName(null, s.last, s.first); }
+      else if (!s.team){ s.team = teamForName(null, s.last, s.first); markShiftDirty(s, 'team'); }
       const tsel = cell.closest('tr').querySelector('[data-f="team"]'); if (tsel) tsel.value = s.team || '';
     }
     clearTimeout(shiftTimers[s.id]); delete shiftTimers[s.id];
@@ -1897,6 +1943,8 @@ function wireTsShell(){
     const gx = e.target.closest('.gx');
     if (gx){
       const s = shiftOf(gx); if (!s) return;
+      if (s.source === 'import' &&
+          !confirm('This is a Gusto row — tonight’s import will bring it back unless it’s also fixed in Gusto. Delete anyway?')) return;
       shiftSyncBusy++;
       const { error } = await sb.from(SITE.tables.shifts).delete().eq('id', s.id);
       shiftSyncBusy--;
@@ -1906,13 +1954,15 @@ function wireTsShell(){
     }
   });
 }
+function markShiftDirty(s, f){ (s._dirty = s._dirty || new Set()).add(f); }
 function applyShiftField(s, f, v){
-  if (f==='work_date'){ if (v) s[f] = v; return; }   // an emptied date keeps the stored one (NOT NULL)
+  if (f==='work_date'){ if (v){ s[f] = v; markShiftDirty(s, f); } return; }   // an emptied date keeps the stored one (NOT NULL)
   if (f==='break_minutes') s[f] = Math.max(0, Math.round(+v||0));   // a negative break would pay time nobody worked
   else if (f==='people') s[f] = Math.max(1, Math.round(+v||1));
   else if (f==='rate') s[f] = v==='' ? null : Math.max(0, +v||0);
   else if (f==='pay_period') s[f] = v||null;
   else s[f] = v;
+  markShiftDirty(s, f);
 }
 // a row added while an older window is on screen must land IN that window —
 // otherwise it saves to today, the filter hides it, and the manager clicks
@@ -1985,8 +2035,14 @@ async function handleTsPhoto(file){
     const up = await sb.storage.from('timesheets').upload(path, blob, { contentType: isPdf ? 'application/pdf' : 'image/jpeg' });
     if (up.error) throw new Error('upload failed: ' + up.error.message);
     const { data: res, error: fnErr } = await sb.functions.invoke('read-timesheet', { body: { path } });
-    if (fnErr || !res || res.ok === false) throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read the sheet — try a clearer photo/PDF or add the rows manually.');
-    if (!(res.rows||[]).length){ toast('No rows found on that sheet — try a clearer file or add them manually', true); return; }
+    if (fnErr || !res || res.ok === false){
+      sb.storage.from('timesheets').remove([path]);   // don't strand the object on a failed read
+      throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read the sheet — try a clearer photo/PDF or add the rows manually.');
+    }
+    if (!(res.rows||[]).length){
+      sb.storage.from('timesheets').remove([path]);
+      toast('No rows found on that sheet — try a clearer file or add them manually', true); return;
+    }
     openTsReview(res, isPdf ? null : URL.createObjectURL(blob), path);   // no inline preview for a PDF
   }catch(err){ toast(err.message || 'Failed to read the file', true); }
   finally{ if (drop){ drop.innerHTML = orig; drop.onclick = showPhotoChooser; } }
@@ -1996,9 +2052,15 @@ function showPhotoChooser(){
   if (c) c.hidden = false;              // NY has no chooser
 }
 function openTsReview(res, dataUrl, path){
+  // replacing an unsaved review discards its upload — don't strand the old object
+  const prev = tsState.review;
+  if (prev && prev.path && !prev.anySaved && prev.path !== path)
+    sb.storage.from('timesheets').remove([prev.path]);
   const company = res.company || SITE.defaultCompany;
   const counts = {}; (res.rows||[]).forEach(r => { if (r.date) counts[r.date]=(counts[r.date]||0)+1; });
-  let sheetDate = res.sheet_date || todayISO(), best = 0;
+  // the reader's own sheet_date starts with one vote — a single misread row date
+  // (wrong year, once, in production) must not outvote it
+  let sheetDate = res.sheet_date || todayISO(), best = res.sheet_date ? 1 : 0;
   Object.keys(counts).forEach(d => { if (counts[d] > best){ best = counts[d]; sheetDate = d; } });
   const rows = (res.rows||[]).map(r => {
     const m = rosterMatch(r.last, r.first);
@@ -2044,6 +2106,8 @@ function drawTsReview(){
     + '<div class="muted">Claude read '+rv.rows.length+' rows. Fix anything that looks off, untick rows to skip, then save.</div>'
     + '<div class="scroll"><table><thead><tr><th></th><th>Name (last first)</th><th></th><th>Company</th><th>Date</th><th>In</th><th>Out</th><th>Break</th><th class="num">Hours</th><th>Rate</th><th class="num">Total</th></tr></thead>'
     + '<tbody>'+rv.rows.map(rowHtml).join('')+'</tbody></table></div>'
+    + (Math.abs(new Date(rv.sheet_date+'T00:00') - new Date(todayISO()+'T00:00')) > 60*86400000
+        ? '<div class="warnrow" style="padding:8px 10px;border-radius:8px;margin-top:10px;background:rgba(239,77,86,.08)">⚠ This sheet reads as <b>'+esc(fDayMDY(rv.sheet_date))+'</b> — more than two months from today. Check the date column before saving.</div>' : '')
     + '<div class="rvbar"><button class="btn primary" id="ts-rv-save">Save '+inc+' row'+(inc===1?'':'s')+'</button>'
     + '<button class="btn sm" id="ts-rv-cancel">Discard</button></div>'
     + (rv.dataUrl ? '<img class="rvpic" src="'+rv.dataUrl+'">' : '')
@@ -2059,11 +2123,25 @@ function drawTsReview(){
       r.last = parts[0]||''; r.first = parts.slice(1).join(' ');
       const m = rosterMatch(r.last, r.first);
       r.matched = !!m; r.roster_id = m ? m.id : null;
-      if (m){ r.team = m.team || r.team; r.rate = rateForName(m, r.last, r.first); }
+      if (m){
+        r.team = m.team || r.team;
+        // a rate the reviewer typed by hand beats the roster default
+        if (!r._rateEdited) r.rate = rateForName(m, r.last, r.first);
+      }
+      // show the match where it happened — silently changing rate/total after a
+      // typed correction meant the screen and the save disagreed
+      const tr2 = cell.closest('tr');
+      const rin = tr2.querySelector('[data-f="rate"]');
+      if (rin && String(rin.value) !== String(r.rate ?? '')) rin.value = r.rate ?? '';
+      const tag = tr2.querySelector('.mtag');
+      if (tag){ tag.className = 'mtag ' + (r.matched ? 'ok' : 'new'); tag.textContent = r.matched ? 'match' : 'new'; }
+      const h2 = tsCalcHours(r.clock_in, r.clock_out, r.break_minutes);
+      tr2.querySelector('.c-h').textContent = tsNum(h2);
+      tr2.querySelector('.c-t').textContent = tsMoney(tsCalcTotal(h2, r.rate!=null?+r.rate:null));
       return;
     }
     if (f === 'break_minutes') r[f] = +cell.value||0;
-    else if (f === 'rate') r[f] = cell.value===''?null:+cell.value;
+    else if (f === 'rate'){ r[f] = cell.value===''?null:+cell.value; r._rateEdited = cell.value !== ''; }
     else r[f] = cell.value;
     const h = tsCalcHours(r.clock_in, r.clock_out, r.break_minutes);
     const tr = cell.closest('tr');
@@ -2083,12 +2161,20 @@ function drawTsReview(){
     }
   });
   box.querySelector('#ts-rv-cancel').onclick = () => {
-    if (rv.path) sb.storage.from('timesheets').remove([rv.path]);   // discard the orphan upload
+    // only remove the upload if NO rows from it were saved — saved rows keep
+    // photo_path pointing at this object, and their 📄 button must keep working
+    if (rv.path && !rv.anySaved) sb.storage.from('timesheets').remove([rv.path]);
     tsState.review = null; drawTsReview();
   };
   box.querySelector('#ts-rv-save').onclick = async (e) => {
-    const btn = e.currentTarget; btn.disabled = true;
-    let added = 0; const failed = [];
+    const btn = e.currentTarget;
+    if (btn.disabled) return;                        // a double-tap must not save twice
+    const included = rv.rows.filter(r => r.include);
+    const noRate = included.filter(r => r.rate == null);
+    if (noRate.length && !confirm(noRate.length + ' row' + (noRate.length===1?'':'s') + ' ('
+        + noRate.map(tsFullName).join(', ') + ') have no pay rate and will save at $0. Save anyway?')) return;
+    btn.disabled = true;
+    let added = 0; const failed = []; const savedDates = [];
     for (const r of rv.rows){
       if (!r.include) continue;
       const ok = await insertShift({
@@ -2098,7 +2184,8 @@ function drawTsReview(){
         break_minutes: r.break_minutes || 0, rate: r.rate == null ? 0 : r.rate,
         source: 'ocr', photo_path: rv.path || null,
       });
-      if (ok) added++; else failed.push(r);
+      if (ok){ added++; rv.anySaved = true; savedDates.push(r.work_date || rv.sheet_date); }
+      else failed.push(r);
     }
     if (failed.length){   // keep whatever didn't save so nothing typed is lost
       rv.rows = failed; drawTsReview();
@@ -2107,7 +2194,14 @@ function drawTsReview(){
       tsState.review = null; drawTsReview();
       toast('Saved '+added+' row'+(added===1?'':'s')+' — they’re in the log below.');
     }
-    renderTsFilters(); renderTsLog(); renderCombined();
+    // if the active filter hides what was just saved, retarget it — otherwise the
+    // empty log invites uploading the same sheet again
+    if (savedDates.length && !savedDates.every(d => filteredShifts().some(s => s.work_date === d && s.source === 'ocr'))){
+      tsState.filter.preset = ''; tsState.filter.employee = '';
+      tsState.filter.from = savedDates.slice().sort()[0];
+      tsState.filter.to = savedDates.slice().sort().pop();
+    }
+    renderTsFilters(); renderTsLog(); if (!tasksDirtyNow()) renderCombined();
   };
 }
 /* ---- harvest notes review: parsed rows -> check -> save -------------------- */
@@ -2339,16 +2433,19 @@ filterEl.onchange = renderCombined;
     const brow = body.querySelector(`tr[data-budgetrow="${date}"]`);
     if (brow){ const tmp = document.createElement('tbody'); tmp.innerHTML = addRowHTML(date, arr); brow.replaceWith(tmp.firstElementChild); }
   }
+  const markTaskDirty = (r, f) => { (r._dirty = r._dirty || new Set()).add(f); };
   body.addEventListener('input', e => {
     const f = e.target.dataset && e.target.dataset.field; if(!f || f==='task') return;
     const ctx = rowOf(e.target); if(!ctx || !ctx.r) return;
     ctx.r[f] = (f==='people'||f==='packaged'||f==='labeled') ? (+e.target.value||0) : e.target.value;
+    markTaskDirty(ctx.r, f);
     refreshDerived(ctx);
   });
   body.addEventListener('change', e => {
     if (e.target.dataset && e.target.dataset.field==='task'){
       const ctx = rowOf(e.target); if(!ctx || !ctx.r) return;
-      ctx.r.task = e.target.value; recomputeRow(ctx.r); saveEdits(); markDirtyDay(ctx.date); renderCombined();  // task change repaints color/rank
+      ctx.r.task = e.target.value; markTaskDirty(ctx.r, 'task');
+      recomputeRow(ctx.r); saveEdits(); markDirtyDay(ctx.date); renderCombined();  // task change repaints color/rank
     }
   });
   body.addEventListener('click', e => {
@@ -2376,11 +2473,23 @@ filterEl.onchange = renderCombined;
   // gap dropdown: picking a window adds a pre-filled Non-packaging activity row
   body.addEventListener('change', e => {
     const sel = e.target.closest('.gapsel'); if (!sel || !sel.value) return;
+    const date = sel.dataset.date;
     const [b, en, ppl] = sel.value.split('|');
-    const arr = ensureEdit(sel.dataset.date);
-    const r = blankTask(sel.dataset.date);
+    const arr = ensureEdit(date);
+    const r = blankTask(date);
     r.task = NONPACK; r.begin = b; r.end = en; r.people = +ppl || 1;
-    recomputeRow(r); arr.push(r); saveEdits(); markDirtyDay(sel.dataset.date); renderCombined();
+    // clamp: the filled row may cover at most the day's remaining unassigned
+    // person-hours — a window that spans a lunch break would otherwise overshoot
+    const ts = tsDay(date);
+    if (ts){
+      const remaining = Math.max(0, ts.hours - taskHoursUsed(arr));
+      const span = (toMin(en) - toMin(b)) / 60;
+      if (span * r.people > remaining + 0.01 && remaining > 0){
+        const capped = Math.max(1, Math.round((toMin(b) + (remaining / r.people) * 60) / 5) * 5);
+        r.end = minToHM(Math.min(toMin(en), capped));
+      }
+    }
+    recomputeRow(r); arr.push(r); saveEdits(); markDirtyDay(date); renderCombined();
   });
 })();
 
@@ -2560,92 +2669,124 @@ async function loadAllData(){
    Waits out local typing + in-flight saves so nothing is yanked mid-edit. */
 let refetchTimers = {};
 function queueRefetch(kind){ clearTimeout(refetchTimers[kind]); refetchTimers[kind] = setTimeout(() => refetch(kind), 600); }
+// "focus is in the table" only counts as busy while the user is actually typing.
+// Kelsey clicks into a cell and walks away — without this, her tab would defer
+// every refetch indefinitely and drift hours stale, then clobber on her next edit.
+let lastTypedAt = 0;
+document.addEventListener('input', () => { lastTypedAt = Date.now(); }, true);
+document.addEventListener('keydown', () => { lastTypedAt = Date.now(); }, true);
+function recentlyTyping(){ return Date.now() - lastTypedAt < 30000; }
 // A refetch may not clobber local state that changed while its select was in
 // flight — every branch re-checks its guards AFTER the await and re-queues.
 function tasksDirtyNow(){
   const el = document.activeElement;
-  return taskSyncBusy || Object.keys(taskSyncTimers).length ||
-         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review'));
+  return taskSyncBusy || Object.keys(taskSyncTimers).length || pendingTaskDeletes.size ||
+         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review') && recentlyTyping());
 }
 function shiftsDirtyNow(){
   const el = document.activeElement;
   return shiftSyncBusy || Object.keys(shiftTimers).length ||
-         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review, #ts-roster, #ts-compare'));
+         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review, #ts-roster, #ts-compare') && recentlyTyping());
 }
 function notesDirtyNow(){
   const el = document.activeElement;
   return noteSyncBusy || Object.keys(noteSyncTimers).length ||
-         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review'));
+         (el && el.closest && el.closest('#combinedTable, #lpTable, #ts-card, #ts-review') && recentlyTyping());
 }
 function lpDirtyNow(){
   const el = document.activeElement;
   return lpSyncBusy || Object.keys(lpTimers).length ||
-         (el && el.closest && el.closest('#lpTable'));
+         (el && el.closest && el.closest('#lpTable') && recentlyTyping());
 }
 function rosterDirtyNow(){
   // covers everything the roster refetch re-renders: the roster page AND the
   // timesheet card (renderTimesheets rebuilds its filters + log)
   const el = document.activeElement;
   return rosterSyncBusy || Object.keys(rosterTimers).length ||
-         (el && el.closest && el.closest('#ts-roster, #ts-card, #ts-review'));
+         (el && el.closest && el.closest('#ts-roster, #ts-card, #ts-review') && recentlyTyping());
 }
 async function refetch(kind){
   if (kind === 'tasks'){
     if (tasksDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll(SITE.tables.tasks, 'work_date');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (tasksDirtyNow()){ queueRefetch(kind); return; }   // changed while the select was in flight
     // Rows the user has staged but not filled in yet carry no _id (a blank row is
     // deliberately never inserted), so a rebuild straight from the database would
     // make them vanish under her cursor. Carry them across.
     const staged = {};
     for (const d in lcEdits){ const keep = lcEdits[d].filter(r => !r._id); if (keep.length) staged[d] = keep; }
+    // ...and rows with UNSAVED dirty fields (a failed write awaiting its retry)
+    // must keep those values across the rebuild, or the retry writes nothing
+    const dirtyById = new Map();
+    for (const d in lcEdits) for (const r of lcEdits[d]) if (r._id && r._dirty && r._dirty.size) dirtyById.set(r._id, r);
     lcEdits = {};
-    for (const x of data){ const r = taskToRow(x); (lcEdits[r.date] = lcEdits[r.date] || []).push(r); }
+    for (const x of data){
+      const r = taskToRow(x);
+      const old = dirtyById.get(r._id);
+      if (old){ for (const f of old._dirty) if (f in old) r[f] = old[f]; r._dirty = old._dirty; r._retries = old._retries; recomputeRow(r); }
+      (lcEdits[r.date] = lcEdits[r.date] || []).push(r);
+    }
     for (const d in staged) (lcEdits[d] = lcEdits[d] || []).push(...staged[d]);
     Object.values(lcEdits).forEach(arr => arr.sort(taskCmp));
     renderCombined(); scheduleDerivedRender();
   } else if (kind === 'shifts'){
     if (shiftsDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll(SITE.tables.shifts, 'work_date');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (shiftsDirtyNow()){ queueRefetch(kind); return; }
+    const shiftDirty = new Map(shifts.filter(s => s._dirty && s._dirty.size).map(s => [s.id, s]));
     shifts = data.map(shiftToTs); tsEntries = shifts;
+    for (const s of shifts){
+      const old = shiftDirty.get(s.id);
+      if (old){ for (const f of old._dirty) if (f in old) s[f] = old[f]; s._dirty = old._dirty; s._retries = old._retries; }
+    }
     renderCombined(); renderTimesheets();
   } else if (kind === 'notes'){
     if (notesDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll(SITE.tables.notes);
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (notesDirtyNow()){ queueRefetch(kind); return; }
     lpNotes = {}; for (const x of data) lpNotes[x.work_date] = x.note == null ? '' : x.note;
     renderLaborPack();
   } else if (kind === 'lpdays'){
     if (lpDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll(SITE.tables.units, 'work_date');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (lpDirtyNow()){ queueRefetch(kind); return; }
     lpDays = new Map(data.map(x => [x.work_date, lpFromDb(x)]));
     renderLaborPack();
   } else if (kind === 'roster'){
     if (rosterDirtyNow()){ queueRefetch(kind); return; }
     const { data, error } = await fetchAll(SITE.tables.roster, 'last');
-    if (error || !data) return;
+    if (error || !data){ setTimeout(() => queueRefetch(kind), 5000); return; }
     if (rosterDirtyNow()){ queueRefetch(kind); return; }
     roster = data.map(x => ({ ...x, _saved: true }));
     renderTimesheets();
   }
 }
 let rtStarted = false;
+function refetchAll(){ ['tasks','shifts','notes','lpdays','roster'].forEach(queueRefetch); }
 function startRealtime(){
   if (rtStarted) return;      // openApp can run twice (retry toast / auth event);
   rtStarted = true;           // re-subscribing the same topic throws in supabase-js
+  let everSubscribed = false;
   sb.channel(SITE.channel)
     .on('postgres_changes', { event:'*', schema:'public', table: SITE.tables.tasks }, () => queueRefetch('tasks'))
     .on('postgres_changes', { event:'*', schema:'public', table: SITE.tables.shifts },  () => queueRefetch('shifts'))
     .on('postgres_changes', { event:'*', schema:'public', table: SITE.tables.notes }, () => queueRefetch('notes'))
     .on('postgres_changes', { event:'*', schema:'public', table: SITE.tables.units }, () => queueRefetch('lpdays'))
     .on('postgres_changes', { event:'*', schema:'public', table: SITE.tables.roster }, () => queueRefetch('roster'))
-    .subscribe();
+    .subscribe((status) => {
+      // events missed while the socket was down are gone forever — a rejoin
+      // must reconcile from the tables or tabs silently diverge for days
+      if (status === 'SUBSCRIBED'){ if (everSubscribed) refetchAll(); everSubscribed = true; }
+    });
+  // same reasoning for a laptop waking up: the overnight import happened while
+  // this tab was asleep and its realtime events are long gone
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refetchAll();
+  });
 }
 
 /* ---- writes: edits debounce per day, then persist straight to Postgres ----
@@ -2664,46 +2805,92 @@ function syncTaskDay(date){   // serialized per day, same reasoning as syncShift
   taskSyncChain[date] = (taskSyncChain[date] || Promise.resolve()).then(() => doSyncTaskDay(date));
   return taskSyncChain[date];
 }
+// One day's sync used to rewrite EVERY row of the day from this tab's snapshot —
+// a tab that had sat stale (deferred refetch) would silently revert a teammate's
+// afternoon fixes the moment its user touched any one cell. Now: only rows this
+// tab actually edited are written, and only the fields that changed. All writes
+// dispatch in the SAME tick (then settle), so a flush on tab-close gets every
+// request onto the wire before the event loop dies — awaiting between rows only
+// guaranteed the FIRST one.
+const TASK_COL = {
+  task: r => r.task || '', people: r => r.people || 0,
+  begin: r => r.begin || null, end: r => r.end || null,
+  packaged: r => r.packaged || 0, labeled: r => r.labeled || 0,
+  note: r => r.note == null ? null : r.note,
+};
+const TASK_COL_NAME = { begin: 'begin_at', end: 'end_at' };   // field → column
 async function doSyncTaskDay(date){
   taskSyncBusy++;
   try{
+    const ops = [];
     const dels = [...pendingTaskDeletes]; pendingTaskDeletes.clear();
     if (dels.length){
-      const { error } = await sb.from(SITE.tables.tasks).delete().in('id', dels);
-      if (error){ dels.forEach(d => pendingTaskDeletes.add(d)); toast('Couldn’t delete the task — will retry on the next change.', true); }
+      ops.push(sb.from(SITE.tables.tasks).delete().in('id', dels).then(({ error }) => {
+        if (error){
+          dels.forEach(d => pendingTaskDeletes.add(d));
+          setTimeout(() => { if (pendingTaskDeletes.size) syncTaskDay(date); }, 4000);
+          toast('Couldn’t delete the task — retrying.', true);
+        }
+      }));
     }
     for (const r of (lcEdits[date] || [])){
-      // never persist an untouched "+ add task" row — the same rule the roster and
-      // the timesheet log already follow. Now that every day of the week is on the
-      // board with its own add button, a stray click would otherwise leave a blank
-      // row in ny_tasks forever. Only the INSERT is skipped: a row that was saved
-      // and then cleared is a real edit and must still UPDATE.
+      // never persist an untouched "+ add task" row (see the blank-row rule);
+      // a saved row later cleared is a real edit and still updates.
       const blankRow = !String(r.task || '').trim() && !(+r.people) && !r.begin && !r.end
         && !(+r.packaged) && !(+r.labeled) && !String(r.note || '').trim();
       if (blankRow && !r._id) continue;
-      const rec = { work_date: date, task: r.task || '', people: r.people || 0,
-        begin_at: r.begin || null, end_at: r.end || null,
-        packaged: r.packaged || 0, labeled: r.labeled || 0,
-        seconds: r.seconds == null ? null : Math.round(r.seconds),
-        hours: r.hours || 0, cost: r.cost || 0,
-        note: r.note == null ? null : r.note, updated_by: myId };
       if (r._id){
-        const { error } = await sb.from(SITE.tables.tasks).update(rec).eq('id', r._id);
-        if (error) toast('Couldn’t save a task change — check your connection.', true);
+        const dirty = [...(r._dirty || [])].filter(f => TASK_COL[f]);
+        if (!dirty.length) continue;                        // this tab didn't touch this row
+        const rec = { updated_by: myId };
+        for (const f of dirty) rec[TASK_COL_NAME[f] || f] = TASK_COL[f](r);
+        // times/people/task feed the client-computed rollups — send those along
+        if (dirty.some(f => f==='task' || f==='people' || f==='begin' || f==='end')){
+          rec.seconds = r.seconds == null ? null : Math.round(r.seconds);
+          rec.hours = r.hours || 0; rec.cost = r.cost || 0;
+        }
+        ops.push(sb.from(SITE.tables.tasks).update(rec).eq('id', r._id).select('id').then(({ data, error }) => {
+          if (error){
+            r._retries = (r._retries || 0) + 1;
+            if (r._retries <= 5) setTimeout(() => markDirtyDay(date), 4000 * r._retries);
+            else toast('Couldn’t save a task change — check your connection.', true);
+          } else if (!data || !data.length){
+            // 0 rows: deleted in another tab — drop it here too instead of pretending
+            const arr = lcEdits[date] || [];
+            const i = arr.indexOf(r); if (i >= 0) arr.splice(i, 1);
+            if (!tasksDirtyNow()) renderCombined();
+            toast('That task was deleted elsewhere — your edit had nowhere to go.', true);
+          } else {
+            r._retries = 0;
+            dirty.forEach(f => r._dirty.delete(f));
+          }
+        }));
       } else if (!r._inserting){
         r._inserting = true;
-        const { data, error } = await sb.from(SITE.tables.tasks).insert(rec).select('id').single();
-        r._inserting = false;
-        if (data){
-          r._id = data.id;
-          // deleted while the insert was in flight: queue the delete now that we have an id
-          if (r._deleted){ pendingTaskDeletes.add(r._id); markDirtyDay(date); }
-        }
-        else if (error) toast('Couldn’t add the task — check your connection.', true);
+        const rec = { work_date: date, task: r.task || '', people: r.people || 0,
+          begin_at: r.begin || null, end_at: r.end || null,
+          packaged: r.packaged || 0, labeled: r.labeled || 0,
+          seconds: r.seconds == null ? null : Math.round(r.seconds),
+          hours: r.hours || 0, cost: r.cost || 0,
+          note: r.note == null ? null : r.note, updated_by: myId };
+        // client-generated id: a retry after a lost RESPONSE conflicts on the key
+        // instead of quietly inserting the same task twice
+        if (!r._cid) r._cid = crypto.randomUUID();
+        rec.id = r._cid;
+        ops.push(sb.from(SITE.tables.tasks).insert(rec).select('id').single().then(({ data, error }) => {
+          r._inserting = false;
+          if (data || (error && error.code === '23505')){   // 23505: the earlier attempt DID land
+            r._id = r._cid;
+            if (r._dirty) r._dirty.clear();
+            if (r._deleted){ pendingTaskDeletes.add(r._id); markDirtyDay(date); }
+          }
+          else if (error) toast('Couldn’t add the task — check your connection.', true);
+        }));
       } else {
         markDirtyDay(date);   // a row is mid-insert: re-sync this day once it has its id
       }
     }
+    await Promise.all(ops);
   } finally { taskSyncBusy--; }
 }
 // fire every pending debounced write NOW (tab closing / backgrounded) — the
@@ -2782,7 +2969,14 @@ async function doSyncLpDay(date){
     const dirty = [...(d._dirty || [])];
     d._dirty = new Set();
     const rollups = [...LP_TOT_COLS, 'uph', ...LP_LBS_COLS];
-    const fail = () => { dirty.forEach(c => d._dirty.add(c)); toast('Couldn’t save the Labor/Packaging change — check your connection.', true); };
+    const fail = () => {
+      dirty.forEach(c => d._dirty.add(c));
+      // re-arm the timer: with no timer pending, the next lpdays refetch would
+      // rebuild lpDays wholesale and throw the dirty values away
+      d._retries = (d._retries || 0) + 1;
+      if (d._retries <= 5) setTimeout(() => markDirtyLpDay(date), 4000 * d._retries);
+      else toast('Couldn’t save the Labor/Packaging change — check your connection.', true);
+    };
     const fullRec = () => {
       const rec = { work_date: date, source: d.source === 'derived' ? 'edit' : d.source, updated_by: myId };
       for (const c of LP_ALL_COLS) rec[c] = d[c];
@@ -2809,6 +3003,7 @@ async function doSyncLpDay(date){
       return;
     }
     if (data){
+      d._retries = 0;
       // adopt the server's merged values for cells with no newer local edit,
       // then re-derive the rollups; if the merge changed them, one more pass
       // (convergent — the next response will match) fixes them server-side
@@ -2883,14 +3078,18 @@ function isEmptyDay(date){
 function tsDay(date){
   const es = tsEntries.filter(t => t.work_date === date && (t.category || 'distro') === 'distro');
   if (!es.length) return null;
-  let lo = null, hi = null, hours = 0;
+  let lo = null, hi = null, hours = 0, leave = 0;
   for (const t of es){
-    hours += +t.hours || 0;
     const b = toMin(t.clock_in), e2 = toMin(t.clock_out);
+    // punchless rows are PAID LEAVE (PTO/holiday from Gusto) — pay, not presence.
+    // Counting them in `hours` made the task-vs-timesheet verdict demand tasks
+    // nobody was there to do: a PTO day read "task time ≠ timesheet" forever.
+    if (b == null && e2 == null){ leave += +t.hours || 0; continue; }
+    hours += +t.hours || 0;
     if (b != null && (lo == null || b < lo)) lo = b;
     if (e2 != null && (hi == null || e2 > hi)) hi = e2;
   }
-  return {lo, hi, hours: +hours.toFixed(2)};
+  return {lo, hi, hours: +hours.toFixed(2), leave: +leave.toFixed(2)};
 }
 // how many distinct people are on the distro timesheet for this day (unique names)
 function tsPeople(date){
@@ -2910,7 +3109,14 @@ function gapWindows(date, es){
   const ts = tsEntries.filter(t => t.work_date === date && (t.category || 'distro') === 'distro');
   if (!ts.length) return [];
   const events = [];
-  for (const t of ts){ const b = toMin(t.clock_in), e = toMin(t.clock_out); if (b != null && e != null && e > b){ events.push([b, 1], [e, -1]); } }
+  for (const t of ts){
+    const b = toMin(t.clock_in), e = toMin(t.clock_out);
+    if (b == null || e == null || e <= b) continue;
+    // a shift's presence is discounted by its break — otherwise the tool's own
+    // suggestion overshoots the timesheet total and flips the verdict red
+    const w = Math.max(0, (e - b - (t.break_minutes || 0)) / (e - b));
+    events.push([b, w], [e, -w]);
+  }
   for (const r of es){ const b = toMin(r.begin), e = toMin(r.end); if (r.task && b != null && e != null && e > b){ events.push([b, -(r.people || 0)], [e, +(r.people || 0)]); } }
   if (!events.length) return [];
   events.sort((a, b) => a[0] - b[0]);
@@ -2920,10 +3126,11 @@ function gapWindows(date, es){
   const wins = []; let cur = 0, k = 0;
   for (let i = 0; i < pts.length - 1; i++){
     while (k < events.length && events[k][0] === pts[i]) cur += events[k++][1];
-    if (cur <= 0) continue;
+    if (cur <= 0.05) continue;
+    const ppl = Math.max(1, Math.round(cur));
     const last = wins[wins.length - 1];
-    if (last && last.end === pts[i] && last.ppl === cur){ last.end = pts[i + 1]; last.pmin += cur * (pts[i + 1] - pts[i]); }
-    else wins.push({start: pts[i], end: pts[i + 1], ppl: cur, pmin: cur * (pts[i + 1] - pts[i])});
+    if (last && last.end === pts[i] && last.ppl === ppl){ last.end = pts[i + 1]; last.pmin += cur * (pts[i + 1] - pts[i]); }
+    else wins.push({start: pts[i], end: pts[i + 1], ppl: ppl, pmin: cur * (pts[i + 1] - pts[i])});
   }
   return wins.filter(w => w.pmin >= 15)                    // ignore slivers under a quarter person-hour
     .sort((a, b) => b.pmin - a.pmin).slice(0, 6)           // the 6 biggest chunks…
@@ -2935,10 +3142,13 @@ function gapWindows(date, es){
 function addRowHTML(date, es){
   const ts = tsDay(date);
   const used = taskHoursUsed(es);
-  const ok = ts && Math.abs(used - ts.hours) < 0.05;
+  const onlyLeave = ts && ts.hours === 0 && ts.leave > 0;
+  const ok = ts && (onlyLeave ? used === 0 : Math.abs(used - ts.hours) < 0.05);
   const diff = ts ? +(ts.hours - used).toFixed(2) : 0;
   const dayCost = es.reduce((a, r) => a + (r.cost || 0), 0);
-  const tsCell = ts ? `Timesheet: <b>${ts.hours.toFixed(2)}</b> hrs` : '<span class="faint">no timesheet hours yet</span>';
+  const tsCell = ts
+    ? `Timesheet: <b>${ts.hours.toFixed(2)}</b> hrs${ts.leave ? ` <span class="faint" title="Paid leave — pay without presence, so the task log isn't expected to cover it">+ ${ts.leave.toFixed(2)} paid leave</span>` : ''}`
+    : '<span class="faint">no timesheet hours yet</span>';
   const verdict = !ts ? '' : (ok
     ? '<span class="v-ok">✓ correct</span>'
     : '<span class="v-bad" title="Task time doesn\'t equal timesheet time">task time ≠ timesheet</span>');
@@ -3138,8 +3348,10 @@ const PRESETS = [
     return [iso(s), iso(t)];
   }},
   {id:'all', label:'All time', range(){
-    if (!rows.length) return [todayISO(), todayISO()];
-    const ds = rows.map(r => r.date);
+    // NY has no frozen history — the real data lives in lcEdits days, so the
+    // range must come from effectiveRows() or "All time" collapses to today
+    const ds = effectiveRows().map(r => r.date).filter(Boolean);
+    if (!ds.length) return [todayISO(), todayISO()];
     return [ds.reduce((a,b)=>a<b?a:b), ds.reduce((a,b)=>a>b?a:b)];
   }},
 ];
@@ -3956,15 +4168,30 @@ async function sha256hex(s){
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
   return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2,'0')).join('');
 }
+// a boot failure must leave a way forward ON the gate — a 12-second toast is
+// not recovery UI, and dropping the gate before data loads shows an empty but
+// editable app that reads as total data loss
+function gateRetry(msg){
+  const g = document.getElementById('login-gate'); if (g) g.classList.remove('hidden');
+  loginErr(msg);
+  const err = document.getElementById('login-err');
+  if (err && !document.getElementById('login-retry')){
+    const b = document.createElement('button');
+    b.id = 'login-retry'; b.className = 'btn'; b.style.marginTop = '10px';
+    b.textContent = 'Retry';
+    b.onclick = () => { loginErr(''); b.remove(); openApp(); };
+    err.insertAdjacentElement('afterend', b);
+  }
+}
 async function openApp(){
   const { data: staff, error } = await sb.rpc('is_staff');
   if (error){
-    // transient (network/API) — keep the session, offer a retry instead of bouncing
-    toast('Couldn’t reach the database — tap to retry.', true, openApp);
+    // transient (network/API) — keep the session, offer a persistent retry
+    gateRetry('Couldn’t reach the database — check your connection.');
     return;
   }
   if (staff !== true){
-    await sb.auth.signOut();
+    await sb.auth.signOut({ scope: 'local' });
     const g = document.getElementById('login-gate'); if (g) g.classList.remove('hidden');
     loginErr('This account isn\'t authorized — sign in with your @' + AUTH_DOMAIN + ' Google account.');
     showGISButton();   // make sure the gate actually has a sign-in button on this path
@@ -3972,9 +4199,9 @@ async function openApp(){
   }
   const { data: { user } } = await sb.auth.getUser();
   myId = user ? user.id : null;
-  const g = document.getElementById('login-gate'); if (g) g.classList.add('hidden');
   const ok = await loadAllData();
-  if (!ok){ toast('Couldn’t load the data — tap to retry.', true, openApp); return; }
+  if (!ok){ gateRetry('Signed in, but the data didn’t load.'); return; }
+  const g = document.getElementById('login-gate'); if (g) g.classList.add('hidden');
   afterDataLoaded();
   startRealtime();
 }
@@ -3985,7 +4212,9 @@ async function onGoogleCredential(resp){
   openApp();
 }
 function signOut(){
-  sb.auth.signOut().finally(() => {
+  // scope 'local': the button says "this device" — the default 'global' revoked
+  // every session on the shared project, including the BA app on people's phones
+  sb.auth.signOut({ scope: 'local' }).finally(() => {
     if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     location.reload();
   });
