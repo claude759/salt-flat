@@ -118,7 +118,43 @@ function setup() {
   Logger.log('Backup is live, every 10 minutes → ' + ss.getUrl());
 }
 
+/**
+ * A backup that fails quietly is worse than no backup — you find out when you
+ * need it. Any failure is written into the _log tab (and re-thrown so Google
+ * still emails its failure notice), so a stalled backup is visible at a glance.
+ */
 function backupNow() {
+  try {
+    runBackup_();
+  } catch (err) {
+    try {
+      logLine_(SpreadsheetApp.getActiveSpreadsheet(),
+               Utilities.formatDate(new Date(), 'America/New_York', 'yyyy-MM-dd HH:mm:ss'),
+               'FAILED: ' + ((err && err.message) ? err.message : String(err)));
+    } catch (ignored) { /* never let the reporter mask the real error */ }
+    throw err;
+  }
+}
+
+// One log line, written as TEXT. appendRow() would re-parse the timestamp into a
+// serial, so write the cells directly with the format set first.
+function logLine_(ss, a, b) {
+  var log = ss.getSheetByName('_log') || ss.insertSheet('_log');
+  if (log.getLastRow() === 0) {
+    var head = log.getRange(1, 1, 1, 2);
+    head.setNumberFormat('@');
+    head.setValues([['backed up at (ET)', 'row counts']]);
+  }
+  var row = log.getRange(log.getLastRow() + 1, 1, 1, 2);
+  row.setNumberFormat('@');
+  row.setValues([[a, b]]);
+  if (log.getLastRow() > 500) log.deleteRows(2, log.getLastRow() - 500);   // keep it small
+  // trim rows that are empty but "used" (an earlier version formatted whole columns)
+  var maxR = log.getMaxRows(), lastR = Math.max(log.getLastRow(), 1);
+  if (maxR > lastR + 50) log.deleteRows(lastR + 1, maxR - lastR - 50);
+}
+
+function runBackup_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var jwt = signIn_();
 
@@ -141,14 +177,16 @@ function backupNow() {
       values.push(line);
     }
     sheet.clearContents();
-    sheet.getRange(1, 1, values.length, t.cols.length).setValues(values);
+    var range = sheet.getRange(1, 1, values.length, t.cols.length);
+    // Store everything as TEXT. Left alone, Sheets coerces '2026-07-27' into the
+    // serial 46230 and '13:00:00' into 0.5417 — which still restores, but nobody
+    // can read it in version history, and reading it is the entire point.
+    range.setNumberFormat('@');
+    range.setValues(values);
     sheet.setFrozenRows(1);
     counts.push(t.name + '=' + rows.length);
   }
 
   // a short log so a stalled backup is obvious at a glance
-  var log = ss.getSheetByName('_log') || ss.insertSheet('_log');
-  if (log.getLastRow() === 0) log.appendRow(['backed up at (ET)', 'row counts']);
-  log.appendRow([stamp, counts.join('  ')]);
-  if (log.getLastRow() > 500) log.deleteRows(2, log.getLastRow() - 500);   // keep it small
+  logLine_(ss, stamp, counts.join('  '));
 }
