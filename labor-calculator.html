@@ -105,6 +105,35 @@
   tr.mrow .chev{display:inline-block;width:14px;color:var(--faint);font-size:10px;transition:transform .15s}
   tr.mrow.open .chev{transform:rotate(90deg)}
   tr.mdetail>td{background:rgba(12,14,18,.6);padding:10px 14px 14px}
+  /* Employee hours report — expandable per-person tiles */
+  .emph-summary{color:var(--muted);font-size:12.5px;margin:2px 0 12px}
+  .emph-summary b{color:var(--text)}
+  .emph-box{display:flex;flex-direction:column;gap:8px}
+  .emph-tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .emph-head{display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer;user-select:none}
+  .emph-head:hover{background:var(--panel2)}
+  .emph-head .chev{display:inline-block;width:12px;color:var(--faint);font-size:10px;transition:transform .15s;flex:none}
+  .emph-tile.open .emph-head .chev{transform:rotate(90deg)}
+  .emph-name{font-weight:600;font-size:14px}
+  .emph-team{font-size:11px;color:var(--muted);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:1px 8px;white-space:nowrap}
+  .emph-tot{margin-left:auto;font-size:13px;color:var(--text);white-space:nowrap}
+  .emph-tot b{font-weight:600}
+  .emph-sub{font-size:11.5px;color:var(--faint);white-space:nowrap}
+  .emph-carrytag{font-size:10px;font-weight:700;color:#ff9b93;background:rgba(239,77,86,.16);border-radius:999px;padding:1px 7px;white-space:nowrap}
+  .emph-body{padding:2px 14px 12px;border-top:1px solid var(--line)}
+  .emph-per{margin-top:12px}
+  .emph-perhead{display:flex;align-items:center;gap:10px;font-size:12.5px;margin-bottom:4px}
+  .emph-perhead .pp-name{font-weight:600}
+  .emph-perhead .pp-tot{color:var(--muted)}
+  .emph-tbl{width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px}
+  .emph-tbl th{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);text-align:right;padding:3px 8px;border-bottom:1px solid var(--line)}
+  .emph-tbl th:first-child,.emph-tbl th:nth-child(2){text-align:left}
+  .emph-tbl td{padding:3px 8px;border-bottom:1px solid rgba(255,255,255,.045);text-align:right;white-space:nowrap}
+  .emph-tbl td:first-child,.emph-tbl td:nth-child(2){text-align:left}
+  .emph-tbl tr.carried td{background:rgba(239,77,86,.10)}
+  .emph-tbl tr.carried td:first-child{box-shadow:inset 3px 0 0 var(--red)}
+  .emph-tbl tr.sub td{border-bottom:none;border-top:1px solid var(--line);font-weight:600;color:var(--muted)}
+  .emph-empty{color:var(--faint);font-size:13px;padding:18px 4px}
   .mini-wrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:10px}
   table.mini{font-size:12.5px}
   table.mini thead th{position:sticky;top:0}
@@ -526,6 +555,7 @@
         <option value="costlb">Labor cost per pound</option>
         <option value="totals">Totals &amp; cost per unit</option>
         <option value="pounds">Units &amp; pounds</option>
+        <option value="emphours">Employee hours</option>
       </select>
       <span class="dash">·</span>
       <div class="chips" id="presets"></div>
@@ -593,6 +623,13 @@
         <thead><tr><th>Product</th><th>Units</th><th>Total cost</th><th>Packaged lbs</th><th>Labeled lbs</th><th>Cost / lb</th></tr></thead>
         <tbody></tbody>
       </table></div>
+    </section>
+
+    <section data-report="emphours" hidden>
+      <h2>Employee hours<span class="note rangeNote"></span>
+        <span class="note">click a name to see their timesheet, split by pay period · a day worked last period but paid this one shows under the period it was paid, flagged</span></h2>
+      <div id="empHoursSummary" class="emph-summary"></div>
+      <div id="empHoursBox" class="emph-box"></div>
     </section>
 
     <footer>
@@ -2851,6 +2888,7 @@ const TASK_COL = {
   note: r => r.note == null ? null : r.note,
 };
 const TASK_COL_NAME = { begin: 'begin_at', end: 'end_at' };
+function markTaskDirtyRow(r, f){ (r._dirty = r._dirty || new Set()).add(f); }
 async function doSyncTaskDay(date){
   taskSyncBusy++;
   try{
@@ -2875,6 +2913,10 @@ async function doSyncTaskDay(date){
       if (r._id){
         const dirty = [...(r._dirty || [])].filter(f => TASK_COL[f]);
         if (!dirty.length) continue;                        // this tab didn't touch this row
+        // same reasoning as doSyncShift: clear the flags BEFORE dispatching so a
+        // keystroke during the round trip isn't acknowledged by a request that
+        // never carried it
+        dirty.forEach(f => r._dirty && r._dirty.delete(f));
         const rec = { updated_by: myId };
         for (const f of dirty) rec[TASK_COL_NAME[f] || f] = TASK_COL[f](r);
         if (dirty.some(f => f==='task' || f==='people' || f==='begin' || f==='end')){
@@ -2883,6 +2925,7 @@ async function doSyncTaskDay(date){
         }
         ops.push(sb.from('packaging_tasks').update(rec).eq('id', r._id).select('id').then(({ data, error }) => {
           if (error){
+            dirty.forEach(f => markTaskDirtyRow(r, f));   // put them back for the retry
             r._retries = (r._retries || 0) + 1;
             if (r._retries <= 5) setTimeout(() => markDirtyDay(date), 4000 * r._retries);
             else toast('Couldn’t save a task change — check your connection.', true);
@@ -2893,7 +2936,6 @@ async function doSyncTaskDay(date){
             toast('That task was deleted elsewhere — your edit had nowhere to go.', true);
           } else {
             r._retries = 0;
-            dirty.forEach(f => r._dirty.delete(f));
           }
         }));
       } else if (!r._inserting){
@@ -2908,11 +2950,14 @@ async function doSyncTaskDay(date){
         // instead of quietly inserting the same task twice
         if (!r._cid) r._cid = crypto.randomUUID();
         rec.id = r._cid;
+        // the INSERT carries the row as it stands now; anything typed during the
+        // round trip accumulates in this fresh set and the next sync writes it
+        r._dirty = new Set();
         ops.push(sb.from('packaging_tasks').insert(rec).select('id').single().then(({ data, error }) => {
           r._inserting = false;
           if (data || (error && error.code === '23505')){
             r._id = r._cid;
-            if (r._dirty) r._dirty.clear();
+            if (r._dirty && r._dirty.size) markDirtyDay(date);   // typed mid-insert
             if (r._deleted){ pendingTaskDeletes.add(r._id); markDirtyDay(date); }
           }
           else if (error) toast('Couldn’t add the task — check your connection.', true);
@@ -3075,8 +3120,13 @@ async function doSyncRoster(id){
       p._saved = true;
       ({ error } = await sb.from('distro_roster').update(rec).eq('id', p.id));
     }
-    if (error){ toast('Couldn’t save the roster change — check your connection.', true); return; }
-    p._saved = true;
+    if (error){
+      p._retries = (p._retries || 0) + 1;
+      if (p._retries <= 5) setTimeout(() => markDirtyRoster(p.id), 4000 * p._retries);
+      else toast('Couldn’t save the roster change — check your connection.', true);
+      return;
+    }
+    p._retries = 0; p._saved = true;
   } finally { rosterSyncBusy--; }
 }
 // the ONLY code that deletes a roster row, and only from the confirmed ✕
@@ -3621,6 +3671,102 @@ function renderReports(){
       <td>${p.cpl ? fCents(p.cpl) : '\u2014'}</td></tr>`;
   }
   prodBody.innerHTML = html || `<tr><td colspan="6" class="empty">No entries in this date range</td></tr>`;
+
+  renderEmpHours();
+}
+
+/* period end + full label for the Employee-hours report */
+function periodEndISO(startISO){
+  const s = new Date(startISO+'T00:00');
+  return new Date(s.getTime()+(PERIOD_LEN-1)*86400000).toISOString().slice(0,10);
+}
+function fPeriodFull(startISO){
+  return startISO ? fPeriodShort(startISO)+', '+new Date(startISO+'T00:00').getFullYear() : '';
+}
+/* Employee hours: per-person expandable tiles, hours grouped by the pay period
+   they're PAID in (effPeriodStart) — so a day worked last period but carried
+   forward shows under the period it was paid, flagged. Per-person pay = hours×rate
+   (a crew row's stored total covers the whole crew; this report is per person). */
+let empHoursWired = false;
+function renderEmpHours(){
+  const box = document.getElementById('empHoursBox'); if (!box) return;
+  const s = startEl.value || '0000', e = endEl.value || '9999';
+  // a shift counts when the pay period it's billed to overlaps the date range
+  const rows = shifts.filter(sh => {
+    const st = effPeriodStart(sh); if (!st) return false;
+    return st <= e && periodEndISO(st) >= s;
+  });
+  const byEmp = new Map();
+  for (const sh of rows){
+    const name = tsFullName(sh) || '(no name)';
+    let emp = byEmp.get(name);
+    if (!emp){ emp = { name, team: sh.team||'', periods: new Map(), h:0, pay:0, carried:0 }; byEmp.set(name, emp); }
+    if (!emp.team && sh.team) emp.team = sh.team;
+    const pk = effPeriodStart(sh);
+    let per = emp.periods.get(pk);
+    if (!per){ per = { start: pk, shifts: [], h:0, pay:0 }; emp.periods.set(pk, per); }
+    const hrs = +sh.hours||0, pay = hrs * (+sh.rate||0);
+    per.shifts.push(sh); per.h += hrs; per.pay += pay;
+    emp.h += hrs; emp.pay += pay;
+    if (periodStartOf(sh.work_date) < pk) emp.carried++;
+  }
+  const emps = [...byEmp.values()].sort((a,b) => a.name.localeCompare(b.name));
+
+  const totH = emps.reduce((a,x)=>a+x.h,0), totPay = emps.reduce((a,x)=>a+x.pay,0);
+  const nCarry = emps.reduce((a,x)=>a+x.carried,0);
+  const sumEl = document.getElementById('empHoursSummary');
+  if (sumEl) sumEl.innerHTML = emps.length
+    ? '<b>'+emps.length+'</b> employee'+(emps.length===1?'':'s')+' · <b>'+fH2(totH)+'</b> hours · <b>'+fCents(totPay)+'</b> total'
+      + (nCarry ? ' · <span style="color:#ff9b93">'+nCarry+' day'+(nCarry===1?'':'s')+' carried from a prior period</span>' : '')
+    : '';
+  if (!emps.length){ box.innerHTML = '<div class="emph-empty">No timesheet hours in this date range.</div>'; return; }
+
+  const shiftRow = (sh, paidStart) => {
+    const nat = periodStartOf(sh.work_date);
+    const carried = nat && nat < paidStart;
+    const hrs = +sh.hours||0, rate = +sh.rate||0, ppl = +sh.people||1;
+    return '<tr'+(carried?' class="carried"':'')+'>'
+      + '<td>'+esc(sh.work_date ? fDate(sh.work_date) : '—')
+        + (carried ? ' <span class="emph-carrytag" title="Worked '+esc(fPeriodShort(nat))+', paid this period">carried from '+esc(fPeriodShort(nat))+'</span>' : '')+'</td>'
+      + '<td>'+esc(sh.company||'—')+(ppl>1?' <span class="emph-sub">crew ×'+ppl+'</span>':'')+'</td>'
+      + '<td>'+esc(hhmm(sh.clock_in)||'—')+'</td><td>'+esc(hhmm(sh.clock_out)||'—')+'</td>'
+      + '<td>'+(sh.break_minutes?(+sh.break_minutes+'m'):'—')+'</td>'
+      + '<td>'+fH2(hrs)+'</td><td>'+(rate?fCents(rate):'—')+'</td><td>'+fCents(hrs*rate)+'</td></tr>';
+  };
+
+  box.innerHTML = emps.map(emp => {
+    const periods = [...emp.periods.values()].sort((a,b) => a.start<b.start?1:-1);   // newest period first
+    const perHtml = periods.map(per => {
+      const body = per.shifts.slice().sort((a,b) => (a.work_date||'')<(b.work_date||'')?-1:1)
+        .map(sh => shiftRow(sh, per.start)).join('');
+      return '<div class="emph-per">'
+        + '<div class="emph-perhead"><span class="pp-name">'+esc(fPeriodFull(per.start))+'</span>'
+          + '<span class="pp-tot">'+fH2(per.h)+' h · '+fCents(per.pay)+'</span></div>'
+        + '<div class="scroll"><table class="emph-tbl"><thead><tr><th>Date</th><th>Company</th><th>In</th><th>Out</th><th>Break</th><th>Hours</th><th>Rate</th><th>Pay</th></tr></thead>'
+        + '<tbody>'+body
+        + '<tr class="sub"><td>Subtotal</td><td></td><td></td><td></td><td></td><td>'+fH2(per.h)+'</td><td></td><td>'+fCents(per.pay)+'</td></tr>'
+        + '</tbody></table></div></div>';
+    }).join('');
+    const nP = periods.length, nS = periods.reduce((a,p)=>a+p.shifts.length,0);
+    return '<div class="emph-tile" data-emp="'+esc(emp.name)+'">'
+      + '<div class="emph-head"><span class="chev">▶</span>'
+        + '<span class="emph-name">'+esc(emp.name)+'</span>'
+        + (emp.team ? '<span class="emph-team">'+esc(emp.team)+'</span>' : '')
+        + (emp.carried ? '<span class="emph-carrytag" title="'+emp.carried+' day(s) worked in a prior period, paid here">'+emp.carried+' carried</span>' : '')
+        + '<span class="emph-tot"><b>'+fH2(emp.h)+'</b> h · <b>'+fCents(emp.pay)+'</b></span>'
+        + '<span class="emph-sub">'+nP+' pay period'+(nP===1?'':'s')+' · '+nS+' shift'+(nS===1?'':'s')+'</span></div>'
+      + '<div class="emph-body" hidden>'+perHtml+'</div></div>';
+  }).join('');
+
+  if (!empHoursWired){
+    box.addEventListener('click', ev => {
+      const head = ev.target.closest('.emph-head'); if (!head) return;
+      const tile = head.closest('.emph-tile'); if (!tile) return;
+      const open = tile.classList.toggle('open');
+      tile.querySelector('.emph-body').hidden = !open;
+    });
+    empHoursWired = true;
+  }
 }
 
 /* ================= Labor / Packaging view ================= */

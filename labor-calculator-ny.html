@@ -915,9 +915,15 @@ async function doSyncShift(s){
   try{
     const rec = { updated_by: myId };
     for (const f of dirty) rec[f] = SHIFT_COL[f](s);
+    // clear these fields BEFORE awaiting: if a correction to the same cell lands
+    // while this save is in flight it re-dirties the field, and the ack must not
+    // wipe that fresh flag (else the correction is silently lost). Re-add on any
+    // failure so the value still gets re-sent.
+    dirty.forEach(f => s._dirty && s._dirty.delete(f));
     const { data, error } = await sb.from(SITE.tables.shifts).update(rec)
       .eq('id', s.id).select('hours,total').single();
     if (error){
+      dirty.forEach(f => markShiftDirty(s, f));
       if (error.code === 'PGRST116'){   // 0 rows: the row was deleted in another tab / by the import
         shifts = shifts.filter(x => x.id !== s.id);
         renderTsFilters(); renderTsLog(); if (!tasksDirtyNow()) renderCombined();
@@ -931,7 +937,6 @@ async function doSyncShift(s){
       return;
     }
     s._retries = 0;
-    dirty.forEach(f => s._dirty.delete(f));
     s.hours = +data.hours || 0; s.total = +data.total || 0;
     const tr = document.querySelector('#tsTable tr[data-id="'+s.id+'"]');
     if (tr){ const h = tr.querySelector('.c-h'), t = tr.querySelector('.c-t');
@@ -2819,6 +2824,7 @@ const TASK_COL = {
   note: r => r.note == null ? null : r.note,
 };
 const TASK_COL_NAME = { begin: 'begin_at', end: 'end_at' };   // field → column
+function markTaskDirtyRow(r, f){ (r._dirty = r._dirty || new Set()).add(f); }
 async function doSyncTaskDay(date){
   taskSyncBusy++;
   try{
@@ -2842,6 +2848,10 @@ async function doSyncTaskDay(date){
       if (r._id){
         const dirty = [...(r._dirty || [])].filter(f => TASK_COL[f]);
         if (!dirty.length) continue;                        // this tab didn't touch this row
+        // same reasoning as doSyncShift: clear the flags BEFORE dispatching so a
+        // keystroke during the round trip isn't acknowledged by a request that
+        // never carried it
+        dirty.forEach(f => r._dirty && r._dirty.delete(f));
         const rec = { updated_by: myId };
         for (const f of dirty) rec[TASK_COL_NAME[f] || f] = TASK_COL[f](r);
         // times/people/task feed the client-computed rollups — send those along
@@ -2851,6 +2861,7 @@ async function doSyncTaskDay(date){
         }
         ops.push(sb.from(SITE.tables.tasks).update(rec).eq('id', r._id).select('id').then(({ data, error }) => {
           if (error){
+            dirty.forEach(f => markTaskDirtyRow(r, f));   // put them back for the retry
             r._retries = (r._retries || 0) + 1;
             if (r._retries <= 5) setTimeout(() => markDirtyDay(date), 4000 * r._retries);
             else toast('Couldn’t save a task change — check your connection.', true);
@@ -2862,7 +2873,6 @@ async function doSyncTaskDay(date){
             toast('That task was deleted elsewhere — your edit had nowhere to go.', true);
           } else {
             r._retries = 0;
-            dirty.forEach(f => r._dirty.delete(f));
           }
         }));
       } else if (!r._inserting){
@@ -2877,11 +2887,14 @@ async function doSyncTaskDay(date){
         // instead of quietly inserting the same task twice
         if (!r._cid) r._cid = crypto.randomUUID();
         rec.id = r._cid;
+        // the INSERT carries the row as it stands now; anything typed during the
+        // round trip accumulates in this fresh set and the next sync writes it
+        r._dirty = new Set();
         ops.push(sb.from(SITE.tables.tasks).insert(rec).select('id').single().then(({ data, error }) => {
           r._inserting = false;
           if (data || (error && error.code === '23505')){   // 23505: the earlier attempt DID land
             r._id = r._cid;
-            if (r._dirty) r._dirty.clear();
+            if (r._dirty && r._dirty.size) markDirtyDay(date);   // typed mid-insert
             if (r._deleted){ pendingTaskDeletes.add(r._id); markDirtyDay(date); }
           }
           else if (error) toast('Couldn’t add the task — check your connection.', true);
@@ -3057,8 +3070,13 @@ async function doSyncRoster(id){
     const { error } = p._saved
       ? await sb.from(SITE.tables.roster).update(rec).eq('id', p.id)
       : await sb.from(SITE.tables.roster).insert(rec);
-    if (error){ toast('Couldn’t save the roster change — check your connection.', true); return; }
-    p._saved = true;
+    if (error){
+      p._retries = (p._retries || 0) + 1;
+      if (p._retries <= 5) setTimeout(() => markDirtyRoster(p.id), 4000 * p._retries);
+      else toast('Couldn’t save the roster change — check your connection.', true);
+      return;
+    }
+    p._retries = 0; p._saved = true;
   } finally { rosterSyncBusy--; }
 }
 // A phantom day: app-owned rows that are all blank, with no timesheet and no
