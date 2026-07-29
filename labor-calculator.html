@@ -105,6 +105,9 @@
   tr.mrow .chev{display:inline-block;width:14px;color:var(--faint);font-size:10px;transition:transform .15s}
   tr.mrow.open .chev{transform:rotate(90deg)}
   tr.mdetail>td{background:rgba(12,14,18,.6);padding:10px 14px 14px}
+  #taskTable td.mcell{cursor:pointer}
+  #taskTable td.mcell:hover{background:rgba(124,92,255,.08)}
+  #taskTable td.mcell.open{background:rgba(124,92,255,.14);box-shadow:inset 0 -2px 0 var(--accent)}
   /* Employee hours report — expandable per-person tiles */
   .emph-summary{color:var(--muted);font-size:12.5px;margin:2px 0 12px}
   .emph-summary b{color:var(--text)}
@@ -612,9 +615,9 @@
     </section>
 
     <section data-report="pounds">
-      <h2>Units &amp; pounds by task</h2>
+      <h2>Pounds &amp; cost by stage<span class="note">sorted by the task's name — packaged vs pre-COA / post-COA / plain labeling · click a cell to see the entries behind it</span></h2>
       <div class="card scroll"><table id="taskTable">
-        <thead><tr><th>Task</th><th>Units</th><th>Total cost</th><th>Cost / unit</th><th>Packaged lbs</th><th>Labeled lbs</th><th>Cost / lb</th></tr></thead>
+        <thead><tr><th>Product</th><th>Packaged lbs</th><th>Packaged cost</th><th>Pre-COA label lbs</th><th>Pre-COA cost</th><th>Post-COA label lbs</th><th>Post-COA cost</th><th>Labeled lbs</th><th>Labeled cost</th></tr></thead>
         <tbody></tbody>
       </table></div>
     </section>
@@ -3580,6 +3583,38 @@ for (const id of ['costlbRec','costlbVoid']){
   });
 }
 
+/* stage table drill-down: every filled cell knows its entries */
+let stageCells = new Map();   // "market|product|stage" -> the task rows behind that cell
+let stOpenKey = null;
+const STAGE_NAMES = { packaged:'Packaged', precoa:'Pre-COA label', postcoa:'Post-COA label', labeled:'Labeled' };
+function stageDetailHTML(k, entries){
+  const [, prod, stage] = k.split('|');
+  const rows = entries.slice().sort((a,b) => a.date < b.date ? -1 : 1).map(r => {
+    const u = (r.packaged||0) + (r.labeled||0);
+    const lbs = u * gramsFor(r.lo) / LB;
+    return `<tr><td>${fDayMDY(r.date)}</td><td>${esc(r.task)}</td><td>${fH2(r.hours)}</td><td>${fCents(r.cost)}</td><td>${fInt(u)}</td><td>${lbs ? fLb2(lbs) : '—'}</td></tr>`;
+  }).join('');
+  const U = sum(entries, r => (r.packaged||0) + (r.labeled||0));
+  const C = sum(entries, r => r.cost), H = sum(entries, r => r.hours);
+  const L = sum(entries, r => ((r.packaged||0) + (r.labeled||0)) * gramsFor(r.lo) / LB);
+  return `<tr class="mdetail"><td colspan="9"><div class="mini-wrap"><table class="mini">
+    <thead><tr><th>Day</th><th>Task</th><th>Hrs</th><th>Pay</th><th>Units</th><th>Lbs</th></tr></thead>
+    <tbody>${rows}
+    <tr class="total"><td colspan="2">Σ ${esc(prod)} — ${STAGE_NAMES[stage] || stage}</td><td>${fH2(H)}</td><td>${fCents(C)}</td><td>${fInt(U)}</td><td>${fLb2(L)}</td></tr>
+    </tbody></table></div></td></tr>`;
+}
+document.querySelector('#taskTable tbody').addEventListener('click', e => {
+  const td = e.target.closest('td.mcell'); if (!td) return;
+  const tb = document.querySelector('#taskTable tbody');
+  tb.querySelectorAll('tr.mdetail').forEach(x => x.remove());
+  tb.querySelectorAll('td.mcell.open').forEach(x => x.classList.remove('open'));
+  const k = td.dataset.k;
+  if (stOpenKey === k){ stOpenKey = null; return; }   // second click closes
+  stOpenKey = k;
+  td.classList.add('open');
+  td.closest('tr').insertAdjacentHTML('afterend', stageDetailHTML(k, stageCells.get(k) || []));
+});
+
 function renderReports(){
   const sel = inRange();
   const s = startEl.value, e = endEl.value;
@@ -3625,36 +3660,54 @@ function renderReports(){
     <tr><td class="task${mkClass(task.toLowerCase())}">${esc(task)}</td><td>${t.n}</td><td>${fInt(t.units)}</td><td>${fUnitC(t.cpuSum/t.n)}</td></tr>`).join('')
     : `<tr><td colspan="4" class="empty">No entries in this date range</td></tr>`;
 
-  // Units & pounds by task \u2014 bucketed by which units column is filled, so the
-  // totals agree with the KPIs and the by-product table even when a task's name
-  // disagrees with the column its units were entered in
-  const packMap = new Map(), labelMap = new Map();
+  // Pounds & cost by stage \u2014 classified by the task's NAME (a "labeled (pre COA)"
+  // task is labeling even when its count was typed into the packaged column),
+  // one row per product, Rec then Void. "(other tasks)" catches unit rows that
+  // match no product so nothing silently disappears; each nonempty cell keeps
+  // its entries in stageCells so it can be clicked open.
+  const stageOf = lo => lo.includes('pre coa') ? 'precoa'
+    : lo.includes('post coa') ? 'postcoa'
+    : lo.includes('label') ? 'labeled' : 'packaged';
+  const ST = ['packaged','precoa','postcoa','labeled'];
+  stageCells = new Map(); stOpenKey = null;
+  const stAgg = new Map();   // "rec|3.5g Jar" -> stage -> {lbs, cost, entries}
   for (const r of sel){
     if (!r.task) continue;
-    if (r.packaged){
-      if (!packMap.has(r.task)) packMap.set(r.task, {units:0, cost:0});
-      const t = packMap.get(r.task); t.units += r.packaged; t.cost += r.cost;
-    }
-    if (r.labeled){
-      if (!labelMap.has(r.task)) labelMap.set(r.task, {units:0, cost:0});
-      const t = labelMap.get(r.task); t.units += r.labeled; t.cost += r.cost;
-    }
+    const p = productFor(r.lo);
+    const units = (r.packaged||0) + (r.labeled||0);
+    if (!p && !units) continue;   // hours-only misc tasks stay out, as before
+    const mk = r.lo.includes('void') ? 'void' : r.lo.includes('rec') ? 'rec' : 'other';
+    const key = (p && mk !== 'other') ? mk + '|' + p.name : 'other|(other tasks)';
+    let o = stAgg.get(key);
+    if (!o){ o = {}; for (const s of ST) o[s] = {lbs:0, cost:0, entries:[]}; stAgg.set(key, o); }
+    const c = o[stageOf(r.lo)];
+    c.lbs += units * gramsFor(r.lo) / LB; c.cost += r.cost; c.entries.push(r);
   }
-  const taskRow = (task, t, side) => {
-    const lbs = t.units * gramsFor(task.toLowerCase()) / LB;
-    const packedLbs = side === 'pack' ? lbs : 0, labeledLbs = side === 'label' ? lbs : 0;
-    return `<tr><td class="task${mkClass(task.toLowerCase())}">${esc(task)}</td><td>${fInt(t.units)}</td><td>${fMoney(t.cost)}</td>
-      <td>${t.units ? fUnitC(t.cost/t.units) : '\u2014'}</td>
-      <td>${packedLbs ? fLbs(packedLbs) : '\u2014'}</td><td>${labeledLbs ? fLbs(labeledLbs) : '\u2014'}</td>
-      <td>${lbs ? fCents(t.cost/lbs) : '\u2014'}</td></tr>`;
-  };
-  const packRows  = [...packMap.entries()].sort((a,b) => a[0].localeCompare(b[0]));
-  const labelRows = [...labelMap.entries()].sort((a,b) => a[0].localeCompare(b[0]));
+  const stTds = (key, o) => ST.map(s => {
+    const c = o[s], k = key + '|' + s;
+    if (!c.entries.length) return '<td></td><td></td>';
+    stageCells.set(k, c.entries);
+    const click = ` class="mcell" data-k="${esc(k)}" title="Click to see the entries behind this"`;
+    return `<td${click}>${c.lbs ? fLbs(c.lbs) : '\u2014'}</td><td${click}>${fMoney(c.cost)}</td>`;
+  }).join('');
   const taskBody = document.querySelector('#taskTable tbody');
-  taskBody.innerHTML = (packRows.length || labelRows.length) ?
-    (packRows.length  ? `<tr class="grouphead"><td colspan="7">Packaging</td></tr>` + packRows.map(([k,t]) => taskRow(k,t,'pack')).join('') : '') +
-    (labelRows.length ? `<tr class="grouphead"><td colspan="7">Labeling</td></tr>` + labelRows.map(([k,t]) => taskRow(k,t,'label')).join('') : '')
-    : `<tr><td colspan="7" class="empty">No entries in this date range</td></tr>`;
+  let stHtml = '';
+  for (const mk of ['rec','void']){
+    const keys = PRODUCTS.map(p => mk + '|' + p.name).filter(k => stAgg.has(k));
+    if (!keys.length) continue;
+    stHtml += `<tr class="grouphead"><td colspan="9">${mk === 'rec' ? 'Rec' : 'Void'}</td></tr>`;
+    for (const k of keys) stHtml += `<tr><td class="task${mkClass(mk)}">${esc(k.split('|')[1])}</td>${stTds(k, stAgg.get(k))}</tr>`;
+  }
+  if (stAgg.has('other|(other tasks)'))
+    stHtml += `<tr class="grouphead"><td colspan="9">Other</td></tr>`
+      + `<tr><td class="task">(other tasks)</td>${stTds('other|(other tasks)', stAgg.get('other|(other tasks)'))}</tr>`;
+  if (stHtml){
+    const tot = {}; for (const s of ST) tot[s] = {lbs:0, cost:0};
+    for (const o of stAgg.values()) for (const s of ST){ tot[s].lbs += o[s].lbs; tot[s].cost += o[s].cost; }
+    stHtml += `<tr class="total"><td>Total</td>` + ST.map(s =>
+      `<td>${tot[s].lbs ? fLbs(tot[s].lbs) : '\u2014'}</td><td>${tot[s].cost ? fMoney(tot[s].cost) : '\u2014'}</td>`).join('') + '</tr>';
+  }
+  taskBody.innerHTML = stHtml || `<tr><td colspan="9" class="empty">No entries in this date range</td></tr>`;
 
   // Units & pounds by product (rec, then void)
   const prodRows = [];
