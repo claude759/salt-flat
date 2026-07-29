@@ -2125,6 +2125,60 @@ async function exportShifts(kind){
 }
 
 /* ---- photo → OCR → review → save ------------------------------------------ */
+// An Edge Function validates the caller's JWT LIVE (auth.getUser), where a table
+// read coasts on whatever PostgREST accepts — so a tab left open for days can be
+// reading rows happily and still get a bare 401 the moment it invokes a function.
+// That is the normal state of this app: it lives in a pinned tab, and the CA and
+// NY trackers share an origin, so both tabs share one session and can race each
+// other's refresh (rotation is on). Refresh a nearly-dead token before the call,
+// and treat a 401 as "the session died", not as "the sheet is unreadable".
+async function invokeFn(name, body){
+  const { data: sess } = await sb.auth.getSession();
+  const s = sess && sess.session;
+  if (s && s.expires_at && (s.expires_at * 1000 - Date.now()) < 120000)
+    await sb.auth.refreshSession().catch(() => {});
+  let r = await sb.functions.invoke(name, { body });
+  if (r.error && r.error.context && r.error.context.status === 401){
+    const { error: rErr } = await sb.auth.refreshSession();
+    // never THROW from here: the caller's cleanup (removing the just-uploaded
+    // object) lives on the resolve path, and a throw was stranding uploads in
+    // the shared bucket. And don't over-assert: a failed refresh can also mean
+    // auth was briefly unreachable, not that the session is truly dead.
+    if (rErr) return { data: null, error: { __friendly:
+      'your sign-in couldn’t be renewed. Reload the page and sign in again, then re-upload.' } };
+    r = await sb.functions.invoke(name, { body });
+  }
+  return r;
+}
+// What to tell the user when an Edge Function call fails. Server-authored
+// `message` copy is shown VERBATIM (the function knows why it declined and its
+// sentence has no wrong causal prefix); machine codes get a readable wrapper.
+async function fnFailureMessage(res, fnErr, subject){
+  if (res && res.message) return res.message;
+  let code = (res && res.error) || '';
+  const ctx = fnErr && fnErr.context;
+  if (!code && fnErr && fnErr.__friendly) code = fnErr.__friendly;
+  if (!code && ctx && typeof ctx.text === 'function'){
+    const body = await ctx.text().catch(() => '');
+    try { const j = JSON.parse(body) || {}; if (j.message) return j.message; code = j.error || ''; }
+    catch { code = String(body).slice(0, 160); }
+    if (code) code += ' (HTTP ' + ctx.status + ')';
+  }
+  // A 401 from the PLATFORM gateway (expired/invalid JWT) never reaches the
+  // function, so it has no body at all — verified against the live project.
+  // "HTTP 401" means nothing to a warehouse manager; say what to do instead.
+  if (!code && ctx && ctx.status) code = ({
+    401: 'your sign-in expired. Reload the page and sign in again, then re-upload.',
+    403: 'your sign-in expired. Reload the page and sign in again, then re-upload.',
+    404: 'the reader service isn’t responding — tell Gianni.',
+    413: 'that file is too big — take a smaller photo or split the PDF.',
+    429: 'the reader is busy right now — wait a minute and try again.',
+  })[ctx.status] || (ctx.status >= 500
+    ? 'the reader service is having trouble — try again in a minute.'
+    : 'HTTP ' + ctx.status);
+  console.error(subject + ' read failed:', code || fnErr);
+  return code ? 'Couldn’t read the ' + subject + ' — ' + code : '';
+}
 async function handleTsPhoto(file){
   const drop = document.getElementById('ts-drop');
   const orig = drop.innerHTML;
@@ -2135,15 +2189,21 @@ async function handleTsPhoto(file){
     const up = await sb.storage.from('timesheets').upload(path, small, { contentType: 'image/jpeg' });
     if (up.error) throw new Error('upload failed: ' + up.error.message);
     if (tsState.category === 'harvest'){
-      const { data: res, error: fnErr } = await sb.functions.invoke('parse-harvest', { body: { path } });
-      if (fnErr || !res || res.ok === false) throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read that photo — try a clearer one.');
-      if (!(res.rows||[]).length){ toast('No harvest entries found in that photo', true); return; }
+      const { data: res, error: fnErr } = await invokeFn('parse-harvest', { path });
+      if (fnErr || !res || res.ok === false){
+        sb.storage.from('timesheets').remove([path]);   // don't strand the object on a failed read
+        throw new Error(await fnFailureMessage(res, fnErr, 'photo') || 'Couldn’t read that photo — try a clearer one.');
+      }
+      if (!(res.rows||[]).length){ sb.storage.from('timesheets').remove([path]); toast('No harvest entries found in that photo', true); return; }
       openHarvestReview(res.rows, URL.createObjectURL(small), path);
       return;
     }
-    const { data: res, error: fnErr } = await sb.functions.invoke('read-timesheet', { body: { path } });
-    if (fnErr || !res || res.ok === false) throw new Error((res && res.error) || (fnErr && fnErr.message) || 'Couldn’t read the sheet — try a clearer photo or add the rows manually.');
-    if (!(res.rows||[]).length){ toast('No rows found on that sheet — try a clearer photo or add them manually', true); return; }
+    const { data: res, error: fnErr } = await invokeFn('read-timesheet', { path });
+    if (fnErr || !res || res.ok === false){
+      sb.storage.from('timesheets').remove([path]);   // don't strand the object on a failed read
+      throw new Error(await fnFailureMessage(res, fnErr, 'sheet') || 'Couldn’t read the sheet — try a clearer photo or add the rows manually.');
+    }
+    if (!(res.rows||[]).length){ sb.storage.from('timesheets').remove([path]); toast('No rows found on that sheet — try a clearer photo or add them manually', true); return; }
     openTsReview(res, URL.createObjectURL(small), path);
   }catch(err){ toast(err.message || 'Failed to read photo', true); }
   finally{

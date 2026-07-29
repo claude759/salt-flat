@@ -123,19 +123,43 @@ Deno.serve(async (req) => {
     // pin the "no year written" fallback to the real current year, deterministically —
     // never let the model guess a year from its training prior (that put rows in 2025).
     const instruction = OCR_INSTRUCTION.replace("{{YEAR}}", String(new Date().getFullYear()));
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({
-        model, max_tokens: 3000,
-        messages: [{ role: "user", content: [
-          contentBlock,
-          { type: "text", text: instruction },
-        ] }],
-      }),
-    });
-    if (!res.ok) return json({ ok: false, error: `anthropic ${res.status}` }, 502);
+    // 429/5xx/529 are documented-transient — one moment of API load must not hard-fail
+    // a manager's upload. Retry twice with backoff (honoring retry-after), and if it
+    // still fails return a FRIENDLY 200: "busy, try again" is true and actionable,
+    // where the old flat 502 told them their sheet was unreadable (it wasn't).
+    const TRANSIENT = new Set([429, 500, 502, 503, 529]);
+    let res!: Response;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({
+          model, max_tokens: 8000,
+          messages: [{ role: "user", content: [
+            contentBlock,
+            { type: "text", text: instruction },
+          ] }],
+        }),
+      });
+      if (res.ok || !TRANSIENT.has(res.status) || attempt === 3) break;
+      const ra = Number(res.headers.get("retry-after"));
+      await res.body?.cancel();
+      await new Promise((r) => setTimeout(r, Math.min((ra > 0 ? ra * 1000 : 1200 * attempt) + Math.random() * 400, 8000)));
+    }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("anthropic", res.status, body.slice(0, 300));
+      if (TRANSIENT.has(res.status))
+        return json({ ok: false, error: "ocr_busy",
+          message: "The reader is busy right now — wait a minute and upload the sheet again." }, 200);
+      return json({ ok: false, error: `anthropic ${res.status}: ${body.slice(0, 140)}` }, 502);
+    }
     const data = await res.json();
+    // a response cut off by max_tokens is unparseable JSON → it used to read as
+    // "No rows found" on a perfectly legible sheet. Say what actually happened.
+    if (data?.stop_reason === "max_tokens")
+      return json({ ok: false, error: "sheet_too_long",
+        message: "That sheet has more rows than the reader can return in one pass — split it into two photos and upload both." }, 200);
     const text = (data?.content ?? []).map((c: any) => c?.text ?? "").join("").trim();
     const parsed = parseJsonLoose(text) ?? {};
 

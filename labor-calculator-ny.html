@@ -2038,10 +2038,44 @@ async function invokeFn(name, body){
   let r = await sb.functions.invoke(name, { body });
   if (r.error && r.error.context && r.error.context.status === 401){
     const { error: rErr } = await sb.auth.refreshSession();
-    if (rErr) throw new Error('your sign-in expired — reload the page and sign in again');
+    // never THROW from here: the caller's cleanup (removing the just-uploaded
+    // object) lives on the resolve path, and a throw was stranding uploads in
+    // the shared bucket. And don't over-assert: a failed refresh can also mean
+    // auth was briefly unreachable, not that the session is truly dead.
+    if (rErr) return { data: null, error: { __friendly:
+      'your sign-in couldn’t be renewed. Reload the page and sign in again, then re-upload.' } };
     r = await sb.functions.invoke(name, { body });
   }
   return r;
+}
+// What to tell the user when an Edge Function call fails. Server-authored
+// `message` copy is shown VERBATIM (the function knows why it declined and its
+// sentence has no wrong causal prefix); machine codes get a readable wrapper.
+async function fnFailureMessage(res, fnErr, subject){
+  if (res && res.message) return res.message;
+  let code = (res && res.error) || '';
+  const ctx = fnErr && fnErr.context;
+  if (!code && fnErr && fnErr.__friendly) code = fnErr.__friendly;
+  if (!code && ctx && typeof ctx.text === 'function'){
+    const body = await ctx.text().catch(() => '');
+    try { const j = JSON.parse(body) || {}; if (j.message) return j.message; code = j.error || ''; }
+    catch { code = String(body).slice(0, 160); }
+    if (code) code += ' (HTTP ' + ctx.status + ')';
+  }
+  // A 401 from the PLATFORM gateway (expired/invalid JWT) never reaches the
+  // function, so it has no body at all — verified against the live project.
+  // "HTTP 401" means nothing to a warehouse manager; say what to do instead.
+  if (!code && ctx && ctx.status) code = ({
+    401: 'your sign-in expired. Reload the page and sign in again, then re-upload.',
+    403: 'your sign-in expired. Reload the page and sign in again, then re-upload.',
+    404: 'the reader service isn’t responding — tell Gianni.',
+    413: 'that file is too big — take a smaller photo or split the PDF.',
+    429: 'the reader is busy right now — wait a minute and try again.',
+  })[ctx.status] || (ctx.status >= 500
+    ? 'the reader service is having trouble — try again in a minute.'
+    : 'HTTP ' + ctx.status);
+  console.error(subject + ' read failed:', code || fnErr);
+  return code ? 'Couldn’t read the ' + subject + ' — ' + code : '';
 }
 const isPdfFile = f => (f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name || '')));
 const isImageFile = f => (f && (String(f.type).startsWith('image/') || /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(f.name || '')));
@@ -2063,33 +2097,8 @@ async function handleTsPhoto(file){
     const { data: res, error: fnErr } = await invokeFn('read-timesheet', { path });
     if (fnErr || !res || res.ok === false){
       sb.storage.from('timesheets').remove([path]);   // don't strand the object on a failed read
-      // On a non-2xx, supabase-js hands back data=null and the useless message
-      // "Edge Function returned a non-2xx status code" — the function's OWN
-      // explanation (unauthorized / download failed / anthropic 429) is in the
-      // Response hanging off the error. Read it, or nobody can ever debug this.
-      let why = (res && res.error) || '';
-      const ctx = fnErr && fnErr.context;
-      if (!why && ctx && typeof ctx.text === 'function'){
-        const body = await ctx.text().catch(() => '');
-        try { why = (JSON.parse(body) || {}).error || ''; } catch { why = String(body).slice(0, 160); }
-        if (why) why += ' (HTTP ' + ctx.status + ')';
-      }
-      // A 401 from the PLATFORM gateway (expired/invalid JWT) never reaches the
-      // function, so it has no body at all — verified against the live project.
-      // "HTTP 401" means nothing to a warehouse manager; say what to do instead.
-      if (!why && ctx && ctx.status) why = ({
-        401: 'your sign-in expired. Reload the page and sign in again, then re-upload.',
-        403: 'your sign-in expired. Reload the page and sign in again, then re-upload.',
-        404: 'the reader service isn’t responding — tell Gianni.',
-        413: 'that file is too big — take a smaller photo or split the PDF.',
-        429: 'the reader is busy right now — wait a minute and try again.',
-      })[ctx.status] || (ctx.status >= 500
-        ? 'the reader service is having trouble — try again in a minute.'
-        : 'HTTP ' + ctx.status);
-      console.error('read-timesheet failed:', why || fnErr);
-      throw new Error(why
-        ? 'Couldn’t read the sheet — ' + why
-        : ((fnErr && fnErr.message) || 'Couldn’t read the sheet — try a clearer photo/PDF or add the rows manually.'));
+      throw new Error(await fnFailureMessage(res, fnErr, 'sheet')
+        || 'Couldn’t read the sheet — try a clearer photo/PDF or add the rows manually.');
     }
     if (!(res.rows||[]).length){
       sb.storage.from('timesheets').remove([path]);
