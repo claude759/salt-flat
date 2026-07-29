@@ -85,7 +85,7 @@ function submittedEmail(ba: any, p: any, sub: any) {
     <table style="width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px">
       ${row("Mileage", money(t.mileage))}
       ${row("Expenses (reimburse)", money(t.expenses))}
-      ${t.company_card ? row("Company card (not reimbursed)", money(t.company_card)) : ""}
+      ${t.company_card ? row("Company-paid (not reimbursed)", money(t.company_card)) : ""}
       ${t.labor ? row("Labor (recorded)", money(t.labor)) : ""}
       <tr><td style="padding:8px 0 0;border-top:1px solid #eee;font-weight:700">Reimburse total</td><td style="padding:8px 0 0;border-top:1px solid #eee;text-align:right;font-weight:700">${money(t.total ?? (Number(t.mileage||0)+Number(t.expenses||0)))}</td></tr>
     </table>
