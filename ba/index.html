@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.71';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.72';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1930,23 +1930,43 @@ function dgApplyEdit(kind, data){
   }
   renderDayGrid(state._dgHost); if(typeof ctx.onChange==='function') ctx.onChange();
 }
-// read-only detail for a locked item (BA hours, submitted/approved rows)
+// read-only detail for a locked item (BA hours, submitted/approved rows). Admins get an
+// edit escape hatch — approval locks the ROW for BAs, not for the people who approve.
 function itemDetailSheet(kind, x){
   const rows=[]; const add=(k,v)=>{ if(v!=null&&v!=='') rows.push(`<div class="row" style="justify-content:space-between;gap:14px"><span class="muted small">${k}</span><span style="text-align:right">${esc(String(v))}</span></div>`); };
   const disp=id=>id?dispName(id):null; let title;
   if(kind==='trip'){ title='Trip'; add('Date',fmtDate(x.trip_date)); add('Start',x.start_label); add('Destination',x.dest_label); add('Dispensary',disp(x.dispensary_id||(x.dispensary_ids&&x.dispensary_ids[0]))); add('Category',x.kind); add('Miles',x.miles); add('Reimbursement',money(Number(x.amount||0))); }
-  else if(kind==='exp'){ title='Expense'; add('Date',fmtDate(x.expense_date)); add('Vendor',x.vendor); add('Category',x.category); add('Amount',money(Number(x.amount||0))); add('Paid with',x.payment); }
+  else if(kind==='exp'){ title='Expense'; add('Date',fmtDate(x.expense_date)); add('Vendor',x.vendor); add('Category',x.category); add('Amount',money(Number(x.amount||0))); add('Paid with',payLabel(x.payment));
+    // where the money went — honors a custom per-store split (alloc), else the even split
+    const ids=dispIds(x);
+    if(ids.length===1) add('Dispensary',disp(ids[0]));
+    else if(ids.length>1){
+      rows.push(`<div class="muted small" style="margin-top:2px">Split across ${ids.length} stores${x.alloc&&x.alloc.length?' · by amount':' · evenly'}</div>`);
+      dispSplit(x, Number(x.amount||0)).forEach(s=>add(dispName(s.id), money(s.share)));
+    }
+    if(x.note) add('Note',x.note); }
   else { title='Hours'; add('Date',fmtDate(x.work_date));
     add('Hours',x.source==='salary'?('salaried · '+money(Number(x.amount||0))):hoursHM(Number(x.hours||0)));
     const shares=dispSplit(x, Number(x.amount||0));
     if(shares.length && shares[0].hrs!=null){   // miles-weighted split → show where the day went
       shares.forEach(s=>add(dispName(s.id)+(s.kind?' · '+s.kind:''), `${hoursHM(s.hrs)} · ${money(s.share)}`));
     } else { add('Category',x.kind); add('Dispensary',disp(x.dispensary_id||(x.dispensary_ids&&x.dispensary_ids[0]))); } }
+  // say WHY it's view-only: an approved/submitted row is locked by its status even in an
+  // open period — "this period is locked" was wrong (and confusing) for those
+  const why = kind==='hours' ? 'labor hours sync from Gusto'
+    : (x.status==='approved'||x.status==='submitted') ? `this item is ${x.status} (ask an admin to change it)`
+    : 'this period is locked';
+  const isAdm = state.profile?.role==='admin';
+  const recBtn = (kind!=='hours' && x.receipt_path) ? `<button class="btn block" id="dvRec" style="margin-top:12px">📄 View receipt</button>` : '';
   openSheet(`<h3>${title} <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
-    <div class="small muted" style="margin:2px 0 12px">View only${kind==='hours'?' — labor hours sync from Gusto':' — this period is locked'}.</div>
+    <div class="small muted" style="margin:2px 0 12px">View only — ${why}.</div>
     <div style="display:flex;flex-direction:column;gap:8px">${rows.join('')}</div>
-    <button class="btn ghost block" id="dvClose" style="margin-top:16px">Close</button>`);
+    ${recBtn}
+    ${isAdm?`<button class="btn primary block" id="dvEdit" style="margin-top:${recBtn?'8':'12'}px">✎ Edit as admin</button>`:''}
+    <button class="btn ghost block" id="dvClose" style="margin-top:8px">Close</button>`);
   $('#dvClose').onclick=closeSheet;
+  const rb=$('#dvRec'); if(rb) rb.onclick=async()=>{ const u=await signedUrl('receipts',x.receipt_path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); };
+  const eb=$('#dvEdit'); if(eb) eb.onclick=()=>adminEditItem(kind, x.id, d=>dgApplyEdit(kind, d));
 }
 // back-comat name: the BA home + save/close paths call renderGrid(); it now paints the day grid
 function renderGrid(){ renderDayGrid($('#gridcard')); }
