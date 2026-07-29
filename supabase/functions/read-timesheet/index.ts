@@ -39,7 +39,17 @@ const OCR_INSTRUCTION =
   'down a column all mean "same value as the row above". Apply the carried value to EVERY row the mark ' +
   'or line spans - this applies to TIME IN, TIME OUT, LUNCH and DATE alike. Only leave a value null when ' +
   'the cell is truly empty with no mark or line through it.\n' +
-  '- break_minutes from the LUNCH column: "12-1" = 60; "12-12:30" = 30; "30" = 30; blank with no mark = 0.\n' +
+  '- break_minutes from the LUNCH column, which appears in THREE shapes:\n' +
+  '    (a) a RANGE — "12-1" = 60; "12:33 - 1:07" = 34; "12-12:30" = 30.\n' +
+  '    (b) a DURATION — "30" = 30; "1 hr" = 60.\n' +
+  '    (c) a START TIME ONLY — "12:33". This crew takes lunch together and often writes the full\n' +
+  '        range on the FIRST row only (sometimes cramped, spilling above the row or into the\n' +
+  '        header), then just the start time on the rest. So when a cell holds only a start time,\n' +
+  '        find the most complete lunch entry ANYWHERE on the sheet and apply ITS duration.\n' +
+  '        Example: row 1 "12:33 - 1:07" and rows 2-8 "12:33" means EVERY row is 34 minutes.\n' +
+  '  A cell that is genuinely blank with no mark = 0. But a start time you cannot resolve to a\n' +
+  '  duration is NOT 0 — return null so a human checks it, because a wrongly-zeroed lunch\n' +
+  '  overstates paid hours for every person on the sheet.\n' +
   '- ONE SHEET = ONE DAY: every row on the sheet is the same work date. Use the top "Date:" field if it is ' +
   'filled in; otherwise the clearest/majority DATE-column entry (assume the year is {{YEAR}} if none is ' +
   'written; ignore an obviously miswritten outlier). Use it for sheet_date AND for every row date.\n' +
@@ -133,13 +143,19 @@ Deno.serve(async (req) => {
       const last = typeof r?.last === "string" ? r.last.trim() : null;
       const first = typeof r?.first === "string" ? r.first.trim() : null;
       if (!last && !first) return null;
-      const brk = Number(r?.break_minutes);
+      // null must SURVIVE here. Number(null) is 0, so the old coercion turned "I could not
+      // read this lunch" into a confident "no lunch" — which silently pays everyone on the
+      // sheet for their break. Unknown stays null and the review screen asks for it.
+      const raw = r?.break_minutes;
+      const brk = Number(raw);
+      const known = raw !== null && raw !== undefined && raw !== ''
+        && Number.isFinite(brk) && brk >= 0 && brk <= 480;
       return {
         last, first,
         date: isDate(r?.date) ? r.date : null,
         time_in: cleanTime(r?.time_in),
         time_out: cleanTime(r?.time_out),
-        break_minutes: Number.isFinite(brk) && brk >= 0 && brk <= 480 ? Math.round(brk) : 0,
+        break_minutes: known ? Math.round(brk) : null,
       };
     }).filter(Boolean);
 
