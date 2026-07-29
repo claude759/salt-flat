@@ -615,9 +615,9 @@
     </section>
 
     <section data-report="pounds">
-      <h2>Pounds &amp; cost by stage<span class="note">sorted by the task's name — packaged vs pre-COA / post-COA / plain labeling · click a cell to see the entries behind it</span></h2>
+      <h2>Pounds &amp; cost by stage<span class="note">sorted by the task's name — packaged vs pre-COA / post-COA / plain labeling · click a cell to see the entries behind it · cost / unit = every stage's cost ÷ units (the larger of the packaged vs labeled counts)</span></h2>
       <div class="card scroll"><table id="taskTable">
-        <thead><tr><th>Product</th><th>Packaged lbs</th><th>Packaged cost</th><th>Pre-COA label lbs</th><th>Pre-COA cost</th><th>Post-COA label lbs</th><th>Post-COA cost</th><th>Labeled lbs</th><th>Labeled cost</th></tr></thead>
+        <thead><tr><th>Product</th><th>Packaged lbs</th><th>Packaged cost</th><th>Pre-COA label lbs</th><th>Pre-COA cost</th><th>Post-COA label lbs</th><th>Post-COA cost</th><th>Labeled lbs</th><th>Labeled cost</th><th>Cost / unit</th></tr></thead>
         <tbody></tbody>
       </table></div>
     </section>
@@ -3597,7 +3597,7 @@ function stageDetailHTML(k, entries){
   const U = sum(entries, r => (r.packaged||0) + (r.labeled||0));
   const C = sum(entries, r => r.cost), H = sum(entries, r => r.hours);
   const L = sum(entries, r => ((r.packaged||0) + (r.labeled||0)) * gramsFor(r.lo) / LB);
-  return `<tr class="mdetail"><td colspan="9"><div class="mini-wrap"><table class="mini">
+  return `<tr class="mdetail"><td colspan="10"><div class="mini-wrap"><table class="mini">
     <thead><tr><th>Day</th><th>Task</th><th>Hrs</th><th>Pay</th><th>Units</th><th>Lbs</th></tr></thead>
     <tbody>${rows}
     <tr class="total"><td colspan="2">Σ ${esc(prod)} — ${STAGE_NAMES[stage] || stage}</td><td>${fH2(H)}</td><td>${fCents(C)}</td><td>${fInt(U)}</td><td>${fLb2(L)}</td></tr>
@@ -3679,10 +3679,17 @@ function renderReports(){
     const mk = r.lo.includes('void') ? 'void' : r.lo.includes('rec') ? 'rec' : 'other';
     const key = (p && mk !== 'other') ? mk + '|' + p.name : 'other|(other tasks)';
     let o = stAgg.get(key);
-    if (!o){ o = {}; for (const s of ST) o[s] = {lbs:0, cost:0, entries:[]}; stAgg.set(key, o); }
+    if (!o){ o = {}; for (const s of ST) o[s] = {lbs:0, cost:0, units:0, entries:[]}; stAgg.set(key, o); }
     const c = o[stageOf(r.lo)];
-    c.lbs += units * gramsFor(r.lo) / LB; c.cost += r.cost; c.entries.push(r);
+    c.lbs += units * gramsFor(r.lo) / LB; c.cost += r.cost; c.units += units; c.entries.push(r);
   }
+  // true per-unit cost: EVERY stage's cost over the product's unit count — the
+  // larger of packaged vs labeled counts, so the same jar isn't counted twice
+  const stCpu = o => {
+    const cost = ST.reduce((a,s) => a + o[s].cost, 0);
+    const units = Math.max(o.packaged.units, o.precoa.units + o.postcoa.units + o.labeled.units);
+    return units ? fUnitC(cost / units) : '—';
+  };
   const stTds = (key, o) => ST.map(s => {
     const c = o[s], k = key + '|' + s;
     if (!c.entries.length) return '<td></td><td></td>';
@@ -3695,19 +3702,20 @@ function renderReports(){
   for (const mk of ['rec','void']){
     const keys = PRODUCTS.map(p => mk + '|' + p.name).filter(k => stAgg.has(k));
     if (!keys.length) continue;
-    stHtml += `<tr class="grouphead"><td colspan="9">${mk === 'rec' ? 'Rec' : 'Void'}</td></tr>`;
-    for (const k of keys) stHtml += `<tr><td class="task${mkClass(mk)}">${esc(k.split('|')[1])}</td>${stTds(k, stAgg.get(k))}</tr>`;
+    stHtml += `<tr class="grouphead"><td colspan="10">${mk === 'rec' ? 'Rec' : 'Void'}</td></tr>`;
+    for (const k of keys) stHtml += `<tr><td class="task${mkClass(mk)}">${esc(k.split('|')[1])}</td>${stTds(k, stAgg.get(k))}<td>${stCpu(stAgg.get(k))}</td></tr>`;
   }
   if (stAgg.has('other|(other tasks)'))
-    stHtml += `<tr class="grouphead"><td colspan="9">Other</td></tr>`
-      + `<tr><td class="task">(other tasks)</td>${stTds('other|(other tasks)', stAgg.get('other|(other tasks)'))}</tr>`;
+    stHtml += `<tr class="grouphead"><td colspan="10">Other</td></tr>`
+      + `<tr><td class="task">(other tasks)</td>${stTds('other|(other tasks)', stAgg.get('other|(other tasks)'))}<td>${stCpu(stAgg.get('other|(other tasks)'))}</td></tr>`;
   if (stHtml){
-    const tot = {}; for (const s of ST) tot[s] = {lbs:0, cost:0};
-    for (const o of stAgg.values()) for (const s of ST){ tot[s].lbs += o[s].lbs; tot[s].cost += o[s].cost; }
+    const tot = {}; for (const s of ST) tot[s] = {lbs:0, cost:0, units:0, entries:[]};
+    for (const o of stAgg.values()) for (const s of ST){ tot[s].lbs += o[s].lbs; tot[s].cost += o[s].cost; tot[s].units += o[s].units; }
     stHtml += `<tr class="total"><td>Total</td>` + ST.map(s =>
-      `<td>${tot[s].lbs ? fLbs(tot[s].lbs) : '\u2014'}</td><td>${tot[s].cost ? fMoney(tot[s].cost) : '\u2014'}</td>`).join('') + '</tr>';
+      `<td>${tot[s].lbs ? fLbs(tot[s].lbs) : '\u2014'}</td><td>${tot[s].cost ? fMoney(tot[s].cost) : '\u2014'}</td>`).join('')
+      + `<td>${stCpu(tot)}</td></tr>`;
   }
-  taskBody.innerHTML = stHtml || `<tr><td colspan="9" class="empty">No entries in this date range</td></tr>`;
+  taskBody.innerHTML = stHtml || `<tr><td colspan="10" class="empty">No entries in this date range</td></tr>`;
 
   // Units & pounds by product (rec, then void)
   const prodRows = [];
