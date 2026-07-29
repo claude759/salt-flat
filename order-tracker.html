@@ -335,6 +335,7 @@ const state = {
   payOpen: { ca:false, ny:false },              // payments panel visible?
   payExpanded: { ca:new Set(), ny:new Set() },  // payment_keys expanded in the panel
   ovScope: 'all',                               // overview scope: all | ca | ny
+  ovExclVapes: localStorage.getItem('ot_exclVapes') === '1',   // overview: leave vapes out of the numbers
   ovCat: new Set(),                             // category names expanded on the overview
   ledgerPay: { ca:new Set(), ny:new Set() },    // wires expanded in the ledger
   lastSync: null,
@@ -745,18 +746,23 @@ function computeAdjust(m, stateKey){
 function bucketBalances(m, adj){
   const dueCol = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'due');
   const nydCol = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'not yet due');
-  let vape = 0, nonvape = 0, vapeSheet0 = 0, nonvapeSheet0 = 0;
+  let vape = 0, nonvape = 0, vapeSheet0 = 0, nonvapeSheet0 = 0,
+      vapeNyd = 0, nonvapeNyd = 0, vapeN = 0, nonvapeN = 0;
   for(const r of m.rows){
-    const sheetOpen = (dueCol ? (money(r.c[dueCol.i])||0) : 0) + (nydCol ? (money(r.c[nydCol.i])||0) : 0);
+    const nyd = nydCol ? (money(r.c[nydCol.i])||0) : 0;
+    const sheetOpen = (dueCol ? (money(r.c[dueCol.i])||0) : 0) + nyd;
     const open = sheetOpen - (adj.delta[r.src]||0);
-    if(isVape(r.type)){ vape += open; vapeSheet0 += sheetOpen; } else { nonvape += open; nonvapeSheet0 += sheetOpen; }
+    if(isVape(r.type)){ vape += open; vapeSheet0 += sheetOpen; vapeNyd += nyd; vapeN++; }
+    else { nonvape += open; nonvapeSheet0 += sheetOpen; nonvapeNyd += nyd; nonvapeN++; }
   }
   const p = adj.payToInv || {vape:0, nonvape:0};
   // a bucket-pay to an invoice already dropped that invoice's `open` (via delta); the offset
-  // rides on the OPPOSITE bucket so the two balances still sum to the true total
+  // rides on the OPPOSITE bucket so the two balances still sum to the true total.
+  // bucket shifts are all due-side money — the Not-yet-due split per bucket is untouched.
   return { vape: vape - adj.netToVape + p.nonvape,
            nonvape: nonvape + adj.netToVape + p.vape,
            vapeSheet: vapeSheet0, nonvapeSheet: nonvapeSheet0,
+           vapeNyd, nonvapeNyd, vapeN, nonvapeN,
            netToVape: adj.netToVape, payToInv: p };
 }
 
@@ -906,7 +912,7 @@ function stateTotals(m){
            paid: sum(find('paid to date')), due: sum(find('due')), nyd: sum(find('not yet due')) };
 }
 
-function purchasesReport(scope){
+function purchasesReport(scope, exclVapes){
   const src = scope === 'all' ? ['ca','ny'] : [scope];
   const now = new Date();
   const months = [];
@@ -921,6 +927,7 @@ function purchasesReport(scope){
     if(!tc) continue;
     for(const r of m.rows){
       if(r.date == null) continue;
+      if(exclVapes && isVape(r.type)) continue;
       const d = new Date(r.date);
       const slot = months.find(x => x.y===d.getFullYear() && x.m===d.getMonth());
       if(slot) slot.sum += money(r.c[tc.i]) || 0;
@@ -973,8 +980,11 @@ function categoryReport(scope){
   return { list, reconcile };
 }
 
-function catReportHtml(scope){
-  const { list, reconcile } = categoryReport(scope);
+function catReportHtml(scope, exclVapes){
+  let { list, reconcile } = categoryReport(scope);
+  // excluding vapes drops the Vapes line; the reconcile line stays — that money is owed
+  // on non-vape, so the total lands on the Non-vape balance
+  if(exclVapes) list = list.filter(c => c.type !== VAPE_TYPE);
   if(!list.length) return '';
   const tot = list.reduce((a,c)=>({n:a.n+c.n, due:a.due+c.due, nyd:a.nyd+c.nyd, open:a.open+c.open}),
                           {n:0,due:0,nyd:0,open:0});
@@ -1015,7 +1025,7 @@ function catReportHtml(scope){
   }
 
   return `<div class="panel"><div class="rtitle">Open balance by category` +
-    `<span class="sub">${scope==='all'?'CA + NY':scope.toUpperCase()} · ${list.length} categories</span></div>` +
+    `<span class="sub">${scope==='all'?'CA + NY':scope.toUpperCase()} · ${list.length} categories${exclVapes?' · vapes excluded':''}</span></div>` +
     `<div style="overflow-x:auto"><table class="payTbl"><thead><tr><th>Category</th><th class="num">Orders</th>` +
     `<th class="num">Open balance</th><th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
     rows +
@@ -1069,32 +1079,44 @@ function renderOverview(){
     const b = bucketBalances(m, adj);
     s.vape = b.vape; s.nonvape = b.nonvape; s.vapeSheet = b.vapeSheet; s.nonvapeSheet = b.nonvapeSheet;
     s.netToVape = b.netToVape;
+    s.vapeNyd = b.vapeNyd; s.nonvapeNyd = b.nonvapeNyd; s.vapeN = b.vapeN; s.nonvapeN = b.nonvapeN;
     t[k] = s;
   }
   const g = Object.values(t).reduce((a,s)=>({n:a.n+s.n,total:a.total+s.total,paid:a.paid+s.paid,due:a.due+s.due,
       nyd:a.nyd+s.nyd,adjDue:a.adjDue+s.adjDue,adjPaid:a.adjPaid+s.adjPaid,overall:a.overall+s.overall,
       vape:a.vape+s.vape,nonvape:a.nonvape+s.nonvape,vapeSheet:a.vapeSheet+s.vapeSheet,
-      nonvapeSheet:a.nonvapeSheet+s.nonvapeSheet,netToVape:a.netToVape+s.netToVape,hasAdj:a.hasAdj||s.hasAdj}),
-    {n:0,total:0,paid:0,due:0,nyd:0,adjDue:0,adjPaid:0,overall:0,vape:0,nonvape:0,vapeSheet:0,nonvapeSheet:0,netToVape:0,hasAdj:false});
+      nonvapeSheet:a.nonvapeSheet+s.nonvapeSheet,netToVape:a.netToVape+s.netToVape,
+      vapeNyd:a.vapeNyd+s.vapeNyd,nonvapeNyd:a.nonvapeNyd+s.nonvapeNyd,
+      vapeN:a.vapeN+s.vapeN,nonvapeN:a.nonvapeN+s.nonvapeN,hasAdj:a.hasAdj||s.hasAdj}),
+    {n:0,total:0,paid:0,due:0,nyd:0,adjDue:0,adjPaid:0,overall:0,vape:0,nonvape:0,vapeSheet:0,nonvapeSheet:0,
+     netToVape:0,vapeNyd:0,nonvapeNyd:0,vapeN:0,nonvapeN:0,hasAdj:false});
 
-  /* scope buttons */
+  /* scope buttons + vapes toggle */
   const scope = state.ovScope;
+  const excl = state.ovExclVapes;
   $('#toolbar').innerHTML = `<div class="seg">` +
     [['all','All'],['ca','CA'],['ny','NY']].map(([k,l]) =>
-      `<button data-scope="${k}" class="${scope===k?'on':''}">${l}</button>`).join('') + `</div>`;
+      `<button data-scope="${k}" class="${scope===k?'on':''}">${l}</button>`).join('') + `</div>` +
+    `<span class="chip ovVapeTgl ${excl?'on':''}" title="Leave the vape (AIO) account out of the table and reports below — the two balance cards always show both accounts">` +
+    `💨 Exclude vapes${excl?' ✓':''}</span>`;
   document.querySelectorAll('#toolbar [data-scope]').forEach(b =>
     b.addEventListener('click', () => { state.ovScope = b.dataset.scope; render(); }));
+  document.querySelector('#toolbar .ovVapeTgl').addEventListener('click', () => {
+    state.ovExclVapes = !state.ovExclVapes;
+    localStorage.setItem('ot_exclVapes', state.ovExclVapes ? '1' : '0');
+    render();
+  });
 
   /* purchases report */
-  const rep = purchasesReport(scope);
+  const rep = purchasesReport(scope, excl);
   pp.style.display = '';
   pp.innerHTML = `<div class="panel"><div class="rtitle">Average monthly purchases` +
-    `<span class="sub">${scope==='all'?'CA + NY':scope.toUpperCase()} · last 3 full months (by ship date)</span></div>` +
+    `<span class="sub">${scope==='all'?'CA + NY':scope.toUpperCase()} · last 3 full months (by ship date)${excl?' · vapes excluded':''}</span></div>` +
     `<div class="mrow">` +
     rep.months.map(x => `<div class="mitem"><div class="fl">${esc(x.label)}</div><div class="fv">${fmtUSD(x.sum)}</div></div>`).join('') +
     `<div class="mitem avg"><div class="fl">Monthly average</div><div class="fv">${fmtUSD(rep.avg)}</div></div>` +
     `</div></div>` +
-    catReportHtml(scope);
+    catReportHtml(scope, excl);
 
   pp.querySelectorAll('tr.prow[data-cat]').forEach(tr => tr.addEventListener('click', () => {
     const c = tr.dataset.cat;
@@ -1109,13 +1131,20 @@ function renderOverview(){
   }));
 
   const adjMark = s => s.hasAdj ? '<span class="adjmark" title="Includes app re-ascriptions">✱</span>' : '';
-  const row = (k, s, cls, name) =>
-    `<tr class="${cls}" ${cls==='st-row'?`data-page="${k}"`:''}><td><b>${name}</b></td>` +
-    `<td class="num">${s.n}</td>` +
-    `<td class="num"><b>${fmtUSD(s.adjDue+s.nyd)}</b>${adjMark(s)}</td>` +
-    `<td class="num" style="color:var(--orange)">${fmtUSD(s.adjDue)}${adjMark(s)}</td>` +
-    `<td class="num" style="color:var(--blue)">${fmtUSD(s.nyd)}</td>` +
+  // excluding vapes: the table shows the Non-vape account (its balance, due-side, and
+  // not-yet-due), so the Total row lands exactly on the Non-vape balance card
+  const disp = s => excl
+    ? { n: s.nonvapeN, open: s.nonvape, due: s.nonvape - s.nonvapeNyd, nyd: s.nonvapeNyd }
+    : { n: s.n, open: s.adjDue + s.nyd, due: s.adjDue, nyd: s.nyd };
+  const row = (k, s, cls, name) => {
+    const d = disp(s);
+    return `<tr class="${cls}" ${cls==='st-row'?`data-page="${k}"`:''}><td><b>${name}</b></td>` +
+    `<td class="num">${d.n}</td>` +
+    `<td class="num"><b>${fmtUSD(d.open)}</b>${adjMark(s)}</td>` +
+    `<td class="num" style="color:var(--orange)">${fmtUSD(d.due)}${adjMark(s)}</td>` +
+    `<td class="num" style="color:var(--blue)">${fmtUSD(d.nyd)}</td>` +
     `<td class="go">${cls==='st-row'?'open →':''}</td></tr>`;
+  };
 
   /* Vape vs Non-vape open balance (scope-aware), reflecting payment attributions */
   const bs = scope === 'all' ? g : t[scope];
@@ -1126,8 +1155,9 @@ function renderOverview(){
     ? `<div class="sub">CA ${fmtUSD(pick(t.ca))} · NY ${fmtUSD(pick(t.ny))}</div>` : '';
   const bucketCards =
     `<div class="cards" style="padding:0 0 14px">` +
-    `<div class="card big"><div class="lbl">💨 Vape balance <span class="faint">(AIO hardware)</span></div>` +
-      `<div class="val" style="color:var(--accent2)">${fmtUSD(bs.vape)}</div>${bsub(bs.vape, bs.vapeSheet)}${split(s=>s.vape)}</div>` +
+    `<div class="card big"${excl?' style="opacity:.65"':''}><div class="lbl">💨 Vape balance <span class="faint">(AIO hardware)</span></div>` +
+      `<div class="val" style="color:var(--accent2)">${fmtUSD(bs.vape)}</div>${bsub(bs.vape, bs.vapeSheet)}${split(s=>s.vape)}` +
+      (excl?`<div class="sub">excluded from the table and reports below</div>`:'') + `</div>` +
     `<div class="card big"><div class="lbl">Non-vape balance</div>` +
       `<div class="val">${fmtUSD(bs.nonvape)}</div>${bsub(bs.nonvape, bs.nonvapeSheet)}${split(s=>s.nonvape)}</div>` +
     `</div>` +
@@ -1139,7 +1169,7 @@ function renderOverview(){
 
   cardsEl.innerHTML = bucketCards +
     `<div class="tblbox">` +
-    `<table class="stateTbl"><thead><tr><th>State</th><th class="num">Orders</th><th class="num">Open balance</th>` +
+    `<table class="stateTbl"><thead><tr><th>State</th><th class="num">Orders</th><th class="num">Open balance${excl?' <span class="hsub" style="display:inline">(non-vape)</span>':''}</th>` +
     `<th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
     row('ca', t.ca, 'st-row', 'CA') + row('ny', t.ny, 'st-row', 'NY') + row('', g, 'grand', 'Total') +
     `</tbody></table></div>` +
