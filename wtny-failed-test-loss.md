@@ -122,12 +122,12 @@ sole proof, and it is why the sourcing below matters more than it looks.
    confirmed lots plausibly lands in the **low five figures** — but that is an estimate and stays
    OUT of the claim until dates × crew × hours are documented.
 
-⚠️ **Rate caveat — the temps are not on the roster.** The sign‑in‑sheet crew (Jim Huang, Amy,
-Jackie, Jackie Ou, Nancy, Fengliu, Cumming Peng, Lina Li) are **not on `ny_roster`**, which holds
-only the six Gusto packaging techs at $23/hr. The tracker will import them at **$0/hr** unless a
-rate is set — so today the cleaning labour would compute to **$0**, which is exactly the number
-this section exists to avoid. **NEEDED: the temp agency's hourly rate (or the agency invoices,
-which are better evidence anyway — a third‑party invoice beats an internal timesheet).**
+**Temp rate: $25/hr — confirmed by Gianni 7/29/2026.** The sign‑in‑sheet crew (Jim Huang, Amy,
+Jackie, Jackie Ou, Nancy, Fengliu, Cumming Peng, Lina Li) are not on `ny_roster` (that's the six
+Gusto packaging techs at $23), and the tracker now defaults every uploaded off‑roster row to
+**$25/hr** automatically. The 7/29 sheet alone ≈ 57 person‑hours ≈ **~$1,430/day** of temp labour.
+Still worth collecting: **the agency's invoices** — a third‑party invoice beats an internal
+timesheet as claim evidence, and it captures any markup the $25 doesn't.
 
 **ASK KELSEY: the dates each strain was packaged, un‑packaged and cleaned, and the crew size on
 each.**
