@@ -793,17 +793,18 @@ const tsState = {
   category: 'distro',   // 'distro' | 'harvest' | 'roster' | 'compare' (labelled "Combined")
   view: 'log',          // 'log' | 'simplified'
   compareView: 'cards', // Combined page view: 'cards' | 'simplified'
-  filter: { company:'', employee:'', from:'', to:'', preset:'period' },
+  filter: { company:'', employee:'', from:'', to:'', preset:'period', source:'all' },   // source: all | gusto | uploaded
   comparePreset: 'period',   // the Combined page's own date window
   compareCos: new Set(),     // companies EXCLUDED from the Combined page (empty = show all)
   review: null,         // {company, sheet_date, rows:[...], dataUrl, path}
 };
 try{ const v = JSON.parse(localStorage.getItem(SITE.lsKey)||'{}');
   if (v.preset) tsState.filter.preset = v.preset;
+  if (['all','gusto','uploaded'].includes(v.source)) tsState.filter.source = v.source;
   if (v.view) tsState.view = v.view;
   if (['cards','simplified'].includes(v.compareView)) tsState.compareView = v.compareView;
   if (['distro','roster'].includes(v.category)) tsState.category = v.category; }catch(_){}   // harvest/Combined are gone
-function saveTsView(){ try{ localStorage.setItem(SITE.lsKey, JSON.stringify({preset:tsState.filter.preset, view:tsState.view, compareView:tsState.compareView, category:tsState.category})); }catch(_){} }
+function saveTsView(){ try{ localStorage.setItem(SITE.lsKey, JSON.stringify({preset:tsState.filter.preset, source:tsState.filter.source, view:tsState.view, compareView:tsState.compareView, category:tsState.category})); }catch(_){} }
 
 const tsFullName = s => [s.last, s.first].filter(Boolean).join(' ').trim() || (s.first || s.last || '');
 // match a name against the crew roster (exact last+first, then aliases, then
@@ -861,6 +862,8 @@ function filteredShifts(){
   return shifts.filter(s => {
     if ((s.category||'distro') !== tsState.category) return false;
     if (f.company && s.company !== f.company) return false;
+    if (f.source === 'gusto' && s.source !== 'import') return false;
+    if (f.source === 'uploaded' && s.source === 'import') return false;
     if (f.employee && tsFullName(s).toLowerCase() !== f.employee.toLowerCase()) return false;
     if (byPeriod){ if (effPeriodStart(s) !== from) return false; }
     else { if (from && s.work_date < from) return false; if (to && s.work_date > to) return false; }
@@ -1568,12 +1571,18 @@ function renderTsFilters(){
     + [['period','This pay period'],['lastperiod','Last pay period'],['30d','Last 30 days'],['all','All']]
       .map(([k,l]) => '<button data-k="'+k+'" class="'+(f.preset===k?'on':'')+'">'+l+'</button>').join('')
     + '</div>'
+    + '<div class="seg" id="ts-source" title="Where the hours came from">'
+    + [['all','All'],['gusto','Gusto'],['uploaded','Uploaded']]
+      .map(([k,l]) => '<button data-k="'+k+'" class="'+((f.source||'all')===k?'on':'')+'">'+l+'</button>').join('')
+    + '</div>'
     + '<div class="f"><label>Employee</label><select id="ts-f-emp"><option value="">All</option>'
     + emps.map(n => '<option '+(f.employee===n?'selected':'')+'>'+esc(n)+'</option>').join('') + '</select></div>'
     + '<div class="f"><label>From</label><input type="date" id="ts-f-from" value="'+f.from+'"></div>'
     + '<div class="f"><label>To</label><input type="date" id="ts-f-to" value="'+f.to+'"></div>';
   document.querySelectorAll('#ts-preset button').forEach(b => b.onclick = () => {
     f.preset = b.dataset.k; f.from=''; f.to=''; saveTsView(); renderTsFilters(); renderTsLog(); });
+  document.querySelectorAll('#ts-source button').forEach(b => b.onclick = () => {
+    f.source = b.dataset.k; saveTsView(); renderTsFilters(); renderTsLog(); });
   document.getElementById('ts-f-emp').onchange = e => { f.employee = e.target.value; renderTsLog(); };
   document.getElementById('ts-f-from').onchange = e => { f.from = e.target.value; f.preset=''; renderTsLog(); };
   document.getElementById('ts-f-to').onchange = e => { f.to = e.target.value; f.preset=''; renderTsLog(); };
@@ -1996,7 +2005,7 @@ async function addShiftRow(key){
   let msg = d === todayISO() ? 'Row added' : 'Row added — dated ' + fDayMDY(d);
   if (!filteredShifts().some(x => x.id === s.id)){
     tsState.filter.employee = '';
-    if (!filteredShifts().some(x => x.id === s.id)){ tsState.filter.preset = 'all'; tsState.filter.from = ''; tsState.filter.to = ''; }
+    if (!filteredShifts().some(x => x.id === s.id)){ tsState.filter.preset = 'all'; tsState.filter.from = ''; tsState.filter.to = ''; tsState.filter.source = 'all'; }
     msg += ' — filters cleared so you can see it';
   }
   renderTsFilters(); renderTsLog(); renderCombined(); toast(msg);
@@ -2262,6 +2271,7 @@ function drawTsReview(){
     // empty log invites uploading the same sheet again
     if (savedDates.length && !savedDates.every(d => filteredShifts().some(s => s.work_date === d && s.source === 'ocr'))){
       tsState.filter.preset = ''; tsState.filter.employee = '';
+      if (tsState.filter.source === 'gusto') tsState.filter.source = 'all';
       tsState.filter.from = savedDates.slice().sort()[0];
       tsState.filter.to = savedDates.slice().sort().pop();
     }
