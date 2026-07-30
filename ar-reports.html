@@ -1047,6 +1047,7 @@
         <div class="cr-form">
           <label>Dispensary<span class="cr-ac-wrap"><input id="cr-disp" placeholder="Start typing a NY customer…" autocomplete="off" /><div id="cr-ac" class="cr-ac hidden"></div></span></label>
           <label>Credit amount<input id="cr-amt" type="number" step="0.01" min="0" placeholder="0.00" /></label>
+          <label>Credit date<input id="cr-date" type="date" title="The date the credit was accepted / applies to (not when it was logged)" /></label>
           <label>Accepted by <span class="muted2">(optional)</span><input id="cr-by" placeholder="your name" autocomplete="off" /></label>
           <label class="cr-note-fld">Note<textarea id="cr-note" rows="2" placeholder="reason / details for this credit"></textarea></label>
           <label class="cr-files-fld">Attach pictures / PDFs <span class="muted2">(optional)</span><input id="cr-files" type="file" accept="image/*,application/pdf" multiple /></label>
@@ -5970,6 +5971,7 @@ async function renderCredits(){
   const wrap=$('#cr-wrap'); if(!wrap) return;
   // dispensary typeahead from the NY (LeafLink) customers list
   crSetupAutocomplete([...new Set((NY_EVENTS||[]).map(e=>e.c).filter(Boolean))].sort((a,b)=>a.localeCompare(b)));
+  { const d=$('#cr-date'); if(d && !d.value) d.value=new Date().toISOString().slice(0,10); }   // credit date defaults to today
   wrap.innerHTML=`<div class="empty">Loading credits…</div>`;
   try{ CREDITS=await sbCredits('select=*&order=created_at.desc'); }
   catch(e){ wrap.innerHTML=`<div class="empty">Couldn't load credits (${esc(e.message)}). Check your connection and hit Refresh.</div>`; return; }
@@ -5987,7 +5989,7 @@ const crD=s=>s?new Date(String(s).length<=10?s+'T00:00:00':s).toLocaleDateString
 // invoice it was applied to, rather than the credit editor.
 function crUsedList(){
   const manual=(CREDITS||[]).filter(c=>c.status==='used').map(c=>({
-    id:c.id, src:'credit', credit_no:c.credit_no, dispensary:c.dispensary, amount:+c.amount||0, note:(c.note||'').trim(),
+    id:c.id, src:'credit', credit_no:c.credit_no, credit_date:c.credit_date, dispensary:c.dispensary, amount:+c.amount||0, note:(c.note||'').trim(),
     used_date:c.used_date||'', used_invoice:c.used_invoice||'', attachments:c.attachments||[] }));
   const disc=(NY_INV||[]).filter(x=>x.disc>0.005).map(x=>({
     id:'inv:'+x.inv, src:'discount', dispensary:x.c, amount:x.disc, note:(x.dsum||'Invoice discount').trim(),
@@ -5998,7 +6000,7 @@ function renderCreditsTable(){
   const wrap=$('#cr-wrap'), sum=$('#cr-summary'), foot=$('#cr-foot'); if(!wrap) return;
   const isActive=crMode==='active';
   const list=isActive
-    ? (CREDITS||[]).filter(c=>c.status==='active').map(c=>({id:c.id,src:'credit',credit_no:c.credit_no,dispensary:c.dispensary,amount:+c.amount||0,note:(c.note||'').trim(),attachments:c.attachments||[],created_at:c.created_at,created_by:c.created_by}))
+    ? (CREDITS||[]).filter(c=>c.status==='active').map(c=>({id:c.id,src:'credit',credit_no:c.credit_no,credit_date:c.credit_date,dispensary:c.dispensary,amount:+c.amount||0,note:(c.note||'').trim(),attachments:c.attachments||[],created_at:c.created_at,created_by:c.created_by}))
     : crUsedList();
   const total=list.reduce((s,c)=>s+(c.amount||0),0);
   const nCred=list.filter(c=>c.src==='credit').length, nDisc=list.filter(c=>c.src==='discount').length;
@@ -6015,7 +6017,8 @@ function renderCreditsTable(){
     const noteCell = c.note ? `<td class="cr-note-cell" title="${esc(c.note)}">${esc(c.note)}</td>` : `<td><span class="neg">—</span></td>`;
     if(isActive) return `<tr class="cr-row" data-id="${esc(c.id)}" data-src="credit">
       <td class="muted2">${crNo(c)||'—'}</td>
-      <td>${esc(c.dispensary)}</td><td class="num money">${fmt$(c.amount)}</td>${noteCell}<td>${att}</td>
+      <td>${esc(c.dispensary)}</td><td class="num money">${fmt$(c.amount)}</td>
+      <td class="num">${crD(c.credit_date)}</td>${noteCell}<td>${att}</td>
       <td class="num">${crD(c.created_at)}${c.created_by?`<div class="muted2" style="font-size:11px">${esc(c.created_by)}</div>`:''}</td>
       <td class="cr-actioncell"><button class="btn cr-mini cr-markused">Mark used ↦</button></td>
       <td class="cr-delcell"><button class="cr-del" title="Delete">✕</button></td></tr>`;
@@ -6029,7 +6032,7 @@ function renderCreditsTable(){
       <td class="cr-delcell">${isDisc?'':'<button class="cr-del" title="Delete">✕</button>'}</td></tr>`;
   }).join('');
   const head = isActive
-    ? `<th>Credit #</th><th>Dispensary</th><th class="num">Amount</th><th>Note</th><th>Attachments</th><th class="num">Added</th><th></th><th></th>`
+    ? `<th>Credit #</th><th>Dispensary</th><th class="num">Amount</th><th class="num">Credit date</th><th>Note</th><th>Attachments</th><th class="num">Added</th><th></th><th></th>`
     : `<th>Credit #</th><th>Dispensary</th><th>Source</th><th class="num">Amount</th><th>Note</th><th class="num">Date applied</th><th>Invoice #</th><th>Attachments</th><th></th>`;
   wrap.innerHTML=`<table id="cr-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
   foot.innerHTML=isActive
@@ -6055,18 +6058,18 @@ async function crExportXlsx(){
       el.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'; el.onload=res; el.onerror=rej; document.head.appendChild(el); }); }catch(e){}
   }
   if(!window.XLSX){   // offline fallback — still give them the data
-    const out=[['Credit #','Status','Dispensary','Amount','Note','Date applied','Invoice #','Added','Added by','Attachments']];
-    active.forEach(c=>out.push([no(c),'active',c.dispensary,(+c.amount||0).toFixed(2),c.note||'','','',(c.created_at||'').slice(0,10),c.created_by||'',atts(c)]));
-    used.forEach(c=>out.push([no(c),c.src==='discount'?'invoice discount':'used',c.dispensary,(+c.amount||0).toFixed(2),c.note||'',c.used_date||'',c.used_invoice||'','','',atts(c)]));
+    const out=[['Credit #','Status','Dispensary','Amount','Credit date','Note','Date applied','Invoice #','Added','Added by','Attachments']];
+    active.forEach(c=>out.push([no(c),'active',c.dispensary,(+c.amount||0).toFixed(2),c.credit_date||'',c.note||'','','',(c.created_at||'').slice(0,10),c.created_by||'',atts(c)]));
+    used.forEach(c=>out.push([no(c),c.src==='discount'?'invoice discount':'used',c.dispensary,(+c.amount||0).toFixed(2),c.credit_date||'',c.note||'',c.used_date||'',c.used_invoice||'','','',atts(c)]));
     downloadCSV('ny-credits.csv',out); return;
   }
   const wb=XLSX.utils.book_new();
-  const ws1=XLSX.utils.aoa_to_sheet([['Credit #','Dispensary','Amount','Note','Added','Added by','Attachments'],
-    ...active.map(c=>[no(c),c.dispensary,+c.amount||0,c.note||'',(c.created_at||'').slice(0,10),c.created_by||'',atts(c)])]);
-  const ws2=XLSX.utils.aoa_to_sheet([['Credit #','Source','Dispensary','Amount','Note','Date applied','Invoice #','Attachments'],
-    ...used.map(c=>[no(c),c.src==='discount'?'Invoice discount':'Credit',c.dispensary,+c.amount||0,c.note||'',c.used_date||'',c.used_invoice||'',atts(c)])]);
-  ws1['!cols']=[{wch:9},{wch:34},{wch:10},{wch:52},{wch:11},{wch:20},{wch:34}];
-  ws2['!cols']=[{wch:9},{wch:15},{wch:34},{wch:10},{wch:52},{wch:12},{wch:16},{wch:34}];
+  const ws1=XLSX.utils.aoa_to_sheet([['Credit #','Dispensary','Amount','Credit date','Note','Added','Added by','Attachments'],
+    ...active.map(c=>[no(c),c.dispensary,+c.amount||0,c.credit_date||'',c.note||'',(c.created_at||'').slice(0,10),c.created_by||'',atts(c)])]);
+  const ws2=XLSX.utils.aoa_to_sheet([['Credit #','Source','Dispensary','Amount','Credit date','Note','Date applied','Invoice #','Attachments'],
+    ...used.map(c=>[no(c),c.src==='discount'?'Invoice discount':'Credit',c.dispensary,+c.amount||0,c.credit_date||'',c.note||'',c.used_date||'',c.used_invoice||'',atts(c)])]);
+  ws1['!cols']=[{wch:9},{wch:34},{wch:10},{wch:12},{wch:52},{wch:11},{wch:20},{wch:34}];
+  ws2['!cols']=[{wch:9},{wch:15},{wch:34},{wch:10},{wch:12},{wch:52},{wch:12},{wch:16},{wch:34}];
   XLSX.utils.book_append_sheet(wb,ws1,'Active credits');
   XLSX.utils.book_append_sheet(wb,ws2,'Used + discounts');
   XLSX.writeFile(wb,'ny-credits.xlsx');
@@ -6111,6 +6114,7 @@ function crEditModal(id){
     <div class="cr-edit-grid">
       <label>Dispensary<input id="cre-disp" type="text" value="${esc(c.dispensary||'')}" /></label>
       <label>Credit amount<input id="cre-amt" type="number" step="0.01" min="0" value="${esc(String(c.amount==null?'':c.amount))}" /></label>
+      <label>Credit date<input id="cre-date" type="date" value="${esc(c.credit_date||'')}" title="The date the credit was accepted / applies to" /></label>
       <label>Accepted by<input id="cre-by" type="text" value="${esc(c.created_by||'')}" /></label>
       ${usedFields}
     </div>
@@ -6143,7 +6147,7 @@ function crEditModal(id){
     const disp=$('#cre-disp').value.trim(), amt=+$('#cre-amt').value, note=$('#cre-note').value.trim(), by=$('#cre-by').value.trim(), msg=$('#cre-msg'), btn=$('#cre-save');
     if(!disp){ msg.innerHTML='<span style="color:var(--red)">Dispensary is required.</span>'; return; }
     if(!(amt>0)){ msg.innerHTML='<span style="color:var(--red)">Amount must be greater than 0.</span>'; return; }
-    const patch={dispensary:disp,amount:amt,note,created_by:by,attachments:atts};
+    const patch={dispensary:disp,amount:amt,note,created_by:by,attachments:atts,credit_date:($('#cre-date').value||null)};
     if(c.status==='used'){ patch.used_date=$('#cre-udate').value||null; patch.used_invoice=($('#cre-uinv').value||'').trim(); }
     btn.disabled=true; btn.textContent='Saving…';
     try{ await sbCreditUpdate(c.id,patch);
@@ -6177,7 +6181,8 @@ $('#cr-add') && ($('#cr-add').onclick=async ()=>{
   btn.disabled=true; const old=btn.textContent; btn.textContent='Saving…'; msg.textContent='';
   let row;
   try{
-    row=await sbCreditInsert({dispensary:disp,amount:amt,note,created_by:by,status:'active',attachments:[]});
+    const cdate=(($('#cr-date')||{}).value)||new Date().toISOString().slice(0,10);
+    row=await sbCreditInsert({dispensary:disp,amount:amt,note,created_by:by,status:'active',attachments:[],credit_date:cdate});
   }catch(e){ msg.innerHTML=`<span style="color:var(--red)">Couldn't save: ${esc(e.message)}</span>`; btn.disabled=false; btn.textContent=old; return; }
   // The credit row is SAVED. Uploads are best-effort from here — an upload failure must NOT read
   // as "couldn't save" (that caused duplicate rows when users clicked Add again). Report partials.
