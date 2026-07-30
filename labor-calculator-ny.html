@@ -2502,6 +2502,15 @@ filterEl.onchange = renderCombined;
     }
     tr.querySelector('.c-cost').textContent = fCents(r.cost);
     tr.querySelector('.c-cpu').textContent = cpu != null ? fCents(cpu) : '';
+    // absorption: this edit repriced the SIBLING rows too — repaint their cells
+    body.querySelectorAll(`tr.editrow[data-date="${date}"]`).forEach(sib => {
+      if (sib === tr) return;
+      const sr = arr[+sib.dataset.i]; if (!sr) return;
+      const scpu = sr.packaged ? sr.cost/sr.packaged : (sr.labeled ? sr.cost/sr.labeled : null);
+      const c1 = sib.querySelector('.c-cost'), c2 = sib.querySelector('.c-cpu');
+      if (c1) c1.textContent = fCents(sr.cost);
+      if (c2) c2.textContent = scpu != null ? fCents(scpu) : '';
+    });
     const tl = body.querySelector(`[data-tl="${date}"]`);
     if (tl){ const tmp = document.createElement('div'); tmp.innerHTML = tlWrap(date, arr); tl.replaceWith(tmp.firstElementChild); }
     const brow = body.querySelector(`tr[data-budgetrow="${date}"]`);
@@ -3235,7 +3244,7 @@ function addRowHTML(date, es){
   const diff = ts ? +(ts.hours - used).toFixed(2) : 0;
   const dayCost = es.reduce((a, r) => a + (r.cost || 0), 0);
   const tsCell = ts
-    ? `Timesheet: <b>${ts.hours.toFixed(2)}</b> hrs${ts.hours > 0.01 ? ` <span class="faint" title="This day's blended timesheet rate (worked pay ÷ worked hours across Gusto + uploaded people) — every task hour today is priced at it">· $${(ts.cost/ts.hours).toFixed(2)}/hr</span>` : ''}${ts.leave ? ` <span class="faint" title="Paid leave — pay without presence, so the task log isn't expected to cover it">+ ${ts.leave.toFixed(2)} paid leave</span>` : ''}`
+    ? `Timesheet: <b>${ts.hours.toFixed(2)}</b> hrs${(ts.hours > 0.01 && used > 0.005) ? ` <span class="faint" title="Effective task rate: this day's payroll ($${ts.cost.toFixed(2)}) spread over the ${used.toFixed(2)} task hours logged. The tasks always absorb the WHOLE payroll — log the missing tasks and this rate falls toward the true crew blend of $${(ts.cost/ts.hours).toFixed(2)}.">· $${(ts.cost/used).toFixed(2)}/hr effective</span>` : ''}${ts.leave ? ` <span class="faint" title="Paid leave — pay without presence, so the task log isn't expected to cover it">+ ${ts.leave.toFixed(2)} paid leave</span>` : ''}`
     : '<span class="faint">no timesheet hours yet</span>';
   const verdict = !ts ? '' : (ok
     ? '<span class="v-ok">✓ correct</span>'
@@ -3289,15 +3298,18 @@ function effectiveRows(){
 }
 function ensureEdit(date){ if(!lcEdits[date]) lcEdits[date] = dayEntries(date).map(r => ({...r})); return lcEdits[date]; }
 function blankTask(date){ return {date, task:'', lo:'', people:0, begin:'', end:'', seconds:null, hours:0, packaged:0, labeled:0, cost:0, note:null}; }
-/* Task pay = the day's BLENDED timesheet rate (that day's worked pay ÷ worked
-   hours). The crew is a mix — $23 Gusto packagers, $25 uploaded temps — and
-   nobody records who worked which task, so the day's real payroll mix is the
-   honest price for every task hour that day. A date with no timesheet yet
-   (today: Gusto lands tomorrow ~5:35am) borrows the nearest earlier day's
-   blend within 14 days, else the $23 crew rate. Costs are repriced from the
-   live timesheet on every render, so when Gusto arrives overnight the board's
-   dollars correct themselves; the DB's stored cost snapshots on the next edit. */
-function taskRate(date){
+/* Task pay ABSORBS the day's whole payroll (Gianni, 7/30): the tasks logged for
+   a date always carry ALL of that date's worked timesheet pay, split by task
+   person-hours. Effective rate = day payroll ÷ task hours logged — so with the
+   task log incomplete each task runs rich, and every task added spreads the same
+   dollars thinner until, at full coverage, the rate IS the true payroll blend
+   ($23 Gusto / $25 uploads mix). The day's task total always equals what payroll
+   actually pays, to the penny. Because one row's hours change EVERY row's cost
+   (the denominator moves), pricing is per-day, never per-row.
+   A date with no timesheet yet (today: Gusto lands tomorrow ~5:35am) falls back
+   to the nearest earlier day's blended rate within 14 days, else $23; paid
+   leave is excluded throughout (pay without presence buys no task time). */
+function blendRate(date){
   const d = tsDay(date);
   if (d && d.hours > 0.01) return d.cost / d.hours;
   for (let i = 1; i <= 14; i++){
@@ -3306,20 +3318,32 @@ function taskRate(date){
   }
   return 23;
 }
-function repriceTasks(){
-  const rateOf = new Map();
-  for (const d in lcEdits){
-    if (!rateOf.has(d)) rateOf.set(d, taskRate(d));
-    const rt = rateOf.get(d);
-    for (const r of lcEdits[d]) r.cost = +(((r.hours||0) * (r.people||0)) * rt).toFixed(2);
+function repriceDay(date, entries){
+  entries = entries || lcEdits[date] || [];
+  const d = tsDay(date);
+  const taskH = entries.reduce((a,r) => a + (r.hours||0) * (r.people||0), 0);
+  const absorb = d && d.hours > 0.01 && taskH > 0.005;
+  const rate = absorb ? d.cost / taskH : blendRate(date);
+  for (const r of entries) r.cost = +(((r.hours||0) * (r.people||0)) * rate).toFixed(2);
+  if (absorb){
+    // per-row cent rounding must not leave the day a few pennies off payroll —
+    // the whole point is that these two numbers MATCH. Park the drift on the
+    // biggest row, where a cent is least visible.
+    const sum = +entries.reduce((a,r) => a + r.cost, 0).toFixed(2);
+    const drift = +(d.cost - sum).toFixed(2);
+    if (drift){
+      const big = entries.reduce((a,b) => ((b.cost||0) > (a.cost||0) ? b : a));
+      big.cost = +(big.cost + drift).toFixed(2);
+    }
   }
 }
+function repriceTasks(){ for (const d in lcEdits) repriceDay(d, lcEdits[d]); }
 function recomputeRow(r){
   const b=toMin(r.begin), e=toMin(r.end);
   if (b!=null && e!=null){ let d=e-b; if(d<0) d+=1440; r.seconds=d*60; r.hours=+(d/60).toFixed(2); }
   else { r.seconds=null; r.hours=0; }
   r.lo = (r.task||'').toLowerCase();
-  r.cost = +(((r.hours||0) * (r.people||0)) * taskRate(r.date)).toFixed(2);
+  repriceDay(r.date);   // absorption: this row's hours moved every sibling's cost too
 }
 
 function readRow(r){
@@ -3338,6 +3362,17 @@ const minToHM = m => String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%6
 // a product task saved with no unit count anywhere: point at the column its
 // units belong in (label tasks → Labeled, everything else → Packaged) so the
 // crew can see a number is still owed. Non-product tasks never need units.
+// General/non-packaging rows produce no units — hide the Packed/Labeled inputs
+// so a count can't be typed into them by mistake. Purely a render rule: stored
+// data is untouched, and a row that ALREADY carries units (a past mis-entry)
+// keeps its inputs so the value stays visible and removable rather than hidden.
+const NO_UNIT_RE = /^(general packaging|non-packaging)/;
+function unitCell(r, f){
+  if (NO_UNIT_RE.test(r.lo || '') && !((r[f] || 0) > 0))
+    return `<td class="c-nounit" title="${f === 'packaged' ? 'Packed' : 'Labeled'} doesn’t apply to ${esc(r.task || 'this activity')}"><span class="faint">—</span></td>`;
+  const need = unitNeed(r) === f;
+  return `<td><input data-field="${f}" type="number" min="0" value="${r[f]||''}" class="e-n${need ? ' need' : ''}" ${need ? 'title="Unit count needed"' : ''}></td>`;
+}
 function unitNeed(r){
   if (!r.task || lpColFor(r.lo) == null) return null;
   if ((r.packaged || 0) > 0 || (r.labeled || 0) > 0) return null;
@@ -3351,8 +3386,8 @@ function editRow(date, i, r){
     <td><input data-field="begin" type="time" value="${r.begin||''}" class="e-t"></td>
     <td><input data-field="end" type="time" value="${r.end||''}" class="e-t"></td>
     <td class="c-time">${fDur(r.seconds)}</td>
-    <td><input data-field="packaged" type="number" min="0" value="${r.packaged||''}" class="e-n${unitNeed(r)==='packaged' ? ' need' : ''}" ${unitNeed(r)==='packaged' ? 'title="Unit count needed"' : ''}></td>
-    <td><input data-field="labeled" type="number" min="0" value="${r.labeled||''}" class="e-n${unitNeed(r)==='labeled' ? ' need' : ''}" ${unitNeed(r)==='labeled' ? 'title="Unit count needed"' : ''}></td>
+    ${unitCell(r, 'packaged')}
+    ${unitCell(r, 'labeled')}
     <td class="c-cost">${fCents(r.cost)}</td>
     <td class="c-cpu">${cpu != null ? fCents(cpu) : ''}</td>
     <td class="avgcpu">${avgCpuFor(r.task) != null ? fCents(avgCpuFor(r.task)) : ''}<button class="e-del" title="Delete this task">\u2715</button></td>
