@@ -3165,7 +3165,7 @@ function isEmptyDay(date){
 function tsDay(date){
   const es = tsEntries.filter(t => t.work_date === date && (t.category || 'distro') === 'distro');
   if (!es.length) return null;
-  let lo = null, hi = null, hours = 0, leave = 0;
+  let lo = null, hi = null, hours = 0, leave = 0, cost = 0;
   for (const t of es){
     const b = toMin(t.clock_in), e2 = toMin(t.clock_out);
     // punchless rows are PAID LEAVE (PTO/holiday from Gusto) — pay, not presence.
@@ -3173,10 +3173,11 @@ function tsDay(date){
     // nobody was there to do: a PTO day read "task time ≠ timesheet" forever.
     if (b == null && e2 == null){ leave += +t.hours || 0; continue; }
     hours += +t.hours || 0;
+    cost += +t.total || 0;
     if (b != null && (lo == null || b < lo)) lo = b;
     if (e2 != null && (hi == null || e2 > hi)) hi = e2;
   }
-  return {lo, hi, hours: +hours.toFixed(2), leave: +leave.toFixed(2)};
+  return {lo, hi, hours: +hours.toFixed(2), leave: +leave.toFixed(2), cost: +cost.toFixed(2)};
 }
 // how many distinct people are on the distro timesheet for this day (unique names)
 function tsPeople(date){
@@ -3234,7 +3235,7 @@ function addRowHTML(date, es){
   const diff = ts ? +(ts.hours - used).toFixed(2) : 0;
   const dayCost = es.reduce((a, r) => a + (r.cost || 0), 0);
   const tsCell = ts
-    ? `Timesheet: <b>${ts.hours.toFixed(2)}</b> hrs${ts.leave ? ` <span class="faint" title="Paid leave — pay without presence, so the task log isn't expected to cover it">+ ${ts.leave.toFixed(2)} paid leave</span>` : ''}`
+    ? `Timesheet: <b>${ts.hours.toFixed(2)}</b> hrs${ts.hours > 0.01 ? ` <span class="faint" title="This day's blended timesheet rate (worked pay ÷ worked hours across Gusto + uploaded people) — every task hour today is priced at it">· $${(ts.cost/ts.hours).toFixed(2)}/hr</span>` : ''}${ts.leave ? ` <span class="faint" title="Paid leave — pay without presence, so the task log isn't expected to cover it">+ ${ts.leave.toFixed(2)} paid leave</span>` : ''}`
     : '<span class="faint">no timesheet hours yet</span>';
   const verdict = !ts ? '' : (ok
     ? '<span class="v-ok">✓ correct</span>'
@@ -3288,12 +3289,37 @@ function effectiveRows(){
 }
 function ensureEdit(date){ if(!lcEdits[date]) lcEdits[date] = dayEntries(date).map(r => ({...r})); return lcEdits[date]; }
 function blankTask(date){ return {date, task:'', lo:'', people:0, begin:'', end:'', seconds:null, hours:0, packaged:0, labeled:0, cost:0, note:null}; }
+/* Task pay = the day's BLENDED timesheet rate (that day's worked pay ÷ worked
+   hours). The crew is a mix — $23 Gusto packagers, $25 uploaded temps — and
+   nobody records who worked which task, so the day's real payroll mix is the
+   honest price for every task hour that day. A date with no timesheet yet
+   (today: Gusto lands tomorrow ~5:35am) borrows the nearest earlier day's
+   blend within 14 days, else the $23 crew rate. Costs are repriced from the
+   live timesheet on every render, so when Gusto arrives overnight the board's
+   dollars correct themselves; the DB's stored cost snapshots on the next edit. */
+function taskRate(date){
+  const d = tsDay(date);
+  if (d && d.hours > 0.01) return d.cost / d.hours;
+  for (let i = 1; i <= 14; i++){
+    const p = tsDay(addDaysISO(date, -i));
+    if (p && p.hours > 0.01) return p.cost / p.hours;
+  }
+  return 23;
+}
+function repriceTasks(){
+  const rateOf = new Map();
+  for (const d in lcEdits){
+    if (!rateOf.has(d)) rateOf.set(d, taskRate(d));
+    const rt = rateOf.get(d);
+    for (const r of lcEdits[d]) r.cost = +(((r.hours||0) * (r.people||0)) * rt).toFixed(2);
+  }
+}
 function recomputeRow(r){
   const b=toMin(r.begin), e=toMin(r.end);
   if (b!=null && e!=null){ let d=e-b; if(d<0) d+=1440; r.seconds=d*60; r.hours=+(d/60).toFixed(2); }
   else { r.seconds=null; r.hours=0; }
   r.lo = (r.task||'').toLowerCase();
-  r.cost = +(((r.hours||0) * (r.people||0)) * 20).toFixed(2);   // flat $20/hr for now; timesheet-based pay comes with the budget feature
+  r.cost = +(((r.hours||0) * (r.people||0)) * taskRate(r.date)).toFixed(2);
 }
 
 function readRow(r){
@@ -3366,6 +3392,7 @@ function tlWrap(date, es){
 }
 
 function renderCombined(){
+  repriceTasks();
   buildFilterOptions();
   _avgMap = buildAvgMap();
   const shown = combinedFiltered();
@@ -3591,6 +3618,7 @@ for (const id of ['costlbAll']){
 }
 
 function renderReports(){
+  repriceTasks();
   const sel = inRange();
   const s = startEl.value, e = endEl.value;
   document.querySelectorAll('.rangeNote').forEach(el => el.textContent = s && e ? `${fDate(s)} \u2013 ${fDate(e)}` : '');
@@ -3863,6 +3891,7 @@ function lpDerivedDays(){
 }
 
 function renderLaborPack(){
+  repriceTasks();
   const fmtU = v => v ? fInt(v) : '';
   const fmtL = v => v ? fLb2(v) : '';
   // stored days (imported history + pinned edits) + the live Tasks-derived
