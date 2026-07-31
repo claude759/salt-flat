@@ -94,6 +94,34 @@ function submittedEmail(ba: any, p: any, sub: any) {
   return { subject: `${ba?.full_name || "A BA"} submitted mileage & expenses (${periodLabel(p)})`, html, text };
 }
 
+function approvedEmail(ba: any, p: any, sub: any, approver: any, wasSubmitted: boolean) {
+  const t = sub?.totals || {};
+  const lbl = esc(periodLabel(p));
+  const who = esc(approver?.full_name || "An admin");
+  const row = (k: string, v: string) => `<tr><td style="padding:4px 0;color:#555">${k}</td><td style="padding:4px 0;text-align:right;font-weight:600">${v}</td></tr>`;
+  // The pointed case: an admin approved rows the BA never submitted. That is allowed
+  // (a BA who forgets shouldn't block payroll) but it should never happen quietly.
+  const flag = wasSubmitted ? "" :
+    `<p style="margin:0 0 12px;padding:9px 12px;background:#fff6e5;border-left:3px solid #e8a33d;font-size:13px">
+       <b>Approved without a submission.</b> ${who} approved these rows directly &mdash;
+       ${esc(ba?.full_name || "the BA")} never pressed Submit, so nobody attested to them.</p>`;
+  const html = shell("A pay period was approved", `
+    <p style="margin:0 0 12px"><b>${who}</b> approved <b>${esc(ba?.full_name || "a brand ambassador")}</b>'s period <b>${lbl}</b>.</p>
+    ${flag}
+    <table style="width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px">
+      ${row("Mileage", money(t.mileage))}
+      ${row("Expenses (reimburse)", money(t.expenses))}
+      ${t.company_card ? row("Company-paid (not reimbursed)", money(t.company_card)) : ""}
+      ${t.labor ? row("Labor (recorded)", money(t.labor)) : ""}
+      <tr><td style="padding:8px 0 0;border-top:1px solid #eee;font-weight:700">Reimburse total</td><td style="padding:8px 0 0;border-top:1px solid #eee;text-align:right;font-weight:700">${money(t.total ?? (Number(t.mileage||0)+Number(t.expenses||0)))}</td></tr>
+    </table>
+    <p style="margin:0"><a href="${APP_URL}" style="background:#6c5ce7;color:#fff;text-decoration:none;padding:11px 20px;border-radius:999px;font-weight:700;display:inline-block">Open the app &rarr;</a></p>`);
+  const text = `${approver?.full_name || "An admin"} approved ${ba?.full_name || "a BA"}'s period ${periodLabel(p)}`
+    + (wasSubmitted ? "" : " (approved WITHOUT a submission - the BA never pressed Submit)")
+    + `. Reimburse total ${money(t.total ?? (Number(t.mileage||0)+Number(t.expenses||0)))}. ${APP_URL}`;
+  return { subject: `${ba?.full_name || "A BA"} period APPROVED by ${approver?.full_name || "an admin"} (${periodLabel(p)})`, html, text };
+}
+
 Deno.serve(async (req) => {
   const pf = preflight(req); if (pf) return pf;
   try {
@@ -162,6 +190,33 @@ Deno.serve(async (req) => {
           .filter((e: string) => e && e !== to && e !== ba?.email && !/^automation@/i.test(e));
       }
       const { subject, html, text } = submittedEmail(ba, period, sub);
+      if (dry) return json({ ok: true, would_notify: to, cc, subject });
+      await sendMail(to, subject, html, text, cc);
+      return json({ ok: true, notified: to, cc });
+    }
+
+    if (job === "approved") {
+      const { ba_id, period_id, approved_by, was_submitted } = body;
+      if (!ba_id || !period_id) return json({ ok: false, error: "ba_id and period_id required" }, 400);
+      const [{ data: ba }, { data: period }, { data: sub }, { data: approver }] = await Promise.all([
+        db.from("profiles").select("full_name,email,region").eq("id", ba_id).single(),
+        db.from("pay_periods").select("*").eq("id", period_id).single(),
+        db.from("submissions").select("*").eq("ba_id", ba_id).eq("period_id", period_id).maybeSingle(),
+        approved_by ? db.from("profiles").select("full_name,email").eq("id", approved_by).single()
+                    : Promise.resolve({ data: null }),
+      ]);
+      const to = testTo || ADMIN_EMAIL;
+      if (!to) return json({ ok: false, error: "ADMIN_EMAIL not set" }, 200);
+      // CC the BA's regional admins, minus the approver (they already know) and the To
+      let cc: string[] = [];
+      if (ba?.region) {
+        const { data: regAdmins } = await db.from("profiles").select("email")
+          .eq("role", "admin").eq("region", ba.region).eq("active", true);
+        cc = (regAdmins || []).map((a: { email: string }) => a.email)
+          .filter((e: string) => e && e !== to && e !== ba?.email
+                              && e !== approver?.email && !/^automation@/i.test(e));
+      }
+      const { subject, html, text } = approvedEmail(ba, period, sub, approver, was_submitted !== false);
       if (dry) return json({ ok: true, would_notify: to, cc, subject });
       await sendMail(to, subject, html, text, cc);
       return json({ ok: true, notified: to, cc });

@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.72';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.73';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -3836,9 +3836,17 @@ async function approveSubmission(baId,periodId,T,E,H,subStatus){
   const take = x=> x.status==='submitted' || (sweep && x.status==='draft');
   const pend=[...(T||[]).filter(take).map(x=>({...x,_k:'trip'})), ...(E||[]).filter(take).map(x=>({...x,_k:'exp'}))];
   const todoN=pend.filter(x=>itemIssues(x).length).length;
+  // Approving a period that hasn't ended freezes the stamped totals while the BA can still
+  // log more days — those land outside the approved snapshot. Name the risk with the real
+  // end date rather than letting it happen silently (Drew, Jul 21: approved 10 days early).
+  const per=(state.periods||[]).find(p=>p.id===periodId) || (state.period&&state.period.id===periodId?state.period:null);
+  const endsOn=per&&per.end_date, openDays = endsOn ? Math.round((new Date(endsOn+'T12:00')-new Date(todayISO()+'T12:00'))/864e5) : 0;
+  const earlyWarn = openDays>0
+    ? `\n\n⚠ This period doesn’t end until ${fmtDate(endsOn)} — ${openDays} day${openDays===1?'':'s'} left. Anything logged after you approve won’t be in these totals.`
+    : '';
   const msg = sweep
-    ? `This BA never pressed “Submit period” — approve ALL their current items for this period (${pend.length} item${pend.length===1?'':'s'}, including drafts)?${todoN?`\n\n⚠ ${todoN} still have open to-dos (missing receipt, miles, or location).`:''}`
-    : `Approve all submitted items for this BA this period?${todoN?`\n\n⚠ ${todoN} still have open to-dos.`:''}`;
+    ? `This BA never pressed “Submit period” — approve ALL their current items for this period (${pend.length} item${pend.length===1?'':'s'}, including drafts)?${todoN?`\n\n⚠ ${todoN} still have open to-dos (missing receipt, miles, or location).`:''}${earlyWarn}`
+    : `Approve all submitted items for this BA this period?${todoN?`\n\n⚠ ${todoN} still have open to-dos.`:''}${earlyWarn}`;
   if(!confirm(msg)) return;
   // the stamped TOTALS cover the whole period as it stands AFTER this click (already-
   // approved + what's being approved now) — never just this batch, or an undo→re-approve
@@ -4413,9 +4421,29 @@ function editBaSheet(b){
     const addr=$('#euAddr').value;
     const hr=$('#euHourly').value;
     const sal=$('#euSalary').value;
+    // A rate change needs a DATE. hours.rate is stamped when a row is inserted and the
+    // Gusto sync imports days that already happened, so a bare edit would re-price the
+    // past. Ask which work date the new rate starts on and record it in ba_rates.
+    let rateFrom=null;
+    if(hr!=='' && Number(hr)!==Number(b.hourly_rate??NaN)){
+      const d=prompt(`New rate $${Number(hr).toFixed(2)}/hr — from which WORK DATE does it apply?\n\nHours worked before this date keep the old rate.`, todayISO());
+      if(d===null) return;                                    // cancelled → don't save anything
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(d.trim())) return toast('Use YYYY-MM-DD (e.g. 2026-08-01)','err');
+      rateFrom=d.trim();
+    }
     const patch={ full_name:$('#euName').value, base_address:addr||null, role, region:region||null, active:$('#euActive').value==='true', hourly_rate:hr!==''?Number(hr):null, salary_per_period:sal!==''?Number(sal):null, gusto_name:$('#euGusto').value.trim()||null };
     if((addr||'')!==(b.base_address||'')){ patch.base_lat=null; patch.base_lng=null; } // re-geocode on next auto-distance
     const btn=$('#euSave'); busy(btn,true);
+    if(rateFrom){
+      // seed the PRIOR rate from the beginning of time first, so days before the change
+      // resolve to what the person was actually earning rather than falling through to
+      // profiles.hourly_rate (which we're about to overwrite with the new number)
+      if(b.hourly_rate!=null) await supabase.from('ba_rates')
+        .upsert({ba_id:b.id, effective_from:'2020-01-01', hourly_rate:b.hourly_rate, note:'rate before the '+rateFrom+' change'}, {onConflict:'ba_id,effective_from', ignoreDuplicates:true});
+      const {error:rerr}=await supabase.from('ba_rates')
+        .upsert({ba_id:b.id, effective_from:rateFrom, hourly_rate:Number(hr), note:'set by '+(state.profile?.full_name||'admin')}, {onConflict:'ba_id,effective_from'});
+      if(rerr){ busy(btn,false); return toast('Couldn’t save the rate change: '+rerr.message,'err'); }
+    }
     const { error }=await supabase.from('profiles').update(patch).eq('id',b.id);
     busy(btn,false);
     if(error) return toast(error.message,'err');
