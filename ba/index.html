@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.73';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.74';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -370,6 +370,9 @@ const PAYMENTS = [['reimbursement','💵 Reimburse me'],['company','💳 Company
 // company-PAID methods (card or bank) are never reimbursed to the BA — one predicate so a
 // future method can't silently land in the reimburse bucket at some call sites only
 const isCoPaid = p => p==='company' || p==='company_bank';
+// Sales-titled hours (Joanna, Jesse) vs Brand-Ambassador hours. Both attribute to the
+// stores driven to that day, but they're different budgets — reports keep them apart.
+const isSalesHours = h => /^sales$/i.test((h&&h.job)||'') || /^sales$/i.test((h&&h.kind)||'');
 const payLabel = p => p==='company' ? '💳 Company card' : p==='company_bank' ? '🏦 Company bank' : '💵 Reimburse';
 const payFlag  = p => p==='company' ? '💳' : p==='company_bank' ? '🏦' : '';
 function expSplit(E){ let reimb=0, card=0; (E||[]).forEach(x=>{ if(isCoPaid(x.payment)) card+=Number(x.amount||0); else reimb+=Number(x.amount||0); }); return {reimb, card}; }
@@ -1321,14 +1324,14 @@ async function baReport(m){
   ]);
   const dn=id=>{ const n=dispName(id); return n==='—'?'':n; };
   const agg={}, items={};
-  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0}; items[k]=items[k]||[]; };
+  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0,laborSales:0}; items[k]=items[k]||[]; };
   (trips.data||[]).forEach(t=>{ const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,ba_id:t.ba_id,date:t.trip_date,ba:'',disp:dn(t.dispensary_id),start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
   (exps.data||[]).forEach(x=>{ const A=Number(x.amount||0), names=dispIds(x).map(dn).filter(Boolean);
     dispSplit(x,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k][isCoPaid(x.payment)?'card':'exp']+=share;
       items[k].push({kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:'',disp:dn(id),dispNames:names,splitN:n,alSplit:!!(x.alloc&&x.alloc.length),vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
   (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dn).filter(Boolean);
-    dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share;
+    dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share; if(isSalesHours(h)) agg[k].laborSales+=share;
       items[k].push({kind:'hours',id:h.id,ba_id:h.ba_id,date:h.work_date,ba:'',disp:dn(id),dispNames:names,splitN:n,hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,cat:h.kind,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));
@@ -1346,7 +1349,7 @@ async function baReport(m){
             <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
           </div>
           <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
-          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor`:''}</div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor${r.laborSales>0?` <span class="muted">(BA ${money(r.labor-r.laborSales)} · Sales ${money(r.laborSales)})</span>`:''}`:''}</div>
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this range yet.</p>`}
     </div>`;
@@ -3039,7 +3042,7 @@ async function adminReport(m){
   const keep=(ba_id,dispId)=>inRegion(ba_id) || dRegion(dispId)===region;
   const baName=ba_id=>(pById[ba_id]&&pById[ba_id].full_name)||'BA';
   const agg={}, items={};   // dispensary_id|'none' -> totals / item list
-  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0}; items[k]=items[k]||[]; };
+  const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0,laborSales:0}; items[k]=items[k]||[]; };
   (trips.data||[]).forEach(t=>{ if(!keep(t.ba_id,t.dispensary_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,ba_id:t.ba_id,date:t.trip_date,ba:baName(t.ba_id),disp:(dById[k]&&dById[k].name)||'',
       start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,
@@ -3050,7 +3053,7 @@ async function adminReport(m){
       items[k].push({kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:baName(x.ba_id),disp:dnm(id),dispNames:names,splitN:n,alSplit:!!(x.alloc&&x.alloc.length),
         vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
   (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dnm).filter(Boolean);
-    dispSplit(h,A).forEach(({id,share,n})=>{ if(!keep(h.ba_id,id)) return; const k=id||'none'; ensure(k); agg[k].labor+=share;
+    dispSplit(h,A).forEach(({id,share,n})=>{ if(!keep(h.ba_id,id)) return; const k=id||'none'; ensure(k); agg[k].labor+=share; if(isSalesHours(h)) agg[k].laborSales+=share;
       items[k].push({kind:'hours',id:h.id,ba_id:h.ba_id,date:h.work_date,ba:baName(h.ba_id),disp:dnm(id),dispNames:names,splitN:n,
         hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,cat:h.kind,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
@@ -3069,7 +3072,7 @@ async function adminReport(m){
             <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
           </div>
           <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
-          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor`:''}</div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor${r.laborSales>0?` <span class="muted">(BA ${money(r.labor-r.laborSales)} · Sales ${money(r.laborSales)})</span>`:''}`:''}</div>
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this range${region!=='all'?' in '+region:''} yet.</p>`}
     </div>`;
@@ -3130,13 +3133,13 @@ function buildVisits(trips, exps, hrs, ctx){
   const ens=(b,d,dt)=>{ const k=`${b}|${d}|${dt}`;
     if(!V[k]) V[k]={key:k,ba_id:b,disp_id:d,date:dt,ba:baName(b),disp:dnm(d)||'(deleted location)',
       home:(homeOf?homeOf(b):'')||'',
-      mile:0,labor:0,exp:0,card:0,miles:0,laborHrs:0,trips:[],hours:[],expenses:[]};
+      mile:0,labor:0,laborSales:0,exp:0,card:0,miles:0,laborHrs:0,trips:[],hours:[],expenses:[]};
     return V[k]; };
   (trips||[]).forEach(t=>{ if(!t.dispensary_id||!keep(t.ba_id,t.dispensary_id)) return;
     const v=ens(t.ba_id,t.dispensary_id,t.trip_date); v.mile+=Number(t.amount||0); v.miles+=Number(t.miles||0); v.trips.push(t); });
   (hrs||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0);
     dispSplit(h,A).forEach(({id,share,n,hrs:hshare})=>{ if(!id||!keep(h.ba_id,id)) return; const v=ens(h.ba_id,id,h.work_date);
-      v.labor+=share; v.laborHrs+=(hshare!=null?hshare:H/n); v.hours.push({row:h,share,n}); }); });
+      v.labor+=share; if(isSalesHours(h)) v.laborSales+=share; v.laborHrs+=(hshare!=null?hshare:H/n); v.hours.push({row:h,share,n}); }); });
   (exps||[]).forEach(x=>{ const A=Number(x.amount||0);
     dispSplit(x,A).forEach(({id,share,n})=>{ if(!id||!keep(x.ba_id,id)) return; const v=ens(x.ba_id,id,x.expense_date);
       if(isCoPaid(x.payment)) v.card+=share; else v.exp+=share; v.expenses.push({row:x,share,n}); }); });
@@ -3208,7 +3211,7 @@ function visitSheet(v){
     const bits=[t.miles!=null?`${t.miles} mi`:'', t.kind?esc(t.kind):''].filter(Boolean).join(' · ');
     return `<div class="s" style="padding:4px 0">🚗 ${route}${bits?` <span class="muted">· ${bits}</span>`:''} — <b>${money(t.amount)}</b></div>`;
   }).join('');
-  const hourLines=v.hours.map(h=>`<div class="s" style="padding:3px 0">⏱ ${Math.round((Number(h.row.hours||0)/h.n)*100)/100} hrs${h.row.kind?` · ${esc(h.row.kind)}`:''}${h.n>1?` · split ${h.n} stores`:''}${h.row.source==='salary'?' · salaried':''} — <b>${money(h.share)}</b></div>`).join('');
+  const hourLines=v.hours.map(h=>`<div class="s" style="padding:3px 0">${isSalesHours(h.row)?'💼':'⏱'} ${Math.round((Number(h.row.hours||0)/h.n)*100)/100} hrs${h.row.kind?` · ${esc(h.row.kind)}`:''}${h.n>1?` · split ${h.n} stores`:''}${h.row.source==='salary'?' · salaried':''} — <b>${money(h.share)}</b></div>`).join('');
   const expLines=v.expenses.map(x=>`<div class="s" style="padding:3px 0">🧾 ${esc(x.row.vendor||'Expense')}${isCoPaid(x.row.payment)?' · '+payFlag(x.row.payment)+' company-paid':' · 💵 reimburse'}${x.n>1?` · split ${x.n}`:''} — <b>${money(x.share)}</b></div>`).join('');
   openSheet(`
     <h3 style="margin-bottom:2px">${esc(v.disp)}</h3>
@@ -3217,7 +3220,7 @@ function visitSheet(v){
       <div style="text-align:center;margin-bottom:4px"><div class="k" style="${kst}">Total visit cost</div>
         <div style="font-size:24px;font-weight:800;color:var(--accent2)">${money(v.total)}</div></div>
       ${line('🚗','Mileage <span class="muted small">up &amp; back</span>',money(v.mile), v.miles?`${Math.round(v.miles*10)/10} mi`:'')}
-      ${line('⏱','Labor',money(v.labor), v.laborHrs?`${Math.round(v.laborHrs*100)/100} hrs that day`:'')}
+      ${line('⏱','Labor'+(v.laborSales>0?` <span class="muted small">BA ${money(v.labor-v.laborSales)} · Sales ${money(v.laborSales)}</span>`:''),money(v.labor), v.laborHrs?`${Math.round(v.laborHrs*100)/100} hrs that day`:'')}
       ${line('🧾','Expenses', v.exp>0?money(v.exp):'<span class="muted">none logged</span>')}
       ${v.card>0?line('💳','Company-paid',money(v.card),'not reimbursed'):''}
     </div>
