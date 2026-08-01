@@ -168,10 +168,11 @@ function normNote(r: any){
     time_out: cleanTime(r.time_out),
     note: typeof r.note === "string" ? r.note.trim().slice(0, 120) : null,
   };
-  // keep unreadable/crossed rows (worker null but flagged in the note) so nothing
-  // is silently dropped — the row-count check + review surface them for a human
-  const flagged = row.note && /^(UNREADABLE|CROSSED)/i.test(row.note);
-  if (!row.worker && !row.task && !row.location && !row.time_in && !row.time_out && !flagged) return null;
+  // never silently drop a filled line: keep the row if it has ANY structured
+  // field OR a note (an illegible/crossed row comes back with only a note —
+  // don't depend on the model using an exact "UNREADABLE" prefix). Only a truly
+  // empty {} is discarded.
+  if (!row.worker && !row.task && !row.location && !row.time_in && !row.time_out && !row.note) return null;
   return row;
 }
 
