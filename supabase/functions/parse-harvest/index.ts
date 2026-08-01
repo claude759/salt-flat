@@ -41,7 +41,14 @@ const HARVEST_INSTR =
   'the run of the list (like 7/25 inside a 7/5..7/16 list) is almost certainly a misread; re-examine the ' +
   'line before writing it. Do not skip lines: one physical line = one row.\n' +
   'Return ONLY a JSON object, no prose: {"rows":[{"category":"distro"|"harvest"|null,"date":"YYYY-MM-DD"|null,"location":string|null,' +
-  '"task":string|null,"break_min":number|null,"worker":string|null,"people":number|null,"rate":number|null,"time_in":"HH:MM"|null,"time_out":"HH:MM"|null,"note":string}]}\n' +
+  '"task":string|null,"break_min":number|null,"worker":string|null,"people":number|null,"rate":number|null,"time_in":"HH:MM"|null,"time_out":"HH:MM"|null,"note":string}],"sheet_row_count":number|null}\n' +
+  '- COMPLETENESS (critical): output ONE row for EVERY filled line — never omit a line because a name is hard to read. ' +
+  'For a printed sign-in grid (a numbered "#" column), set "sheet_row_count" to the number of numbered rows that contain ANY handwriting ' +
+  '(a name and/or a time), INCLUDING crossed-out rows. For a freeform notes list, "sheet_row_count" = the number of work lines. ' +
+  'The number of objects in "rows" should equal "sheet_row_count".\n' +
+  '- UNREADABLE / CROSSED: if a filled row exists but its name is illegible, STILL output the row with "worker" null and "note" beginning "UNREADABLE — " ' +
+  'plus whatever letters you can make out and the times. If a row is crossed out, output it with "worker" null and "note" beginning "CROSSED OUT — ". ' +
+  'Do not silently drop either kind; a human will fill it in or untick it.\n' +
   'Rules:\n' +
   '- Bare dates like "6/7", "jun 6", "5/27", "6/20/16" are year 2026 (ignore an obviously wrong year like 16). Output YYYY-MM-DD.\n' +
   '- SPANISH is common. Month names: enero=01 febrero=02 marzo=03 abril=04 mayo=05 junio=06 julio=07 ' +
@@ -161,7 +168,10 @@ function normNote(r: any){
     time_out: cleanTime(r.time_out),
     note: typeof r.note === "string" ? r.note.trim().slice(0, 120) : null,
   };
-  if (!row.worker && !row.task && !row.location && !row.time_in) return null;
+  // keep unreadable/crossed rows (worker null but flagged in the note) so nothing
+  // is silently dropped — the row-count check + review surface them for a human
+  const flagged = row.note && /^(UNREADABLE|CROSSED)/i.test(row.note);
+  if (!row.worker && !row.task && !row.location && !row.time_in && !row.time_out && !flagged) return null;
   return row;
 }
 
@@ -203,7 +213,9 @@ Deno.serve(async (req) => {
     const out = (data?.content ?? []).map((c: any) => c?.text ?? "").join("").trim();
     const parsed = parseJsonLoose(out) ?? {};
     const rows = (Array.isArray(parsed.rows) ? parsed.rows : []).map(normNote).filter(Boolean);
-    return json({ ok: true, rows });
+    const n = Number(parsed.sheet_row_count);
+    const filled_rows = isFinite(n) && n > 0 ? Math.round(n) : null;
+    return json({ ok: true, rows, filled_rows });
   } catch (e) {
     return json({ ok: false, error: String((e as Error)?.message ?? e) }, 500);
   }

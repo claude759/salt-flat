@@ -1717,7 +1717,7 @@ function renderTsPaste(){
       const { data: res, error } = await sb.functions.invoke('parse-harvest', { body: { text } });
       if (error || !res || res.ok === false) throw new Error((res && res.error) || (error && error.message) || 'Couldn’t parse the notes.');
       if (!(res.rows||[]).length){ toast('No harvest entries found in those notes.', true); return; }
-      openHarvestReview(res.rows, null, null);
+      openHarvestReview(res.rows, null, null, res.filled_rows);
     }catch(err){ toast(err.message || 'Parse failed', true); }
     finally{ btn.disabled = false; btn.textContent = 'Parse notes'; }
   };
@@ -2308,7 +2308,7 @@ async function handleTsPhoto(file){
         throw new Error(await fnFailureMessage(res, fnErr, 'photo') || 'Couldn’t read that photo — try a clearer one.');
       }
       if (!(res.rows||[]).length){ sb.storage.from('timesheets').remove([path]); toast('No harvest entries found in that photo', true); return; }
-      openHarvestReview(res.rows, URL.createObjectURL(small), path);
+      openHarvestReview(res.rows, URL.createObjectURL(small), path, res.filled_rows);
       return;
     }
     const { data: res, error: fnErr } = await invokeFn('read-timesheet', { path });
@@ -2457,7 +2457,7 @@ function drawTsReview(){
   };
 }
 /* ---- harvest notes review: parsed rows -> check -> save -------------------- */
-function openHarvestReview(parsed, dataUrl, path){
+function openHarvestReview(parsed, dataUrl, path, filledRows){
   const rows = (parsed||[]).map(r => {
     // workers mix distro + grow-site hours in one list; Claude classifies each
     // row and the Type column lets you flip anything it got wrong
@@ -2465,7 +2465,7 @@ function openHarvestReview(parsed, dataUrl, path){
     const row = {
       include: true,
       category,
-      unsure: r.category == null,   // parser couldn't tell — highlight until touched
+      unsure: r.category == null || /^(unreadable|crossed)/i.test(r.note || ''),   // parser couldn't tell/read — highlight until touched
       location: r.location || '', work_date: r.date || todayISO(),
       task: r.task || '', worker: r.worker || '',
       people: r.people || 1,
@@ -2478,7 +2478,7 @@ function openHarvestReview(parsed, dataUrl, path){
     return row;
   });
   tsState.review = null; drawTsReview();          // close any distro review first
-  tsState.harvestReview = { rows, dataUrl, path };
+  tsState.harvestReview = { rows, dataUrl, path, filledRows: filledRows || null };
   drawHarvestReview();
 }
 // a distro row must show exactly what will save: a real company in the select,
@@ -2547,17 +2547,32 @@ function drawHarvestReview(){
   const inc = rv.rows.filter(r => r.include).length;
   const missN = rv.rows.filter(r => r.include && reviewMissed(payTo, r.work_date)).length;
   const missBanner = missN ? '<div class="rvmiss">⚑ '+missN+' shift'+(missN===1?'':'s')+' dated before this period will be paid in the <b>current</b> period ('+esc(fPeriodShort(periodWindow(0)[0]))+') and flagged <b>missed last pay period</b>.</div>' : '';
+  // completeness guard: warn if fewer rows were read than the sheet appears to hold,
+  // and surface any rows the reader couldn't read (rather than dropping them)
+  const parsedN = rv.rows.length, filledN = rv.filledRows || 0;
+  const shortBy = (filledN && parsedN < filledN) ? filledN - parsedN : 0;
+  const unreadN = rv.rows.filter(r => !((r.worker||'').trim()) && /^(unreadable|crossed)/i.test(r.note||'')).length;
+  const countBanner = (shortBy || unreadN)
+    ? '<div class="rvmiss">'
+      + (shortBy ? '⚠️ The sheet looks like it has <b>'+filledN+'</b> filled row'+(filledN===1?'':'s')+', but I read <b>'+parsedN+'</b> — <b>'+shortBy+'</b> may be missing. ' : '')
+      + (unreadN ? '<b>'+unreadN+'</b> row'+(unreadN===1?'':'s')+' couldn’t be read (flagged below — type the name, or untick to skip). ' : '')
+      + (rv.path ? 'Tap <b>View sheet</b> to compare against the photo.' : 'Check against the sheet before saving.')
+      + '</div>'
+    : '';
   box.innerHTML = '<div class="card">'
     + '<h3>Review the parsed hours</h3>'
-    + '<div class="muted">Claude parsed '+rv.rows.length+' rows and sorted distro from harvest/deleaf — check the Type column, fix anything off, untick rows to skip, then save. Distro rows land on the Distro Hours page.</div>'
-    + missBanner
+    + '<div class="muted">Claude parsed '+parsedN+' rows'+(filledN?' (of ~'+filledN+' on the sheet)':'')+' and sorted distro from harvest/deleaf — check the Type column, fix anything off, untick rows to skip, then save. Distro rows land on the Distro Hours page.</div>'
+    + countBanner + missBanner
     + '<div class="scroll"><table><thead><tr><th></th><th>Type</th><th>Location</th><th>Date</th><th>Worker</th><th>Task</th><th>People</th><th>In</th><th>Out</th><th class="num">Break</th><th class="num">Hours</th><th>Rate</th><th class="num">Total</th><th>Note</th></tr></thead>'
     + '<tbody>'+rv.rows.map(rowHtml).join('')+'</tbody></table></div>'
     + '<div class="rvbar"><button class="btn primary" id="ts-hrv-save">Save '+inc+' row'+(inc===1?'':'s')+'</button>'
     + '<button class="btn sm" id="ts-hrv-cancel">Discard</button>'
+    + (rv.path ? '<button class="btn sm" id="ts-hrv-view">📄 View sheet</button>' : '')
     + payPeriodPicker(payTo)+'</div>'
     + (rv.dataUrl ? '<img class="rvpic" src="'+rv.dataUrl+'">' : '')
     + '</div>';
+  const viewBtn = box.querySelector('#ts-hrv-view');
+  if (viewBtn) viewBtn.onclick = () => openSheetViewer(rv.path, 'Sheet under review');
   const ppSel = box.querySelector('.rvppsel');
   if (ppSel) ppSel.onchange = () => { rv.payTo = ppSel.value; drawHarvestReview(); };
   const tbody = box.querySelector('tbody');
