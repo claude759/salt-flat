@@ -431,6 +431,24 @@
   #tsTable .pbtn:hover{border-color:var(--accent);color:var(--text)}
   #tsTable img.pthumb{height:26px;border-radius:5px;vertical-align:middle;margin-left:10px;cursor:pointer;
     border:1px solid var(--line)}
+  #tsTable tr.datehead img.pthumb.lg{height:40px}
+  /* side-by-side sheet viewer: docked panel that shifts the table left so both are visible */
+  #sheet-viewer{position:fixed;top:0;right:0;height:100vh;width:var(--sv-w,46vw);min-width:300px;max-width:92vw;
+    background:var(--panel);border-left:1px solid var(--line);box-shadow:-10px 0 30px rgba(0,0,0,.45);z-index:130;display:flex;flex-direction:column}
+  body.sv-open{padding-right:var(--sv-w,46vw)}
+  #sheet-viewer .sv-head{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);flex:none}
+  #sheet-viewer .sv-title{font-size:12.5px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #sheet-viewer .sv-tools{margin-left:auto;display:flex;gap:6px;align-items:center}
+  #sheet-viewer .sv-tools .pbtn,#sheet-viewer .sv-tools a.pbtn{background:var(--panel2);border:1px solid var(--line);border-radius:7px;
+    color:var(--muted);font:inherit;font-size:12px;padding:4px 9px;cursor:pointer;text-decoration:none;line-height:1.4}
+  #sheet-viewer .sv-tools .pbtn:hover,#sheet-viewer .sv-tools a.pbtn:hover{border-color:var(--accent);color:var(--text)}
+  #sheet-viewer .sv-body{flex:1;overflow:auto;background:#0c0e12;display:flex;align-items:flex-start;justify-content:center}
+  #sheet-viewer .sv-body img{max-width:100%;height:auto;display:block;cursor:zoom-in}
+  #sheet-viewer .sv-body.zoom{justify-content:flex-start}
+  #sheet-viewer .sv-body.zoom img{max-width:none;width:auto;cursor:zoom-out}
+  #sheet-viewer .sv-resize{position:absolute;left:-4px;top:0;bottom:0;width:9px;cursor:ew-resize;z-index:2}
+  #sheet-viewer .sv-resize:hover{background:linear-gradient(90deg,transparent,var(--accent))}
+  @media (max-width:820px){ #sheet-viewer{width:100vw;max-width:100vw} body.sv-open{padding-right:0} }
   #tsTable .emptyrow td{color:var(--faint);text-align:center;padding:34px}
   #tsTable tr.spacer td{border-bottom:none}
   /* OCR review card */
@@ -683,6 +701,18 @@
   <button class="pc-opt" id="pc-upload">🖼️&nbsp; Upload a pic</button>
   <button class="pc-cancel" id="pc-cancel">Cancel</button>
 </div></div>
+<div id="sheet-viewer" hidden>
+  <div class="sv-resize" id="sv-resize"></div>
+  <div class="sv-head">
+    <span class="sv-title" id="sv-title">Sheet</span>
+    <span class="sv-tools">
+      <button class="pbtn" id="sv-zoom" title="Toggle actual size">⤢ Zoom</button>
+      <a class="pbtn" id="sv-tab" target="_blank" rel="noopener">↗ Tab</a>
+      <button class="pbtn" id="sv-close" title="Close">✕ Close</button>
+    </span>
+  </div>
+  <div class="sv-body" id="sv-body"><img id="sv-img" alt="sign-in sheet"></div>
+</div>
 <div id="toast"></div>
 
 <script>
@@ -863,6 +893,7 @@ function todayISO(){
 /* ================= tabs ================= */
 document.getElementById('tabs').addEventListener('click', e => {
   const btn = e.target.closest('.tab'); if (!btn) return;
+  if (typeof closeSheetViewer === 'function') closeSheetViewer();
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === btn));
   document.getElementById('view-combined').hidden   = btn.dataset.tab !== 'combined';
   document.getElementById('view-laborpack').hidden  = btn.dataset.tab !== 'laborpack';
@@ -929,14 +960,16 @@ const tsState = {
   filter: { company:'', employee:'', from:'', to:'', preset:'period' },
   comparePreset: 'period',   // the Combined page's own date window
   compareCos: new Set(),     // companies EXCLUDED from the Combined page (empty = show all)
+  harvestGroup: 'company',   // Harvest log grouping: 'company' | 'day'
   review: null,         // {company, sheet_date, rows:[...], dataUrl, path}
 };
 try{ const v = JSON.parse(localStorage.getItem('lc.tsview')||'{}');
   if (v.preset) tsState.filter.preset = v.preset;
   if (v.view) tsState.view = v.view;
   if (['cards','norma','justin','simplified'].includes(v.compareView)) tsState.compareView = v.compareView;
+  if (['company','day'].includes(v.harvestGroup)) tsState.harvestGroup = v.harvestGroup;
   if (['harvest','distro','roster','compare'].includes(v.category)) tsState.category = v.category; }catch(_){}
-function saveTsView(){ try{ localStorage.setItem('lc.tsview', JSON.stringify({preset:tsState.filter.preset, view:tsState.view, compareView:tsState.compareView, category:tsState.category})); }catch(_){} }
+function saveTsView(){ try{ localStorage.setItem('lc.tsview', JSON.stringify({preset:tsState.filter.preset, view:tsState.view, compareView:tsState.compareView, harvestGroup:tsState.harvestGroup, category:tsState.category})); }catch(_){} }
 
 const tsFullName = s => [s.last, s.first].filter(Boolean).join(' ').trim() || (s.first || s.last || '');
 // match a name against the crew roster (exact last+first, then aliases, then
@@ -1108,6 +1141,7 @@ function renderTsCatseg(){
   seg.querySelectorAll('button').forEach(b => b.onclick = () => {
     if (tsState.category === b.dataset.cat) return;
     tsState.category = b.dataset.cat;
+    closeSheetViewer();
     saveTsView(); renderTimesheets();
   });
   // per-page dropzone labels
@@ -1689,8 +1723,16 @@ function renderTsPaste(){
 }
 function renderTsViewseg(){
   const seg = document.getElementById('ts-viewseg');
-  if (tsState.category === 'harvest'){ seg.innerHTML = ''; seg.style.display = 'none'; return; }
   seg.style.display = '';
+  if (tsState.category === 'harvest'){
+    const gv = [['company','By company'],['day','By day']];
+    seg.innerHTML = gv.map(([k,l]) => '<button data-hg="'+k+'" class="'+(tsState.harvestGroup===k?'on':'')+'">'+l+'</button>').join('');
+    seg.querySelectorAll('button').forEach(b => b.onclick = () => {
+      tsState.harvestGroup = b.dataset.hg;
+      saveTsView(); renderTsViewseg(); renderHarvestLog();
+    });
+    return;
+  }
   const views = [['log','Log'],['norma',"Norma's Team"],['justin',"Justin's Team"],['simplified','By Employee Simplified']];
   seg.innerHTML = views.map(([k,l]) => '<button data-v="'+k+'" class="'+(tsState.view===k?'on':'')+'">'+l+'</button>').join('');
   seg.querySelectorAll('button').forEach(b => b.onclick = () => {
@@ -1850,9 +1892,12 @@ function renderHarvestLog(){
     tbl.innerHTML = '<tbody><tr class="emptyrow"><td colspan="'+NC+'">No harvest entries for this filter. Paste notes above, drop a photo, or “+ Add row”.</td></tr></tbody>';
     return;
   }
+  const byDay = tsState.harvestGroup === 'day';
   const groups = []; const byLoc = new Map();
-  for (const s of rows){ const k = s.company || '(no location)'; if (!byLoc.has(k)){ byLoc.set(k, []); groups.push(k); } byLoc.get(k).push(s); }
-  groups.sort((a,b) => ((HARVEST_LOCS.indexOf(a)+1||99)-(HARVEST_LOCS.indexOf(b)+1||99)) || (a<b?-1:1));
+  for (const s of rows){ const k = byDay ? (s.work_date || '(no date)') : (s.company || '(no location)'); if (!byLoc.has(k)){ byLoc.set(k, []); groups.push(k); } byLoc.get(k).push(s); }
+  if (byDay) groups.sort((a,b) => a<b?1:a>b?-1:0);   // newest day first
+  else groups.sort((a,b) => ((HARVEST_LOCS.indexOf(a)+1||99)-(HARVEST_LOCS.indexOf(b)+1||99)) || (a<b?-1:1));
+  const dayLabel = k => k==='(no date)' ? k : new Date(k+'T00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
   const locOpts = c => [...new Set(HARVEST_LOCS.concat(rows.map(x=>x.company).filter(Boolean)))]
     .map(o => '<option '+(c===o?'selected':'')+'>'+esc(o)+'</option>').join('');
   const colHead = '<tr class="colhead"><td>Location</td><td>Date</td><td>Last</td><td>Worker</td><td>Task</td><td class="num">People</td><td>In</td><td>Out</td><td class="num">Break</td><td class="num">Hours</td><td class="num">Rate</td><td class="num">Total</td><td></td></tr>';
@@ -1865,9 +1910,13 @@ function renderHarvestLog(){
   for (const loc of groups){
     const es = byLoc.get(loc); let gh=0, gt=0;
     const pics = [...new Set(es.map(x => x.photo_path).filter(Boolean))];
-    const picBtns = pics.map(p => ' <img class="pthumb" data-path="'+esc(p)+'" title="View the uploaded notes" src="'+TS_THUMB_PLACEHOLDER+'">').join('');
-    body += '<tr class="datehead"><td colspan="'+NC+'">'+esc(loc)+picBtns
-      + ' <button class="pbtn gadd" data-loc="'+esc(loc)+'" title="Add a blank row to this location">+ row</button></td></tr>';
+    const thumbCls = 'pthumb' + (byDay ? ' lg' : '');
+    const picBtns = pics.map(p => ' <img class="'+thumbCls+'" data-path="'+esc(p)+'" title="Open the sheet photo alongside the table" src="'+TS_THUMB_PLACEHOLDER+'">').join('');
+    const gLabel = byDay ? dayLabel(loc) : esc(loc);
+    const addBtn = byDay
+      ? ' <button class="pbtn gadd" data-key="'+esc(loc)+'" title="Add a blank row to this day">+ row</button>'
+      : ' <button class="pbtn gadd" data-loc="'+esc(loc)+'" title="Add a blank row to this location">+ row</button>';
+    body += '<tr class="datehead"><td colspan="'+NC+'">'+gLabel+picBtns+addBtn+'</td></tr>';
     body += colHead;
     for (const s of es){
       gh += (+s.hours||0)*(+s.people||1); gt += +s.total||0;
@@ -1889,7 +1938,7 @@ function renderHarvestLog(){
         + '<td class="calc money c-t num">'+tsMoney(s.total)+'</td>'
         + '<td><button class="gx" title="Delete">✕</button></td></tr>';
     }
-    body += '<tr class="sub"><td colspan="'+(NC-4)+'" class="num">'+esc(loc)+' total</td><td class="num">'+tsNum(gh)+'</td><td></td><td class="num">'+tsMoney(gt)+'</td><td></td></tr>';
+    body += '<tr class="sub"><td colspan="'+(NC-4)+'" class="num">'+(byDay?dayLabel(loc):esc(loc))+' total</td><td class="num">'+tsNum(gh)+'</td><td></td><td class="num">'+tsMoney(gt)+'</td><td></td></tr>';
   }
   tbl.innerHTML = '<tbody>'+body+'</tbody>';
   hydrateTsThumbs();
@@ -1977,9 +2026,49 @@ async function hydrateTsThumbs(){
     if (data && data.signedUrl){
       TS_PHOTO_CACHE[p] = data.signedUrl;
       document.querySelectorAll('img.pthumb[data-path="'+p.replace(/"/g,'')+'"]').forEach(i => { i.src = data.signedUrl; });
+      if (svCurrentPath === p){ document.getElementById('sv-img').src = data.signedUrl; document.getElementById('sv-tab').href = data.signedUrl; }
     }
   }
 }
+/* ---- side-by-side sheet viewer (docked panel; the table stays visible left) ---- */
+let svCurrentPath = null;
+async function openSheetViewer(path, title){
+  const panel = document.getElementById('sheet-viewer');
+  const img = document.getElementById('sv-img'), tab = document.getElementById('sv-tab');
+  svCurrentPath = path;
+  document.getElementById('sv-title').textContent = title || 'Sheet';
+  document.getElementById('sv-body').classList.remove('zoom');
+  let url = TS_PHOTO_CACHE[path];
+  if (!url){
+    const { data } = await sb.storage.from('timesheets').createSignedUrl(path, 3600);
+    url = data && data.signedUrl; if (url) TS_PHOTO_CACHE[path] = url;
+  }
+  if (!url){ toast('Couldn’t load that sheet photo.', true); return; }
+  img.src = url; tab.href = url;
+  panel.hidden = false; document.body.classList.add('sv-open');
+}
+function closeSheetViewer(){
+  svCurrentPath = null;
+  document.getElementById('sheet-viewer').hidden = true;
+  document.body.classList.remove('sv-open');
+}
+(function wireSheetViewer(){
+  const panel = document.getElementById('sheet-viewer'); if (!panel) return;
+  document.getElementById('sv-close').onclick = closeSheetViewer;
+  document.getElementById('sv-zoom').onclick = () => document.getElementById('sv-body').classList.toggle('zoom');
+  document.getElementById('sv-img').onclick = () => document.getElementById('sv-body').classList.toggle('zoom');
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !panel.hidden) closeSheetViewer(); });
+  // drag the left edge to resize the panel (and the space the table gets)
+  const handle = document.getElementById('sv-resize');
+  let dragging = false;
+  handle.addEventListener('mousedown', e => { dragging = true; e.preventDefault(); document.body.style.userSelect='none'; });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const w = Math.min(window.innerWidth*0.92, Math.max(300, window.innerWidth - e.clientX));
+    document.documentElement.style.setProperty('--sv-w', w+'px');
+  });
+  window.addEventListener('mouseup', () => { if (dragging){ dragging = false; document.body.style.userSelect=''; } });
+})();
 
 /* ---- shell wiring: dropzone, log editing, add row, exports ----------------- */
 function wireTsShell(){
@@ -2071,7 +2160,12 @@ function wireTsShell(){
       return;
     }
     const thumb = e.target.closest('img.pthumb');
-    if (thumb && TS_PHOTO_CACHE[thumb.dataset.path]){ window.open(TS_PHOTO_CACHE[thumb.dataset.path], '_blank', 'noopener'); return; }
+    if (thumb){
+      const head = thumb.closest('tr.datehead');
+      const title = head ? head.textContent.replace('+ row','').trim() : 'Sheet';
+      openSheetViewer(thumb.dataset.path, title);
+      return;
+    }
     const gx = e.target.closest('.gx');
     if (gx){
       const s = shiftOf(gx); if (!s) return;
