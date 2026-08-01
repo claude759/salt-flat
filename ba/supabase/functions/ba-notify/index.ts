@@ -149,10 +149,14 @@ Deno.serve(async (req) => {
       if (!period) return json({ ok: true, skipped: `no pay period ended ${endedOn}` });
       if (period.reminder_sent_at && !force) return json({ ok: true, skipped: "reminder already sent for this period" });
 
-      const { data: bas } = await db.from("profiles").select("id,full_name,email").eq("role", "ba").eq("active", true);
+      // Remind FIELD WORKERS: BAs + REGIONAL admins (Maddy/NY, Keelin & Drew/FL) who log
+      // their own mileage/hours. Universal admins (role admin, NO region — e.g. Gianni) are
+      // oversight-only and never reminded; they're the CC instead.
+      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region").eq("active", true);
+      const fieldWorkers = (people || []).filter((b) => b.role === "ba" || (b.role === "admin" && b.region));
       const { data: subs } = await db.from("submissions").select("ba_id").eq("period_id", period.id).in("status", ["submitted", "approved"]);
       const done = new Set((subs || []).map((s) => s.ba_id));
-      const targets = (bas || []).filter((b) => !done.has(b.id) && b.email);
+      const targets = fieldWorkers.filter((b) => !done.has(b.id) && b.email);
 
       if (dry) return json({ ok: true, period: period.end_date, would_remind: targets.map((b) => ({ name: b.full_name, email: testTo || b.email })) });
 
