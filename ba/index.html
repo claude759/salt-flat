@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.76';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-07-13.77';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1030,8 +1030,17 @@ function periodGraceEnd(p){
   if(!p || !p.end_date || !/^\d{4}-/.test(p.end_date)) return null;
   const d=new Date(p.end_date+'T11:00:00');
   do{ d.setDate(d.getDate()+1); }while(d.getDay()!==0);   // advance to the next Sunday
-  return d;                                               // Sunday 11:00 local
+  // an admin can REOPEN a period (edit_until) — extends the window for late submitters
+  if(p.edit_until){ const e=new Date(p.edit_until); if(!isNaN(e) && e>d) return e; }
+  return d;                                               // Sunday 11:00 local (or the reopen deadline)
 }
+// is this period open past its natural grace because an admin reopened it?
+function periodReopened(p){ if(!p||!p.edit_until) return false; const e=new Date(p.edit_until); return !isNaN(e) && e>new Date(); }
+// short human deadline for the editable window ("Sun 11am" or a reopened date)
+function graceLabel(p){ const g=periodGraceEnd(p); if(!g) return ''; const now=new Date();
+  const days=Math.round((g-new Date(now.getFullYear(),now.getMonth(),now.getDate()))/864e5);
+  return (days>=0&&days<=6 ? g.toLocaleDateString([],{weekday:'short'}) : g.toLocaleDateString([],{month:'short',day:'numeric'}))
+    + ' ' + g.toLocaleTimeString([],{hour:'numeric',minute:g.getMinutes()?'2-digit':undefined}); }
 function periodPhase(p){ if(!p) return 'none'; const t=todayISO();
   if(p.start_date>t) return 'future';
   if(p.end_date<t){ const g=periodGraceEnd(p); return (g && new Date()<g) ? 'current' : 'past'; }
@@ -1048,7 +1057,7 @@ function periodPicker(onChange, opts={}){
   if(!list.length) list = state.periods;                                  // never render an empty picker
   const html = `<option value="all" ${isAllPeriods(state.period)?'selected':''}>All pay periods</option>` + list.map(p=>{
     const tag = p.status==='closed' ? ' (closed)'
-      : periodPhase(p)==='current' ? (p.end_date<todayISO() ? ' (submit by Sun 11am)' : ' (current)')
+      : periodPhase(p)==='current' ? (p.end_date<todayISO() ? ` (${periodReopened(p)?'reopened':'submit'} — by ${graceLabel(p)})` : ' (current)')
       : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : '');
     return `<option value="${p.id}" ${state.period?.id===p.id?'selected':''}>${esc(p.label)}${tag}</option>`;
   }).join('');
@@ -4089,6 +4098,10 @@ async function adminReview(m){
       <div class="row"><div class="small muted grow">Pay period</div>${periodPicker(()=>adminReview(m))}</div>
       <div class="row" style="margin-top:8px"><div class="small muted grow">Region</div>
         ${adminRegionPicker('regSelR')}</div>
+      ${!allPer && per ? `<div class="row" style="margin-top:8px;align-items:center;gap:8px">
+        <div class="small grow" style="color:${periodReopened(per)?'var(--green)':(periodPhase(per)==='past'?'var(--yellow)':'var(--muted)')}">${periodEditStatus(per)}</div>
+        ${periodPhase(per)!=='future' && per.status!=='closed' ? `<button class="btn sm ${periodReopened(per)?'ghost':'primary'}" id="reopenBtn">${periodReopened(per)?'🔒 Close edits':'🔓 Reopen for edits'}</button>` : ''}
+      </div>` : ''}
       <div class="totbar" style="margin-top:12px">
         <div class="tot"><div class="k">To review</div><div class="v">${awaiting}</div></div>
         <div class="tot"><div class="k">Not in yet</div><div class="v">${rows.length-inCount}</div></div>
@@ -4116,6 +4129,31 @@ async function adminReview(m){
     </div>`;
   m.querySelectorAll('[data-ba]').forEach(el=>el.onclick=()=>adminBaDetail(el.dataset.ba));
   wireRegionButtons('regSelR', ()=>adminReview(m));
+  { const rb=$('#reopenBtn'); if(rb) rb.onclick=async()=>{
+    if(periodReopened(per)){
+      if(!confirm(`Close “${per.label}” for BA edits now? They’ll be back to view-only.`)) return;
+      const { error }=await supabase.from('pay_periods').update({edit_until:null}).eq('id',per.id);
+      if(error) return toast('Couldn’t close: '+error.message,'err');
+      toast('Period closed for edits','ok');
+    } else {
+      const def=(()=>{ const d=new Date(); d.setDate(d.getDate()+3); return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); })();
+      const d=prompt(`Reopen “${per.label}” so BAs can add mileage/expenses again.\n\nEditable until which date? (YYYY-MM-DD — closes 11pm that day)`, def);
+      if(d===null) return;
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(d.trim())) return toast('Use YYYY-MM-DD (e.g. '+def+')','err');
+      const { error }=await supabase.from('pay_periods').update({edit_until:new Date(d.trim()+'T23:00:00').toISOString()}).eq('id',per.id);
+      if(error) return toast('Couldn’t reopen: '+error.message,'err');
+      toast('Reopened — BAs can edit through '+d.trim(),'ok');
+    }
+    await reloadPeriods(); adminReview(m);
+  }; }
+}
+// header line describing the selected period's edit state (admin review)
+function periodEditStatus(p){
+  if(periodReopened(p)) return `🔓 Reopened — BAs can edit until ${graceLabel(p)}`;
+  if(periodPhase(p)==='past') return '🔒 Closed for BA edits — reopen to let someone add items';
+  if(periodPhase(p)==='current' && p.end_date<todayISO()) return `⏳ In grace — BAs can edit through ${graceLabel(p)}`;
+  if(periodPhase(p)==='current') return '🟢 Current period — open for edits';
+  return 'Upcoming period';
 }
 
 /* ── Admin: settings ── */
