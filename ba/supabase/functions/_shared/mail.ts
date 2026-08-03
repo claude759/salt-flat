@@ -46,7 +46,8 @@ export function inviteEmail(fullName: string, email: string, password: string) {
   const html = mailShell("You're set up on the Wizard Trees field app", `
     <p style="margin:0 0 14px">Hi ${esc(fullName || "there")}, an admin just set you up on the Wizard Trees brand-ambassador app.</p>
     <p style="margin:0 0 6px">${btn(APP_URL, "Open the app →")}</p>
-    <p style="margin:0 0 16px;font-size:13px;color:#555">or paste this into your browser: <a href="${esc(APP_URL)}">${esc(APP_URL)}</a></p>
+    <p style="margin:0 0 10px;font-size:13px;color:#555">or paste this into your browser: <a href="${esc(APP_URL)}">${esc(APP_URL)}</a></p>
+    <p style="margin:0 0 16px;padding:9px 12px;background:#fff6e5;border-left:3px solid #e8a33d;border-radius:6px;font-size:13px"><b>Important:</b> open the link in <b>Safari or Chrome</b> — not the preview inside your email or text app. In those, the sign-in doesn't stick and you'll get an "auth session missing" error when setting your password.</p>
     ${credBox([["Your login", email], ["Temporary password", password]])}
     <p style="margin:0 0 14px;color:#777;font-size:13px">You'll choose your own password the first time you sign in.</p>
     <p style="margin:0 0 6px;font-weight:700">What you can do in seconds:</p>
@@ -57,7 +58,7 @@ export function inviteEmail(fullName: string, email: string, password: string) {
       <li>🔐 Turn on <b>Face ID / fingerprint</b> for quick sign-in</li>
     </ul>
     <p style="margin:0;color:#888;font-size:12px">Tip: open this on your phone and "Add to Home Screen" so it feels like a real app.</p>`);
-  const text = `Hi ${fullName || "there"}, you've been set up on the Wizard Trees field app.\n\nOpen the app: ${APP_URL}\n\nLogin: ${email}\nTemporary password: ${password} (you'll set your own on first sign-in)\n\nWhat you can do: log mileage (by address, a nav screenshot, or odometer photos), add expenses by snapping a receipt, and submit each pay period for reimbursement.`;
+  const text = `Hi ${fullName || "there"}, you've been set up on the Wizard Trees field app.\n\nOpen the app: ${APP_URL}\nIMPORTANT: open that link in Safari or Chrome — NOT the preview inside your email/text app, or the sign-in won't stick ("auth session missing").\n\nLogin: ${email}\nTemporary password: ${password} (you'll set your own on first sign-in)\n\nWhat you can do: log mileage (by address, a nav screenshot, or odometer photos), add expenses by snapping a receipt, and submit each pay period for reimbursement.`;
   return { subject: "Welcome to the Wizard Trees field app", html, text };
 }
 export function credBox(rows: [string, string][]) {

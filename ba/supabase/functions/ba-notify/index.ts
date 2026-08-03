@@ -7,6 +7,7 @@
 // secret held in Vault — verified by the ba_notify_authorized() RPC, so this
 // function never holds the raw secret and randoms can't trigger email blasts.
 import { admin, json, preflight } from "../_shared/util.ts";
+import { adminCcList, inviteEmail } from "../_shared/mail.ts";
 import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
 
 const APP_URL = "https://claude759.github.io/salt-flat/ba/";
@@ -233,6 +234,26 @@ Deno.serve(async (req) => {
       }
       const { subject, html, text } = approvedEmail(ba, period, sub, approver, was_submitted !== false);
       if (dry) return json({ ok: true, would_notify: to, cc, subject });
+      await sendMail(to, subject, html, text, cc);
+      return json({ ok: true, notified: to, cc });
+    }
+
+    if (job === "invite") {
+      // (re)send a new hire's welcome email — same as the admin "Resend invite" button, but
+      // triggerable server-side (secret-auth) rather than needing an admin session. Issues a
+      // FRESH temp password (old one stops working), flags must_change_password, CCs admins.
+      const { ba_id } = body;
+      if (!ba_id) return json({ ok: false, error: "ba_id required" }, 400);
+      const { data: t } = await db.from("profiles").select("id,email,full_name,region").eq("id", ba_id).maybeSingle();
+      if (!t?.email) return json({ ok: false, error: "that person has no email" }, 400);
+      if (dry) return json({ ok: true, would_notify: testTo || t.email, subject: "Welcome to the Wizard Trees field app", note: "a real send issues a fresh temp password" });
+      const password = "wt-" + crypto.randomUUID().replace(/-/g, "").slice(0, 6);
+      const { error: uErr } = await db.auth.admin.updateUserById(ba_id, { password });
+      if (uErr) return json({ ok: false, error: uErr.message }, 500);
+      await db.from("profiles").update({ must_change_password: true }).eq("id", ba_id);
+      const cc = await adminCcList(db, t.email, t.region);
+      const { subject, html, text } = inviteEmail(t.full_name, t.email, password);
+      const to = testTo || t.email;
       await sendMail(to, subject, html, text, cc);
       return json({ ok: true, notified: to, cc });
     }
