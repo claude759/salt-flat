@@ -76,6 +76,17 @@ function reminderEmail(name: string, p: any) {
   const text = `Hi ${name || "there"},\n\nThe pay period ${periodLabel(p)} ended ${p.end_date} and we don't have your mileage & expenses yet. Please submit them: ${APP_URL}\n\nIf you've already submitted, ignore this.`;
   return { subject: `Reminder: submit your mileage & expenses (period ending ${p.end_date})`, html, text };
 }
+function reopenedEmail(name: string, p: any, closes: string) {
+  const lbl = esc(periodLabel(p));
+  const html = shell("Your pay period is open again", `
+    <p style="margin:0 0 12px">Hi ${esc(name || "there")},</p>
+    <p style="margin:0 0 12px">Good news — the pay period <b>${lbl}</b> has been <b>reopened</b> so you can add your mileage &amp; expenses.</p>
+    <p style="margin:0 0 18px">Please add them and tap <b>Submit period</b> before <b>${esc(closes)}</b>, when it closes again.</p>
+    <p style="margin:0 0 8px"><a href="${APP_URL}" style="background:#6c5ce7;color:#fff;text-decoration:none;padding:11px 20px;border-radius:999px;font-weight:700;display:inline-block">Open the app &amp; add yours →</a></p>
+    <p style="margin:16px 0 0;color:#888;font-size:12px">If you don't have anything to add, no action needed.</p>`);
+  const text = `Hi ${name || "there"},\n\nThe pay period ${periodLabel(p)} has been reopened so you can add your mileage & expenses. Please add them and tap Submit period before ${closes}, when it closes again: ${APP_URL}`;
+  return { subject: `Reopened: add your mileage & expenses for ${periodLabel(p)}`, html, text };
+}
 function submittedEmail(ba: any, p: any, sub: any) {
   const t = sub?.totals || {};
   const lbl = esc(periodLabel(p));
@@ -222,6 +233,27 @@ Deno.serve(async (req) => {
       }
       const { subject, html, text } = approvedEmail(ba, period, sub, approver, was_submitted !== false);
       if (dry) return json({ ok: true, would_notify: to, cc, subject });
+      await sendMail(to, subject, html, text, cc);
+      return json({ ok: true, notified: to, cc });
+    }
+
+    if (job === "reopened") {
+      const { ba_id, period_id } = body;
+      if (!ba_id || !period_id) return json({ ok: false, error: "ba_id and period_id required" }, 400);
+      const [{ data: ba }, { data: period }] = await Promise.all([
+        db.from("profiles").select("full_name,email,region").eq("id", ba_id).single(),
+        db.from("pay_periods").select("*").eq("id", period_id).single(),
+      ]);
+      if (!ba?.email) return json({ ok: false, error: "that person has no email" }, 400);
+      let closes = "the deadline";
+      if (period?.edit_until) {
+        closes = new Date(period.edit_until).toLocaleString("en-US",
+          { timeZone: "America/Los_Angeles", weekday: "long", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      }
+      const to = testTo || ba.email;
+      const cc = (!testTo && ADMIN_EMAIL && ADMIN_EMAIL !== to) ? [ADMIN_EMAIL] : undefined;
+      const { subject, html, text } = reopenedEmail(ba.full_name, period, closes);
+      if (dry) return json({ ok: true, would_notify: to, cc, subject, closes });
       await sendMail(to, subject, html, text, cc);
       return json({ ok: true, notified: to, cc });
     }
