@@ -329,6 +329,14 @@ const sbHead = { apikey: SB_KEY, Authorization: 'Bearer '+SB_KEY, 'Content-Type'
 
 const $ = s => document.querySelector(s);
 
+/* fetch with a hard timeout — a request that hangs (stalled socket after sleep/wake,
+   flaky network) must FAIL, not pin the sync flag forever and brick the page */
+function fetchT(url, opts = {}, ms = 30000){
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
+}
+
 const PAGE_KEYS = ['overview','ca','ny'];
 const hashPage = () => {
   const k = location.hash.replace('#','').toLowerCase();
@@ -393,7 +401,7 @@ async function fetchTab(tab){
   let lastErr;
   for(const url of urls){
     try{
-      const r = await fetch(url, {cache:'no-store'});
+      const r = await fetchT(url, {cache:'no-store'});
       if(!r.ok) throw new Error('HTTP '+r.status);
       return await r.text();
     }catch(e){ lastErr=e; }
@@ -781,7 +789,7 @@ function bucketBalances(m, adj){
 
 /* ---------- Supabase I/O ---------- */
 async function fetchAsc(){
-  const r = await fetch(`${SB_URL}/rest/v1/${SB_T}?select=*&order=created_at.asc`, {headers: sbHead, cache:'no-store'});
+  const r = await fetchT(`${SB_URL}/rest/v1/${SB_T}?select=*&order=created_at.asc`, {headers: sbHead, cache:'no-store'});
   if(!r.ok) throw new Error('HTTP '+r.status);
   return await r.json();
 }
@@ -801,15 +809,15 @@ async function ascWrite(doIt){
   render();
 }
 const ascAdd = row => ascWrite(async () => {
-  const r = await fetch(`${SB_URL}/rest/v1/${SB_T}`, {method:'POST', headers:sbHead, body:JSON.stringify(row)});
+  const r = await fetchT(`${SB_URL}/rest/v1/${SB_T}`, {method:'POST', headers:sbHead, body:JSON.stringify(row)});
   if(!r.ok) throw new Error('HTTP '+r.status);
 });
 const ascDel = id => ascWrite(async () => {
-  const r = await fetch(`${SB_URL}/rest/v1/${SB_T}?id=eq.${encodeURIComponent(id)}`, {method:'DELETE', headers:sbHead});
+  const r = await fetchT(`${SB_URL}/rest/v1/${SB_T}?id=eq.${encodeURIComponent(id)}`, {method:'DELETE', headers:sbHead});
   if(!r.ok) throw new Error('HTTP '+r.status);
 });
 const ascClear = (stateKey, key) => ascWrite(async () => {
-  const r = await fetch(`${SB_URL}/rest/v1/${SB_T}?state=eq.${stateKey}&payment_key=eq.${encodeURIComponent(key)}`,
+  const r = await fetchT(`${SB_URL}/rest/v1/${SB_T}?state=eq.${stateKey}&payment_key=eq.${encodeURIComponent(key)}`,
     {method:'DELETE', headers:sbHead});
   if(!r.ok) throw new Error('HTTP '+r.status);
 });
@@ -849,7 +857,7 @@ async function zipRead(buf, e){
 const unent = s => s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'");
 
 async function fetchInvoiceLinks(){
-  const r = await fetch(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=xlsx`, {cache:'no-store'});
+  const r = await fetchT(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=xlsx`, {cache:'no-store'});
   if(!r.ok) throw new Error('HTTP '+r.status);
   const buf = new Uint8Array(await r.arrayBuffer());
   const entries = zipEntries(buf);
@@ -1704,8 +1712,14 @@ function renderPayPanel(m, adj){
 
 /* ---------- sync ---------- */
 async function sync(){
-  if(state.fetching) return;
+  // watchdog: a sync marked in-flight for >90s is dead (every request times out at 30s,
+  // so a healthy pass can never take that long) — clear the flag and go again
+  if(state.fetching){
+    if(Date.now() - (state.fetchStart || 0) < 90000) return;
+    console.warn('sync watchdog: previous sync never finished, retrying');
+  }
   state.fetching = true;
+  state.fetchStart = Date.now();
   $('#dot').className = 'dot busy';
   try{
     const [texts, links, asc] = await Promise.all([
@@ -1777,7 +1791,8 @@ $('#q').addEventListener('input', e => {
 });
 $('#refreshBtn').addEventListener('click', sync);
 document.addEventListener('visibilitychange', () => {
-  if(!document.hidden && state.lastSync && Date.now()-state.lastSync.getTime() > 15000) sync();
+  // refetch on return to the tab — including when the initial sync never completed
+  if(!document.hidden && (!state.lastSync || Date.now()-state.lastSync.getTime() > 15000)) sync();
 });
 
 setInterval(sync, POLL_MS);
