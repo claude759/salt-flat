@@ -199,6 +199,8 @@
   #rosterTable button.rowdel{background:none;border:0;color:var(--muted);cursor:pointer;font-size:14px;padding:4px 6px}
   #rosterTable button.rowdel:hover{color:rgb(239,77,86)}
   .cmp-filters{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin-bottom:12px}
+  .cmp-periodsel{background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--text);font:inherit;font-size:12.5px;padding:6px 9px;cursor:pointer}
+  .cmp-periodsel:focus{outline:1px solid var(--accent)}
   .cmp-cos{display:flex;align-items:center;gap:8px}
   .cmp-coslabel{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
   #cmp-cos button::before{content:"✓ ";opacity:.9}
@@ -1223,10 +1225,12 @@ function renderRoster(){
    hours can land twice (or once in each category). This page lines up every
    named row from BOTH categories per employee, flags time overlaps on the same
    day (double-submitted hours), and offers delete / keep-both to resolve them. */
+const isPeriodStart = v => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
 function compareRange(){
   if (tsState.comparePreset === 'period') return periodWindow(0);
   if (tsState.comparePreset === 'lastperiod') return periodWindow(-1);
   if (tsState.comparePreset === '30d') return [addDaysISO(todayISO(), -29), todayISO()];
+  if (isPeriodStart(tsState.comparePreset)) return [tsState.comparePreset, periodEndISO(tsState.comparePreset)];  // a chosen older pay period
   return [null, null];
 }
 function shiftIval(s){
@@ -1479,7 +1483,7 @@ function renderCompare(){
   // pay-period presets bill by the period a row is PAID in (effPeriodStart), so a
   // day missed last period but carried forward lands in "this pay period" here too;
   // the rolling/all windows still go by the actual work date.
-  const byPeriod = tsState.comparePreset === 'period' || tsState.comparePreset === 'lastperiod';
+  const byPeriod = tsState.comparePreset === 'period' || tsState.comparePreset === 'lastperiod' || isPeriodStart(tsState.comparePreset);
   const dateRows = shifts.filter(s => tsFullName(s) &&
     (byPeriod ? effPeriodStart(s) === c0 : (!c0 || (s.work_date >= c0 && s.work_date <= c1))));
   // company toggle chips: exclude a company and its rows drop out (people with
@@ -1549,6 +1553,15 @@ function renderCompare(){
   const presetSeg = '<div class="seg" id="cmp-preset">'
     + CMP_PRESETS.map(([k, l]) => '<button data-k="' + k + '" class="' + (tsState.comparePreset === k ? 'on' : '') + '">' + l + '</button>').join('')
     + '</div>';
+  // dropdown for older pay periods (anything before "last pay period" that has data)
+  const lastStart = periodWindow(-1)[0];
+  const olderPeriods = [...new Set(shifts.map(s => effPeriodStart(s)).filter(Boolean))].filter(p => p < lastStart).sort().reverse();
+  const periodSel = olderPeriods.length
+    ? '<select id="cmp-periodsel" class="cmp-periodsel" title="Jump to an older pay period">'
+      + '<option value="">Older pay period ▾</option>'
+      + olderPeriods.map(p => '<option value="' + p + '"' + (tsState.comparePreset === p ? ' selected' : '') + '>' + esc(fPeriodFull(p)) + '</option>').join('')
+      + '</select>'
+    : '';
   const CMP_VIEWS = [['cards','By person'],['norma',"Norma's Team"],['justin',"Justin's Team"],['simplified','By Employee Simplified']];
   const viewSeg = '<div class="seg" id="cmp-view">'
     + CMP_VIEWS.map(([k, l]) => '<button data-v="' + k + '" class="' + (tsState.compareView === k ? 'on' : '') + '">' + l + '</button>').join('')
@@ -1568,7 +1581,9 @@ function renderCompare(){
   const coNote = tsState.compareCos.size
     ? ' · ' + (cosSorted.filter(c => !tsState.compareCos.has(c)).join(', ') || 'no companies') + ' only'
     : '';
-  const rangeLabel = (CMP_PRESETS.find(([k]) => k === tsState.comparePreset) || [,'All'])[1]
+  const presetLabel = (CMP_PRESETS.find(([k]) => k === tsState.comparePreset) || [])[1]
+    || (isPeriodStart(tsState.comparePreset) ? fPeriodFull(tsState.comparePreset) : 'All');
+  const rangeLabel = presetLabel
     + (c0 ? ' · ' + fDayMDY(c0) + ' – ' + fDayMDY(c1) : ' recorded dates') + coNote;
   CMP_CARDS = {}; CMP_ORDER = emps.slice(); CMP_RANGE = rangeLabel;
   let html = '<div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px">'
@@ -1581,7 +1596,7 @@ function renderCompare(){
     + 'Delete the duplicate, or Keep both if the person really worked both. '
     + 'This pay period / Last pay period bill by the paid period, so a day missed last period but carried forward shows here under this one (flagged on its row); the rolling windows go by the actual work date.</div>'
     + '<div class="cmp-filters" style="margin-bottom:8px">' + viewSeg + '</div>'
-    + '<div class="cmp-filters">' + presetSeg + cosSeg + grandTot + '</div>';
+    + '<div class="cmp-filters">' + presetSeg + periodSel + cosSeg + grandTot + '</div>';
   // one pass builds every person's totals (drives the cards, the team views,
   // the simplified rollup, and the copy-image payloads)
   const people = emps.map(k => {
@@ -1653,6 +1668,8 @@ function renderCompare(){
   box.querySelectorAll('#cmp-preset button').forEach(bn => bn.onclick = () => {
     tsState.comparePreset = bn.dataset.k; renderCompare();
   });
+  const periodSelEl = box.querySelector('#cmp-periodsel');
+  if (periodSelEl) periodSelEl.onchange = () => { if (periodSelEl.value){ tsState.comparePreset = periodSelEl.value; renderCompare(); } };
   const copySimpBtn = box.querySelector('#cmp-copysimple');
   if (copySimpBtn) copySimpBtn.onclick = () => copyCmpSimplified();
   box.querySelectorAll('#cmp-cos button').forEach(bn => bn.onclick = () => {
