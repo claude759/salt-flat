@@ -1410,6 +1410,7 @@ function classify(rows){
     // so accept Buyer + a total + a date. Checked LAST so it can't shadow the other reports.
     if(h.includes('Buyer') && (h.includes('Total Amount')||h.includes('Order Total')||h.includes('Total')) && (h.includes('Ship Date')||h.includes('Order Date')||h.includes('Created Date'))) return {type:'leaflink',hr:i};
     if(has('Order','Ship Date') && !h.includes('Buyer')) return {type:'leaflink_meta',hr:i};   // NY per-order ship dates (crawl-leaflink meta flatten)
+    if(has('SKU','Available Inventory (Units)')) return {type:'leaflink_inventory',hr:i};   // LeafLink Inventory Overview (NY on-hand at the distributor)
     if(has('Order','Product','Quantity','Line Total')) return {type:'leaflink_items',hr:i};   // NY per-order line items (crawl-leaflink flatten)
   }
   return {type:'unknown',hr:-1};
@@ -1442,7 +1443,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, leaflink_meta:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, leaflink_meta:null, leaflink_inventory:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
 // Provenance of publishable state: which payload keys were rebuilt from ACTUAL FILES this session.
 // loadShared paints the localStorage cache first (stale-while-revalidate), so state can be
 // cache-derived — publishing that would overwrite the (fresher) live payload with stale data.
@@ -1465,6 +1466,7 @@ const LABELS = {
   leaflink:'LeafLink orders (NY)',
   leaflink_items:'LeafLink line items (NY)',
   leaflink_meta:'LeafLink ship dates (NY)',
+  leaflink_inventory:'LeafLink inventory (NY on-hand)',
   ny_invoices:'NY recon invoices (payments/discounts)',
   ny_qbo_inv:'WTNY QuickBooks invoices',
   ny_qbo_items:'WTNY QuickBooks invoice items',
@@ -1671,6 +1673,7 @@ function applyShared(d){
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); buildNyLegal(); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
     if(data.nyShip && data.nyShip.length){ NY_SHIP=nyShipFromWire(data.nyShip); any=true; }
+    if(data.nyLlInv && data.nyLlInv.length){ NY_LLINV=nyLlInvFromWire(data.nyLlInv); NY_LLINV_ASOF=data.nyLlInvAsOf||null; any=true; }
     if(data.nyInv && data.nyInv.length){ NY_INV=nyInvFromWire(data.nyInv); any=true; }   // NY recon invoices (real paid/outstanding/discounts)
     if(data.nyQbo && data.nyQbo.length){ NY_QBO=nyQboFromWire(data.nyQbo); any=true; }   // WTNY QuickBooks invoices (our receivables)
     if(data.nyQboPay && data.nyQboPay.length){ NY_QBO_PAY=nyQboPayFromWire(data.nyQboPay); any=true; }
@@ -1743,6 +1746,8 @@ async function publishToTeam(){
     if(FRESH.has('ny') && NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     if(FRESH.has('nyItems') && NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
     if(FRESH.has('nyShip') && NY_SHIP && Object.keys(NY_SHIP).length) cur.nyShip=nyShipToWire(NY_SHIP);        // additive; LeafLink per-order ship dates (NY Scorecard delivery source #2)
+    if(FRESH.has('nyLlInv') && NY_LLINV && NY_LLINV.length) cur.nyLlInv=nyLlInvToWire(NY_LLINV);              // additive; LeafLink inventory overview (NY Scorecard On Hand)
+    if(FRESH.has('nyLlInv') && NY_LLINV && NY_LLINV.length) cur.nyLlInvAsOf=new Date().toISOString(); else if(NY_LLINV_ASOF) cur.nyLlInvAsOf=NY_LLINV_ASOF;   // staleness stamp, rows-survive pattern
     if(FRESH.has('nyInv') && NY_INV && NY_INV.length) cur.nyInv=nyInvToWire(NY_INV);                          // additive; NY recon invoices (paid/outstanding/discounts)
     if(FRESH.has('nyQbo') && NY_QBO && NY_QBO.length) cur.nyQbo=nyQboToWire(NY_QBO);                          // additive; WTNY QuickBooks invoices (our receivables)
     if(FRESH.has('nyQboPay') && NY_QBO_PAY && NY_QBO_PAY.length) cur.nyQboPay=nyQboPayToWire(NY_QBO_PAY);        // additive; payments applied to those invoices
@@ -1839,6 +1844,7 @@ function clearFileState(t){
     leaflink:()=>{ NY_EVENTS=[]; FRESH.delete('ny'); },
     leaflink_items:()=>{ NY_ITEMS=[]; FRESH.delete('nyItems'); },
     leaflink_meta:()=>{ NY_SHIP={}; FRESH.delete('nyShip'); },
+    leaflink_inventory:()=>{ NY_LLINV=[]; FRESH.delete('nyLlInv'); },
     ny_invoices:()=>{ NY_INV=[]; FRESH.delete('nyInv'); },
     ny_recon_items:()=>{ NY_RITEMS=[]; FRESH.delete('nyRItems'); },
     ny_qbo_inv:()=>{ NY_QBO=[]; FRESH.delete('nyQbo'); },
@@ -3927,6 +3933,19 @@ function buildNyShip(){ const m={};
   return m; }
 function nyShipToWire(m){ return Object.entries(m||{}).map(([ref,ms])=>[ref,ms]); }
 function nyShipFromWire(w){ const m={}; (w||[]).forEach(a=>{ if(a&&a[0]!=null&&a[1]!=null) m[String(a[0])]=+a[1]; }); return m; }
+// LeafLink Inventory Overview — per-SKU on-hand AT THE DISTRIBUTOR (HM OPS), the NY analog of the
+// CA scorecard's on-hand. LeafLink prices are per CASE; units are EACHES, so valuation divides by
+// the product line's case size (unknown lines stay unpriced — units count, value excluded).
+let NY_LLINV=[], NY_LLINV_ASOF=null;
+const NYINV_CASE_UNITS={'3.5g Flower Jar':32, '5pk Indoor Pre Roll':10, 'Single Indoor Pre Roll':10};
+function buildNyLlInv(){ if(!FILES.leaflink_inventory) return [];
+  return FILES.leaflink_inventory.data.map(r=>({
+    sku:(r['SKU']||'').trim(), name:(r['Name']||'').trim(), line:(r['Product Line']||'').trim(),
+    units:num(r['Inventory (Units)']), res:num(r['Reserved Inventory (Units)']), avail:num(r['Available Inventory (Units)']),
+    casePrice:num(r['Wholesale Price']) })).filter(x=>x.sku||x.name); }
+function nyLlInvValue(x){ const cu=NYINV_CASE_UNITS[x.line]; return (cu&&x.casePrice>0)?x.units/cu*x.casePrice:null; }
+function nyLlInvToWire(list){ return (list||[]).map(x=>[x.sku,x.name,x.line,x.units,x.res,x.avail,x.casePrice]); }
+function nyLlInvFromWire(w){ return (w||[]).map(a=>({sku:String(a[0]||''), name:String(a[1]||''), line:String(a[2]||''), units:+a[3]||0, res:+a[4]||0, avail:+a[5]||0, casePrice:+a[6]||0})); }
 function nyParseUnits(q){ const m=String(q||'').match(/-?[\d,]+/); return m?+m[0].replace(/,/g,''):0; }
 // "Wizard Trees | 3.5g Indoor Flower | Black Magic | IndicaSKU: Black Magic Flower 3.5G"
 //   → {format:'3.5g Indoor Flower', strain:'Black Magic', sku:'Black Magic Flower 3.5G'}
@@ -4229,7 +4248,7 @@ function nyRecon(){
   return {n:L.length, gross, discounts, delivered, excise, netProduct, distroFee, netPO, collected, outstanding, collectedNetPO};
 }
 
-function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny'); buildNyLegal(); } if(FILES.leaflink_items){ NY_ITEMS=buildNyItemEvents(); FRESH.add('nyItems'); } if(FILES.leaflink_meta){ NY_SHIP=buildNyShip(); FRESH.add('nyShip'); }
+function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny'); buildNyLegal(); } if(FILES.leaflink_items){ NY_ITEMS=buildNyItemEvents(); FRESH.add('nyItems'); } if(FILES.leaflink_meta){ NY_SHIP=buildNyShip(); FRESH.add('nyShip'); } if(FILES.leaflink_inventory){ NY_LLINV=buildNyLlInv(); FRESH.add('nyLlInv'); }
   if(FILES.ny_invoices){ NY_INV=buildNyInv(); FRESH.add('nyInv'); }
   if(FILES.ny_recon_items){ NY_RITEMS=buildNyRItems(); FRESH.add('nyRItems'); }
   if(FILES.ny_qbo_inv){ NY_QBO=buildNyQbo(); FRESH.add('nyQbo'); }
@@ -4443,20 +4462,35 @@ function renderNySc(){
       ${C(r,'mtd','num money',m$(r.mtd),r.mtd!=null&&r.mtd>0)}
       ${C(r,'priorMtd','num money',m$(r.priorMtd),r.priorMtd!=null&&r.priorMtd>0)}
       ${C(r,'fourWk','num money',m$(r.fourWk),r.fourWk!=null&&r.fourWk>0)}
+      ${C(r,'onhand','num money',m$(r.isCur?nyscOnHandTotal():null),r.isCur&&nyscOnHandTotal()>0)}
     </tr>`; }).join('');
   wrap.innerHTML=`<table id="nysc-table"><thead><tr>
       <th>Week</th><th class="num">Projected Deliveries</th><th class="num">Orders</th><th class="num">Customer Count</th>
       ${drops.map(dn=>`<th class="num">Drop ${dn}</th>`).join('')}
       <th class="num">COD</th><th class="num">Net 30</th>
-      <th class="num">MTD Delivered</th><th class="num">Prior Month</th><th class="num">4-Wk Avg</th>
+      <th class="num">MTD Delivered</th><th class="num">Prior Month</th><th class="num">4-Wk Avg</th><th class="num">On Hand (LeafLink)</th>
     </tr></thead><tbody>${trs}</tbody></table>`;
-  if(note) note.innerHTML=`<b>Click any highlighted number</b> to open the deliveries behind it — each order expands to its line items. One row per week (Monday), like the CA Sales Scorecard: the <span class="pill" style="font-size:9.5px;color:var(--yellow)">next</span> row is deliveries already scheduled for a future week; the <span class="pill live" style="font-size:9.5px">live</span> row is the current week. Orders are placed on the week they <b>deliver</b> — the delivery date comes from the distributor's HM OPS schedule (matched by LL#, refreshed hourly), falling back to <b>LeafLink's own Ship date</b> (crawled from each order page); an order neither source has scheduled counts on its <b>order date</b> and is tagged in the drill. <b>Drop</b> columns split the week by harvest (assigned by LeafLink order date). <b>MTD Delivered</b> = month-to-date as of that row (through the previous Sunday for past weeks, through today on the live row). <b>4-Wk Avg</b> = that week + the 3 prior. Amounts are LeafLink order totals — gross, before the distributor's excise + 10% fee waterfall.`;
+  if(note) note.innerHTML=`<b>Click any highlighted number</b> to open the deliveries behind it — each order expands to its line items. One row per week (Monday), like the CA Sales Scorecard: the <span class="pill" style="font-size:9.5px;color:var(--yellow)">next</span> row is deliveries already scheduled for a future week; the <span class="pill live" style="font-size:9.5px">live</span> row is the current week. Orders are placed on the week they <b>deliver</b> — the delivery date comes from the distributor's HM OPS schedule (matched by LL#, refreshed hourly), falling back to <b>LeafLink's own Ship date</b> (crawled from each order page); an order neither source has scheduled counts on its <b>order date</b> and is tagged in the drill. <b>Drop</b> columns split the week by harvest (assigned by LeafLink order date). <b>MTD Delivered</b> = month-to-date as of that row (through the previous Sunday for past weeks, through today on the live row). <b>4-Wk Avg</b> = that week + the 3 prior. Amounts are LeafLink order totals — gross, before the distributor's excise + 10% fee waterfall. <b>On Hand (LeafLink)</b> is a today snapshot of per-SKU inventory at the distributor (Inventory Overview report, hourly) — shown on the live row only; click it for the SKU breakdown incl. Reserved (allocated to open orders) vs Available.`;
 }
+// On-hand at the distributor (LeafLink Inventory Overview): a TODAY snapshot, so only the live
+// row carries it — mirroring the CA board, where past-week on-hand comes from saved snapshots
+// (none exist for NY yet; each week's figure starts accruing when we add NY snapshotting).
+function nyscOnHandTotal(){ return (NY_LLINV||[]).reduce((s,x)=>{ const v=nyLlInvValue(x); return s+(v||0); },0); }
 // Cell drill: the deliveries behind one board cell, each order expandable to its line items.
 function nyscBoardDrill(dateStr, col){
   const p=dateStr.split('-'); const monday=new Date(+p[0],+p[1]-1,+p[2]);
   const rows=nyscRows(); const {a,b}=nyscWeekWin(monday);
   const wkLabel=`${monday.getMonth()+1}/${monday.getDate()}/${monday.getFullYear()}`;
+  if(col==='onhand'){
+    const list=(NY_LLINV||[]).slice().sort((x,y)=>(nyLlInvValue(y)||0)-(nyLlInvValue(x)||0)||y.units-x.units);
+    if(!list.length) return {title:'On Hand at the distributor', empty:'No LeafLink inventory data yet (publishes with the next NY refresh).'};
+    const asOf=NY_LLINV_ASOF?new Date(NY_LLINV_ASOF).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):null;
+    return {title:'On Hand at the distributor (LeafLink)',
+      sub:`per-SKU inventory at HM OPS from LeafLink's Inventory Overview${asOf?` · as of ${asOf}`:''} · Reserved = allocated to open orders · value = units × case price ÷ case size`,
+      columns:[{l:'SKU'},{l:'Units',num:true},{l:'Reserved',num:true},{l:'Available',num:true},{l:'Value',num:true,money:true}],
+      rows:list.map(x=>{ const v=nyLlInvValue(x); return [x.sku||x.name, Math.round(x.units).toLocaleString(), Math.round(x.res).toLocaleString(), Math.round(x.avail).toLocaleString(), v==null?'':v]; }),
+      totalLabel:'Total on hand', total:nyscOnHandTotal()};
+  }
   let list, label, win={a,b};
   if(col==='mtd'){ const mw=nyscMtdWin(monday); if(!mw) return null; win=mw; label='MTD Delivered'; }
   else if(col==='priorMtd'){ win={a:new Date(monday.getFullYear(),monday.getMonth()-1,1), b:new Date(monday.getFullYear(),monday.getMonth(),0,23,59,59,999)}; label='Prior month deliveries'; }
@@ -4488,10 +4522,10 @@ function nyscBoardDrill(dateStr, col){
 { const el=$('#nysc-export'); if(el) el.onclick=()=>{
   const board=nyscBoardRows(); if(!board.length) return;
   const drops=board[0].drops;
-  const out=[['Week','Projected Deliveries','Orders','Customer Count',...drops.map(d=>'Drop '+d),'COD','Net 30','MTD Delivered','Prior Month','4-Wk Avg']];
+  const out=[['Week','Projected Deliveries','Orders','Customer Count',...drops.map(d=>'Drop '+d),'COD','Net 30','MTD Delivered','Prior Month','4-Wk Avg','On Hand (LeafLink)']];
   board.forEach(r=>out.push([r.key, r.m.tot.toFixed(2), r.m.n, r.m.accts.size,
     ...drops.map(d=>(r.m.byDrop[d]||0).toFixed(2)), r.m.cod.toFixed(2), r.m.net.toFixed(2),
-    r.mtd==null?'':r.mtd.toFixed(2), r.priorMtd==null?'':r.priorMtd.toFixed(2), r.fourWk==null?'':r.fourWk.toFixed(2)]));
+    r.mtd==null?'':r.mtd.toFixed(2), r.priorMtd==null?'':r.priorMtd.toFixed(2), r.fourWk==null?'':r.fourWk.toFixed(2), r.isCur?nyscOnHandTotal().toFixed(2):'']));
   downloadCSV('ny-scorecard.csv', out); }; }
 // ── CA / NY state toggle ──
 function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUTH_STATES[0]||st;   // never enter a state the signed-in user can't see
