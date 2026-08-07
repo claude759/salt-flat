@@ -478,13 +478,13 @@
     <div class="tabs">
       <div class="tab active" data-tab="ar">Accounts Receivable</div>
       <div class="tab hidden" data-tab="nysc">Scorecard</div>
+      <div class="tab hidden" data-tab="hmops">HM OPS Tracker</div>
       <div class="tab" data-tab="cd">Credits/Discounts</div>
       <div class="tab" data-tab="sku">Sales by Type</div>
       <div class="tab" data-tab="scorecard">Sales Scorecard</div>
       <div class="tab" data-tab="tiers">Customer Tiers</div>
       <div class="tab" data-tab="reports">Reports</div>
       <div class="tab hidden" data-tab="credits">Credits/Discount Tracker</div>
-      <div class="tab hidden" data-tab="hmops">HM OPS Tracker</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -4382,6 +4382,35 @@ function nyscRows(){
     return {...e, deliv:(t!=null?t:null), when:(t!=null?t:e.d), sched:t!=null,
       src:(sheet!=null?'sheet':(ll!=null?'leaflink':null)), drop:dr?dr.n:2}; });
 }
+// Sheet totals by LL# (deduped like the tracker) — the HM OPS sheet's hand-entered Total is
+// net of the 5% early-pay discount on flagged accounts, so it legitimately differs from the
+// LeafLink gross; anything ELSE differing is worth a human look (entry errors, box-count swaps).
+function nyscSheetTotals(){ const m={};
+  hmDedupe(HM_OPS||[]).forEach(x=>{ const r=String(x.ll||'').trim(); if(r) m[r]=+x.total||0; });
+  return m; }
+// Reconcile one scorecard week against the sheet: per-order LeafLink vs sheet Total, classified.
+function nyscSheetDiff(monday){
+  const {a,b}=nyscWeekWin(monday);
+  const wk=nyscRows().filter(r=>nyscInWin(r,a,b));
+  const sheet=nyscSheetTotals();
+  const inWeek=new Set(wk.map(r=>String(r.ref||'').trim()));
+  const rows=[]; let disc5=0, mismatch=0, missing=0, sheetOnly=0;
+  wk.forEach(r=>{ const ref=String(r.ref||'').trim(); const sh=sheet[ref];
+    if(sh==null){ rows.push({ref, c:r.c, ll:r.amt, sheet:null, diff:r.amt, why:'not on the HM OPS sheet yet'}); missing+=r.amt; return; }
+    const d=r.amt-sh; if(Math.abs(d)<=0.005) return;
+    if(Math.abs(sh-r.amt*0.95)<=0.02){ rows.push({ref, c:r.c, ll:r.amt, sheet:sh, diff:d, why:'5% early-pay discount (sheet = 95% of LeafLink)'}); disc5+=d; }
+    else { rows.push({ref, c:r.c, ll:r.amt, sheet:sh, diff:d, why:'AMOUNT MISMATCH — check the sheet entry vs the LeafLink order'}); mismatch+=d; }
+  });
+  // sheet rows delivering this week with no matching LeafLink order in the week
+  hmDedupe(HM_OPS||[]).forEach(x=>{ const ref=String(x.ll||'').trim();
+    const d=hmRowDate(x); if(d==null||d<a.getTime()||d>b.getTime()) return;
+    if(ref&&inWeek.has(ref)) return;
+    const t=+x.total||0; if(t<=0.005) return;
+    rows.push({ref:ref||'(no LL#)', c:x.shop||'', ll:null, sheet:t, diff:-t, why:'on the HM OPS sheet only (no matching LeafLink order this week)'}); sheetOnly-=t;
+  });
+  const delta=disc5+mismatch+missing+sheetOnly;
+  return {delta, rows, disc5, mismatch, missing, sheetOnly};
+}
 const nyscMonOf=ms=>{ const d=new Date(ms); d.setHours(0,0,0,0); d.setDate(d.getDate()-((d.getDay()+6)%7)); return d; };
 const nyscIso=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 function nyscInWin(r,a,b){ return r.when!=null && r.when>=a.getTime() && r.when<=b.getTime(); }
@@ -4454,6 +4483,10 @@ function renderNySc(){
     return `<tr${r.isCur?' class="totals"':''}>
       <td>${fmtD(r.monday)}${pill}</td>
       ${C(r,'tot','num money','<b>'+m$(r.m.tot)+'</b>',has)}
+      ${(()=>{ if(!has) return C(r,'vsheet','num money',m$(null),false);
+        const sd=nyscSheetDiff(r.monday); const flag=Math.abs(sd.mismatch)>0.005||Math.abs(sd.sheetOnly)>0.005;
+        const txt=Math.abs(sd.delta)<=0.005?'<span style="color:var(--green)">✓ match</span>':`<span style="color:${flag?'var(--orange)':'var(--muted)'}">${sd.delta>0?'+':''}${fmt$(sd.delta)}</span>`;
+        return C(r,'vsheet','num money',txt,sd.rows.length>0); })()}
       ${C(r,'orders','num',iN(r.m.n),has)}
       ${C(r,'accts','num',iN(r.m.accts.size),has)}
       ${drops.map(dn=>C(r,'drop'+dn,'num money',m$(r.m.byDrop[dn]!=null?r.m.byDrop[dn]:(has?0:null)),!!r.m.byDrop[dn])).join('')}
@@ -4465,12 +4498,12 @@ function renderNySc(){
       ${C(r,'onhand','num money',m$(r.isCur?nyscOnHandTotal():null),r.isCur&&nyscOnHandTotal()>0)}
     </tr>`; }).join('');
   wrap.innerHTML=`<table id="nysc-table"><thead><tr>
-      <th>Week</th><th class="num">Projected Deliveries</th><th class="num">Orders</th><th class="num">Customer Count</th>
+      <th>Week</th><th class="num">Projected Deliveries</th><th class="num">vs HM OPS Sheet</th><th class="num">Orders</th><th class="num">Customer Count</th>
       ${drops.map(dn=>`<th class="num">Drop ${dn}</th>`).join('')}
       <th class="num">COD</th><th class="num">Net 30</th>
       <th class="num">MTD Delivered</th><th class="num">Prior Month</th><th class="num">4-Wk Avg</th><th class="num">On Hand (LeafLink)</th>
     </tr></thead><tbody>${trs}</tbody></table>`;
-  if(note) note.innerHTML=`<b>Click any highlighted number</b> to open the deliveries behind it — each order expands to its line items. One row per week (Monday), like the CA Sales Scorecard: the <span class="pill" style="font-size:9.5px;color:var(--yellow)">next</span> row is deliveries already scheduled for a future week; the <span class="pill live" style="font-size:9.5px">live</span> row is the current week. Orders are placed on the week they <b>deliver</b> — the delivery date comes from the distributor's HM OPS schedule (matched by LL#, refreshed hourly), falling back to <b>LeafLink's own Ship date</b> (crawled from each order page); an order neither source has scheduled counts on its <b>order date</b> and is tagged in the drill. <b>Drop</b> columns split the week by harvest (assigned by LeafLink order date). <b>MTD Delivered</b> = month-to-date as of that row (through the previous Sunday for past weeks, through today on the live row). <b>4-Wk Avg</b> = that week + the 3 prior. Amounts are LeafLink order totals — gross, before the distributor's excise + 10% fee waterfall. <b>On Hand (LeafLink)</b> is a today snapshot of per-SKU inventory at the distributor (Inventory Overview report, hourly) — shown on the live row only; click it for the SKU breakdown incl. Reserved (allocated to open orders) vs Available.`;
+  if(note) note.innerHTML=`<b>Click any highlighted number</b> to open the deliveries behind it — each order expands to its line items. One row per week (Monday), like the CA Sales Scorecard: the <span class="pill" style="font-size:9.5px;color:var(--yellow)">next</span> row is deliveries already scheduled for a future week; the <span class="pill live" style="font-size:9.5px">live</span> row is the current week. Orders are placed on the week they <b>deliver</b> — the delivery date comes from the distributor's HM OPS schedule (matched by LL#, refreshed hourly), falling back to <b>LeafLink's own Ship date</b> (crawled from each order page); an order neither source has scheduled counts on its <b>order date</b> and is tagged in the drill. <b>Drop</b> columns split the week by harvest (assigned by LeafLink order date). <b>MTD Delivered</b> = month-to-date as of that row (through the previous Sunday for past weeks, through today on the live row). <b>4-Wk Avg</b> = that week + the 3 prior. Amounts are LeafLink order totals — gross, before the distributor's excise + 10% fee waterfall. <b>vs HM OPS Sheet</b> = that week's LeafLink total minus the sheet's hand-entered totals — the expected gap is the 5% early-pay discount (sheet is net of it); orange means unexplained mismatches or membership gaps, and the drill itemizes every order with the reason. <b>On Hand (LeafLink)</b> is a today snapshot of per-SKU inventory at the distributor (Inventory Overview report, hourly) — shown on the live row only; click it for the SKU breakdown incl. Reserved (allocated to open orders) vs Available.`;
 }
 // On-hand at the distributor (LeafLink Inventory Overview): a TODAY snapshot, so only the live
 // row carries it — mirroring the CA board, where past-week on-hand comes from saved snapshots
@@ -4481,6 +4514,21 @@ function nyscBoardDrill(dateStr, col){
   const p=dateStr.split('-'); const monday=new Date(+p[0],+p[1]-1,+p[2]);
   const rows=nyscRows(); const {a,b}=nyscWeekWin(monday);
   const wkLabel=`${monday.getMonth()+1}/${monday.getDate()}/${monday.getFullYear()}`;
+  if(col==='vsheet'){
+    const sd=nyscSheetDiff(monday);
+    if(!sd.rows.length) return {title:`LeafLink vs HM OPS sheet — week of ${wkLabel}`, empty:'Every order matches the sheet to the cent this week.'};
+    const parts=[];
+    if(Math.abs(sd.disc5)>0.005) parts.push(`${fmt$(Math.abs(sd.disc5))} is the expected 5% early-pay discount (sheet totals are net of it; LeafLink is gross)`);
+    if(Math.abs(sd.mismatch)>0.005) parts.push(`${fmt$(Math.abs(sd.mismatch))} is UNEXPLAINED amount mismatches — likely sheet entry errors, worth sending back to the distributor`);
+    if(Math.abs(sd.missing)>0.005) parts.push(`${fmt$(Math.abs(sd.missing))} is LeafLink orders not on the sheet yet`);
+    if(Math.abs(sd.sheetOnly)>0.005) parts.push(`${fmt$(Math.abs(sd.sheetOnly))} is sheet rows with no matching LeafLink order`);
+    return {title:`LeafLink vs HM OPS sheet — week of ${wkLabel}`,
+      sub:`Scorecard total (LeafLink, gross) minus the tracker total (sheet entries): ${sd.delta>0?'+':''}${fmt$(sd.delta)}. ${parts.join(' · ')}.`,
+      columns:[{l:'LL#'},{l:'Buyer'},{l:'LeafLink',num:true,money:true},{l:'Sheet',num:true,money:true},{l:'Δ',num:true,money:true},{l:'Why'}],
+      rows:sd.rows.map(x=>[x.ref, x.c, x.ll==null?'':x.ll, x.sheet==null?'':x.sheet, x.diff, x.why]),
+      rowClass:sd.rows.map(x=>/MISMATCH|only/.test(x.why)?'row-div':''),
+      totalLabel:'Total difference', total:sd.delta};
+  }
   if(col==='onhand'){
     const list=(NY_LLINV||[]).slice().sort((x,y)=>(nyLlInvValue(y)||0)-(nyLlInvValue(x)||0)||y.units-x.units);
     if(!list.length) return {title:'On Hand at the distributor', empty:'No LeafLink inventory data yet (publishes with the next NY refresh).'};
@@ -4522,8 +4570,8 @@ function nyscBoardDrill(dateStr, col){
 { const el=$('#nysc-export'); if(el) el.onclick=()=>{
   const board=nyscBoardRows(); if(!board.length) return;
   const drops=board[0].drops;
-  const out=[['Week','Projected Deliveries','Orders','Customer Count',...drops.map(d=>'Drop '+d),'COD','Net 30','MTD Delivered','Prior Month','4-Wk Avg','On Hand (LeafLink)']];
-  board.forEach(r=>out.push([r.key, r.m.tot.toFixed(2), r.m.n, r.m.accts.size,
+  const out=[['Week','Projected Deliveries','vs HM OPS Sheet','Orders','Customer Count',...drops.map(d=>'Drop '+d),'COD','Net 30','MTD Delivered','Prior Month','4-Wk Avg','On Hand (LeafLink)']];
+  board.forEach(r=>out.push([r.key, r.m.tot.toFixed(2), nyscSheetDiff(r.monday).delta.toFixed(2), r.m.n, r.m.accts.size,
     ...drops.map(d=>(r.m.byDrop[d]||0).toFixed(2)), r.m.cod.toFixed(2), r.m.net.toFixed(2),
     r.mtd==null?'':r.mtd.toFixed(2), r.priorMtd==null?'':r.priorMtd.toFixed(2), r.fourWk==null?'':r.fourWk.toFixed(2), r.isCur?nyscOnHandTotal().toFixed(2):'']));
   downloadCSV('ny-scorecard.csv', out); }; }
