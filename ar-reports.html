@@ -477,6 +477,7 @@
 
     <div class="tabs">
       <div class="tab active" data-tab="ar">Accounts Receivable</div>
+      <div class="tab hidden" data-tab="nysc">Scorecard</div>
       <div class="tab" data-tab="cd">Credits/Discounts</div>
       <div class="tab" data-tab="sku">Sales by Type</div>
       <div class="tab" data-tab="scorecard">Sales Scorecard</div>
@@ -1014,6 +1015,27 @@
     <!-- Wizard Trees rows from the distributor's "HM OPS Order Queue" Google Sheet (filtered by
          Box Count/Brands), pulled a few times a day via the reports Apps Script (runs as gianni@,
          who has view access — the sheet itself stays private). -->
+    <!-- ===================== NY Scorecard — LeafLink orders on a delivery-date week board ===================== -->
+    <div id="view-nysc" class="hidden">
+      <div class="toolbar">
+        <input type="text" id="nysc-search" placeholder="Search buyer / LL#…" />
+        <select id="nysc-range" title="Which deliveries to show — LeafLink orders by their HM OPS delivery date">
+          <option value="week" selected>This week</option>
+          <option value="lastweek">Last week</option>
+          <option value="nextweek">Next week</option>
+          <option value="custom">Custom range…</option>
+        </select>
+        <label class="dt">From <input type="date" id="nysc-from" /></label>
+        <label class="dt">To <input type="date" id="nysc-to" /></label>
+        <div class="grow"></div>
+        <button class="btn" id="nysc-export">⬇ Export CSV</button>
+      </div>
+      <div class="tier-cards" id="nysc-cards"></div>
+      <div class="tablewrap" id="nysc-byday"></div>
+      <div class="tablewrap" id="nysc-wrap"></div>
+      <div class="notes" id="nysc-note"></div>
+    </div>
+
     <div id="view-hmops" class="hidden">
       <div class="toolbar">
         <input type="text" id="hmops-search" placeholder="Search shop / LL# / week…" />
@@ -1665,7 +1687,7 @@ function applyShared(d){
     // Repaint whichever NY view is on screen — without this, a payload landing (or Refresh)
     // while NY AR / HM OPS is open left stale or blank content until a manual tab switch.
     try{ if(APP_STATE==='NY'){ const at=(document.querySelector('.tab.active')||{}).dataset||{};
-      if(at.tab==='ar') renderArNY(); else if(at.tab==='hmops') renderHmOps(); }}catch(e){}
+      if(at.tab==='ar') renderArNY(); else if(at.tab==='hmops') renderHmOps(); else if(at.tab==='nysc') renderNySc(); }}catch(e){}
     if(data.nyQboItems && data.nyQboItems.length){ NY_QBO_ITEMS=nyQboItemsFromWire(data.nyQboItems); any=true; }
     if(data.hmops && data.hmops.length){ HM_OPS=hmOpsFromWire(data.hmops); any=true; }   // HM OPS Order Queue (Wizard Trees rows)
     if(data.hmopsAsOf) HMOPS_ASOF=data.hmopsAsOf;
@@ -4210,7 +4232,7 @@ function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny
   if(FILES.ny_qbo_pay){ NY_QBO_PAY=buildNyQboPay(); FRESH.add('nyQboPay'); }
   if(FILES.ny_qbo_items){ NY_QBO_ITEMS=buildNyQboItems(); FRESH.add('nyQboItems'); }
   if(FILES.hm_ops){ HM_OPS=buildHmOps(); FRESH.add('hmops'); }
-  if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); renderHmOps(); } }
+  if(APP_STATE==='NY'){ renderTiers(); renderSku(); renderArNY(); renderHmOps(); renderNySc(); } }
 function tierDataNY(){
   const months=Math.max(1,+(($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
@@ -4315,6 +4337,122 @@ function nyTierDrill(name){
     footHtml,
     totalLabel:'Total', total:list.reduce((s,e)=>s+e.amt,0)});
 }
+// ── NY Scorecard: LeafLink orders on a DELIVERY-DATE week board ─────────────────────────────
+// The LeafLink export has NO delivery date (Order Date only), so each order's delivery date comes
+// from the distributor's HM OPS schedule (DELIVERY DATE, joined by LL# — the same join the HM OPS
+// tracker uses, refreshed hourly). An order the sheet hasn't scheduled yet falls back to its
+// ORDER date and is tagged "not scheduled" so fresh pipeline stays visible in the current week;
+// future windows (Next week) therefore show only actually-scheduled deliveries.
+function nyscDelivIndex(){ const m={};
+  hmDedupe(HM_OPS||[]).forEach(x=>{ const r=String(x.ll||'').trim(); if(!r) return;
+    const t=hmDelivTs(x.dl); if(t!=null) m[r]=t; });
+  return m; }
+function applyNyscPreset(p){
+  const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  if(p==='custom') return;                       // custom → leave whatever is in the boxes
+  const d=new Date(); const mon=new Date(d); mon.setDate(d.getDate()-((d.getDay()+6)%7)+(p==='lastweek'?-7:p==='nextweek'?7:0));
+  const sun=new Date(mon); sun.setDate(mon.getDate()+6);
+  if($('#nysc-from')) $('#nysc-from').value=isoD(mon);
+  if($('#nysc-to')) $('#nysc-to').value=isoD(sun);
+}
+function nyscWindow(){
+  const f=(($('#nysc-from')||{}).value)||'', t=(($('#nysc-to')||{}).value)||'';
+  const a=f?new Date(f+'T00:00:00'):null, b=t?new Date(t+'T23:59:59.999'):null;
+  const p=(($('#nysc-range')||{}).value)||'week';
+  const label=p==='week'?'this week':p==='lastweek'?'last week':p==='nextweek'?'next week':(f||t?`${f||'…'} – ${t||'…'}`:'all time');
+  return {a,b,label};
+}
+function nyscRows(){
+  const idx=nyscDelivIndex();
+  return (NY_EVENTS||[]).map(e=>{ const t=idx[String(e.ref||'').trim()];
+    const dr=nyDropOf(e.d);
+    return {...e, deliv:(t!=null?t:null), when:(t!=null?t:e.d), sched:t!=null, drop:dr?dr.n:2}; });
+}
+function nyscView(){
+  const {a,b}=nyscWindow();
+  const q=(($('#nysc-search')||{}).value||'').trim().toLowerCase();
+  let v=nyscRows().filter(r=>r.when!=null && (!a||r.when>=a.getTime()) && (!b||r.when<=b.getTime()));
+  if(q) v=v.filter(r=>(r.c||'').toLowerCase().includes(q)||(r.legal||'').toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q));
+  return v.sort((x,y)=>(x.when-y.when)||(y.amt-x.amt));
+}
+function renderNySc(){
+  const cards=$('#nysc-cards'), byday=$('#nysc-byday'), wrap=$('#nysc-wrap'), note=$('#nysc-note');
+  const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  if(!wrap) return;
+  if(!(NY_EVENTS||[]).length){ if(cards)cards.innerHTML=''; if(byday)byday.innerHTML=''; if(note)note.innerHTML='';
+    wrap.innerHTML='<div class="empty">No LeafLink data yet — the scorecard fills in after the next NY refresh.</div>'; return; }
+  const {a,b,label}=nyscWindow();
+  const v=nyscView();
+  const tot=v.reduce((s,r)=>s+r.amt,0);
+  const unsched=v.filter(r=>!r.sched);
+  const custs=new Set(v.map(r=>tierNorm(r.c))).size;
+  // prior window of the same length, for the value card's comparison line
+  let priorTxt='';
+  if(a&&b){ const len=b.getTime()-a.getTime()+1;
+    const pa=new Date(a.getTime()-len), pb=new Date(a.getTime()-1);
+    const pv=nyscRows().filter(r=>r.when!=null&&r.when>=pa.getTime()&&r.when<=pb.getTime());
+    priorTxt='prior '+Math.round(len/86400000)+' days: '+fmt$(pv.reduce((s,r)=>s+r.amt,0)); }
+  const drops={}; v.forEach(r=>{ drops[r.drop]=(drops[r.drop]||0)+r.amt; });
+  const dropKeys=Object.keys(drops).sort((x,y)=>+x-+y);
+  const dropTxt=dropKeys.map(k=>`Drop ${k} ${fmt$(drops[k])}`).join(' · ')||'—';
+  const cod=v.filter(r=>/cod/i.test(r.terms||'')), net=v.filter(r=>/net/i.test(r.terms||''));
+  if(cards) cards.innerHTML=[
+    ['Orders delivering', String(v.length), label+(unsched.length?` · ${unsched.length} not scheduled (shown by order date)`:''), null],
+    ['Total value', fmt$(tot), priorTxt||('across '+custs+' account'+(custs!==1?'s':'')), 'var(--green)'],
+    ['By drop', dropKeys.length?('Drop '+dropKeys.join(' + ')):'—', dropTxt, null],
+    ['Accounts', String(custs), `${cod.length} COD (${fmt$(cod.reduce((s,r)=>s+r.amt,0))}) · ${net.length} Net 30 (${fmt$(net.reduce((s,r)=>s+r.amt,0))})`, null],
+  ].map(([l,vv,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${vv}</div><div class="tc-blurb">${esc(sub)}</div></div>`).join('');
+  // day-by-day strip (windows ≤ 35 days only — a custom multi-month range would be noise)
+  if(byday){
+    if(a&&b&&(b-a)<35*86400000 && v.length){
+      const days=[]; for(const d=new Date(a); d<=b; d.setDate(d.getDate()+1)){
+        const d0=new Date(d); d0.setHours(0,0,0,0); const d1=new Date(d); d1.setHours(23,59,59,999);
+        const rows=v.filter(r=>r.when>=d0.getTime()&&r.when<=d1.getTime());
+        days.push([new Date(d0), rows.length, rows.reduce((s,r)=>s+r.amt,0)]); }
+      byday.innerHTML=`<table><thead><tr><th>Day</th><th class="num">Orders</th><th class="num">Value</th></tr></thead><tbody>`+
+        days.map(([d,n,amt])=>`<tr${n?'':' style="opacity:.45"'}><td>${d.toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'})}</td><td class="num">${n||'—'}</td><td class="num money">${amt?fmt$(amt):'—'}</td></tr>`).join('')+
+        `</tbody><tfoot><tr class="totals"><td>${esc(label)}</td><td class="num">${v.length}</td><td class="num money">${fmt$(tot)}</td></tr></tfoot></table>`;
+    } else byday.innerHTML='';
+  }
+  if(!v.length){
+    wrap.innerHTML=`<div class="empty">No deliveries in <b>${esc(label)}</b>.<br><span class="muted2">${(NY_EVENTS||[]).length} LeafLink orders loaded overall — widen the range to see them.</span></div>`;
+  } else {
+    const dropPill=n=>`<span class="pill" style="color:${n===1?'var(--purple,#a78bfa)':String(n)==='2.3'?'var(--orange)':'var(--green)'}">Drop ${n}</span>`;
+    wrap.innerHTML=`<table id="nysc-table"><thead><tr><th>Delivery</th><th>LL#</th><th class="num">Drop</th><th>Buyer</th><th>Status</th><th class="num">Amount</th></tr></thead><tbody>`+
+      v.map(r=>`<tr class="clickrow" data-ref="${esc(r.ref)}" title="Click for this order's line items">
+        <td class="num">${r.sched?`<b>${new Date(r.deliv).toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'})}</b>`:`${fmtDt(r.when)} <span class="neg">not scheduled</span>`}</td>
+        <td>${esc(r.ref||'—')}${r.terms?`<div class="rep">${esc(r.terms)}</div>`:''}</td>
+        <td class="num">${dropPill(r.drop)}</td>
+        <td>${esc(r.c)}${r.legal?` <span class="rep">${esc(r.legal)}</span>`:''}</td>
+        <td>${/fulfil|complete|deliver/i.test(r.st||'')?`<span style="color:var(--green)">${esc(r.st)}</span>`:`<span style="color:var(--yellow)">${esc(r.st||'—')}</span>`}</td>
+        <td class="num money">${fmt$(r.amt)}</td></tr>`).join('')+
+      `</tbody><tfoot><tr class="totals"><td>${v.length} order${v.length!==1?'s':''}</td><td></td><td></td><td></td><td></td><td class="num money">${fmt$(tot)}</td></tr></tfoot></table>`;
+    wrap.querySelectorAll('tr.clickrow').forEach(tr=>tr.onclick=()=>nyscDrill(tr.dataset.ref));
+  }
+  if(note) note.innerHTML=`<b>NY Scorecard — LeafLink orders by delivery date.</b> Every LeafLink order (cancelled/merged excluded) shown on the week it <b>delivers</b>. The LeafLink export has no delivery date, so it comes from the distributor's HM OPS schedule (matched by LL#, refreshed hourly); an order the sheet hasn't scheduled yet shows on its <b>order date</b> tagged <i>not scheduled</i> — so <b>Next week</b> lists only confirmed scheduled deliveries. <b>Drop</b> = the order's harvest assignment (by LeafLink order date). Amounts are LeafLink order totals — gross, before the distributor's excise + 10% fee waterfall. Click an order for its line items.`;
+}
+function nyscDrill(ref){
+  const e=nyscRows().find(x=>x.ref===ref); if(!e) return;
+  const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  const its=(NY_ITEMS||[]).filter(it=>it.ref===ref);
+  const rows=its.map(it=>{ const p=nyParseProduct(it.product); const u=it.units||0;
+    return [p.strain+(p.format?` — ${p.format}`:''), u?Math.round(u).toLocaleString():'', u?it.lineTotal/u:'', it.lineTotal]; });
+  openScModal({ title:`${e.ref} — ${e.c}`,
+    sub:`${e.sched?('delivers '+new Date(e.deliv).toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'})):'not scheduled yet'} · ordered ${fmtDt(e.d)} · Drop ${e.drop}${e.terms?' · '+e.terms:''}${e.st?' · '+e.st:''}`,
+    columns:[{l:'Product'},{l:'Units',num:true},{l:'Price/Unit',num:true,money:true},{l:'Line Total',num:true,money:true}],
+    rows,
+    empty:rows.length?undefined:'No line-item detail for this order yet (the detail crawler picks it up on the next NY refresh).',
+    totalLabel:'Order total', total:e.amt });
+}
+{ const el=$('#nysc-range'); if(el) el.addEventListener('change',ev=>{ applyNyscPreset(ev.target.value); renderNySc(); }); }
+['nysc-from','nysc-to'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('change',()=>{
+  const sel=$('#nysc-range'); if(sel) sel.value='custom'; renderNySc(); }); });
+{ const el=$('#nysc-search'); if(el) el.addEventListener('input',renderNySc); }
+applyNyscPreset('week');   // fill the date boxes with the default window from the start
+{ const el=$('#nysc-export'); if(el) el.onclick=()=>{
+  const {label}=nyscWindow(); const out=[['Delivery date','Scheduled','LL#','Buyer','Legal name','Drop','Terms','Status','Amount']];
+  nyscView().forEach(r=>out.push([new Date(r.when).toISOString().slice(0,10), r.sched?'yes':'no (order date)', r.ref, r.c, r.legal||'', 'Drop '+r.drop, r.terms||'', r.st||'', r.amt.toFixed(2)]));
+  downloadCSV(`ny-scorecard-${label.replace(/[^a-z0-9]+/gi,'-')}.csv`, out); }; }
 // ── CA / NY state toggle ──
 function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUTH_STATES[0]||st;   // never enter a state the signed-in user can't see
   const was=APP_STATE; APP_STATE=st;
@@ -4322,7 +4460,7 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
   // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the
   // NY-only tabs. (Access is by STATE now — applyStateAccess gates which states you can reach.)
-  const NY_TABS=['ar','tiers','reports','credits','hmops'], NY_ONLY=['credits','hmops'];   // Sales by Type is a Reports mode in NY (2026-07-21), a standalone tab in CA
+  const NY_TABS=['ar','nysc','tiers','reports','credits','hmops'], NY_ONLY=['nysc','credits','hmops'];   // Sales by Type is a Reports mode in NY (2026-07-21), a standalone tab in CA
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
     t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary / Sales by Type
@@ -6376,6 +6514,8 @@ function activateTab(tab, fromHash){
     else renderRepMode(); }
   $('#view-credits').classList.toggle('hidden',tab!=='credits');
   if(tab==='credits') renderCredits();
+  $('#view-nysc').classList.toggle('hidden',tab!=='nysc');
+  if(tab==='nysc') renderNySc();
   $('#view-hmops').classList.toggle('hidden',tab!=='hmops');
   if(tab==='hmops') renderHmOps();
   $('#conc-controls').classList.toggle('hidden', tab!=='cd');
