@@ -147,6 +147,9 @@
   tr.pay .pay-amt{font-weight:800;color:var(--green)}
   tr.pay .chev{color:#4e9b74}
   tr.pay.open .chev{transform:rotate(90deg);color:var(--green)}
+  tr.pay.pend td{background:rgba(231,180,22,.09);color:#e0cf8f;border-bottom-color:rgba(231,180,22,.16)}
+  tr.pay.pend td.sticky{background:#241f10;color:var(--yellow)}
+  tr.pay.pend .pay-amt{color:var(--yellow)}
   tr.paydetail>td{background:#101a15;padding:0;border-bottom:1px solid rgba(47,191,113,.18)}
   tr.paydetail .msec{color:#5f9d7e}
 
@@ -645,6 +648,11 @@ function ledger(m, adj, pdates){
                amt: -w.apps.reduce((a,x)=>a+x.amt,0), apps:reslice(w.apps, w.key), superseded:reslice(w.superseded, w.key),
                re: adj.restated.has(w.key) });
 
+  // payments we've recorded that the supplier hasn't posted to the sheet yet
+  for(const a of adj.pendingPays || [])
+    evs.push({ kind:'pending', pend:a, key:'X'+a.id, amt:-(+a.amount),
+               date: payDateOf(a) });
+
   evs.sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
   let run = 0;
   evs.forEach(ev => { run += ev.amt; ev.bal = run; });
@@ -673,11 +681,45 @@ function paymentsMeta(m){
 const VAPE_TYPE = 'Vapes (AIO)';
 const isVape = t => t === VAPE_TYPE;
 
+/* an app-recorded payment is dated by paid_on (a plain date — read it as local noon so a
+   timezone shift can never roll it to the previous day), else by when it was entered */
+function payDateOf(a){
+  if(a.paid_on){
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(a.paid_on);
+    if(m) return new Date(+m[1], +m[2]-1, +m[3], 12).getTime();
+  }
+  return new Date(a.created_at).getTime();
+}
+const payDateLabel = a => {
+  const d = new Date(payDateOf(a));
+  return `${d.getDate()} ${MONS[d.getMonth()]} ${d.getFullYear()}`;
+};
+
+/* Has the supplier posted this payment to their sheet yet? Matching a wire by amount is
+   fragile — they split wires, bundle freight, and leave headers undated. Instead compare the
+   sheet's paid-to-date against the snapshot taken when the payment was recorded: any rise is
+   money that wasn't there before, so it MIGHT be this one. Never auto-removes; just warns. */
+function postedRisk(a, sheetPaidNow){
+  const base = a.sheet_paid_at_entry;
+  if(base == null || sheetPaidNow == null) return null;      // older row, no baseline
+  const rise = sheetPaidNow - base;
+  if(rise < 0.01) return null;                                // nothing new posted
+  return { rise, covered: rise >= (+a.amount) - 0.01 };
+}
+
 function computeAdjust(m, stateKey){
   const groups = {};
-  const bucketEntries = [];
+  const bucketEntries = [], pendingPays = [];
+  // money we've paid that the supplier hasn't posted to the sheet yet — real cash, so it
+  // REDUCES the balance (unlike bucket re-ascriptions, which only move money between buckets)
+  const extraPaid = { vape: 0, nonvape: 0 };
   for(const a of state.asc) if(a.state === stateKey){
     if(a.mode === 'config') continue;                  // global settings, handled below
+    if(a.mode === 'payment'){
+      pendingPays.push(a);
+      if(a.invoice_no === '__vape__') extraPaid.vape += +a.amount; else extraPaid.nonvape += +a.amount;
+      continue;
+    }
     if(a.mode === 'bucket') bucketEntries.push(a);
     else (groups[a.payment_key] ??= []).push(a);
   }
@@ -766,7 +808,7 @@ function computeAdjust(m, stateKey){
   for(const src in removed) bump(src, -removed[src].reduce((a,x)=>a+x.amt,0));
   for(const src in added)   bump(src, +added[src].reduce((a,x)=>a+x.amt,0));
   return { meta, metaByKey, groups, restated, removed, added, delta, overall, orphans, moves,
-           netToVape, payToInv, bucketEntries };
+           netToVape, payToInv, bucketEntries, pendingPays, extraPaid };
 }
 
 /* open balance split into the Vape (AIO hardware) bucket and everything else, with the
@@ -784,14 +826,16 @@ function bucketBalances(m, adj){
     else { nonvape += open; nonvapeSheet0 += sheetOpen; nonvapeNyd += nyd; nonvapeN++; }
   }
   const p = adj.payToInv || {vape:0, nonvape:0};
+  const xp = adj.extraPaid || {vape:0, nonvape:0};
   // a bucket-pay to an invoice already dropped that invoice's `open` (via delta); the offset
   // rides on the OPPOSITE bucket so the two balances still sum to the true total.
   // bucket shifts are all due-side money — the Not-yet-due split per bucket is untouched.
-  return { vape: vape - adj.netToVape + p.nonvape,
-           nonvape: nonvape + adj.netToVape + p.vape,
+  // extraPaid is real cash not yet on the sheet, so it comes straight off its bucket.
+  return { vape: vape - adj.netToVape + p.nonvape - xp.vape,
+           nonvape: nonvape + adj.netToVape + p.vape - xp.nonvape,
            vapeSheet: vapeSheet0, nonvapeSheet: nonvapeSheet0,
            vapeNyd, nonvapeNyd, vapeN, nonvapeN,
-           netToVape: adj.netToVape, payToInv: p };
+           netToVape: adj.netToVape, payToInv: p, extraPaid: xp };
 }
 
 /* ---------- Supabase I/O ---------- */
@@ -992,11 +1036,14 @@ function categoryReport(scope){
   // Vapes is its own account with a payment system — override its line to the vape
   // BALANCE (which the bucket attributions live at), and reconcile the difference (the
   // payments re-ascribed to vapes, owed on non-vape but not tied to a category).
-  let vapeBal = 0, stateOpen = 0, vapeShifted = false;
+  let vapeBal = 0, stateOpen = 0, vapeShifted = false, pendNonvape = 0;
   for(const k of keys){
     const m = state.data[k]; if(!m) continue;
     const adj = computeAdjust(m, k), b = bucketBalances(m, adj), st = stateTotals(m);
-    vapeBal += b.vape; stateOpen += st.due + st.nyd;
+    const xp = adj.extraPaid;
+    vapeBal += b.vape;                                  // already net of the vape-side pending
+    stateOpen += st.due + st.nyd - xp.vape - xp.nonvape;
+    pendNonvape += xp.nonvape;
     if(Math.abs(b.vapeSheet - b.vape) > 0.005) vapeShifted = true;
   }
   const vapeCat = list.find(c => c.type === VAPE_TYPE);
@@ -1004,12 +1051,14 @@ function categoryReport(scope){
 
   list.forEach(c => c.rows.sort((a,b) => b.open - a.open || b.due - a.due));
   list.sort((a,b) => b.open - a.open || b.n - a.n || a.type.localeCompare(b.type));
-  const reconcile = stateOpen - list.reduce((a,c) => a + c.open, 0);
-  return { list, reconcile };
+  // residual splits into the vape re-ascription piece and the app-recorded payments piece,
+  // so each shows as its own line instead of one opaque number
+  const reconcile = stateOpen - list.reduce((a,c) => a + c.open, 0) + pendNonvape;
+  return { list, reconcile, pendNonvape };
 }
 
 function catReportHtml(scope, exclVapes){
-  let { list, reconcile } = categoryReport(scope);
+  let { list, reconcile, pendNonvape } = categoryReport(scope);
   // excluding vapes drops the Vapes line; the reconcile line stays — that money is owed
   // on non-vape, so the total lands on the Non-vape balance
   if(exclVapes) list = list.filter(c => c.type !== VAPE_TYPE);
@@ -1018,6 +1067,8 @@ function catReportHtml(scope, exclVapes){
                           {n:0,due:0,nyd:0,open:0});
   const hasRec = Math.abs(reconcile) > 0.005;
   if(hasRec){ tot.open += reconcile; tot.due += reconcile; }
+  const hasPend = Math.abs(pendNonvape) > 0.005;
+  if(hasPend){ tot.open -= pendNonvape; tot.due -= pendNonvape; }
   const showState = scope === 'all';
   const adjMark = '<span class="adjmark" title="the Vapes account balance, after payment attributions (see the Payments panel)">✱</span>';
 
@@ -1062,6 +1113,11 @@ function catReportHtml(scope, exclVapes){
         `<td class="num"><b>${fmtUSD(reconcile)}</b></td>` +
         `<td class="num" style="color:var(--orange)">${fmtUSD(reconcile)}</td>` +
         `<td class="num" style="color:var(--blue)">${fmtUSD(0)}</td><td></td></tr>` : '') +
+    (hasPend ? `<tr class="prow" style="cursor:default"><td colspan="2"><span class="faint">Payments made, not yet on the sheet</span>` +
+        `<span class="psub">recorded in this app · general (non-vape)</span></td>` +
+        `<td class="num"><b style="color:var(--yellow)">−${fmtUSD(pendNonvape)}</b></td>` +
+        `<td class="num" style="color:var(--yellow)">−${fmtUSD(pendNonvape)}</td>` +
+        `<td class="num" style="color:var(--blue)">${fmtUSD(0)}</td><td></td></tr>` : '') +
     `<tr class="grand"><td><b>Total</b></td><td class="num">${tot.n}</td><td class="num"><b>${fmtUSD(tot.open)}</b></td>` +
     `<td class="num">${fmtUSD(tot.due)}</td><td class="num">${fmtUSD(tot.nyd)}</td><td></td></tr>` +
     `</tbody></table></div></div>`;
@@ -1102,11 +1158,15 @@ function renderOverview(){
     const dSum = Object.values(adj.delta).reduce((a,d)=>a+d,0);
     // a bucket-pay reduces an invoice's due but its offset rides the opposite bucket, so add
     // payTotal back into the state total — the reallocation conserves total due
-    s.adjDue = s.due - dSum + payTotal; s.adjPaid = s.paid + dSum - payTotal;
-    s.overall = adj.overall; s.hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005;
+    const xpTotal = (adj.extraPaid.vape || 0) + (adj.extraPaid.nonvape || 0);
+    s.adjDue = s.due - dSum + payTotal - xpTotal; s.adjPaid = s.paid + dSum - payTotal + xpTotal;
+    s.pending = xpTotal; s.pendingPays = adj.pendingPays;
+    s.overall = adj.overall;
+    s.hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005 || xpTotal > 0.005;
     const b = bucketBalances(m, adj);
     s.vape = b.vape; s.nonvape = b.nonvape; s.vapeSheet = b.vapeSheet; s.nonvapeSheet = b.nonvapeSheet;
     s.netToVape = b.netToVape;
+    s.xpVape = adj.extraPaid.vape; s.xpNonvape = adj.extraPaid.nonvape;
     s.vapeNyd = b.vapeNyd; s.nonvapeNyd = b.nonvapeNyd; s.vapeN = b.vapeN; s.nonvapeN = b.nonvapeN;
     t[k] = s;
   }
@@ -1115,9 +1175,11 @@ function renderOverview(){
       vape:a.vape+s.vape,nonvape:a.nonvape+s.nonvape,vapeSheet:a.vapeSheet+s.vapeSheet,
       nonvapeSheet:a.nonvapeSheet+s.nonvapeSheet,netToVape:a.netToVape+s.netToVape,
       vapeNyd:a.vapeNyd+s.vapeNyd,nonvapeNyd:a.nonvapeNyd+s.nonvapeNyd,
-      vapeN:a.vapeN+s.vapeN,nonvapeN:a.nonvapeN+s.nonvapeN,hasAdj:a.hasAdj||s.hasAdj}),
+      vapeN:a.vapeN+s.vapeN,nonvapeN:a.nonvapeN+s.nonvapeN,pending:a.pending+s.pending,
+      xpVape:a.xpVape+s.xpVape,xpNonvape:a.xpNonvape+s.xpNonvape,
+      hasAdj:a.hasAdj||s.hasAdj}),
     {n:0,total:0,paid:0,due:0,nyd:0,adjDue:0,adjPaid:0,overall:0,vape:0,nonvape:0,vapeSheet:0,nonvapeSheet:0,
-     netToVape:0,vapeNyd:0,nonvapeNyd:0,vapeN:0,nonvapeN:0,hasAdj:false});
+     netToVape:0,vapeNyd:0,nonvapeNyd:0,vapeN:0,nonvapeN:0,pending:0,xpVape:0,xpNonvape:0,hasAdj:false});
 
   /* scope buttons + vapes toggle */
   const scope = state.ovScope;
@@ -1176,8 +1238,12 @@ function renderOverview(){
 
   /* Vape vs Non-vape open balance (scope-aware), reflecting payment attributions */
   const bs = scope === 'all' ? g : t[scope];
-  const shifted = Math.abs((bs.vapeSheet||0) - (bs.vape||0)) > 0.005;
-  const bsub = (v, sheet) => shifted ? `<div class="sub">sheet: ${fmtUSD(sheet)}</div>` : '';
+  // the vape balance differs from the sheet for TWO reasons — money re-ascribed between
+  // buckets (zero-sum) and unposted payments (not). Only the first is a "re-ascription".
+  const vShift = (bs.vapeSheet||0) - ((bs.vape||0) + (bs.xpVape||0));
+  const shifted = Math.abs(vShift) > 0.005;
+  const differs = shifted || (bs.xpVape||0) > 0.005 || (bs.xpNonvape||0) > 0.005;
+  const bsub = (v, sheet) => differs ? `<div class="sub">sheet: ${fmtUSD(sheet)}</div>` : '';
   // vape is tracked as its own account per state — show the CA/NY split in All view
   const split = pick => scope === 'all'
     ? `<div class="sub">CA ${fmtUSD(pick(t.ca))} · NY ${fmtUSD(pick(t.ny))}</div>` : '';
@@ -1190,9 +1256,9 @@ function renderOverview(){
       `<div class="val">${fmtUSD(bs.nonvape)}</div>${bsub(bs.nonvape, bs.nonvapeSheet)}${split(s=>s.nonvape)}</div>` +
     `</div>` +
     (shifted ? `<div style="padding:0 2px 12px;font-size:11.5px;color:var(--faint)">` +
-      ((bs.vapeSheet||0) - (bs.vape||0) >= 0
-        ? `${fmtUSD((bs.vapeSheet||0) - (bs.vape||0))} of payments re-ascribed onto vapes in this app`
-        : `${fmtUSD((bs.vape||0) - (bs.vapeSheet||0))} of payments moved off vapes to non-vape in this app`) +
+      (vShift >= 0
+        ? `${fmtUSD(vShift)} of payments re-ascribed onto vapes in this app`
+        : `${fmtUSD(-vShift)} of payments moved off vapes to non-vape in this app`) +
       ` · manage on the CA/NY page → 💸 Payments → “Attribute payments”.</div>` : '');
 
   cardsEl.innerHTML = bucketCards +
@@ -1201,6 +1267,16 @@ function renderOverview(){
     `<th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
     row('ca', t.ca, 'st-row', 'CA') + row('ny', t.ny, 'st-row', 'NY') + row('', g, 'grand', 'Total') +
     `</tbody></table></div>` +
+    (g.pending > 0.005 ? `<div style="padding:8px 2px 0;font-size:12px;color:var(--yellow);font-weight:650">${fmtUSD(g.pending)} paid, not yet on the supplier’s sheet <span class="faint" style="font-weight:500">— already off these balances; remove the entry once their sheet shows it (CA/NY page → 💸 Payments)</span></div>` : '') +
+    // the double-count check lives in a collapsed panel two pages away — surface it here too
+    (()=>{ const hits=[];
+      for(const k of ['ca','ny']){ const mm=state.data[k]; if(!mm) continue;
+        const aa=computeAdjust(mm,k), paidNow=stateTotals(mm).paid;
+        for(const p of aa.pendingPays||[]){ const r=postedRisk(p, paidNow);
+          if(r && r.covered) hits.push(`${k.toUpperCase()} ${fmtUSD(+p.amount)}`); } }
+      return hits.length ? `<div style="padding:6px 2px 0;font-size:12px;color:var(--orange);font-weight:650">` +
+        `⚠ Check for double-counting: ${hits.join(', ')} — the supplier has posted new payments since these were recorded ` +
+        `<span class="faint" style="font-weight:500">(CA/NY page → 💸 Payments → remove the entry if it's now on their sheet)</span></div>` : ''; })() +
     (g.overall > 0.005 ? `<div style="padding:8px 2px 0;font-size:12px;color:var(--accent2);font-weight:650">On overall balance: ${fmtUSD(g.overall)} <span class="faint" style="font-weight:500">— re-ascribed, not on an invoice</span></div>` : '') +
     (g.hasAdj ? `<div style="padding:6px 2px 0;font-size:11.5px;color:var(--faint)">✱ adjusted for app payment re-ascriptions (see the Payments panel on each state page); the supplier sheet itself is unchanged.</div>` : '');
   cardsEl.querySelectorAll('tr.st-row').forEach(tr =>
@@ -1221,7 +1297,8 @@ function render(){
   const rows = filteredRows(m);
   const f = state.filters[state.page];
   const adj = computeAdjust(m, state.page);
-  const hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005;
+  const hasAdj = Object.keys(adj.delta).length > 0 || Math.abs(adj.overall) > 0.005
+                 || (adj.extraPaid.vape + adj.extraPaid.nonvape) > 0.005;
 
   /* cards */
   const findCol = name => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === name);
@@ -1233,8 +1310,15 @@ function render(){
   // them back for whichever buckets the filtered rows represent (keeps the total conserved
   // unfiltered, and shows the true vape/non-vape total when filtered to one)
   const hasVapeRow = rows.some(r => isVape(r.type)), hasNonvapeRow = rows.some(r => !isVape(r.type));
-  const bucketOffset = (hasVapeRow ? (adj.payToInv.nonvape - adj.netToVape) : 0)
-                     + (hasNonvapeRow ? (adj.payToInv.vape + adj.netToVape) : 0);
+  // account-level adjustments belong to a WHOLE bucket, so only apply a bucket's share when
+  // every row of that bucket is on screen — otherwise a filter down to a handful of invoices
+  // would subtract the entire payment from that small subset
+  const visSrc = new Set(rows.map(r => r.src));
+  const allShown = want => { const rs = m.rows.filter(r => isVape(r.type) === want);
+                             return rs.length > 0 && rs.every(r => visSrc.has(r.src)); };
+  const vapeWhole = allShown(true), nonvapeWhole = allShown(false);
+  const bucketOffset = (vapeWhole ? (adj.payToInv.nonvape - adj.netToVape - adj.extraPaid.vape) : 0)
+                     + (nonvapeWhole ? (adj.payToInv.vape + adj.netToVape - adj.extraPaid.nonvape) : 0);
   const dueVal = hasAdj ? sumAdj(dueCol, -1) + bucketOffset : sum(dueCol);
   const cardDefs = [
     { lbl:'Orders' + (f.q||f.st.size||f.ty.size?' (filtered)':''), val: rows.length, cls:'' },
@@ -1335,16 +1419,21 @@ function render(){
       .map(a => { const pd = pdates[a.payment_key] || {};   // dated by the source wire, when known
         return { kind:'bucketpay', key:'B'+a.id, date: pd.ts ?? Date.now(), dlabel: pd.label,
                  amt: -(+a.amount), note:a.note }; });
-    const combined = [...orderEvts, ...bucketpays].sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
+    const vapePending = rawEvents.filter(ev => ev.kind === 'pending' && ev.pend.invoice_no === '__vape__');
+    const combined = [...orderEvts, ...bucketpays, ...vapePending]
+      .sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
     let run = 0; combined.forEach(ev => { run += ev.amt; ev.vbal = run; });
     events = combined.reverse();
     balField = 'vbal';
   } else {
     // a payment shows unfiltered, or when one of its (re-sliced) applications is in view —
     // so with payments defaulted to Non-vape, no payment appears in the vape account
-    events = rawEvents.filter(ev => ev.kind === 'order'
-      ? visible.has(ev.r.src)
-      : (!anyFilter || ev.apps.concat(ev.superseded).some(a => visible.has(a.src)))).reverse();
+    events = rawEvents.filter(ev => {
+      if(ev.kind === 'order')   return visible.has(ev.r.src);
+      if(ev.kind === 'pending') return !anyFilter ||
+        (ev.pend.invoice_no === '__vape__' ? hasVapeRow : hasNonvapeRow);
+      return !anyFilter || ev.apps.concat(ev.superseded).some(a => visible.has(a.src));
+    }).reverse();
   }
 
   const thead = '<tr>' + m.cols.map((c,idx) => {
@@ -1392,6 +1481,20 @@ function render(){
         return `<td${cls?` class="${cls}"`:''}>${cell}</td>`;
       }).join('') + '</tr>';
       if(isOpen) body += `<tr class="detail"><td colspan="${nCols}">${detailHtml(m, r, adj)}</td></tr>`;
+      continue;
+    }
+
+    if(ev.kind === 'pending'){
+      // a payment we've recorded but the supplier hasn't posted to the sheet
+      const a = ev.pend, isV = a.invoice_no === '__vape__';
+      body += `<tr class="pay pend" data-pend="${a.id}">` +
+        `<td class="sticky s1">${esc(payDateLabel(a))}</td>` +
+        `<td class="sticky s2">↳ payment made</td>` +
+        `<td class="num pay-amt">−${fmtUSD(-ev.amt)}</td>` +
+        `<td class="num balcell">${fmtUSD(ev[balField])}</td>` +
+        (restCols ? `<td colspan="${restCols}"><span class="badge warn">not yet on the supplier’s sheet</span> ` +
+          `${isV?'vapes':'general (non-vape)'}${a.note?` · ${esc(a.note)}`:''}</td>` : '') +
+        '</tr>';
       continue;
     }
 
@@ -1636,8 +1739,39 @@ function renderPayPanel(m, adj){
       `<span class="hint">Moves that amount of payment credit toward vapes (from non-vape). Pick “a specific invoice” to pay one invoice down so it shows on its row (e.g. INV-1937); otherwise it adjusts the Vape/Non-vape totals only. Either way the grand total is unchanged — the sheet isn’t touched.</span>` +
     `</div></div>`;
 
+  /* payments we've made that the supplier hasn't posted to the sheet yet */
+  const sheetPaidNow = stateTotals(m).paid;
+  const pendRows = (adj.pendingPays || []).map(a => {
+    const risk = postedRisk(a, sheetPaidNow);
+    const warn = risk
+      ? `<span class="badge warn" style="margin-left:8px">${risk.covered
+          ? `the supplier has posted ${fmtUSD(risk.rise)} since you recorded this — if it includes this payment, remove it to avoid double-counting`
+          : `${fmtUSD(risk.rise)} posted since you recorded this — check whether part of it is this payment`}</span>`
+      : '';
+    return `<div class="entry" style="background:rgba(231,180,22,.08);border-color:rgba(231,180,22,.22)">` +
+      `<span><b>${esc(payDateLabel(a))}</b> → ${a.invoice_no==='__vape__'?'vapes':'general (non-vape)'}` +
+      (a.note?` <span class="note">· ${esc(a.note)}</span>`:'') + warn +
+      `</span><span class="amt" style="color:var(--yellow)">${fmtUSD(+a.amount)}</span>` +
+      `<button class="del" data-del="${a.id}" title="Remove">✕</button></div>`;
+  }).join('');
+  // keep whatever date the user picked across the 60s background re-render
+  const keptDate = panel.querySelector('.addform[data-mode=pending] [data-f=date]')?.value;
+  const todayISO = keptDate || (()=>{ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+  const pendPanel = `<div class="panel" style="margin-bottom:10px">` +
+    `<div class="ptitle">Payments made — not yet on the supplier’s sheet · ${stateKey.toUpperCase()}</div>` +
+    (pendRows || `<div class="nolink">None recorded. Add one here when you’ve paid but the supplier hasn’t posted it yet — it comes off the balance right away and is flagged until their sheet catches up.</div>`) +
+    `<div class="addform" data-mode="pending">` +
+      `<input type="date" class="pdate" data-f="date" value="${todayISO}" style="background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:6px 9px;font:inherit;font-size:12.5px;color-scheme:dark">` +
+      `<input class="amt" placeholder="Amount" inputmode="decimal" data-f="amt">` +
+      `<span class="faint" style="font-size:12px">toward</span>` +
+      `<select class="src" data-f="bucket"><option value="__nonvape__">General (non-vape)</option><option value="__vape__">💨 Vapes</option></select>` +
+      `<input class="nt" placeholder="Note (optional)" data-f="nt">` +
+      `<button class="btn primary" data-pendadd="1" style="padding:6px 12px;font-size:12.5px">Record payment</button>` +
+      `<span class="hint">Reduces the balance immediately. When the supplier posts the same wire to their sheet, remove this entry — otherwise the payment counts twice. The app flags it for you when it spots a matching wire.</span>` +
+    `</div></div>`;
+
   panel.style.display = '';
-  panel.innerHTML = `<div class="panel-wrap">` + bucketPanel +
+  panel.innerHTML = `<div class="panel-wrap">` + pendPanel + bucketPanel +
     `<div class="panel"><div class="ptitle">Payments (wires) — ${stateKey.toUpperCase()} · click one to re-ascribe by invoice</div>` +
     `<datalist id="invList">${invoices.map(i=>`<option value="${esc(i)}">`).join('')}</datalist>` +
     `<div style="overflow-x:auto"><table class="payTbl"><thead><tr><th>Payment</th><th class="num">Wire</th>` +
@@ -1680,6 +1814,22 @@ function renderPayPanel(m, adj){
     inv.style.display = sel.value === '__inv__' ? '' : 'none';
     if(sel.value === '__inv__') inv.focus();
   }));
+  panel.querySelectorAll('[data-pendadd]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const form = b.closest('.addform');
+    const amt = money(form.querySelector('[data-f=amt]').value);
+    const when = form.querySelector('[data-f=date]').value;
+    const bucket = form.querySelector('[data-f=bucket]').value;
+    const nt = form.querySelector('[data-f=nt]').value.trim();
+    if(amt===null || amt<=0){ form.querySelector('[data-f=amt]').focus(); return; }
+    // a mistyped year ("0026") would silently land in 1926 and sort to the top of the ledger
+    if(!/^(19|20)\d\d-\d\d-\d\d$/.test(when)){
+      alert('Enter a valid payment date.'); form.querySelector('[data-f=date]').focus(); return;
+    }
+    ascAdd({ state: stateKey, payment_key: '__paid__', mode:'payment',
+             invoice_no: bucket, amount: amt, paid_on: when, note: nt || null,
+             sheet_paid_at_entry: stateTotals(m).paid });   // baseline for the double-count check
+  }));
   panel.querySelectorAll('[data-bucket]').forEach(b => b.addEventListener('click', e => {
     e.stopPropagation();
     const form = b.closest('.addform');
@@ -1713,7 +1863,8 @@ function renderPayPanel(m, adj){
              invoice_no: inv, source_invoice: src, amount: amt, note: nt || null });
   }));
   panel.querySelectorAll('.addform input').forEach(inp => inp.addEventListener('keydown', e => {
-    if(e.key === 'Enter') inp.closest('.addform').querySelector('[data-add]').click();
+    // each .addform has exactly one submit button, but not always the same attribute
+    if(e.key === 'Enter') inp.closest('.addform').querySelector('button')?.click();
   }));
 }
 
@@ -1752,12 +1903,22 @@ async function sync(){
     } else state.ascFailed = true;
     state.lastSync = new Date();
     state.failed = false;
-    $('#banner').className = 'banner';
+    const bn = $('#banner');
+    if(state.ascFailed){
+      // the sheet loaded but our payment adjustments didn't — say so, because the balances
+      // on screen are then the raw supplier numbers and can be materially too high
+      bn.className = 'banner warn';
+      bn.textContent = 'Payment adjustments couldn\'t be loaded — the balances below are the raw supplier-sheet numbers and do NOT include payments or attributions recorded in this app. Retrying automatically.';
+    }else{
+      bn.className = 'banner'; bn.textContent = '';
+    }
     if(changed) render();
   }catch(e){
     state.failed = true;
     const b = $('#banner');
-    if(currentModel()){
+    // "have we got data at all?" — NOT currentModel(), which is always empty on the
+    // Overview page and made every transient blip look like a sharing problem
+    if(state.data.ca || state.data.ny){
       b.className = 'banner warn';
       b.textContent = `Couldn't reach the Google Sheet — showing data from ${state.lastSync ? state.lastSync.toLocaleTimeString() : 'earlier'}. Retrying automatically.`;
     }else{
