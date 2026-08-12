@@ -4331,15 +4331,16 @@ function baAttach(rows,state,start,end){
 const baCellV=r=>(r.baVisits==null?'<span class="neg">…</span>':(r.baVisits?`<span style="color:var(--green)">${r.baVisits}</span>`:'<span class="neg">—</span>'));
 const baCellS=r=>(r.baSpend==null?'<span class="neg">…</span>':(r.baSpend>0.005?fmt$(r.baSpend):'<span class="neg">—</span>'));
 const baTitle=g=>g?`Labor ${fmt$(g.labor)} · Mileage ${fmt$(g.mileage)} · Expenses ${fmt$(g.expense)} · Company card ${fmt$(g.card)}${g.stores.length>1?` · ${g.stores.length} stores: ${g.stores.join(', ')}`:''}`:'';
-// Per-day BA visit dates (ba_visit_days RPC — supabase/ba-sales-detail.sql): feeds the merged
-// Visits column (schedule ∪ BA, deduped by DAY) and the visit drills. One fetch per window.
+// Per-day BA visits WITH who/what (ba_visit_detail RPC — supabase/ba-sales-detail.sql): feeds the
+// merged Visits column (schedule ∪ BA, deduped by DAY) and the visit drills, which show the BA's
+// first name + the activity kinds they logged in the app. One fetch per window.
 let BA_VD={key:null,rows:null,err:null};
 function baVisitDaysFetch(start,end){
   const pad=n=>String(n).padStart(2,'0'), iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const key=iso(start)+'|'+iso(end);
   if(BA_VD.key===key) return BA_VD;
   BA_VD={key,rows:null,err:null};
-  fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_visit_days`,{method:'POST',
+  fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_visit_detail`,{method:'POST',
     headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
     body:JSON.stringify({p_from:iso(start),p_to:iso(end)})})
     .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
@@ -4347,15 +4348,29 @@ function baVisitDaysFetch(start,end){
     .catch(e=>{ if(BA_VD.key!==key) return; BA_VD={key,rows:null,err:String(e.message||e)}; });
   return BA_VD;
 }
-// state → sales_key → Map(ISO day → BA count)
+// state → sales_key → Map(ISO day → [{ba, act}]) — one entry per BA on site that day
 function baVisitDaysFor(state){
   const by={};
   (BA_VD.rows||[]).forEach(r=>{ if(r.disp_state!==state||!r.sales_key) return;
-    (by[r.sales_key]||(by[r.sales_key]=new Map())).set(r.d, (by[r.sales_key].get(r.d)||0)+(+r.bas||0)); });
+    const m=(by[r.sales_key]||(by[r.sales_key]=new Map()));
+    (m.get(r.d)||m.set(r.d,[]).get(r.d)).push({ba:r.ba||'BA', act:baActClean(r.activity)}); });
   return by;
 }
+// The app's kind strings carry filler ("Travel", admin) alongside the substance ("Demo / PAD",
+// "Education talk"). Keep the substance; only fall back to the filler when it's all there is.
+function baActClean(act){
+  const parts=String(act||'').split(' · ').map(s=>s.trim()).filter(Boolean);
+  const keep=parts.filter(p=>p!=='Travel'&&p!=='Non-BA activity'&&p!=='General BA Activity/Admin');
+  return (keep.length?keep:parts.filter(p=>p!=='Travel'&&p!=='Non-BA activity')).join(' · ')||'Store visit';
+}
+// "Cesar: Demo / PAD" / "Cesar + Joanna: Demo / PAD" / "Cesar: PAD, Joanna: Sales" for one day's crew
+function baWhoWhat(arr){
+  const acts=[...new Set(arr.map(x=>x.act))];
+  if(acts.length===1) return `${arr.map(x=>x.ba).join(' + ')}: ${acts[0]}`;
+  return arr.map(x=>`${x.ba}: ${x.act}`).join(', ');
+}
 // BA Spend drill — the per-entry detail behind one account's cell (ba_sales_detail RPC).
-// Cached per (window, key); labor arrives pre-aggregated per store-day (never per person).
+// Cached per (window, key); every row names the BA (per Gianni 2026-08-12) — labor per person-day.
 const BA_DET={};
 function tierBaSpendDrill(name){
   const state=APP_STATE==='NY'?'NY':'CA';
@@ -4364,7 +4379,7 @@ function tierBaSpendDrill(name){
   const key=baRowKey(name), ck=iso(start)+'|'+iso(end)+'|'+key;
   const open=rows=>{ const tot=rows.reduce((s,x)=>s+(+x.amount||0),0);
     const fmtDt=d=>{ const p=String(d).split('-'); return `${+p[1]}/${+p[2]}/${p[0].slice(2)}`; };
-    openScModal({title:`${name} — BA spend`, sub:`what the field team spent on this account in the last ${months} month${months>1?'s':''} — live from the BA field app · labor is shown per store-day, mileage per trip, expenses per receipt share`,
+    openScModal({title:`${name} — BA spend`, sub:`what the field team spent on this account in the last ${months} month${months>1?'s':''} — live from the BA field app · labor per person-day, mileage per trip, expenses per receipt share`,
       columns:[{l:'Date'},{l:'Type'},{l:'What'},{l:'Amount',num:true,money:true}],
       rows:rows.map(x=>[fmtDt(x.d), x.kind, x.descr||'—', +x.amount||0]),
       empty:rows.length?undefined:'No BA spend recorded for this account in the window.',
@@ -4384,9 +4399,10 @@ function tierBaVisitsDrill(name){
   if(!days||!days.size) return;
   const fmtDt=d=>{ const p=String(d).split('-'); return new Date(+p[0],+p[1]-1,+p[2]).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}); };
   const list=[...days.entries()].sort((a,b)=>b[0]<a[0]?-1:1);
+  const rows=[]; list.forEach(([d,arr])=>arr.forEach(x=>rows.push([fmtDt(d), x.ba, x.act])));
   openScModal({title:`${name} — BA visits`, sub:`${list.length} visit day${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · live from the BA field app · newest first`,
-    columns:[{l:'Date'},{l:'BAs on site',num:true}],
-    rows:list.map(([d,n])=>[fmtDt(d), n||1])});
+    columns:[{l:'Date'},{l:'Who'},{l:'Activity'}],
+    rows});
 }
 // reconciliation sentence for the note line: what matched, and a LOUD list of BA spend that
 // landed on NO account row (either a store with no sales this window, or a name mismatch)
@@ -5287,8 +5303,8 @@ function tierVisitsDrill(name){
   if(!list.length && !baDays.size) return;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
   const fmtD2=d=>{ const p=String(d).split('-'); return new Date(+p[0],+p[1]-1,+p[2]).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}); };
-  const rows=list.map(e=>[fmtDt(e.d), (e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU')+(baDays.has(iso(e.d))?' · also in the BA app':''), visitNote(e), iso(e.d)]);
-  [...baDays.entries()].filter(([d])=>!schedDays.has(d)).forEach(([d,n])=>rows.push([fmtD2(d), 'BA field app', `${n||1} BA${(n||1)!==1?'s':''} on site (not on the schedule sheet)`, d]));
+  const rows=list.map(e=>[fmtDt(e.d), (e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU'), visitNote(e)+(baDays.has(iso(e.d))?` · also in the BA app (${baWhoWhat(baDays.get(iso(e.d)))})`:''), iso(e.d)]);
+  [...baDays.entries()].filter(([d])=>!schedDays.has(d)).forEach(([d,arr])=>rows.push([fmtD2(d), [...new Set(arr.map(x=>x.act))].join(' · '), baWhoWhat(arr)+' (not on the schedule sheet)', d]));
   rows.sort((a,b)=>b[3]<a[3]?-1:1);
   const uniq=new Set([...schedDays,...baDays.keys()]).size;
   openScModal({title:`${name} — visits`, sub:`${uniq} unique visit day${uniq!==1?'s':''} in the last ${months} month${months>1?'s':''} — field schedule ∪ BA field app, deduped by day · newest first`,
