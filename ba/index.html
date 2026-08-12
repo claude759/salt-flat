@@ -351,7 +351,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-12.86';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-12.87';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4722,17 +4722,33 @@ async function schedLoad(center){
         const k=[x.iso,x.account.toLowerCase(),(x.driver||'').toLowerCase(),x.soNotes||''].join('|');
         if(S.seen.has(k)) continue; S.seen.add(k);
         const canon=schedCanon(x.driver);
-        const v={...x,canon,color:schedColor(canon),time:schedTime(x.soNotes)||schedTime(x.teamNotes)};
-        S.rows.push(v);
-        if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
+        S.rows.push({...x,canon,color:schedColor(canon),time:schedTime(x.soNotes)||schedTime(x.teamNotes)});
       }
       S.loadedTabs.push({key,name}); any=true;
       break;
     }
   }
+  await schedReloadTasks();   // in-app tasks (schedule_tasks) merge into the same calendar
   const now=new Date();
   S.label=`${S.loadedTabs.map(t=>t.name).join(', ')} · ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
-  return any||S.rows.length>0;
+  return any||S.rows.length>0||S.dbRows.length>0;
+}
+// fetch app-created tasks and rebuild the date index (workbook rows + app rows)
+async function schedReloadTasks(){
+  const S=state.sched;
+  try{
+    const { data:tasks } = await supabase.from('schedule_tasks').select('*').order('created_at');
+    S.dbRows=(tasks||[]).map(t=>{
+      const canon=schedCanon(t.driver);
+      return { iso:t.task_date, account:t.account, region:t.region||'', driver:t.driver||'',
+        inv:t.inv_total==null?'':String(t.inv_total), soNotes:t.notes||'', teamNotes:'',
+        soNum:t.so_num||'', sheet:'app', dbId:t.id, canon, color:schedColor(canon), time:schedTime(t.notes||'') };
+    });
+  }catch(_){ S.dbRows=S.dbRows||[]; }
+  S.byIso=new Map();
+  for(const v of S.rows.concat(S.dbRows)){
+    if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
+  }
 }
 function schedCss(){
   if(document.getElementById('sbCss')) return;
@@ -4770,18 +4786,19 @@ function schedCss(){
     .sb-mini .dot{display:none}
     .sb-more{font-size:8px}
   }
-  .sb-tblwrap{max-height:62vh;overflow:auto}
-  .sb-tbl{width:100%;border-collapse:collapse;font-size:12.5px;min-width:540px}
-  .sb-tbl th{text-align:left;font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);
-    padding:6px 8px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:1}
-  .sb-tbl td{padding:7px 8px;vertical-align:top}
-  .sb-r td{border-top:1px solid var(--line)}
-  .sb-r td:first-child,.sb-rn td{border-left:3px solid var(--dv,transparent)}
-  .sb-r .acct{font-weight:700}
-  .sb-tbl .inv{text-align:right;white-space:nowrap}
-  .sb-r .so{color:var(--accent2);font-size:11.5px;white-space:nowrap}
-  .sb-rn td{padding:0 8px 8px;color:var(--muted);font-size:11.5px}
-  .sb-rn .nrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center;line-height:1.4}
+  .sb-sheet{max-height:56vh;overflow:auto}
+  .sb-item{padding:9px 4px 9px 11px;border-left:3px solid var(--dv,transparent);border-bottom:1px solid var(--line)}
+  .sb-item:last-child{border-bottom:0}
+  .sb-item .acct{font-weight:700;font-size:13.5px;line-height:1.3;display:flex;align-items:center;gap:8px}
+  .sb-item .meta{display:flex;flex-wrap:wrap;gap:7px;align-items:center;color:var(--muted);font-size:12px;margin-top:4px}
+  .sb-item .meta .inv{color:var(--text);font-weight:650}
+  .sb-item .meta .so{color:var(--accent2);font-size:11.5px}
+  .sb-item .notes{color:var(--muted);font-size:11.5px;margin-top:4px;line-height:1.4;white-space:pre-wrap}
+  .sb-edit{margin-left:auto;background:none;border:0;color:var(--muted);cursor:pointer;font-size:14px;padding:2px 6px;flex:none}
+  .sb-edit:hover{color:var(--text)}
+  .sb-fab{position:fixed;right:16px;bottom:calc(78px + var(--safe-b));width:54px;height:54px;border-radius:16px;
+    background:var(--accent);color:#fff;font-size:26px;line-height:1;border:0;box-shadow:var(--shadow);cursor:pointer;z-index:34}
+  .sb-fab:active{transform:scale(.96)}
   .sb-who{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;
     color:var(--dv,var(--accent));background:color-mix(in srgb,var(--dv,var(--accent)) 15%,transparent);
     border:1px solid color-mix(in srgb,var(--dv,var(--accent)) 35%,transparent)}
@@ -4796,7 +4813,7 @@ const SCHED_PAD=/\bPADs?\b/i, SCHED_EDU=/\bEDUs?\b|educat/i;
 const SCHED_MONL=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 async function drawSchedule(m){
   schedCss();
-  if(!state.sched) state.sched={rows:[],byIso:new Map(),seen:new Set(),tried:new Set(),loadedTabs:[],
+  if(!state.sched) state.sched={rows:[],dbRows:[],byIso:new Map(),seen:new Set(),tried:new Set(),loadedTabs:[],
     month:new Date(new Date().getFullYear(),new Date().getMonth(),1),sel:null,ready:false};
   const S=state.sched;
   if(!state.scheduleWb){ m.innerHTML='<div class="card" style="margin:12px">Schedule isn’t enabled for your account.</div>'; return; }
@@ -4820,35 +4837,97 @@ function schedDaySorted(iso,vis){
     return ta!==tb?ta-tb:a.account.localeCompare(b.account);
   });
 }
-// Day detail: mirrors the workbook's day table (same columns, same row order),
-// with the notes folded into a sub-row under each account instead of a column.
+function schedMoney(x){ const n=parseFloat(String(x||'').replace(/[^0-9.\-]/g,''));
+  return isNaN(n)||n===0?'':'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+// Day detail: stacked entries — account name, then inv/region/driver/SO# on one
+// line, then the notes. App-created tasks (dbId) get an edit pencil.
 function schedDaySheet(iso){
   const S=state.sched, vis=v=>!S.sel||S.sel.has(v.canon);
-  const list=(S.byIso.get(iso)||[]).filter(vis);         // keep the workbook's row order
+  const list=(S.byIso.get(iso)||[]).filter(vis);         // workbook row order, app tasks after
   const d=new Date(iso+'T12:00:00');
   const DOW=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  const money=x=>{ const n=parseFloat(String(x||'').replace(/[^0-9.\-]/g,''));
-    return isNaN(n)||n===0?'':'$'+n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); };
-  const rows=list.map(v=>{
-    const who=v.canon==='Team'?(v.driver||'Team'):(v.canon||'—');
-    const blob=v.soNotes+' '+v.teamNotes;
-    const flags=(v.time?`<span class="sb-tag time">${v.time.label}</span>`:'')
+  const items=list.map((v,i)=>{
+    const who=v.canon==='Team'?(v.driver||'Team'):(v.canon||'');
+    const blob=(v.soNotes||'')+' '+(v.teamNotes||'');
+    const chips=(v.time?`<span class="sb-tag time">${v.time.label}</span>`:'')
       +(SCHED_PAD.test(blob)?'<span class="sb-tag pad">PAD</span>':'')
       +(SCHED_EDU.test(blob)?'<span class="sb-tag edu">EDU</span>':'');
+    const inv=schedMoney(v.inv);
+    const meta=[
+      inv?`<span class="inv">${inv}</span>`:'',
+      v.region?`<span>${esc(v.region)}</span>`:'',
+      who?`<span class="sb-who" style="--dv:${v.color}">${esc(who)}</span>`:'',
+      v.soNum?`<span class="so">${esc(v.soNum)}</span>`:'',
+      chips].filter(Boolean).join('');
     const notes=[v.soNotes,v.teamNotes?('Team: '+v.teamNotes):''].filter(Boolean).join('   ·   ');
-    return `<tr class="sb-r" style="--dv:${v.color}">
-        <td class="acct">${esc(v.account)}</td>
-        <td class="inv">${money(v.inv)}</td>
-        <td>${esc(v.region||'')}</td>
-        <td><span class="sb-who" style="--dv:${v.color}">${esc(who)}</span></td>
-        <td class="so">${esc(v.soNum||'')}</td></tr>
-      ${(notes||flags)?`<tr class="sb-rn" style="--dv:${v.color}"><td colspan="5"><div class="nrow">${flags}${notes?`<span>${esc(notes)}</span>`:''}</div></td></tr>`:''}`;
+    return `<div class="sb-item" style="--dv:${v.color}">
+      <div class="acct">${esc(v.account)}${v.dbId?`<button class="sb-edit" data-sbe="${i}" title="Edit task">✎</button>`:''}</div>
+      ${meta?`<div class="meta">${meta}</div>`:''}
+      ${notes?`<div class="notes">${esc(notes)}</div>`:''}</div>`;
   }).join('');
   openSheet(`<h3 style="margin:0 0 2px">${DOW[d.getDay()]}, ${SCHED_MONL[d.getMonth()]} ${d.getDate()}</h3>
-    <div class="small muted" style="margin-bottom:10px">${list.length} visit${list.length!==1?'s':''}${S.sel?' · filtered':''}</div>
-    ${list.length?`<div class="sb-tblwrap"><table class="sb-tbl">
-      <thead><tr><th>Account</th><th class="inv">Inv total</th><th>Region</th><th>Driver</th><th>SO #</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`:'<div class="small muted">Nothing scheduled.</div>'}`);
+    <div class="small muted" style="margin-bottom:8px">${list.length} visit${list.length!==1?'s':''}${S.sel?' · filtered':''}</div>
+    <div class="sb-sheet">${items||'<div class="small muted" style="padding:8px 0">Nothing scheduled.</div>'}</div>
+    <button class="btn primary block" id="sbDayAdd" style="margin-top:12px">＋ Add task</button>`);
+  $('#sbDayAdd').onclick=()=>schedTaskSheet(iso,null);
+  document.querySelectorAll('[data-sbe]').forEach(b=>b.onclick=()=>schedTaskSheet(iso,list[+b.dataset.sbe]));
+}
+// Create/edit an in-app schedule task (stored in schedule_tasks, not the workbook)
+function schedTaskSheet(iso, task){
+  const S=state.sched;
+  const known=S.rows.concat(S.dbRows);
+  const accounts=[...new Set(known.map(v=>v.account.trim())
+    .concat((state.dispensaries||[]).filter(x=>!x.private&&x.retail!==false).map(x=>x.name)))].sort((a,b)=>a.localeCompare(b));
+  const regions=[...new Set(known.map(v=>(v.region||'').trim()).filter(Boolean))].sort();
+  const drivers=['Cesar','Makenna','Ledy','Joanna','Jesse','Al','AJ','Team'];
+  openSheet(`<h3 style="margin:0 0 4px">${task?'Edit task':'New task'}</h3>
+    <label class="fl">Date</label><input type="date" id="stDate" value="${task?task.iso:iso}">
+    <label class="fl">Account / destination</label>
+    <input id="stAcct" list="stAcctList" placeholder="Start typing a store…" value="${task?esc(task.account):''}" autocomplete="off">
+    <datalist id="stAcctList">${accounts.map(a=>`<option value="${esc(a)}">`).join('')}</datalist>
+    <label class="fl">Invoice total <span class="muted">(optional)</span></label>
+    <input id="stInv" type="number" step="0.01" inputmode="decimal" placeholder="0.00" value="${task&&task.inv?esc(String(task.inv).replace(/[^0-9.]/g,'')):''}">
+    <label class="fl">Region</label>
+    <input id="stRegion" list="stRegionList" placeholder="e.g. SD, LA, Valley" value="${task?esc(task.region):''}" autocomplete="off">
+    <datalist id="stRegionList">${regions.map(r=>`<option value="${esc(r)}">`).join('')}</datalist>
+    <label class="fl">Driver / BA</label>
+    <select id="stDriver"><option value=""></option>${drivers.map(x=>`<option${task&&schedCanon(task.driver)===x?' selected':''}>${x}</option>`).join('')}</select>
+    <label class="fl">SO #</label><input id="stSo" placeholder="#SO-0000123" value="${task?esc(task.soNum):''}">
+    <label class="fl">Notes</label><textarea id="stNotes" placeholder="Store visit, demo 2–4pm…">${task?esc(task.soNotes):''}</textarea>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      ${task?'<button class="btn" id="stDel" style="color:var(--red);border-color:var(--red)">Delete</button>':''}
+      <button class="btn primary" id="stSave" style="flex:1">${task?'Save changes':'Add to schedule'}</button>
+    </div>`);
+  const refresh=async(dateIso)=>{ await schedReloadTasks(); const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m); schedDaySheet(dateIso); };
+  $('#stSave').onclick=async()=>{
+    const rec={ task_date:$('#stDate').value, account:$('#stAcct').value.trim(),
+      inv_total:$('#stInv').value?Number($('#stInv').value):null,
+      region:$('#stRegion').value.trim()||null, driver:$('#stDriver').value||null,
+      so_num:$('#stSo').value.trim()||null, notes:$('#stNotes').value.trim()||null };
+    $('#stAcct').classList.toggle('needs',!rec.account);
+    $('#stDate').classList.toggle('needs',!rec.task_date);
+    if(!rec.task_date||!rec.account) return;
+    const btn=$('#stSave'); btn.disabled=true; btn.textContent='Saving…';
+    try{
+      if(task&&task.dbId){
+        const { error }=await supabase.from('schedule_tasks').update({...rec,updated_at:new Date().toISOString()}).eq('id',task.dbId);
+        if(error) throw error;
+      }else{
+        rec.created_by=state.session?.user?.id||null;
+        const { error }=await supabase.from('schedule_tasks').insert(rec);
+        if(error) throw error;
+      }
+      await refresh(rec.task_date);
+    }catch(e){ btn.disabled=false; btn.textContent=task?'Save changes':'Add to schedule'; toast('Could not save — '+(e.message||e)); }
+  };
+  if(task&&task.dbId) $('#stDel').onclick=async()=>{
+    if(!confirm('Delete this task?')) return;
+    try{
+      const { error }=await supabase.from('schedule_tasks').delete().eq('id',task.dbId);
+      if(error) throw error;
+      await refresh(task.iso);
+    }catch(e){ toast('Could not delete — '+(e.message||e)); }
+  };
 }
 function schedRender(m){
   const S=state.sched, todayIso=schedIso(new Date());
@@ -4859,7 +4938,7 @@ function schedRender(m){
   const days=[...Array(nWeeks*7)].map((_,i)=>schedAdd(start,i));
   // person chips: counts for THIS month
   const moDrv=new Map(); let moCount=0;
-  for(const v of S.rows){ const d=new Date(v.iso+'T12:00:00');
+  for(const v of S.rows.concat(S.dbRows)){ const d=new Date(v.iso+'T12:00:00');
     if(d.getFullYear()===y&&d.getMonth()===mo){ moDrv.set(v.canon,(moDrv.get(v.canon)||0)+1); if(vis(v)) moCount++; } }
   const chips=[...moDrv.entries()].sort((a,b)=>b[1]-a[1]).filter(([n])=>n&&n!=='—').map(([n,cnt])=>{
     const col=schedColor(n), on=S.sel&&S.sel.has(n);
@@ -4893,12 +4972,15 @@ function schedRender(m){
       <div class="sb-grid">${cells}</div>
     </div>
     <div class="sb-src">${moCount} visit${moCount!==1?'s':''} in ${SCHED_MONL[mo]} · tap a day for details · source: workbook (${esc(S.label||'')})</div>
-  </div>`;
+  </div>
+  <button class="sb-fab" id="sbAdd" title="New task">＋</button>`;
   const go=async n=>{ S.month=new Date(y,mo+n,1);
     m.innerHTML='<div class="loading"><span class="spin"></span></div>';
     await schedLoad(S.month).catch(()=>{}); schedRender(m); };
   $('#sbPrev').onclick=()=>go(-1);
   $('#sbNext').onclick=()=>go(1);
+  $('#sbAdd').onclick=()=>{ const t=new Date();
+    schedTaskSheet(t.getFullYear()===y&&t.getMonth()===mo?schedIso(t):schedIso(first),null); };
   $('#sbToday').onclick=()=>{ S.month=new Date(new Date().getFullYear(),new Date().getMonth(),1); schedRender(m); };
   $('#sbReload').onclick=()=>{ state.sched=null; drawSchedule(m); };
   $('#sbAll').onclick=()=>{ S.sel=null; schedRender(m); };
