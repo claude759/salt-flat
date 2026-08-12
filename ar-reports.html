@@ -272,8 +272,8 @@
   .cre-del:hover{border-color:var(--red);color:var(--red)}
   .neg{color:var(--muted)}
   /* Customer Tiers */
-  td.over-link{cursor:pointer}
-  td.over-link>span{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
+  td.over-link,td.visit-link,td.baspend-link,td.ba-visit-link{cursor:pointer}
+  td.over-link>span,td.visit-link>span,td.baspend-link>span,td.ba-visit-link>span{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .tier-badge{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap}
   .tier-badge.t1{background:#123524;color:#7ee2a8}
   .tier-badge.t2{background:#3a3413;color:#f4d873}
@@ -4317,18 +4317,77 @@ const baRowKey=name=>tierNorm(String(name||'').replace(/^\s*\[[^\]]*\]\s*/,''));
 // account) — the BA numbers go to the highest-revenue row only, so the tfoot and the CSV can
 // never double-count a store's spend.
 function baAttach(rows,state,start,end){
-  baMetricsFor(start,end);
+  baMetricsFor(start,end); baVisitDaysFetch(start,end);
   const by=baAggFor(state);
+  const vd=baVisitDaysFor(state);
   const host={};   // key → the row that gets the numbers
   rows.forEach(r=>{ const k=baRowKey(r.name);
     if(!host[k] || Math.abs(r.rev||0)>Math.abs(host[k].rev||0)) host[k]=r; });
-  rows.forEach(r=>{ const g=by[baRowKey(r.name)];
-    const own=g&&host[baRowKey(r.name)]===r;
-    r.baVisits=own?g.visits:(BA_MX.rows?0:null); r.baSpend=own?g.spend:(BA_MX.rows?0:null); r._baG=own?g:null; });
+  rows.forEach(r=>{ const k=baRowKey(r.name); const g=by[k];
+    const own=g&&host[k]===r;
+    r.baVisits=own?g.visits:(BA_MX.rows?0:null); r.baSpend=own?g.spend:(BA_MX.rows?0:null); r._baG=own?g:null;
+    r._baDays=(own||(!g&&host[k]===r))&&vd[k]?vd[k]:null; });   // per-day BA visit dates (claim-once, may lag the metrics by one fetch)
 }
 const baCellV=r=>(r.baVisits==null?'<span class="neg">…</span>':(r.baVisits?`<span style="color:var(--green)">${r.baVisits}</span>`:'<span class="neg">—</span>'));
 const baCellS=r=>(r.baSpend==null?'<span class="neg">…</span>':(r.baSpend>0.005?fmt$(r.baSpend):'<span class="neg">—</span>'));
 const baTitle=g=>g?`Labor ${fmt$(g.labor)} · Mileage ${fmt$(g.mileage)} · Expenses ${fmt$(g.expense)} · Company card ${fmt$(g.card)}${g.stores.length>1?` · ${g.stores.length} stores: ${g.stores.join(', ')}`:''}`:'';
+// Per-day BA visit dates (ba_visit_days RPC — supabase/ba-sales-detail.sql): feeds the merged
+// Visits column (schedule ∪ BA, deduped by DAY) and the visit drills. One fetch per window.
+let BA_VD={key:null,rows:null,err:null};
+function baVisitDaysFetch(start,end){
+  const pad=n=>String(n).padStart(2,'0'), iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const key=iso(start)+'|'+iso(end);
+  if(BA_VD.key===key) return BA_VD;
+  BA_VD={key,rows:null,err:null};
+  fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_visit_days`,{method:'POST',
+    headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify({p_from:iso(start),p_to:iso(end)})})
+    .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+    .then(rows=>{ if(BA_VD.key!==key) return; BA_VD={key,rows,err:null}; renderTiers(); })
+    .catch(e=>{ if(BA_VD.key!==key) return; BA_VD={key,rows:null,err:String(e.message||e)}; });
+  return BA_VD;
+}
+// state → sales_key → Map(ISO day → BA count)
+function baVisitDaysFor(state){
+  const by={};
+  (BA_VD.rows||[]).forEach(r=>{ if(r.disp_state!==state||!r.sales_key) return;
+    (by[r.sales_key]||(by[r.sales_key]=new Map())).set(r.d, (by[r.sales_key].get(r.d)||0)+(+r.bas||0)); });
+  return by;
+}
+// BA Spend drill — the per-entry detail behind one account's cell (ba_sales_detail RPC).
+// Cached per (window, key); labor arrives pre-aggregated per store-day (never per person).
+const BA_DET={};
+function tierBaSpendDrill(name){
+  const state=APP_STATE==='NY'?'NY':'CA';
+  const {start,end,months}=(state==='NY'?tierDataNY():tierData());
+  const pad=n=>String(n).padStart(2,'0'), iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  const key=baRowKey(name), ck=iso(start)+'|'+iso(end)+'|'+key;
+  const open=rows=>{ const tot=rows.reduce((s,x)=>s+(+x.amount||0),0);
+    const fmtDt=d=>{ const p=String(d).split('-'); return `${+p[1]}/${+p[2]}/${p[0].slice(2)}`; };
+    openScModal({title:`${name} — BA spend`, sub:`what the field team spent on this account in the last ${months} month${months>1?'s':''} — live from the BA field app · labor is shown per store-day, mileage per trip, expenses per receipt share`,
+      columns:[{l:'Date'},{l:'Type'},{l:'What'},{l:'Amount',num:true,money:true}],
+      rows:rows.map(x=>[fmtDt(x.d), x.kind, x.descr||'—', +x.amount||0]),
+      empty:rows.length?undefined:'No BA spend recorded for this account in the window.',
+      totalLabel:'Total BA spend', total:tot}); };
+  if(BA_DET[ck]){ open(BA_DET[ck]); return; }
+  fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_sales_detail`,{method:'POST',
+    headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
+    body:JSON.stringify({p_from:iso(start),p_to:iso(end),p_key:key})})
+    .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+    .then(rows=>{ BA_DET[ck]=rows; open(rows); })
+    .catch(e=>openScModal({title:`${name} — BA spend`, empty:'Couldn’t load the BA detail right now ('+String(e.message||e)+').'}));
+}
+// NY BA Visits drill — the per-day visit list (NY has no field-schedule; BA data is the record)
+function tierBaVisitsDrill(name){
+  const {months}=tierDataNY();
+  const days=baVisitDaysFor('NY')[baRowKey(name)];
+  if(!days||!days.size) return;
+  const fmtDt=d=>{ const p=String(d).split('-'); return new Date(+p[0],+p[1]-1,+p[2]).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}); };
+  const list=[...days.entries()].sort((a,b)=>b[0]<a[0]?-1:1);
+  openScModal({title:`${name} — BA visits`, sub:`${list.length} visit day${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · live from the BA field app · newest first`,
+    columns:[{l:'Date'},{l:'BAs on site',num:true}],
+    rows:list.map(([d,n])=>[fmtDt(d), n||1])});
+}
 // reconciliation sentence for the note line: what matched, and a LOUD list of BA spend that
 // landed on NO account row (either a store with no sales this window, or a name mismatch)
 function baNoteHtml(state,claimed){
@@ -4396,8 +4455,8 @@ function renderTiersNY(){
     <td class="num money">${fmt$(r.net)}</td>
     <td class="num">${r.orders}</td>
     <td class="num">${fmtD(r.last)}</td>
-    <td class="num">${baCellV(r)}</td>
-    <td class="num money"${r._baG?` title="${esc(baTitle(r._baG))}"`:''}>${baCellS(r)}</td></tr>`).join('');
+    <td class="num${(r.baVisits||0)>0?' ba-visit-link':''}"${(r.baVisits||0)>0?' title="Click for the visit days"':''}>${baCellV(r)}</td>
+    <td class="num money${(r.baSpend||0)>0.005?' baspend-link':''}"${r._baG?` title="${esc(baTitle(r._baG))} — click for the per-entry detail"`:''}>${baCellS(r)}</td></tr>`).join('');
   const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,orders:a.orders+r.orders,conc:a.conc+(r.totalConc||0),net:a.net+(r.net||0),baV:a.baV+(r.baVisits||0),baS:a.baS+(r.baSpend||0)}),{rev:0,orders:0,conc:0,net:0,baV:0,baS:0});
   wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="2">${view.length} account${view.length!==1?'s':''}</td>
@@ -5104,13 +5163,18 @@ function tierData(){
     const grossList=_ec.grossList, totalConc=_ec.conc;
     return {name:g.name,source:[...g.src].sort().join(' + '),brand:brandOf(g.name),rev:g.rev,
       orders:Object.values(g.orders).filter(v=>Math.abs(v)>0.005).length,last:g.last?g.last.getTime():null,
-      visits:(vis[nk]||[]).length, grossList, totalConc, pctDC:grossList>0.005?totalConc/grossList:null,
+      visits:(vis[nk]||[]).length, _visEvs:vis[nk]||[], grossList, totalConc, pctDC:grossList>0.005?totalConc/grossList:null,
       arOut:a.out,arOver:a.over,avgPaidLate:g.plCnt?g.plSum/g.plCnt:null,paidOrders:g.plCnt,tier}; })
     // Keep accounts with revenue OR any concession activity (a sample-only account has $0 revenue
     // but real gross/concessions). Dropping the latter made Tiers' totals disagree with the
     // Credits/Discounts page by the sample-only accounts — now they reconcile, as the footnote says.
     .filter(r=>Math.abs(r.rev)>0.005 || Math.abs(r.totalConc)>0.005 || (r.grossList||0)>0.005);
   baAttach(rows,'CA',start,end);   // live BA field metrics → baVisits / baSpend on each row
+  // Merged Visits = schedule visit days ∪ BA field-app visit days, deduped by DAY — one column,
+  // no double-count when both systems recorded the same store visit (per Gianni 2026-08-12).
+  rows.forEach(r=>{ const sd=new Set((r._visEvs||[]).map(v=>new Date(v.d).toISOString().slice(0,10)));
+    if(r._baDays) r._baDays.forEach((n,d)=>sd.add(d));
+    r.visitsAll=sd.size; });
   return {rows,start,end,months,t1,t2};
 }
 // Search + tier-filter predicate, shared by the table render and the CSV export (WYSIWYG).
@@ -5136,7 +5200,7 @@ function renderTiers(){
   let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
-  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['last','Last order',1],['visits','Visits',1],['baVisits','BA Visits',1],['baSpend','BA Spend',1],['arOut','AR Outstanding',1],['arOver','Overdue',1],['avgPaidLate','Avg Days Late',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['last','Last order',1],['visitsAll','Visits',1],['baSpend','BA Spend',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
@@ -5146,25 +5210,23 @@ function renderTiers(){
     <td class="num money">${(r.totalConc||0)>0.005?`<span style="color:var(--orange)">${fmt$(r.totalConc)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num">${r.pctDC==null?'<span class="neg">—</span>':`<span style="color:${r.pctDC>=0.25?'var(--red)':r.pctDC>=0.15?'var(--yellow)':'var(--muted)'}">${(r.pctDC*100).toFixed(1)}%</span>`}</td>
     <td class="num">${fmtD(r.last)}</td>
-    <td class="num${r.visits?' visit-link':''}"${r.visits?' title="Click to see this account’s PAD/EDU visits"':''}>${r.visits?`<span style="color:var(--green)">${r.visits}</span>`:'<span class="neg">—</span>'}</td>
-    <td class="num">${baCellV(r)}</td>
-    <td class="num money"${r._baG?` title="${esc(baTitle(r._baG))}"`:''}>${baCellS(r)}</td>
+    <td class="num${r.visitsAll?' visit-link':''}"${r.visitsAll?' title="Click to see this account’s visit days (schedule + BA field app)"':''}>${r.visitsAll?`<span style="color:var(--green)">${r.visitsAll}</span>`:'<span class="neg">—</span>'}</td>
+    <td class="num money${(r.baSpend||0)>0.005?' baspend-link':''}"${r._baG?` title="${esc(baTitle(r._baG))} — click for the per-entry detail"`:''}>${baCellS(r)}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
-    <td class="num"${r.paidOrders?` title="avg across ${r.paidOrders} paid order${r.paidOrders!==1?'s':''}"`:''}>${fmtLate(r.avgPaidLate)}</td>
   </tr>`).join('');
-  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,gross:a.gross+(r.grossList||0),conc:a.conc+(r.totalConc||0),visits:a.visits+r.visits,baV:a.baV+(r.baVisits||0),baS:a.baS+(r.baSpend||0),out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,gross:0,conc:0,visits:0,baV:0,baS:0,out:0,over:0});
+  const tot=view.reduce((a,r)=>({rev:a.rev+r.rev,gross:a.gross+(r.grossList||0),conc:a.conc+(r.totalConc||0),visits:a.visits+(r.visitsAll||0),baS:a.baS+(r.baSpend||0),out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,gross:0,conc:0,visits:0,baS:0,out:0,over:0});
   wrap.innerHTML=`<table id="tier-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="3">${view.length} account${view.length!==1?'s':''}</td>
     <td class="num money">${fmt$(tot.rev)}</td>
     <td class="num money">${tot.conc>0.005?fmt$(tot.conc):'—'}</td>
     <td class="num">${tot.gross>0.005?((tot.conc/tot.gross*100).toFixed(1)+'%'):'—'}</td><td></td><td class="num">${tot.visits||'—'}</td>
-    <td class="num">${tot.baV||'—'}</td><td class="num money">${tot.baS>0.005?fmt$(tot.baS):'—'}</td>
-    <td class="num money">${fmt$(tot.out)}</td><td class="num money">${tot.over?fmt$(tot.over):'—'}</td><td></td></tr></tfoot></table>`;
+    <td class="num money">${tot.baS>0.005?fmt$(tot.baS):'—'}</td>
+    <td class="num money">${fmt$(tot.out)}</td><td class="num money">${tot.over?fmt$(tot.over):'—'}</td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:(key==='name'||key==='brand'||key==='source')?1:-1}; renderTiers(); });
   const isoD=dt=>`${dt.getMonth()+1}/${dt.getDate()}/${String(dt.getFullYear()).slice(2)}`;
-  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, or its <b>Visits</b> count for the PAD/EDU visit dates + notes (from the field-schedule sheet, same window; matched by name — best-effort). <b>Disc + Credits</b> = the account's total concessions over the window (per-unit discounts + free samples at list + budtender pouches + invoice discounts + credit memos), from live Nabis/Distru data; <b>% of Sales</b> = that ÷ gross-at-list — the same figure as the Credits/Discounts page's "% of Gross", so the two pages tie. <b>Avg Days Late</b> = the account's <b>actual</b> average days late paid, from real payment dates (Nabis detailed report's Paid At vs. delivery + terms; Distru payment dates vs. invoice due date), averaged over its paid orders in the window (on-time/early = 0; not-yet-paid orders are excluded). Shows "—" for accounts with no paid orders in range. An account selling through both Nabis and Distru under different names will appear as two rows.`
+  note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, its <b>Visits</b> count for the visit-day detail, or its <b>BA Spend</b> for the per-entry breakdown (labor per store-day, mileage per trip, expenses per receipt). <b>Visits</b> merges the field-schedule (PAD/EDU) and the BA field app's recorded visits into unique visit DAYS — a visit recorded in both counts once. <b>Disc + Credits</b> = the account's total concessions over the window (per-unit discounts + free samples at list + budtender pouches + invoice discounts + credit memos), from live Nabis/Distru data; <b>% of Sales</b> = that ÷ gross-at-list — the same figure as the Credits/Discounts page's "% of Gross", so the two pages tie. An account selling through both Nabis and Distru under different names will appear as two rows.`
     + baNoteHtml('CA', new Set(rows.map(r=>baRowKey(r.name))));
 }
 function tierDrill(name){
@@ -5214,21 +5276,34 @@ function tierOverdueDrill(name){
 }
 // Visits cell → the account's PAD/EDU visits (dates + type + schedule note) in the tier window.
 function tierVisitsDrill(name){
+  // Merged view: field-schedule PAD/EDU rows + the BA field app's recorded visit days, one table,
+  // deduped by DAY for the count (a day recorded in both systems shows both rows, tagged).
   const {start,end,months}=tierData();
   const key=tierNorm(name);
   const list=(VISIT_EVENTS||[]).filter(v=>v.d&&v.d>=start.getTime()&&v.d<=end.getTime()&&visitGroupKey(v.c)===key).sort((a,b)=>b.d-a.d);
-  if(!list.length) return;
-  const pads=list.filter(v=>v.pad).length, edus=list.filter(v=>v.edu).length;
+  const iso=ms=>new Date(ms).toISOString().slice(0,10);
+  const schedDays=new Set(list.map(v=>iso(v.d)));
+  const baDays=baVisitDaysFor('CA')[baRowKey(name)]||new Map();
+  if(!list.length && !baDays.size) return;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
-  openScModal({title:`${name} — PAD / EDU visits`, sub:`${pads} PAD · ${edus} EDU in the last ${months} month${months>1?'s':''} · newest first`,
-    columns:[{l:'Date'},{l:'Type'},{l:'Schedule note'}],
-    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', visitNote(e)])});
+  const fmtD2=d=>{ const p=String(d).split('-'); return new Date(+p[0],+p[1]-1,+p[2]).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}); };
+  const rows=list.map(e=>[fmtDt(e.d), (e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU')+(baDays.has(iso(e.d))?' · also in the BA app':''), visitNote(e), iso(e.d)]);
+  [...baDays.entries()].filter(([d])=>!schedDays.has(d)).forEach(([d,n])=>rows.push([fmtD2(d), 'BA field app', `${n||1} BA${(n||1)!==1?'s':''} on site (not on the schedule sheet)`, d]));
+  rows.sort((a,b)=>b[3]<a[3]?-1:1);
+  const uniq=new Set([...schedDays,...baDays.keys()]).size;
+  openScModal({title:`${name} — visits`, sub:`${uniq} unique visit day${uniq!==1?'s':''} in the last ${months} month${months>1?'s':''} — field schedule ∪ BA field app, deduped by day · newest first`,
+    columns:[{l:'Date'},{l:'Type / source'},{l:'Detail'}],
+    rows:rows.map(r=>r.slice(0,3))});
 }
 $('#tier-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#tier-wrap').contains(tr)) return;
   const name=tr.getAttribute('data-name');
-  if(APP_STATE==='NY') return nyTierDrill(name);                                             // NY rows → LeafLink orders
+  if(APP_STATE==='NY'){
+    if(ev.target.closest && ev.target.closest('td.baspend-link')) return tierBaSpendDrill(name);   // BA Spend cell → per-entry detail
+    if(ev.target.closest && ev.target.closest('td.ba-visit-link')) return tierBaVisitsDrill(name); // BA Visits cell → visit days
+    return nyTierDrill(name); }                                                             // rest of the row → LeafLink orders
   if(ev.target.closest && ev.target.closest('td.over-link')) tierOverdueDrill(name);        // Overdue cell → past-due invoices
-  else if(ev.target.closest && ev.target.closest('td.visit-link')) tierVisitsDrill(name);   // Visits cell → PAD/EDU visit detail
+  else if(ev.target.closest && ev.target.closest('td.baspend-link')) tierBaSpendDrill(name);// BA Spend cell → per-entry detail
+  else if(ev.target.closest && ev.target.closest('td.visit-link')) tierVisitsDrill(name);   // Visits cell → merged visit-day detail
   else tierDrill(name); };                                                                  // rest of the row → the account's orders
 ['tier-months','tier-t1','tier-t2','tier-search','tier-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderTiers); });
 $('#tier-export').onclick=()=>{
@@ -5237,8 +5312,8 @@ $('#tier-export').onclick=()=>{
     tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.rev.toFixed(2),(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',(r.net||0).toFixed(2),r.orders,r.last?new Date(r.last).toISOString().slice(0,10):'',r.baVisits==null?'':r.baVisits,r.baSpend==null?'':r.baSpend.toFixed(2)]));
     downloadCSV('customer-tiers-ny.csv',out); return; }
   const {rows,months}=tierData();
-  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Disc + Credits','% of Sales','Last order','Visits','BA Visits','BA Spend','AR Outstanding','Overdue','Avg Days Late']];
-  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'',r.visits||0,r.baVisits==null?'':r.baVisits,r.baSpend==null?'':r.baSpend.toFixed(2),r.arOut.toFixed(2),r.arOver.toFixed(2),r.avgPaidLate==null?'':Math.round(r.avgPaidLate)]));
+  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Disc + Credits','% of Sales','Last order','Visits (sched ∪ BA)','BA Spend','AR Outstanding','Overdue']];
+  tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'',r.visitsAll||0,r.baSpend==null?'':r.baSpend.toFixed(2),r.arOut.toFixed(2),r.arOver.toFixed(2)]));
   downloadCSV('customer-tiers.csv',out);
 };
 
