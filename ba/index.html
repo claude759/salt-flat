@@ -340,7 +340,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-07-13.79';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-12.80';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -786,6 +786,9 @@ async function loadMe(){
     const { data: rt } = await supabase.from('trips').select('start_label,dest_label').eq('ba_id',state.session.user.id).order('created_at',{ascending:false}).limit(60);
     const places=new Set(); (rt||[]).forEach(t=>{ if(t.start_label)places.add(t.start_label); if(t.dest_label)places.add(t.dest_label); });
     state.recentPlaces=[...places].filter(p=>p&&p!=='📍 Current location').slice(0,30);
+    // schedule board config — RLS allowlist: non-allowed users get 0 rows and no Schedule tab
+    try{ const { data: sbc } = await supabase.from('schedule_board').select('workbook_id').eq('id',1).maybeSingle();
+      state.scheduleWb = sbc?.workbook_id || null; }catch(_){ state.scheduleWb = null; }
   }catch(e){ state.loadError = String(e?.message||e); state.profile=null; }
 }
 // refresh the cached pay-period list (e.g. periods added since the app loaded)
@@ -1138,6 +1141,7 @@ function renderBA(){
   $('#tab-trip').onclick=()=>tripSheet();
   $('#tab-exp').onclick =()=>expenseSheet();
   $('#tab-report').onclick=()=>{state.baTab='report';drawBA();};
+  const _ts=$('#tab-sched'); if(_ts) _ts.onclick=()=>{state.baTab='sched';drawBA();};
   $('#tab-loc').onclick =()=>{state.baTab='loc';drawBA();};
   drawBA();
 }
@@ -1148,16 +1152,18 @@ function baTabs(){
     <button id="tab-trip"><span class="ic">🚗</span>Trip</button>
     <button id="tab-exp"><span class="ic">🧾</span>Expense</button>
     <button id="tab-report" class="${on('report')}"><span class="ic">📊</span>Report</button>
+    ${state.scheduleWb?`<button id="tab-sched" class="${on('sched')}"><span class="ic">🗓️</span>Schedule</button>`:''}
     <button id="tab-loc" class="${on('loc')}"><span class="ic">📍</span>Locations</button>
   </div>`;
 }
 async function drawBA(){
   document.querySelectorAll('.tabbar button').forEach(b=>b.classList.remove('on'));
-  const activeTab = ['home','loc','report'].includes(state.baTab) ? state.baTab : 'home';
+  const activeTab = ['home','loc','report','sched'].includes(state.baTab) ? state.baTab : 'home';
   $(`#tab-${activeTab}`)?.classList.add('on');
   const m=$('#main');
   if(state.baTab==='loc') return drawLocations(m);
   if(state.baTab==='report') return baReport(m);
+  if(state.baTab==='sched') return drawSchedule(m);
   await flushGrid();                                  // commit pending grid edits before reading
   const seq = state._drawSeq = (state._drawSeq||0)+1; // latest render wins
   m.innerHTML = `<div class="loading"><span class="spin"></span></div>`;
@@ -3021,6 +3027,7 @@ function renderAdmin(){
         <button data-t="dash" class="${state.adminTab==='dash'?'on':''}">Dashboard</button>
         <button data-t="review" class="${state.adminTab==='review'?'on':''}">Review</button>
         <button data-t="report" class="${state.adminTab==='report'?'on':''}">Report</button>
+        ${state.scheduleWb?`<button data-t="sched" class="${state.adminTab==='sched'?'on':''}">Schedule</button>`:''}
         <button data-t="settings" class="${state.adminTab==='settings'?'on':''}">Settings</button>
       </div>
     </div>
@@ -3047,6 +3054,7 @@ function drawAdmin(){
   if(state.adminTab==='dash') return adminDash(m);
   if(state.adminTab==='review') return adminReview(m);
   if(state.adminTab==='report') return adminReport(m);
+  if(state.adminTab==='sched') return drawSchedule(m);
   return adminSettings(m);
 }
 // Spend per dispensary — the app's core metric. Aggregates trips ($ mileage) +
@@ -4576,12 +4584,278 @@ document.addEventListener('visibilitychange',()=>{ if(!document.hidden) checkFor
 setInterval(()=>{ if(!document.hidden) checkForUpdate(); }, 5*60*1000);
 setTimeout(checkForUpdate, 15000);   // also shortly after open
 
+/* ═══════════════════ SCHEDULE BOARD (workbook viewer) ═══════════════════ */
+/* Read-only weekly board of the shared scheduling workbook (Google Sheet).
+   Feature-gated: state.scheduleWb only arrives for emails on the
+   schedule_board.allowed_emails RLS allowlist — everyone else never sees the
+   tab, and the workbook id never ships in this file. Data is fetched straight
+   from the sheet's gviz CSV endpoint (link-shared → CORS ok), then the messy
+   grid — bands of 7 day-blocks across, "Account Name"/"BRAND" headers, banner
+   rows — is flattened to visit cards. */
+const SCHED_ALIASES={makennna:'Makenna',makenna:'Makenna',leticia:'Ledy',ledy:'Ledy','leticia (ledy)':'Ledy'};
+const SCHED_COLORS={Joanna:'#4f9dff',Ledy:'#2fbf71',Jesse:'#f08a24',Cesar:'#e7b416',Al:'#ef4d56',AJ:'#9d86ff',Makenna:'#22c6c6',Team:'#b98cff'};
+function schedCanon(raw){
+  const s=(raw||'').trim(); if(!s) return '';
+  if(s.includes('/')||s.includes(',')) return 'Team';
+  const k=s.toLowerCase().replace(/\s+/g,' ');
+  if(SCHED_ALIASES[k]) return SCHED_ALIASES[k];
+  return s.replace(/\w\S*/g,w=>w[0].toUpperCase()+w.slice(1).toLowerCase());
+}
+function schedColor(c){ if(SCHED_COLORS[c]) return SCHED_COLORS[c];
+  let h=0; for(const ch of c) h=(h*31+ch.charCodeAt(0))>>>0; return `hsl(${h%360} 62% 62%)`; }
+// earliest clock time mentioned in the notes → sort each day chronologically
+function schedTime(txt){
+  if(!txt) return null;
+  const re=/\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)?\b/gi;
+  let m,best=null;
+  while((m=re.exec(txt))){
+    let h=+m[1]; const min=m[2]?+m[2]:0;
+    let ap=m[3]?m[3][0].toLowerCase():null;
+    const ctx=txt.slice(Math.max(0,m.index-2),m.index+m[0].length+3);
+    if(!ap && !/\d\s*[-–]\s*\d/.test(ctx) && !/\bpm\b|\bam\b/i.test(ctx)) continue;
+    if(!ap) ap=(h>=8&&h<=11)?'a':'p';
+    let hh=h%12; if(ap==='p') hh+=12;
+    const mins=hh*60+min;
+    if(best===null||mins<best.mins) best={mins,h,min,ap};
+  }
+  if(!best) return null;
+  return {mins:best.mins,label:`${best.h}${best.min?':'+String(best.min).padStart(2,'0'):''} ${best.ap==='a'?'AM':'PM'}`};
+}
+function schedMonday(d){ const x=new Date(d.getFullYear(),d.getMonth(),d.getDate());
+  x.setDate(x.getDate()-((x.getDay()+6)%7)); return x; }
+function schedIso(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function schedAdd(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+// grid of strings → visit rows (see schedule.html's flattenScheduleGrid — same rules)
+function schedFlatten(grid,sheetName){
+  const norm=v=>String(v==null?'':v).replace(/\s+/g,' ').trim();
+  const WD=/^(MON|TUES|WEDNES|THURS|FRI|SATUR|SUN)DAY\b/i;
+  const DATE=/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
+  const out=[];
+  for(let r=0;r<grid.length;r++){
+    const row=grid[r]||[];
+    for(let c=0;c<row.length;c++){
+      const h=norm(row[c]);
+      if(h!=='Account Name'&&h.toUpperCase()!=='BRAND') continue;
+      const offs={};
+      for(let j=1;j<=9;j++){ const x=norm(row[c+j]).toLowerCase();
+        if(x.startsWith('sales order notes')) offs.soNotes=j;
+        else if(x.startsWith('distro team notes')) offs.teamNotes=j;
+        else if(x==='region') offs.region=j;
+        else if(x==='driver') offs.driver=j;
+        else if(x.startsWith('sales order #')) offs.soNum=j; }
+      if(offs.driver==null&&offs.region==null) continue;
+      let iso=null;
+      for(const rr of [r-1,r-2]){
+        const m=DATE.exec(norm((grid[rr]||[])[c]));
+        if(m){ const y=+m[3]<100?2000+(+m[3]):+m[3];
+          iso=`${y}-${String(+m[1]).padStart(2,'0')}-${String(+m[2]).padStart(2,'0')}`; break; }
+      }
+      if(!iso) continue;
+      for(let i=r+1;i<=r+45&&i<grid.length;i++){
+        const dr=grid[i]||[]; const acct=norm(dr[c]);
+        let hitTotal=false; for(let j=0;j<=9;j++) if(String(dr[c+j]||'').includes('< TOTAL')) hitTotal=true;
+        if(hitTotal) break;
+        if(acct==='Account Name'||acct.toUpperCase()==='BRAND'||WD.test(acct)||DATE.test(acct)) break;
+        if(!acct) continue;
+        const cell=j=>(j==null?'':norm(dr[c+j]));
+        if(/\bout\s*$/i.test(acct)&&!cell(offs.driver)) continue;   // "MAKENNNA - out" banners
+        out.push({iso,account:acct,region:cell(offs.region),driver:cell(offs.driver),
+          soNotes:cell(offs.soNotes),teamNotes:cell(offs.teamNotes),soNum:cell(offs.soNum),sheet:sheetName});
+      }
+    }
+  }
+  return out;
+}
+const SCHED_MONTHS=['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'];
+const SCHED_ABBR  =['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEPT','OCT','NOV','DEC'];
+function schedTabNames(d){
+  const y=d.getFullYear(),m=d.getMonth(),out=[];
+  for(const n of [SCHED_MONTHS[m],SCHED_ABBR[m]]) out.push(`${n} ${y}`,`${n} SCHEDULE ${y}`,`${n} DELIVERY ${y}`);
+  return [...new Set(out)];
+}
+async function schedFetchTab(name){
+  const u=`https://docs.google.com/spreadsheets/d/${state.scheduleWb}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(name)}`;
+  try{
+    const r=await fetch(u,{cache:'no-store'}); if(!r.ok) return null;
+    const t=await r.text();
+    if(!t.trim()||t.trim().startsWith('<')) return null;
+    return t;
+  }catch(_){ return null; }
+}
+async function schedLoad(){
+  const S=state.sched, now=new Date();
+  const months=[new Date(now.getFullYear(),now.getMonth()-1,1),now,new Date(now.getFullYear(),now.getMonth()+1,1)];
+  const rows=[],tabs=[];
+  for(const d of months){
+    for(const name of schedTabNames(d)){
+      const csv=await schedFetchTab(name);
+      if(csv==null) continue;
+      const got=schedFlatten(parseCSV(csv),name);
+      if(got.length){ rows.push(...got); tabs.push(name); }
+      break;   // tab exists — don't try its aliases
+    }
+  }
+  if(!rows.length) return false;
+  const seen=new Set(); S.rows=[];
+  for(const x of rows){   // month tabs overlap at week boundaries — drop repeats
+    const k=[x.iso,x.account.toLowerCase(),(x.driver||'').toLowerCase(),x.soNotes||''].join('|');
+    if(seen.has(k)) continue; seen.add(k);
+    const canon=schedCanon(x.driver);
+    S.rows.push({...x,canon,color:schedColor(canon),time:schedTime(x.soNotes)||schedTime(x.teamNotes)});
+  }
+  S.byIso=new Map();
+  for(const v of S.rows){ if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v); }
+  S.label=`${tabs.join(', ')} · ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
+  return true;
+}
+function schedCss(){
+  if(document.getElementById('sbCss')) return;
+  const st=document.createElement('style'); st.id='sbCss'; st.textContent=`
+  .sb-wrap{padding:10px 12px calc(20px + var(--safe-b))}
+  .sb-nav{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+  .sb-wk{font-weight:700;min-width:148px;text-align:center}
+  .sb-wk .small{display:block;font-weight:600}
+  .sb-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+  .sb-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;cursor:pointer;
+    border:1px solid var(--line);background:var(--panel2);color:var(--muted);font-weight:650;font-size:12.5px;user-select:none;white-space:nowrap}
+  .sb-chip .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .sb-chip .n{color:var(--muted);opacity:.7;font-size:11px}
+  .sb-chip.on{color:#fff}
+  .sb-board{display:grid;gap:10px}
+  @media(min-width:760px){.sb-board{grid-auto-flow:column;grid-auto-columns:minmax(185px,1fr);overflow-x:auto;align-items:start;padding-bottom:6px}}
+  .sb-col{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+  .sb-col.today{border-color:color-mix(in srgb,var(--accent) 55%,var(--line));box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 30%,transparent)}
+  .sb-colhead{background:var(--panel2);border-bottom:1px solid var(--line);padding:8px 12px;display:flex;gap:8px;align-items:baseline}
+  .sb-colhead .wd{font-weight:750;font-size:12px;letter-spacing:.4px;text-transform:uppercase}
+  .sb-col.today .sb-colhead .wd{color:var(--accent2)}
+  .sb-colhead .dt{color:var(--muted);font-size:12px;font-weight:600}
+  .sb-colhead .cnt{margin-left:auto;font-size:11px;color:var(--muted);font-weight:700;background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:1px 7px}
+  .sb-cards{padding:8px;display:flex;flex-direction:column;gap:8px}
+  .sb-empty{padding:14px 12px;text-align:center;color:var(--muted);opacity:.6;font-size:12.5px}
+  .sb-card{position:relative;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:9px 11px 9px 13px;cursor:pointer;overflow:hidden}
+  .sb-card:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--dv,var(--accent))}
+  .sb-card .store{font-weight:700;font-size:13.5px;line-height:1.25;margin-bottom:5px;word-break:break-word}
+  .sb-meta{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:5px}
+  .sb-who{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;
+    color:var(--dv,var(--accent));background:color-mix(in srgb,var(--dv,var(--accent)) 15%,transparent);
+    border:1px solid color-mix(in srgb,var(--dv,var(--accent)) 35%,transparent)}
+  .sb-tag{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--bg)}
+  .sb-tag.time{color:var(--text)}
+  .sb-tag.pad{color:#fff;background:var(--orange);border-color:var(--orange)}
+  .sb-tag.edu{color:#fff;background:var(--green);border-color:var(--green)}
+  .sb-notes{font-size:12px;color:var(--muted);line-height:1.4;white-space:pre-wrap;word-break:break-word}
+  .sb-notes.clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .sb-tnotes{margin-top:5px;font-size:11.5px;color:var(--muted);opacity:.8;white-space:pre-wrap;border-top:1px dashed var(--line);padding-top:5px}
+  .sb-src{color:var(--muted);opacity:.7;font-size:11px;margin-top:10px;text-align:right}`;
+  document.head.appendChild(st);
+}
+const SCHED_PAD=/\bPADs?\b/i, SCHED_EDU=/\bEDUs?\b|educat/i;
+async function drawSchedule(m){
+  schedCss();
+  if(!state.sched) state.sched={rows:null,byIso:new Map(),mon:schedMonday(new Date()),sel:null,firstLoad:true};
+  const S=state.sched;
+  if(!state.scheduleWb){ m.innerHTML='<div class="card" style="margin:12px">Schedule isn’t enabled for your account.</div>'; return; }
+  if(!S.rows){
+    m.innerHTML='<div class="loading"><span class="spin"></span></div>';
+    const ok=await schedLoad().catch(()=>false);
+    if(!ok){
+      m.innerHTML=`<div class="card" style="margin:12px"><b>Couldn’t reach the schedule workbook.</b>
+        <div class="small muted" style="margin-top:4px">Check your connection, then try again.</div>
+        <button class="btn primary" id="sbRetry" style="margin-top:10px">Retry</button></div>`;
+      $('#sbRetry').onclick=()=>{ S.rows=null; drawSchedule(m); };
+      return;
+    }
+    if(S.firstLoad){ S.firstLoad=false;
+      const has=mon=>[...Array(7)].some((_,i)=>S.byIso.has(schedIso(schedAdd(mon,i))));
+      if(!has(S.mon)&&S.rows.length){   // empty current week → jump to the nearest one with data
+        const weeks=[...new Set(S.rows.map(v=>schedIso(schedMonday(new Date(v.iso+'T12:00:00')))))].sort();
+        let best=null,bd=Infinity;
+        for(const w of weeks){ const d=Math.abs(new Date(w)-S.mon); if(d<bd){bd=d;best=w;} }
+        if(best) S.mon=schedMonday(new Date(best+'T12:00:00'));
+      }
+    }
+  }
+  schedRender(m);
+}
+function schedRender(m){
+  const S=state.sched, todayIso=schedIso(new Date());
+  const days=[...Array(7)].map((_,i)=>schedAdd(S.mon,i));
+  const MONL=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmt=d=>`${MONL[d.getMonth()]} ${d.getDate()}`;
+  const vis=v=>!S.sel||S.sel.has(v.canon);
+  const weekDrv=new Map(); let weekCount=0;
+  const cols=days.map((d,i)=>{
+    const iso=schedIso(d);
+    const list=(S.byIso.get(iso)||[]).filter(vis).slice().sort((a,b)=>{
+      const ta=a.time?a.time.mins:1e9,tb=b.time?b.time.mins:1e9;
+      return ta!==tb?ta-tb:a.account.localeCompare(b.account);
+    });
+    weekCount+=list.length;
+    for(const v of (S.byIso.get(iso)||[])) weekDrv.set(v.canon,(weekDrv.get(v.canon)||0)+1);
+    const cards=list.length?list.map(v=>{
+      const tags=[];
+      const blob=v.soNotes+' '+v.teamNotes;
+      if(v.time) tags.push(`<span class="sb-tag time">${v.time.label}</span>`);
+      if(SCHED_PAD.test(blob)) tags.push('<span class="sb-tag pad">PAD</span>');
+      if(SCHED_EDU.test(blob)) tags.push('<span class="sb-tag edu">EDU</span>');
+      if(v.region) tags.push(`<span class="sb-tag">${esc(v.region)}</span>`);
+      if(v.soNum) tags.push(`<span class="sb-tag">${esc(v.soNum)}</span>`);
+      const who=v.canon==='Team'?(v.driver||'Team'):(v.canon||'—');
+      return `<div class="sb-card" style="--dv:${v.color}" data-sbc>
+        <div class="store">${esc(v.account)}</div>
+        <div class="sb-meta"><span class="sb-who">${esc(who)}</span>${tags.join('')}</div>
+        ${v.soNotes?`<div class="sb-notes clamp">${esc(v.soNotes)}</div>`:''}
+        ${v.teamNotes?`<div class="sb-tnotes"><b>Team:</b> ${esc(v.teamNotes)}</div>`:''}</div>`;
+    }).join(''):'<div class="sb-empty">—</div>';
+    return `<div class="sb-col${iso===todayIso?' today':''}">
+      <div class="sb-colhead"><span class="wd">${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][i]}</span>
+      <span class="dt">${fmt(d)}</span><span class="cnt">${(S.byIso.get(iso)||[]).filter(vis).length}</span></div>
+      <div class="sb-cards">${cards}</div></div>`;
+  }).join('');
+  const chips=[...weekDrv.entries()].sort((a,b)=>b[1]-a[1]).filter(([n])=>n&&n!=='—').map(([n,cnt])=>{
+    const col=schedColor(n), on=S.sel&&S.sel.has(n);
+    return `<div class="sb-chip${on?' on':''}" data-sbd="${esc(n)}" style="${on?`background:color-mix(in srgb,${col} 24%,transparent);border-color:${col}`:''}">
+      <span class="dot" style="background:${col}"></span>${esc(n)} <span class="n">${cnt}</span></div>`;
+  }).join('');
+  m.innerHTML=`<div class="sb-wrap">
+    <div class="sb-nav">
+      <button class="btn sm ghost" id="sbPrev">‹</button>
+      <div class="sb-wk">${fmt(days[0])} – ${fmt(days[6])}<span class="small muted">${days[0].getFullYear()}</span></div>
+      <button class="btn sm ghost" id="sbNext">›</button>
+      <button class="btn sm ghost" id="sbToday">This week</button>
+      <span class="grow"></span>
+      <button class="btn sm ghost" id="sbReload" title="Re-fetch the workbook">⟳</button>
+    </div>
+    <div class="sb-chips">
+      <div class="sb-chip${!S.sel?' on':''}" id="sbAll" style="${!S.sel?'background:var(--accent);border-color:var(--accent)':''}">All</div>
+      ${chips}
+    </div>
+    <div class="sb-board">${cols}</div>
+    <div class="sb-src">${weekCount} visit${weekCount!==1?'s':''} this week · source: workbook (${esc(S.label||'')})</div>
+  </div>`;
+  $('#sbPrev').onclick=()=>{ S.mon=schedAdd(S.mon,-7); schedRender(m); };
+  $('#sbNext').onclick=()=>{ S.mon=schedAdd(S.mon,7); schedRender(m); };
+  $('#sbToday').onclick=()=>{ S.mon=schedMonday(new Date()); schedRender(m); };
+  $('#sbReload').onclick=()=>{ S.rows=null; drawSchedule(m); };
+  $('#sbAll').onclick=()=>{ S.sel=null; schedRender(m); };
+  m.querySelectorAll('[data-sbd]').forEach(c=>c.onclick=()=>{
+    if(!S.sel) S.sel=new Set();
+    const n=c.dataset.sbd;
+    if(S.sel.has(n)) S.sel.delete(n); else S.sel.add(n);
+    if(!S.sel.size) S.sel=null;
+    schedRender(m);
+  });
+  m.querySelectorAll('[data-sbc]').forEach(c=>c.onclick=()=>{
+    const n=c.querySelector('.sb-notes'); if(n) n.classList.toggle('clamp');
+  });
+}
+
 /* ─────────────────────────── go ─────────────────────────── */
 boot();
 if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
 // local-preview debug hook (dev servers only; never active on the deployed host)
 if(location.hostname==='127.0.0.1'||location.hostname==='localhost')
-  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixExpenseSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles, userTypeLabel, userCat };
+  window.__ba={ get state(){return state}, tripSheet, expenseSheet, fixExpenseSheet, adminEditItem, dispSort, baDispensaries, dispChipsHtml, openSheet, closeSheet, checkForUpdate, showUpdateBar, renderDayGrid, gridCtx, profileTypeOpts, adminRegionPicker, isRegionalAdmin, isUniversalAdmin, viewSwitcher, recalcMiles, userTypeLabel, userCat, drawSchedule };
 </script>
 </body>
 </html>
