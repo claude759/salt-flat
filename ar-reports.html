@@ -1530,9 +1530,10 @@ function jsonp(){
     // but the callback never runs. Detect that on load and fail fast (instead of the timeout).
     s.onload=()=>{ if(!settled){ rej(new Error('bad response')); done(); } };
     document.body.appendChild(s);
-    // 25s: Apps Script has been observed taking 14-21s to serve the ~700KB payload on bad days —
-    // a shorter timeout kills valid-but-slow responses and wastes every retry.
-    setTimeout(()=>{ if(!settled){ rej(new Error('timeout')); done(); } },25000);
+    // 50s: Apps Script has been observed taking 14-21s for a ~700KB payload and 60s+ under load
+    // now that it's ~1.6MB (sched/pistil keys, Aug 2026) — a shorter timeout kills valid-but-slow
+    // responses and wastes every retry, stranding viewers on the cached payload.
+    setTimeout(()=>{ if(!settled){ rej(new Error('timeout')); done(); } },50000);
   });
 }
 // Apps Script flakes a few % of the time (HTML error page / transient 5xx) — retry before
@@ -1736,7 +1737,13 @@ async function loadShared(){
   try{
     const d=await jsonpRetry(3);
     if(applyShared(d)){ try{ localStorage.setItem(SHARED_CACHE_KEY, JSON.stringify({uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy,data:d.data})); }catch(e){} }
-  }catch(e){ if(!hadCache) renderShareBar('error'); }   // cache already painted → keep showing it (bar says when it's from)
+  }catch(e){ if(!hadCache) renderShareBar('error');
+    // A failed load must NOT strand the viewer on the cached payload until they manually
+    // reload (that's how the BA Report's new columns sat empty on 2026-08-12: the payload
+    // outgrew the old timeout, every retry died, and the pre-upgrade cache kept painting).
+    // Keep retrying quietly; the timer stops the first time a fetch succeeds.
+    if(!loadShared._t) loadShared._t=setTimeout(()=>{ loadShared._t=null; loadShared(); },90000);
+  }
 }
 
 async function publishToTeam(){
@@ -1764,7 +1771,7 @@ async function publishToTeam(){
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
     if(FRESH.has('visits') && VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
-    if(FRESH.has('sched') && SCHED_EVENTS && SCHED_EVENTS.length) cur.sched=schedToWire(SCHED_EVENTS);      // additive; FULL schedule (incl. future rows) for the BA Report
+    if(FRESH.has('sched') && SCHED_EVENTS && SCHED_EVENTS.length) cur.sched=schedToWire(SCHED_EVENTS.filter(e=>e.d>=Date.now()-14*864e5));   // additive; recent + FUTURE schedule rows only (Upcoming needs the future; visits carries the PAD/EDU history) — keeps the payload lean
     if(FRESH.has('sched') && SCHED_EVENTS && SCHED_EVENTS.length) cur.schedAsOf=new Date().toISOString(); else if(SCHED_ASOF && !cur.schedAsOf) cur.schedAsOf=SCHED_ASOF;   // staleness stamp, rows-survive; the merge base's stamp wins over our boot capture (base is always ≥ ours)
     if(FRESH.has('pistil') && PISTIL && PISTIL.length) cur.pistil=pistilToWire(PISTIL);                     // additive; Pistil per-store WT shelf status (BA Report)
     if(FRESH.has('pistil') && PISTIL && PISTIL.length) cur.pistilAsOf=new Date().toISOString(); else if(PISTIL_ASOF && !cur.pistilAsOf) cur.pistilAsOf=PISTIL_ASOF;   // staleness stamp, rows-survive; base stamp wins (see schedAsOf)
