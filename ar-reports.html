@@ -272,7 +272,7 @@
   .cre-del:hover{border-color:var(--red);color:var(--red)}
   .neg{color:var(--muted)}
   /* Customer Tiers */
-  td.over-link,td.visit-link,td.baspend-link,td.ba-visit-link{cursor:pointer}
+  td.over-link,td.visit-link,td.baspend-link,td.ba-visit-link,td.ba-up-link,td.ba-pis-link{cursor:pointer}
   td.over-link>span,td.visit-link>span,td.baspend-link>span,td.ba-visit-link>span{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .tier-badge{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap}
   .tier-badge.t1{background:#123524;color:#7ee2a8}
@@ -777,7 +777,7 @@
           <button data-rep="bysku">Sales by SKU</button>
           <button data-rep="bydisp">By Dispensary</button>
           <button data-rep="payments">Payments</button>
-          <button data-rep="stiiizy">Stiiizy Inventory</button>
+          <button data-rep="ba">BA Report</button>
           <button data-rep="mom">Month over Month</button>
           <button data-rep="time">Sales Over Time</button>
           <button data-rep="nysku" class="hidden">Sales by Type</button>
@@ -832,16 +832,23 @@
         <div class="notes" id="cust-note"></div>
       </div>
 
-      <!-- STIIIZY INVENTORY — the chain's own periodic store report (roster + what's on their
-           shelves). Data is a snapshot baked in by ar-automation/tools/stiiizy_import.py. -->
-      <div id="rep-stiiizy" class="hidden">
+      <!-- BA REPORT — the Customer Tiers view cut for the field team (replaced Stiiizy Inventory,
+           per Gianni 2026-08-12): visit recency (EDU / PAD / any store visit), the next scheduled
+           activity from the team workbook, and Pistil's per-store WT shelf status. -->
+      <div id="rep-ba" class="hidden">
         <div class="toolbar">
-          <input type="text" id="sti-search" placeholder="Search store or city…" />
+          <select id="ba-months" title="Revenue + visit lookback window">
+            <option value="1">Last month</option>
+            <option value="3" selected>Last 3 months</option>
+            <option value="6">Last 6 months</option>
+            <option value="12">Last 12 months</option>
+          </select>
+          <input type="text" id="ba-search" placeholder="Search account…" />
           <div class="grow"></div>
-          <button class="btn" id="sti-export">⬇ Export CSV</button>
+          <button class="btn" id="ba-export">⬇ Export CSV</button>
         </div>
-        <div class="tablewrap" id="sti-wrap"></div>
-        <div class="notes" id="sti-note"></div>
+        <div class="tablewrap" id="ba-wrap"></div>
+        <div class="notes" id="ba-note"></div>
       </div>
 
       <!-- NEW CUSTOMERS (first in-range order with no order in the prior 9 months) — default report -->
@@ -1415,6 +1422,7 @@ function classify(rows){
     if(has('Available Quantity','Active Value (Price)'))  return {type:'distru_inventory',hr:i};   // Distru Inventory Valuation report
     if(has('Name','Legal Business Name','Address'))       return {type:'distru_companies',hr:i};   // Distru company directory (DBA/legal/address/license — lib/distru-companies.mjs)
     if(has('Schedule Date','Account Name','Sales Order Notes')) return {type:'visits',hr:i};   // field-schedule flatten (lib/schedule.mjs) — feeds the Reports tab
+    if(has('Store','Product','Menu Counts','In stock')) return {type:'pistil',hr:i};   // Pistil stock report flatten (lib/pistil.mjs) — feeds the BA Report's WT Inventory column
     // LeafLink orders report export (NY) — header names vary slightly across LeafLink versions,
     // so accept Buyer + a total + a date. Checked LAST so it can't shadow the other reports.
     if(h.includes('Buyer') && (h.includes('Total Amount')||h.includes('Order Total')||h.includes('Total')) && (h.includes('Ship Date')||h.includes('Order Date')||h.includes('Created Date'))) return {type:'leaflink',hr:i};
@@ -1452,7 +1460,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, leaflink:null, leaflink_items:null, leaflink_meta:null, leaflink_inventory:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, pistil:null, leaflink:null, leaflink_items:null, leaflink_meta:null, leaflink_inventory:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
 // Provenance of publishable state: which payload keys were rebuilt from ACTUAL FILES this session.
 // loadShared paints the localStorage cache first (stale-while-revalidate), so state can be
 // cache-derived — publishing that would overwrite the (fresher) live payload with stale data.
@@ -1472,6 +1480,7 @@ const LABELS = {
   distru_assets:'Distru inventory assets',
   distru_companies:'Distru company directory',
   visits:'Field schedule (PAD/EDU)',
+  pistil:'Pistil stock report (WT shelf status)',
   leaflink:'LeafLink orders (NY)',
   leaflink_items:'LeafLink line items (NY)',
   leaflink_meta:'LeafLink ship dates (NY)',
@@ -1678,6 +1687,10 @@ function applyShared(d){
       $('#reports').classList.remove('hidden'); renderSku(); any=true;
     }
     if(data.visits && data.visits.length){ VISIT_EVENTS=visitsFromWire(data.visits); any=true; }
+    if(data.sched && data.sched.length){ SCHED_EVENTS=schedFromWire(data.sched); any=true; }   // full schedule (BA Report upcoming column)
+    if(data.schedAsOf) SCHED_ASOF=data.schedAsOf;
+    if(data.pistil && data.pistil.length){ PISTIL=pistilFromWire(data.pistil); any=true; }     // Pistil WT shelf status (BA Report)
+    if(data.pistilAsOf) PISTIL_ASOF=data.pistilAsOf;
     if(data.custDir) CUST_DIR=custDirFromWire(data.custDir);   // customer directory (legal name / address / license)
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); buildNyLegal(); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
@@ -1751,6 +1764,10 @@ async function publishToTeam(){
     if(hasConc) cur.conc={events:eventsToWire(CONC_EVENTS),meta:CONC_META};
     if(hasSku)  cur.sku =skuToWire(SKU_EVENTS);
     if(FRESH.has('visits') && VISIT_EVENTS && VISIT_EVENTS.length) cur.visits=visitsToWire(VISIT_EVENTS);   // additive; absent → prior payload's visits persist via cur
+    if(FRESH.has('sched') && SCHED_EVENTS && SCHED_EVENTS.length) cur.sched=schedToWire(SCHED_EVENTS);      // additive; FULL schedule (incl. future rows) for the BA Report
+    if(FRESH.has('sched') && SCHED_EVENTS && SCHED_EVENTS.length) cur.schedAsOf=new Date().toISOString(); else if(SCHED_ASOF && !cur.schedAsOf) cur.schedAsOf=SCHED_ASOF;   // staleness stamp, rows-survive; the merge base's stamp wins over our boot capture (base is always ≥ ours)
+    if(FRESH.has('pistil') && PISTIL && PISTIL.length) cur.pistil=pistilToWire(PISTIL);                     // additive; Pistil per-store WT shelf status (BA Report)
+    if(FRESH.has('pistil') && PISTIL && PISTIL.length) cur.pistilAsOf=new Date().toISOString(); else if(PISTIL_ASOF && !cur.pistilAsOf) cur.pistilAsOf=PISTIL_ASOF;   // staleness stamp, rows-survive; base stamp wins (see schedAsOf)
     if(FRESH.has('custDir') && CUST_DIR && Object.keys(CUST_DIR).length) cur.custDir=custDirToWire(CUST_DIR);  // additive; customer directory persists like visits
     if(FRESH.has('ny') && NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     if(FRESH.has('nyItems') && NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
@@ -1818,7 +1835,7 @@ function handleFiles(fileList){
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); buildCustDir(); }
+      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildNy(); buildCustDir(); }
     };
     reader.readAsText(f);
   });
@@ -1833,7 +1850,7 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildNy(); buildCustDir(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildNy(); buildCustDir(); });
 }
 // Clearing a file chip must also retract its derived state + FRESH mark — otherwise the next
 // publish still sends the removed file's data (the builds skip re-assignment when the file is
@@ -1849,7 +1866,8 @@ function clearFileState(t){
     nabis_detail:()=>{ CONC_EVENTS=[]; SKU_EVENTS=[]; CUST_DIR={}; FRESH.delete('conc'); FRESH.delete('sku'); FRESH.delete('custDir'); },
     nabis_brand:()=>{ CUST_DIR={}; FRESH.delete('custDir'); },
     distru_companies:()=>{ CUST_DIR={}; FRESH.delete('custDir'); },
-    visits:()=>{ VISIT_EVENTS=[]; FRESH.delete('visits'); },
+    visits:()=>{ VISIT_EVENTS=[]; SCHED_EVENTS=[]; FRESH.delete('visits'); FRESH.delete('sched'); },
+    pistil:()=>{ PISTIL=[]; FRESH.delete('pistil'); },
     leaflink:()=>{ NY_EVENTS=[]; FRESH.delete('ny'); },
     leaflink_items:()=>{ NY_ITEMS=[]; FRESH.delete('nyItems'); },
     leaflink_meta:()=>{ NY_SHIP={}; FRESH.delete('nyShip'); },
@@ -4283,19 +4301,31 @@ function buildNy(){ if(FILES.leaflink){ NY_EVENTS=buildNyEvents(); FRESH.add('ny
    re-split expense, corrected hours) is simply right on the next render. Stores map to sales
    accounts via dispensaries.sales_key (tierNorm-normalized, hand-curated where names diverge);
    whatever doesn't match an account row is surfaced in the note line, never silently dropped. */
+// Small per-WINDOW cache (not single-slot): Customer Tiers and the BA Report can ask for
+// DIFFERENT windows at once (#tier-months vs #ba-months). With one slot, each resolve's
+// re-render evicted the other view's window and started a new fetch — an infinite RPC
+// ping-pong the moment the two selectors differed. Entries are mutated in place, so a
+// resolve updates its own window no matter which view is "current"; the two globals below
+// always point at the entry for the LAST-REQUESTED window (set synchronously by each
+// render pass before its consumers read them).
 let BA_MX={key:null,rows:null,err:null,loading:false};
+const BA_MX_C=new Map();
 function baMetricsFor(start,end){
   const pad=n=>String(n).padStart(2,'0'), iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const key=iso(start)+'|'+iso(end);
-  if(BA_MX.key===key) return BA_MX;                      // cached, in flight, or errored — one fetch per window
-  BA_MX={key,rows:null,err:null,loading:true};
-  fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_sales_metrics`,{method:'POST',
-    headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
-    body:JSON.stringify({p_from:iso(start),p_to:iso(end)})})
-    .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
-    .then(rows=>{ if(BA_MX.key!==key) return; BA_MX={key,rows,err:null,loading:false}; renderTiers(); })
-    .catch(e=>{ if(BA_MX.key!==key) return; BA_MX={key,rows:null,err:String(e.message||e),loading:false}; renderTiers(); });
-  return BA_MX;
+  let e=BA_MX_C.get(key);
+  if(!e){
+    e={key,rows:null,err:null,loading:true};
+    BA_MX_C.set(key,e);
+    if(BA_MX_C.size>4) BA_MX_C.delete(BA_MX_C.keys().next().value);   // keep it tiny; an evicted in-flight resolve mutates an orphan, harmlessly
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_sales_metrics`,{method:'POST',
+      headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({p_from:iso(start),p_to:iso(end)})})
+      .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+      .then(rows=>{ e.rows=rows; e.loading=false; renderTiers(); if(repMode==='ba') renderRepMode(); })
+      .catch(err=>{ e.err=String(err.message||err); e.loading=false; renderTiers(); if(repMode==='ba') renderRepMode(); });
+  }
+  BA_MX=e; return e;
 }
 // roll the RPC's per-store rows up by sales_key for one state → key → {visits, spend, parts…}
 // A real store with a NULL sales_key gets a private per-store key so its spend still reaches
@@ -4335,18 +4365,23 @@ const baTitle=g=>g?`Labor ${fmt$(g.labor)} · Mileage ${fmt$(g.mileage)} · Expe
 // merged Visits column (schedule ∪ BA, deduped by DAY) and the visit drills, which show the BA's
 // first name + the activity kinds they logged in the app. One fetch per window.
 let BA_VD={key:null,rows:null,err:null};
+const BA_VD_C=new Map();   // per-window, same rationale as BA_MX_C
 function baVisitDaysFetch(start,end){
   const pad=n=>String(n).padStart(2,'0'), iso=d=>`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
   const key=iso(start)+'|'+iso(end);
-  if(BA_VD.key===key) return BA_VD;
-  BA_VD={key,rows:null,err:null};
-  fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_visit_detail`,{method:'POST',
-    headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
-    body:JSON.stringify({p_from:iso(start),p_to:iso(end)})})
-    .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
-    .then(rows=>{ if(BA_VD.key!==key) return; BA_VD={key,rows,err:null}; renderTiers(); })
-    .catch(e=>{ if(BA_VD.key!==key) return; BA_VD={key,rows:null,err:String(e.message||e)}; });
-  return BA_VD;
+  let e=BA_VD_C.get(key);
+  if(!e){
+    e={key,rows:null,err:null};
+    BA_VD_C.set(key,e);
+    if(BA_VD_C.size>4) BA_VD_C.delete(BA_VD_C.keys().next().value);
+    fetch(`${SUPABASE_URL}/rest/v1/rpc/ba_visit_detail`,{method:'POST',
+      headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({p_from:iso(start),p_to:iso(end)})})
+      .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+      .then(rows=>{ e.rows=rows; renderTiers(); if(repMode==='ba') renderRepMode(); })
+      .catch(err=>{ e.err=String(err.message||err); });
+  }
+  BA_VD=e; return e;
 }
 // state → sales_key → Map(ISO day → [{ba, act}]) — one entry per BA on site that day
 function baVisitDaysFor(state){
@@ -5140,8 +5175,8 @@ function eventConc(e, A){
   const conc=parts.unitDisc+parts.samples+parts.pouches+parts.invD+parts.cred+parts.sampBillAdj;
   return {grossList, conc, parts};
 }
-function tierData(){
-  const months=Math.max(1,+(($('#tier-months')||{}).value||3));
+function tierData(monthsOv){
+  const months=Math.max(1,+(monthsOv || ($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
   const start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0);
   const t1=Math.max(0,+(($('#tier-t1')||{}).value||15000)), t2=Math.min(t1,Math.max(0,+(($('#tier-t2')||{}).value||7000)));   // clamp t2 ≤ t1 so Tier 2 stays reachable
@@ -5245,8 +5280,8 @@ function renderTiers(){
   note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, its <b>Visits</b> count for the visit-day detail, or its <b>BA Spend</b> for the per-entry breakdown (labor per store-day, mileage per trip, expenses per receipt). <b>Visits</b> merges the field-schedule (PAD/EDU) and the BA field app's recorded visits into unique visit DAYS — a visit recorded in both counts once. <b>Disc + Credits</b> = the account's total concessions over the window (per-unit discounts + free samples at list + budtender pouches + invoice discounts + credit memos), from live Nabis/Distru data; <b>% of Sales</b> = that ÷ gross-at-list — the same figure as the Credits/Discounts page's "% of Gross", so the two pages tie. An account selling through both Nabis and Distru under different names will appear as two rows.`
     + baNoteHtml('CA', new Set(rows.map(r=>baRowKey(r.name))));
 }
-function tierDrill(name){
-  const {start,end}=tierData();
+function tierDrill(name,monthsOv){
+  const {start,end}=tierData(monthsOv);
   const A=concAssum();
   const byRef={};
   (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return; if(((e.c||'Unknown').trim()||'Unknown')!==name) return; const dt=e.d?new Date(e.d):null; if(!dt||dt<start||dt>end) return;
@@ -5291,10 +5326,10 @@ function tierOverdueDrill(name){
     totalLabel:'Total overdue', total:list.reduce((s,x)=>s+x.outstanding,0)});
 }
 // Visits cell → the account's PAD/EDU visits (dates + type + schedule note) in the tier window.
-function tierVisitsDrill(name){
+function tierVisitsDrill(name,monthsOv){
   // Merged view: field-schedule PAD/EDU rows + the BA field app's recorded visit days, one table,
   // deduped by DAY for the count (a day recorded in both systems shows both rows, tagged).
-  const {start,end,months}=tierData();
+  const {start,end,months}=tierData(monthsOv);
   const key=tierNorm(name);
   const list=(VISIT_EVENTS||[]).filter(v=>v.d&&v.d>=start.getTime()&&v.d<=end.getTime()&&visitGroupKey(v.c)===key).sort((a,b)=>b.d-a.d);
   const iso=ms=>new Date(ms).toISOString().slice(0,10);
@@ -5399,7 +5434,46 @@ function buildVisitEvents(){
 // Shared-payload wire: [d, account, flags(1=PAD|2=EDU), note] per visit (additive payload key).
 function visitsToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, (e.pad?1:0)|(e.edu?2:0), e.note||'']); }
 function visitsFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), pad:!!(a[2]&1), edu:!!(a[2]&2), note:String(a[3]||'')})); }
-function buildVisits(){ if(FILES.visits){ VISIT_EVENTS=buildVisitEvents(); FRESH.add('visits'); } renderRepMode(); }   // refresh the ACTIVE report (visits/customers/sales/…) — CONC_EVENTS was just rebuilt upstream
+// FULL schedule (every row, past AND future, any activity — not just PAD/EDU) for the BA Report's
+// "Upcoming scheduled activity" column. Same field-schedule.csv, its own payload key `sched` so
+// the long-standing PAD/EDU semantics of `visits` (Tiers counts, PAD/EDU report) never shift.
+let SCHED_EVENTS=[];   // {d:ms, c:account, drv:driver, pad, edu, note, so}
+let SCHED_ASOF=null;   // payload stamp: when the schedule was last scraped fresh
+function buildSchedEvents(){
+  if(!FILES.visits) return [];
+  const out=[];
+  FILES.visits.data.forEach(r=>{
+    const c=(r['Account Name']||'').trim(); if(!c) return;
+    const d=parseDate(r['Schedule Date']); if(!d) return;
+    const note=[(r['Sales Order Notes']||'').trim(),(r['Distro Team Notes']||'').trim()].filter(Boolean).join(' · ');
+    out.push({d:d.getTime(), c, drv:(r['Driver']||'').trim(), pad:VISIT_PAD_RE.test(note), edu:VISIT_EDU_RE.test(note),
+              note:note.slice(0,220), so:(r['Sales Order #']||'').trim()});
+  });
+  return out.sort((a,b)=>a.d-b.d);
+}
+function schedToWire(evs){ return (evs||[]).map(e=>[e.d, e.c, e.drv||'', (e.pad?1:0)|(e.edu?2:0), e.note||'', e.so||'']); }
+function schedFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''), drv:String(a[2]||''), pad:!!(a[3]&1), edu:!!(a[3]&2), note:String(a[4]||''), so:String(a[5]||'')})); }
+function buildVisits(){ if(FILES.visits){ VISIT_EVENTS=buildVisitEvents(); SCHED_EVENTS=buildSchedEvents(); FRESH.add('visits'); FRESH.add('sched'); } renderRepMode(); }   // refresh the ACTIVE report (visits/customers/sales/…) — CONC_EVENTS was just rebuilt upstream
+// Pistil stock report (lib/pistil.mjs → pistil-stock.csv): per-store WT shelf status for the BA
+// Report's WT Inventory column. Grouped per store; product names drop the "Wizard Trees - " prefix.
+let PISTIL=[];         // {s:store, a:address, st:state, rd:reportDate, items:[[product, price, inStock(0/1), menuCount, lastSeen]]}
+let PISTIL_ASOF=null;
+function buildPistilRows(){
+  if(!FILES.pistil) return [];
+  const by=new Map();
+  FILES.pistil.data.forEach(r=>{
+    const s=(r['Store']||'').trim(); if(!s) return;
+    const a=(r['Address']||'').trim();
+    let g=by.get(s);
+    if(!g){ const m=a.match(/,\s*([A-Z]{2}),?\s*\d{5}/); g={s, a, st:m?m[1]:'', rd:(r['Report Date']||'').trim(), items:[]}; by.set(s,g); }
+    g.items.push([(r['Product']||'').replace(/^Wizard Trees\s*-\s*/i,'').trim(), (r['Latest Price']||'').trim(),
+                  String(r['In stock']||'').trim().toLowerCase()==='yes'?1:0, (r['Menu Counts']||'').trim(), (r['Last seen']||'').trim()]);
+  });
+  return [...by.values()];
+}
+function pistilToWire(rows){ return (rows||[]).map(g=>[g.s, g.a, g.st, g.rd, g.items]); }
+function pistilFromWire(w){ return (w||[]).map(x=>({s:String(x[0]||''), a:String(x[1]||''), st:String(x[2]||''), rd:String(x[3]||''), items:(x[4]||[]).map(i=>[String(i[0]||''),String(i[1]||''),i[2]?1:0,String(i[3]||''),String(i[4]||'')])})); }
+function buildPistil(){ if(FILES.pistil){ PISTIL=buildPistilRows(); if(PISTIL.length) FRESH.add('pistil'); } renderRepMode(); }
 // Stiiizy rollup (user request Jul 2 2026): all Stiiizy-branded stores count under ONE
 // account "STIIIZY" — matches any name containing sti(i…)zy (incl. the sheet's "Stiizy"
 // typo), the Airfield San Jose store, and Authentic 209 (Stiiizy Modesto). The raw store
@@ -5514,7 +5588,7 @@ $('#repv-date-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closes
 // The Reports tab hosts several reports, picked by the #rep-toggle seg:
 // visits (PAD/EDU) · mom (Month over Month) · time (Sales Over Time).
 let repMode='newcust';   // New Customers is the default report on the Reports tab
-const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','stiiizy','mom','time','nysku'];
+const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','ba','mom','time','nysku'];
 // NY Sales by Type as a report mode: adopt the #view-sku node into the Reports pane and render.
 // (activateTab('sku') docks it back to top level for CA's standalone tab — see skuDock.)
 let SKU_HOME=null;
@@ -5524,7 +5598,7 @@ function skuDock(where){ const v=$('#view-sku'); if(!v) return;
   else if(SKU_HOME.parent && v.parentElement!==SKU_HOME.parent) SKU_HOME.parent.insertBefore(v, SKU_HOME.next);
 }
 function renderRepNySku(){ skuDock('reports'); const v=$('#view-sku'); if(v) v.classList.remove('hidden'); renderSku(); }
-function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,stiiizy:renderStiiizy,mom:renderMom,time:renderTimeSeries,nysku:renderRepNySku}[repMode]||renderReports)(); }
+function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,ba:renderBaReport,mom:renderMom,time:renderTimeSeries,nysku:renderRepNySku}[repMode]||renderReports)(); }
 function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.rep===repMode));
   $('#rep-visits').classList.toggle('hidden', repMode!=='visits');
@@ -5534,7 +5608,7 @@ function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   $('#rep-bysku').classList.toggle('hidden', repMode!=='bysku');
   $('#rep-bydisp').classList.toggle('hidden', repMode!=='bydisp');
   $('#rep-payments').classList.toggle('hidden', repMode!=='payments');
-  $('#rep-stiiizy').classList.toggle('hidden', repMode!=='stiiizy');
+  $('#rep-ba').classList.toggle('hidden', repMode!=='ba');
   $('#view-mom').classList.toggle('hidden', repMode!=='mom');
   $('#view-time').classList.toggle('hidden', repMode!=='time');
   $('#rep-nysku').classList.toggle('hidden', repMode!=='nysku');
@@ -5641,88 +5715,176 @@ async function loadNyAddr(){
     if(APP_STATE==='NY' && repMode==='customers') renderCustomers();   // repaint once addresses arrive
   }catch(e){ NY_ADDR_LOADED=false; /* view not exposed yet — retry next time the report opens */ }
 }
-// ── Stiiizy Inventory: the STIIIZY chain's own store report ─────────────────────────────────
-// STIIIZY emails a periodic "WIZARD_TREES_Report" workbook covering every store of theirs that
-// carries us. It labels the SAME 15 stores two ways — internal codes on the retail sheet (7TH,
-// COLEMAN, SBHST…), store names on the aging sheet (Caliva - San Jose, Airfield - San Jose, SB2…);
-// the roster below ties each code to the store's real name and street address. This is a SNAPSHOT,
-// not a live feed: refresh it from a newer workbook with
-//     python3 ~/ar-automation/tools/stiiizy_import.py '<workbook.xlsx>' --write
-// <<< STIIIZY DATA — generated by ar-automation/tools/stiiizy_import.py, do not hand-edit
-// Source: STIIIZY's periodic 'WIZARD_TREES_Report' workbook (Retail + Aging Inventory sheets).
-const STIIIZY_ASOF="2026-07-27";
-const STIIIZY_STORES=[["MOD","STIIIZY Authentic 209 (Modesto)","426 McHenry Ave, Modesto, CA 95354"],["COSTAMESA","STIIIZY Costa Mesa (Harbor)","2710 Harbor Blvd, Costa Mesa, CA 92626"],["DTLA","STIIIZY Downtown LA","728 E Commercial St, Los Angeles, CA 90012"],["FRESNO","STIIIZY Fresno","6929 N Willow Ave Ste 103, Fresno, CA 93710"],["LONGBEACH","STIIIZY King's Crew (Long Beach)","5630 E Pacific Coast Hwy, Long Beach, CA 90814"],["MADERA","STIIIZY Madera","1105 Country Club Dr, Madera, CA 93638"],["PACHECO","STIIIZY Pacheco","5753 Pacheco Blvd, Pacheco, CA 94553"],["POMONA","STIIIZY Pomona","1605 W Holt Ave, Pomona, CA 91768"],["SBHST","STIIIZY San Bernardino (H St)","390 N H St, San Bernardino, CA 92410"],["COLEMAN","STIIIZY San Jose (Airfield)","1190 Coleman Ave, San Jose, CA 95110"],["7TH","STIIIZY San Jose (Caliva)","1695 S 7th St, San Jose, CA 95112"],["SUISUN","STIIIZY Suisun City","521 Railroad Ave, Suisun City, CA 94585"],["UNI","STIIIZY Union Square","180 O'Farrell St, San Francisco, CA 94102"],["VENTURA","STIIIZY Ventura","1860 S Victoria Ave, Ventura, CA 93003"],["PCH","STIIIZY Wilmington (PCH)","1026 W Pacific Coast Hwy, Wilmington, CA 90744"]];
-const STIIIZY_SKUS=[["Black Light","Flower 3.5g",24.0],["Black Magic","Flower 3.5g",24.0],["Limelight","Flower 3.5g",24.0],["Nebula","Flower 3.5g",24.0],["Wizard Og","Flower 3.5g",24.0],["Black Light","Preroll Multipack 3.5g",20.0],["Black Magic","Preroll Multipack 3.5g",20.0],["Blue Magic","Flower 3.5g",24.0],["Gas Gimlet","Flower 3.5g",24.0],["Zangbanger","Flower 3.5g",24.0],["Dark Matter","Preroll Multipack 3.5g",20.0],["Jungle Juice","Flower 3.5g",24.0],["Orange Magic","Flower 3.5g",24.0],["Smoothie","Flower 3.5g",24.0],["Zoza","Flower 3.5g",24.0],["Blue Magic","Preroll Multipack 3.5g",20.0],["Limelight","Preroll Multipack 3.5g",20.0],["Tea Party","Flower 3.5g",24.0],["Dark Matter","Flower 3.5g",24.0],["Dark Matter","Preroll 1.5g",10.0],["Zangbanger","Preroll 1.5g",10.0],["British Delight","Flower 3.5g",24.0],["Zoza","Preroll 1.5g",10.0],["New Yorker","Preroll Multipack 3.5g",20.0],["Zangbanger","Preroll Multipack 3.5g",20.0],["Orange Magic","Preroll 1.5g",10.0]];
-const STIIIZY_INV={"MOD":[[1,11.0,0.0,0.0,6.0,17.0],[5,8.0,0.0,0.0,2.0,2.0],[7,8.0,0.0,0.0,4.0,15.0],[11,8.0,0.0,0.0,1.0,8.0],[17,6.0,0.0,0.0,1.0,11.0],[15,5.0,0.0,0.0,1.0,11.0],[0,4.0,0.0,0.0,1.0,7.0],[6,0.0,0.0,0.0,4.0,4.0],[10,0.0,0.0,0.0,0.0,10.0],[16,0.0,0.0,0.0,0.0,10.0],[9,0.0,0.0,0.0,0.0,12.0]],"COSTAMESA":[[12,3.0,0.0,0.0,4.0,11.0],[13,3.0,0.0,0.0,5.0,7.0],[7,0.0,0.0,0.0,1.0,10.0],[11,0.0,0.0,0.0,0.0,2.0],[2,0.0,0.0,0.0,4.0,10.0]],"DTLA":[[2,13.0,0.0,0.0,0.0,2.0],[0,8.0,0.0,0.0,5.0,8.0],[5,3.0,0.0,0.0,7.0,7.0],[12,2.0,0.0,0.0,4.0,8.0],[9,2.0,0.0,0.0,2.0,23.0],[15,1.0,0.0,0.0,9.0,19.0],[11,1.0,0.0,0.0,6.0,14.0],[8,0.0,0.0,0.0,0.0,15.0],[16,0.0,0.0,0.0,0.0,20.0],[14,0.0,0.0,0.0,0.0,8.0]],"FRESNO":[[4,10.0,0.0,0.0,0.0,0.0],[0,9.0,0.0,0.0,1.0,1.0],[6,9.0,0.0,0.0,0.0,0.0],[3,9.0,0.0,0.0,1.0,1.0],[1,5.0,0.0,0.0,5.0,15.0],[12,2.0,0.0,0.0,1.0,9.0],[7,1.0,0.0,0.0,2.0,12.0],[8,1.0,0.0,0.0,2.0,8.0],[5,0.0,0.0,0.0,5.0,10.0],[15,0.0,0.0,0.0,4.0,11.0],[10,0.0,0.0,0.0,0.0,10.0],[11,0.0,0.0,0.0,0.0,3.0],[2,0.0,0.0,0.0,4.0,10.0],[16,0.0,0.0,0.0,3.0,10.0],[13,0.0,0.0,0.0,0.0,10.0],[17,0.0,0.0,0.0,0.0,1.0]],"LONGBEACH":[[0,2.0,0.0,0.0,0.0,0.0]],"MADERA":[[15,10.0,0.0,0.0,0.0,3.0],[8,10.0,0.0,0.0,1.0,5.0],[10,8.0,0.0,0.0,0.0,0.0],[5,7.0,0.0,0.0,2.0,3.0],[1,6.0,0.0,0.0,1.0,6.0],[6,6.0,0.0,0.0,1.0,1.0],[14,3.0,0.0,0.0,1.0,1.0],[11,2.0,0.0,0.0,3.0,6.0],[17,2.0,0.0,0.0,0.0,4.0],[7,0.0,0.0,0.0,1.0,2.0],[18,0.0,0.0,0.0,0.0,2.0],[9,0.0,0.0,0.0,3.0,8.0]],"PACHECO":[[1,6.0,10.0,0.0,4.0,13.0],[5,0.0,10.0,0.0,0.0,0.0],[15,0.0,10.0,0.0,0.0,0.0],[2,10.0,0.0,0.0,0.0,1.0],[0,8.0,0.0,0.0,2.0,2.0],[12,7.0,0.0,0.0,0.0,5.0],[11,3.0,0.0,0.0,3.0,15.0],[8,0.0,0.0,0.0,0.0,10.0],[13,0.0,0.0,0.0,6.0,10.0],[9,0.0,0.0,0.0,2.0,10.0]],"POMONA":[[11,16.0,0.0,0.0,1.0,5.0],[2,7.0,0.0,0.0,0.0,1.0],[12,6.0,0.0,0.0,2.0,9.0],[5,3.0,0.0,0.0,1.0,7.0],[15,3.0,0.0,0.0,1.0,7.0],[10,3.0,0.0,0.0,2.0,7.0],[14,2.0,0.0,0.0,0.0,4.0],[0,1.0,0.0,0.0,0.0,4.0],[19,0.0,0.0,0.0,0.0,8.0],[8,0.0,0.0,0.0,0.0,10.0],[17,0.0,0.0,0.0,0.0,2.0],[9,0.0,0.0,0.0,0.0,8.0],[20,0.0,0.0,0.0,0.0,8.0]],"SBHST":[[0,10.0,0.0,0.0,1.0,3.0],[17,7.0,0.0,0.0,2.0,5.0],[5,5.0,0.0,0.0,6.0,6.0],[2,5.0,0.0,0.0,0.0,2.0],[9,5.0,0.0,0.0,0.0,4.0],[1,4.0,0.0,0.0,6.0,29.0],[15,4.0,0.0,0.0,5.0,5.0],[14,4.0,0.0,0.0,1.0,5.0],[7,2.0,0.0,0.0,1.0,17.0],[21,0.0,0.0,0.0,0.0,1.0],[23,0.0,0.0,0.0,0.0,4.0],[20,0.0,0.0,0.0,0.0,2.0],[24,0.0,0.0,0.0,0.0,2.0],[22,0.0,0.0,0.0,0.0,2.0]],"COLEMAN":[[7,24.0,0.0,0.0,14.0,29.0],[0,7.0,0.0,0.0,3.0,3.0],[5,5.0,0.0,0.0,18.0,28.0],[8,0.0,2.0,0.0,11.0,19.0],[2,0.0,1.0,0.0,16.0,29.0],[10,0.0,0.0,0.0,0.0,10.0],[9,0.0,0.0,0.0,0.0,19.0]],"7TH":[[0,10.0,0.0,0.0,0.0,0.0],[2,10.0,0.0,0.0,0.0,0.0],[3,9.0,0.0,0.0,1.0,1.0],[1,8.0,0.0,0.0,2.0,2.0],[5,7.0,0.0,0.0,3.0,3.0],[4,7.0,0.0,0.0,3.0,3.0],[6,6.0,0.0,0.0,4.0,4.0]],"SUISUN":[[2,9.0,20.0,0.0,4.0,7.0],[0,12.0,0.0,0.0,1.0,4.0],[14,10.0,0.0,0.0,2.0,6.0],[7,8.0,0.0,0.0,5.0,15.0],[10,5.0,0.0,0.0,1.0,5.0],[15,4.0,0.0,0.0,1.0,6.0],[21,0.0,0.0,0.0,0.0,4.0],[18,0.0,0.0,0.0,0.0,4.0],[19,0.0,0.0,0.0,0.0,1.0],[11,0.0,0.0,0.0,0.0,6.0],[16,0.0,0.0,0.0,0.0,1.0],[12,0.0,0.0,0.0,1.0,7.0],[9,0.0,0.0,0.0,0.0,3.0],[20,0.0,0.0,0.0,0.0,3.0]],"UNI":[[12,6.0,0.0,0.0,0.0,4.0],[11,1.0,0.0,0.0,1.0,6.0],[8,0.0,0.0,0.0,0.0,3.0]],"VENTURA":[[5,7.0,0.0,0.0,2.0,3.0],[0,6.0,0.0,0.0,2.0,5.0],[1,6.0,0.0,0.0,3.0,4.0],[25,6.0,0.0,0.0,1.0,7.0],[15,3.0,0.0,0.0,5.0,7.0],[4,1.0,0.0,0.0,4.0,9.0],[7,0.0,0.0,0.0,0.0,10.0],[19,0.0,0.0,0.0,0.0,4.0],[11,0.0,0.0,0.0,0.0,10.0],[3,0.0,0.0,0.0,6.0,10.0],[13,0.0,0.0,0.0,0.0,10.0],[17,0.0,0.0,0.0,0.0,9.0],[9,0.0,0.0,0.0,0.0,12.0],[20,0.0,0.0,0.0,0.0,4.0]],"PCH":[[5,9.0,0.0,0.0,1.0,1.0],[3,8.0,0.0,0.0,2.0,2.0],[4,5.0,0.0,0.0,5.0,5.0]]};
-const STIIIZY_AGE={"MOD":109,"COSTAMESA":18,"DTLA":68,"FRESNO":62,"LONGBEACH":111,"MADERA":81,"PACHECO":53,"POMONA":87,"SBHST":140,"COLEMAN":13,"7TH":4,"SUISUN":94,"UNI":35,"VENTURA":91,"PCH":4};
-// >>> STIIIZY DATA
-
-let stiSort={key:'name',dir:1};
-const stiSku=i=>(STIIIZY_SKUS||[])[i]||['?','',0];
-const stiSkuLabel=i=>{ const s=stiSku(i); return s[1]?(s[0]+' · '+s[1]):s[0]; };
-// One row per store: the roster (name / code / address) plus its totals from the retail sheet.
-// "On hand" = shelf + backstock; Transit is what's on its way but not sellable yet.
-function stiRows(){
-  return (STIIIZY_STORES||[]).map(([code,name,address])=>{
-    const inv=(STIIIZY_INV||{})[code]||[];
-    let shelf=0,back=0,transit=0,l7=0,l28=0,val=0;
-    inv.forEach(r=>{ shelf+=r[1]; back+=r[2]; transit+=r[3]; l7+=r[4]; l28+=r[5]; val+=(r[1]+r[2])*stiSku(r[0])[2]; });
-    const age=(STIIIZY_AGE||{})[code];
-    return {code,name,address,inv, skus:inv.filter(r=>r[1]+r[2]>0).length,
-      shelf,back,transit,onhand:shelf+back,l7,l28,val, age:(age==null?null:age)};
+// ── BA Report: the Customer Tiers view cut for the field team ───────────────────────────────
+// Replaced Stiiizy Inventory (per Gianni 2026-08-12). Same rows/window machinery as Customer
+// Tiers (tierData) minus the money-ops columns (BA Spend / Disc+Credits / % of Sales), plus:
+//   Last EDU / Last PAD      — most recent field-schedule row flagged EDU / PAD (VISIT_EVENTS)
+//   Last store visit         — most recent day in the merged Visits set (schedule ∪ BA app)
+//   Upcoming                 — next row for the account in the FULL schedule (SCHED_EVENTS,
+//                              same workbook the BA app's Schedule board reads)
+//   WT Inventory             — Pistil Stock Report shelf status (PISTIL, CA stores),
+//                              STIIIZY branches rolled up like everywhere else
+let baSort={key:'tier',dir:1};
+// Driver-name canon (sheet typos: MAKENNNA has 3 N's; Leticia goes by Ledy)
+const BA_DRV_ALIAS={makennna:'Makenna',makenna:'Makenna',leticia:'Ledy','leticia (ledy)':'Ledy',ledy:'Ledy'};
+function baDrvName(raw){ const t=String(raw||'').trim(); if(!t) return '';
+  if(t.includes('/')||t.includes(',')) return 'Team';
+  const k=t.toLowerCase().replace(/\s+/g,' ');
+  return BA_DRV_ALIAS[k]||t.replace(/\w\S*/g,w=>w[0].toUpperCase()+w.slice(1).toLowerCase()); }
+// account key → upcoming schedule rows (today onward), soonest first
+function baUpcomingFor(){
+  const t0=new Date(); t0.setHours(0,0,0,0); const t=t0.getTime();
+  const by={};
+  (SCHED_EVENTS||[]).forEach(e=>{ if(e.d<t) return; const k=visitGroupKey(e.c); (by[k]=by[k]||[]).push(e); });
+  Object.values(by).forEach(a=>a.sort((x,y)=>x.d-y.d));
+  return by;
+}
+// account key → Pistil shelf rollup (CA stores; STIIIZY branches collapse to the corporate account)
+function baPistilByKey(){
+  const by={};
+  (PISTIL||[]).forEach(g=>{ if(g.st && g.st!=='CA') return; const k=visitGroupKey(g.s);
+    const b=(by[k]=by[k]||{stores:[],inStock:0,total:0,units:0,rd:g.rd});
+    b.stores.push(g); if(g.rd>b.rd) b.rd=g.rd;
+    g.items.forEach(it=>{ b.total++; if(it[2]) b.inStock++; const n=parseFloat(it[3]); if(!isNaN(n)) b.units+=n; });
   });
+  return by;
 }
-function renderStiiizy(){
-  const wrap=$('#sti-wrap'), note=$('#sti-note'); if(!wrap) return;
-  const rows=stiRows();
-  if(!rows.length){ note.innerHTML=''; wrap.innerHTML='<div class="empty">No STIIIZY store data loaded yet.</div>'; return; }
-  const q=(($('#sti-search')||{}).value||'').trim().toLowerCase();
-  let view=q?rows.filter(r=>r.name.toLowerCase().includes(q)||r.address.toLowerCase().includes(q)||r.code.toLowerCase().includes(q)):rows.slice();
-  const k=stiSort.key,dir=stiSort.dir;
-  view.sort((a,b)=>{ let av=a[k],bv=b[k];
-    if(av==null) av=-1; if(bv==null) bv=-1;
-    if(typeof av==='string'){ av=av.toLowerCase(); bv=String(bv||'').toLowerCase(); }
-    return av<bv?-dir:av>bv?dir:a.name.localeCompare(b.name); });
-  const cols=[['name','Store',0],['code','Code',0],['address','Address',0],['skus','SKUs',1],
-    ['onhand','On hand',1],['transit','In transit',1],['l28','Sold 28d',1],['age','Oldest stock',1],['val','Value',1]];
+// Pistil store name ↔ sales account name rarely match verbatim ("BUZZ - Mission Valley" vs
+// "Buzz Cannabis - Mission Valley", "Goat Global" vs "Goat Global Westwood"). Three passes,
+// each claim-once so one store can never land on two accounts: exact normalized key →
+// filler-word-stripped equality → unique prefix (≥6 chars, one candidate only). Anything
+// ambiguous stays unmatched and is listed BY NAME in the note — never guessed.
+const BA_PIS_FILLER=/\b(cannabis|dispensaries|dispensary|collective|company|wellness|caregivers|remedies|supply|co|shop|store|the|rec|llc|inc)\b/gi;
+const baLooseKey=n=>tierNorm(String(n||'').replace(/\(.*?\)/g,' ').replace(/\|/g,' ').replace(BA_PIS_FILLER,' '));
+let BA_PIS_RES={};   // last render's account-key → pistil rollup (drills read this)
+function baPisResolve(accounts){
+  const pis=baPistilByKey();
+  const entries=Object.entries(pis).map(([k,v])=>({k,v,loose:[...new Set(v.stores.map(g=>baLooseKey(g.s)))]}));
+  const res={}, taken=new Set();
+  accounts.forEach(a=>{ if(pis[a.key] && !taken.has(a.key)){ res[a.key]=pis[a.key]; taken.add(a.key); } });
+  accounts.forEach(a=>{ if(res[a.key]) return; const lk=baLooseKey(a.name); if(!lk) return;
+    const c=entries.filter(e=>!taken.has(e.k) && e.loose.includes(lk));
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  accounts.forEach(a=>{ if(res[a.key]) return; const lk=baLooseKey(a.name); if(lk.length<6) return;
+    const c=entries.filter(e=>!taken.has(e.k) && e.loose.some(x=>x.length>=6 && (x.startsWith(lk)||lk.startsWith(x))));
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  BA_PIS_RES=res;
+  return {res, unmatched:entries.filter(e=>!taken.has(e.k))};
+}
+function baRepView(){
+  const months=Math.max(1,+(($('#ba-months')||{}).value||3));
+  const {rows,start,end}=tierData(months);
+  const up=baUpcomingFor();
+  const {res,unmatched}=baPisResolve(rows.map(r=>({key:baRowKey(r.name),name:r.name})));
+  const view=rows.map(r=>{
+    const k=baRowKey(r.name);
+    let lastEdu=null,lastPad=null,lastVisit=null;
+    (r._visEvs||[]).forEach(e=>{ if(e.edu&&(!lastEdu||e.d>lastEdu)) lastEdu=e.d;
+      if(e.pad&&(!lastPad||e.d>lastPad)) lastPad=e.d;
+      if(!lastVisit||e.d>lastVisit) lastVisit=e.d; });
+    if(r._baDays) r._baDays.forEach((v,d)=>{ const ms=new Date(d+'T12:00:00').getTime(); if(!lastVisit||ms>lastVisit) lastVisit=ms; });
+    return {...r, lastEdu, lastPad, lastVisit, upAll:up[k]||[], pis:res[k]||null};
+  });
+  return {view, months, start, end, up, unmatched};
+}
+function renderBaReport(){
+  const wrap=$('#ba-wrap'), note=$('#ba-note'); if(!wrap) return;
+  const {view,months,unmatched}=baRepView();
+  if(!view.length){ note.innerHTML=''; wrap.innerHTML=`<div class="empty">No sales in the last ${months} month${months>1?'s':''} yet — the BA Report shows the same accounts as Customer Tiers.</div>`; return; }
+  const q=(($('#ba-search')||{}).value||'').trim().toLowerCase();
+  let rows=q?view.filter(r=>r.name.toLowerCase().includes(q)||(r.brand||'').toLowerCase().includes(q)):view.slice();
+  const k=baSort.key,dir=baSort.dir;
+  const sv=r=>{ if(k==='up') return r.upAll.length?r.upAll[0].d:9e15*dir; if(k==='pis') return r.pis?r.pis.inStock:-1; const v=r[k]; return typeof v==='string'?v.toLowerCase():v; };
+  rows.sort((a,b)=>{ const av=sv(a),bv=sv(b); return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):null;
+  const ago=ms=>ms?Math.round((Date.now()-ms)/864e5):null;
+  const dCell=(ms,drill)=>{ if(!ms) return `<td class="num neg">—</td>`; const a=ago(ms);
+    const col=a<=30?'var(--green)':a<=60?'var(--text)':'var(--orange)';
+    return `<td class="num${drill?' visit-link':''}" title="${a} day${a!==1?'s':''} ago"><span style="color:${col}">${fmtD(ms)}</span></td>`; };
+  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev',`Revenue (${months}mo)`,1],['last','Last order',1],['visitsAll','Visits',1],['lastEdu','Last EDU',1],['lastPad','Last PAD',1],['lastVisit','Last store visit',1],['up','Upcoming',1],['pis','WT Inventory',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
-  const nz=(v,cls)=>v?`<span${cls?` class="${cls}"`:''}>${v.toLocaleString()}</span>`:'<span class="neg">—</span>';
-  const body=view.map(r=>`<tr class="parent" data-code="${esc(r.code)}" title="Click for this store's shelf by product">
-    <td>${esc(r.name)}</td><td><span class="rep">${esc(r.code)}</span></td><td class="addr">${esc(r.address||'—')}</td>
-    <td class="num">${nz(r.skus)}</td><td class="num">${nz(r.onhand)}</td><td class="num">${nz(r.transit)}</td>
-    <td class="num">${nz(r.l28)}</td>
-    <td class="num">${r.age==null?'<span class="neg">—</span>':`<span style="color:${r.age>=60?'var(--red)':r.age>=30?'var(--yellow)':'var(--green)'}">${r.age}d</span>`}</td>
-    <td class="num money">${fmt$(r.val)}</td></tr>`).join('');
-  const T=key=>view.reduce((s,r)=>s+(r[key]||0),0);
-  wrap.innerHTML=`<table id="sti-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td colspan="3">${view.length} store${view.length!==1?'s':''}</td>
-    <td class="num">${T('skus')}</td><td class="num">${T('onhand').toLocaleString()}</td><td class="num">${T('transit').toLocaleString()}</td>
-    <td class="num">${T('l28').toLocaleString()}</td><td></td><td class="num money">${fmt$(T('val'))}</td></tr></tfoot></table>`;
+  const body=rows.map(r=>{
+    const u=r.upAll[0]||null, uN=r.upAll.length;
+    const uTxt=u?`${fmtD(u.d)} · ${esc(baDrvName(u.drv)||'—')}${u.pad&&u.edu?' · PAD+EDU':u.pad?' · PAD':u.edu?' · EDU':''}${uN>1?` <span class="neg">+${uN-1}</span>`:''}`:'<span class="neg">—</span>';
+    const p=r.pis;
+    const pTxt=p?(p.inStock?`<span style="color:var(--green)">${p.inStock}/${p.total} in stock</span>`:`<span style="color:var(--red)">OOS (${p.total} tracked)</span>`):'<span class="neg">—</span>';
+    return `<tr class="parent" data-name="${esc(r.name)}">
+    <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
+    <td>${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
+    <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
+    <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
+    <td class="num">${fmtD(r.last)||'<span class="neg">—</span>'}</td>
+    <td class="num${r.visitsAll?' visit-link':''}"${r.visitsAll?' title="Click to see this account’s visit days (schedule + BA field app)"':''}>${r.visitsAll?`<span style="color:var(--green)">${r.visitsAll}</span>`:'<span class="neg">—</span>'}</td>
+    ${dCell(r.lastEdu,true)}${dCell(r.lastPad,true)}${dCell(r.lastVisit,true)}
+    <td class="num${u?' ba-up-link':''}"${u?` title="${esc((u.note||'').slice(0,180))} — click for all upcoming"`:''}>${uTxt}</td>
+    <td class="num${p?' ba-pis-link':''}"${p?` title="${p.units?Math.round(p.units)+' units listed on menus · ':''}${p.stores.length} store${p.stores.length>1?'s':''} — click for the shelf detail"`:''}>${pTxt}</td>
+    <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
+    <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
+  </tr>`; }).join('');
+  const tot=rows.reduce((a,r)=>({rev:a.rev+r.rev,visits:a.visits+(r.visitsAll||0),out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,visits:0,out:0,over:0});
+  wrap.innerHTML=`<table id="ba-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="3">${rows.length} account${rows.length!==1?'s':''}</td><td class="num money">${fmt$(tot.rev)}</td><td></td><td class="num">${tot.visits}</td><td colspan="5"></td><td class="num money">${fmt$(tot.out)}</td><td class="num money">${fmt$(tot.over)}</td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
-    if(stiSort.key===key) stiSort.dir*=-1; else stiSort={key,dir:(['name','code','address'].includes(key))?1:-1}; renderStiiizy(); });
-  wrap.querySelectorAll('tbody tr.parent').forEach(tr=>tr.onclick=()=>stiDrill(tr.dataset.code));
-  // The snapshot is only as good as the last workbook — say how old it is rather than let a
-  // months-stale shelf count read as today's.
-  const asOf=STIIIZY_ASOF?new Date(STIIIZY_ASOF+'T12:00:00'):null;
-  const days=asOf?Math.floor((Date.now()-asOf.getTime())/86400000):null;
-  const stamp=asOf?`<b>as of ${asOf.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</b>${days>21?` <span style="color:var(--red);font-weight:700">— ${days} days old, ask STIIIZY for a fresh report</span>`:days>1?` (${days} days ago)`:''}`:'date unknown';
-  note.innerHTML=`Every <b>STIIIZY retail store</b> that carries Wizard Trees — ${rows.length} stores — with the address of each. Numbers are STIIIZY's own inventory report, ${stamp}. <b>On hand</b> = units on the shelf plus backstock; <b>In transit</b> is on its way to the store and not sellable yet; <b>Sold 28d</b> is their sell-through over the last 28 days; <b>Oldest stock</b> is the age of the oldest batch still sitting in the store; <b>Value</b> is on-hand units at their wholesale cost. Click a store for its shelf by product. This is a snapshot from the workbook STIIIZY sends, not a live feed.`;
+    if(baSort.key===key) baSort.dir=-baSort.dir; else baSort={key,dir:key==='name'||key==='tier'||key==='source'?1:-1};
+    renderBaReport(); });
+  note.innerHTML=baRepNote(view,months,unmatched);   // note stats over the FULL view — a search box filter must not change coverage numbers
 }
-function stiDrill(code){
-  const r=stiRows().find(x=>x.code===code); if(!r) return;
-  const rows=(r.inv||[]).map(x=>[stiSkuLabel(x[0]), x[1], x[2], x[3], x[4], x[5], (x[1]+x[2])*stiSku(x[0])[2]]);
-  openScModal({ title:r.name, sub:`${r.address||'address unknown'} · store code ${r.code}${STIIIZY_ASOF?` · as of ${new Date(STIIIZY_ASOF+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`:''}`,
-    columns:[{l:'Product'},{l:'Shelf',num:true},{l:'Backstock',num:true},{l:'In transit',num:true},{l:'Sold 7d',num:true},{l:'Sold 28d',num:true},{l:'Value',num:true,money:true}],
-    rows,
-    empty:rows.length?undefined:'No Wizard Trees product on hand or sold at this store in the last report.',
-    totalLabel:'On-hand value', total:rows.length?r.val:undefined });
+function baRepNote(rows,months,unmatched){
+  const schedMax=(SCHED_EVENTS||[]).reduce((m,e)=>Math.max(m,e.d),0);
+  const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—';
+  let s=`<b>BA Report</b> — the Customer Tiers accounts (same tiers, thresholds and ${months}-month window) with the field team's columns. <b>Last EDU / Last PAD</b> come from the schedule sheet's keyword-tagged rows; <b>Last store visit</b> is the most recent day in the merged Visits set (schedule ∪ BA field app); <b>Upcoming</b> is the account's next row in the team schedule workbook (any activity, deliveries included).`;
+  if(SCHED_EVENTS&&SCHED_EVENTS.length){ s+=` Schedule loaded through <b>${fmtDt(schedMax)}</b>${SCHED_ASOF?` (scraped ${new Date(SCHED_ASOF).toLocaleString()})`:''}.`;
+    if(schedMax<new Date().setHours(0,0,0,0)) s+=` <span style="color:var(--orange)">The workbook has no rows past ${fmtDt(schedMax)} — Upcoming is empty until the team schedules further out.</span>`; }
+  else s+=` <span style="color:var(--orange)">No schedule data loaded yet — Upcoming shows “—”.</span>`;
+  const matched=new Set(rows.filter(r=>r.pis).map(r=>baRowKey(r.name))).size, total=matched+(unmatched||[]).length;
+  if(total){
+    const rd=rows.filter(r=>r.pis).map(r=>r.pis.rd).concat((unmatched||[]).map(e=>e.v.rd)).sort().pop();
+    s+=` <b>WT Inventory</b> = Pistil's Stock Report menu crawl (report of ${rd||'—'}${PISTIL_ASOF?`, pulled ${new Date(PISTIL_ASOF).toLocaleDateString()}`:''}): WT SKUs seen on each store's menu, in stock vs out; unit counts only where the menu exposes them. Store names are matched to accounts exact-first, then with filler words stripped, then by unique prefix — ambiguous names are left unmatched, never guessed. ${matched} of ${total} Pistil-tracked CA stores/chains matched accounts on this list.`;
+    if((unmatched||[]).length){ const names=unmatched.slice(0,12).map(e=>esc(e.v.stores.map(g=>g.s).join(' + ')));
+      s+=` <span style="color:var(--orange)"><b>Tracked by Pistil but not matched above:</b> ${names.join(', ')}${unmatched.length>12?` +${unmatched.length-12} more`:''}</span> — no sales in this window, or a store↔account name mismatch.`; }
+  } else s+=` <span style="color:var(--orange)"><b>WT Inventory:</b> no Pistil data loaded yet — the column shows “—”.</span>`;
+  return s;
 }
-$('#sti-export').onclick=()=>{
-  const out=[['Store','Code','Address','SKUs on hand','On hand','Shelf','Backstock','In transit','Sold 7d','Sold 28d','Oldest stock (days)','On-hand value']];
-  stiRows().forEach(r=>out.push([r.name,r.code,r.address,r.skus,r.onhand,r.shelf,r.back,r.transit,r.l7,r.l28,r.age==null?'':r.age,r.val.toFixed(2)]));
-  downloadCSV(`stiiizy-stores${STIIIZY_ASOF?'-'+STIIIZY_ASOF:''}.csv`,out);
+function baUpcomingDrill(name){
+  const list=baUpcomingFor()[baRowKey(name)]||[];
+  if(!list.length) return;
+  const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+  openScModal({title:`${name} — upcoming scheduled activity`,
+    sub:`from the team schedule workbook (the BA app's Schedule board reads the same sheet) · soonest first`,
+    columns:[{l:'Date'},{l:'Who'},{l:'Activity'},{l:'Notes'}],
+    rows:list.map(e=>[fmtDt(e.d), baDrvName(e.drv)||'—', e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':e.edu?'EDU':'Visit',
+      (visitNote(e)||'')+(e.so?` · ${e.so}`:'')])});
+}
+function baPistilDrill(name){
+  const p=BA_PIS_RES[baRowKey(name)]||baPistilByKey()[baRowKey(name)]; if(!p) return;
+  const multi=p.stores.length>1;
+  const rows=[];
+  p.stores.forEach(g=>g.items.forEach(it=>rows.push([
+    ...(multi?[g.s]:[]), it[0]||'—', it[1]?('$'+it[1]):'—',
+    it[2]?'in stock':'out of stock', it[3]||'—', it[4]||'—'])));
+  openScModal({title:`${name} — WT shelf status (Pistil)`,
+    sub:`${multi?p.stores.length+' stores · ':''}menu-crawl report of ${p.rd||'—'} · “Menu count” is a real unit count only where the store's menu exposes quantities (“In-Stock” = listed without a count)`,
+    columns:[...(multi?[{l:'Store'}]:[]),{l:'Product'},{l:'Price'},{l:'Status'},{l:'Menu count'},{l:'Last seen'}],
+    rows});
+}
+$('#ba-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#ba-wrap').contains(tr)) return;
+  const name=tr.getAttribute('data-name'), mo=+(($('#ba-months')||{}).value||3);
+  if(ev.target.closest && ev.target.closest('td.visit-link')) return tierVisitsDrill(name,mo);   // Visits + the three Last-… cells → merged visit-day detail
+  if(ev.target.closest && ev.target.closest('td.ba-up-link')) return baUpcomingDrill(name);
+  if(ev.target.closest && ev.target.closest('td.ba-pis-link')) return baPistilDrill(name);
+  if(ev.target.closest && ev.target.closest('td.over-link')) return tierOverdueDrill(name);
+  return tierDrill(name,mo); };   // orders drill over the BA report's own window, not Tiers'
+['ba-months','ba-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderBaReport); });
+$('#ba-export').onclick=()=>{
+  const {view,months}=baRepView();
+  const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
+  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Last order','Visits (sched ∪ BA)','Last EDU','Last PAD','Last store visit','Upcoming date','Upcoming who','Upcoming activity','WT SKUs in stock','WT SKUs tracked','AR Outstanding','Overdue']];
+  view.sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>{ const u=r.upAll[0]||null;
+    out.push([r.tier,r.name,r.source,r.rev.toFixed(2),iso(r.last),r.visitsAll||0,iso(r.lastEdu),iso(r.lastPad),iso(r.lastVisit),
+      u?iso(u.d):'',u?baDrvName(u.drv):'',u?(u.pad&&u.edu?'PAD + EDU':u.pad?'PAD':u.edu?'EDU':'Visit'):'',
+      r.pis?r.pis.inStock:'',r.pis?r.pis.total:'',r.arOut.toFixed(2),r.arOver.toFixed(2)]); });
+  downloadCSV('ba-report.csv',out);
 };
-{ const el=$('#sti-search'); if(el) el.addEventListener('input',renderStiiizy); }
 function renderCustomers(){
   if(APP_STATE==='NY' && !NY_ADDR_LOADED) loadNyAddr();
   const wrap=$('#cust-wrap'), note=$('#cust-note'); if(!wrap) return;
