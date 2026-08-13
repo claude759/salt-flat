@@ -272,7 +272,7 @@
   .cre-del:hover{border-color:var(--red);color:var(--red)}
   .neg{color:var(--muted)}
   /* Customer Tiers */
-  td.over-link,td.visit-link,td.baspend-link,td.ba-visit-link,td.ba-up-link,td.ba-pis-link{cursor:pointer}
+  td.over-link,td.visit-link,td.baspend-link,td.ba-visit-link,td.ba-up-link,td.ba-pis-link,td.ba-why-link{cursor:pointer}
   td.over-link>span,td.visit-link>span,td.baspend-link>span,td.ba-visit-link>span{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .tier-badge{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap}
   .tier-badge.t1{background:#123524;color:#7ee2a8}
@@ -5791,6 +5791,51 @@ function baPistilByKey(){
 // each claim-once so one store can never land on two accounts: exact normalized key →
 // filler-word-stripped equality → unique prefix (≥6 chars, one candidate only). Anything
 // ambiguous stays unmatched and is listed BY NAME in the note — never guessed.
+// Hand-curated Pistil-store → account bridges, each pair verified by STREET ADDRESS in the
+// 2026-08-12 gap audit (same street # + zip in Pistil's export and our customer directory —
+// see the audit script's output before extending; never bridge on name similarity alone).
+// Multi-store chains that bill through one account (Cannavine → their distro account) list
+// every branch. tierNorm'd at startup so punctuation variants can't break a bridge.
+const BA_PIS_ALIAS_RAW={
+  'Catalyst Cannabis Dispensary Santa Ana - OC3':'Catalyst OC3',
+  'Swish Cannabis':'Swish Cannabis North Hollywood',
+  'Goat Global | West LA':'Goat Global Westwood',
+  'Dr. Greenthumbs San Diego':"Dr. Greenthumb's San Diego",
+  'WE ROLL UP LAX':'We Roll Up Culver City',
+  'Xzibit\u2019s West Coast Cannabis Dispensary - Chatsworth':'Xzibits West Coast Cannabis Chatsworth',
+  'R2H Dispensary':'Roots 2 Harvest Lake Elsinore',
+  'JADEROOM OC':'Jaderoom Santa Ana',
+  'Herbal Pain Relief Center':'Herbal Pain Relief Center North Hills',
+  'The Maven Store':'The Maven Store Tarzana',
+  'The Bright Spot (MED)':'The Bright Spot',
+  'Purple Lotus Peninsula - San Jose Commercial St':'Purple Lotus Retail',
+  'Catalyst Cannabis Dispensary Downtown Long Beach (DTLB)':'Catalyst Pine',
+  'Purple Lotus - Downtown San Jose':'Purple Lotus Patient Center Downtown',
+  'Catalyst Cannabis Dispensary South LA - Figueroa':'Catalyst South Figueroa',
+  'Catalyst Cannabis Dispensary Los Angeles - Mid City':'Catalyst Mid City',
+  'Catalyst Cannabis Dispensary Los Angeles - Silver Lake':'Catalyst Silver Lake',
+  'Cannavine - Ukiah (REC)':'Cannavine Distro',
+  'Cannavine - Belmont (REC)':'Cannavine Distro',
+  'Cannavine - San Francisco (REC)':'Cannavine Distro',
+  'Cannavine - Santa Rosa (REC)':'Cannavine Distro',
+  'Jungle Boys - OC':'Jungle Boys Santa Ana',
+  'Sundialed Collective':'Sundial Bishop',
+  'GreenBean':'Green Bean',
+  'Elevated San Francisco':'Elevated SF',
+  'The Hill - San Francisco, CA':'The Hill',
+  'PLNTBSD':'Grand-Era',
+  'Jade Leaf Westwood':'Jade Leaf',
+  'Flame Antioch':'Flame Dispensary',
+  'Proper Wellness Center - Eureka':'Proper Wellness - Eureka',
+  'Cookies - Mission Valley':'Cookies San Diego',
+  'BudBees':'Bud Bees',
+  'HPC - Oxnard':'HPC of Oxnard',
+  'Jade Leaf Lomita':'South Bay Canna Clinic',
+  'Perfect Union - Sacramento Northside':'Perfect Union Northside',
+  'Flavors Antioch':'Pacafi \u2014 Flavors Antioch',
+  'The Ounce':'The Ounce North Hollywood',   // same address + license as our dupe account "The Ounce" — the NH row carries the active revenue
+};
+const BA_PIS_ALIAS={}; Object.entries(BA_PIS_ALIAS_RAW).forEach(([st,acct])=>{ BA_PIS_ALIAS[tierNorm(st)]=tierNorm(acct); });
 const BA_PIS_FILLER=/\b(cannabis|dispensaries|dispensary|collective|company|wellness|caregivers|remedies|supply|co|shop|store|the|rec|llc|inc)\b/gi;
 const baLooseKey=n=>tierNorm(String(n||'').replace(/\(.*?\)/g,' ').replace(/\|/g,' ').replace(BA_PIS_FILLER,' '));
 // account key → POS on-hand rollup (no state column in that export — matching against the
@@ -5806,10 +5851,21 @@ function baPistilPosByKey(){
 }
 let BA_PIS_RES={};   // last render's account-key → menu-crawl rollup (drills read this)
 let BA_POS_RES={};   // last render's account-key → POS rollup
+let BA_PIS_UN=[];    // last render's UNMATCHED menu-crawl entries (the why-drill searches these)
 function baPisResolve(accounts, pis){
   const entries=Object.entries(pis).map(([k,v])=>({k,v,loose:[...new Set(v.stores.map(g=>baLooseKey(g.s)))]}));
   const res={}, taken=new Set();
-  accounts.forEach(a=>{ if(pis[a.key] && !taken.has(a.key)){ res[a.key]=pis[a.key]; taken.add(a.key); } });
+  // pass 0: the hand-curated, address-verified bridges win before any heuristic; several
+  // bridged stores can feed ONE account (Cannavine's four branches → their distro account),
+  // so later entries MERGE into the target instead of being dropped.
+  const byAccountKey={}; accounts.forEach(a=>byAccountKey[a.key]=true);
+  const mergeRoll=(a,b)=>{ const m={...a, stores:a.stores.concat(b.stores)};
+    ['inStock','total','units','skus'].forEach(f=>{ if(typeof a[f]==='number'||typeof b[f]==='number') m[f]=(a[f]||0)+(b[f]||0); });
+    if((b.rd||'')>(m.rd||'')) m.rd=b.rd; return m; };
+  entries.forEach(e=>{ if(taken.has(e.k)) return;
+    for(const g of e.v.stores){ const target=BA_PIS_ALIAS[tierNorm(g.s)];
+      if(target && byAccountKey[target]){ res[target]=res[target]?mergeRoll(res[target],e.v):e.v; taken.add(e.k); break; } } });
+  accounts.forEach(a=>{ if(!res[a.key] && pis[a.key] && !taken.has(a.key)){ res[a.key]=pis[a.key]; taken.add(a.key); } });
   accounts.forEach(a=>{ if(res[a.key]) return; const lk=baLooseKey(a.name); if(!lk) return;
     const c=entries.filter(e=>!taken.has(e.k) && e.loose.includes(lk));
     if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
@@ -5823,7 +5879,7 @@ function baRepView(){
   const {rows,start,end}=tierData(months);
   const up=baUpcomingFor();
   const accounts=rows.map(r=>({key:baRowKey(r.name),name:r.name}));
-  const {res,unmatched}=baPisResolve(accounts, baPistilByKey()); BA_PIS_RES=res;
+  const {res,unmatched}=baPisResolve(accounts, baPistilByKey()); BA_PIS_RES=res; BA_PIS_UN=unmatched;
   const {res:resPos}=baPisResolve(accounts, baPistilPosByKey()); BA_POS_RES=resPos;
   const view=rows.map(r=>{
     const k=baRowKey(r.name);
@@ -5867,7 +5923,7 @@ function renderBaReport(){
     <td class="num${r.visitsAll?' visit-link':''}"${r.visitsAll?' title="Click to see this account’s visit days (schedule + BA field app)"':''}>${r.visitsAll?`<span style="color:var(--green)">${r.visitsAll}</span>`:'<span class="neg">—</span>'}</td>
     ${dCell(r.lastEdu,true)}${dCell(r.lastPad,true)}${dCell(r.lastVisit,true)}
     <td class="num${u?' ba-up-link':''}"${u?` title="${esc((u.note||'').slice(0,180))} — click for all upcoming"`:''}>${uTxt}</td>
-    <td class="num${(p||q)?' ba-pis-link':''}"${(p||q)?` title="${q?'true POS on-hand ('+q.stores.length+' store'+(q.stores.length>1?'s':'')+') · ':''}${p?p.stores.length+' store'+(p.stores.length>1?'s':'')+' on the menu crawl · ':''}click for the shelf detail"`:''}>${pTxt}</td>
+    <td class="num ${(p||q)?'ba-pis-link':'ba-why-link'}" title="${(p||q)?`${q?'true POS on-hand ('+q.stores.length+' store'+(q.stores.length>1?'s':'')+') · ':''}${p?p.stores.length+' store'+(p.stores.length>1?'s':'')+' on the menu crawl · ':''}click for the shelf detail`:'No Pistil data matched — click to see why'}>${pTxt}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
   </tr>`; }).join('');
@@ -5896,6 +5952,7 @@ function baRepNote(rows,months,unmatched){
   const posN=rows.filter(r=>r.pos).length;
   if(posN){ const posRd=rows.filter(r=>r.pos).map(r=>r.pos.rd).sort().pop();
     s+=` <b>${posN}</b> account${posN!==1?'s':''} show${posN===1?'s':''} a bold “N units” figure — TRUE POS on-hand from Pistil-connected stores (report of ${posRd||'—'}${PISTIL_POS_ASOF?`, pulled ${new Date(PISTIL_POS_ASOF).toLocaleDateString()}`:''}); everyone else shows menu-crawl status only (menus rarely expose counts).`; }
+  s+=` Click an empty WT Inventory cell to see WHY it's empty (likely name mismatch vs not tracked by Pistil); 36 store↔account name bridges are already hand-verified by address.`;
   return s;
 }
 function baUpcomingDrill(name){
@@ -5933,11 +5990,45 @@ function baPistilDrill(name){
     columns:[...(multi?[{l:'Store'}]:[]),{l:'Product'},{l:'Units',num:true},{l:'Velocity'},{l:'Price'},{l:'Menu'},{l:'Last seen'}],
     rows});
 }
+// Empty WT Inventory cell → WHY: address-match then name-similarity against the stores Pistil
+// tracks but we couldn't attach. Turns "—" from a dead end into a diagnosis: either a likely
+// name mismatch (with the candidate store + both addresses shown) or "Pistil doesn't track them".
+function baPisWhyDrill(name){
+  const addrKey=a=>{ const t=String(a||'').toUpperCase();
+    const num=(t.match(/\b(\d{2,6})\b/)||[])[1]||'', zip=(t.match(/\b(9\d{4})\b/)||[])[1]||'';
+    return num&&zip?num+'|'+zip:null; };
+  const toks=n=>new Set(String(n).toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>2&&!/^(THE|CANNABIS|DISPENSARY|COLLECTIVE|COMPANY|WELLNESS|STORE|SHOP|REC|LLC|INC)$/.test(w)));
+  const sim=(a,b)=>{ const A=toks(a),B=toks(b); if(!A.size||!B.size) return 0;
+    let n2=0; A.forEach(w=>{ if(B.has(w)) n2++; else if([...B].some(x=>x.startsWith(w)||w.startsWith(x))) n2+=0.7; });
+    return n2/Math.max(A.size,B.size); };
+  const ourAddr=(CUST_DIR[tierNorm(name)]||{}).address||'';
+  const ourAK=addrKey(ourAddr);
+  // Search EVERY Pistil store, not just unmatched ones — when our own books carry the same
+  // store under two account names, the data lands on the sibling and this drill must say so.
+  const claimedBy={}; Object.entries(BA_PIS_RES).forEach(([ak,v])=>v.stores.forEach(g=>claimedBy[g.s]=ak));
+  const rowName={}; ( ($('#ba-table')&&[...document.querySelectorAll('#ba-table tbody tr.parent')])||[] ).forEach(tr=>{ const n=tr.getAttribute('data-name'); rowName[baRowKey(n)]=n; });
+  const cands=[];
+  (PISTIL||[]).forEach(g=>{ if(g.st&&g.st!=='CA') return;
+    const byAddr=ourAK&&addrKey(g.a)===ourAK;
+    const sc=sim(name,g.s);
+    if(byAddr||sc>=0.45) cands.push({s:g.s,a:g.a||'',sc:byAddr?1:sc,byAddr,who:claimedBy[g.s]?(rowName[claimedBy[g.s]]||claimedBy[g.s]):null});
+  });
+  cands.sort((a,b)=>b.sc-a.sc);
+  const top=cands.slice(0,4);
+  openScModal({title:`${name} — why no WT Inventory?`,
+    sub: top.length
+      ? `Pistil tracks ${top.length===1?'a store that may be':'stores that may be'} this account under a different name — if one below is right, it can be bridged permanently (address is the proof to check).`
+      : `Pistil's WT crawl (all ${(PISTIL||[]).length} stores) has nothing resembling this account by name or address — they're not tracked. Delivery services, distro/manufacturing accounts and non-storefront buyers never appear in Pistil.`,
+    columns: top.length?[{l:'Pistil store'},{l:'Evidence'},{l:'Currently attached to'},{l:'Pistil address'},{l:'Our address on file'}]:undefined,
+    rows: top.map(c=>[c.s, c.byAddr?'SAME street # + zip':`name similarity ${(c.sc*100).toFixed(0)}%`, c.who?c.who:'nothing (unmatched)', c.a||'—', ourAddr||'(none on file)']),
+    empty: top.length?undefined:' '});
+}
 $('#ba-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#ba-wrap').contains(tr)) return;
   const name=tr.getAttribute('data-name'), mo=+(($('#ba-months')||{}).value||3);
   if(ev.target.closest && ev.target.closest('td.visit-link')) return tierVisitsDrill(name,mo);   // Visits + the three Last-… cells → merged visit-day detail
   if(ev.target.closest && ev.target.closest('td.ba-up-link')) return baUpcomingDrill(name);
   if(ev.target.closest && ev.target.closest('td.ba-pis-link')) return baPistilDrill(name);
+  if(ev.target.closest && ev.target.closest('td.ba-why-link')) return baPisWhyDrill(name);
   if(ev.target.closest && ev.target.closest('td.over-link')) return tierOverdueDrill(name);
   return tierDrill(name,mo); };   // orders drill over the BA report's own window, not Tiers'
 ['ba-months','ba-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderBaReport); });
