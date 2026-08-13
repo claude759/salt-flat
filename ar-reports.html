@@ -5464,6 +5464,26 @@ function visitsFromWire(w){ return (w||[]).map(a=>({d:a[0]||0, c:String(a[1]||''
 // "Upcoming scheduled activity" column. Same field-schedule.csv, its own payload key `sched` so
 // the long-standing PAD/EDU semantics of `visits` (Tiers counts, PAD/EDU report) never shift.
 let SCHED_EVENTS=[];   // {d:ms, c:account, drv:driver, pad, edu, note, so}
+/* Tasks created inside the BA app's Schedule tab (schedule_tasks). They live in
+   Supabase, not the workbook, so they arrive via their own RPC and are kept in a
+   SEPARATE array — schedAll() unions them for reads, while the published payload
+   keeps carrying workbook rows only. */
+let APP_TASKS=[], APP_TASKS_LOADED=false;
+const schedAll=()=>(SCHED_EVENTS||[]).concat(APP_TASKS);
+function loadAppTasks(){
+  if(APP_TASKS_LOADED) return; APP_TASKS_LOADED=true;
+  fetch(`${SUPABASE_URL}/rest/v1/rpc/schedule_tasks_feed`,{method:'POST',
+    headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},body:'{}'})
+    .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+    .then(rows=>{
+      const PAD=/\bPADs?\b/i, EDU=/\bEDUs?\b|educat/i;
+      APP_TASKS=(rows||[]).map(t=>{ const note=t.notes||'';
+        return { d:new Date(t.task_date+'T12:00:00').getTime(), c:String(t.account||''), drv:String(t.driver||''),
+                 pad:PAD.test(note), edu:EDU.test(note), note, so:String(t.so_num||''), app:true }; });
+      if(APP_TASKS.length) renderRepMode();
+    })
+    .catch(()=>{ APP_TASKS_LOADED=false; });
+}
 let SCHED_ASOF=null;   // payload stamp: when the schedule was last scraped fresh
 function buildSchedEvents(){
   if(!FILES.visits) return [];
@@ -5784,7 +5804,7 @@ function baDrvName(raw){ const t=String(raw||'').trim(); if(!t) return '';
 function baUpcomingFor(){
   const t0=new Date(); t0.setHours(0,0,0,0); const t=t0.getTime();
   const by={};
-  (SCHED_EVENTS||[]).forEach(e=>{ if(e.d<t) return; const k=visitGroupKey(e.c); (by[k]=by[k]||[]).push(e); });
+  schedAll().forEach(e=>{ if(e.d<t) return; const k=visitGroupKey(e.c); (by[k]=by[k]||[]).push(e); });
   Object.values(by).forEach(a=>a.sort((x,y)=>x.d-y.d));
   return by;
 }
@@ -5939,13 +5959,14 @@ function baBranchData(key, pisStores, posStores){
     if(!b.lastVisit||v.d>b.lastVisit) b.lastVisit=v.d; });
   Object.entries(days).forEach(([n,set])=>{ const b=brs.find(x=>x.name===n)||un; b.visits=set.size; });
   const t0=new Date(); t0.setHours(0,0,0,0);
-  (SCHED_EVENTS||[]).forEach(e=>{ if(e.d<t0.getTime()||visitGroupKey(e.c)!==key) return; const b=assign(e.c);
+  schedAll().forEach(e=>{ if(e.d<t0.getTime()||visitGroupKey(e.c)!==key) return; const b=assign(e.c);
     b.upN++; if(!b.up||e.d<b.up.d) b.up=e; });
   const out=brs.sort((a,b)=>a.name<b.name?-1:1);
   if(un.visits||un.upN||un.lastVisit) out.push(un);
   return out;
 }
 function renderBaReport(){
+  loadAppTasks();   // BA-app-created schedule tasks feed the Upcoming column
   const wrap=$('#ba-wrap'), note=$('#ba-note'); if(!wrap) return;
   const {view,months,unmatched}=baRepView();
   if(!view.length){ note.innerHTML=''; wrap.innerHTML=`<div class="empty">No sales in the last ${months} month${months>1?'s':''} yet — the BA Report shows the same accounts as Customer Tiers.</div>`; return; }
@@ -6006,7 +6027,7 @@ function renderBaReport(){
   note.innerHTML=baRepNote(view,months,unmatched);   // note stats over the FULL view — a search box filter must not change coverage numbers
 }
 function baRepNote(rows,months,unmatched){
-  const schedMax=(SCHED_EVENTS||[]).reduce((m,e)=>Math.max(m,e.d),0);
+  const schedMax=schedAll().reduce((m,e)=>Math.max(m,e.d),0);
   const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—';
   let s=`<b>BA Report</b> — the Customer Tiers accounts (same tiers, thresholds and ${months}-month window) with the field team's columns. <b>Last EDU / Last PAD</b> come from the schedule sheet's keyword-tagged rows; <b>Last store visit</b> is the most recent day in the merged Visits set (schedule ∪ BA field app); <b>Upcoming</b> is the account's next row in the team schedule workbook (any activity, deliveries included).`;
   if(SCHED_EVENTS&&SCHED_EVENTS.length){ s+=` Schedule loaded through <b>${fmtDt(schedMax)}</b>${SCHED_ASOF?` (scraped ${new Date(SCHED_ASOF).toLocaleString()})`:''}.`;
@@ -6134,7 +6155,7 @@ function baBranchVisitsDrill(key, branch, type){
 function baBranchUpDrill(key, branch){
   const assign=baBranchAssignFor(key);
   const t0=new Date(); t0.setHours(0,0,0,0);
-  const list=(SCHED_EVENTS||[]).filter(e=>e.d>=t0.getTime()&&visitGroupKey(e.c)===key&&assign(e.c).name===branch).sort((a,b)=>a.d-b.d);
+  const list=schedAll().filter(e=>e.d>=t0.getTime()&&visitGroupKey(e.c)===key&&assign(e.c).name===branch).sort((a,b)=>a.d-b.d);
   if(!list.length) return;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
   openScModal({title:`${branch} — upcoming scheduled activity`, sub:'from the team schedule workbook · soonest first',
