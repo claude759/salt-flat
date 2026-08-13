@@ -47,13 +47,26 @@ on conflict (id) do update
       workbook_id=excluded.workbook_id, allowed_emails=excluded.allowed_emails, updated_at=now();
 
 -- ── 3. visibility: allowlist OR universal admin OR your own region ──────────
+-- Every branch is gated on the caller still being ACTIVE. Deactivating someone in
+-- Admin → Users is the only offboarding step the app offers, and it must actually
+-- revoke this board: the workbook id is the de-facto secret for an
+-- anyone-with-the-link Google Sheet, and board access also carries task write/delete.
+-- One helper, used by both the policy and schedule_states(), so the two predicates
+-- can never drift apart.
+create or replace function public.schedule_can_see(p_state text, p_emails text[])
+ returns boolean language sql stable security definer set search_path=public as $$
+  select exists(select 1 from public.profiles p where p.id = auth.uid() and p.active)
+     and (
+       lower(coalesce(auth.jwt()->>'email','')) = any(p_emails)
+       or public.is_universal_admin()
+       or p_state = (select region from public.profiles where id = auth.uid() and active)
+     );
+$$;
+grant execute on function public.schedule_can_see(text, text[]) to authenticated;
+
 drop policy if exists schedule_board_select on public.schedule_board;
 create policy schedule_board_select on public.schedule_board for select to authenticated
-  using (
-    lower(coalesce(auth.jwt()->>'email','')) = any(allowed_emails)
-    or public.is_universal_admin()
-    or state = (select region from public.profiles where id = auth.uid() and active)
-  );
+  using ( public.schedule_can_see(state, allowed_emails) );
 
 -- ── 4. tasks belong to a board ─────────────────────────────────────────────
 -- NOTE: schedule_tasks.region is the CA workbook's DELIVERY ZONE column, not a
@@ -61,13 +74,12 @@ create policy schedule_board_select on public.schedule_board for select to authe
 alter table public.schedule_tasks add column if not exists state text not null default 'CA';
 create index if not exists schedule_tasks_state_date_idx on public.schedule_tasks(state, task_date);
 
--- the set of board states this user may see (mirrors the policy above)
+-- the set of board states this user may see — same predicate as the policy above,
+-- via the same helper, so an inactive user loses tasks exactly when they lose boards
 create or replace function public.schedule_states() returns text[]
  language sql stable security definer set search_path=public as $$
   select coalesce(array_agg(state), '{}') from public.schedule_board
-   where lower(coalesce(auth.jwt()->>'email','')) = any(allowed_emails)
-      or public.is_universal_admin()
-      or state = (select region from public.profiles where id = auth.uid() and active);
+   where public.schedule_can_see(state, allowed_emails);
 $$;
 grant execute on function public.schedule_states() to authenticated;
 

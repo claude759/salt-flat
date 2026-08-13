@@ -355,7 +355,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-13.97';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-13.98';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4730,26 +4730,42 @@ const NY_FIELDS={'account name':'account','account':'account','store':'account',
   'brand ambassador':'driver','brand ambassdor':'driver','ba':'driver',
   'time':'time','deals':'deals','deal':'deals','notes':'notes','note':'notes',
   'sales rep':'rep','rep':'rep'};
+// Anomalies the parse had to work around (a typo'd or contradictory date cell).
+// Surfaced under the calendar rather than swallowed, so a workbook mistake is
+// visible to whoever can fix it instead of quietly moving someone's day.
+const SCHED_NY_WARN=[];
 function schedFlattenNY(grid,sheetName){
   const norm=v=>String(v==null?'':v).replace(/\s+/g,' ').trim();
   const DAYS=['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'];
-  const DATE=/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
-  const ISO=/^(\d{4})-(\d{2})-(\d{2})/;
+  // Tolerant like the CA parser's WD: the sheet decorates structural cells
+  // ("8/31/26 LAST DAY OF THE MONTH"), so exact equality would miss a band start
+  // and silently swallow the following week.
+  const WD=/^(MON|TUES|WEDNES|THURS|FRI|SATUR|SUN)DAY\b/i;
+  const dayIdx=s=>{ const m=WD.exec(norm(s)); if(!m) return -1;
+    return DAYS.findIndex(d=>d.startsWith(m[1].toUpperCase())); };
+  // a date ANYWHERE in the cell, not the whole cell
+  const DATE=/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/;
+  const ISO=/(\d{4})-(\d{2})-(\d{2})/;
   const isoOf=s=>{ const t=norm(s); let m=DATE.exec(t);
     if(m){ const y=+m[3]<100?2000+(+m[3]):+m[3];
-      return `${y}-${String(+m[1]).padStart(2,'0')}-${String(+m[2]).padStart(2,'0')}`; }
+      const mo=+m[1], da=+m[2];
+      if(mo<1||mo>12||da<1||da>31) return null;
+      return `${y}-${String(mo).padStart(2,'0')}-${String(da).padStart(2,'0')}`; }
     m=ISO.exec(t); return m?`${m[1]}-${m[2]}-${m[3]}`:null; };
+  const dnum=iso=>Date.UTC(+iso.slice(0,4),+iso.slice(5,7)-1,+iso.slice(8,10))/864e5;
+  const dstr=n=>new Date(n*864e5).toISOString().slice(0,10);
+  const warn=SCHED_NY_WARN;
   const out=[];
-  // band starts: any row containing the word MONDAY on its own
+  // band starts: any row whose cells include a MONDAY-ish day name
   const starts=[];
   for(let r=0;r<grid.length;r++)
-    if((grid[r]||[]).some(c=>norm(c).toUpperCase()==='MONDAY')) starts.push(r);
+    if((grid[r]||[]).some(c=>dayIdx(c)===0)) starts.push(r);
   for(let b=0;b<starts.length;b++){
     const h=starts[b], end=b+1<starts.length?starts[b+1]:grid.length;
     const hdr=grid[h]||[];
     const anchors=[];
-    for(let c=0;c<hdr.length;c++){ const t=norm(hdr[c]).toUpperCase();
-      if(DAYS.includes(t)) anchors.push(c); }
+    for(let c=0;c<hdr.length;c++){ const di=dayIdx(hdr[c]);
+      if(di>=0) anchors.push({c,di}); }
     if(!anchors.length) continue;
     // the field-header row: the first row below with 3+ recognised headers
     let fr=-1;
@@ -4761,26 +4777,55 @@ function schedFlattenNY(grid,sheetName){
     if(fr<0) continue;
     // the date row sits between the day names and the headers
     let dr=-1;
-    for(let r=h+1;r<fr;r++) if(anchors.some(c=>isoOf((grid[r]||[])[c]))){ dr=r; break; }
+    for(let r=h+1;r<fr;r++) if(anchors.some(a=>isoOf((grid[r]||[])[a.c]))){ dr=r; break; }
     if(dr<0) continue;
+    // ── the band's dates are DERIVED, not trusted cell-by-cell ──────────────
+    // Each day column votes for a week start (its own date minus its weekday
+    // offset); the majority wins and every day is then computed from it. This
+    // survives the two failure modes the workbook actually exhibits: a typo'd
+    // cell ("6/1026") that would otherwise delete that whole day, and a stale
+    // leftover date that would file a day's visits onto the wrong date.
+    const votes={};
+    for(let i=0;i<anchors.length;i++){
+      const a=anchors[i], cEnd=i+1<anchors.length?anchors[i+1].c:(grid[dr]||[]).length;
+      let iso=null, text='';
+      for(let c=a.c;c<cEnd;c++){ const t=norm((grid[dr]||[])[c]);
+        if(t&&!text) text=t;
+        if(!iso) iso=isoOf((grid[dr]||[])[c]); }
+      a.raw=iso; a.text=text;
+      if(!iso) continue;
+      const base=dnum(iso)-a.di;
+      votes[base]=(votes[base]||0)+1;
+    }
+    const bases=Object.keys(votes);
+    if(!bases.length) continue;
+    const base=+bases.sort((x,y)=>votes[y]-votes[x]||+x-+y)[0];
+    for(const a of anchors){
+      a.iso=dstr(base+a.di);
+      // Only flag a cell that is actually WRONG: it disagrees with the rest of its
+      // week, or it holds text that isn't a readable date. A blank cell is normal
+      // (months are left empty outside their own weeks) and stays silent.
+      if(a.raw&&a.raw!==a.iso) warn.push(`${sheetName}: ${DAYS[a.di]} says ${a.raw}, the rest of that week says ${a.iso}`);
+      else if(!a.raw&&a.text) warn.push(`${sheetName}: ${DAYS[a.di]} date "${a.text}" is unreadable — used ${a.iso}`);
+    }
     for(let ai=0;ai<anchors.length;ai++){
-      const c0=anchors[ai], cEnd=ai+1<anchors.length?anchors[ai+1]:(grid[fr]||[]).length;
+      const c0=anchors[ai].c, cEnd=ai+1<anchors.length?anchors[ai+1].c:(grid[fr]||[]).length;
       const cols={};
       for(let c=c0;c<cEnd;c++){ const k=NY_FIELDS[norm((grid[fr]||[])[c]).toLowerCase()];
         if(k&&cols[k]==null) cols[k]=c; }
       if(cols.account==null) continue;
-      let iso=null;
-      for(let c=c0;c<cEnd&&!iso;c++) iso=isoOf((grid[dr]||[])[c]);
-      if(!iso) continue;
+      const iso=anchors[ai].iso;
       for(let r=fr+1;r<end;r++){
         const row=grid[r]||[]; const acct=norm(row[cols.account]);
         if(!acct) continue;
-        if(DAYS.includes(acct.toUpperCase())||isoOf(acct)) break;
+        if(dayIdx(acct)>=0||isoOf(acct)) break;
         const cell=k=>cols[k]==null?'':norm(row[cols[k]]);
-        // "RACHEL OFF" / "JACKIE OFF AFTER 4PM" banners occupy the account cell alone.
-        // Same test the CA parser uses for its "- out" banners: the word AND no BA —
-        // so a real store whose name contains "off" is never dropped.
-        if(/\bOFF\b/i.test(acct)&&!cell('driver')) continue;
+        // "RACHEL OFF" / "JACKIE OFF AFTER 4PM" banners. When the banner cell is
+        // MERGED across the day block, gviz repeats its text into every column —
+        // so "no BA" alone doesn't identify it; the repeated value does. A real
+        // store containing "off" has a BA and its own distinct address/time.
+        if(/\bOFF\b/i.test(acct) &&
+           (!cell('driver') || cell('driver')===acct || cell('location')===acct)) continue;
         // map onto the shared visit shape: `driver` is the person chip/colour, and
         // Time+Deals+Location ride along for the day sheet.
         // Time rides in soNotes so the existing schedTime() can pull a clock time out
@@ -4860,6 +4905,7 @@ async function schedLoad(center){
     .filter(d=>!S.tried.has(`${d.getFullYear()}-${d.getMonth()}`));
   months.forEach(d=>S.tried.add(`${d.getFullYear()}-${d.getMonth()}`));
   const bd=schedBoard();   // pin the board for this whole load
+  SCHED_NY_WARN.length=0;  // workbook anomalies are per-load, not cumulative
   // months resolve in parallel with each other AND with the schedule_tasks fetch
   const [monthRes]=await Promise.all([
     Promise.all(months.map(d=>schedResolveMonth(d,bd).catch(()=>null))),
@@ -4993,6 +5039,8 @@ function schedCss(){
   .sb-tag.pad{color:#fff;background:var(--orange);border-color:var(--orange)}
   .sb-tag.edu{color:#fff;background:var(--green);border-color:var(--green)}
   .sb-tag.deal{color:var(--yellow,#e7b416);border-color:color-mix(in srgb,var(--yellow,#e7b416) 45%,var(--line))}
+  .sb-warn{margin-top:6px;font-size:12px;color:var(--orange);background:color-mix(in srgb,var(--orange) 12%,transparent);
+    border:1px solid color-mix(in srgb,var(--orange) 35%,var(--line));border-radius:9px;padding:7px 10px;cursor:help}
   .sb-addr{font-size:12px;margin-top:3px}
   .sb-addr a{color:var(--muted);text-decoration:none}
   .sb-addr a:hover{color:var(--text);text-decoration:underline}
@@ -5352,6 +5400,7 @@ function schedRender(m){
       <div class="sb-grid">${cells}</div>
     </div>
     <div class="sb-src">${moCount} visit${moCount!==1?'s':''} in ${SCHED_MONL[mo]} · tap a day for details · source: workbook (${esc(S.label||'')})</div>
+    ${SCHED_NY_WARN.length?`<div class="sb-warn" title="${esc(SCHED_NY_WARN.join('\n'))}">⚠︎ ${SCHED_NY_WARN.length} date cell${SCHED_NY_WARN.length!==1?'s':''} in the workbook look wrong — the week's other days were used instead. Tap to see which.</div>`:''}
   </div>
   <button class="sb-fab" id="sbAdd" title="New task">＋</button>`;
   const go=async n=>{ S.month=new Date(y,mo+n,1);
