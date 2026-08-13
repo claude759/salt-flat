@@ -355,7 +355,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-13.96';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-13.97';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -801,9 +801,21 @@ async function loadMe(){
     const { data: rt } = await supabase.from('trips').select('start_label,dest_label').eq('ba_id',state.session.user.id).order('created_at',{ascending:false}).limit(60);
     const places=new Set(); (rt||[]).forEach(t=>{ if(t.start_label)places.add(t.start_label); if(t.dest_label)places.add(t.dest_label); });
     state.recentPlaces=[...places].filter(p=>p&&p!=='📍 Current location').slice(0,30);
-    // schedule board config — RLS allowlist: non-allowed users get 0 rows and no Schedule tab
-    try{ const { data: sbc } = await supabase.from('schedule_board').select('workbook_id').eq('id',1).maybeSingle();
-      state.scheduleWb = sbc?.workbook_id || null; }catch(_){ state.scheduleWb = null; }
+    // schedule boards (one per state) — RLS returns only the boards this user may
+    // see: their own region's, plus every board for a universal admin. 0 rows = no
+    // Schedule tab. Seeing more than one is what earns the CA/NY switcher.
+    try{
+      const { data: sbc } = await supabase.from('schedule_board')
+        .select('state,workbook_id,layout,label').order('state');
+      state.scheduleBoards = sbc || [];
+      // default board: whichever one you last looked at, else your own region's,
+      // else the first you're allowed to see
+      let last=null; try{ last=localStorage.getItem('ba.schedstate'); }catch(_){}
+      const pick = state.scheduleBoards.find(b=>b.state===last)
+        || state.scheduleBoards.find(b=>b.state===state.profile?.region);
+      state.schedState = (pick || state.scheduleBoards[0] || {}).state || null;
+      state.scheduleWb = schedBoard()?.workbook_id || null;
+    }catch(_){ state.scheduleBoards = []; state.schedState = null; state.scheduleWb = null; }
   }catch(e){ state.loadError = String(e?.message||e); state.profile=null; }
 }
 // refresh the cached pay-period list (e.g. periods added since the app loaded)
@@ -842,7 +854,7 @@ function renderLoadError(){
       <button class="btn ghost block" id="so" style="margin-top:8px">Sign out</button>
     </div></div>`;
   $('#retry').onclick = async ()=>{ app.innerHTML='<div class="loading"><span class="spin"></span></div>'; await loadMe(); render(); };
-  $('#so').onclick = async ()=>{ await supabase.auth.signOut(); state.profile=null; state.loadError=null; render(); };
+  $('#so').onclick = async ()=>{ await supabase.auth.signOut(); state.profile=null; state.loadError=null; schedForget(); render(); };
 }
 // passkeys need: the browser API, AND the experimental supabase-js methods actually present
 const hasPasskey = ()=> !!(window.PublicKeyCredential && supabase?.auth
@@ -1016,7 +1028,7 @@ function topbar(){
   </div>`;
 }
 function wireTop(){
-  $('#signout').onclick = async ()=>{ await supabase.auth.signOut(); state.profile=null; state.preview=null; render(); };
+  $('#signout').onclick = async ()=>{ await supabase.auth.signOut(); state.profile=null; state.preview=null; schedForget(); render(); };
   const pb=$('#profileBtn'); if(pb) pb.onclick=()=>profileSheet();
 }
 
@@ -4608,7 +4620,23 @@ setTimeout(checkForUpdate, 15000);   // also shortly after open
    grid — bands of 7 day-blocks across, "Account Name"/"BRAND" headers, banner
    rows — is flattened to visit cards. */
 const SCHED_ALIASES={makennna:'Makenna',makenna:'Makenna',mckenna:'Makenna',mckennna:'Makenna',leticia:'Ledy',ledy:'Ledy','leticia (ledy)':'Ledy'};
-const SCHED_COLORS={Joanna:'#4f9dff',Ledy:'#2fbf71',Jesse:'#f08a24',Cesar:'#e7b416',Al:'#ef4d56',AJ:'#9d86ff',Makenna:'#22c6c6',Team:'#b98cff'};
+const SCHED_COLORS={Joanna:'#4f9dff',Ledy:'#2fbf71',Jesse:'#f08a24',Cesar:'#e7b416',Al:'#ef4d56',AJ:'#9d86ff',Makenna:'#22c6c6',Team:'#b98cff',
+  // NY field crew
+  Rachel:'#ff6fae',Terrance:'#37c8f0',Jackie:'#ffb02e',Chandler:'#7ee081',Maddy:'#c58cff'};
+// the board (state) currently being viewed, and its workbook/layout
+function schedBoard(){
+  const bs=state.scheduleBoards||[];
+  return bs.find(b=>b.state===state.schedState) || bs[0] || null;
+}
+// Drop every trace of the signed-in user's schedule. Sign-out on a shared phone
+// otherwise leaves the previous person's board cached in memory, and their last
+// board pinned in localStorage for whoever signs in next.
+function schedForget(){
+  state.sched=null; state.scheduleBoards=[]; state.schedState=null; state.scheduleWb=null;
+  try{ localStorage.removeItem('ba.schedstate');
+    Object.keys(localStorage).filter(k=>k.startsWith('ba.schedtab.')).forEach(k=>localStorage.removeItem(k));
+  }catch(_){}
+}
 function schedCanon(raw){
   const s=(raw||'').trim(); if(!s) return '';
   if(s.includes('/')||s.includes(',')) return 'Team';
@@ -4687,6 +4715,86 @@ function schedFlatten(grid,sheetName){
   }
   return out;
 }
+/* ── New York workbook layout ───────────────────────────────────────────────
+   The NY book is organised differently from California's: weekly BANDS stacked
+   down the sheet, each band a row of day names (MONDAY..SUNDAY) spread across
+   the columns, then a date row, then a field-header row
+   (Account Name / Location / Brand Ambassador / Time / Deals / Notes / Sales Rep),
+   then that day's visits.
+   NOTHING here is a fixed column offset: the day columns are read off the day-name
+   row and each field's column is read off the header row beneath it. The layout
+   genuinely drifts between months (July carries an extra column and different day
+   anchors than August), and a hardcoded parser silently dropped ~90% of July. */
+const NY_FIELDS={'account name':'account','account':'account','store':'account',
+  'location':'location','address':'location',
+  'brand ambassador':'driver','brand ambassdor':'driver','ba':'driver',
+  'time':'time','deals':'deals','deal':'deals','notes':'notes','note':'notes',
+  'sales rep':'rep','rep':'rep'};
+function schedFlattenNY(grid,sheetName){
+  const norm=v=>String(v==null?'':v).replace(/\s+/g,' ').trim();
+  const DAYS=['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY','SATURDAY','SUNDAY'];
+  const DATE=/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
+  const ISO=/^(\d{4})-(\d{2})-(\d{2})/;
+  const isoOf=s=>{ const t=norm(s); let m=DATE.exec(t);
+    if(m){ const y=+m[3]<100?2000+(+m[3]):+m[3];
+      return `${y}-${String(+m[1]).padStart(2,'0')}-${String(+m[2]).padStart(2,'0')}`; }
+    m=ISO.exec(t); return m?`${m[1]}-${m[2]}-${m[3]}`:null; };
+  const out=[];
+  // band starts: any row containing the word MONDAY on its own
+  const starts=[];
+  for(let r=0;r<grid.length;r++)
+    if((grid[r]||[]).some(c=>norm(c).toUpperCase()==='MONDAY')) starts.push(r);
+  for(let b=0;b<starts.length;b++){
+    const h=starts[b], end=b+1<starts.length?starts[b+1]:grid.length;
+    const hdr=grid[h]||[];
+    const anchors=[];
+    for(let c=0;c<hdr.length;c++){ const t=norm(hdr[c]).toUpperCase();
+      if(DAYS.includes(t)) anchors.push(c); }
+    if(!anchors.length) continue;
+    // the field-header row: the first row below with 3+ recognised headers
+    let fr=-1;
+    for(let r=h+1;r<Math.min(h+5,end);r++){
+      let hits=0; for(const c of (grid[r]||[]).keys())
+        if(NY_FIELDS[norm(grid[r][c]).toLowerCase()]) hits++;
+      if(hits>=3){ fr=r; break; }
+    }
+    if(fr<0) continue;
+    // the date row sits between the day names and the headers
+    let dr=-1;
+    for(let r=h+1;r<fr;r++) if(anchors.some(c=>isoOf((grid[r]||[])[c]))){ dr=r; break; }
+    if(dr<0) continue;
+    for(let ai=0;ai<anchors.length;ai++){
+      const c0=anchors[ai], cEnd=ai+1<anchors.length?anchors[ai+1]:(grid[fr]||[]).length;
+      const cols={};
+      for(let c=c0;c<cEnd;c++){ const k=NY_FIELDS[norm((grid[fr]||[])[c]).toLowerCase()];
+        if(k&&cols[k]==null) cols[k]=c; }
+      if(cols.account==null) continue;
+      let iso=null;
+      for(let c=c0;c<cEnd&&!iso;c++) iso=isoOf((grid[dr]||[])[c]);
+      if(!iso) continue;
+      for(let r=fr+1;r<end;r++){
+        const row=grid[r]||[]; const acct=norm(row[cols.account]);
+        if(!acct) continue;
+        if(DAYS.includes(acct.toUpperCase())||isoOf(acct)) break;
+        const cell=k=>cols[k]==null?'':norm(row[cols[k]]);
+        // "RACHEL OFF" / "JACKIE OFF AFTER 4PM" banners occupy the account cell alone.
+        // Same test the CA parser uses for its "- out" banners: the word AND no BA —
+        // so a real store whose name contains "off" is never dropped.
+        if(/\bOFF\b/i.test(acct)&&!cell('driver')) continue;
+        // map onto the shared visit shape: `driver` is the person chip/colour, and
+        // Time+Deals+Location ride along for the day sheet.
+        // Time rides in soNotes so the existing schedTime() can pull a clock time out
+        // of it and sort the day; teamNotes stays empty because the day sheet labels
+        // it "Team:" — NY's Deals get their own chip instead.
+        out.push({iso,account:acct,region:'',driver:cell('driver'),inv:'',
+          soNotes:[cell('time'),cell('notes')].filter(Boolean).join(' · '),
+          teamNotes:'',soNum:'',location:cell('location'),
+          when:cell('time'),deals:cell('deals'),rep:cell('rep'),sheet:sheetName});
+      }
+    }
+  }
+  return out;
+}
 const SCHED_MONTHS=['JANUARY','FEBRUARY','MARCH','APRIL','MAY','JUNE','JULY','AUGUST','SEPTEMBER','OCTOBER','NOVEMBER','DECEMBER'];
 const SCHED_ABBR  =['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEPT','OCT','NOV','DEC'];
 function schedTabNames(d){
@@ -4694,8 +4802,15 @@ function schedTabNames(d){
   for(const n of [SCHED_MONTHS[m],SCHED_ABBR[m]]) out.push(`${n} ${y}`,`${n} SCHEDULE ${y}`,`${n} DELIVERY ${y}`);
   return [...new Set(out)];
 }
-async function schedFetchTab(name){
-  const u=`https://docs.google.com/spreadsheets/d/${state.scheduleWb}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(name)}`;
+// parse a fetched tab with the layout its board declares (schedule_board.layout).
+// `bd` is the board captured when the fetch STARTED — reading the live global here
+// would parse a CA download with the NY parser if the user switched mid-flight.
+function schedParse(csv,name,bd){
+  const grid=parseCSV(csv);
+  return ((bd||schedBoard())?.layout==='ny') ? schedFlattenNY(grid,name) : schedFlatten(grid,name);
+}
+async function schedFetchTab(name,wb){
+  const u=`https://docs.google.com/spreadsheets/d/${wb||state.scheduleWb}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(name)}`;
   try{
     const r=await fetch(u,{cache:'no-store'}); if(!r.ok) return null;
     const t=await r.text();
@@ -4709,8 +4824,13 @@ async function schedFetchTab(name){
 // first (in preference order) whose rows contain dates in that month — gviz
 // silently serves the FIRST tab for unknown names, so presence isn't enough.
 // The winning name is cached so later sessions make exactly one request.
-async function schedResolveMonth(d){
-  const cacheKey=`ba.schedtab.${d.getFullYear()}-${d.getMonth()}`;
+async function schedResolveMonth(d,bd){
+  // Everything below is pinned to the board this call STARTED on: the cache key,
+  // the workbook fetched, and the parser. CA and NY name their tabs differently,
+  // and a switch mid-flight must not write one board's result — or its 6-hour
+  // "no tab" marker — under the other board's key.
+  bd = bd || schedBoard();
+  const cacheKey=`ba.schedtab.${bd?.state||'CA'}.${d.getFullYear()}-${d.getMonth()}`;
   const my=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
   const all=schedTabNames(d);
   let cached=null, missAt=0;
@@ -4721,10 +4841,10 @@ async function schedResolveMonth(d){
   const waves = cached ? [[cached], all.filter(n=>n!==cached)] : [all.slice(0,2), all.slice(2)];
   for(const wave of waves){
     if(!wave.length) continue;
-    const fetched=await Promise.all(wave.map(n=>schedFetchTab(n).catch(()=>null)));
+    const fetched=await Promise.all(wave.map(n=>schedFetchTab(n,bd?.workbook_id).catch(()=>null)));
     for(let i=0;i<wave.length;i++){
       if(fetched[i]==null) continue;
-      const got=schedFlatten(parseCSV(fetched[i]),wave[i]);
+      const got=schedParse(fetched[i],wave[i],bd);
       if(!got.some(x=>x.iso.startsWith(my))) continue;
       try{ localStorage.setItem(cacheKey,wave[i]); localStorage.removeItem(cacheKey+'.miss'); }catch(_){}
       return {name:wave[i],rows:got};
@@ -4739,9 +4859,10 @@ async function schedLoad(center){
   const months=[-1,0,1].map(n=>new Date(c.getFullYear(),c.getMonth()+n,1))
     .filter(d=>!S.tried.has(`${d.getFullYear()}-${d.getMonth()}`));
   months.forEach(d=>S.tried.add(`${d.getFullYear()}-${d.getMonth()}`));
+  const bd=schedBoard();   // pin the board for this whole load
   // months resolve in parallel with each other AND with the schedule_tasks fetch
   const [monthRes]=await Promise.all([
-    Promise.all(months.map(d=>schedResolveMonth(d).catch(()=>null))),
+    Promise.all(months.map(d=>schedResolveMonth(d,bd).catch(()=>null))),
     schedReloadTasks(),
     schedLoadActivity().catch(()=>{}),
   ]);
@@ -4767,7 +4888,11 @@ async function schedLoad(center){
 async function schedReloadTasks(){
   const S=state.sched;
   try{
-    const { data:tasks } = await supabase.from('schedule_tasks').select('*').order('created_at');
+    // tasks belong to a board; RLS already scopes to boards you may see, and this
+    // keeps the viewed board's calendar from showing the other state's tasks
+    let q=supabase.from('schedule_tasks').select('*').order('created_at');
+    if(state.schedState) q=q.eq('state',state.schedState);
+    const { data:tasks } = await q;
     S.dbRows=(tasks||[]).map(t=>{
       const canon=schedCanon(t.driver);
       return { iso:t.task_date, account:t.account, region:t.region||'', driver:t.driver||'',
@@ -4784,6 +4909,10 @@ function schedCss(){
   if(document.getElementById('sbCss')) return;
   const st=document.createElement('style'); st.id='sbCss'; st.textContent=`
   .sb-wrap{padding:10px 12px calc(20px + var(--safe-b))}
+  .sb-states{display:inline-flex;gap:0;margin-bottom:9px;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:var(--pan2,var(--panel2))}
+  .sb-st{appearance:none;border:0;background:transparent;color:var(--muted);font:inherit;font-weight:750;font-size:13px;
+    padding:7px 18px;cursor:pointer;letter-spacing:.3px}
+  .sb-st.on{background:var(--accent);color:#fff}
   .sb-nav{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
   .sb-wk{font-weight:750;min-width:150px;text-align:center;font-size:15px}
   .sb-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
@@ -4863,29 +4992,49 @@ function schedCss(){
   .sb-tag.time{color:var(--text)}
   .sb-tag.pad{color:#fff;background:var(--orange);border-color:var(--orange)}
   .sb-tag.edu{color:#fff;background:var(--green);border-color:var(--green)}
+  .sb-tag.deal{color:var(--yellow,#e7b416);border-color:color-mix(in srgb,var(--yellow,#e7b416) 45%,var(--line))}
+  .sb-addr{font-size:12px;margin-top:3px}
+  .sb-addr a{color:var(--muted);text-decoration:none}
+  .sb-addr a:hover{color:var(--text);text-decoration:underline}
   .sb-src{color:var(--muted);opacity:.7;font-size:11px;margin-top:10px;text-align:right}`;
   document.head.appendChild(st);
 }
 const SCHED_PAD=/\bPADs?\b/i, SCHED_EDU=/\bEDUs?\b|educat/i;
 const SCHED_MONL=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let schedGen=0;   // bumped per draw: a superseded run must not repaint the new board
 async function drawSchedule(m){
   schedCss();
   if(!state.sched) state.sched={rows:[],dbRows:[],byIso:new Map(),seen:new Set(),tried:new Set(),loadedTabs:[],
     month:new Date(new Date().getFullYear(),new Date().getMonth(),1),sel:null,ready:false};
   const S=state.sched;
+  const gen=++schedGen;
   if(!state.scheduleWb){ m.innerHTML='<div class="card" style="margin:12px">Schedule isn’t enabled for your account.</div>'; return; }
   if(!S.ready){
     m.innerHTML='<div class="loading"><span class="spin"></span></div>';
     const ok=await schedLoad(S.month).catch(()=>false);
+    if(gen!==schedGen) return;   // the user switched boards while this was loading
     if(!ok){
-      m.innerHTML=`<div class="card" style="margin:12px"><b>Couldn’t reach the schedule workbook.</b>
+      // Keep the state switcher ON the error card: the chosen board is remembered,
+      // so without it one unreachable workbook would strand a two-board user here
+      // with no way back to the board that does load.
+      const bs=state.scheduleBoards||[];
+      const sw=bs.length>1?`<div class="sb-states" style="margin:0 0 10px">${bs.map(b=>
+        `<button class="sb-st${b.state===state.schedState?' on':''}" data-sbst="${esc(b.state)}">${esc(b.state)}</button>`).join('')}</div>`:'';
+      m.innerHTML=`<div style="padding:10px 12px">${sw}<div class="card"><b>Couldn’t reach the ${esc(schedBoard()?.label||'schedule')} workbook.</b>
         <div class="small muted" style="margin-top:4px">Check your connection, then try again.</div>
-        <button class="btn primary" id="sbRetry" style="margin-top:10px">Retry</button></div>`;
-      $('#sbRetry').onclick=()=>{ drawSchedule(m); };
+        <button class="btn primary" id="sbRetry" style="margin-top:10px">Retry</button></div></div>`;
+      $('#sbRetry').onclick=()=>{ state.sched=null; drawSchedule(m); };
+      m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{
+        const st=b.dataset.sbst; if(st===state.schedState) return;
+        state.schedState=st; state.scheduleWb=schedBoard()?.workbook_id||null;
+        try{ localStorage.setItem('ba.schedstate',st); }catch(_){}
+        state.sched=null; drawSchedule(m);
+      });
       return;
     }
     S.ready=true;
   }
+  if(gen!==schedGen) return;
   schedRender(m);
 }
 function schedDaySorted(iso,vis){
@@ -4992,6 +5141,10 @@ function schedDaySheet(iso){
       v.region?`<span>${esc(v.region)}</span>`:'',
       who?`<span class="sb-who" style="--dv:${v.color}">${esc(who)}</span>`:'',
       v.soNum?`<span class="so">${esc(v.soNum)}</span>`:'',
+      // NY rows carry a written time ("after strain stars", "4-7pm") that no clock
+      // parser can turn into a chip — show it verbatim rather than lose it
+      (v.when&&!v.time)?`<span>${esc(v.when)}</span>`:'',
+      v.deals?`<span class="sb-tag deal">${esc(v.deals)}</span>`:'',
       chips,
       `<a class="rep" href="https://claude759.github.io/salt-flat/ar-reports.html#ba~${encodeURIComponent((r=>r?(r.sales_key||r.name):v.account.trim())(schedRegistryFor(v.account)))}" target="_blank" rel="noopener" title="Open this account's BA report in the sales app">📊 BA report</a>`
     ].filter(Boolean).join('');
@@ -5007,6 +5160,7 @@ function schedDaySheet(iso){
     return `<div class="sb-item" style="--dv:${v.color}">
       <div class="acct">${esc(v.account)}${v.dbId?`<button class="sb-edit" data-sbe="${i}" title="Edit task">✎</button>`:''}</div>
       ${meta?`<div class="meta">${meta}</div>`:''}
+      ${v.location?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(v.location)}" target="_blank" rel="noopener">📍 ${esc(v.location)}</a></div>`:''}
       ${notes?`<div class="notes">${esc(notes)}</div>`:''}
       ${review}</div>`;
   }).join('');
@@ -5063,7 +5217,16 @@ function schedTaskSheet(iso, task){
   const accounts=[...new Set(known.map(v=>v.account.trim())
     .concat((state.dispensaries||[]).filter(x=>!x.private&&x.retail!==false).map(x=>x.name)))].sort((a,b)=>a.localeCompare(b));
   const regions=[...new Set(known.map(v=>(v.region||'').trim()).filter(Boolean))].sort();
-  const drivers=['Cesar','Makenna','Ledy','Joanna','Jesse','Al','AJ','Team'];
+  // Whoever actually works THIS board: the people already on its workbook rows,
+  // plus that state's roster as a floor (a brand-new month has no rows yet). A
+  // hardcoded CA list left NY users unable to assign anyone, silently saving a
+  // task with no BA on it.
+  const roster=(state.schedState==='NY')
+    ? ['Rachel','Terrance','Jackie','Chandler','Maddy']
+    : ['Cesar','Makenna','Ledy','Joanna','Jesse','Al','AJ'];
+  const drivers=[...new Set(
+    (state.sched?.rows||[]).map(r=>r.canon).filter(Boolean).filter(n=>n!=='—')
+      .concat(roster))].sort((a,b)=>a.localeCompare(b)).concat('Team');
   openSheet(`<h3 style="margin:0 0 4px">${task?'Edit task':'New task'}</h3>
     <label class="fl">Date</label><input type="date" id="stDate" value="${task?task.iso:iso}">
     <label class="fl">Account / destination</label>
@@ -5103,7 +5266,8 @@ function schedTaskSheet(iso, task){
     const rec={ task_date:$('#stDate').value, account:$('#stAcct').value.trim(),
       inv_total:$('#stInv').value?Number($('#stInv').value):null,
       region:$('#stRegion').value.trim()||null, driver:$('#stDriver').value||null,
-      so_num:$('#stSo').value.trim()||null, notes:$('#stNotes').value.trim()||null };
+      so_num:$('#stSo').value.trim()||null, notes:$('#stNotes').value.trim()||null,
+      state:state.schedState||'CA' };   // a task belongs to the board it was created on
     $('#stAcct').classList.toggle('needs',!rec.account);
     $('#stDate').classList.toggle('needs',!rec.task_date);
     if(!rec.task_date||!rec.account) return;
@@ -5163,7 +5327,14 @@ function schedRender(m){
       <div class="sb-dnum">${d.getDate()}${(()=>{const n=schedDayReportCount(iso,list);
         return n?`<span class="sb-pvdot" title="${n} post-visit report${n!==1?'s':''}">📋${n>1?n:''}</span>`:'';})()}</div>${list.length?`<div class="sb-minis">${minis}</div>`:''}</div>`;
   }).join('');
+  // State switcher — shown only to people who can see more than one board (the
+  // RLS grants that to Universal Admins only, i.e. Gianni + Victoria). Everyone
+  // else is pinned to their own region's board and never sees these buttons.
+  const boards=state.scheduleBoards||[];
+  const switcher=boards.length>1?`<div class="sb-states">${boards.map(b=>
+    `<button class="sb-st${b.state===state.schedState?' on':''}" data-sbst="${esc(b.state)}">${esc(b.state)}</button>`).join('')}</div>`:'';
   m.innerHTML=`<div class="sb-wrap">
+    ${switcher}
     <div class="sb-nav">
       <button class="btn sm ghost" id="sbPrev">‹</button>
       <div class="sb-wk">${SCHED_MONL[mo]} ${y}</div>
@@ -5192,6 +5363,15 @@ function schedRender(m){
     schedTaskSheet(t.getFullYear()===y&&t.getMonth()===mo?schedIso(t):schedIso(first),null); };
   $('#sbToday').onclick=()=>{ S.month=new Date(new Date().getFullYear(),new Date().getMonth(),1); schedRender(m); };
   $('#sbReload').onclick=()=>{ state.sched=null; drawSchedule(m); };
+  // switching board = a different workbook AND a different task set: drop the
+  // whole cache so no CA row can survive into the NY calendar
+  m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{
+    const st=b.dataset.sbst; if(st===state.schedState) return;
+    state.schedState=st;
+    state.scheduleWb=schedBoard()?.workbook_id||null;
+    try{ localStorage.setItem('ba.schedstate',st); }catch(_){}
+    state.sched=null; drawSchedule(m);
+  });
   $('#sbAll').onclick=()=>{ S.sel=null; schedRender(m); };
   m.querySelectorAll('[data-sbd]').forEach(c=>c.onclick=()=>{
     if(!S.sel) S.sel=new Set();
