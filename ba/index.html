@@ -355,7 +355,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-13.92';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-13.93';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -5011,12 +5011,20 @@ function schedRender(m){
     return `<div class="sb-chip${on?' on':''}" data-sbd="${esc(n)}" style="${on?`background:color-mix(in srgb,${col} 24%,transparent);border-color:${col}`:''}">
       <span class="dot" style="background:${col}"></span>${esc(n)} <span class="n">${cnt}</span></div>`;
   }).join('');
+  // How many entries fit before "+N". First paint uses an estimate; the
+  // measure pass at the end of this function reads the REAL cell box (rows
+  // stretch to fill the window on desktop) and re-renders once if it differs.
+  const mobile=matchMedia('(max-width:600px)').matches, wide=matchMedia('(min-width:900px)').matches;
+  const chipH=mobile?11:15.7, headH=mobile?23:37;
+  const rowH=wide?Math.max(118,(innerHeight-190)/nWeeks):(mobile?88:112);
+  const maxChips=S._fit||Math.max(3,Math.min(16,Math.floor((rowH-headH)/chipH)));
   const cells=days.map(d=>{
     const iso=schedIso(d), list=schedDaySorted(iso,vis);
     const dim=d.getMonth()!==mo?' dim':'', today=iso===todayIso?' today':'';
-    const maxChips=matchMedia('(max-width:600px)').matches?4:(matchMedia('(min-width:900px)').matches?5:3);
-    const minis=list.slice(0,maxChips).map(v=>`<div class="sb-mini" style="--dv:${v.color}"><span class="dot"></span>${esc(v.account)}</div>`).join('')
-      +(list.length>maxChips?`<div class="sb-more">+${list.length-maxChips}</div>`:'');
+    // one extra fits when nothing is hidden (no "+N" line to leave room for)
+    const shown=list.length===maxChips+1?list.length:maxChips;
+    const minis=list.slice(0,shown).map(v=>`<div class="sb-mini" style="--dv:${v.color}"><span class="dot"></span>${esc(v.account)}</div>`).join('')
+      +(list.length>shown?`<div class="sb-more">+${list.length-shown}</div>`:'');
     return `<div class="sb-cell${dim}${today}" data-sbday="${iso}">
       <div class="sb-dnum">${d.getDate()}</div>${list.length?`<div class="sb-minis">${minis}</div>`:''}</div>`;
   }).join('');
@@ -5058,6 +5066,36 @@ function schedRender(m){
     schedRender(m);
   });
   m.querySelectorAll('[data-sbday]').forEach(c=>c.onclick=()=>schedDaySheet(c.dataset.sbday));
+
+  // ── fit pass ───────────────────────────────────────────────────────────
+  // Grow the grid into whatever space is actually left under it, then count
+  // how many entry rows truly fit in a cell and re-render once if that beats
+  // the estimate. Self-correcting for any window size or surrounding chrome.
+  requestAnimationFrame(()=>{
+    const grid=m.querySelector('.sb-grid'), cell=m.querySelector('.sb-cell');
+    if(!grid||!cell) return;
+    if(matchMedia('(min-width:900px)').matches){
+      const cal=m.querySelector('.sb-cal'), src=m.querySelector('.sb-src');
+      const slack=innerHeight-cal.getBoundingClientRect().bottom-(src?src.getBoundingClientRect().height:0)-14;
+      if(slack>12) grid.style.minHeight=(grid.getBoundingClientRect().height+slack)+'px';
+    }
+    const cs=getComputedStyle(cell), dn=cell.querySelector('.sb-dnum');
+    const head=(dn?dn.getBoundingClientRect().height+parseFloat(getComputedStyle(dn).marginBottom||0):22);
+    const sample=cell.parentElement.querySelector('.sb-mini');
+    const row=sample?sample.getBoundingClientRect().height+parseFloat(getComputedStyle(sample).marginBottom||0):15.7;
+    const avail=cell.clientHeight-parseFloat(cs.paddingTop||0)-parseFloat(cs.paddingBottom||0)-head;
+    const fit=Math.max(3,Math.min(16,Math.floor(avail/row)));
+    S._fitPass=(S._fitPass||0)+1;
+    if(fit!==maxChips && S._fitPass<4){ S._fit=fit; schedRender(m); }
+    else S._fitPass=0;
+  });
+
+  // window resize → drop the measured fit and re-render
+  if(!state._sbResize){ state._sbResize=true;
+    let t; addEventListener('resize',()=>{ clearTimeout(t); t=setTimeout(()=>{
+      const host=$('#main'); if(host&&host.querySelector('.sb-cal')){ (state.sched||{})._fit=null; schedRender(host); }
+    },180); });
+  }
 }
 
 /* ─────────────────────────── go ─────────────────────────── */
