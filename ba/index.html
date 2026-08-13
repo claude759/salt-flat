@@ -355,7 +355,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-13.91';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-13.92';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4705,37 +4705,62 @@ async function schedFetchTab(name){
 }
 // Fetch the tabs around `center` that we haven't tried yet and MERGE into state
 // (month tabs overlap at week boundaries — dedupe by iso+account+driver+notes).
+// Resolve one month's workbook tab: try every name alias IN PARALLEL, accept the
+// first (in preference order) whose rows contain dates in that month — gviz
+// silently serves the FIRST tab for unknown names, so presence isn't enough.
+// The winning name is cached so later sessions make exactly one request.
+async function schedResolveMonth(d){
+  const cacheKey=`ba.schedtab.${d.getFullYear()}-${d.getMonth()}`;
+  const my=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  const all=schedTabNames(d);
+  let cached=null, missAt=0;
+  try{ cached=localStorage.getItem(cacheKey); missAt=+localStorage.getItem(cacheKey+'.miss')||0; }catch(_){}
+  if(!cached && missAt && Date.now()-missAt < 6*3600*1000) return null;   // month has no tab yet — don't re-probe every load
+  // waves keep request count down: the known name alone, else the 2 likeliest,
+  // then the long tail — each wrong guess costs a full fallback download
+  const waves = cached ? [[cached], all.filter(n=>n!==cached)] : [all.slice(0,2), all.slice(2)];
+  for(const wave of waves){
+    if(!wave.length) continue;
+    const fetched=await Promise.all(wave.map(n=>schedFetchTab(n).catch(()=>null)));
+    for(let i=0;i<wave.length;i++){
+      if(fetched[i]==null) continue;
+      const got=schedFlatten(parseCSV(fetched[i]),wave[i]);
+      if(!got.some(x=>x.iso.startsWith(my))) continue;
+      try{ localStorage.setItem(cacheKey,wave[i]); localStorage.removeItem(cacheKey+'.miss'); }catch(_){}
+      return {name:wave[i],rows:got};
+    }
+  }
+  try{ localStorage.setItem(cacheKey+'.miss',String(Date.now())); }catch(_){}
+  return null;
+}
 async function schedLoad(center){
   const S=state.sched;
   const c=center||new Date();
-  const months=[-1,0,1].map(n=>new Date(c.getFullYear(),c.getMonth()+n,1));
-  let any=false;
-  for(const d of months){
-    const key=`${d.getFullYear()}-${d.getMonth()}`;
-    if(S.tried.has(key)) { any=any||S.loadedTabs.some(t=>t.key===key); continue; }
-    S.tried.add(key);
-    const my=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    for(const name of schedTabNames(d)){
-      const csv=await schedFetchTab(name);
-      if(csv==null) continue;
-      const got=schedFlatten(parseCSV(csv),name);
-      // gviz silently returns the FIRST tab for unknown sheet names — only accept
-      // a candidate whose rows actually include dates in the month we asked for
-      if(!got.some(x=>x.iso.startsWith(my))) continue;
-      for(const x of got){
-        const k=[x.iso,x.account.toLowerCase(),(x.driver||'').toLowerCase(),x.soNotes||''].join('|');
-        if(S.seen.has(k)) continue; S.seen.add(k);
-        const canon=schedCanon(x.driver);
-        S.rows.push({...x,canon,color:schedColor(canon),time:schedTime(x.soNotes)||schedTime(x.teamNotes)});
-      }
-      S.loadedTabs.push({key,name}); any=true;
-      break;
+  const months=[-1,0,1].map(n=>new Date(c.getFullYear(),c.getMonth()+n,1))
+    .filter(d=>!S.tried.has(`${d.getFullYear()}-${d.getMonth()}`));
+  months.forEach(d=>S.tried.add(`${d.getFullYear()}-${d.getMonth()}`));
+  // months resolve in parallel with each other AND with the schedule_tasks fetch
+  const [monthRes]=await Promise.all([
+    Promise.all(months.map(d=>schedResolveMonth(d).catch(()=>null))),
+    schedReloadTasks(),
+  ]);
+  for(const r of monthRes){
+    if(!r) continue;
+    for(const x of r.rows){
+      const k=[x.iso,x.account.toLowerCase(),(x.driver||'').toLowerCase(),x.soNotes||''].join('|');
+      if(S.seen.has(k)) continue; S.seen.add(k);
+      const canon=schedCanon(x.driver);
+      S.rows.push({...x,canon,color:schedColor(canon),time:schedTime(x.soNotes)||schedTime(x.teamNotes)});
     }
+    S.loadedTabs.push({name:r.name});
   }
-  await schedReloadTasks();   // in-app tasks (schedule_tasks) merge into the same calendar
+  S.byIso=new Map();
+  for(const v of S.rows.concat(S.dbRows)){
+    if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
+  }
   const now=new Date();
   S.label=`${S.loadedTabs.map(t=>t.name).join(', ')} · ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
-  return any||S.rows.length>0||S.dbRows.length>0;
+  return S.rows.length>0||S.dbRows.length>0;
 }
 // fetch app-created tasks and rebuild the date index (workbook rows + app rows)
 async function schedReloadTasks(){
@@ -4782,6 +4807,11 @@ function schedCss(){
   .sb-mini .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--dv)}
   .sb-more{font-size:10px;color:var(--muted);font-weight:700}
   /* phone: Google-Calendar-style solid text chips instead of dot+label lines */
+  /* desktop: fill the viewport vertically — equal-height week rows, taller cells */
+  @media(min-width:900px){
+    .sb-grid{grid-auto-rows:1fr;min-height:calc(100dvh - 330px)}
+    .sb-cell{min-height:118px}
+  }
   @media(max-width:600px){
     .sb-cell{min-height:88px;padding:3px 2px 4px}
     .sb-dnum{margin:0 auto 2px;width:19px;height:19px;font-size:11px}
@@ -4984,7 +5014,7 @@ function schedRender(m){
   const cells=days.map(d=>{
     const iso=schedIso(d), list=schedDaySorted(iso,vis);
     const dim=d.getMonth()!==mo?' dim':'', today=iso===todayIso?' today':'';
-    const maxChips=matchMedia('(max-width:600px)').matches?4:3;
+    const maxChips=matchMedia('(max-width:600px)').matches?4:(matchMedia('(min-width:900px)').matches?5:3);
     const minis=list.slice(0,maxChips).map(v=>`<div class="sb-mini" style="--dv:${v.color}"><span class="dot"></span>${esc(v.account)}</div>`).join('')
       +(list.length>maxChips?`<div class="sb-more">+${list.length-maxChips}</div>`:'');
     return `<div class="sb-cell${dim}${today}" data-sbday="${iso}">
