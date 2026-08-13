@@ -159,6 +159,12 @@
   tbody tr:hover{background:#1b1f29}
   tr.parent{cursor:pointer}
   td .src{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:999px;background:var(--panel2);color:var(--muted)}
+  td.reg{white-space:nowrap}
+  .regchip{display:inline-block;font-size:10px;font-weight:700;padding:1.5px 6px;border-radius:999px;margin:1px 2px 1px 0}
+  .regchip.ok{background:#123524;color:#7ee2a8}
+  .regchip.miss{background:#3d2c12;color:#f0c060}
+  .regchip.none{background:#3d1518;color:#ff9ca3}
+  .regchip.multi{background:var(--panel2);color:var(--muted)}
   td .src.Distru{background:#15324f;color:#9cc8ff}
   td .src.Nabis{background:#4a2c18;color:#ffbf9c}
   td .src.QuickBooks{background:#173a2b;color:#7fe0b0}
@@ -825,6 +831,7 @@
           <label class="dt">From <input type="date" id="cust-start" /></label>
           <label class="dt">To <input type="date" id="cust-end" /></label>
           <input type="text" id="cust-search" placeholder="Search customer…" />
+          <label style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:12.5px;cursor:pointer"><input type="checkbox" id="cust-missing" style="accent-color:var(--accent,#7c5cff)"/> ⚠ missing registry info</label>
           <div class="grow"></div>
           <button class="btn" id="cust-export">⬇ Export CSV</button>
         </div>
@@ -6066,45 +6073,96 @@ $('#ba-export').onclick=()=>{
       r.pos?r.pos.units:'',r.pis?r.pis.inStock:'',r.pis?r.pis.total:'',r.arOut.toFixed(2),r.arOver.toFixed(2)]); });
   downloadCSV('ba-report.csv',out);
 };
+/* ── Central store registry (dispensaries table via the store_registry RPC) ──
+   One canonical row per store: DBA name, legal name, Pistil name, address,
+   license, sales-app key + workbook aliases. The Customers report joins by
+   normalized name/alias and flags anything with missing directory info. */
+let REGISTRY=null, REG_BYKEY=null, REG_LOADING=false, REG_ERR=null;
+function loadRegistry(){
+  if(REGISTRY||REG_LOADING) return;
+  REG_LOADING=true;
+  fetch(`${SUPABASE_URL}/rest/v1/rpc/store_registry`,{method:'POST',
+    headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},body:'{}'})
+    .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+    .then(rows=>{ REGISTRY=rows; REG_BYKEY=new Map();
+      rows.forEach(g=>{ const ks=new Set([tierNorm(g.name),tierNorm(g.sales_key),tierNorm(g.pistil_name),...(g.aliases||[]).map(tierNorm)]);
+        ks.forEach(k=>{ if(!k) return; if(!REG_BYKEY.has(k)) REG_BYKEY.set(k,[]); REG_BYKEY.get(k).push(g); }); });
+      if(repMode==='customers') renderCustomers(); })
+    .catch(e=>{ REG_ERR=String(e.message||e); REG_LOADING=false; });
+}
+// registry rows for a customer name, preferring the app's current state
+function regFor(name){
+  if(!REG_BYKEY) return null;
+  const c=REG_BYKEY.get(tierNorm(name)); if(!c||!c.length) return null;
+  const st=c.filter(g=>g.state===APP_STATE);
+  return {g:(st[0]||c[0]), n:(st.length||c.length)};
+}
+function regMissing(g){
+  const miss=[];
+  if(!g.legal_name) miss.push('legal');
+  if(!g.pistil_name) miss.push('Pistil');
+  if(!g.address) miss.push('address');
+  if(!g.license) miss.push('license');
+  return miss;
+}
+function regCell(name){
+  if(!REG_BYKEY) return '<span class="muted">…</span>';
+  const hit=regFor(name);
+  if(!hit) return '<span class="regchip none" title="No row in the central store registry — add it in the BA app (Locations)">✗ not linked</span>';
+  const miss=regMissing(hit.g);
+  const multi=hit.n>1?`<span class="regchip multi" title="${hit.n} registry stores share this billing account">×${hit.n}</span>`:'';
+  if(!miss.length) return `<span class="regchip ok" title="Registry complete: legal name, Pistil name, address, license">✓</span>${multi}`;
+  return miss.map(m=>`<span class="regchip miss" title="Registry row is missing the ${m==='Pistil'?'Pistil store name':m}">⚠ ${m}</span>`).join('')+multi;
+}
 function renderCustomers(){
   if(APP_STATE==='NY' && !NY_ADDR_LOADED) loadNyAddr();
+  loadRegistry();
   const wrap=$('#cust-wrap'), note=$('#cust-note'); if(!wrap) return;
   const {rows,start,end}=customersData();
   if(!rows.length){ note.innerHTML=''; wrap.innerHTML=`<div class="empty">No customers with sales in ${fmtRangeLabel(start,end)}.</div>`; return; }
   const q=(($('#cust-search')||{}).value||'').trim().toLowerCase();
   let view=q?rows.filter(r=>r.name.toLowerCase().includes(q)||(r.legal||'').toLowerCase().includes(q)||(APP_STATE==='NY'&&nyLegalFor(r.name).toLowerCase().includes(q))):rows.slice();
+  // registry join: attach missing-info count for the Registry column + sort + filter
+  view.forEach(r=>{ const hit=REG_BYKEY?regFor(r.name):null;
+    r.registry = !REG_BYKEY ? -1 : (hit ? regMissing(hit.g).length : 99); });
+  if(($('#cust-missing')||{}).checked) view=view.filter(r=>r.registry>0);
   const k=custSort.key,dir=custSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.net-a.net); });
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   const cols=APP_STATE==='NY'
-    ? [['name','Customer (DBA)',0],['legal','Legal name',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]]
-    : [['name','Customer',0],['legal','Legal name (DBA)',0],['address','Address',0],['channel','Channel',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]];
+    ? [['name','Customer (DBA)',0],['legal','Legal name',0],['address','Address',0],['channel','Channel',0],['registry','Registry',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]]
+    : [['name','Customer',0],['legal','Legal name (DBA)',0],['address','Address',0],['channel','Channel',0],['registry','Registry',0],['orders','Orders',1],['net','Net Revenue',1],['first','First order',1],['last','Last order',1]];
   const showDir=APP_STATE!=='NY';
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const dirCols=APP_STATE==='NY'||showDir;   // both states show Legal name + Address now
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders + contents"><td>${esc(r.name)}</td>${dirCols?`<td>${esc(r.legal||'—')}</td><td class="addr">${esc(r.address||'—')}</td>`:''}<td><span class="src ${r.channel.replace(/[^A-Za-z]/g,'')}">${esc(r.channel)}</span></td>
+    <td class="reg">${regCell(r.name)}</td>
     <td class="num">${r.orders}</td><td class="num money">${fmt$(r.net)}</td><td class="num">${fmtD(r.first)}</td><td class="num">${fmtD(r.last)}</td></tr>`).join('');
   const tot=view.reduce((a,r)=>({net:a.net+r.net,orders:a.orders+r.orders}),{net:0,orders:0});
   const nD=view.filter(r=>r.channel==='Distru').length, nN=view.filter(r=>r.channel==='Nabis').length, nB=view.filter(r=>r.channel==='Distru + Nabis').length;
   wrap.innerHTML=`<table id="cust-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td colspan="4">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
+    <tfoot><tr class="totals"><td colspan="5">${view.length} customer${view.length!==1?'s':''}</td><td class="num">${tot.orders}</td><td class="num money">${fmt$(tot.net)}</td><td></td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(custSort.key===key) custSort.dir*=-1; else custSort={key,dir:(['name','legal','address','channel'].includes(key))?1:-1}; renderCustomers(); });
   note.innerHTML=APP_STATE==='NY'
     ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). <b>Customer (DBA)</b> and <b>Legal name</b> are the two halves of the LeafLink buyer name (trade name + the legal LLC in parentheses). <b>Address</b> comes from the NY dispensary directory (OCM license + workbook); a store with no directory match shows “—”. Click a row for the customer's orders and contents.`
-    : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name.`;
+    : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name. <b>Registry</b> = the central store directory (BA app database, one row per store: DBA + legal + Pistil name + address + license) — ⚠ chips mark what that store's row is still missing, <b>✗ not linked</b> means no registry row matches this customer yet; use the checkbox above to hunt them down.`;
 }
 $('#cust-export').onclick=()=>{
   const {rows}=customersData(); const q=(($('#cust-search')||{}).value||'').trim().toLowerCase();
   const ny=APP_STATE==='NY';
+  const regCols=r=>{ const hit=REG_BYKEY?regFor(r.name):null;
+    return hit?[hit.g.name,hit.g.legal_name||'',hit.g.pistil_name||'',hit.g.address||'',hit.g.license||'',regMissing(hit.g).join('; ')]
+              :['','','','','','not in registry']; };
+  const regHead=['Registry name','Registry legal','Pistil name','Registry address','Registry license','Registry missing'];
   const out=[ny
-    ? ['Customer (DBA)','Legal name','Address','Channel','Orders','Net Revenue','First order','Last order']
-    : ['Customer (DBA)','Legal name','Address','Retailer License','Region','Channel','Orders','Net Revenue','First order','Last order']];
+    ? ['Customer (DBA)','Legal name','Address','Channel','Orders','Net Revenue','First order','Last order',...regHead]
+    : ['Customer (DBA)','Legal name','Address','Retailer License','Region','Channel','Orders','Net Revenue','First order','Last order',...regHead]];
   (q?rows.filter(r=>r.name.toLowerCase().includes(q)):rows).sort((a,b)=>b.net-a.net)
     .forEach(r=>{ const d=r.first?new Date(r.first).toISOString().slice(0,10):'', l=r.last?new Date(r.last).toISOString().slice(0,10):'';
       out.push(ny
-        ? [r.name,nyLegalFor(r.name),nyAddrFor(r.name),r.channel,r.orders,r.net.toFixed(2),d,l]
-        : [r.name,r.legal||'',r.address||'',r.license||'',r.region||'',r.channel,r.orders,r.net.toFixed(2),d,l]); });
+        ? [r.name,nyLegalFor(r.name),nyAddrFor(r.name),r.channel,r.orders,r.net.toFixed(2),d,l,...regCols(r)]
+        : [r.name,r.legal||'',r.address||'',r.license||'',r.region||'',r.channel,r.orders,r.net.toFixed(2),d,l,...regCols(r)]); });
   downloadCSV('customers-by-channel.csv',out);
 };
 
@@ -6216,6 +6274,7 @@ $('#pay-export').onclick=()=>ledgerExport('pay','pd',payState,'Payment date','pa
 document.querySelectorAll('#sales-src button').forEach(b=>b.onclick=()=>{ salesState.src=b.dataset.src; document.querySelectorAll('#sales-src button').forEach(x=>x.classList.toggle('on',x===b)); renderSalesReport(); });
 document.querySelectorAll('#pay-src button').forEach(b=>b.onclick=()=>{ payState.src=b.dataset.src; document.querySelectorAll('#pay-src button').forEach(x=>x.classList.toggle('on',x===b)); renderPaymentsReport(); });
 wireRepRange('cust', renderCustomers, '6m');
+{ const mc=$('#cust-missing'); if(mc) mc.addEventListener('change',renderCustomers); }
 wireRepRange('nc', renderNewCustomers, 'd90');
 wireRepRange('sales', renderSalesReport, '3m');
 wireRepRange('pay', renderPaymentsReport, '3m');
