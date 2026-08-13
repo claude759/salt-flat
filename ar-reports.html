@@ -279,6 +279,9 @@
   .neg{color:var(--muted)}
   /* Customer Tiers */
   td.over-link,td.visit-link,td.baspend-link,td.ba-visit-link,td.ba-up-link,td.ba-pis-link,td.ba-why-link,td.ba-edu-link,td.ba-pad-link,td.ba-order-link{cursor:pointer}
+  .ba-exp{cursor:pointer;color:var(--muted);font-size:10px;user-select:none}
+  tr.ba-branch td{background:color-mix(in srgb,var(--panel2) 55%,transparent);font-size:12px;color:var(--muted);border-top:none;padding-top:4px;padding-bottom:4px}
+  td.ba-branch-name{padding-left:22px;color:var(--text)}
   td.over-link>span,td.visit-link>span,td.baspend-link>span,td.ba-visit-link>span{text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px}
   .tier-badge{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap}
   .tier-badge.t1{background:#123524;color:#7ee2a8}
@@ -4520,7 +4523,7 @@ function renderTiersNY(){
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click to see this account's orders">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
-    <td>${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
+    <td>${caret}${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
     <td class="num money">${fmt$(r.rev)}</td>
     <td class="num money">${r.totalConc>0.005?`<span style="color:var(--orange)">${fmt$(r.totalConc)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num">${r.pctDC==null?'<span class="neg">—</span>':(r.pctDC>0.00005?`<span style="color:${r.pctDC>=0.1?'var(--red)':r.pctDC>=0.05?'var(--yellow)':'var(--muted)'}">${(r.pctDC*100).toFixed(1)}%</span>`:'<span class="neg">—</span>')}</td>
@@ -5276,7 +5279,7 @@ function renderTiers(){
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
-    <td>${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
+    <td>${caret}${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
     <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
     <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
     <td class="num money">${(r.totalConc||0)>0.005?`<span style="color:var(--orange)">${fmt$(r.totalConc)}</span>`:'<span class="neg">—</span>'}</td>
@@ -5899,6 +5902,40 @@ function baRepView(){
   });
   return {view, months, start, end, up, unmatched};
 }
+// ── Branch expansion: a multi-store rollup (STIIIZY's branches under the Sgi Jackson corporate
+// account, Cannavine's four shops under their distro account) expands to one sub-row per store.
+// Per-branch data: Pistil shelf status comes per store already; schedule rows keep the RAW store
+// name, so visits/upcoming are assigned to the branch whose distinctive name tokens they share
+// ("Stiiizy Costa Mesa" → STIIIZY Costa Mesa). Rows naming no specific branch (bare "stiiizy")
+// land in an "(unspecified store)" bucket instead of being guessed. BA-app visit days can't be
+// split (the RPC returns the shared sales_key, not the store) — they stay on the parent row.
+const BA_BR_COMMON=/^(STIIIZY|STIIZY|CANNABIS|DISPENSARY|COLLECTIVE|COMPANY|SUPPLY|WELLNESS|CENTER|THE|REC|LLC|INC|SAN|LOS|CITY)$/;
+const baBranchToks=n=>new Set(String(n||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>=3&&!BA_BR_COMMON.test(w)));
+let BA_EXP=new Set();   // expanded account keys (survives re-render/sort)
+function baBranchData(key, pisStores, posStores){
+  const brs=(pisStores||[]).map(g=>({name:g.s, toks:baBranchToks(g.s),
+    inStock:g.items.filter(it=>it[2]).length, total:g.items.length,
+    units:null, visits:0, lastEdu:null, lastPad:null, lastVisit:null, up:null, upN:0}));
+  (posStores||[]).forEach(q=>{ const b=brs.find(x=>x.name===q.s); const u=q.items.reduce((t,it)=>t+(+it[1]||0),0);
+    if(b) b.units=u; else brs.push({name:q.s, toks:baBranchToks(q.s), inStock:null, total:null, units:u, visits:0, lastEdu:null, lastPad:null, lastVisit:null, up:null, upN:0}); });
+  const un={name:'(store not specified on the schedule)', toks:new Set(), inStock:null, total:null, units:null, visits:0, lastEdu:null, lastPad:null, lastVisit:null, up:null, upN:0, unassigned:true};
+  const assign=raw=>{ const t=baBranchToks(raw); let best=null,bestN=0;
+    brs.forEach(b=>{ let n2=0; t.forEach(w=>{ if(b.toks.has(w)) n2++; }); if(n2>bestN){ bestN=n2; best=b; } });
+    return bestN>=1?best:un; };
+  const days={};   // per-branch distinct schedule visit days
+  (VISIT_EVENTS||[]).forEach(v=>{ if(visitGroupKey(v.c)!==key) return; const b=assign(v.c);
+    (days[b.name]=days[b.name]||new Set()).add(new Date(v.d).toISOString().slice(0,10));
+    if(v.edu&&(!b.lastEdu||v.d>b.lastEdu)) b.lastEdu=v.d;
+    if(v.pad&&(!b.lastPad||v.d>b.lastPad)) b.lastPad=v.d;
+    if(!b.lastVisit||v.d>b.lastVisit) b.lastVisit=v.d; });
+  Object.entries(days).forEach(([n,set])=>{ const b=brs.find(x=>x.name===n)||un; b.visits=set.size; });
+  const t0=new Date(); t0.setHours(0,0,0,0);
+  (SCHED_EVENTS||[]).forEach(e=>{ if(e.d<t0.getTime()||visitGroupKey(e.c)!==key) return; const b=assign(e.c);
+    b.upN++; if(!b.up||e.d<b.up.d) b.up=e; });
+  const out=brs.sort((a,b)=>a.name<b.name?-1:1);
+  if(un.visits||un.upN||un.lastVisit) out.push(un);
+  return out;
+}
 function renderBaReport(){
   const wrap=$('#ba-wrap'), note=$('#ba-note'); if(!wrap) return;
   const {view,months,unmatched}=baRepView();
@@ -5916,6 +5953,10 @@ function renderBaReport(){
   const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev',`Revenue (${months}mo)`,1],['last','Last order',1],['visitsAll','Visits',1],['lastEdu','Last EDU',1],['lastPad','Last PAD',1],['lastVisit','Last store visit',1],['up','Upcoming',1],['pis','WT Inventory',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=rows.map(r=>{
+    const rk=baRowKey(r.name);
+    const multiStore=(r.pis&&r.pis.stores.length>1)||(r.pos&&r.pos.stores.length>1);
+    const expanded=multiStore&&BA_EXP.has(rk);
+    const caret=multiStore?`<span class="ba-exp" data-exp="${esc(rk)}" title="${expanded?'Collapse':'Expand'} the individual stores under this account">${expanded?'▼':'▶'} </span>`:'';
     const u=r.upAll[0]||null, uN=r.upAll.length;
     const uTxt=u?`${fmtD(u.d)} · ${esc(baDrvName(u.drv)||'—')}${u.pad&&u.edu?' · PAD+EDU':u.pad?' · PAD':u.edu?' · EDU':''}${uN>1?` <span class="neg">+${uN-1}</span>`:''}`:'<span class="neg">—</span>';
     const p=r.pis, q=r.pos;
@@ -5923,7 +5964,7 @@ function renderBaReport(){
       :p?(p.inStock?`<span style="color:var(--green)">${p.inStock}/${p.total} in stock</span>`:`<span style="color:var(--red)">OOS (${p.total} tracked)</span>`):'<span class="neg">—</span>';
     return `<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
-    <td>${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
+    <td>${caret}${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
     <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
     <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
     <td class="num${r.last?' ba-order-link':''}"${r.last?' title="Click to open the most recent order"':''}>${fmtD(r.last)||'<span class="neg">—</span>'}</td>
@@ -5933,7 +5974,18 @@ function renderBaReport(){
     <td class="num ${(p||q)?'ba-pis-link':'ba-why-link'}" title="${(p||q)?`${q?'true POS on-hand ('+q.stores.length+' store'+(q.stores.length>1?'s':'')+') · ':''}${p?p.stores.length+' store'+(p.stores.length>1?'s':'')+' on the menu crawl · ':''}click for the shelf detail`:'No Pistil data matched — click to see why'}>${pTxt}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
-  </tr>`; }).join('');
+  </tr>`+(expanded?baBranchData(rk, r.pis&&r.pis.stores, r.pos&&r.pos.stores).map(b=>{
+    const dash='<span class="neg">—</span>';
+    const bd=ms=>ms?`<span style="color:${ago(ms)<=30?'var(--green)':ago(ms)<=60?'var(--text)':'var(--orange)'}">${fmtD(ms)}</span>`:dash;
+    const bu=b.up?`${fmtD(b.up.d)} · ${esc(baDrvName(b.up.drv)||'—')}${b.up.pad&&b.up.edu?' · PAD+EDU':b.up.pad?' · PAD':b.up.edu?' · EDU':''}${b.upN>1?` <span class="neg">+${b.upN-1}</span>`:''}`:dash;
+    const bi=b.total!=null?(b.inStock?`<span style="color:var(--green)">${b.inStock}/${b.total} in stock</span>`:`<span style="color:var(--red)">OOS (${b.total})</span>`):dash;
+    return `<tr class="ba-branch"${b.up?` title="${esc((b.up.note||'').slice(0,160))}"`:''}>
+    <td></td><td class="ba-branch-name">${esc(b.name)}</td><td></td><td></td><td></td>
+    <td class="num">${b.visits?`<span style="color:var(--green)">${b.visits}</span>`:dash}</td>
+    <td class="num">${bd(b.lastEdu)}</td><td class="num">${bd(b.lastPad)}</td><td class="num">${bd(b.lastVisit)}</td>
+    <td class="num">${bu}</td>
+    <td class="num">${b.units!=null?`<span style="font-weight:700;color:${b.units>0?'var(--green)':'var(--red)'}">${b.units} units</span>${b.total!=null?' <span class="neg">· '+b.inStock+'/'+b.total+' listed</span>':''}`:bi}</td>
+    <td></td><td></td></tr>`; }).join(''):''); }).join('');
   const tot=rows.reduce((a,r)=>({rev:a.rev+r.rev,visits:a.visits+(r.visitsAll||0),out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,visits:0,out:0,over:0});
   wrap.innerHTML=`<table id="ba-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="3">${rows.length} account${rows.length!==1?'s':''}</td><td class="num money">${fmt$(tot.rev)}</td><td></td><td class="num">${tot.visits}</td><td colspan="5"></td><td class="num money">${fmt$(tot.out)}</td><td class="num money">${fmt$(tot.over)}</td></tr></tfoot></table>`;
@@ -6051,7 +6103,11 @@ function baPisWhyDrill(name){
     rows: top.map(c=>[c.s, c.byAddr?'SAME street # + zip':`name similarity ${(c.sc*100).toFixed(0)}%`, c.who?c.who:'nothing (unmatched)', c.a||'—', ourAddr||'(none on file)']),
     empty: top.length?undefined:' '});
 }
-$('#ba-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#ba-wrap').contains(tr)) return;
+$('#ba-wrap').onclick=(ev)=>{
+  const ex=ev.target.closest&&ev.target.closest('.ba-exp');
+  if(ex){ const k=ex.dataset.exp; if(BA_EXP.has(k)) BA_EXP.delete(k); else BA_EXP.add(k); renderBaReport(); return; }
+  if(ev.target.closest&&ev.target.closest('tr.ba-branch')) return;   // branch sub-rows are informational
+  const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#ba-wrap').contains(tr)) return;
   const name=tr.getAttribute('data-name'), mo=+(($('#ba-months')||{}).value||3);
   if(ev.target.closest && ev.target.closest('td.ba-edu-link')) return baTypeVisitsDrill(name,'edu',mo);
   if(ev.target.closest && ev.target.closest('td.ba-pad-link')) return baTypeVisitsDrill(name,'pad',mo);
