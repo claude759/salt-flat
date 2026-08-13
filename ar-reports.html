@@ -4497,8 +4497,8 @@ function baNoteHtml(state,claimed){
   if(off>0.005) s+=` Another ${fmt$(off)} of ${state} field time wasn't tied to any store (office/admin work, unlinked days) — it's in the BA app's own report, not in these columns.`;
   return s;
 }
-function tierDataNY(){
-  const months=Math.max(1,+(($('#tier-months')||{}).value||3));
+function tierDataNY(monthsOv){
+  const months=Math.max(1,+(monthsOv || ($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
   const start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0);
   const t1=Math.max(0,+(($('#tier-t1')||{}).value||15000)), t2=Math.min(t1,Math.max(0,+(($('#tier-t2')||{}).value||7000)));
@@ -4560,8 +4560,8 @@ function renderTiersNY(){
   note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (cancelled/rejected orders excluded). Same editable thresholds as California; tiers rank by Gross Sales. <b>Gross Sales</b> = LeafLink order totals. <b>Disc + Credits</b> = invoice-level discounts from the distributor's recon, joined to the account by name; <b>% of Sales</b> = that ÷ gross; <b>Net Sales</b> = gross − discounts/credits. Click a row for the account's orders — each discount there shows the order it was used on. AR isn't tracked per-account for NY yet.`
     + baNoteHtml('NY', new Set(rows.map(r=>baRowKey(r.name))));
 }
-function nyTierDrill(name){
-  const {start,end,months}=tierDataNY();
+function nyTierDrill(name,monthsOv){
+  const {start,end,months}=tierDataNY(monthsOv);
   const list=(NY_EVENTS||[]).filter(e=>e.c===name&&e.d>=start.getTime()&&e.d<=end.getTime()).sort((a,b)=>b.d-a.d);
   if(!list.length) return;
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
@@ -4832,12 +4832,14 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
     t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary / Sales by Type
-  const NY_REPORTS=['customers','newcust','sales','bydisp','nysku'], NY_ONLY_REPORTS=['nysku'];
+  const NY_REPORTS=['customers','newcust','sales','bydisp','nysku','ba'], NY_ONLY_REPORTS=['nysku'];
   document.querySelectorAll('#rep-toggle button').forEach(b=>{ const rb=b.dataset.rep;
     b.classList.toggle('hidden', APP_STATE==='NY' ? !NY_REPORTS.includes(rb) : NY_ONLY_REPORTS.includes(rb)); });
   if(APP_STATE==='NY'&&!NY_REPORTS.includes(repMode)) setRepMode('customers');
   if(APP_STATE!=='NY'&&repMode==='nysku') setRepMode('newcust');   // never leave CA parked on a NY-only mode
   if(APP_STATE!==was){
+    BA_PIS_RES={}; BA_POS_RES={}; BA_PIS_UN=[]; try{ BA_EXP.clear(); }catch(e){}   // these rollups are per-STATE
+    baSort={key:'tier',dir:1};   // the states' column KEYS differ (visitsAll/baVisits, source, up) — a carried-over key sorts by undefined
     // sku date range: NY defaults to ALL TIME (its orders predate CA's "last week" default);
     // returning to CA restores the last-week preset.
     if(APP_STATE==='NY'){ if($('#sku-preset')){ $('#sku-preset').value='30d'; applySkuPreset('30d'); } }
@@ -5934,9 +5936,10 @@ function baUpcomingFor(){
   return by;
 }
 // account key → Pistil shelf rollup (CA stores; STIIIZY branches collapse to the corporate account)
-function baPistilByKey(){
+function baPistilByKey(st){
+  const want=st||(APP_STATE==='NY'?'NY':'CA');   // the crawl covers BOTH states now (143 CA + 142 NY)
   const by={};
-  (PISTIL||[]).forEach(g=>{ if(g.st && g.st!=='CA') return; const k=visitGroupKey(g.s);
+  (PISTIL||[]).forEach(g=>{ if(g.st && g.st!==want) return; const k=visitGroupKey(g.s);
     const b=(by[k]=by[k]||{stores:[],inStock:0,total:0,units:0,rd:g.rd});
     b.stores.push(g); if(g.rd>b.rd) b.rd=g.rd;
     g.items.forEach(it=>{ b.total++; if(it[2]) b.inStock++; const n=parseFloat(it[3]); if(!isNaN(n)) b.units+=n; });
@@ -6031,23 +6034,50 @@ function baPisResolve(accounts, pis){
     if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
   return {res, unmatched:entries.filter(e=>!taken.has(e.k))};
 }
+// NY receivables per account (recon invoices + un-invoiced LeafLink orders), keyed like tier rows.
+function baNyArByKey(){
+  const by={};
+  nyArBuyerGroups(nyArAllRows().all).forEach(g=>{ const k=tierNorm(g.name);
+    const b=by[k]||(by[k]={out:0,over:0}); b.out+=g.total; b.over+=g.overdue; });
+  return by;
+}
+// The BA Report runs in BOTH states off ONE implementation — the columns differ because the
+// underlying data does, not because the code forked:
+//   CA: Distru/Nabis revenue · field-schedule PAD/EDU + Upcoming · Pistil menu crawl · live AR
+//   NY: LeafLink revenue · PAD/EDU from what BAs LOGGED in the field app (no NY schedule sheet
+//       exists, so there is no Upcoming column rather than an always-empty one) · Pistil POS
+//       units (NY is where the POS coverage lives) · recon AR incl. past-due
 function baRepView(){
+  const NY=APP_STATE==='NY';
   const months=Math.max(1,+(($('#ba-months')||{}).value||3));
-  const {rows,start,end}=tierData(months);
-  const up=baUpcomingFor();
+  const {rows,start,end}=NY?tierDataNY(months):tierData(months);
+  const up=NY?{}:baUpcomingFor();
+  const nyAr=NY?baNyArByKey():null;
   const accounts=rows.map(r=>({key:baRowKey(r.name),name:r.name}));
-  const {res,unmatched}=baPisResolve(accounts, baPistilByKey()); BA_PIS_RES=res; BA_PIS_UN=unmatched;
+  // Both states have a menu crawl now; NY additionally has true POS units (that's where Pistil's
+  // POS coverage lives), so an NY cell can show "N units · x/y listed" like a connected CA store.
+  const {res,unmatched}=baPisResolve(accounts, baPistilByKey(NY?'NY':'CA'));
+  BA_PIS_RES=res; BA_PIS_UN=unmatched;
   const {res:resPos}=baPisResolve(accounts, baPistilPosByKey()); BA_POS_RES=resPos;
   const view=rows.map(r=>{
     const k=baRowKey(r.name);
     let lastEdu=null,lastPad=null,lastVisit=null;
+    // CA: the schedule sheet's keyword-tagged rows are the PAD/EDU record.
     (r._visEvs||[]).forEach(e=>{ if(e.edu&&(!lastEdu||e.d>lastEdu)) lastEdu=e.d;
       if(e.pad&&(!lastPad||e.d>lastPad)) lastPad=e.d;
       if(!lastVisit||e.d>lastVisit) lastVisit=e.d; });
-    if(r._baDays) r._baDays.forEach((v,d)=>{ const ms=new Date(d+'T12:00:00').getTime(); if(!lastVisit||ms>lastVisit) lastVisit=ms; });
-    return {...r, lastEdu, lastPad, lastVisit, upAll:up[k]||[], pis:res[k]||null, pos:resPos[k]||null};
+    // Both states: the BA app's own logged activity. In NY it's the ONLY source, and it's a good
+    // one — the kinds carry "Education talk" / "Demo / PAD" straight from what the BA selected.
+    if(r._baDays) r._baDays.forEach((arr,d)=>{ const ms=new Date(d+'T12:00:00').getTime();
+      if(!lastVisit||ms>lastVisit) lastVisit=ms;
+      (arr||[]).forEach(x=>{ const a=String(x.act||'');
+        if(/education/i.test(a)&&(!lastEdu||ms>lastEdu)) lastEdu=ms;
+        if(/demo|\bpad\b/i.test(a)&&(!lastPad||ms>lastPad)) lastPad=ms; }); });
+    const ar=nyAr?(nyAr[tierNorm(r.name)]||{out:0,over:0}):null;
+    return {...r, lastEdu, lastPad, lastVisit, upAll:up[k]||[], pis:res[k]||null, pos:resPos[k]||null,
+      arOut:ar?ar.out:r.arOut, arOver:ar?ar.over:r.arOver};
   });
-  return {view, months, start, end, up, unmatched};
+  return {view, months, start, end, up, unmatched, NY};
 }
 // ── Branch expansion: a multi-store rollup (STIIIZY's branches under the Sgi Jackson corporate
 // account, Cannavine's four shops under their distro account) expands to one sub-row per store.
@@ -6093,8 +6123,8 @@ function baBranchData(key, pisStores, posStores){
 function renderBaReport(){
   loadAppTasks();   // BA-app-created schedule tasks feed the Upcoming column
   const wrap=$('#ba-wrap'), note=$('#ba-note'); if(!wrap) return;
-  const {view,months,unmatched}=baRepView();
-  if(!view.length){ note.innerHTML=''; wrap.innerHTML=`<div class="empty">No sales in the last ${months} month${months>1?'s':''} yet — the BA Report shows the same accounts as Customer Tiers.</div>`; return; }
+  const {view,months,unmatched,NY}=baRepView();
+  if(!view.length){ note.innerHTML=''; wrap.innerHTML=`<div class="empty">No ${NY?'LeafLink orders':'sales'} in the last ${months} month${months>1?'s':''} yet — the BA Report shows the same accounts as Customer Tiers.</div>`; return; }
   const q=(($('#ba-search')||{}).value||'').trim().toLowerCase();
   let rows=q?view.filter(r=>r.name.toLowerCase().includes(q)||(r.brand||'').toLowerCase().includes(q)):view.slice();
   const k=baSort.key,dir=baSort.dir;
@@ -6105,7 +6135,7 @@ function renderBaReport(){
   const dCell=(ms,cls,what)=>{ if(!ms) return `<td class="num neg">—</td>`; const a=ago(ms);
     const col=a<=30?'var(--green)':a<=60?'var(--text)':'var(--orange)';
     return `<td class="num${cls?' '+cls:''}" title="${a} day${a!==1?'s':''} ago${what?' — click for '+what:''}"><span style="color:${col}">${fmtD(ms)}</span></td>`; };
-  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev',`Revenue (${months}mo)`,1],['last','Last order',1],['visitsAll','Visits',1],['lastEdu','Last EDU',1],['lastPad','Last PAD',1],['lastVisit','Last store visit',1],['up','Upcoming',1],['pis','WT Inventory',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],...(NY?[]:[['source','Source',0]]),['rev',`Revenue (${months}mo)`,1],['last','Last order',1],[NY?'baVisits':'visitsAll','Visits',1],['lastEdu','Last EDU',1],['lastPad','Last PAD',1],['lastVisit','Last store visit',1],...(NY?[]:[['up','Upcoming',1]]),['pis','WT Inventory',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=rows.map(r=>{
     const rk=baRowKey(r.name);
@@ -6120,12 +6150,12 @@ function renderBaReport(){
     return `<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
     <td${multiStore?` class="ba-acct-exp" title="Click to ${expanded?'collapse':'expand'} the stores under this account"`:''}>${caret}${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
-    <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
+    ${NY?'':`<td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>`}
     <td class="num money disc-link" title="Click to see this account's orders">${fmt$(r.rev)}</td>
     <td class="num${r.last?' ba-order-link':''}"${r.last?' title="Click to open the most recent order"':''}>${fmtD(r.last)||'<span class="neg">—</span>'}</td>
-    <td class="num${r.visitsAll?' visit-link':''}"${r.visitsAll?' title="Click to see this account’s visit days (schedule + BA field app)"':''}>${r.visitsAll?`<span style="color:var(--green)">${r.visitsAll}</span>`:'<span class="neg">—</span>'}</td>
-    ${dCell(r.lastEdu,'ba-edu-link','the EDU visit history')}${dCell(r.lastPad,'ba-pad-link','the PAD visit history')}${dCell(r.lastVisit,'visit-link','all visit days (schedule + BA app)')}
-    <td class="num${u?' ba-up-link':''}"${u?` title="${esc((u.note||'').slice(0,180))} — click for all upcoming"`:''}>${uTxt}</td>
+    <td class="num${(NY?r.baVisits:r.visitsAll)?' visit-link':''}" title="Click to see this account’s visit days${NY?' logged in the BA field app':' (schedule + BA field app)'}">${(NY?r.baVisits:r.visitsAll)?`<span style="color:var(--green)">${NY?r.baVisits:r.visitsAll}</span>`:(NY&&r.baVisits==null?'<span class="neg">…</span>':'<span class="neg">—</span>')}</td>
+    ${dCell(r.lastEdu,'ba-edu-link','the EDU visit history')}${dCell(r.lastPad,'ba-pad-link','the PAD visit history')}${dCell(r.lastVisit,'visit-link','all visit days')}
+    ${NY?'':`<td class="num${u?' ba-up-link':''}"${u?` title="${esc((u.note||'').slice(0,180))} — click for all upcoming"`:''}>${uTxt}</td>`}
     <td class="num ${(p||q)?'ba-pis-link':'ba-why-link'}" title="${(p||q)?`${q?'true POS on-hand ('+q.stores.length+' store'+(q.stores.length>1?'s':'')+') · ':''}${p?p.stores.length+' store'+(p.stores.length>1?'s':'')+' on the menu crawl · ':''}click for the shelf detail`:'No Pistil data matched — click to see why'}>${pTxt}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
@@ -6135,17 +6165,17 @@ function renderBaReport(){
     const bu=b.up?`${fmtD(b.up.d)} · ${esc(baDrvName(b.up.drv)||'—')}${b.up.pad&&b.up.edu?' · PAD+EDU':b.up.pad?' · PAD':b.up.edu?' · EDU':''}${b.upN>1?` <span class="neg">+${b.upN-1}</span>`:''}`:dash;
     const bi=b.total!=null?(b.inStock?`<span style="color:var(--green)">${b.inStock}/${b.total} in stock</span>`:`<span style="color:var(--red)">OOS (${b.total})</span>`):dash;
     return `<tr class="ba-branch" data-parent="${esc(rk)}" data-branch="${esc(b.name)}"${b.up?` title="${esc((b.up.note||'').slice(0,160))}"`:''}>
-    <td></td><td class="ba-branch-name">${esc(b.name)}</td><td></td><td></td><td></td>
+    <td></td><td class="ba-branch-name">${esc(b.name)}</td>${NY?'':'<td></td>'}<td></td><td></td>
     <td class="num${b.visits?' bb-visit':''}"${b.visits?' title="Click for this store’s visit history"':''}>${b.visits?`<span style="color:var(--green)">${b.visits}</span>`:dash}</td>
     <td class="num${b.lastEdu?' bb-edu':''}"${b.lastEdu?' title="Click for this store’s EDU visits"':''}>${bd(b.lastEdu)}</td>
     <td class="num${b.lastPad?' bb-pad':''}"${b.lastPad?' title="Click for this store’s PAD visits"':''}>${bd(b.lastPad)}</td>
     <td class="num${b.lastVisit?' bb-visit':''}"${b.lastVisit?' title="Click for this store’s visit history"':''}>${bd(b.lastVisit)}</td>
-    <td class="num${b.up?' bb-up':''}"${b.up?' title="Click for this store’s upcoming schedule"':''}>${bu}</td>
+    ${NY?'':`<td class="num${b.up?' bb-up':''}"${b.up?' title="Click for this store’s upcoming schedule"':''}>${bu}</td>`}
     <td class="num${(b.total!=null||b.units!=null)?' bb-inv':''}"${(b.total!=null||b.units!=null)?' title="Click for this store’s shelf detail"':''}>${b.units!=null?`<span style="font-weight:700;color:${b.units>0?'var(--green)':'var(--red)'}">${b.units} units</span>${b.total!=null?' <span class="neg">· '+b.inStock+'/'+b.total+' listed</span>':''}`:bi}</td>
     <td></td><td></td></tr>`; }).join(''):''); }).join('');
-  const tot=rows.reduce((a,r)=>({rev:a.rev+r.rev,visits:a.visits+(r.visitsAll||0),out:a.out+r.arOut,over:a.over+r.arOver}),{rev:0,visits:0,out:0,over:0});
+  const tot=rows.reduce((a,r)=>({rev:a.rev+r.rev,visits:a.visits+((NY?r.baVisits:r.visitsAll)||0),out:a.out+(r.arOut||0),over:a.over+(r.arOver||0)}),{rev:0,visits:0,out:0,over:0});
   wrap.innerHTML=`<table id="ba-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td colspan="3">${rows.length} account${rows.length!==1?'s':''}</td><td class="num money">${fmt$(tot.rev)}</td><td></td><td class="num">${tot.visits}</td><td colspan="5"></td><td class="num money">${fmt$(tot.out)}</td><td class="num money">${fmt$(tot.over)}</td></tr></tfoot></table>`;
+    <tfoot><tr class="totals"><td colspan="${NY?2:3}">${rows.length} account${rows.length!==1?'s':''}</td><td class="num money">${fmt$(tot.rev)}</td><td></td><td class="num">${tot.visits}</td><td colspan="${NY?4:5}"></td><td class="num money">${fmt$(tot.out)}</td><td class="num money">${fmt$(tot.over)}</td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(baSort.key===key) baSort.dir=-baSort.dir; else baSort={key,dir:key==='name'||key==='tier'||key==='source'?1:-1};
     renderBaReport(); });
@@ -6153,6 +6183,16 @@ function renderBaReport(){
   note.innerHTML=baRepNote(view,months,unmatched);   // note stats over the FULL view — a search box filter must not change coverage numbers
 }
 function baRepNote(rows,months,unmatched){
+  if(APP_STATE==='NY'){
+    const withEdu=rows.filter(r=>r.lastEdu).length, withPad=rows.filter(r=>r.lastPad).length,
+          withVis=rows.filter(r=>r.baVisits).length, withPos=rows.filter(r=>r.pos).length;
+    const posRd=rows.filter(r=>r.pos).map(r=>r.pos.rd).sort().pop();
+    let s2=`<b>BA Report — New York</b> — the Customer Tiers accounts (same tiers, thresholds and ${months}-month window, LeafLink revenue) with the field team's columns. <b>Visits, Last EDU, Last PAD and Last store visit all come from the BA field app</b> — New York has no schedule workbook, so what the BA logged (activity kinds “Education talk” / “Demo / PAD”) is the record; ${withVis} account${withVis!==1?'s have':' has'} a logged visit, ${withPad} a demo/PAD, ${withEdu} an education talk. There is deliberately <b>no Upcoming column</b>: no NY scheduling source exists yet — the BA app's schedule tasks are CA-only and carry no state, so an Upcoming column here could only ever be blank.`;
+    if(withPos) s2+=` <b>WT Inventory</b> = TRUE POS units on hand from Pistil's Inventory Report (report of ${posRd||'—'}${PISTIL_POS_ASOF?`, pulled ${new Date(PISTIL_POS_ASOF).toLocaleDateString()}`:''}) — NY is where Pistil's POS coverage lives, so these are real counts, not menu inference; ${withPos} of ${rows.length} accounts matched a POS-connected store.`;
+    else s2+=` <span style="color:var(--orange)"><b>WT Inventory:</b> no Pistil POS rows matched these accounts yet.</span>`;
+    s2+=` <b>AR Outstanding / Overdue</b> come from the distributor recon plus un-invoiced LeafLink orders — the same figures as the NY Accounts Receivable page. Click any cell for its detail.`;
+    return s2;
+  }
   const schedMax=schedAll().reduce((m,e)=>Math.max(m,e.d),0);
   const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—';
   let s=`<b>BA Report</b> — the Customer Tiers accounts (same tiers, thresholds and ${months}-month window) with the field team's columns. <b>Last EDU / Last PAD</b> come from the schedule sheet's keyword-tagged rows; <b>Last store visit</b> is the most recent day in the merged Visits set (schedule ∪ BA field app); <b>Upcoming</b> is the account's next row in the team schedule workbook (any activity, deliveries included).`;
@@ -6212,13 +6252,24 @@ function baPistilDrill(name){
 function baTypeVisitsDrill(name,type,monthsOv){
   const {start,end,months}=tierData(monthsOv);
   const key=tierNorm(name);
-  const list=(VISIT_EVENTS||[]).filter(v=>v.d&&v.d>=start.getTime()&&v.d<=end.getTime()&&visitGroupKey(v.c)===key&&(type==='edu'?v.edu:v.pad)).sort((a,b)=>b.d-a.d);
-  if(!list.length) return;
+  const want=a=>type==='edu'?/education/i.test(a):/demo|\bpad\b/i.test(a);
+  const rows=(VISIT_EVENTS||[]).filter(v=>v.d&&v.d>=start.getTime()&&v.d<=end.getTime()&&visitGroupKey(v.c)===key&&(type==='edu'?v.edu:v.pad))
+    .map(e=>({d:e.d, type:e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', detail:visitNote(e), src:'schedule'}));
+  // The cell's date also considers what BAs LOGGED in the field app, so the drill must too —
+  // otherwise a cell shows a date its own drill can't explain.
+  const days=baVisitDaysFor('CA')[baRowKey(name)];
+  if(days) days.forEach((arr,d)=>{ const p2=String(d).split('-'), ms=new Date(+p2[0],+p2[1]-1,+p2[2],12).getTime();
+    if(ms<start.getTime()||ms>end.getTime()) return;
+    (arr||[]).forEach(x=>{ if(!want(String(x.act||''))) return;
+      rows.push({d:ms, type:x.act, detail:`${x.ba} — logged in the BA field app`, src:'app'}); }); });
+  if(!rows.length) return;
+  rows.sort((a,b)=>b.d-a.d);
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+  const nApp=rows.filter(r=>r.src==='app').length;
   openScModal({title:`${name} — ${type==='edu'?'EDU':'PAD'} visits`,
-    sub:`${list.length} ${type==='edu'?'staff-education (EDU)':'patient-appreciation-day (PAD)'} visit${list.length!==1?'s':''} in the last ${months} month${months>1?'s':''} · from the field schedule · newest first`,
+    sub:`${rows.length} ${type==='edu'?'staff-education (EDU)':'patient-appreciation-day (PAD)'} entr${rows.length!==1?'ies':'y'} in the last ${months} month${months>1?'s':''} · field schedule${nApp?` + ${nApp} logged in the BA app`:''} · newest first`,
     columns:[{l:'Date'},{l:'Type'},{l:'Notes'}],
-    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', visitNote(e)])});
+    rows:rows.map(e=>[fmtDt(e.d), e.type, e.detail])});
 }
 function baLastOrderDrill(name,monthsOv){
   const {start,end}=tierData(monthsOv);
@@ -6228,25 +6279,58 @@ function baLastOrderDrill(name,monthsOv){
     if(!best||e.d>best.d) best={d:e.d,k:orderKey(e)}; });
   if(best) orderDrill(best.k);
 }
+// NY visit drills read the BA field app directly (no NY schedule sheet exists): every logged day
+// at the account, optionally narrowed to the days carrying an Education-talk / Demo-PAD kind.
+function baNyActDrill(name,type){
+  const days=baVisitDaysFor('NY')[baRowKey(name)];
+  if(!days||!days.size) return;
+  const want=a=>type==='edu'?/education/i.test(a):type==='pad'?/demo|\bpad\b/i.test(a):true;
+  const rows=[];
+  [...days.entries()].sort((a,b)=>b[0]<a[0]?-1:1).forEach(([d,arr])=>{
+    const p2=String(d).split('-');
+    const fmtDt=new Date(+p2[0],+p2[1]-1,+p2[2]).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+    (arr||[]).forEach(x=>{ if(want(String(x.act||''))) rows.push([fmtDt, x.ba, x.act]); });
+  });
+  if(!rows.length) return;
+  openScModal({title:`${name} — ${type==='edu'?'education talks':type==='pad'?'demos / PADs':'visits'}`,
+    sub:`${rows.length} logged ${rows.length===1?'entry':'entries'} in the last ${Math.max(1,+(($('#ba-months')||{}).value||3))} month${Math.max(1,+(($('#ba-months')||{}).value||3))>1?'s':''} · straight from the BA field app (New York has no schedule sheet — what the BA recorded IS the record) · newest first`,
+    columns:[{l:'Date'},{l:'Who'},{l:'Activity'}], rows});
+}
+// NY Overdue cell → the past-due rows the figure was built from (the CA drill reads the CA
+// invoice model, which holds nothing for a NY account — it silently opened nothing).
+function baNyOverdueDrill(name){
+  const g=nyArBuyerGroups(nyArAllRows().all).find(x=>tierNorm(x.name)===tierNorm(name));
+  if(!g) return;
+  const past=(g.rows||[]).filter(x=>x.dpd!=null&&x.dpd>0&&x.out>0.005).sort((a,b)=>b.dpd-a.dpd);
+  if(!past.length) return;
+  const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  openScModal({title:`${name} — past due`,
+    sub:`${past.length} item${past.length!==1?'s':''} past their due date · invoiced rows use the distributor's own due dates; “not invoiced” rows are estimates from LeafLink terms`,
+    columns:[{l:'Invoice / order #'},{l:'Due'},{l:'Status'},{l:'Amount',num:true,money:true}],
+    rows:past.map(x=>[x._pend?`${x._ref||'(order)'} — not invoiced`:x.inv, fmtDt(x.due), `overdue ${x.dpd}d`, x.out]),
+    totalLabel:'Total past due', total:past.reduce((t,x)=>t+x.out,0)});
+}
 // Empty WT Inventory cell → WHY: address-match then name-similarity against the stores Pistil
 // tracks but we couldn't attach. Turns "—" from a dead end into a diagnosis: either a likely
 // name mismatch (with the candidate store + both addresses shown) or "Pistil doesn't track them".
 function baPisWhyDrill(name){
+  const NY=APP_STATE==='NY';
   const addrKey=a=>{ const t=String(a||'').toUpperCase();
-    const num=(t.match(/\b(\d{2,6})\b/)||[])[1]||'', zip=(t.match(/\b(9\d{4})\b/)||[])[1]||'';
+    const num=(t.match(/\b(\d{2,6})\b/)||[])[1]||'', zip=(t.match(/\b(\d{5})\b/)||[])[1]||'';   // NY zips are 1xxxx — a 9xxxx-only regex never matched there
     return num&&zip?num+'|'+zip:null; };
   const toks=n=>new Set(String(n).toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>2&&!/^(THE|CANNABIS|DISPENSARY|COLLECTIVE|COMPANY|WELLNESS|STORE|SHOP|REC|LLC|INC)$/.test(w)));
   const sim=(a,b)=>{ const A=toks(a),B=toks(b); if(!A.size||!B.size) return 0;
     let n2=0; A.forEach(w=>{ if(B.has(w)) n2++; else if([...B].some(x=>x.startsWith(w)||w.startsWith(x))) n2+=0.7; });
     return n2/Math.max(A.size,B.size); };
-  const ourAddr=(CUST_DIR[tierNorm(name)]||{}).address||'';
+  const ourAddr=(NY?(NY_ADDR[nyAddrNorm(name)]||''):((CUST_DIR[tierNorm(name)]||{}).address||''))||'';
   const ourAK=addrKey(ourAddr);
   // Search EVERY Pistil store, not just unmatched ones — when our own books carry the same
   // store under two account names, the data lands on the sibling and this drill must say so.
   const claimedBy={}; Object.entries(BA_PIS_RES).forEach(([ak,v])=>v.stores.forEach(g=>claimedBy[g.s]=ak));
   const rowName={}; ( ($('#ba-table')&&[...document.querySelectorAll('#ba-table tbody tr.parent')])||[] ).forEach(tr=>{ const n=tr.getAttribute('data-name'); rowName[baRowKey(n)]=n; });
   const cands=[];
-  (PISTIL||[]).forEach(g=>{ if(g.st&&g.st!=='CA') return;
+  const stWant=NY?'NY':'CA';
+  (PISTIL||[]).forEach(g=>{ if(g.st&&g.st!==stWant) return;
     const byAddr=ourAK&&addrKey(g.a)===ourAK;
     const sc=sim(name,g.s);
     if(byAddr||sc>=0.45) cands.push({s:g.s,a:g.a||'',sc:byAddr?1:sc,byAddr,who:claimedBy[g.s]?(rowName[claimedBy[g.s]]||claimedBy[g.s]):null});
@@ -6256,7 +6340,7 @@ function baPisWhyDrill(name){
   openScModal({title:`${name} — why no WT Inventory?`,
     sub: top.length
       ? `Pistil tracks ${top.length===1?'a store that may be':'stores that may be'} this account under a different name — if one below is right, it can be bridged permanently (address is the proof to check).`
-      : `Pistil's WT crawl (all ${(PISTIL||[]).length} stores) has nothing resembling this account by name or address — they're not tracked. Delivery services, distro/manufacturing accounts and non-storefront buyers never appear in Pistil.`,
+      : `Pistil's ${stWant} crawl (${(PISTIL||[]).filter(g=>!g.st||g.st===stWant).length} stores) has nothing resembling this account by name or address — they're not tracked. Delivery services, distro/manufacturing accounts and non-storefront buyers never appear in Pistil.`,
     columns: top.length?[{l:'Pistil store'},{l:'Evidence'},{l:'Currently attached to'},{l:'Pistil address'},{l:'Our address on file'}]:undefined,
     rows: top.map(c=>[c.s, c.byAddr?'SAME street # + zip':`name similarity ${(c.sc*100).toFixed(0)}%`, c.who?c.who:'nothing (unmatched)', c.a||'—', ourAddr||'(none on file)']),
     empty: top.length?undefined:' '});
@@ -6320,25 +6404,31 @@ $('#ba-wrap').onclick=(ev)=>{
   const expSpan=tr.querySelector('.ba-exp'), td0=ev.target.closest('td');
   if(expSpan && td0 && [...tr.children].indexOf(td0)<=1){   // whole Tier/Account cell toggles a multi-store account
     const k=expSpan.dataset.exp; if(BA_EXP.has(k)) BA_EXP.delete(k); else BA_EXP.add(k); renderBaReport(); return; }
-  if(ev.target.closest && ev.target.closest('td.ba-edu-link')) return baTypeVisitsDrill(name,'edu',mo);
-  if(ev.target.closest && ev.target.closest('td.ba-pad-link')) return baTypeVisitsDrill(name,'pad',mo);
-  if(ev.target.closest && ev.target.closest('td.ba-order-link')) return baLastOrderDrill(name,mo);
-  if(ev.target.closest && ev.target.closest('td.visit-link')) return tierVisitsDrill(name,mo);   // Visits + Last store visit → merged visit-day detail
+  if(ev.target.closest && ev.target.closest('td.ba-edu-link')) return APP_STATE==='NY'?baNyActDrill(name,'edu'):baTypeVisitsDrill(name,'edu',mo);
+  if(ev.target.closest && ev.target.closest('td.ba-pad-link')) return APP_STATE==='NY'?baNyActDrill(name,'pad'):baTypeVisitsDrill(name,'pad',mo);
+  if(ev.target.closest && ev.target.closest('td.ba-order-link')) return APP_STATE==='NY'?nyTierDrill(name,mo):baLastOrderDrill(name,mo);
+  if(ev.target.closest && ev.target.closest('td.visit-link')) return APP_STATE==='NY'?baNyActDrill(name,null):tierVisitsDrill(name,mo);   // Visits + Last store visit → visit-day detail
   if(ev.target.closest && ev.target.closest('td.ba-up-link')) return baUpcomingDrill(name);
   if(ev.target.closest && ev.target.closest('td.ba-pis-link')) return baPistilDrill(name);
   if(ev.target.closest && ev.target.closest('td.ba-why-link')) return baPisWhyDrill(name);
-  if(ev.target.closest && ev.target.closest('td.over-link')) return tierOverdueDrill(name);
-  return tierDrill(name,mo); };   // orders drill over the BA report's own window, not Tiers'
+  if(ev.target.closest && ev.target.closest('td.over-link')) return APP_STATE==='NY'?baNyOverdueDrill(name):tierOverdueDrill(name);
+  return APP_STATE==='NY'?nyTierDrill(name,mo):tierDrill(name,mo); };   // orders drill over the BA report's own window, not Tiers'
 ['ba-months','ba-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderBaReport); });
 $('#ba-export').onclick=()=>{
   const {view,months}=baRepView();
   const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
-  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Last order','Visits (sched ∪ BA)','Last EDU','Last PAD','Last store visit','Upcoming date','Upcoming who','Upcoming activity','POS units on hand','WT SKUs in stock','WT SKUs tracked','AR Outstanding','Overdue']];
+  const NY=APP_STATE==='NY';
+  const out=[NY
+    ? ['Tier','Account',`Revenue (${months}mo)`,'Last order','Visits (BA app)','Last EDU','Last PAD','Last store visit','POS units on hand','AR Outstanding','Overdue']
+    : ['Tier','Account','Source',`Revenue (${months}mo)`,'Last order','Visits (sched ∪ BA)','Last EDU','Last PAD','Last store visit','Upcoming date','Upcoming who','Upcoming activity','POS units on hand','WT SKUs in stock','WT SKUs tracked','AR Outstanding','Overdue']];
   view.sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>{ const u=r.upAll[0]||null;
-    out.push([r.tier,r.name,r.source,r.rev.toFixed(2),iso(r.last),r.visitsAll||0,iso(r.lastEdu),iso(r.lastPad),iso(r.lastVisit),
-      u?iso(u.d):'',u?baDrvName(u.drv):'',u?(u.pad&&u.edu?'PAD + EDU':u.pad?'PAD':u.edu?'EDU':'Visit'):'',
-      r.pos?r.pos.units:'',r.pis?r.pis.inStock:'',r.pis?r.pis.total:'',r.arOut.toFixed(2),r.arOver.toFixed(2)]); });
-  downloadCSV('ba-report.csv',out);
+    out.push(NY
+      ? [r.tier,r.name,r.rev.toFixed(2),iso(r.last),r.baVisits||0,iso(r.lastEdu),iso(r.lastPad),iso(r.lastVisit),
+         r.pos?r.pos.units:'',(r.arOut||0).toFixed(2),(r.arOver||0).toFixed(2)]
+      : [r.tier,r.name,r.source,r.rev.toFixed(2),iso(r.last),r.visitsAll||0,iso(r.lastEdu),iso(r.lastPad),iso(r.lastVisit),
+         u?iso(u.d):'',u?baDrvName(u.drv):'',u?(u.pad&&u.edu?'PAD + EDU':u.pad?'PAD':u.edu?'EDU':'Visit'):'',
+         r.pos?r.pos.units:'',r.pis?r.pis.inStock:'',r.pis?r.pis.total:'',(r.arOut||0).toFixed(2),(r.arOver||0).toFixed(2)]); });
+  downloadCSV(NY?'ba-report-ny.csv':'ba-report.csv',out);
 };
 /* ── Central store registry (dispensaries table via the store_registry RPC) ──
    One canonical row per store: DBA name, legal name, Pistil name, address,
