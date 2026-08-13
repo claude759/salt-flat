@@ -1423,6 +1423,7 @@ function classify(rows){
     if(has('Name','Legal Business Name','Address'))       return {type:'distru_companies',hr:i};   // Distru company directory (DBA/legal/address/license — lib/distru-companies.mjs)
     if(has('Schedule Date','Account Name','Sales Order Notes')) return {type:'visits',hr:i};   // field-schedule flatten (lib/schedule.mjs) — feeds the Reports tab
     if(has('Store','Product','Menu Counts','In stock')) return {type:'pistil',hr:i};   // Pistil stock report flatten (lib/pistil.mjs) — feeds the BA Report's WT Inventory column
+    if(has('Store','POS Product','Units on hand')) return {type:'pistil_pos',hr:i};    // Pistil POS inventory (true units on hand, POS-connected stores only)
     // LeafLink orders report export (NY) — header names vary slightly across LeafLink versions,
     // so accept Buyer + a total + a date. Checked LAST so it can't shadow the other reports.
     if(h.includes('Buyer') && (h.includes('Total Amount')||h.includes('Order Total')||h.includes('Total')) && (h.includes('Ship Date')||h.includes('Order Date')||h.includes('Created Date'))) return {type:'leaflink',hr:i};
@@ -1460,7 +1461,7 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, pistil:null, leaflink:null, leaflink_items:null, leaflink_meta:null, leaflink_inventory:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, pistil:null, pistil_pos:null, leaflink:null, leaflink_items:null, leaflink_meta:null, leaflink_inventory:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
 // Provenance of publishable state: which payload keys were rebuilt from ACTUAL FILES this session.
 // loadShared paints the localStorage cache first (stale-while-revalidate), so state can be
 // cache-derived — publishing that would overwrite the (fresher) live payload with stale data.
@@ -1481,6 +1482,7 @@ const LABELS = {
   distru_companies:'Distru company directory',
   visits:'Field schedule (PAD/EDU)',
   pistil:'Pistil stock report (WT shelf status)',
+  pistil_pos:'Pistil POS inventory (units on hand)',
   leaflink:'LeafLink orders (NY)',
   leaflink_items:'LeafLink line items (NY)',
   leaflink_meta:'LeafLink ship dates (NY)',
@@ -1692,6 +1694,8 @@ function applyShared(d){
     if(data.schedAsOf) SCHED_ASOF=data.schedAsOf;
     if(data.pistil && data.pistil.length){ PISTIL=pistilFromWire(data.pistil); any=true; }     // Pistil WT shelf status (BA Report)
     if(data.pistilAsOf) PISTIL_ASOF=data.pistilAsOf;
+    if(data.pistilPos && data.pistilPos.length){ PISTIL_POS=pistilPosFromWire(data.pistilPos); any=true; }   // true POS units overlay
+    if(data.pistilPosAsOf) PISTIL_POS_ASOF=data.pistilPosAsOf;
     if(data.custDir) CUST_DIR=custDirFromWire(data.custDir);   // customer directory (legal name / address / license)
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); buildNyLegal(); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
@@ -1775,6 +1779,8 @@ async function publishToTeam(){
     if(FRESH.has('sched') && SCHED_EVENTS && SCHED_EVENTS.length) cur.schedAsOf=new Date().toISOString(); else if(SCHED_ASOF && !cur.schedAsOf) cur.schedAsOf=SCHED_ASOF;   // staleness stamp, rows-survive; the merge base's stamp wins over our boot capture (base is always ≥ ours)
     if(FRESH.has('pistil') && PISTIL && PISTIL.length) cur.pistil=pistilToWire(PISTIL);                     // additive; Pistil per-store WT shelf status (BA Report)
     if(FRESH.has('pistil') && PISTIL && PISTIL.length) cur.pistilAsOf=new Date().toISOString(); else if(PISTIL_ASOF && !cur.pistilAsOf) cur.pistilAsOf=PISTIL_ASOF;   // staleness stamp, rows-survive; base stamp wins (see schedAsOf)
+    if(FRESH.has('pistilPos') && PISTIL_POS && PISTIL_POS.length) cur.pistilPos=pistilPosToWire(PISTIL_POS);   // additive; true POS units on hand (BA Report overlay)
+    if(FRESH.has('pistilPos') && PISTIL_POS && PISTIL_POS.length) cur.pistilPosAsOf=new Date().toISOString(); else if(PISTIL_POS_ASOF && !cur.pistilPosAsOf) cur.pistilPosAsOf=PISTIL_POS_ASOF;   // staleness stamp, rows-survive; base stamp wins
     if(FRESH.has('custDir') && CUST_DIR && Object.keys(CUST_DIR).length) cur.custDir=custDirToWire(CUST_DIR);  // additive; customer directory persists like visits
     if(FRESH.has('ny') && NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     if(FRESH.has('nyItems') && NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
@@ -1875,6 +1881,7 @@ function clearFileState(t){
     distru_companies:()=>{ CUST_DIR={}; FRESH.delete('custDir'); },
     visits:()=>{ VISIT_EVENTS=[]; SCHED_EVENTS=[]; FRESH.delete('visits'); FRESH.delete('sched'); },
     pistil:()=>{ PISTIL=[]; FRESH.delete('pistil'); },
+    pistil_pos:()=>{ PISTIL_POS=[]; FRESH.delete('pistilPos'); },
     leaflink:()=>{ NY_EVENTS=[]; FRESH.delete('ny'); },
     leaflink_items:()=>{ NY_ITEMS=[]; FRESH.delete('nyItems'); },
     leaflink_meta:()=>{ NY_SHIP={}; FRESH.delete('nyShip'); },
@@ -5480,7 +5487,30 @@ function buildPistilRows(){
 }
 function pistilToWire(rows){ return (rows||[]).map(g=>[g.s, g.a, g.st, g.rd, g.items]); }
 function pistilFromWire(w){ return (w||[]).map(x=>({s:String(x[0]||''), a:String(x[1]||''), st:String(x[2]||''), rd:String(x[3]||''), items:(x[4]||[]).map(i=>[String(i[0]||''),String(i[1]||''),i[2]?1:0,String(i[3]||''),String(i[4]||'')])})); }
-function buildPistil(){ if(FILES.pistil){ PISTIL=buildPistilRows(); if(PISTIL.length) FRESH.add('pistil'); } renderRepMode(); }
+// True POS on-hand (lib/pistil.mjs exportPistilPos → pistil-pos.csv, the "WT Inventory Daily"
+// send): only Pistil-POS-connected stores appear (~86, mostly NY + ~12 CA), but their
+// "Units on hand" is a real count — it OVERLAYS the menu-crawl status on the BA Report.
+let PISTIL_POS=[];     // {s:store, rd:reportDate, items:[[product, units, avgPerDay, daysOnHand, lastUpdate]]}
+let PISTIL_POS_ASOF=null;
+function buildPistilPosRows(){
+  if(!FILES.pistil_pos) return [];
+  const by=new Map(), num=v=>{ const n=parseFloat(v); return isNaN(n)?0:n; };
+  FILES.pistil_pos.data.forEach(r=>{
+    const st=(r['Store']||'').trim(); if(!st) return;
+    let g=by.get(st); if(!g){ g={s:st, rd:(r['Report Date']||'').trim(), items:[]}; by.set(st,g); }
+    g.items.push([(r['Product']||'').replace(/^Wizard Trees\s*-\s*/i,'').trim(),
+      Math.round(num(r['Units on hand'])), Math.round(num(r['Avg units per day'])*10)/10,
+      Math.round(num(r['Days on hand'])), (r['Last update']||'').trim()]);
+  });
+  return [...by.values()];
+}
+function pistilPosToWire(rows){ return (rows||[]).map(g=>[g.s, g.rd, g.items]); }
+function pistilPosFromWire(w){ return (w||[]).map(x=>({s:String(x[0]||''), rd:String(x[1]||''), items:(x[2]||[]).map(i=>[String(i[0]||''),+i[1]||0,+i[2]||0,+i[3]||0,String(i[4]||'')])})); }
+function buildPistil(){
+  if(FILES.pistil){ PISTIL=buildPistilRows(); if(PISTIL.length) FRESH.add('pistil'); }
+  if(FILES.pistil_pos){ PISTIL_POS=buildPistilPosRows(); if(PISTIL_POS.length) FRESH.add('pistilPos'); }
+  renderRepMode();
+}
 // Stiiizy rollup (user request Jul 2 2026): all Stiiizy-branded stores count under ONE
 // account "STIIIZY" — matches any name containing sti(i…)zy (incl. the sheet's "Stiizy"
 // typo), the Airfield San Jose store, and Authentic 209 (Stiiizy Modesto). The raw store
@@ -5763,9 +5793,20 @@ function baPistilByKey(){
 // ambiguous stays unmatched and is listed BY NAME in the note — never guessed.
 const BA_PIS_FILLER=/\b(cannabis|dispensaries|dispensary|collective|company|wellness|caregivers|remedies|supply|co|shop|store|the|rec|llc|inc)\b/gi;
 const baLooseKey=n=>tierNorm(String(n||'').replace(/\(.*?\)/g,' ').replace(/\|/g,' ').replace(BA_PIS_FILLER,' '));
-let BA_PIS_RES={};   // last render's account-key → pistil rollup (drills read this)
-function baPisResolve(accounts){
-  const pis=baPistilByKey();
+// account key → POS on-hand rollup (no state column in that export — matching against the
+// CA account list IS the geographic filter; the NY Flowery/Strain Stars names don't collide)
+function baPistilPosByKey(){
+  const by={};
+  (PISTIL_POS||[]).forEach(g=>{ const k=visitGroupKey(g.s);
+    const b=(by[k]=by[k]||{stores:[],units:0,skus:0,rd:g.rd});
+    b.stores.push(g); if(g.rd>b.rd) b.rd=g.rd;
+    g.items.forEach(it=>{ b.skus++; b.units+=(+it[1]||0); });
+  });
+  return by;
+}
+let BA_PIS_RES={};   // last render's account-key → menu-crawl rollup (drills read this)
+let BA_POS_RES={};   // last render's account-key → POS rollup
+function baPisResolve(accounts, pis){
   const entries=Object.entries(pis).map(([k,v])=>({k,v,loose:[...new Set(v.stores.map(g=>baLooseKey(g.s)))]}));
   const res={}, taken=new Set();
   accounts.forEach(a=>{ if(pis[a.key] && !taken.has(a.key)){ res[a.key]=pis[a.key]; taken.add(a.key); } });
@@ -5775,14 +5816,15 @@ function baPisResolve(accounts){
   accounts.forEach(a=>{ if(res[a.key]) return; const lk=baLooseKey(a.name); if(lk.length<6) return;
     const c=entries.filter(e=>!taken.has(e.k) && e.loose.some(x=>x.length>=6 && (x.startsWith(lk)||lk.startsWith(x))));
     if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
-  BA_PIS_RES=res;
   return {res, unmatched:entries.filter(e=>!taken.has(e.k))};
 }
 function baRepView(){
   const months=Math.max(1,+(($('#ba-months')||{}).value||3));
   const {rows,start,end}=tierData(months);
   const up=baUpcomingFor();
-  const {res,unmatched}=baPisResolve(rows.map(r=>({key:baRowKey(r.name),name:r.name})));
+  const accounts=rows.map(r=>({key:baRowKey(r.name),name:r.name}));
+  const {res,unmatched}=baPisResolve(accounts, baPistilByKey()); BA_PIS_RES=res;
+  const {res:resPos}=baPisResolve(accounts, baPistilPosByKey()); BA_POS_RES=resPos;
   const view=rows.map(r=>{
     const k=baRowKey(r.name);
     let lastEdu=null,lastPad=null,lastVisit=null;
@@ -5790,7 +5832,7 @@ function baRepView(){
       if(e.pad&&(!lastPad||e.d>lastPad)) lastPad=e.d;
       if(!lastVisit||e.d>lastVisit) lastVisit=e.d; });
     if(r._baDays) r._baDays.forEach((v,d)=>{ const ms=new Date(d+'T12:00:00').getTime(); if(!lastVisit||ms>lastVisit) lastVisit=ms; });
-    return {...r, lastEdu, lastPad, lastVisit, upAll:up[k]||[], pis:res[k]||null};
+    return {...r, lastEdu, lastPad, lastVisit, upAll:up[k]||[], pis:res[k]||null, pos:resPos[k]||null};
   });
   return {view, months, start, end, up, unmatched};
 }
@@ -5801,7 +5843,7 @@ function renderBaReport(){
   const q=(($('#ba-search')||{}).value||'').trim().toLowerCase();
   let rows=q?view.filter(r=>r.name.toLowerCase().includes(q)||(r.brand||'').toLowerCase().includes(q)):view.slice();
   const k=baSort.key,dir=baSort.dir;
-  const sv=r=>{ if(k==='up') return r.upAll.length?r.upAll[0].d:9e15*dir; if(k==='pis') return r.pis?r.pis.inStock:-1; const v=r[k]; return typeof v==='string'?v.toLowerCase():v; };
+  const sv=r=>{ if(k==='up') return r.upAll.length?r.upAll[0].d:9e15*dir; if(k==='pis') return r.pos?1e6+r.pos.units:(r.pis?r.pis.inStock:-1); const v=r[k]; return typeof v==='string'?v.toLowerCase():v; };
   rows.sort((a,b)=>{ const av=sv(a),bv=sv(b); return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):null;
   const ago=ms=>ms?Math.round((Date.now()-ms)/864e5):null;
@@ -5813,8 +5855,9 @@ function renderBaReport(){
   const body=rows.map(r=>{
     const u=r.upAll[0]||null, uN=r.upAll.length;
     const uTxt=u?`${fmtD(u.d)} · ${esc(baDrvName(u.drv)||'—')}${u.pad&&u.edu?' · PAD+EDU':u.pad?' · PAD':u.edu?' · EDU':''}${uN>1?` <span class="neg">+${uN-1}</span>`:''}`:'<span class="neg">—</span>';
-    const p=r.pis;
-    const pTxt=p?(p.inStock?`<span style="color:var(--green)">${p.inStock}/${p.total} in stock</span>`:`<span style="color:var(--red)">OOS (${p.total} tracked)</span>`):'<span class="neg">—</span>';
+    const p=r.pis, q=r.pos;
+    const pTxt=q?`<span style="color:${q.units>0?'var(--green)':'var(--red)'};font-weight:700">${q.units} units</span>`+(p?` <span class="neg">· ${p.inStock}/${p.total} listed</span>`:'')
+      :p?(p.inStock?`<span style="color:var(--green)">${p.inStock}/${p.total} in stock</span>`:`<span style="color:var(--red)">OOS (${p.total} tracked)</span>`):'<span class="neg">—</span>';
     return `<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
     <td>${esc(r.name)}${legalFor(r.name)?`<div class="rep">${esc(legalFor(r.name))}</div>`:''}</td>
@@ -5824,7 +5867,7 @@ function renderBaReport(){
     <td class="num${r.visitsAll?' visit-link':''}"${r.visitsAll?' title="Click to see this account’s visit days (schedule + BA field app)"':''}>${r.visitsAll?`<span style="color:var(--green)">${r.visitsAll}</span>`:'<span class="neg">—</span>'}</td>
     ${dCell(r.lastEdu,true)}${dCell(r.lastPad,true)}${dCell(r.lastVisit,true)}
     <td class="num${u?' ba-up-link':''}"${u?` title="${esc((u.note||'').slice(0,180))} — click for all upcoming"`:''}>${uTxt}</td>
-    <td class="num${p?' ba-pis-link':''}"${p?` title="${p.units?Math.round(p.units)+' units listed on menus · ':''}${p.stores.length} store${p.stores.length>1?'s':''} — click for the shelf detail"`:''}>${pTxt}</td>
+    <td class="num${(p||q)?' ba-pis-link':''}"${(p||q)?` title="${q?'true POS on-hand ('+q.stores.length+' store'+(q.stores.length>1?'s':'')+') · ':''}${p?p.stores.length+' store'+(p.stores.length>1?'s':'')+' on the menu crawl · ':''}click for the shelf detail"`:''}>${pTxt}</td>
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
   </tr>`; }).join('');
@@ -5850,6 +5893,8 @@ function baRepNote(rows,months,unmatched){
     if((unmatched||[]).length){ const names=unmatched.slice(0,12).map(e=>esc(e.v.stores.map(g=>g.s).join(' + ')));
       s+=` <span style="color:var(--orange)"><b>Tracked by Pistil but not matched above:</b> ${names.join(', ')}${unmatched.length>12?` +${unmatched.length-12} more`:''}</span> — no sales in this window, or a store↔account name mismatch.`; }
   } else s+=` <span style="color:var(--orange)"><b>WT Inventory:</b> no Pistil data loaded yet — the column shows “—”.</span>`;
+  const posN=rows.filter(r=>r.pos).length;
+  if(posN) s+=` <b>${posN}</b> account${posN!==1?'s':''} show${posN===1?'s':''} a bold “N units” figure — TRUE POS on-hand from Pistil-connected stores; everyone else shows menu-crawl status only (menus rarely expose counts).`;
   return s;
 }
 function baUpcomingDrill(name){
@@ -5863,15 +5908,27 @@ function baUpcomingDrill(name){
       (visitNote(e)||'')+(e.so?` · ${e.so}`:'')])});
 }
 function baPistilDrill(name){
-  const p=BA_PIS_RES[baRowKey(name)]||baPistilByKey()[baRowKey(name)]; if(!p) return;
-  const multi=p.stores.length>1;
-  const rows=[];
-  p.stores.forEach(g=>g.items.forEach(it=>rows.push([
-    ...(multi?[g.s]:[]), it[0]||'—', it[1]?('$'+it[1]):'—',
-    it[2]?'in stock':'out of stock', it[3]||'—', it[4]||'—'])));
+  const k=baRowKey(name);
+  const p=BA_PIS_RES[k], q=BA_POS_RES[k];
+  if(!p && !q) return;
+  // Merge the two sources per (store, product): POS gives true units/velocity where the store
+  // is Pistil-POS-connected; the menu crawl gives listed/price/last-seen for everyone.
+  const pk=(st,prod)=>st+'|'+String(prod||'').toLowerCase().replace(/[^a-z0-9]/g,'');
+  const map=new Map();
+  if(q) q.stores.forEach(g=>g.items.forEach(it=>{ map.set(pk(g.s,it[0]),{s:g.s,prod:it[0],units:it[1],avg:it[2],doh:it[3]}); }));
+  if(p) p.stores.forEach(g=>g.items.forEach(it=>{ const kk=pk(g.s,it[0]); const m=map.get(kk)||{s:g.s,prod:it[0]};
+    m.price=it[1]; m.stk=it[2]; m.cnt=it[3]; m.seen=it[4]; map.set(kk,m); }));
+  const all=[...map.values()].sort((a,b)=>a.s<b.s?-1:a.s>b.s?1:(a.prod<b.prod?-1:1));
+  const multi=new Set(all.map(x=>x.s)).size>1;
+  const rows=all.map(x=>[...(multi?[x.s]:[]), x.prod||'—',
+    x.units!=null?String(x.units):'—', x.units!=null?(x.avg+'/day · '+x.doh+'d OH'):'—',
+    x.price?('$'+x.price):'—',
+    x.stk!=null?(x.stk?'listed':'not on menu'):(x.units!=null?'POS only':'—'),
+    x.seen||'—']);
+  const rd=(q&&q.rd)||(p&&p.rd)||'—';
   openScModal({title:`${name} — WT shelf status (Pistil)`,
-    sub:`${multi?p.stores.length+' stores · ':''}menu-crawl report of ${p.rd||'—'} · “Menu count” is a real unit count only where the store's menu exposes quantities (“In-Stock” = listed without a count)`,
-    columns:[...(multi?[{l:'Store'}]:[]),{l:'Product'},{l:'Price'},{l:'Status'},{l:'Menu count'},{l:'Last seen'}],
+    sub:`report of ${rd} · “Units” = true POS on-hand (only Pistil-POS-connected stores report it) · menu columns come from the daily menu crawl (“In-Stock” = listed without a count)`,
+    columns:[...(multi?[{l:'Store'}]:[]),{l:'Product'},{l:'Units',num:true},{l:'Velocity'},{l:'Price'},{l:'Menu'},{l:'Last seen'}],
     rows});
 }
 $('#ba-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#ba-wrap').contains(tr)) return;
@@ -5885,11 +5942,11 @@ $('#ba-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.p
 $('#ba-export').onclick=()=>{
   const {view,months}=baRepView();
   const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
-  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Last order','Visits (sched ∪ BA)','Last EDU','Last PAD','Last store visit','Upcoming date','Upcoming who','Upcoming activity','WT SKUs in stock','WT SKUs tracked','AR Outstanding','Overdue']];
+  const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Last order','Visits (sched ∪ BA)','Last EDU','Last PAD','Last store visit','Upcoming date','Upcoming who','Upcoming activity','POS units on hand','WT SKUs in stock','WT SKUs tracked','AR Outstanding','Overdue']];
   view.sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>{ const u=r.upAll[0]||null;
     out.push([r.tier,r.name,r.source,r.rev.toFixed(2),iso(r.last),r.visitsAll||0,iso(r.lastEdu),iso(r.lastPad),iso(r.lastVisit),
       u?iso(u.d):'',u?baDrvName(u.drv):'',u?(u.pad&&u.edu?'PAD + EDU':u.pad?'PAD':u.edu?'EDU':'Visit'):'',
-      r.pis?r.pis.inStock:'',r.pis?r.pis.total:'',r.arOut.toFixed(2),r.arOver.toFixed(2)]); });
+      r.pos?r.pos.units:'',r.pis?r.pis.inStock:'',r.pis?r.pis.total:'',r.arOut.toFixed(2),r.arOver.toFixed(2)]); });
   downloadCSV('ba-report.csv',out);
 };
 function renderCustomers(){
@@ -6995,6 +7052,11 @@ function activateTab(tab, fromHash){
   $('#view-reports').classList.toggle('hidden',tab!=='reports');
   if(tab==='reports'){ const h=(location.hash||'').replace(/^#/,'');
     if(fromHash&&(h==='mom'||h==='time')) setRepMode(h);   // legacy #mom/#time deep links land on the right report
+    else if(fromHash&&(h==='ba'||h.startsWith('ba~'))){    // #ba / #ba~<account> → BA Report, search prefilled (BA app calendar links here)
+      const m=h.match(/^ba~(.+)$/);
+      const el=$('#ba-search'); if(el) el.value=m?decodeURIComponent(m[1]):'';
+      setRepMode('ba');
+    }
     else renderRepMode(); }
   $('#view-credits').classList.toggle('hidden',tab!=='credits');
   if(tab==='credits') renderCredits();
@@ -7033,6 +7095,7 @@ function tabFromHash(){ let h=(location.hash||'').replace(/^#/,'').trim();
   if(h==='cd-disp'||h==='cd-brand') h='cd';
   if(h==='invoice'||h==='dispensary'||h==='brand') h='ar';
   if(h==='mom'||h==='time') h='reports';   // former top-level tabs, now reports on the Reports tab
+  if(h==='ba'||h.startsWith('ba~')) h='reports';   // #ba~<account> → BA Report with the search prefilled
   return document.querySelector('.tab[data-tab="'+h+'"]')?h:null; }
 window.addEventListener('hashchange',()=>{ const t=tabFromHash(); if(t) activateTab(t,true); });
 ['inv-search','inv-source','inv-bucket','inv-open'].forEach(id=>$('#'+id).addEventListener('input',renderInvoices));
