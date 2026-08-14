@@ -205,6 +205,8 @@
     box-shadow:var(--shadow);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90%}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
   #toast.err{border-color:var(--red)} #toast.ok{border-color:var(--green)}
+  .toast-act{margin-left:9px;background:transparent;border:1px solid rgba(255,255,255,.45);color:inherit;
+    font:inherit;font-weight:800;padding:2px 10px;border-radius:999px;cursor:pointer}
 
   /* spinner */
   .spin{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;
@@ -355,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-13.98';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-14.99';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -403,6 +405,17 @@ const fmtDate = s => s ? new Date(s+'T00:00:00').toLocaleDateString('en-US',{mon
 function toast(msg, kind='') {
   const t = $('#toast'); t.textContent = msg; t.className = 'show ' + kind;
   clearTimeout(toast._t); toast._t = setTimeout(()=>{ t.className=''; }, 2600);
+}
+// A toast carrying one action (Undo after a delete). Separate from toast() so the
+// plain-text path keeps its exact behaviour; stays up longer because it needs a click.
+function toastAction(msg, label, fn, ms=9000){
+  const t=$('#toast');
+  t.innerHTML=`${esc(msg)} <button type="button" class="toast-act">${esc(label)}</button>`;
+  t.className='show';
+  t.querySelector('.toast-act').onclick=async()=>{
+    t.className=''; clearTimeout(toast._t); await fn();
+  };
+  clearTimeout(toast._t); toast._t=setTimeout(()=>{ t.className=''; }, ms);
 }
 function dispName(id){ const d = state.dispensaries.find(x=>x.id===id); return d? d.name : '—'; }
 // the dispensaries linked to a trip/expense/hours row, as a display string (handles multi)
@@ -774,7 +787,12 @@ async function boot(){
   if(!CONFIGURED) return renderConfig();
   const { data:{ session } } = await supabase.auth.getSession();
   state.session = session;
-  supabase.auth.onAuthStateChange((_e, s)=>{ state.session = s; if(!s){ state.profile=null; render(); } });
+  // Losing the session ANY way (token expiry, sign-out in another tab, revoked
+  // refresh) has to clear the schedule too — the Sign out buttons aren't the only
+  // path, and whatever is left in memory/localStorage belongs to the person who
+  // just left, not to whoever signs in next on a shared phone.
+  supabase.auth.onAuthStateChange((_e, s)=>{ state.session = s;
+    if(!s){ state.profile=null; schedForget(); render(); } });
   if(session) await loadMe();
   render();
 }
@@ -4677,11 +4695,25 @@ function schedFlatten(grid,sheetName){
   const out=[];
   for(let r=0;r<grid.length;r++){
     const row=grid[r]||[];
+    // Day blocks are found by the DATE row above the header, not by a literal
+    // "Account Name" cell: gviz drops merged header cells, and the live SEPT 2026
+    // tab carries that header in only ONE of its seven day columns. Requiring it
+    // deleted six days a week — and let the field scan run past the block edge and
+    // bind the NEXT day's INV TOTAL onto this day's last visit.
+    const blockCols=new Set();
     for(let c=0;c<row.length;c++){
       const h=norm(row[c]);
-      if(h!=='Account Name'&&h.toUpperCase()!=='BRAND') continue;
+      if(h==='Account Name'||h.toUpperCase()==='BRAND') blockCols.add(c);
+    }
+    for(const rr of [r-1,r-2]) for(let c=0;c<(grid[rr]||[]).length;c++)
+      if(DATE.test(norm((grid[rr]||[])[c]))) blockCols.add(c);
+    const starts=[...blockCols].sort((a,b)=>a-b);
+    for(const c of starts){
+      // the block ends where the next one begins — never scan past it
+      const nextC=starts.find(x=>x>c);
+      const span=Math.min(9, nextC==null?9:nextC-c-1);
       const offs={};
-      for(let j=1;j<=9;j++){ const x=norm(row[c+j]).toLowerCase();
+      for(let j=1;j<=span;j++){ const x=norm(row[c+j]).toLowerCase();
         if(x==='account name'||x==='brand') break;   // next day-block's header — stop, don't clobber
         if(offs.soNotes==null&&x.startsWith('sales order notes')) offs.soNotes=j;
         else if(offs.teamNotes==null&&x.startsWith('distro team notes')) offs.teamNotes=j;
@@ -4702,12 +4734,20 @@ function schedFlatten(grid,sheetName){
       if(!iso) continue;
       for(let i=r+1;i<=r+45&&i<grid.length;i++){
         const dr=grid[i]||[]; const acct=norm(dr[c]);
-        let hitTotal=false; for(let j=0;j<=9;j++) if(String(dr[c+j]||'').includes('< TOTAL')) hitTotal=true;
+        let hitTotal=false; for(let j=0;j<=span;j++) if(String(dr[c+j]||'').includes('< TOTAL')) hitTotal=true;
         if(hitTotal) break;
         if(acct==='Account Name'||acct.toUpperCase()==='BRAND'||WD.test(acct)||DATE.test(acct)) break;
         if(!acct) continue;
         const cell=j=>(j==null?'':norm(dr[c+j]));
-        if(/\bout\s*$/i.test(acct)&&!cell(offs.driver)) continue;   // "MAKENNNA - out" banners
+        // Availability banners, not visits: "AL -OFF", "cesar off- personal day",
+        // "MAKENNA- AVALIABLE AFTER 12PM", "MAKENNNA - out". The old test only matched
+        // the word "out" at the very END of the cell, so every other phrasing the team
+        // uses became a phantom visit card (and a bogus "no post-visit report" flag).
+        // As in NY, a merged banner is also repeated across the block's columns.
+        const drv=cell(offs.driver);
+        if(/\b(off|out|avaliable|available|pto|vacation)\b/i.test(acct)
+           && !/\b(office|offsite)\b/i.test(acct)
+           && (!drv || drv===acct || cell(offs.region)===acct)) continue;
         out.push({iso,account:acct,region:cell(offs.region),driver:cell(offs.driver),inv:cell(offs.inv),
           soNotes:cell(offs.soNotes),teamNotes:cell(offs.teamNotes),soNum:cell(offs.soNum),sheet:sheetName});
       }
@@ -4857,12 +4897,18 @@ function schedParse(csv,name,bd){
 async function schedFetchTab(name,wb){
   const u=`https://docs.google.com/spreadsheets/d/${wb||state.scheduleWb}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(name)}`;
   try{
-    const r=await fetch(u,{cache:'no-store'}); if(!r.ok) return null;
+    const r=await fetch(u,{cache:'no-store'});
+    // 400 from gviz = "no such tab" (a real answer). Anything else that fails is a
+    // TRANSPORT problem, and the two must not be confused: caching a network blip as
+    // "this month doesn't exist" blanked the month for six hours.
+    if(!r.ok) return r.status===400 ? null : SCHED_NET_FAIL;
     const t=await r.text();
     if(!t.trim()||t.trim().startsWith('<')) return null;
     return t;
-  }catch(_){ return null; }
+  }catch(_){ return SCHED_NET_FAIL; }
 }
+// sentinel: the request never got an answer we can trust (offline, DNS, CORS, 5xx)
+const SCHED_NET_FAIL=Symbol('sched-net-fail');
 // Fetch the tabs around `center` that we haven't tried yet and MERGE into state
 // (month tabs overlap at week boundaries — dedupe by iso+account+driver+notes).
 // Resolve one month's workbook tab: try every name alias IN PARALLEL, accept the
@@ -4884,10 +4930,12 @@ async function schedResolveMonth(d,bd){
   // waves keep request count down: the known name alone, else the 2 likeliest,
   // then the long tail — each wrong guess costs a full fallback download
   const waves = cached ? [[cached], all.filter(n=>n!==cached)] : [all.slice(0,2), all.slice(2)];
+  let netFail=false;
   for(const wave of waves){
     if(!wave.length) continue;
-    const fetched=await Promise.all(wave.map(n=>schedFetchTab(n,bd?.workbook_id).catch(()=>null)));
+    const fetched=await Promise.all(wave.map(n=>schedFetchTab(n,bd?.workbook_id).catch(()=>SCHED_NET_FAIL)));
     for(let i=0;i<wave.length;i++){
+      if(fetched[i]===SCHED_NET_FAIL){ netFail=true; continue; }
       if(fetched[i]==null) continue;
       const got=schedParse(fetched[i],wave[i],bd);
       if(!got.some(x=>x.iso.startsWith(my))) continue;
@@ -4895,8 +4943,18 @@ async function schedResolveMonth(d,bd){
       return {name:wave[i],rows:got};
     }
   }
+  // Only remember "this month has no tab" when the workbook actually ANSWERED.
+  // A transport failure is reported instead, so the caller can retry and tell the
+  // user, rather than silently showing an empty month for the next six hours.
+  if(netFail) return SCHED_NET_FAIL;
   try{ localStorage.setItem(cacheKey+'.miss',String(Date.now())); }catch(_){}
   return null;
+}
+// wipe the negative "no tab here" markers for a board so a retry really re-probes
+function schedClearMisses(st){
+  try{ const pre=`ba.schedtab.${st||schedBoard()?.state||'CA'}.`;
+    Object.keys(localStorage).filter(k=>k.startsWith(pre)&&k.endsWith('.miss'))
+      .forEach(k=>localStorage.removeItem(k)); }catch(_){}
 }
 async function schedLoad(center){
   const S=state.sched;
@@ -4912,10 +4970,19 @@ async function schedLoad(center){
     schedReloadTasks(),
     schedLoadActivity().catch(()=>{}),
   ]);
+  // a month whose fetch never got an answer is UNTRIED, not empty: drop it from
+  // S.tried so paging back to it (or ⟳) re-probes instead of showing a blank month
+  monthRes.forEach((r,i)=>{ if(r===SCHED_NET_FAIL){
+    S.netFail=true; S.tried.delete(`${months[i].getFullYear()}-${months[i].getMonth()}`); } });
   for(const r of monthRes){
-    if(!r) continue;
+    if(!r||r===SCHED_NET_FAIL) continue;
     for(const x of r.rows){
-      const k=[x.iso,x.account.toLowerCase(),(x.driver||'').toLowerCase(),x.soNotes||''].join('|');
+      // Dedupe exists because month tabs overlap at week boundaries. The key must
+      // therefore include every field that distinguishes two REAL visits, or two
+      // separate sales orders to the same store on the same day (which the CA
+      // workbook genuinely contains) silently collapse into one.
+      const k=[x.iso,x.account.toLowerCase(),(x.driver||'').toLowerCase(),x.soNotes||'',
+               x.soNum||'',x.inv||'',x.region||''].join('|');
       if(S.seen.has(k)) continue; S.seen.add(k);
       const canon=schedCanon(x.driver);
       S.rows.push({...x,canon,color:schedColor(canon),time:schedTime(x.soNotes)||schedTime(x.teamNotes)});
@@ -4926,6 +4993,7 @@ async function schedLoad(center){
   for(const v of S.rows.concat(S.dbRows)){
     if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
   }
+  schedPairActs();   // report→visit ownership follows the visits it was computed from
   const now=new Date();
   S.label=`${S.loadedTabs.map(t=>t.name).join(', ')} · ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
   return S.rows.length>0||S.dbRows.length>0;
@@ -4936,20 +5004,28 @@ async function schedReloadTasks(){
   try{
     // tasks belong to a board; RLS already scopes to boards you may see, and this
     // keeps the viewed board's calendar from showing the other state's tasks
-    let q=supabase.from('schedule_tasks').select('*').order('created_at');
+    // deleted_at is null → the live rows. Deletes are soft (see migrate-schedule-backup.sql),
+    // so a removed task is still in the table and can be undeleted.
+    let q=supabase.from('schedule_tasks').select('*').is('deleted_at',null).order('created_at');
     if(state.schedState) q=q.eq('state',state.schedState);
-    const { data:tasks } = await q;
+    const { data:tasks, error } = await q;
+    // supabase-js RESOLVES with {data:null,error} on 401/5xx/offline — it doesn't throw.
+    // Ignoring `error` turned every hiccup into "all app tasks vanished", which right
+    // after a save reads as "the save didn't work". Keep what we had and say so.
+    if(error) throw error;
     S.dbRows=(tasks||[]).map(t=>{
       const canon=schedCanon(t.driver);
       return { iso:t.task_date, account:t.account, region:t.region||'', driver:t.driver||'',
         inv:t.inv_total==null?'':String(t.inv_total), soNotes:t.notes||'', teamNotes:'',
         soNum:t.so_num||'', sheet:'app', dbId:t.id, canon, color:schedColor(canon), time:schedTime(t.notes||'') };
     });
-  }catch(_){ S.dbRows=S.dbRows||[]; }
+  }catch(e){ S.dbRows=S.dbRows||[];        // keep the last good rows rather than blanking
+    toast('Couldn’t refresh tasks — showing the last loaded copy'); }
   S.byIso=new Map();
   for(const v of S.rows.concat(S.dbRows)){
     if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
   }
+  schedPairActs();   // report→visit ownership follows the visits it was computed from
 }
 function schedCss(){
   if(document.getElementById('sbCss')) return;
@@ -5039,6 +5115,25 @@ function schedCss(){
   .sb-tag.pad{color:#fff;background:var(--orange);border-color:var(--orange)}
   .sb-tag.edu{color:#fff;background:var(--green);border-color:var(--green)}
   .sb-tag.deal{color:var(--yellow,#e7b416);border-color:color-mix(in srgb,var(--yellow,#e7b416) 45%,var(--line))}
+  .sb-filt{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:8px 0 0;padding:7px 10px;font-size:12px;
+    background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));border-radius:10px}
+  .sb-bk-sub{color:var(--muted);font-size:12.5px;line-height:1.5;margin:2px 0 12px}
+  .sb-bk-now{font-size:14px;margin:0 0 10px}
+  .sb-bk-del{color:var(--orange);font-weight:700}
+  .sb-bk-acts{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+  .sb-bk-undel{background:color-mix(in srgb,var(--orange) 10%,transparent);border:1px solid color-mix(in srgb,var(--orange) 30%,var(--line));
+    border-radius:11px;padding:9px 11px;margin-bottom:14px}
+  .sb-bk-dl{font-size:11.5px;color:var(--muted);margin-top:6px;line-height:1.5}
+  .sb-bk-h{font-weight:800;font-size:13px;margin:2px 0 7px}
+  .sb-bk-list{display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto}
+  .sb-bk-row{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    background:var(--card);border:1px solid var(--line);border-radius:11px;padding:9px 11px}
+  .sb-bk-when{font-size:13px;font-weight:700}
+  .sb-bk-meta{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .sb-bk-kind{font-size:9.5px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;
+    padding:1px 6px;border-radius:999px;background:var(--line);color:var(--muted);margin-left:5px}
+  .sb-bk-kind.k-manual{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent)}
+  .sb-bk-kind.k-pre-restore{background:color-mix(in srgb,var(--orange) 20%,transparent);color:var(--orange)}
   .sb-warn{margin-top:6px;font-size:12px;color:var(--orange);background:color-mix(in srgb,var(--orange) 12%,transparent);
     border:1px solid color-mix(in srgb,var(--orange) 35%,var(--line));border-radius:9px;padding:7px 10px;cursor:help}
   .sb-addr{font-size:12px;margin-top:3px}
@@ -5071,7 +5166,7 @@ async function drawSchedule(m){
       m.innerHTML=`<div style="padding:10px 12px">${sw}<div class="card"><b>Couldn’t reach the ${esc(schedBoard()?.label||'schedule')} workbook.</b>
         <div class="small muted" style="margin-top:4px">Check your connection, then try again.</div>
         <button class="btn primary" id="sbRetry" style="margin-top:10px">Retry</button></div></div>`;
-      $('#sbRetry').onclick=()=>{ state.sched=null; drawSchedule(m); };
+      $('#sbRetry').onclick=()=>{ schedClearMisses(state.schedState); state.sched=null; drawSchedule(m); };
       m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{
         const st=b.dataset.sbst; if(st===state.schedState) return;
         state.schedState=st; state.scheduleWb=schedBoard()?.workbook_id||null;
@@ -5082,7 +5177,9 @@ async function drawSchedule(m){
     }
     S.ready=true;
   }
-  if(gen!==schedGen) return;
+  // Superseded run, or the user has since navigated away — either way this result
+  // must not paint over whatever is on screen now.
+  if(gen!==schedGen || state.baTab!=='sched') return;
   schedRender(m);
 }
 function schedDaySorted(iso,vis){
@@ -5102,63 +5199,94 @@ function schedMoney(x){ const n=parseFloat(String(x||'').replace(/[^0-9.\-]/g,''
 async function schedLoadActivity(){
   const S=state.sched;
   try{
-    const { data } = await supabase.from('ba_activity')
-      .select('visit_date,dispensary_id,store_raw,rep_name,activities,promo,aged_product,brand_presence,stock_status,next_steps,traffic,est_units,manager,photos')
+    // `id` is the row's identity — without it two corrected submissions for the same
+    // store/day/rep collapse into one. `state` scopes the reports to THIS board, or the
+    // other state's reports land on this calendar as phantom badges.
+    let q=supabase.from('ba_activity')
+      .select('id,state,visit_date,dispensary_id,store_raw,rep_name,activities,promo,aged_product,brand_presence,stock_status,next_steps,traffic,est_units,manager,photos')
       .gte('visit_date', schedIso(schedAdd(new Date(), -420)));
-    S.acts=data||[];
-  }catch(_){ S.acts=S.acts||[]; }
-  // indexed by STORE only — the date is matched with tolerance below, because
-  // reps routinely file the next morning for yesterday's visit
-  S.actByKey=new Map();
-  for(const a of S.acts){
-    const keys=[];
-    if(a.dispensary_id) keys.push('d:'+a.dispensary_id);
-    if(a.store_raw) keys.push('n:'+a.store_raw.trim().toLowerCase());
-    for(const k of keys){ if(!S.actByKey.has(k)) S.actByKey.set(k,[]); S.actByKey.get(k).push(a); }
+    if(state.schedState) q=q.eq('state',state.schedState);
+    const { data, error } = await q;
+    if(error) throw error;
+    S.acts=data||[]; S.actsErr=null;
+  }catch(e){ S.acts=S.acts||[]; S.actsErr=e.message||String(e); }
+  schedPairActs();
+}
+// ── assign each report to AT MOST ONE scheduled visit ───────────────────────
+// A report belongs to the visit it documents. Two rules make that unambiguous:
+//   • it may only LAG the visit (filed the same day, or up to SCHED_ACT_SLACK days
+//     after) — a report can't document a visit that hasn't happened yet;
+//   • of the visits it could belong to, the NEAREST one wins, and it is claimed
+//     exactly once.
+// Without this a single report attached to every visit of that store inside a
+// 5-day window: counted on several days at once, while the day it was actually
+// filed for showed nothing, and a genuinely missed visit looked reported.
+function schedPairActs(){
+  const S=state.sched;
+  S.actOwner=new Map();      // actId → visit key
+  S.visitActs=new Map();     // visit key → [act, …]
+  if(!S.acts||!S.byIso) return;
+  const key=schedVisitKey;
+  const dayN=iso=>Math.round(new Date(iso+'T12:00:00').getTime()/864e5);
+  // a report carries dispensary_id; a schedule row carries a typed name, so it is
+  // resolved through the store registry — that's what lets "Flowery UWS" on the
+  // workbook meet a report filed against the registry store.
+  const storeKeys=x=>{ const k=[];
+    if(x.dispensary_id) k.push('d:'+x.dispensary_id);
+    else if(x.account){ const d=schedRegistryFor(x.account); if(d) k.push('d:'+d.id); }
+    const nm=(x.store_raw||x.account||'').trim().toLowerCase();
+    if(nm) k.push('n:'+nm);
+    return k; };
+  // index visits by store key
+  const byStore=new Map();
+  for(const list of S.byIso.values()) for(const v of list)
+    for(const k of storeKeys(v)){ if(!byStore.has(k)) byStore.set(k,[]); byStore.get(k).push(v); }
+  // deterministic order so the same data always pairs the same way
+  const acts=S.acts.slice().sort((a,b)=>
+    String(a.visit_date).localeCompare(String(b.visit_date))||String(schedActId(a)).localeCompare(String(schedActId(b))));
+  for(const a of acts){
+    if(!a.visit_date) continue;
+    const an=dayN(a.visit_date);
+    let best=null, bestDiff=Infinity;
+    const seen=new Set();
+    for(const k of storeKeys(a)) for(const v of (byStore.get(k)||[])){
+      if(seen.has(v)) continue; seen.add(v);
+      const diff=an-dayN(v.iso);                       // ≥0 ⇒ filed on/after the visit
+      if(diff<0||diff>SCHED_ACT_SLACK) continue;
+      const taken=(S.visitActs.get(key(v))||[]).length;
+      // nearest visit wins; among equals prefer one that hasn't claimed a report yet
+      if(diff<bestDiff||(diff===bestDiff&&best&&taken<((S.visitActs.get(key(best))||[]).length))){
+        best=v; bestDiff=diff;
+      }
+    }
+    if(!best) continue;
+    const kk=key(best);
+    S.actOwner.set(schedActId(a), kk);
+    if(!S.visitActs.has(kk)) S.visitActs.set(kk,[]);
+    S.visitActs.get(kk).push({...a,_diff:bestDiff});
   }
 }
 const SCHED_ACT_SLACK=2;   // days a report may lag the visit and still pair with it
 const schedActId=a=>a.id||[a.store_raw,a.visit_date,a.rep_name].join('|');
-// Does this report already sit under a scheduled visit somewhere in its slack
-// window? (A report filed Monday for Sunday's visit belongs to Sunday's row —
-// it must not ALSO show up as "unscheduled" on Monday.)
-function schedActIsPaired(a){
-  const S=state.sched; if(!a.visit_date) return false;
-  const base=new Date(a.visit_date+'T12:00:00');
-  for(let off=-SCHED_ACT_SLACK; off<=SCHED_ACT_SLACK; off++){
-    const iso=schedIso(schedAdd(base,off));
-    for(const v of (S.byIso.get(iso)||[]))
-      if(schedActsFor(v).some(x=>schedActId(x)===schedActId(a))) return true;
-  }
-  return false;
-}
-// reports to surface on a given day: those paired to its scheduled rows, plus
-// reports filed for that date that pair with nothing anywhere
+const schedVisitKey=v=>v.iso+'|'+(v.dbId||v.account+'|'+(v.driver||''));
+// reports filed FOR this date that no scheduled visit claimed (a walk-in, or a
+// visit that isn't on the workbook). Ownership is decided once in schedPairActs,
+// so a report appears in exactly one place: under its visit, or here.
 function schedDayLoose(iso){
   const S=state.sched; if(!S.acts) return [];
-  return S.acts.filter(a=>a.visit_date===iso && !schedActIsPaired(a));
+  return S.acts.filter(a=>a.visit_date===iso && !(S.actOwner&&S.actOwner.has(schedActId(a))));
 }
+// Every report counts on exactly one day — the day of the visit it documents,
+// or, unclaimed, the day it was filed for.
 function schedDayReportCount(iso, list){
   const S=state.sched; if(!S.acts||!S.acts.length) return 0;
-  const paired=new Set((list||[]).flatMap(v=>schedActsFor(v)).map(schedActId));
-  return paired.size+schedDayLoose(iso).length;
+  const owned=new Set((list||[]).flatMap(v=>schedActsFor(v)).map(schedActId));
+  return owned.size+schedDayLoose(iso).length;
 }
-// responses attached to one calendar entry (same store, within the slack window)
+// the reports this calendar entry owns (assigned in schedPairActs)
 function schedActsFor(v){
-  const S=state.sched; if(!S.actByKey) return [];
-  const day=ms=>Math.round(ms/864e5);
-  const target=day(new Date(v.iso+'T12:00:00').getTime());
-  const out=[], seen=new Set();
-  const push=k=>{ for(const a of (S.actByKey.get(k)||[])){
-    if(seen.has(a)||!a.visit_date) continue;
-    const diff=day(new Date(a.visit_date+'T12:00:00').getTime())-target;
-    if(diff<-SCHED_ACT_SLACK||diff>SCHED_ACT_SLACK) continue;
-    seen.add(a); out.push({...a,_diff:Math.abs(diff)});
-  } };
-  const d=schedRegistryFor(v.account);
-  if(d) push('d:'+d.id);
-  push('n:'+(v.account||'').trim().toLowerCase());
-  return out.sort((a,b)=>a._diff-b._diff);
+  const S=state.sched; if(!S.visitActs) return [];
+  return (S.visitActs.get(schedVisitKey(v))||[]).slice().sort((a,b)=>a._diff-b._diff);
 }
 function schedRegistryFor(account){
   const n=(account||'').trim().toLowerCase(); if(!n) return null;
@@ -5203,7 +5331,7 @@ function schedDaySheet(iso){
     const past=v.iso<schedIso(new Date());
     const isVisit=!/^\s*$/.test(v.account) && !v.soNum;   // pure delivery rows aren't store visits
     const review=acts.length
-      ? `<div class="sb-pv">${acts.map((a,ai)=>`<button class="sb-pvhead" data-sbpv="${i}-${ai}">📋 Post-visit report${a.rep_name?` · ${esc(a.rep_name)}`:''}${a._diff?` <span class="chev">(filed ${a._diff}d later)</span>`:''} <span class="chev">›</span></button>`).join('')}</div>`
+      ? `<div class="sb-pv">${acts.map((a,ai)=>`<button class="sb-pvhead" data-sbpv="${i}-${ai}">📋 Post-visit report${a.rep_name?` · ${esc(a.rep_name)}`:''}${a._diff?` <span class="chev">(filed ${a._diff} day${a._diff===1?'':'s'} later)</span>`:''} <span class="chev">›</span></button>`).join('')}</div>`
       : (past&&isVisit?`<div class="sb-pv"><span class="sb-pvmiss">📋 No post-visit report</span></div>`:'');
     return `<div class="sb-item" style="--dv:${v.color}">
       <div class="acct">${esc(v.account)}${v.dbId?`<button class="sb-edit" data-sbe="${i}" title="Edit task">✎</button>`:''}</div>
@@ -5259,6 +5387,111 @@ function schedActivitySheet(a, v, iso){
   $('#pvBack').onclick=()=>schedDaySheet(iso);
 }
 // Create/edit an in-app schedule task (stored in schedule_tasks, not the workbook)
+/* ── Backup & restore for schedule tasks ────────────────────────────────────
+   The calendar's VISITS mirror the Google workbook, so the sheet is their backup.
+   Tasks exist only in our database, so they get the full net: nightly snapshots,
+   restore to any snapshot, soft-deleted rows that can be undeleted, and a JSON
+   download/upload for an off-site copy. Every restore snapshots the current state
+   FIRST, so a restore is itself undoable. See migrate-schedule-backup.sql. */
+async function schedBackupSheet(){
+  schedCss();                     // self-sufficient: don't rely on the calendar having painted
+  const st=state.schedState||'CA';
+  const board=(state.scheduleBoards||[]).find(b=>b.state===st);
+  openSheet(`<h3>Backup &amp; restore</h3>
+    <div class="sb-bk-sub">${esc(board?.label||st)} tasks. Workbook visits aren't included — those live in the Google Sheet, which is its own backup.</div>
+    <div id="bkBody"><div class="loading"><span class="spin"></span></div></div>`);
+  await schedBackupRender();
+}
+async function schedBackupRender(){
+  const st=state.schedState||'CA', body=$('#bkBody'); if(!body) return;
+  const [baks,live,del]=await Promise.all([
+    supabase.from('schedule_backups').select('id,taken_at,kind,row_count,note').eq('state',st).order('taken_at',{ascending:false}).limit(40),
+    supabase.from('schedule_tasks').select('id').eq('state',st).is('deleted_at',null),
+    supabase.from('schedule_tasks').select('id,account,task_date,deleted_at').eq('state',st).not('deleted_at','is',null).order('deleted_at',{ascending:false}).limit(50),
+  ]);
+  if(baks.error){ body.innerHTML=`<div class="err">Couldn't load backups — ${esc(baks.error.message)}</div>`; return; }
+  const nLive=(live.data||[]).length, dels=del.data||[];
+  const when=t=>{ const d=new Date(t), now=new Date();
+    const same=d.toDateString()===now.toDateString();
+    return same?`Today ${d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`
+      :d.toLocaleDateString([],{month:'short',day:'numeric'})+' '+d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}); };
+  body.innerHTML=`
+    <div class="sb-bk-now"><b>${nLive}</b> task${nLive!==1?'s':''} on the ${esc(st)} board right now${dels.length?` · <span class="sb-bk-del">${dels.length} deleted</span>`:''}</div>
+    <div class="sb-bk-acts">
+      <button class="btn sm" id="bkSnap">Take a snapshot now</button>
+      <button class="btn sm ghost" id="bkDown">⤓ Download JSON</button>
+      <button class="btn sm ghost" id="bkUpBtn">⤒ Restore from a file</button>
+      <input type="file" id="bkUp" accept="application/json,.json" hidden />
+    </div>
+    ${dels.length?`<div class="sb-bk-undel">
+      <button class="btn sm ghost" id="bkUndel">Undo the ${dels.length} deletion${dels.length!==1?'s':''}</button>
+      <div class="sb-bk-dl">${dels.slice(0,6).map(d=>`${esc(d.account)} <span class="muted">(${esc(d.task_date)})</span>`).join(' · ')}${dels.length>6?' …':''}</div>
+    </div>`:''}
+    <div class="sb-bk-h">Snapshots</div>
+    ${!(baks.data||[]).length?`<div class="sb-bk-sub">None yet — one is taken automatically every night.</div>`:''}
+    <div class="sb-bk-list">${(baks.data||[]).map(b=>`
+      <div class="sb-bk-row">
+        <div><div class="sb-bk-when">${esc(when(b.taken_at))} <span class="sb-bk-kind k-${esc(b.kind)}">${esc(b.kind)}</span></div>
+          <div class="sb-bk-meta">${b.row_count} task${b.row_count!==1?'s':''}${b.note?' · '+esc(b.note):''}</div></div>
+        <button class="btn sm ghost" data-bkr="${b.id}" data-bkn="${b.row_count}">Restore</button>
+      </div>`).join('')}</div>`;
+
+  $('#bkSnap').onclick=async e=>{ e.target.disabled=true;
+    const { error }=await supabase.rpc('schedule_snapshot',{p_state:st,p_kind:'manual',p_note:'taken by hand'});
+    toast(error?('Could not snapshot — '+error.message):'Snapshot saved'); await schedBackupRender(); };
+
+  $('#bkDown').onclick=async()=>{
+    const { data, error }=await supabase.from('schedule_tasks').select('*').eq('state',st).order('task_date');
+    if(error){ toast('Could not export — '+error.message); return; }
+    const blob=new Blob([JSON.stringify({app:'wt-ba-schedule',state:st,exported_at:new Date().toISOString(),rows:data||[]},null,1)],{type:'application/json'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=`schedule-tasks-${st}-${schedIso(new Date())}.json`;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    toast(`Downloaded ${(data||[]).length} task${(data||[]).length!==1?'s':''}`);
+  };
+
+  $('#bkUpBtn').onclick=()=>$('#bkUp').click();
+  $('#bkUp').onchange=async e=>{
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    e.target.value='';
+    let rows;
+    try{ const j=JSON.parse(await f.text());
+      rows=Array.isArray(j)?j:j.rows;
+      if(!Array.isArray(rows)) throw new Error('no task rows in that file');
+      if(j.state && j.state!==st) throw new Error(`that file is a ${j.state} backup — switch to the ${j.state} board first`);
+    }catch(err){ toast('Could not read that file — '+(err.message||err)); return; }
+    if(!confirm(`Restore ${rows.length} task${rows.length!==1?'s':''} from this file?\n\nThe ${st} board will be set to exactly what the file contains. A snapshot of the board as it is right now is saved first, so this can be undone.`)) return;
+    const { data, error }=await supabase.rpc('schedule_restore_json',{p_state:st,p_rows:rows});
+    if(error){ toast('Restore failed — '+error.message); return; }
+    toast(`Restored ${data.restored} task${data.restored!==1?'s':''}`);
+    await schedBackupRender(); await schedBackupAfterRestore();
+  };
+
+  if($('#bkUndel')) $('#bkUndel').onclick=async()=>{
+    const { data, error }=await supabase.rpc('schedule_undelete',{p_id:null,p_minutes:null});
+    if(error){ toast('Could not undo — '+error.message); return; }
+    toast(`Restored ${data} task${data!==1?'s':''}`);
+    await schedBackupRender(); await schedBackupAfterRestore();
+  };
+
+  body.querySelectorAll('[data-bkr]').forEach(btn=>btn.onclick=async()=>{
+    const id=+btn.dataset.bkr, n=+btn.dataset.bkn;
+    if(!confirm(`Restore this snapshot?\n\nThe ${st} board goes back to the ${n} task${n!==1?'s':''} it held then: anything created since is removed (recoverably) and any edited task returns to its snapshot values.\n\nA snapshot of the board as it is right now is saved first, so this can be undone.`)) return;
+    btn.disabled=true; btn.textContent='…';
+    const { data, error }=await supabase.rpc('schedule_restore',{p_backup_id:id});
+    if(error){ toast('Restore failed — '+error.message); btn.disabled=false; btn.textContent='Restore'; return; }
+    toast(`Restored ${data.restored} task${data.restored!==1?'s':''}${data.removed?`, removed ${data.removed}`:''}`);
+    await schedBackupRender(); await schedBackupAfterRestore();
+  });
+}
+// after any restore the calendar in the background is stale — reload it in place
+async function schedBackupAfterRestore(){
+  const S=state.sched; if(!S) return;
+  S.dbRows=null; S.tried=new Set(); S.byIso=null;
+  await schedLoad(S.month).catch(()=>{});
+  const m=$('#main'); if(m && state.baTab==='sched') { /* keep the sheet open; repaint behind it */
+    const sheet=$('#sheet'); schedRender(m); if(sheet) document.body.appendChild(sheet); }
+}
 function schedTaskSheet(iso, task){
   const S=state.sched;
   const known=S.rows.concat(S.dbRows);
@@ -5274,7 +5507,12 @@ function schedTaskSheet(iso, task){
     : ['Cesar','Makenna','Ledy','Joanna','Jesse','Al','AJ'];
   const drivers=[...new Set(
     (state.sched?.rows||[]).map(r=>r.canon).filter(Boolean).filter(n=>n!=='—')
-      .concat(roster))].sort((a,b)=>a.localeCompare(b)).concat('Team');
+      .concat(roster)
+      // the task's OWN driver must always be an option: this list is rebuilt from the
+      // rows currently loaded, so editing an older task whose BA has since left (or
+      // isn't on this month's sheet) would otherwise silently blank the assignment
+      .concat(task&&schedCanon(task.driver)?[schedCanon(task.driver)]:[])
+      )].sort((a,b)=>a.localeCompare(b)).concat('Team');
   openSheet(`<h3 style="margin:0 0 4px">${task?'Edit task':'New task'}</h3>
     <label class="fl">Date</label><input type="date" id="stDate" value="${task?task.iso:iso}">
     <label class="fl">Account / destination</label>
@@ -5309,7 +5547,16 @@ function schedTaskSheet(iso, task){
     const r=$('#stRegion'); if(!r||r.value.trim()) return;
     const g=regionFor($('#stAcct').value); if(g) r.value=g;
   }));
-  const refresh=async(dateIso)=>{ await schedReloadTasks(); const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m); schedDaySheet(dateIso); };
+  // After a save the new/edited task MUST be visible. A person-chip filter left on
+  // would otherwise hide it from both the calendar and the day sheet, which reads as
+  // "the save failed" — and the fix people reach for is saving it again.
+  const refresh=async(dateIso,drv)=>{
+    const S=state.sched;
+    if(S&&S.sel&&drv!==undefined&&!S.sel.has(schedCanon(drv))) S.sel=null;
+    await schedReloadTasks();
+    const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m);
+    schedDaySheet(dateIso);
+  };
   $('#stSave').onclick=async()=>{
     const rec={ task_date:$('#stDate').value, account:$('#stAcct').value.trim(),
       inv_total:$('#stInv').value?Number($('#stInv').value):null,
@@ -5329,15 +5576,25 @@ function schedTaskSheet(iso, task){
         const { error }=await supabase.from('schedule_tasks').insert(rec);
         if(error) throw error;
       }
-      await refresh(rec.task_date);
+      await refresh(rec.task_date, rec.driver);
     }catch(e){ btn.disabled=false; btn.textContent=task?'Save changes':'Add to schedule'; toast('Could not save — '+(e.message||e)); }
   };
   if(task&&task.dbId) $('#stDel').onclick=async()=>{
     if(!confirm('Delete this task?')) return;
     try{
-      const { error }=await supabase.from('schedule_tasks').delete().eq('id',task.dbId);
+      // SOFT delete: the row stays in the table with deleted_at set, so this is
+      // undoable (Undo here, or Backup & restore → Undo deletions). Nothing in the
+      // app hard-deletes a task — the DELETE privilege is revoked in the database.
+      const { error }=await supabase.from('schedule_tasks')
+        .update({deleted_at:new Date().toISOString(),deleted_by:state.session?.user?.id||null,
+                 updated_at:new Date().toISOString()}).eq('id',task.dbId);
       if(error) throw error;
       await refresh(task.iso);
+      toastAction('Task deleted.','Undo',async()=>{
+        const { error:e2 }=await supabase.rpc('schedule_undelete',{p_id:task.dbId,p_minutes:null});
+        if(e2){ toast('Could not undo — '+e2.message); return; }
+        toast('Task restored'); await refresh(task.iso, task.driver);
+      });
     }catch(e){ toast('Could not delete — '+(e.message||e)); }
   };
 }
@@ -5390,6 +5647,7 @@ function schedRender(m){
       <button class="btn sm ghost" id="sbToday">Today</button>
       <span class="grow"></span>
       <button class="btn sm ghost" id="sbReload" title="Re-fetch the workbook">⟳</button>
+      ${state.profile?.role==='admin'?`<button class="btn sm ghost" id="sbBackup" title="Backup &amp; restore tasks">🛟</button>`:''}
     </div>
     <div class="sb-chips">
       <div class="sb-chip${!S.sel?' on':''}" id="sbAll" style="${!S.sel?'background:var(--accent);border-color:var(--accent)':''}">All</div>
@@ -5399,6 +5657,8 @@ function schedRender(m){
       <div class="sb-dow"><div>Sat</div><div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div></div>
       <div class="sb-grid">${cells}</div>
     </div>
+    ${S.sel?`<div class="sb-filt">Showing only <b>${esc([...S.sel].join(', '))}</b>${moCount?'':' — nothing for them this month'} <button class="btn sm ghost" id="sbClearF">Show everyone</button></div>`:''}
+    ${S.netFail?`<div class="sb-warn">⚠︎ Some of the workbook didn't load (connection). Tap ⟳ to try again — a month may look empty until then.</div>`:''}
     <div class="sb-src">${moCount} visit${moCount!==1?'s':''} in ${SCHED_MONL[mo]} · tap a day for details · source: workbook (${esc(S.label||'')})</div>
     ${SCHED_NY_WARN.length?`<div class="sb-warn" title="${esc(SCHED_NY_WARN.join('\n'))}">⚠︎ ${SCHED_NY_WARN.length} date cell${SCHED_NY_WARN.length!==1?'s':''} in the workbook look wrong — the week's other days were used instead. Tap to see which.</div>`:''}
   </div>
@@ -5408,10 +5668,15 @@ function schedRender(m){
     await schedLoad(S.month).catch(()=>{}); schedRender(m); };
   $('#sbPrev').onclick=()=>go(-1);
   $('#sbNext').onclick=()=>go(1);
+  if($('#sbBackup')) $('#sbBackup').onclick=()=>schedBackupSheet();
+  if($('#sbClearF')) $('#sbClearF').onclick=()=>{ S.sel=null; schedRender(m); };
   $('#sbAdd').onclick=()=>{ const t=new Date();
     schedTaskSheet(t.getFullYear()===y&&t.getMonth()===mo?schedIso(t):schedIso(first),null); };
   $('#sbToday').onclick=()=>{ S.month=new Date(new Date().getFullYear(),new Date().getMonth(),1); schedRender(m); };
-  $('#sbReload').onclick=()=>{ state.sched=null; drawSchedule(m); };
+  // ⟳ is the user's "this looks wrong, fetch it again" — it must also clear the
+  // negative markers on disk, or a month that failed once stays blank for 6 hours
+  // no matter how many times they tap it.
+  $('#sbReload').onclick=()=>{ schedClearMisses(state.schedState); state.sched=null; drawSchedule(m); };
   // switching board = a different workbook AND a different task set: drop the
   // whole cache so no CA row can survive into the NY calendar
   m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{
