@@ -73,12 +73,44 @@ export function credBox(rows: [string, string][]) {
 // Always excludes the recipient and the gusto-sync service account (automation@… has
 // no real mailbox, so CC'ing it just bounces).
 export async function adminCcList(db: { from: (t: string) => any }, exclude?: string, region?: string | null) {
-  const { data } = await db.from("profiles").select("email,region").eq("role", "admin").eq("active", true).not("email", "is", null);
+  const { data } = await db.from("profiles").select("email,region,home_region").eq("role", "admin").eq("active", true).not("email", "is", null);
   const ex = (exclude || "").toLowerCase();
   return [...new Set(
     (data || [])
-      .filter((a: { region: string | null }) => a.region == null || a.region === region)
+      .filter((a: { region: string | null; home_region: string | null }) => {
+        const scope = notifyScope(a);
+        return scope == null || scope === region;
+      })
       .map((a: { email: string }) => a.email)
       .filter((e: string) => e && e.toLowerCase() !== ex && !/^automation@/i.test(e)),
+  )];
+}
+
+// Which region's notifications an admin receives:
+//   • a REGIONAL admin (region set) → their own region, as before;
+//   • a universal admin who still works a region themselves (home_region set) → that
+//     region only, so Amanda gets CA submission alerts and not NY ones;
+//   • a pure oversight admin (both null) → null, meaning every region.
+// One definition, used by every mail path, so the rules can't drift apart.
+export const notifyScope = (p: { region?: string | null; home_region?: string | null } | null | undefined) =>
+  (p?.region ?? p?.home_region ?? null);
+
+// The admins to CC about one person's submission/approval: those whose notification
+// scope covers that person's own region. `subject` is the BA the mail is ABOUT.
+export async function regionCcList(
+  db: { from: (t: string) => any },
+  subject: { region?: string | null; home_region?: string | null; email?: string | null } | null,
+  exclude: (string | null | undefined)[] = [],
+) {
+  const theirs = notifyScope(subject);
+  if (!theirs) return [];
+  const { data } = await db.from("profiles").select("email,region,home_region")
+    .eq("role", "admin").eq("active", true).not("email", "is", null);
+  const ex = new Set(exclude.filter(Boolean).map((e) => String(e).toLowerCase()));
+  return [...new Set(
+    (data || [])
+      .filter((a: { region: string | null; home_region: string | null }) => notifyScope(a) === theirs)
+      .map((a: { email: string }) => a.email)
+      .filter((e: string) => e && !ex.has(e.toLowerCase()) && !/^automation@/i.test(e)),
   )];
 }

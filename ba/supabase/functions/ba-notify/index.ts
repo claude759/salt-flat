@@ -7,7 +7,7 @@
 // secret held in Vault — verified by the ba_notify_authorized() RPC, so this
 // function never holds the raw secret and randoms can't trigger email blasts.
 import { admin, json, preflight } from "../_shared/util.ts";
-import { adminCcList, inviteEmail } from "../_shared/mail.ts";
+import { adminCcList, regionCcList, inviteEmail } from "../_shared/mail.ts";
 import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
 
 const APP_URL = "https://claude759.github.io/salt-flat/ba/";
@@ -161,11 +161,13 @@ Deno.serve(async (req) => {
       if (!period) return json({ ok: true, skipped: `no pay period ended ${endedOn}` });
       if (period.reminder_sent_at && !force) return json({ ok: true, skipped: "reminder already sent for this period" });
 
-      // Remind FIELD WORKERS: BAs + REGIONAL admins (Maddy/NY, Keelin & Drew/FL) who log
-      // their own mileage/hours. Universal admins (role admin, NO region — e.g. Gianni) are
-      // oversight-only and never reminded; they're the CC instead.
-      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region").eq("active", true);
-      const fieldWorkers = (people || []).filter((b) => b.role === "ba" || (b.role === "admin" && b.region));
+      // Remind FIELD WORKERS: anyone who files their own mileage/hours — BAs, REGIONAL
+      // admins (Maddy/NY, Keelin & Drew/FL), and universal admins who still work a region
+      // themselves (home_region set, e.g. Amanda/CA). Pure oversight admins (no region and
+      // no home_region — Gianni, Victoria) are never reminded; they're the CC instead.
+      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region,home_region").eq("active", true);
+      const fieldWorkers = (people || []).filter((b) =>
+        b.role === "ba" || (b.role === "admin" && (b.region || b.home_region)));
       const { data: subs } = await db.from("submissions").select("ba_id").eq("period_id", period.id).in("status", ["submitted", "approved"]);
       const done = new Set((subs || []).map((s) => s.ba_id));
       const targets = fieldWorkers.filter((b) => !done.has(b.id) && b.email);
@@ -190,21 +192,16 @@ Deno.serve(async (req) => {
       const { ba_id, period_id } = body;
       if (!ba_id || !period_id) return json({ ok: false, error: "ba_id and period_id required" }, 400);
       const [{ data: ba }, { data: period }, { data: sub }] = await Promise.all([
-        db.from("profiles").select("full_name,email,region").eq("id", ba_id).single(),
+        db.from("profiles").select("full_name,email,region,home_region").eq("id", ba_id).single(),
         db.from("pay_periods").select("*").eq("id", period_id).single(),
         db.from("submissions").select("*").eq("ba_id", ba_id).eq("period_id", period_id).maybeSingle(),
       ]);
       const to = testTo || ADMIN_EMAIL;
       if (!to) return json({ ok: false, error: "ADMIN_EMAIL not set" }, 200);
-      // CC the submitting BA's REGIONAL admins (e.g. Maddy for NY) — active admin
-      // profiles whose region matches; never the automation login or the To recipient
-      let cc: string[] = [];
-      if (ba?.region) {
-        const { data: regAdmins } = await db.from("profiles").select("email")
-          .eq("role", "admin").eq("region", ba.region).eq("active", true);
-        cc = (regAdmins || []).map((a: { email: string }) => a.email)
-          .filter((e: string) => e && e !== to && e !== ba?.email && !/^automation@/i.test(e));
-      }
+      // CC the admins whose notification scope covers this person's own region:
+      // Maddy for an NY BA, Amanda for a CA BA. Never the automation login, the
+      // To recipient, or the submitter themselves.
+      const cc = await regionCcList(db, ba, [to, ba?.email]);
       const { subject, html, text } = submittedEmail(ba, period, sub);
       if (dry) return json({ ok: true, would_notify: to, cc, subject });
       await sendMail(to, subject, html, text, cc);
@@ -215,7 +212,7 @@ Deno.serve(async (req) => {
       const { ba_id, period_id, approved_by, was_submitted } = body;
       if (!ba_id || !period_id) return json({ ok: false, error: "ba_id and period_id required" }, 400);
       const [{ data: ba }, { data: period }, { data: sub }, { data: approver }] = await Promise.all([
-        db.from("profiles").select("full_name,email,region").eq("id", ba_id).single(),
+        db.from("profiles").select("full_name,email,region,home_region").eq("id", ba_id).single(),
         db.from("pay_periods").select("*").eq("id", period_id).single(),
         db.from("submissions").select("*").eq("ba_id", ba_id).eq("period_id", period_id).maybeSingle(),
         approved_by ? db.from("profiles").select("full_name,email").eq("id", approved_by).single()
@@ -223,15 +220,8 @@ Deno.serve(async (req) => {
       ]);
       const to = testTo || ADMIN_EMAIL;
       if (!to) return json({ ok: false, error: "ADMIN_EMAIL not set" }, 200);
-      // CC the BA's regional admins, minus the approver (they already know) and the To
-      let cc: string[] = [];
-      if (ba?.region) {
-        const { data: regAdmins } = await db.from("profiles").select("email")
-          .eq("role", "admin").eq("region", ba.region).eq("active", true);
-        cc = (regAdmins || []).map((a: { email: string }) => a.email)
-          .filter((e: string) => e && e !== to && e !== ba?.email
-                              && e !== approver?.email && !/^automation@/i.test(e));
-      }
+      // Same scope rule as 'submitted', minus the approver (they already know)
+      const cc = await regionCcList(db, ba, [to, ba?.email, approver?.email]);
       const { subject, html, text } = approvedEmail(ba, period, sub, approver, was_submitted !== false);
       if (dry) return json({ ok: true, would_notify: to, cc, subject });
       await sendMail(to, subject, html, text, cc);
@@ -262,7 +252,7 @@ Deno.serve(async (req) => {
       const { ba_id, period_id } = body;
       if (!ba_id || !period_id) return json({ ok: false, error: "ba_id and period_id required" }, 400);
       const [{ data: ba }, { data: period }] = await Promise.all([
-        db.from("profiles").select("full_name,email,region").eq("id", ba_id).single(),
+        db.from("profiles").select("full_name,email,region,home_region").eq("id", ba_id).single(),
         db.from("pay_periods").select("*").eq("id", period_id).single(),
       ]);
       if (!ba?.email) return json({ ok: false, error: "that person has no email" }, 400);
