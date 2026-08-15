@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-15.100';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-15.101';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -3127,26 +3127,33 @@ async function adminReport(m){
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
   const region=state.adminRegion;
-  const inRegion=ba_id=>region==='all' || (pById[ba_id]&&personRegion(pById[ba_id])===region);
-  // region membership follows the linked dispensary's state too — so an admin (no region)
-  // or a cross-region user logging spend at, say, a NY store still lands under the NY
-  // report, not only under "All". Unlinked/general items fall back to the logger's region.
   const dRegion=id=>{ const d=id&&dById[id]; return d?(d.state||null):null; };
-  const keep=(ba_id,dispId)=>inRegion(ba_id) || dRegion(dispId)===region;
+  // Which region does this ROW belong to? In order:
+  //   1. the linked store's state — spend at a NY store is NY spend, whoever logged it;
+  //   2. the row's own `state`, stamped from the logger's region when it was created —
+  //      this is what keeps general/unlinked work in the region it was actually done in;
+  //   3. the logger's current region, only for old rows with no state at all.
+  // Reading the row (not the person's CURRENT region) is what lets someone move between
+  // regions without dragging their history with them: Keelin's FL hours stay in the FL
+  // report after she becomes a CA BA, and her new CA work lands in CA.
+  const rowRegion=(row,dispId)=>dRegion(dispId) || (row&&row.state) || personRegion(pById[row&&row.ba_id]) || null;
+  const keep=(row,dispId)=>region==='all' || rowRegion(row,dispId)===region;
+  // person-level fallback, still needed where there is no row in hand
+  const inRegion=ba_id=>region==='all' || (pById[ba_id]&&personRegion(pById[ba_id])===region);
   const baName=ba_id=>(pById[ba_id]&&pById[ba_id].full_name)||'BA';
   const agg={}, items={};   // dispensary_id|'none' -> totals / item list
   const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0,laborSales:0}; items[k]=items[k]||[]; };
-  (trips.data||[]).forEach(t=>{ if(!keep(t.ba_id,t.dispensary_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
+  (trips.data||[]).forEach(t=>{ if(!keep(t,t.dispensary_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,ba_id:t.ba_id,date:t.trip_date,ba:baName(t.ba_id),disp:(dById[k]&&dById[k].name)||'',
       start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,
       start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
   const dnm=id=>(id&&dById[id])?dById[id].name:'';
   (exps.data||[]).forEach(x=>{ const A=Number(x.amount||0), names=dispIds(x).map(dnm).filter(Boolean);
-    dispSplit(x,A).forEach(({id,share,n})=>{ if(!keep(x.ba_id,id)) return; const k=id||'none'; ensure(k); agg[k][isCoPaid(x.payment)?'card':'exp']+=share;
+    dispSplit(x,A).forEach(({id,share,n})=>{ if(!keep(x,id)) return; const k=id||'none'; ensure(k); agg[k][isCoPaid(x.payment)?'card':'exp']+=share;
       items[k].push({kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:baName(x.ba_id),disp:dnm(id),dispNames:names,splitN:n,alSplit:!!(x.alloc&&x.alloc.length),
         vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
   (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dnm).filter(Boolean);
-    dispSplit(h,A).forEach(({id,share,n})=>{ if(!keep(h.ba_id,id)) return; const k=id||'none'; ensure(k); agg[k].labor+=share; if(isSalesHours(h)) agg[k].laborSales+=share;
+    dispSplit(h,A).forEach(({id,share,n})=>{ if(!keep(h,id)) return; const k=id||'none'; ensure(k); agg[k].labor+=share; if(isSalesHours(h)) agg[k].laborSales+=share;
       items[k].push({kind:'hours',id:h.id,ba_id:h.ba_id,date:h.work_date,ba:baName(h.ba_id),disp:dnm(id),dispNames:names,splitN:n,
         hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,cat:h.kind,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
@@ -3175,8 +3182,8 @@ async function adminReport(m){
   const visits=buildVisits(trips.data,exps.data,hrs.data,{keep,baName,dnm,homeOf:id=>(pById[id]||{}).base_address||''});
   // Not everything is a store visit — trips/expenses with no store linked are legit
   // (general driving, supplies, non-BA time). Tally them so nothing's lost, framed neutrally.
-  const nvTrips=(trips.data||[]).filter(t=>inRegion(t.ba_id) && !t.dispensary_id);
-  const nvExps=(exps.data||[]).filter(x=>inRegion(x.ba_id) && dispIds(x).length===0);
+  const nvTrips=(trips.data||[]).filter(t=>keep(t,null) && !t.dispensary_id);
+  const nvExps=(exps.data||[]).filter(x=>keep(x,null) && dispIds(x).length===0);
   const nonVisit={ tripCount:nvTrips.length, tripAmt:nvTrips.reduce((a,t)=>a+Number(t.amount||0),0),
     expCount:nvExps.length, expReimb:nvExps.filter(x=>!isCoPaid(x.payment)).reduce((a,x)=>a+Number(x.amount||0),0),
     expCard:nvExps.filter(x=>isCoPaid(x.payment)).reduce((a,x)=>a+Number(x.amount||0),0) };
@@ -3228,13 +3235,13 @@ function buildVisits(trips, exps, hrs, ctx){
       home:(homeOf?homeOf(b):'')||'',
       mile:0,labor:0,laborSales:0,exp:0,card:0,miles:0,laborHrs:0,trips:[],hours:[],expenses:[]};
     return V[k]; };
-  (trips||[]).forEach(t=>{ if(!t.dispensary_id||!keep(t.ba_id,t.dispensary_id)) return;
+  (trips||[]).forEach(t=>{ if(!t.dispensary_id||!keep(t,t.dispensary_id)) return;
     const v=ens(t.ba_id,t.dispensary_id,t.trip_date); v.mile+=Number(t.amount||0); v.miles+=Number(t.miles||0); v.trips.push(t); });
   (hrs||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0);
-    dispSplit(h,A).forEach(({id,share,n,hrs:hshare})=>{ if(!id||!keep(h.ba_id,id)) return; const v=ens(h.ba_id,id,h.work_date);
+    dispSplit(h,A).forEach(({id,share,n,hrs:hshare})=>{ if(!id||!keep(h,id)) return; const v=ens(h.ba_id,id,h.work_date);
       v.labor+=share; if(isSalesHours(h)) v.laborSales+=share; v.laborHrs+=(hshare!=null?hshare:H/n); v.hours.push({row:h,share,n}); }); });
   (exps||[]).forEach(x=>{ const A=Number(x.amount||0);
-    dispSplit(x,A).forEach(({id,share,n})=>{ if(!id||!keep(x.ba_id,id)) return; const v=ens(x.ba_id,id,x.expense_date);
+    dispSplit(x,A).forEach(({id,share,n})=>{ if(!id||!keep(x,id)) return; const v=ens(x.ba_id,id,x.expense_date);
       if(isCoPaid(x.payment)) v.card+=share; else v.exp+=share; v.expenses.push({row:x,share,n}); }); });
   return Object.values(V).map(v=>({...v,total:v.mile+v.labor+v.exp+v.card})).filter(v=>v.total>0);
 }
