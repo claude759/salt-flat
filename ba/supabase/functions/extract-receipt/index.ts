@@ -6,7 +6,7 @@ import { caller, claudeVision, downloadImage, json, ownsPath, parseJsonLoose, pr
 
 // mirror EXPENSE_CATEGORIES in ba/index.html — a category outside the app's list
 // renders as an un-categorized "Other" row in every report
-const CATEGORIES = ["Travel/Parking/Tolls", "Meals", "Food for retailer", "Flights", "Lodging", "Displays", "Events", "Supplies", "Other"];
+const CATEGORIES = ["Travel/Parking/Tolls", "Meals", "Food for retailer", "Flights", "Lodging", "Displays", "Events", "Supplies", "Quality Control", "Other"];
 const BUCKET = "receipts"; // pinned — never trust a client-supplied bucket
 
 Deno.serve(async (req) => {
