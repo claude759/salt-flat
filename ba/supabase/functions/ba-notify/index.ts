@@ -165,9 +165,9 @@ Deno.serve(async (req) => {
       // admins (Maddy/NY, Keelin & Drew/FL), and universal admins who still work a region
       // themselves (home_region set, e.g. Amanda/CA). Pure oversight admins (no region and
       // no home_region — Gianni, Victoria) are never reminded; they're the CC instead.
-      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region,home_region").eq("active", true);
+      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region,home_region,non_ba").eq("active", true);
       const fieldWorkers = (people || []).filter((b) =>
-        b.role === "ba" || (b.role === "admin" && (b.region || b.home_region)));
+        !b.non_ba && (b.role === "ba" || (b.role === "admin" && (b.region || b.home_region))));
       const { data: subs } = await db.from("submissions").select("ba_id").eq("period_id", period.id).in("status", ["submitted", "approved"]);
       const done = new Set((subs || []).map((s) => s.ba_id));
       const targets = fieldWorkers.filter((b) => !done.has(b.id) && b.email);

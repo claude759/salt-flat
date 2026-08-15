@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-14.99';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-15.100';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1075,7 +1075,16 @@ function actingAsBA(){ return !!state.preview || state.profile?.role!=='admin'; 
 // as a BA). Universal admins (admin, no region) are pure oversight and don't appear as BAs.
 // Active field staff only: inactive profiles (e.g. ar-reports-only logins that the
 // handle_new_user trigger auto-minted as role 'ba') stay out of Review/Dashboard lists.
-function isFieldWorker(b){ return !!b && b.active!==false && (b.role==='ba' || (b.role==='admin' && !!b.region)); }
+// The region a person WORKS in. `region` also means "the region I administer", so a
+// Universal Admin who still does field work carries it in home_region instead — every
+// reader that asks "is this person CA?" must go through here or she falls out of the
+// CA lists while her own mileage sits in them.
+const personRegion = b => (b && (b.region || b.home_region)) || null;
+// A field worker files their own mileage/hours: BAs, regional admins, and universal
+// admins with a home_region. Pure oversight admins (no region either way) are not.
+// `non_ba` logins (app access, but not brand-ambassador work) never are.
+function isFieldWorker(b){ return !!b && b.active!==false && !b.non_ba
+  && (b.role==='ba' || (b.role==='admin' && !!personRegion(b))); }
 // A just-ended period stays editable through a GRACE window — until the following
 // SUNDAY 11:00am (device-local) — so BAs can still finish + submit after the
 // period closes Friday and the reminder email lands Saturday (per Gianni 2026-07-18).
@@ -3109,7 +3118,7 @@ async function adminReport(m){
   await reloadPeriods();
   const {start,end}=ensureRepRange();
   const [{data:profs},{data:disps},trips,exps,hrs]=await Promise.all([
-    supabase.from('profiles').select('id,full_name,region,base_address'),
+    supabase.from('profiles').select('id,full_name,region,home_region,non_ba,base_address'),
     supabase.from('dispensaries').select('id,name,state'),
     supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
     supabase.from('expenses').select('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
@@ -3118,7 +3127,7 @@ async function adminReport(m){
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
   const region=state.adminRegion;
-  const inRegion=ba_id=>region==='all' || (pById[ba_id]&&pById[ba_id].region===region);
+  const inRegion=ba_id=>region==='all' || (pById[ba_id]&&personRegion(pById[ba_id])===region);
   // region membership follows the linked dispensary's state too — so an admin (no region)
   // or a cross-region user logging spend at, say, a NY store still lands under the NY
   // report, not only under "All". Unlinked/general items fall back to the logger's region.
@@ -3761,7 +3770,7 @@ async function adminDash(m){
   S.forEach(s=>{ const b=byBa[s.ba_id]; if(b){ if(!all) b.status=s.status; if(['submitted','approved'].includes(s.status)) b.subN++; } });
   // every field worker (BAs + regional admins like Maddy), plus anyone else who logged something
   let rows=Object.values(byBa).filter(r=> isFieldWorker(r.p) || r.items>0 );
-  if(state.adminRegion!=='all') rows=rows.filter(r=>r.p.region===state.adminRegion);
+  if(state.adminRegion!=='all') rows=rows.filter(r=>personRegion(r.p)===state.adminRegion);
   const grand=rows.reduce((a,r)=>a+r.mile+r.exp,0);
   m.innerHTML=`
     <div class="card">
@@ -4144,7 +4153,7 @@ async function adminReview(m){
   const cnt={}; (trips.data||[]).concat(exps.data||[]).forEach(x=>cnt[x.ba_id]=(cnt[x.ba_id]||0)+1);
   const hrsBy={}; (hours.data||[]).forEach(h=>hrsBy[h.ba_id]=(hrsBy[h.ba_id]||0)+1);
   let rows=(bas||[]).filter(isFieldWorker);   // BAs + regional admins (Maddy); not universal admins
-  if(state.adminRegion!=='all') rows=rows.filter(b=>b.region===state.adminRegion);
+  if(state.adminRegion!=='all') rows=rows.filter(b=>personRegion(b)===state.adminRegion);
   const turnedIn=b=>allPer ? (subN[b.id]||0)>0 : ['submitted','approved'].includes(subBy[b.id]?.status);
   // order: awaiting your approval → not submitted → approved
   const rank=b=>{ const s=subBy[b.id]?.status; return s==='submitted'?0 : s==='approved'?2 : 1; };
