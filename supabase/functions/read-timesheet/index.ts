@@ -30,8 +30,10 @@ const OCR_INSTRUCTION =
   'Return ONLY a JSON object, no prose:\n' +
   '{"company": string|null, "sheet_date": "YYYY-MM-DD"|null, "rows": [{"last": string|null, "first": string|null, ' +
   '"date": "YYYY-MM-DD"|null, "time_in": "HH:MM"|null, "time_out": "HH:MM"|null, "break_minutes": number|null}]}\n' +
-  '- company: from the TITLE header ONLY when it names a company/LLC (drop ", LLC" + license numbers); if ' +
-  'the title is only a location or crew name, set company to null.\n' +
+  '- company: MUST be one of exactly Filifera, Slane, Portal, Imperial, Olympic, or null. Read it from the ' +
+  'printed TITLE text (drop ", LLC" + license numbers). "23rd Street" means Slane and "25th Street" means ' +
+  'Filifera. NEVER take it from the logo or letterhead: every sheet is printed on Wizard Trees / Wizard Tags ' +
+  'stationery and those are NOT sites. If the title names none of the five, set company to null.\n' +
   '- Ignore the leading "#" row-number column and the SIGNATURE column. One object per NAMED data row; ' +
   'skip rows with no name written, and skip the header.\n' +
   '- 24-hour "HH:MM"; infer AM/PM from an 8am-6pm workday ("8:00" in = 08:00, "5:00" out = 17:00).\n' +
@@ -77,11 +79,17 @@ function parseJsonLoose(text: string): any {
   if (a >= 0 && b > a) { try { return JSON.parse(text.slice(a, b + 1)); } catch { /* ignore */ } }
   return null;
 }
+// The ONLY five sites that exist. Every sheet is printed on Wizard Trees / Wizard
+// Tags letterhead, so a model that reads the logo instead of the title used to hand
+// back "Wizard Trees" as the company and it went straight into the log. Anything not
+// on this list is now dropped to null and the human picks it in the review card.
+const SITES = ["Filifera", "Slane", "Portal", "Imperial", "Olympic"];
 const cleanCompany = (c: unknown) => {
   if (typeof c !== "string") return null;
   const s = c.replace(/,?\s*LLC.*$/i, "").trim();
-  for (const k of ["Filifera", "Slane", "Portal"]) if (s.toLowerCase().includes(k.toLowerCase())) return k;
-  return s || null;
+  const t = s.toLowerCase();
+  for (const k of SITES) if (t.includes(k.toLowerCase())) return k;
+  return null;
 };
 const isDate = (v: unknown) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
 const cleanTime = (v: unknown) => {

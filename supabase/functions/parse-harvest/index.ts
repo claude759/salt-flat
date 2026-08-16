@@ -70,6 +70,9 @@ const HARVEST_INSTR =
   '- Times: "7 to 5pm" -> 07:00/17:00; "8:30 to 4pm" -> 08:30/16:00; "10:50-2:00" -> 10:50/14:00; ' +
   '"5pm to 9pm" -> 17:00/21:00. Infer AM/PM for a normal daytime shift.\n' +
   '- If the image has a header naming the location or person, apply it to every row below it.\n' +
+  '- location MUST be one of exactly Slane, Filifera, Imperial, Olympic, Portal, or null. Never read it off ' +
+  'the logo or letterhead: the sheets are printed on Wizard Trees / Wizard Tags stationery and neither is a ' +
+  'site. If the sheet names none of the five, use null.\n' +
   '- location: use the mapped business name (Slane/Filifera/Imperial/Olympic for harvest; Portal or another ' +
   'distro company name for distro rows). If none is given, null.\n' +
   '- BREAKS/LUNCH are NOT tasks. A lunch or break notation — "30m", "30 min", "30 min break", "1/2 hr", ' +
@@ -119,7 +122,10 @@ function cleanLocation(s: unknown){
     if (/(^|[^0-9])23/.test(t)) return "Slane";
     if (/(^|[^0-9])25/.test(t)) return "Filifera";
   }
-  return s.trim() || null;
+  // Only the five real sites survive. The sheets are printed on Wizard Trees /
+  // Wizard Tags letterhead and a stray read of the logo used to land in the log
+  // as a company; an unknown string now becomes null so the review card asks.
+  return null;
 }
 // minutes from a break/lunch token, or null if the token isn't a break at all
 function breakFromToken(s: string): number | null {
