@@ -3,9 +3,13 @@
 -- salaried people, but it must not read as brand-ambassador activity:
 --   • job  = 'Sales'            → isSalesHours() picks it up, so it lands in the Sales
 --                                 half of the labor split instead of the BA half;
---   • kind = 'Non-BA activity'  → one of the NONSTORE_KINDS, so it is never counted as
---                                 a store visit;
+--   • kind = 'Non-BA activity'  → honest labelling everywhere the kind is displayed;
 --   • parked on the '* Non-BA activity' placeholder rather than left to autolink.
+--
+-- The BUCKET is what actually keeps it out of store reporting, not the kind: NONSTORE_KINDS
+-- is only consulted for TRIPS (itemIssues/adminEditItem), never for hours rows, which are
+-- bucketed purely by their dispensary link. Visits are excluded by the '* ' name prefix
+-- (isPlaceholderName). So do not rename that location without the '* '.
 --
 -- That last one is the important part. generate_salary_labor inserts with no dispensary,
 -- and trg_hours_before then AUTOLINKS the row to whatever stores the person drove to that
@@ -44,18 +48,30 @@ begin
   v_per := round(v_sal / v_n, 2);
   -- non-BA salary parks on the placeholder; supplying it suppresses the autolink
   if v_job is not null then
-    select id into v_bucket from public.dispensaries where name = '* Non-BA activity' limit 1;
+    select id into v_bucket from public.dispensaries
+     where name = '* Non-BA activity' and coalesce(active,true) order by created_at limit 1;
+    -- Falling through with a NULL bucket would hand the row to the autolink, which puts a
+    -- Sales salary onto whatever real stores they drove to that day. Refuse instead.
+    if v_bucket is null then
+      raise exception 'the "* Non-BA activity" location is missing — cannot file % salary without it', v_job;
+    end if;
   end if;
   foreach d in array v_days loop
     insert into public.hours (ba_id, work_date, hours, source, amount, status, period_id,
                               job, kind, dispensary_ids)
     values (p_ba, d, 0, 'salary', v_per, 'draft', p_period,
             v_job,
-            case when v_job is null then null else 'Non-BA activity' end,
+            -- hours.kind is NOT NULL: an explicit NULL suppresses the column default and
+            -- aborts the whole insert (and the app swallows the error), so a non-sales
+            -- salaried person would silently generate NOTHING. Always supply a value.
+            case when v_job is null then 'General BA Activity/Admin' else 'Non-BA activity' end,
             case when v_bucket is null then null else array[v_bucket] end)
     on conflict (ba_id, work_date, source) do update
       set amount = excluded.amount, period_id = excluded.period_id,
-          job = excluded.job, kind = coalesce(excluded.kind, hours.kind)
+          job = excluded.job,
+          -- only a non-BA salary forces its kind; an ordinary BA salary row keeps the
+          -- kind the autolink gave it (that's why Maddy's rows read 'Store visit')
+          kind = case when excluded.job is null then hours.kind else excluded.kind end
       where hours.status not in ('submitted','approved');
   end loop;
   return v_n;
