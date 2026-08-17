@@ -496,6 +496,7 @@
       <div class="tab" data-tab="scorecard">Sales Scorecard</div>
       <div class="tab" data-tab="tiers">Customer Tiers</div>
       <div class="tab" data-tab="reports">Reports</div>
+      <div class="tab" data-tab="emails">Automated Emails</div>
       <div class="tab hidden" data-tab="credits">Credits/Discount Tracker</div>
     </div>
 
@@ -754,6 +755,23 @@
     </div>
 
     <!-- CUSTOMER TIERS -->
+    <!-- AUTOMATED EMAILS — starts as the customer directory the future sends will address:
+         every CA account we've sold to, with its corporate (legal) name, DBA and address. -->
+    <div id="view-emails" class="hidden">
+      <div class="toolbar">
+        <input type="text" id="em-search" placeholder="Search customer, corporate name or address…" />
+        <select id="em-filter" title="Completeness">
+          <option value="">All customers</option>
+          <option value="missing">Missing something</option>
+          <option value="complete">Complete only</option>
+        </select>
+        <div class="grow"></div>
+        <button class="btn" id="em-export">⬇ Export CSV</button>
+      </div>
+      <div class="tablewrap" id="em-wrap"></div>
+      <div class="notes" id="em-note"></div>
+    </div>
+
     <div id="view-tiers" class="hidden">
       <div class="toolbar">
         <select id="tier-months" title="Revenue lookback window">
@@ -1742,6 +1760,7 @@ function applyShared(d){
     if(any) renderTimeSeries();
     if(any) renderMom();
     if(any) renderTiers();   // re-render after the team report arrives (fixes blank Tiers tab on a cold refresh)
+    if(any) renderEmails();
     if(any) renderRepMode();   // refresh whichever report is active (visits/customers/sales/payments/…)
     renderShareBar();
     return any;
@@ -4828,7 +4847,7 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
   // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the
   // NY-only tabs. (Access is by STATE now — applyStateAccess gates which states you can reach.)
-  const NY_TABS=['ar','nysc','tiers','reports','credits','hmops'], NY_ONLY=['nysc','credits','hmops'];   // Sales by Type is a Reports mode in NY (2026-07-21), a standalone tab in CA
+  const NY_TABS=['ar','nysc','tiers','reports','credits','hmops'], NY_ONLY=['nysc','credits','hmops'];   // 'emails' is CA-only: absent from NY_TABS (hidden in NY), absent from NY_ONLY (visible in CA)   // Sales by Type is a Reports mode in NY (2026-07-21), a standalone tab in CA
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
     t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary / Sales by Type
@@ -5326,6 +5345,73 @@ function nyOverdueByAccount(){
     const k=tierNorm(x.c); by[k]=(by[k]||0)+x.out; });
   return by;
 }
+/* ======================= Automated Emails (customer directory) =======================
+   The base every future automated send needs: who the CA customers are, the corporate
+   (legal) entity behind each one, and where they are. Rows come from the accounts we've
+   actually sold to (CONC_EVENTS, QuickBooks history excluded — same account universe as
+   Customer Tiers), joined to CUST_DIR, which merges Nabis's "DBA [LEGAL]" Site field with
+   the Distru company directory. Gaps are shown, not hidden: an address or corporate name
+   we don't have is a red "missing" cell, because a mailing list is only as good as the
+   holes you can see. */
+let emSort={key:'name',dir:1};
+function emailsData(){
+  const acc={};
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return;
+    const name=((e.c||'').trim()); if(!name) return;
+    const g=acc[name]||(acc[name]={name, src:new Set(), last:null, rev:0});
+    g.src.add(e.s); g.rev+=eventBilling(e);
+    if(e.d!=null && (g.last==null || e.d>g.last)) g.last=e.d; });
+  return Object.values(acc).map(g=>{
+    const info=custInfo(g.name)||{};
+    return {name:g.name, dba:info.dba||g.name, legal:info.legal||'', address:info.address||'',
+            license:info.license||'', region:info.region||'',
+            source:[...g.src].sort().join(' + '), last:g.last, rev:g.rev,
+            missing:[!(info.legal)&&'corporate name', !(info.address)&&'address'].filter(Boolean)};
+  }).sort((a,b)=>a.name.localeCompare(b.name));
+}
+function renderEmails(){
+  if(APP_STATE==='NY') return;                       // CA-only page
+  const wrap=$('#em-wrap'), note=$('#em-note'); if(!wrap) return;
+  const all=emailsData();
+  if(!all.length){ note.innerHTML=''; wrap.innerHTML='<div class="empty">No customers loaded yet — the team report fills this in automatically.</div>'; return; }
+  const q=(($('#em-search')||{}).value||'').trim().toLowerCase(), f=($('#em-filter')||{}).value||'';
+  let view=all.filter(r=>(!q || r.name.toLowerCase().includes(q) || (r.legal||'').toLowerCase().includes(q) || (r.address||'').toLowerCase().includes(q))
+    && (!f || (f==='missing'? r.missing.length>0 : r.missing.length===0)));
+  const k=emSort.key, dir=emSort.dir;
+  view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(av==null)av=''; if(bv==null)bv='';
+    if(typeof av==='string'){av=av.toLowerCase();bv=String(bv).toLowerCase();}
+    return av<bv?-dir:av>bv?dir:a.name.localeCompare(b.name); });
+  const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'<span class="neg">—</span>';
+  const miss='<span style="color:var(--red)">missing</span>';
+  const cols=[['dba','Customer (DBA)',0],['legal','Corporate name',0],['address','Address',0],['license','License',0],['source','Source',0],['last','Last order',1]];
+  const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
+  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders">
+    <td>${esc(r.dba)}${r.dba!==r.name?`<div class="rep">${esc(r.name)}</div>`:''}</td>
+    <td>${r.legal?esc(r.legal):miss}</td>
+    <td class="addr">${r.address?esc(r.address):miss}</td>
+    <td class="rep">${r.license?esc(r.license):'<span class="neg">—</span>'}</td>
+    <td><span class="src ${String(r.source||'').replace(/[^A-Za-z]/g,'')}">${esc(r.source)}</span></td>
+    <td class="num">${fmtD(r.last)}</td></tr>`).join('');
+  wrap.innerHTML=`<table id="em-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td colspan="6">${view.length} customer${view.length!==1?'s':''}${view.length!==all.length?` of ${all.length}`:''}</td></tr></tfoot></table>`;
+  wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
+    if(emSort.key===key) emSort.dir=-emSort.dir; else emSort={key,dir:1}; renderEmails(); });
+  thSortMark(wrap,emSort.key,emSort.dir);
+  const noLegal=all.filter(r=>!r.legal).length, noAddr=all.filter(r=>!r.address).length;
+  note.innerHTML=`<b>Automated Emails</b> — the CA customer list these sends will address: every account with real sales activity (QuickBooks history excluded), its <b>corporate name</b> (the legal entity), <b>DBA</b> and <b>address</b>. Sourced live from the team report — Nabis carries "DBA [LEGAL ENTITY]" plus a site address on every order, and the Distru company directory fills the Distru-only accounts. Click a row for that customer's orders; click a header to sort.
+    ${(noLegal||noAddr)?`<span style="color:var(--orange)"> <b>Gaps:</b> ${noLegal} without a corporate name, ${noAddr} without an address</span> — filter to “Missing something” to work them.`:' Every customer has a corporate name and address.'}
+    <b>Next step</b> when you're ready: contact emails per account, then the send itself.`;
+}
+$('#em-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null;
+  if(!tr||!$('#em-wrap').contains(tr)) return;
+  const {start,end}=repRange('cust'); customerOrdersDrill(tr.getAttribute('data-name'),start,end); };
+['em-search','em-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderEmails); });
+$('#em-export').onclick=()=>{
+  const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
+  const out=[['Customer (DBA)','Billing name','Corporate name','Address','License','Region','Source','Last order']];
+  emailsData().forEach(r=>out.push([r.dba,r.name,r.legal,r.address,r.license,r.region,r.source,iso(r.last)]));
+  downloadCSV('ca-customers-directory.csv',out);
+};
 function tierData(monthsOv){
   const months=Math.max(1,+(monthsOv || ($('#tier-months')||{}).value||3));
   const end=new Date(); end.setHours(23,59,59,999);
@@ -7575,6 +7661,8 @@ function activateTab(tab, fromHash){
   $('#view-ar-ny').classList.toggle('hidden',tab!=='ar'||APP_STATE!=='NY');
   if(tab==='ar'&&APP_STATE==='NY') renderArNY();
   else if(tab==='ar'){ if(fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='invoice'||h==='dispensary'||h==='brand') setArMode(h); } freezeInvCols(); }   // honor legacy #invoice/#dispensary/#brand; measure sticky cols if Invoice mode visible
+  $('#view-emails').classList.toggle('hidden',tab!=='emails');
+  if(tab==='emails') renderEmails();
   $('#view-cd').classList.toggle('hidden',tab!=='cd');
   if(tab==='cd' && fromHash){ const h=(location.hash||'').replace(/^#/,''); if(h==='cd-disp'||h==='cd-brand') setCdMode(h==='cd-brand'?'brand':'disp'); }   // honor legacy #cd-disp/#cd-brand links
   if(tab==='sku') skuDock('main');   // CA standalone tab: make sure the view is back at top level
