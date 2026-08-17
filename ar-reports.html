@@ -290,6 +290,8 @@
   /* every text cell truncates — fixed layout means anything that doesn't will overrun its
      neighbour (the DBA and corporate-name columns were colliding). Full value is in the title. */
   #em-table tbody td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* ...but the EXPANDED row is the place those full values live, so it wraps instead of clipping */
+  #em-table tbody tr.detail td{overflow:visible;text-overflow:clip;white-space:normal}
   #em-table td.em-name{font-weight:500}
   #em-table td.addr{font-size:12px;color:var(--muted)}
   #em-table td.em-cc{font-size:12px;color:var(--muted)}
@@ -299,7 +301,23 @@
     padding:3px 6px;font:inherit;font-size:12px;width:100%;cursor:pointer}
   select.em-rep.unset{color:var(--red);border-color:color-mix(in srgb,var(--red) 45%,var(--line))}
   select.em-rep:hover{border-color:var(--accent)}
+  /* inferred from sales data, not stated by a human — dashed + italic so a glance separates
+     "someone decided this" from "this is who has been selling it" */
+  select.em-rep.inferred{color:var(--muted);font-style:italic;border-style:dashed}
   input.em-cb{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
+  /* edit-in-place: reads as text until you touch it, so the table stays a table */
+  input.em-inp{width:100%;background:transparent;border:1px solid transparent;border-radius:6px;color:var(--text);
+    font:inherit;font-size:12.5px;padding:3px 5px}
+  input.em-inp:hover{border-color:var(--line);background:var(--panel2)}
+  input.em-inp:focus{outline:none;border-color:var(--accent);background:var(--panel2)}
+  input.em-inp::placeholder{color:var(--red);opacity:.85}
+  input.em-inp.unset::placeholder{color:var(--red)}
+  #em-table tr.parent{cursor:pointer}
+  #em-table tr.parent.open{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+  #em-table tr.parent .caret{display:inline-block;width:11px;color:var(--muted);font-size:9px;transition:.15s}
+  .em-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:6px 18px;margin-bottom:12px}
+  .em-fact{display:flex;gap:8px;justify-content:space-between;border-bottom:1px solid var(--line);padding:4px 0;font-size:12.5px}
+  .em-fact span{color:var(--muted)} .em-fact b{text-align:right;word-break:break-word}
   .ba-exp{cursor:pointer;color:var(--muted);font-size:10px;user-select:none}
   td.ba-acct-exp{cursor:pointer}
   tr.ba-branch td.bb-visit,tr.ba-branch td.bb-edu,tr.ba-branch td.bb-pad,tr.ba-branch td.bb-up,tr.ba-branch td.bb-inv{cursor:pointer}
@@ -1760,6 +1778,7 @@ function applyShared(d){
     if(data.pistilPos && data.pistilPos.length){ PISTIL_POS=pistilPosFromWire(data.pistilPos); any=true; }   // true POS units overlay
     if(data.pistilPosAsOf) PISTIL_POS_ASOF=data.pistilPosAsOf;
     if(data.custDir) CUST_DIR=custDirFromWire(data.custDir);   // customer directory (legal name / address / license)
+    if(data.salesRep) SALES_REP=salesRepFromWire(data.salesRep);   // who sold each account last (Automated Emails rep fallback)
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); buildNyLegal(); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
     if(data.nyShip && data.nyShip.length){ NY_SHIP=nyShipFromWire(data.nyShip); any=true; }
@@ -1849,6 +1868,7 @@ async function publishToTeam(){
     if(FRESH.has('pistilPos') && PISTIL_POS && PISTIL_POS.length) cur.pistilPos=pistilPosToWire(PISTIL_POS);   // additive; true POS units on hand (BA Report overlay)
     if(FRESH.has('pistilPos') && PISTIL_POS && PISTIL_POS.length) cur.pistilPosAsOf=new Date().toISOString(); else if(PISTIL_POS_ASOF && !cur.pistilPosAsOf) cur.pistilPosAsOf=PISTIL_POS_ASOF;   // staleness stamp, rows-survive; base stamp wins
     if(FRESH.has('custDir') && CUST_DIR && Object.keys(CUST_DIR).length) cur.custDir=custDirToWire(CUST_DIR);  // additive; customer directory persists like visits
+    if(FRESH.has('salesRep') && SALES_REP && Object.keys(SALES_REP).length) cur.salesRep=salesRepToWire(SALES_REP);   // additive; last-order rep per account
     if(FRESH.has('ny') && NY_EVENTS && NY_EVENTS.length) cur.ny=nyToWire(NY_EVENTS);                     // additive; NY LeafLink orders for the NY Tiers page
     if(FRESH.has('nyItems') && NY_ITEMS && NY_ITEMS.length) cur.nyItems=nyItemsToWire(NY_ITEMS);               // additive; NY line items for NY Sales by Type + drops
     if(FRESH.has('nyShip') && NY_SHIP && Object.keys(NY_SHIP).length) cur.nyShip=nyShipToWire(NY_SHIP);        // additive; LeafLink per-order ship dates (NY Scorecard delivery source #2)
@@ -1915,7 +1935,7 @@ function handleFiles(fileList){
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); }
+      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); }
     };
     reader.readAsText(f);
   });
@@ -1930,7 +1950,7 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); });
 }
 // Clearing a file chip must also retract its derived state + FRESH mark — otherwise the next
 // publish still sends the removed file's data (the builds skip re-assignment when the file is
@@ -1940,10 +1960,10 @@ function renderChips(){
 function clearFileState(t){
   FILES[t]=null;
   const U={
-    distru_invoice:()=>{ FRESH.delete('ar'); },
-    nabis_aging:()=>{ FRESH.delete('ar'); },
-    distru_items:()=>{ CONC_EVENTS=[]; SKU_EVENTS=[]; FRESH.delete('conc'); FRESH.delete('sku'); },
-    nabis_detail:()=>{ CONC_EVENTS=[]; SKU_EVENTS=[]; CUST_DIR={}; FRESH.delete('conc'); FRESH.delete('sku'); FRESH.delete('custDir'); },
+    distru_invoice:()=>{ FRESH.delete('ar'); SALES_REP={}; FRESH.delete('salesRep'); },
+    nabis_aging:()=>{ FRESH.delete('ar'); SALES_REP={}; FRESH.delete('salesRep'); },
+    distru_items:()=>{ CONC_EVENTS=[]; SKU_EVENTS=[]; SALES_REP={}; FRESH.delete('conc'); FRESH.delete('sku'); FRESH.delete('salesRep'); },
+    nabis_detail:()=>{ CONC_EVENTS=[]; SKU_EVENTS=[]; CUST_DIR={}; SALES_REP={}; FRESH.delete('conc'); FRESH.delete('sku'); FRESH.delete('custDir'); FRESH.delete('salesRep'); },
     nabis_brand:()=>{ CUST_DIR={}; FRESH.delete('custDir'); },
     distru_companies:()=>{ CUST_DIR={}; FRESH.delete('custDir'); },
     visits:()=>{ VISIT_EVENTS=[]; SCHED_EVENTS=[]; FRESH.delete('visits'); FRESH.delete('sched'); },
@@ -5387,6 +5407,7 @@ function nyOverdueByAccount(){
    holes you can see. */
 let emSort={key:'name',dir:1};
 let EM_UNMATCHED=[];
+let EM_OPEN=new Set();   // expanded rows (account keys), survives re-render/sort
 // Reminder cadence + send history, shared across the team (Supabase email_reminders, RLS'd to
 // @wizardtrees.com). Keyed by the same account key the rest of the page joins on, so a rename in
 // Distru/Nabis doesn't lose a customer's settings. Loaded once per session; toggles write through
@@ -5401,18 +5422,19 @@ function repNorm(v){ const t=String(v||'').toLowerCase();
 async function loadReminders(){
   if(EM_REM_LOADED) return; EM_REM_LOADED=true;
   try{ const c=sbAuth(); if(!c) return;
-    const {data,error}=await c.from('email_reminders').select('acct_key,d1_before,d1_after,d7_after,last_sent,rep').abortSignal(AbortSignal.timeout(8000));
+    const {data,error}=await c.from('email_reminders').select('acct_key,d1_before,d1_after,d7_after,last_sent,rep,email,cc').abortSignal(AbortSignal.timeout(8000));
     if(error) throw error;
-    (data||[]).forEach(r=>{ EM_REM[r.acct_key]={b1:!!r.d1_before, a1:!!r.d1_after, a7:!!r.d7_after, last:r.last_sent||null, rep:r.rep||''}; });
+    (data||[]).forEach(r=>{ EM_REM[r.acct_key]={b1:!!r.d1_before, a1:!!r.d1_after, a7:!!r.d7_after, last:r.last_sent||null, rep:r.rep||'', email:r.email||'', cc:r.cc||''}; });
     renderEmails();
   }catch(e){ EM_REM_LOADED=false; /* offline or not signed in — checkboxes stay unchecked, page still renders */ }
 }
 async function setReminder(key,name,field,val){
-  const cur=EM_REM[key]||{b1:false,a1:false,a7:false,last:null,rep:''};
+  const cur=EM_REM[key]||{b1:false,a1:false,a7:false,last:null,rep:'',email:'',cc:''};
   const next={...cur,[field]:val}; EM_REM[key]=next; renderEmails();
   try{ const c=sbAuth(); if(!c) throw new Error('not signed in');
     const {error}=await c.from('email_reminders').upsert({acct_key:key, acct_name:name,
       d1_before:next.b1, d1_after:next.a1, d7_after:next.a7, rep:next.rep||null,
+      email:next.email||null, cc:next.cc||null,
       updated_at:new Date().toISOString(), updated_by:(AUTH_USER&&AUTH_USER.email)||''});
     if(error) throw error;
   }catch(e){ EM_REM[key]=cur; renderEmails(); alert('Could not save that reminder setting — '+(e.message||e)); }
@@ -5468,6 +5490,17 @@ function resolveContacts(accountKeys){
   // Figueroa"). Requires 2+ shared words AND a unique candidate, so a bare "Catalyst" can't grab
   // a store; still the loosest rule here, which is why it runs last on what nothing else claimed.
   const toks=x=>new Set(baLooseKey(x).split(' ').filter(w=>w.length>2));
+  // Pass 0.5 (runs before the name guessing below is even needed, and again as a net at the end):
+  // LICENSE is an exact identifier, so it beats every name heuristic — and unlike money, a contact
+  // may legitimately serve SEVERAL accounts. Catalyst OC3 and Catalyst Halladay St are one store
+  // (C10-0001434-LIC) billed under two names; claim-once name matching gave the AP address to OC3
+  // and left Halladay blank. Licenses fix that, and correctly keep Catalyst Santa Ana
+  // (C10-0000230-LIC → saa.ap@) separate from OC3 (→ oc3.ap@).
+  const byLic={};
+  Object.values(by).forEach(v=>{ const l=String(v.lic||'').trim().toUpperCase(); if(l) byLic[l]=v; });
+  accountKeys.forEach(a=>{ if(res[a.key]) return;
+    const lic=String((custInfo(a.name)||{}).license||'').trim().toUpperCase();
+    if(lic && byLic[lic]) res[a.key]=byLic[lic]; });   // shared on purpose — no claim-once for contacts
   accountKeys.forEach(a=>{ if(res[a.key]) return; const A=toks(a.name); if(A.size<2) return;
     const c=entries.filter(e=>{ if(taken.has(e.k)) return false; const B=toks(e.v.name||e.k);
       if(B.size<2) return false;
@@ -5497,16 +5530,25 @@ function emailsData(){
     const inf=(info.legal||info.address)?info:(info0||info);
     const address=inf.address||c.loc||'';          // the workbook's Location fills our address gaps
     const key=baRowKey(g.name), rm=EM_REM[key]||{}, arx=arMap[key]||arMap[tierNorm(g.name)]||{out:0,over:0};
+    // Rep, in precedence order: chosen here (a person decided) > the workbook's Designated Rep >
+    // inferred from who sold the last order. The inference is a fallback only — it never overwrites
+    // either of the first two, and choosing a name from the dropdown retires it for that account.
+    const repSheet=repNorm(c.rep||''), sr=SALES_REP[key]||{};
+    const repInf=(!rm.rep && !repSheet) ? (sr.rep||'') : '';
+    const repFinal=rm.rep||repSheet||repInf;
     return {name:g.name, key, out:arx.out||0, over:arx.over||0,
             b1:!!rm.b1, a1:!!rm.a1, a7:!!rm.a7, lastRem:rm.last?Date.parse(rm.last):null, nextRem:nextReminderFor(key),
-            repSet:rm.rep||'', repFromSheet:repNorm(c.rep||''),
+            repSet:rm.rep||'', repFromSheet:repSheet,
+            repInf, soldBy:sr.raw||'', soldD:sr.d||0, soldSrc:sr.src||'',
+            emailSet:rm.email||'', ccSet:rm.cc||'',
             dba:info.dba||g.name, legal:inf.legal||c.legal||'', address,
             addrFromSheet:!inf.address&&!!c.loc, viaCoop:!!(info0&&(info0.legal||info0.address)),
             license:inf.license||c.lic||'', region:inf.region||c.terr||'',
-            rep:(rm.rep||repNorm(c.rep||'')), repRaw:c.rep||'', email:c.email||'', cc:c.cc||'', arNoEmail:c.arNoEmail||'', cxSrc:c.src||'',
+            rep:repFinal, repRaw:c.rep||'',
+            email:(rm.email||c.email||''), cc:(rm.cc||c.cc||''), arNoEmail:c.arNoEmail||'', cxSrc:c.src||'',
             source:[...g.src].sort().join(' + '), last:g.last, rev:g.rev,
             missing:[!(info.legal||c.legal)&&'corporate name', !address&&'address',
-                     !(c.email)&&'contact email', !(c.rep)&&'rep'].filter(Boolean)};
+                     !(c.email)&&'contact email', !repFinal&&'rep'].filter(Boolean)};
   }).sort((a,b)=>a.name.localeCompare(b.name))
     // CLAIM-ONCE: two spellings of one account ("Buzz Cannabis Santee" / "BUZZ CANNABIS Santee")
     // normalize to the same key, and both would show — and total — the same balance. The AR goes
@@ -5514,6 +5556,42 @@ function emailsData(){
     .map((r,_,arr)=>{ if(!(r.out>0.005)) return r;
       const host=arr.filter(x=>x.key===r.key).sort((a,b)=>Math.abs(b.rev)-Math.abs(a.rev))[0];
       return host===r?r:{...r, out:0, over:0, dupOf:host.name}; });
+}
+// Expanded row: the facts that don't fit the table, plus this account's OPEN invoices — the
+// reminders being scheduled above are about exactly these, so they belong on the same screen.
+function emDetailRow(r){
+  const inv=(INVOICES||[]).filter(x=>x.outstanding>0.005 && baRowKey(x.dispensary)===r.key)
+    .sort((a,b)=>(b.dpd||-1e9)-(a.dpd||-1e9));
+  const fD=d=>d?new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const invTbl=inv.length?`<table class="ddtable"><thead><tr><th>Invoice</th><th>Source</th><th class="num">Invoiced</th><th class="num">Due</th><th>Aging</th><th class="num">Outstanding</th><th></th></tr></thead><tbody>
+      ${inv.map(x=>{ const lk=invLinkUrl(x); return `<tr>
+        <td>${esc(x.number||'—')}</td><td><span class="src ${esc(x.source)}">${esc(x.source)}</span></td>
+        <td class="num">${fD(x.invoiceDate)}</td><td class="num">${fD(x.dueDate)}</td>
+        <td><span class="bucket ${bucketClass(x.bucket)}">${x.bucket}</span>${x.dpd>0?` <span class="neg">${x.dpd}d</span>`:''}</td>
+        <td class="num money">${fmt$(x.outstanding)}</td>
+        <td>${lk?`<a class="inv-link sm" href="${esc(lk)}" target="_blank" rel="noopener">Open ↗</a>`:''}</td></tr>`; }).join('')}</tbody>
+      <tfoot><tr class="totals"><td colspan="5">${inv.length} open invoice${inv.length!==1?'s':''}</td>
+        <td class="num money"><b>${fmt$(inv.reduce((t,x)=>t+x.outstanding,0))}</b></td><td></td></tr></tfoot></table>`
+    : `<div class="small muted">No open invoices — nothing to remind about right now.</div>`;
+  const fact=(l,v)=>v?`<div class="em-fact"><span>${l}</span><b>${esc(v)}</b></div>`:'';
+  return `<tr class="detail"><td colspan="12"><div class="detailbox">
+    <div class="em-facts">
+      ${fact('Billed as', r.name!==r.dba?r.name:'')}
+      ${fact('Corporate name', r.legal)}
+      ${fact('Address', r.address)}
+      ${fact('License', r.license)}
+      ${fact('Region / territory', r.region)}
+      ${fact('Source', r.source)}
+      ${fact('Last order', r.last?fD(r.last):'')}
+      ${fact('Contact source', r.cxSrc)}
+      ${fact('Sheet says rep', r.repRaw)}
+      ${r.soldBy?`<div class="em-fact"><span>Last order sold by</span><b>${esc(r.soldBy)}${r.soldD?` · ${fD(r.soldD)}`:''}${r.soldSrc?` (${esc(r.soldSrc)})`:''}${r.repInf?' — used as the rep above':(r.rep&&repNorm(r.soldBy)&&repNorm(r.soldBy)!==r.rep?' — differs from the rep above':'')}</b></div>`:''}
+      ${fact('AR contact without an email', r.arNoEmail)}
+      ${r.dupOf?`<div class="em-fact"><span>Balance</span><b>counted on ${esc(r.dupOf)}</b></div>`:''}
+    </div>
+    <div class="ddhead">Open invoices</div>${invTbl}
+    <div style="margin-top:10px"><button class="btn sm" data-orders="${esc(r.name)}">All orders for this customer ↗</button></div>
+  </div></td></tr>`;
 }
 function renderEmails(){
   if(APP_STATE==='NY') return;                       // CA-only page
@@ -5537,23 +5615,23 @@ function renderEmails(){
               ['b1','−1d',1,'c-box','Remind 1 day BEFORE the due date'],['a1','+1d',1,'c-box','Remind 1 day AFTER the due date'],['a7','+7d',1,'c-box','Remind 7 days AFTER the due date']];
   const colgroup=`<colgroup>${cols.map(c=>`<col class="${c[3]}">`).join('')}</colgroup>`;
   const thead=cols.map(([key,lbl,n,,tip])=>`<th class="${n?'num':''}" data-k="${key}"${tip?` title="${esc(tip)}"`:''}>${lbl}</th>`).join('');
-  const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click for this customer's orders">
-    <td class="em-name" title="${esc(r.dba)}${r.dba!==r.name?` · billed as ${esc(r.name)}`:''}">${esc(r.dba)}</td>
+  const body=view.map(r=>`<tr class="parent${EM_OPEN.has(r.key)?' open':''}" data-name="${esc(r.name)}" data-key="${esc(r.key)}" title="Click to expand">
+    <td class="em-name" title="${esc(r.dba)}${r.dba!==r.name?` · billed as ${esc(r.name)}`:''}"><span class="caret">${EM_OPEN.has(r.key)?'▼':'▶'}</span> ${esc(r.dba)}</td>
     <td title="${esc(r.legal||'')}${r.viaCoop?' (bills via Pacafi Cooperative)':''}">${r.legal?esc(r.legal):miss}${r.viaCoop?' <span class="neg">(co-op)</span>':''}</td>
     <td class="addr" title="${esc(r.address||'')}">${r.address?esc(r.address):miss}</td>
-    <td><select class="em-rep${r.rep?'':' unset'}" data-k="${esc(r.key)}" data-n="${esc(r.name)}" title="${r.repRaw?`sheet says: ${esc(r.repRaw)}`:'not in the account list'}">
+    <td><select class="em-rep${r.rep?(r.repInf?' inferred':''):' unset'}" data-k="${esc(r.key)}" data-n="${esc(r.name)}" title="${r.repInf?`inferred — ${esc(r.soldBy)} sold this account's most recent order${r.soldD?` (${esc(fmtD(r.soldD))})`:''}; the workbook names no rep. Pick a name to make it official.`:(r.repRaw?`sheet says: ${esc(r.repRaw)}`:'not in the account list')}">
       <option value=""${r.rep?'':' selected'}>missing</option>
       ${EM_REPS.map(x=>`<option value="${x}"${r.rep===x?' selected':''}>${x}</option>`).join('')}
     </select></td>
-    <td class="em-em" title="${esc(r.email||r.arNoEmail||'')}">${r.email?`<a href="mailto:${esc(r.email)}" style="color:var(--accent)">${esc(r.email)}</a>`
-        :(r.arNoEmail?`<span style="color:var(--orange)">AR named, no email</span>`:miss)}</td>
-    <td class="em-cc" title="${esc(r.cc||'')}">${(()=>{ const n=r.cc?r.cc.split(/;\s*/).filter(Boolean):[];
-      return !n.length?'<span class="neg">—</span>':(n.length===1?esc(n[0]):`${esc(n[0])} <span class="neg">+${n.length-1}</span>`); })()}</td>
+    <td class="em-em"><input class="em-inp${r.email?'':' unset'}" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-f="email"
+      value="${esc(r.email)}" placeholder="${r.arNoEmail?'AR named, no email':'missing'}" title="${esc(r.email||r.arNoEmail||'not set')}${r.emailSet?' · set here':''}"></td>
+    <td class="em-cc"><input class="em-inp" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-f="cc"
+      value="${esc(r.cc)}" placeholder="—" title="${esc(r.cc||'none')}${r.ccSet?' · set here':''}"></td>
     <td class="num money"${r.dupOf?` title="counted on ${esc(r.dupOf)}"`:''}>${r.out>0.005?`<b>${fmt$(r.out)}</b>${r.over>0.005?`<div class="rep" style="color:var(--red)">${fmt$(r.over)} od</div>`:''}`:'<span class="neg">—</span>'}</td>
     <td class="num" title="${r.lastRem?esc(fmtD(r.lastRem)):''}">${r.lastRem?fmtDShort(r.lastRem):'<span class="neg">—</span>'}</td>
     <td class="num" title="${r.nextRem?esc(fmtD(r.nextRem)):''}">${r.nextRem?`<span style="color:${r.nextRem-Date.now()<2*864e5?'var(--orange)':'var(--text)'}">${fmtDShort(r.nextRem)}</span>`:'<span class="neg">—</span>'}</td>
     ${['b1','a1','a7'].map(f=>`<td class="num"><input type="checkbox" class="em-cb" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-f="${f}"${r[f]?' checked':''} title="${f==='b1'?'Remind 1 day before the due date':f==='a1'?'Remind 1 day after the due date':'Remind 7 days after the due date'}"></td>`).join('')}
-  </tr>`).join('');
+  </tr>${EM_OPEN.has(r.key)?emDetailRow(r):''}`).join('');
   wrap.innerHTML=`<table id="em-table">${colgroup}<thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="6">${view.length} customer${view.length!==1?'s':''}${view.length!==all.length?` of ${all.length}`:''}</td>
       <td class="num money"><b>${fmt$(view.reduce((t,r)=>t+(r.out||0),0))}</b></td>
@@ -5565,11 +5643,12 @@ function renderEmails(){
   thSortMark(wrap,emSort.key,emSort.dir);
   const noLegal=all.filter(r=>!r.legal).length, noAddr=all.filter(r=>!r.address).length;
   const pageOut=all.reduce((t,r)=>t+(r.out||0),0), arOut=Object.values(arByAccount()).reduce((t,v)=>t+v.out,0);
-  const noEmail=all.filter(r=>!r.email).length, noRep=all.filter(r=>!r.rep).length,
+  const noEmail=all.filter(r=>!r.email).length, noRep=all.filter(r=>!r.rep).length, infRep=all.filter(r=>r.repInf).length,
         arNoEm=all.filter(r=>!r.email&&r.arNoEmail).length, cat=all.filter(r=>r.cxSrc==='Catalyst AP doc').length;
   note.innerHTML=`<b>Automated Emails</b> — the CA customer list these sends will address: every account with real sales activity (QuickBooks history excluded), its <b>corporate name</b> (the legal entity), <b>DBA</b> and <b>address</b>. Sourced live from the team report — Nabis carries "DBA [LEGAL ENTITY]" plus a site address on every order, and the Distru company directory fills the Distru-only accounts. Click a row for that customer's orders; click a header to sort.
     <b>Total outstanding</b> is the same per-account balance the Accounts Receivable page shows${Math.abs(pageOut-arOut)>0.5?` (${fmt$(arOut-pageOut)} of open AR sits on accounts with no sales in this data, so it isn't listed here)`:''}; <b>Next reminder</b> is the soonest date an enabled offset fires against that account's open invoice due dates, and the three checkboxes are shared team settings — they save for everyone, not just your browser.
     <b>Designated rep, address fallback, contact email and CC</b> come from the team workbook's ACCOUNT LIST tab (live, same sheet as the field schedule) — the contact field is free text, so an address labelled AR / accounting / billing is taken as the primary and every other address on the row becomes a CC.
+    ${infRep?`Where the workbook names no rep, <b>${infRep}</b> are <i>inferred</i> (shown dashed and italic) from the sales data — whoever sold that account's most recent Distru or Nabis order. Accounts whose last order was sold by someone not on the list stay <b>missing</b> rather than being handed to the wrong person; expand the row to see who sold last. Choosing a name saves it for the team and retires the guess.`:''}
     ${cat?`For the <b>${cat} Catalyst stores</b> their own contact doc wins: the store's <b>AP group</b> is the primary and <b>Liliana Villa</b> is CC'd, which is Catalyst's published rule (“always use the AP email address … and cc Liliana Villa; do not send invoices to only Liliana Villa”).`:''}
     ${(noLegal||noAddr||noEmail||noRep)?`<span style="color:var(--orange)"> <b>Gaps:</b> ${noEmail} without a contact email, ${noRep} without a rep, ${noAddr} without an address, ${noLegal} without a corporate name</span> — filter to “Missing something” to work them.${arNoEm?` ${arNoEm} of those name an AR contact in the sheet but give no address — adding it there fills this in automatically.`:''}`:' Every customer is complete.'}
     ${EM_UNMATCHED.length?`<span style="color:var(--orange)"><b>${EM_UNMATCHED.length} account-list row${EM_UNMATCHED.length!==1?'s':''} matched no customer here:</b> ${EM_UNMATCHED.slice(0,6).map(esc).join(', ')}${EM_UNMATCHED.length>6?`, +${EM_UNMATCHED.length-6} more`:''}</span> — either a store with no sales in this data, or a spelling the matcher wouldn't risk guessing.`:''}`;
@@ -5579,17 +5658,27 @@ $('#em-wrap').addEventListener('change',(ev)=>{
   if(cb) return setReminder(cb.dataset.k, cb.dataset.n, cb.dataset.f, cb.checked);
   const sel=ev.target.closest&&ev.target.closest('select.em-rep');
   if(sel) return setReminder(sel.dataset.k, sel.dataset.n, 'rep', sel.value);
+  const inp=ev.target.closest&&ev.target.closest('input.em-inp');
+  if(inp) return setReminder(inp.dataset.k, inp.dataset.n, inp.dataset.f, inp.value.trim());
 });
-$('#em-wrap').onclick=(ev)=>{ if(ev.target.closest&&(ev.target.closest('input.em-cb')||ev.target.closest('select.em-rep'))) return;   // an edit is not a drill
+$('#em-wrap').addEventListener('keydown',(ev)=>{ const inp=ev.target.closest&&ev.target.closest('input.em-inp');
+  if(inp && ev.key==='Enter'){ ev.preventDefault(); inp.blur(); } });
+$('#em-wrap').addEventListener('click',(ev)=>{ const b=ev.target.closest&&ev.target.closest('[data-orders]');
+  if(!b) return; ev.stopPropagation(); const {start,end}=repRange('cust'); customerOrdersDrill(b.dataset.orders,start,end); });
+$('#em-wrap').onclick=(ev)=>{
+  if(ev.target.closest&&(ev.target.closest('input')||ev.target.closest('select')||ev.target.closest('a')||ev.target.closest('button'))) return;   // editing is not expanding
   const tr=ev.target.closest?ev.target.closest('tr.parent'):null;
   if(!tr||!$('#em-wrap').contains(tr)) return;
-  const {start,end}=repRange('cust'); customerOrdersDrill(tr.getAttribute('data-name'),start,end); };
+  const key=tr.getAttribute('data-key');
+  if(EM_OPEN.has(key)) EM_OPEN.delete(key); else EM_OPEN.add(key);
+  renderEmails(); };
 ['em-search','em-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderEmails); });
 $('#em-export').onclick=()=>{
   const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
-  const out=[['Customer (DBA)','Billing name','Corporate name','Address','Designated rep','Contact email','CC','AR contact (no email)',
+  const out=[['Customer (DBA)','Billing name','Corporate name','Address','Designated rep','Rep source','Contact email','CC','AR contact (no email)',
               'Total outstanding','Overdue','Last reminder','Next reminder','1 day before','1 day after','7 days after','License','Region','Source','Last order']];
-  emailsData().forEach(r=>out.push([r.dba,r.name,r.legal,r.address,r.rep,r.email,r.cc,r.arNoEmail,
+  emailsData().forEach(r=>out.push([r.dba,r.name,r.legal,r.address,r.rep,
+    r.repSet?'set in app':r.repFromSheet?'workbook':r.repInf?`inferred (${r.soldBy})`:'',r.email,r.cc,r.arNoEmail,
     (r.out||0).toFixed(2),(r.over||0).toFixed(2),iso(r.lastRem),iso(r.nextRem),r.b1?'yes':'',r.a1?'yes':'',r.a7?'yes':'',
     r.license,r.region,r.source,iso(r.last)]));
   downloadCSV('ca-customers-directory.csv',out);
@@ -5832,6 +5921,37 @@ function buildCustDir(){
 function custInfo(name){ return CUST_DIR[tierNorm(name)]||{}; }
 function custDirToWire(dir){ const o={}; for(const k in dir){ const v=dir[k]; o[k]=[v.dba||'',v.legal||'',v.address||'',v.license||'',v.region||'']; } return o; }
 function custDirFromWire(o){ const d={}; if(o) for(const k in o){ const a=o[k]||[]; d[k]={dba:a[0]||'',legal:a[1]||'',address:a[2]||'',license:a[3]||'',region:a[4]||'',_d:0}; } return d; }
+
+// ── Who has been selling this account ───────────────────────────────────────
+// Distru and Nabis both stamp every order with the rep who sold it (Distru "Sales Rep" / "Owner",
+// Nabis "Sold By"), so an account the workbook never assigned can still say who works it.
+// The rule is deliberately strict: the rep on the MOST RECENT order, whoever that was. Walking
+// back past a departed rep to find an older Jesse/Joanna/Amanda order would invent a present-day
+// owner out of stale history — Carlos Guillen alone sold 84 of these accounts through late 2025.
+// Those read as unassigned instead, and the expanded row names who sold last so the call is the
+// team's. Checked against the accounts the workbook DOES assign: 86 of 87 agree.
+let SALES_REP={};
+function buildSalesReps(){
+  const by={};
+  const scan=(rows,nameCol,repCol,dateCol,src,nameFn)=>{ if(!rows) return; rows.forEach(r=>{
+    const raw=((nameFn?nameFn(r):r[nameCol])||'').trim();
+    if(!raw || isOwnEntity(raw) || isNabisCust(raw)) return;   // our own entities / the Distru→Nabis transfer
+    const key=baRowKey(raw); if(!key) return;
+    const who=firstLine(r[repCol]||'').trim(); if(!who) return;
+    const d=parseDate(r[dateCol]), t=d?d.getTime():0;
+    const cur=by[key];
+    if(!cur || t>cur.d) by[key]={rep:repNorm(who), raw:who, d:t, src};
+  }); };
+  scan(FILES.distru_items   && FILES.distru_items.data,   'Customer',  'Sales Rep','Order Date',   'Distru');
+  scan(FILES.distru_invoice && FILES.distru_invoice.data, 'Customer',  'Owner',    'Invoice Date', 'Distru');
+  scan(FILES.nabis_detail   && FILES.nabis_detail.data,   'Site',      'Sold By',  'Delivery Date','Nabis');
+  scan(FILES.nabis_aging    && FILES.nabis_aging.data,    null,        'Sold by',  'Delivery Date','Nabis', r=>nabisName(r['Dispensary'],r['Name']));
+  // Same guard as the customer directory: only replace the map when a source file is loaded, or a
+  // file drop carrying none of these would blank the payload-loaded one.
+  if(FILES.distru_items||FILES.distru_invoice||FILES.nabis_detail||FILES.nabis_aging){ SALES_REP=by; FRESH.add('salesRep'); }
+}
+function salesRepToWire(m){ const o={}; for(const k in m){ const v=m[k]; o[k]=[v.rep||'',v.raw||'',v.d||0,v.src||'']; } return o; }
+function salesRepFromWire(o){ const m={}; if(o) for(const k in o){ const a=o[k]||[]; m[k]={rep:a[0]||'',raw:a[1]||'',d:a[2]||0,src:a[3]||''}; } return m; }
 
 let VISIT_EVENTS=[];   // {d:ms, c:account, pad:bool, edu:bool, note} — keyword-matched rows only
 const VISIT_PAD_RE=/\bPADs?\b/i;                 // PAD / PADs / pad — word-bounded (won't catch "padded")

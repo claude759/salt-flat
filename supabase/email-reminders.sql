@@ -19,6 +19,8 @@ create table if not exists public.email_reminders (
   d1_after    boolean not null default false,
   d7_after    boolean not null default false,
   rep         text,          -- designated rep OVERRIDE (Jesse / Joanna / Amanda); null = use the sheet
+  email       text,          -- contact email OVERRIDE; null = use whatever the sheet/Catalyst doc gives
+  cc          text,          -- CC list OVERRIDE (semicolon-separated); null = use the sheet
   last_sent   timestamptz,
   updated_at  timestamptz not null default now(),
   updated_by  text
