@@ -5430,8 +5430,11 @@ async function loadReminders(){
     renderEmails();
   }catch(e){ EM_REM_LOADED=false; /* offline or not signed in — checkboxes stay unchecked, page still renders */ }
 }
-async function setReminder(key,name,field,val){
-  const cur=EM_REM[key]||{b1:false,a1:false,a7:false,last:null,rep:'',email:'',cc:''};
+// EM_REM record for a merged row: host key first, then the alias keys — the SAME order the
+// display uses, so an edit can never seed from emptier state than the row was showing.
+function emRemFor(keys){ for(const k of (Array.isArray(keys)?keys:[keys])){ if(EM_REM[k]) return EM_REM[k]; } return null; }
+async function setReminder(key,name,field,val,aliasKeys){
+  const cur=emRemFor([key,...(aliasKeys||[])])||{b1:false,a1:false,a7:false,last:null,rep:'',email:'',cc:''};
   const next={...cur,[field]:val}; EM_REM[key]=next; renderEmails();
   try{ const c=sbAuth(); if(!c) throw new Error('not signed in');
     const {error}=await c.from('email_reminders').upsert({acct_key:key, acct_name:name,
@@ -5443,11 +5446,12 @@ async function setReminder(key,name,field,val){
 }
 // Next reminder = the soonest date any ENABLED offset fires against this account's open invoices.
 // No enabled offsets, or nothing open, means there is nothing to send — shown as "—", not a guess.
-function nextReminderFor(key){
-  const r=EM_REM[key]; if(!r||(!r.b1&&!r.a1&&!r.a7)) return null;
+function nextReminderFor(keys, rmO){
+  keys=Array.isArray(keys)?keys:[keys];
+  const r=rmO||EM_REM[keys[0]]; if(!r||(!r.b1&&!r.a1&&!r.a7)) return null;
   const now=Date.now(), day=864e5; let best=null;
   (INVOICES||[]).forEach(x=>{ if(!(x.outstanding>0.005)) return;
-    if(baRowKey(x.dispensary)!==key) return;
+    if(!keys.includes(baRowKey(x.dispensary))) return;
     const due=x.dueDate?new Date(x.dueDate).getTime():null; if(!due) return;
     [r.b1&&due-day, r.a1&&due+day, r.a7&&due+7*day].forEach(t=>{
       if(t && t>=now-day && (best===null||t<best)) best=t; }); });
@@ -5463,7 +5467,7 @@ function contactsByKey(){
   (CATCX||[]).forEach(c=>{ const k=tierNorm(c.dba); if(!k) return;
     const cur=by[k]||{};
     by[k]={...cur, name:cur.name||c.dba, email:c.email||cur.email, cc:c.cc||cur.cc, loc:cur.loc||c.addr,
-           lic:c.lic, legal:c.legal, src:'Catalyst AP doc'}; });
+           lic:c.lic, legal:c.legal, src:'Catalyst AP doc', sheetRow:cur.src==='account list'||!!cur.sheetRow}; });
   return by;
 }
 // The sheet spells accounts its own way ("Big Chief Silverlake", "Catalyst - Figueroa", "High
@@ -5488,6 +5492,9 @@ function resolveContacts(accountKeys){
     let c=entries.filter(e=>!taken.has(e.k)&&sq(e.loose)===lk);
     if(c.length!==1) c=entries.filter(e=>!taken.has(e.k)&&sq(e.loose).length>=8&&(sq(e.loose).startsWith(lk)||lk.startsWith(sq(e.loose))));
     if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  accountKeys.forEach(a=>{ if(res[a.key]) return; const rk=sq(tierNorm(a.name)); if(rk.length<6) return;
+    const c=entries.filter(e=>!taken.has(e.k)&&sq(tierNorm(e.v.name||e.k))===rk);
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
   // Pass 5 — one name's words are a subset of the other's ("Catalyst Figueroa" ⊂ "Catalyst South
   // Figueroa"). Requires 2+ shared words AND a unique candidate, so a bare "Catalyst" can't grab
   // a store; still the loosest rule here, which is why it runs last on what nothing else claimed.
@@ -5498,18 +5505,89 @@ function resolveContacts(accountKeys){
   // (C10-0001434-LIC) billed under two names; claim-once name matching gave the AP address to OC3
   // and left Halladay blank. Licenses fix that, and correctly keep Catalyst Santa Ana
   // (C10-0000230-LIC → saa.ap@) separate from OC3 (→ oc3.ap@).
-  const byLic={};
+  const byLic={}, licUsed=new Set();
   Object.values(by).forEach(v=>{ const l=String(v.lic||'').trim().toUpperCase(); if(l) byLic[l]=v; });
   accountKeys.forEach(a=>{ if(res[a.key]) return;
     const lic=String((custInfo(a.name)||{}).license||'').trim().toUpperCase();
-    if(lic && byLic[lic]) res[a.key]=byLic[lic]; });   // shared on purpose — no claim-once for contacts
+    if(lic && byLic[lic]){ res[a.key]=byLic[lic]; licUsed.add(byLic[lic]); } });   // shared on purpose — no claim-once for contacts
   accountKeys.forEach(a=>{ if(res[a.key]) return; const A=toks(a.name); if(A.size<2) return;
     const c=entries.filter(e=>{ if(taken.has(e.k)) return false; const B=toks(e.v.name||e.k);
       if(B.size<2) return false;
       const sub=[...B].every(w=>A.has(w))||[...A].every(w=>B.has(w));
       return sub && [...B].filter(w=>A.has(w)).length>=2; });
     if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
-  return {res, unmatched:entries.filter(e=>!taken.has(e.k)).map(e=>e.v.name||e.k)};
+  // Pass 6 — the PCF↔Pacafi family: the workbook calls the co-op's stores "PCF-Flavors Oakland",
+  // billing calls them "Pacafi — Flavors Oakland". One store list, two vocabularies. Strip the
+  // family words from both sides and match the remainders — exact first, then a unique
+  // token-subset (either direction). tierNorm keeps parenthesized city hints ("(Chula Vista)")
+  // that baLooseKey would throw away, and those hints are exactly what disambiguates here.
+  // "march"/"ash" stay: they are a sub-chain's NAME ("PCF-March and Ash Vista" must not reduce
+  // to bare "vista" and steal "Pacafi — Flavors Vista"); the subset direction still lets
+  // "PCF- March and Ash Imperial" ⊇ "Imperial" attach correctly.
+  const famStrip=x=>tierNorm(x).split(' ').filter(w=>w&&!/^(pcf|pacafi|and|n|the|of|dispensary|delivery)$/.test(w)&&!/^\d+$/.test(w));
+  const famA=accountKeys.filter(a=>!res[a.key]&&/^pacafi\b/i.test(a.name));
+  const isFamE=e=>/^pcf\b/i.test(e.v.name||e.k);
+  famA.forEach(a=>{ const aj=famStrip(a.name).join(' '); if(!aj) return;
+    const c=entries.filter(e=>!taken.has(e.k)&&isFamE(e)&&famStrip(e.v.name||e.k).join(' ')===aj);
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  famA.forEach(a=>{ if(res[a.key]) return; const A=famStrip(a.name); if(!A.length) return; const AS=new Set(A);
+    const c=entries.filter(e=>{ if(taken.has(e.k)||!isFamE(e)) return false;
+      const B=famStrip(e.v.name||e.k); if(!B.length) return false; const BS=new Set(B);
+      const shared=A.filter(w=>BS.has(w)).length;
+      return shared>=1 && (A.every(w=>BS.has(w))||B.every(w=>AS.has(w))); });
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  // Pass 7 — the store's own paperwork settles it: the sheet says "Cannable Parlier", billing
+  // says "Cannable Retail", and the directory says Cannable Retail = GBH PARLIER LLC in Parlier.
+  // Sheet-name words checked against the account's name + legal entity + address; needs 2+ word
+  // hits and a unique candidate each way.
+  // one Damerau edit (substitution, insert, delete, or adjacent transposition) — used by the
+  // evidence pass ("Commerical" is Commercial St) and the typo net below; a DIGIT difference is
+  // always a different branch, so callers also require the digit substrings to agree
+  const digitsOf=x=>x.replace(/\D+/g,'');
+  const dl1=(x,y)=>{ if(x===y) return true;
+    const lx=x.length, ly=y.length; if(Math.abs(lx-ly)>1) return false;
+    let i=0; const n=Math.min(lx,ly); while(i<n&&x[i]===y[i]) i++;
+    if(lx===ly){
+      if(x.slice(i+1)===y.slice(i+1)) return true;                                   // substitution
+      return i+1<lx && x[i]===y[i+1] && x[i+1]===y[i] && x.slice(i+2)===y.slice(i+2); // transposition
+    }
+    const a2=lx>ly?x:y, b2=lx>ly?y:x;                                                // insert/delete
+    return a2.slice(0,i)+a2.slice(i+1)===b2; };
+  accountKeys.forEach(a=>{ if(res[a.key]) return;
+    const i=custInfo(a.name)||{}; if(!(i.legal||i.address)) return;
+    const nameToks=new Set(tierNorm(a.name).split(' ').filter(w=>w.length>2));
+    const ext=new Set(tierNorm(a.name+' '+(i.legal||'')+' '+(i.address||'')).split(' ').filter(w=>w.length>2));
+    // a sheet word is evidenced if it appears in name+legal+address, or is one Damerau edit from
+    // an evidence word (same digits, both ≥6 chars) — the sheet's "Commerical" IS Commercial St
+    const evid=w=>ext.has(w)||(w.length>=6&&[...ext].some(x2=>x2.length>=6&&digitsOf(w)===digitsOf(x2)&&dl1(w,x2)));
+    const c=entries.filter(e=>{ if(taken.has(e.k)) return false; const B=[...toks(e.v.name||e.k)];
+      // every sheet word must be evidenced AND at least one must hit the account NAME itself —
+      // otherwise a row named after a city or street attaches to whatever store sits there
+      return B.length>=2 && B.every(evid) && B.some(w=>nameToks.has(w)); });
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  // Pass 8 — unique brand: "Jaderoom OC" can only mean the one Jaderoom we bill, whatever the
+  // branch word says. Only when the leading brand word is unique on BOTH sides.
+  const brand=x=>{ const t=tierNorm(x).split(' ').filter(w=>w&&!/^(the|a)$/.test(w)); return t[0]||''; };
+  // uniqueness over the WHOLE population, never the residuals: if a chain has two stores and one
+  // already matched, the leftover sheet sibling must NOT be handed to the leftover account —
+  // they are different branches, and residual counting would call both "unique"
+  const bA={}, bE={};
+  accountKeys.forEach(a=>{ const b=brand(a.name); if(b) bA[b]=(bA[b]||0)+1; });
+  entries.forEach(e=>{ const b=brand(e.v.name||e.k); if(b) bE[b]=(bE[b]||0)+1; });
+  accountKeys.forEach(a=>{ if(res[a.key]) return; const b=brand(a.name); if(!b||b.length<6) return;
+    if(bA[b]!==1||bE[b]!==1) return;
+    const c=entries.filter(e=>!taken.has(e.k)&&brand(e.v.name||e.k)===b);
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  // Pass 9 — a single typo is not a different store ("Humbolt Honey" = "Humboldt Honey"):
+  // edit distance ≤1 on the squashed loose keys, both sides ≥8 chars, unique candidate.
+  accountKeys.forEach(a=>{ if(res[a.key]) return; const lk=sq(baLooseKey(a.name)); if(lk.length<8) return;
+    // numbered siblings ("Verde 101" / "Verde 102") differ by one char too — a digit difference
+    // is a DIFFERENT BRANCH, never a typo, so the digit substrings must agree exactly
+    const c=entries.filter(e=>!taken.has(e.k)&&sq(e.loose).length>=8&&dl1(lk,sq(e.loose))&&digitsOf(lk)===digitsOf(sq(e.loose)));
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
+  // Catalyst's AP doc covers their WHOLE chain — the stores we don't sell to are expected to be
+  // left over and are not "unmatched sheet rows", so they stay out of the gap report.
+  return {res, unmatched:entries.filter(e=>!taken.has(e.k)&&!licUsed.has(e.v)&&!(e.v.src==='Catalyst AP doc'&&!e.v.sheetRow)).map(e=>e.v.name||e.k)};
 }
 function emailsData(){
   const acc={};
@@ -5519,27 +5597,101 @@ function emailsData(){
     g.src.add(e.s); g.rev+=eventBilling(e);
     if(e.d!=null && (g.last==null || e.d>g.last)) g.last=e.d; });
   const arMap=arByAccount();   // same per-account outstanding/overdue the AR page uses
-  const names=Object.values(acc).map(g=>({key:baRowKey(g.name), name:g.name}));
+  // ── One store, one row ────────────────────────────────────────────────────
+  // A store can appear under several names: spelling variants collapse by key ("Buzz Cannabis
+  // Santee" / "BUZZ CANNABIS Santee"), and the two billing systems often name one store
+  // differently — Nabis's "Buzz Cannabis Palomar" IS Distru's "BUZZ Cannabis Wildomar".
+  // Cross-NAME merges demand hard billing identity, never name similarity:
+  //   * same retailer license + a second signal (same legal entity or same street): a license is
+  //     state-unique per premises, and the second signal guards against data slop;
+  //   * same legal entity + same street with no license conflict: covers pairs where one side's
+  //     license is missing (Bishop Boyz / Bishop Boyz LLC).
+  // Identity reads custInfo DIRECTLY — never the Pacafi co-op fallback: all ~22 Pacafi
+  // sub-stores share the co-op's license/legal/address and are genuinely different stores.
+  const groups={};
+  Object.values(acc).forEach(g=>{ const k=baRowKey(g.name); (groups[k]||(groups[k]=[])).push(g); });
+  const keys=Object.keys(groups);
+  const gid={}; keys.forEach(k=>{ gid[k]=k; });
+  const find=k=>{ while(gid[k]!==k) k=gid[k]=gid[gid[k]]; return k; };
+  const unite=(a,b)=>{ a=find(a); b=find(b); if(a!==b) gid[a]=b; };
+  const nrm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  // The street key must identify a PREMISES, not a prefix: house number + the street-name words
+  // through the (synonym-normalized) street type. "123 N Main St, LA" and "123 N Broadway Ave,
+  // Fresno" must NOT collide on "123 n", and "Campo Rd" must equal "Campo Road".
+  const ST_TYPE=/^(st|street|ave|av|avenue|blvd|boulevard|rd|road|dr|drive|way|wy|ln|lane|ct|court|hwy|highway|pkwy|parkway|pl|place|cir|circle|ter|terrace|trl|trail)$/;
+  const ST_MAP={street:'st',avenue:'ave',av:'ave',boulevard:'blvd',road:'rd',drive:'dr',lane:'ln',court:'ct',highway:'hwy',parkway:'pkwy',place:'pl',circle:'cir',terrace:'ter',trail:'trl',wy:'way'};
+  const ST_DIR=/^(n|s|e|w|north|south|east|west)$/;
+  const street=a=>{ const m=nrm(a).match(/^(\d+) (.+)$/); if(!m) return '';
+    const out=[]; for(const w of m[2].split(' ')){ out.push(ST_MAP[w]||w); if(ST_TYPE.test(w)) break; }
+    if(!out.some(w=>!ST_DIR.test(w)&&!ST_TYPE.test(w))) return '';   // a bare directional is not a street name
+    return m[1]+' '+out.join(' '); };
+  const zipOf=a=>{ const m=String(a||'').match(/\b(\d{5})(?:-\d{4})?\s*$/); return m?m[1]:''; };
+  const topName=k=>groups[k].slice().sort((a,b)=>Math.abs(b.rev)-Math.abs(a.rev))[0].name;
+  // identity can live under ANY member spelling (a leading "[At-Risk]" tag keeps the tagged name
+  // out of the directory) — scan members biggest-biller first and take the first real entry
+  const ident={};
+  keys.forEach(k=>{ let ci={};
+    for(const m of groups[k].slice().sort((a,b)=>Math.abs(b.rev)-Math.abs(a.rev))){
+      const i=custInfo(m.name)||{}; if(i.license||i.legal||i.address){ ci=i; break; } }
+    ident[k]={lic:String(ci.license||'').trim().toUpperCase(), legal:nrm(ci.legal), st:street(ci.address), zip:zipOf(ci.address)}; });
+  const byLic={}, byLS={};
+  keys.forEach(k=>{ const d=ident[k];
+    if(d.lic)(byLic[d.lic]||(byLic[d.lic]=[])).push(k);
+    if(d.legal&&d.st)(byLS[d.legal+'|'+d.st]||(byLS[d.legal+'|'+d.st]=[])).push(k); });
+  const pairwise=(ks,ok)=>{ for(let i2=0;i2<ks.length;i2++) for(let j2=i2+1;j2<ks.length;j2++) if(ok(ident[ks[i2]],ident[ks[j2]])) unite(ks[i2],ks[j2]); };
+  Object.values(byLic).forEach(ks=>pairwise(ks,(a,b)=>(a.legal&&a.legal===b.legal)||(a.st&&a.st===b.st)));
+  // Legal+street bucket: union-find is TRANSITIVE, so a pairwise license check is not enough — a
+  // license-less middle key would bridge two keys whose licenses CONFLICT. Resolve the bucket's
+  // licenses first: if it holds 2+ distinct licenses, only identical-license pairs may unite (the
+  // license-less rows are ambiguous and stay out); with at most one license the bucket is one
+  // store. A zip conflict always blocks — same street line in two towns is two stores.
+  Object.values(byLS).forEach(ks=>{
+    const lics=[...new Set(ks.map(k=>ident[k].lic).filter(Boolean))];
+    const zipOk=(a,b)=>!(a.zip&&b.zip&&a.zip!==b.zip);
+    if(lics.length>1) pairwise(ks,(a,b)=>a.lic&&b.lic&&a.lic===b.lic&&zipOk(a,b));
+    else pairwise(ks,zipOk);
+  });
+  const mergedGroups={};
+  keys.forEach(k=>{ const r=find(k); (mergedGroups[r]||(mergedGroups[r]=[])).push(k); });
+  // Contact matching gets one entry per KEY (not per merged row), so a sheet row spelled like
+  // EITHER system's name can attach; the merged row then reads whichever key landed one.
+  const names=keys.map(k=>({key:k, name:topName(k)}));
   const {res:cx, unmatched:cxUn}=resolveContacts(names); EM_UNMATCHED=cxUn;
-  return Object.values(acc).map(g=>{
-    const info=custInfo(g.name)||{};
+  return Object.values(mergedGroups).map(ks=>{
+    const members=ks.flatMap(k=>groups[k]).sort((a,b)=>Math.abs(b.rev)-Math.abs(a.rev));
+    const g=members[0];                                   // host = the biggest-billing name
+    const hostKey=baRowKey(g.name);
+    const aliasKeys=[hostKey, ...ks.filter(k=>k!==hostKey)];   // host FIRST — every fallback scan below is deterministic
+    const aliasNames=members.slice(1).map(m=>m.name);
+    const srcSet=new Set(); members.forEach(m=>m.src.forEach(x=>srcSet.add(x)));
+    const last=members.reduce((t,m)=>(m.last!=null&&(t==null||m.last>t))?m.last:t,null);
+    const rev=members.reduce((t,m)=>t+m.rev,0);
+    let info={}; for(const m of members){ const i=custInfo(m.name)||{}; if(i.legal||i.address){ info=i; break; } }
     // Pacafi is a COOPERATIVE: every sub-store bills through "Pacafi Cooperative [PMG LYFTED
-    // FARMS LLC]", so the directory only ever holds the co-op — the ~22 "Pacafi — <store>" rows
-    // would all read as missing. Fall back to the co-op's billing identity and say so.
+    // FARMS LLC]", so the directory only ever holds the co-op — fall back to the co-op's billing
+    // identity for DISPLAY (never for merging, see above) and say so.
     const isPacafi=/^pacafi\b/i.test(g.name);
     const info0=isPacafi&&!info.legal?(custInfo('Pacafi Cooperative')||{}):null;
-    const c=cx[baRowKey(g.name)]||{};
+    let c={}; for(const k of aliasKeys){ if(cx[k]){ c=cx[k]; break; } }
     const inf=(info.legal||info.address)?info:(info0||info);
     const address=inf.address||c.loc||'';          // the workbook's Location fills our address gaps
-    const key=baRowKey(g.name), rm=EM_REM[key]||{}, arx=arMap[key]||arMap[tierNorm(g.name)]||{out:0,over:0};
+    const key=hostKey;
+    const rm=emRemFor(aliasKeys)||{};
+    // outstanding: sum across every billing name in the merge. arByAccount keys by tierNorm, and
+    // a leading "[At-Risk]" tag makes tierNorm and baRowKey disagree — an invoice name without
+    // the tag lives under the baRowKey spelling — so both normalizations are looked up (the Set
+    // dedupes; distinct keys are distinct arByAccount entries, so this adds, never double-counts)
+    const arKeys=[...new Set(members.flatMap(m=>[tierNorm(m.name), baRowKey(m.name)]))];
+    let out=0,over=0; arKeys.forEach(k=>{ const e=arMap[k]; if(e){ out+=e.out; over+=e.over; } });
+    let sr=null; aliasKeys.forEach(k=>{ const v=SALES_REP[k]; if(v&&(!sr||((v.d||0)>(sr.d||0)))) sr=v; }); sr=sr||{};
     // Rep, in precedence order: chosen here (a person decided) > the workbook's Designated Rep >
     // inferred from who sold the last order. The inference is a fallback only — it never overwrites
     // either of the first two, and choosing a name from the dropdown retires it for that account.
-    const repSheet=repNorm(c.rep||''), sr=SALES_REP[key]||{};
+    const repSheet=repNorm(c.rep||'');
     const repInf=(!rm.rep && !repSheet) ? (sr.rep||'') : '';
     const repFinal=rm.rep||repSheet||repInf;
-    return {name:g.name, key, out:arx.out||0, over:arx.over||0,
-            b1:!!rm.b1, a1:!!rm.a1, a7:!!rm.a7, lastRem:rm.last?Date.parse(rm.last):null, nextRem:nextReminderFor(key),
+    return {name:g.name, key, aliasKeys, aliasNames, arKeys, out, over,
+            b1:!!rm.b1, a1:!!rm.a1, a7:!!rm.a7, lastRem:rm.last?Date.parse(rm.last):null, nextRem:nextReminderFor(aliasKeys, rm),
             repSet:rm.rep||'', repFromSheet:repSheet,
             repInf, soldBy:sr.raw||'', soldD:sr.d||0, soldSrc:sr.src||'',
             emailSet:rm.email||'', ccSet:rm.cc||'',
@@ -5548,21 +5700,15 @@ function emailsData(){
             license:inf.license||c.lic||'', region:inf.region||c.terr||'',
             rep:repFinal, repRaw:c.rep||'',
             email:(rm.email||c.email||''), cc:(rm.cc||c.cc||''), arNoEmail:c.arNoEmail||'', cxSrc:c.src||'',
-            source:[...g.src].sort().join(' + '), last:g.last, rev:g.rev,
+            source:[...srcSet].sort().join(' + '), last, rev,
             missing:[!(info.legal||c.legal)&&'corporate name', !address&&'address',
                      !(c.email)&&'contact email', !repFinal&&'rep'].filter(Boolean)};
-  }).sort((a,b)=>a.name.localeCompare(b.name))
-    // CLAIM-ONCE: two spellings of one account ("Buzz Cannabis Santee" / "BUZZ CANNABIS Santee")
-    // normalize to the same key, and both would show — and total — the same balance. The AR goes
-    // to the biggest-billing row only, so the footer reconciles with the AR page.
-    .map((r,_,arr)=>{ if(!(r.out>0.005)) return r;
-      const host=arr.filter(x=>x.key===r.key).sort((a,b)=>Math.abs(b.rev)-Math.abs(a.rev))[0];
-      return host===r?r:{...r, out:0, over:0, dupOf:host.name}; });
+  }).sort((a,b)=>a.name.localeCompare(b.name));
 }
 // Expanded row: the facts that don't fit the table, plus this account's OPEN invoices — the
 // reminders being scheduled above are about exactly these, so they belong on the same screen.
 function emDetailRow(r){
-  const inv=(INVOICES||[]).filter(x=>x.outstanding>0.005 && baRowKey(x.dispensary)===r.key)
+  const inv=(INVOICES||[]).filter(x=>x.outstanding>0.005 && (r.aliasKeys||[r.key]).includes(baRowKey(x.dispensary)))
     .sort((a,b)=>(b.dpd||-1e9)-(a.dpd||-1e9));
   const fD=d=>d?new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
   const invTbl=inv.length?`<table class="ddtable"><thead><tr><th>Invoice</th><th>Source</th><th class="num">Invoiced</th><th class="num">Due</th><th>Aging</th><th class="num">Outstanding</th><th></th></tr></thead><tbody>
@@ -5579,6 +5725,7 @@ function emDetailRow(r){
   return `<tr class="detail"><td colspan="13"><div class="detailbox">
     <div class="em-facts">
       ${fact('Billed as', r.name!==r.dba?r.name:'')}
+      ${(r.aliasNames&&r.aliasNames.length)?`<div class="em-fact"><span>Also billed as</span><b>${r.aliasNames.map(esc).join(' · ')}</b></div>`:''}
       ${fact('Corporate name', r.legal)}
       ${fact('Address', r.address)}
       ${fact('License', r.license)}
@@ -5588,10 +5735,9 @@ function emDetailRow(r){
       ${fact('Sheet says rep', r.repRaw)}
       ${r.soldBy?`<div class="em-fact"><span>Last order sold by</span><b>${esc(r.soldBy)}${r.soldD?` · ${fD(r.soldD)}`:''}${r.soldSrc?` (${esc(r.soldSrc)})`:''}${r.repInf?' — used as the rep above':(r.rep&&repNorm(r.soldBy)&&repNorm(r.soldBy)!==r.rep?' — differs from the rep above':'')}</b></div>`:''}
       ${fact('AR contact without an email', r.arNoEmail)}
-      ${r.dupOf?`<div class="em-fact"><span>Balance</span><b>counted on ${esc(r.dupOf)}</b></div>`:''}
     </div>
     <div class="ddhead">Open invoices</div>${invTbl}
-    <div style="margin-top:10px"><button class="btn sm" data-orders="${esc(r.name)}">All orders for this customer ↗</button></div>
+    <div style="margin-top:10px"><button class="btn sm" data-orders="${esc(r.name)}" data-okeys="${esc(JSON.stringify(r.arKeys||[]))}">All orders for this customer ↗</button></div>
   </div></td></tr>`;
 }
 function renderEmails(){
@@ -5600,7 +5746,7 @@ function renderEmails(){
   const all=emailsData();
   if(!all.length){ note.innerHTML=''; wrap.innerHTML='<div class="empty">No customers loaded yet — the team report fills this in automatically.</div>'; return; }
   const q=(($('#em-search')||{}).value||'').trim().toLowerCase(), f=($('#em-filter')||{}).value||'';
-  let view=all.filter(r=>(!q || r.name.toLowerCase().includes(q) || (r.legal||'').toLowerCase().includes(q) || (r.address||'').toLowerCase().includes(q))
+  let view=all.filter(r=>(!q || r.name.toLowerCase().includes(q) || (r.legal||'').toLowerCase().includes(q) || (r.address||'').toLowerCase().includes(q) || (r.aliasNames||[]).some(n=>n.toLowerCase().includes(q)))
     && (!f || (f==='missing'? r.missing.length>0 : r.missing.length===0)));
   const k=emSort.key, dir=emSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(av==null)av=''; if(bv==null)bv='';
@@ -5618,23 +5764,23 @@ function renderEmails(){
   const colgroup=`<colgroup>${cols.map(c=>`<col class="${c[3]}">`).join('')}</colgroup>`;
   const thead=cols.map(([key,lbl,n,,tip])=>`<th class="${n?'num':''}" data-k="${key}"${tip?` title="${esc(tip)}"`:''}>${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent${EM_OPEN.has(r.key)?' open':''}" data-name="${esc(r.name)}" data-key="${esc(r.key)}" title="Click to expand">
-    <td class="em-name" title="${esc(r.dba)}${r.dba!==r.name?` · billed as ${esc(r.name)}`:''}"><span class="caret">${EM_OPEN.has(r.key)?'▼':'▶'}</span> ${esc(r.dba)}</td>
+    <td class="em-name" title="${esc(r.dba)}${r.dba!==r.name?` · billed as ${esc(r.name)}`:''}${(r.aliasNames&&r.aliasNames.length)?` · also billed as ${esc(r.aliasNames.join(', '))}`:''}"><span class="caret">${EM_OPEN.has(r.key)?'▼':'▶'}</span> ${esc(r.dba)}</td>
     <td title="${esc(r.legal||'')}${r.viaCoop?' (bills via Pacafi Cooperative)':''}">${r.legal?esc(r.legal):miss}${r.viaCoop?' <span class="neg">(co-op)</span>':''}</td>
     <td class="addr" title="${esc(r.address||'')}">${r.address?esc(r.address):miss}</td>
     <td class="em-src" title="${esc(r.source||'')}">${String(r.source||'').split(' + ').filter(Boolean)
       .map(x=>`<span class="src ${esc(x.replace(/[^A-Za-z]/g,''))}">${esc(x)}</span>`).join('')||'<span class="neg">—</span>'}</td>
-    <td><select class="em-rep${r.rep?(r.repInf?' inferred':''):' unset'}" data-k="${esc(r.key)}" data-n="${esc(r.name)}" title="${r.repInf?`inferred — ${esc(r.soldBy)} sold this account's most recent order${r.soldD?` (${esc(fmtD(r.soldD))})`:''}; the workbook names no rep. Pick a name to make it official.`:(r.repRaw?`sheet says: ${esc(r.repRaw)}`:'not in the account list')}">
+    <td><select class="em-rep${r.rep?(r.repInf?' inferred':''):' unset'}" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-ak="${esc(JSON.stringify(r.aliasKeys||[]))}" title="${r.repInf?`inferred — ${esc(r.soldBy)} sold this account's most recent order${r.soldD?` (${esc(fmtD(r.soldD))})`:''}; the workbook names no rep. Pick a name to make it official.`:(r.repRaw?`sheet says: ${esc(r.repRaw)}`:'not in the account list')}">
       <option value=""${r.rep?'':' selected'}>missing</option>
       ${EM_REPS.map(x=>`<option value="${x}"${r.rep===x?' selected':''}>${x}</option>`).join('')}
     </select></td>
-    <td class="em-em"><input class="em-inp${r.email?'':' unset'}" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-f="email"
+    <td class="em-em"><input class="em-inp${r.email?'':' unset'}" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-ak="${esc(JSON.stringify(r.aliasKeys||[]))}" data-f="email"
       value="${esc(r.email)}" placeholder="${r.arNoEmail?'AR named, no email':'missing'}" title="${esc(r.email||r.arNoEmail||'not set')}${r.emailSet?' · set here':''}"></td>
-    <td class="em-cc"><input class="em-inp" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-f="cc"
+    <td class="em-cc"><input class="em-inp" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-ak="${esc(JSON.stringify(r.aliasKeys||[]))}" data-f="cc"
       value="${esc(r.cc)}" placeholder="—" title="${esc(r.cc||'none')}${r.ccSet?' · set here':''}"></td>
-    <td class="num money"${r.dupOf?` title="counted on ${esc(r.dupOf)}"`:''}>${r.out>0.005?`<b>${fmt$(r.out)}</b>${r.over>0.005?`<div class="rep" style="color:var(--red)">${fmt$(r.over)} od</div>`:''}`:'<span class="neg">—</span>'}</td>
+    <td class="num money">${r.out>0.005?`<b>${fmt$(r.out)}</b>${r.over>0.005?`<div class="rep" style="color:var(--red)">${fmt$(r.over)} od</div>`:''}`:'<span class="neg">—</span>'}</td>
     <td class="num" title="${r.lastRem?esc(fmtD(r.lastRem)):''}">${r.lastRem?fmtDShort(r.lastRem):'<span class="neg">—</span>'}</td>
     <td class="num" title="${r.nextRem?esc(fmtD(r.nextRem)):''}">${r.nextRem?`<span style="color:${r.nextRem-Date.now()<2*864e5?'var(--orange)':'var(--text)'}">${fmtDShort(r.nextRem)}</span>`:'<span class="neg">—</span>'}</td>
-    ${['b1','a1','a7'].map(f=>`<td class="num"><input type="checkbox" class="em-cb" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-f="${f}"${r[f]?' checked':''} title="${f==='b1'?'Remind 1 day before the due date':f==='a1'?'Remind 1 day after the due date':'Remind 7 days after the due date'}"></td>`).join('')}
+    ${['b1','a1','a7'].map(f=>`<td class="num"><input type="checkbox" class="em-cb" data-k="${esc(r.key)}" data-n="${esc(r.name)}" data-ak="${esc(JSON.stringify(r.aliasKeys||[]))}" data-f="${f}"${r[f]?' checked':''} title="${f==='b1'?'Remind 1 day before the due date':f==='a1'?'Remind 1 day after the due date':'Remind 7 days after the due date'}"></td>`).join('')}
   </tr>${EM_OPEN.has(r.key)?emDetailRow(r):''}`).join('');
   wrap.innerHTML=`<table id="em-table">${colgroup}<thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td colspan="7">${view.length} customer${view.length!==1?'s':''}${view.length!==all.length?` of ${all.length}`:''}</td>
@@ -5649,7 +5795,7 @@ function renderEmails(){
   const pageOut=all.reduce((t,r)=>t+(r.out||0),0), arOut=Object.values(arByAccount()).reduce((t,v)=>t+v.out,0);
   const noEmail=all.filter(r=>!r.email).length, noRep=all.filter(r=>!r.rep).length, infRep=all.filter(r=>r.repInf).length,
         arNoEm=all.filter(r=>!r.email&&r.arNoEmail).length, cat=all.filter(r=>r.cxSrc==='Catalyst AP doc').length;
-  note.innerHTML=`<b>Automated Emails</b> — the CA customer list these sends will address: every account with real sales activity (QuickBooks history excluded), its <b>corporate name</b> (the legal entity), <b>DBA</b> and <b>address</b>. Sourced live from the team report — Nabis carries "DBA [LEGAL ENTITY]" plus a site address on every order, and the Distru company directory fills the Distru-only accounts. Click a row for that customer's orders; click a header to sort.
+  note.innerHTML=`<b>Automated Emails</b> — the CA customer list these sends will address: every account with real sales activity (QuickBooks history excluded), its <b>corporate name</b> (the legal entity), <b>DBA</b> and <b>address</b>. Sourced live from the team report — Nabis carries "DBA [LEGAL ENTITY]" plus a site address on every order, and the Distru company directory fills the Distru-only accounts. A store that bills under several names (spelling variants, or a different name per system) shows as <b>one row</b> — matched on license / legal entity / address, with its other billing names in the expanded view — and its balance is the sum across all of them. Click a row for that customer's orders; click a header to sort.
     <b>Total outstanding</b> is the same per-account balance the Accounts Receivable page shows${Math.abs(pageOut-arOut)>0.5?` (${fmt$(arOut-pageOut)} of open AR sits on accounts with no sales in this data, so it isn't listed here)`:''}; <b>Next reminder</b> is the soonest date an enabled offset fires against that account's open invoice due dates, and the three checkboxes are shared team settings — they save for everyone, not just your browser.
     <b>Designated rep, address fallback, contact email and CC</b> come from the team workbook's ACCOUNT LIST tab (live, same sheet as the field schedule) — the contact field is free text, so an address labelled AR / accounting / billing is taken as the primary and every other address on the row becomes a CC.
     ${infRep?`Where the workbook names no rep, <b>${infRep}</b> are <i>inferred</i> (shown dashed and italic) from the sales data — whoever sold that account's most recent Distru or Nabis order. Accounts whose last order was sold by someone not on the list stay <b>missing</b> rather than being handed to the wrong person; expand the row to see who sold last. Choosing a name saves it for the team and retires the guess.`:''}
@@ -5658,17 +5804,19 @@ function renderEmails(){
     ${EM_UNMATCHED.length?`<span style="color:var(--orange)"><b>${EM_UNMATCHED.length} account-list row${EM_UNMATCHED.length!==1?'s':''} matched no customer here:</b> ${EM_UNMATCHED.slice(0,6).map(esc).join(', ')}${EM_UNMATCHED.length>6?`, +${EM_UNMATCHED.length-6} more`:''}</span> — either a store with no sales in this data, or a spelling the matcher wouldn't risk guessing.`:''}`;
 }
 $('#em-wrap').addEventListener('change',(ev)=>{
+  const ak=el=>{ try{ return JSON.parse(el.dataset.ak||'[]'); }catch(_){ return []; } };
   const cb=ev.target.closest&&ev.target.closest('input.em-cb');
-  if(cb) return setReminder(cb.dataset.k, cb.dataset.n, cb.dataset.f, cb.checked);
+  if(cb) return setReminder(cb.dataset.k, cb.dataset.n, cb.dataset.f, cb.checked, ak(cb));
   const sel=ev.target.closest&&ev.target.closest('select.em-rep');
-  if(sel) return setReminder(sel.dataset.k, sel.dataset.n, 'rep', sel.value);
+  if(sel) return setReminder(sel.dataset.k, sel.dataset.n, 'rep', sel.value, ak(sel));
   const inp=ev.target.closest&&ev.target.closest('input.em-inp');
-  if(inp) return setReminder(inp.dataset.k, inp.dataset.n, inp.dataset.f, inp.value.trim());
+  if(inp) return setReminder(inp.dataset.k, inp.dataset.n, inp.dataset.f, inp.value.trim(), ak(inp));
 });
 $('#em-wrap').addEventListener('keydown',(ev)=>{ const inp=ev.target.closest&&ev.target.closest('input.em-inp');
   if(inp && ev.key==='Enter'){ ev.preventDefault(); inp.blur(); } });
 $('#em-wrap').addEventListener('click',(ev)=>{ const b=ev.target.closest&&ev.target.closest('[data-orders]');
-  if(!b) return; ev.stopPropagation(); const {start,end}=repRange('cust'); customerOrdersDrill(b.dataset.orders,start,end); });
+  if(!b) return; ev.stopPropagation(); const {start,end}=repRange('cust'); let ok=null; try{ ok=JSON.parse(b.dataset.okeys||'null'); }catch(_){}
+  customerOrdersDrill(b.dataset.orders,start,end,ok); });
 $('#em-wrap').onclick=(ev)=>{
   if(ev.target.closest&&(ev.target.closest('input')||ev.target.closest('select')||ev.target.closest('a')||ev.target.closest('button'))) return;   // editing is not expanding
   const tr=ev.target.closest?ev.target.closest('tr.parent'):null;
@@ -5679,9 +5827,9 @@ $('#em-wrap').onclick=(ev)=>{
 ['em-search','em-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderEmails); });
 $('#em-export').onclick=()=>{
   const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
-  const out=[['Customer (DBA)','Billing name','Corporate name','Address','Designated rep','Rep source','Contact email','CC','AR contact (no email)',
+  const out=[['Customer (DBA)','Billing name','Also billed as','Corporate name','Address','Designated rep','Rep source','Contact email','CC','AR contact (no email)',
               'Total outstanding','Overdue','Last reminder','Next reminder','1 day before','1 day after','7 days after','License','Region','Source','Last order']];
-  emailsData().forEach(r=>out.push([r.dba,r.name,r.legal,r.address,r.rep,
+  emailsData().forEach(r=>out.push([r.dba,r.name,(r.aliasNames||[]).join('; '),r.legal,r.address,r.rep,
     r.repSet?'set in app':r.repFromSheet?'workbook':r.repInf?`inferred (${r.soldBy})`:'',r.email,r.cc,r.arNoEmail,
     (r.out||0).toFixed(2),(r.over||0).toFixed(2),iso(r.lastRem),iso(r.nextRem),r.b1?'yes':'',r.a1?'yes':'',r.a7?'yes':'',
     r.license,r.region,r.source,iso(r.last)]));
@@ -7126,7 +7274,7 @@ function orderDrill(k){
     columns:[{l:'Contents'},{l:'Units',num:true},{l:'Billed',num:true,money:true}], rows, totalLabel:'Net', total:net });
 }
 // One customer (Customers/New Customers row) → their orders in the range, each expandable to contents.
-function customerOrdersDrill(name,start,end){
+function customerOrdersDrill(name,start,end,aliasKeys){
   if(APP_STATE==='NY'){
     const key=tierNorm(name);
     const orders=stateOrders().filter(o=>tierNorm(o.cust)===key&&o.date!=null&&o.date>=start&&o.date<=end).sort((a,b)=>(b.date||0)-(a.date||0));
@@ -7142,8 +7290,8 @@ function customerOrdersDrill(name,start,end){
       totalLabel:'Total', total:orders.reduce((s2,o)=>s2+o.net,0) });
     return;
   }
-  const key=tierNorm(name); const byRef={};
-  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks')return; if(tierNorm(e.c)!==key)return; if(e.d==null||e.d<start||e.d>end)return;
+  const keySet=new Set((aliasKeys&&aliasKeys.length)?aliasKeys:[tierNorm(name)]); const byRef={};
+  (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks')return; if(!keySet.has(tierNorm(e.c)))return; if(e.d==null||e.d<start||e.d>end)return;
     const k=orderKey(e); const g=byRef[k]||(byRef[k]={s:e.s,ref:e.ref||'(no #)',d:null,evs:[]}); g.evs.push(e); if(e.d!=null&&(g.d==null||e.d<g.d))g.d=e.d; });
   const orders=Object.values(byRef).map(g=>({...g,net:orderFmtLines(g.evs).net})).filter(o=>Math.abs(o.net)>0.005).sort((a,b)=>(b.d||0)-(a.d||0));
   if(!orders.length) return;
