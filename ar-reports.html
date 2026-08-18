@@ -1805,7 +1805,7 @@ function applyShared(d){
     if(data.pistilAsOf) PISTIL_ASOF=data.pistilAsOf;
     if(data.pistilPos && data.pistilPos.length){ PISTIL_POS=pistilPosFromWire(data.pistilPos); any=true; }   // true POS units overlay
     if(data.pistilPosAsOf) PISTIL_POS_ASOF=data.pistilPosAsOf;
-    if(data.custDir) CUST_DIR=custDirFromWire(data.custDir);   // customer directory (legal name / address / license)
+    if(data.custDir){ CUST_DIR=custDirFromWire(data.custDir); CUST_BY_LEGAL=null; }   // customer directory (legal name / address / license)
     if(data.salesRep) SALES_REP=salesRepFromWire(data.salesRep);   // who sold each account last (Automated Emails rep fallback)
     if(data.ny && data.ny.length){ NY_EVENTS=nyFromWire(data.ny); buildNyLegal(); any=true; }
     if(data.nyItems && data.nyItems.length){ NY_ITEMS=nyItemsFromWire(data.nyItems); any=true; }
@@ -5457,6 +5457,17 @@ let EM_REM={}, EM_REM_LOADED=false;
 // The sheet writes reps freehand ("Joanna A", "Jesse, Joanna A", "MAKENNNA"); the page offers the
 // three people who actually own accounts today. A saved override always wins over the sheet.
 const EM_REPS=['Jesse','Joanna','Amanda'];
+// +30 days past due is the standing policy: ON for every account unless someone unchecks it.
+// A checkbox nobody has touched has no email_reminders row at all, so the default lives here (and
+// in setReminder's seed, which must match) rather than in 300 written rows — new customers inherit
+// it the day they first order. The DB column default is true as well, for writes from elsewhere.
+const EM_D30_DEFAULT=true;
+// Facts from the team that no export carries. Kept tiny and explicit — each line is something a
+// person verified, not a guess. Corporate names fill where Distru's record is blank; entity
+// contacts apply to EVERY account billing under that legal entity (PMG Lyfted Farms is the Pacafi
+// co-op, so one line covers all ~22 of its stores).
+const EM_LEGAL_FIX={ 'bonafide burbank':'Divino Tessera LLC' };                      // Gianni, 2026-08-18
+const EM_ENTITY_CONTACTS={ 'pmg lyfted farms llc':'Misty@thepremier.group' };        // Gianni, 2026-08-18
 function repNorm(v){ const t=String(v||'').toLowerCase();
   for(const r of EM_REPS){ if(t.includes(r.toLowerCase())) return r; }   // first listed wins on "Jesse, Joanna A"
   return ''; }
@@ -5473,7 +5484,7 @@ async function loadReminders(){
 // display uses, so an edit can never seed from emptier state than the row was showing.
 function emRemFor(keys){ for(const k of (Array.isArray(keys)?keys:[keys])){ if(EM_REM[k]) return EM_REM[k]; } return null; }
 async function setReminder(key,name,field,val,aliasKeys){
-  const cur=emRemFor([key,...(aliasKeys||[])])||{b1:false,a1:false,a7:false,a30:false,last:null,rep:'',email:'',cc:''};
+  const cur=emRemFor([key,...(aliasKeys||[])])||{b1:false,a1:false,a7:false,a30:EM_D30_DEFAULT,last:null,rep:'',email:'',cc:''};
   const next={...cur,[field]:val}; EM_REM[key]=next; emInvalidate(); renderEmails();
   try{ const c=sbAuth(); if(!c) throw new Error('not signed in');
     const {error}=await c.from('email_reminders').upsert({acct_key:key, acct_name:name,
@@ -5713,6 +5724,9 @@ function emailsData(){
     const info0=isPacafi&&!info.legal?(custInfo('Pacafi Cooperative')||{}):null;
     let c={}; for(const k of aliasKeys){ if(cx[k]){ c=cx[k]; break; } }
     const inf=(info.legal||info.address)?info:(info0||info);
+    const legal=inf.legal||c.legal||EM_LEGAL_FIX[baRowKey(g.name)]||'';
+    // an AR contact can belong to the whole entity (a co-op's back office bills for every store)
+    const entityEmail=EM_ENTITY_CONTACTS[String(legal).trim().toLowerCase()]||'';
     const address=inf.address||c.loc||'';          // the workbook's Location fills our address gaps
     const key=hostKey;
     const rm=emRemFor(aliasKeys)||{};
@@ -5730,19 +5744,20 @@ function emailsData(){
     const repInf=(!rm.rep && !repSheet) ? (sr.rep||'') : '';
     const repFinal=rm.rep||repSheet||repInf;
     return {name:g.name, key, aliasKeys, aliasNames, arKeys, out, over,
-            b1:!!rm.b1, a1:!!rm.a1, a7:!!rm.a7, a30:!!rm.a30, lastSent:rm.last?Date.parse(rm.last):null,
+            b1:!!rm.b1, a1:!!rm.a1, a7:!!rm.a7, a30:(rm.a30===undefined?EM_D30_DEFAULT:!!rm.a30), lastSent:rm.last?Date.parse(rm.last):null,
             repSet:rm.rep||'', repFromSheet:repSheet,
             repInf, soldBy:sr.raw||'', soldD:sr.d||0, soldSrc:sr.src||'',
             emailSet:rm.email||'', ccSet:rm.cc||'',
-            dba:info.dba||g.name, legal:inf.legal||c.legal||'', address,
+            dba:info.dba||g.name, legal, address,
             addrFromSheet:!inf.address&&!!c.loc, viaCoop:!!(info0&&(info0.legal||info0.address)),
             license:inf.license||c.lic||'', region:inf.region||c.terr||'',
             rep:repFinal, repRaw:c.rep||'',
-            email:(rm.email||c.email||''), cc:(rm.cc||c.cc||''), arNoEmail:c.arNoEmail||'', cxSrc:c.src||'',
+            email:(rm.email||c.email||entityEmail||''), cc:(rm.cc||c.cc||''), arNoEmail:c.arNoEmail||'',
+            cxSrc:c.src||(entityEmail?'entity AR contact':''),
             source:[...srcSet].sort().join(' + '), last, rev,
             active:(()=>{ const c6=new Date(); c6.setMonth(c6.getMonth()-6); return last!=null && last>=c6.getTime(); })(),
-            missing:[!(info.legal||c.legal)&&'corporate name', !address&&'address',
-                     !(c.email)&&'contact email', !repFinal&&'rep'].filter(Boolean)};
+            missing:[!legal&&'corporate name', !address&&'address',
+                     !(c.email||entityEmail)&&'contact email', !repFinal&&'rep'].filter(Boolean)};
   }).sort((a,b)=>a.name.localeCompare(b.name));
 }
 // Expanded row: the facts that don't fit the table, plus this account's OPEN invoices — the
@@ -5936,7 +5951,7 @@ function renderEmails(){
   const noEmail=all.filter(r=>!r.email).length, noRep=all.filter(r=>!r.rep).length, infRep=all.filter(r=>r.repInf).length,
         arNoEm=all.filter(r=>!r.email&&r.arNoEmail).length, cat=all.filter(r=>r.cxSrc==='Catalyst AP doc').length;
   note.innerHTML=`<b>Automated Emails</b> — the CA customer list these sends will address: every account with real sales activity (QuickBooks history excluded), its <b>corporate name</b> (the legal entity), <b>DBA</b> and <b>address</b>. Sourced live from the team report — Nabis carries "DBA [LEGAL ENTITY]" plus a site address on every order, and the Distru company directory fills the Distru-only accounts. A store that bills under several names (spelling variants, or a different name per system) shows as <b>one row</b> — matched on license / legal entity / address, with its other billing names in the expanded view — and its balance is the sum across all of them. Click a row for that customer's orders; click a header to sort. <b>${all.length-inact} active</b> · <b>${inact} inactive</b> (no order in 6+ months — the filter isolates either).
-    <b>Total outstanding</b> is the same per-account balance the Accounts Receivable page shows${Math.abs(pageOut-arOut)>0.5?` (${fmt$(arOut-pageOut)} of open AR sits on accounts with no sales in this data, so it isn't listed here)`:''}; <b>Next reminder</b> is the soonest date an enabled offset fires against that account's open invoice due dates, and the three checkboxes are shared team settings — they save for everyone, not just your browser.
+    <b>Total outstanding</b> is the same per-account balance the Accounts Receivable page shows${Math.abs(pageOut-arOut)>0.5?` (${fmt$(arOut-pageOut)} of open AR sits on accounts with no sales in this data, so it isn't listed here)`:''}; The cadence checkboxes are shared team settings — they save for everyone, not just your browser — and <b>+30d is on by default for every account</b> (standing policy: chase anything 30 days past due); uncheck it on a row to opt that customer out.
     <b>Designated rep, address fallback, contact email and CC</b> come from the team workbook's ACCOUNT LIST tab (live, same sheet as the field schedule) — the contact field is free text, so an address labelled AR / accounting / billing is taken as the primary and every other address on the row becomes a CC.
     ${infRep?`Where the workbook names no rep, <b>${infRep}</b> are <i>inferred</i> (shown dashed and italic) from the sales data — whoever sold that account's most recent Distru or Nabis order. Accounts whose last order was sold by someone not on the list stay <b>missing</b> rather than being handed to the wrong person; expand the row to see who sold last. Choosing a name saves it for the team and retires the guess.`:''}
     ${cat?`For the <b>${cat} Catalyst stores</b> their own contact doc wins: the store's <b>AP group</b> is the primary and <b>Liliana Villa</b> is CC'd, which is Catalyst's published rule (“always use the AP email address … and cc Liliana Villa; do not send invoices to only Liliana Villa”).`:''}
@@ -6187,14 +6202,19 @@ $('#tier-export').onclick=()=>{
 // by the SAME tierNorm used to merge customers, so it attaches to the merged report row. Carried
 // in the published payload (additive, like visits) so shared viewers see it without the raw files.
 let CUST_DIR={};
+// Distru writes an em dash (and Nabis the odd "n/a") where a field is empty. Importing that
+// verbatim put "—" in the Corporate name column AND made the gap report count it as PRESENT, so
+// the account never appeared under "Missing something". A placeholder is a blank.
+const PLACEHOLDER=/^(—|–|-{1,2}|n\/?a|none|null|tbd|unknown)$/i;
+const realVal=v=>{ const t=String(v==null?'':v).trim(); return PLACEHOLDER.test(t)?'':t; };
 function buildCustDir(){
   const dir={};
   const scan=(rows,dateCol)=>{ if(!rows) return; rows.forEach(r=>{
     const raw=(r['Site']||'').trim(); if(!raw || isOwnEntity(raw)) return;
     const key=tierNorm(raw); if(!key) return;
     const dba=raw.replace(/\s*\[[^\]]*\]\s*$/,'').trim();
-    const m=raw.match(/\[([^\]]*)\]\s*$/); const legal=m?m[1].trim():'';
-    const address=(r['Site Address']||'').trim(), license=(r['Retailer License']||'').trim(), region=(r['Region']||'').trim();
+    const m=raw.match(/\[([^\]]*)\]\s*$/); const legal=m?realVal(m[1]):'';
+    const address=realVal(r['Site Address']), license=realVal(r['Retailer License']), region=realVal(r['Region']);
     const d=parseDate(r[dateCol]); const t=d?d.getTime():0;
     const cur=dir[key];
     if(!cur){ dir[key]={dba,legal,address,license,region,_d:t}; }
@@ -6207,7 +6227,7 @@ function buildCustDir(){
   if(FILES.distru_companies) FILES.distru_companies.data.forEach(r=>{
     const dba=(r['Name']||'').trim(); if(!dba || isOwnEntity(dba)) return;
     const key=tierNorm(dba); if(!key) return;
-    const legal=(r['Legal Business Name']||'').trim(), address=(r['Address']||'').trim(), license=(r['License']||'').trim();
+    const legal=realVal(r['Legal Business Name']), address=realVal(r['Address']), license=realVal(r['License']);
     const cur=dir[key];
     if(!cur) dir[key]={dba,legal,address,license,region:'',_d:0};
     else { if(!cur.legal&&legal)cur.legal=legal; if(!cur.address&&address)cur.address=address; if(!cur.license&&license)cur.license=license; }
@@ -6216,11 +6236,26 @@ function buildCustDir(){
   scan(FILES.nabis_brand  && FILES.nabis_brand.data,  'Delivery Date');   // fallback / fill blanks
   // Only replace the directory when a source file is actually loaded — otherwise a file drop with
   // none of these sources would blank the cache-loaded directory (and publishing is provenance-gated).
-  if(FILES.distru_companies || FILES.nabis_detail || FILES.nabis_brand){ CUST_DIR=dir; FRESH.add('custDir'); }
+  if(FILES.distru_companies || FILES.nabis_detail || FILES.nabis_brand){ CUST_DIR=dir; CUST_BY_LEGAL=null; FRESH.add('custDir'); }
 }
-function custInfo(name){ return CUST_DIR[tierNorm(name)]||{}; }
+// Secondary index: legal name → the company record, for accounts that bill under their entity
+// name. Only fills keys no DBA already claims, and blanks the dba so the row keeps showing the
+// name it actually bills under (never "Bishop Boys (Pick Up)" on the Happy Valley row).
+let CUST_BY_LEGAL=null;
+function custLegalIndex(){
+  if(CUST_BY_LEGAL) return CUST_BY_LEGAL;
+  CUST_BY_LEGAL={};
+  for(const k in CUST_DIR){ const v=CUST_DIR[k], lk=tierNorm(v.legal);
+    if(lk && lk!==k && !CUST_DIR[lk] && !CUST_BY_LEGAL[lk]) CUST_BY_LEGAL[lk]={...v, dba:''}; }
+  return CUST_BY_LEGAL;
+}
+function custInfo(name){ const k=tierNorm(name); return CUST_DIR[k]||custLegalIndex()[k]||{}; }
 function custDirToWire(dir){ const o={}; for(const k in dir){ const v=dir[k]; o[k]=[v.dba||'',v.legal||'',v.address||'',v.license||'',v.region||'']; } return o; }
-function custDirFromWire(o){ const d={}; if(o) for(const k in o){ const a=o[k]||[]; d[k]={dba:a[0]||'',legal:a[1]||'',address:a[2]||'',license:a[3]||'',region:a[4]||'',_d:0}; } return d; }
+// realVal on the way IN as well as the way out: the live payload was published before the
+// placeholder rule existed, so a stale "—" would otherwise sit in the Corporate name column
+// until the next full pipeline run rebuilt the directory.
+function custDirFromWire(o){ const d={}; if(o) for(const k in o){ const a=o[k]||[];
+  d[k]={dba:realVal(a[0]),legal:realVal(a[1]),address:realVal(a[2]),license:realVal(a[3]),region:realVal(a[4]),_d:0}; } return d; }
 
 // ── Who has been selling this account ───────────────────────────────────────
 // Distru and Nabis both stamp every order with the rep who sold it (Distru "Sales Rep" / "Owner",
