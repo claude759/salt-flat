@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-17.104';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-18.105';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4961,7 +4961,7 @@ async function schedResolveMonth(d,bd){
       const got=schedParse(fetched[i],wave[i],bd);
       if(!got.some(x=>x.iso.startsWith(my))) continue;
       try{ localStorage.setItem(cacheKey,wave[i]); localStorage.removeItem(cacheKey+'.miss'); }catch(_){}
-      return {name:wave[i],rows:got};
+      return {name:wave[i],rows:got,csv:fetched[i]};   // raw CSV rides along for the workbook backup
     }
   }
   // Only remember "this month has no tab" when the workbook actually ANSWERED.
@@ -5008,7 +5008,7 @@ async function schedLoad(center){
       const canon=schedCanon(x.driver);
       S.rows.push({...x,canon,color:schedColor(canon),time:schedTime(x.soNotes)||schedTime(x.teamNotes)});
     }
-    S.loadedTabs.push({name:r.name});
+    S.loadedTabs.push({name:r.name, csv:r.csv});
   }
   S.byIso=new Map();
   for(const v of S.rows.concat(S.dbRows)){
@@ -5017,6 +5017,7 @@ async function schedLoad(center){
   schedPairActs();   // report→visit ownership follows the visits it was computed from
   const now=new Date();
   S.label=`${S.loadedTabs.map(t=>t.name).join(', ')} · ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
+  schedBackupWorkbook(bd).catch(()=>{});   // fire-and-forget: never block the calendar
   return S.rows.length>0||S.dbRows.length>0;
 }
 // fetch app-created tasks and rebuild the date index (workbook rows + app rows)
@@ -5416,6 +5417,25 @@ function schedActivitySheet(a, v, iso){
   $('#pvBack').onclick=()=>schedDaySheet(iso);
 }
 // Create/edit an in-app schedule task (stored in schedule_tasks, not the workbook)
+// Keep a copy of the WORKBOOK itself — the calendar's actual content. The visits on
+// screen are parsed from Google Sheets tabs; if a tab is mangled or the workbook is
+// lost, nothing in this app remembers what it said. Stores the raw CSV Google served,
+// at most once a day per board, byte-identical copies skipped server-side.
+// Fire-and-forget from schedLoad: a backup must never delay or break the calendar.
+async function schedBackupWorkbook(bd){
+  try{
+    const S=state.sched; if(!S||!bd||!bd.state) return;
+    const tabs=(S.loadedTabs||[]).filter(t=>t&&t.csv&&t.name);
+    if(!tabs.length) return;
+    const key='ba.wbbackup.'+bd.state;
+    const last=+(localStorage.getItem(key)||0);
+    if(Date.now()-last < 20*3600*1000) return;          // once a day is plenty
+    const { error }=await supabase.rpc('schedule_workbook_snapshot',
+      {p_state:bd.state, p_workbook:bd.workbook_id||null,
+       p_tabs:tabs.map(t=>({tab:t.name, csv:t.csv}))});
+    if(!error) localStorage.setItem(key,String(Date.now()));
+  }catch(_){}
+}
 /* ── Backup & restore for schedule tasks ────────────────────────────────────
    The calendar's VISITS mirror the Google workbook, so the sheet is their backup.
    Tasks exist only in our database, so they get the full net: nightly snapshots,
@@ -5433,10 +5453,11 @@ async function schedBackupSheet(){
 }
 async function schedBackupRender(){
   const st=state.schedState||'CA', body=$('#bkBody'); if(!body) return;
-  const [baks,live,del]=await Promise.all([
+  const [baks,live,del,wb]=await Promise.all([
     supabase.from('schedule_backups').select('id,taken_at,kind,row_count,note').eq('state',st).order('taken_at',{ascending:false}).limit(40),
     supabase.from('schedule_tasks').select('id').eq('state',st).is('deleted_at',null),
     supabase.from('schedule_tasks').select('id,account,task_date,deleted_at').eq('state',st).not('deleted_at','is',null).order('deleted_at',{ascending:false}).limit(50),
+    supabase.from('schedule_workbook_backups').select('id,taken_at,tab,bytes').eq('state',st).order('taken_at',{ascending:false}).limit(60),
   ]);
   if(baks.error){ body.innerHTML=`<div class="err">Couldn't load backups — ${esc(baks.error.message)}</div>`; return; }
   const nLive=(live.data||[]).length, dels=del.data||[];
@@ -5444,8 +5465,22 @@ async function schedBackupRender(){
     const same=d.toDateString()===now.toDateString();
     return same?`Today ${d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}`
       :d.toLocaleDateString([],{month:'short',day:'numeric'})+' '+d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}); };
+  // the calendar itself — its own section, because it's what people actually see
+  const wbRows=wb.data||[];
+  const wbTabs=[...new Set(wbRows.map(r=>r.tab))];
+  const wbNewest=wbRows.length?new Date(wbRows[0].taken_at):null;
+  const wbAge=wbNewest?Math.round((Date.now()-wbNewest)/36e5):null;
+  const kb=n=>n>=1048576?(n/1048576).toFixed(1)+' MB':Math.max(1,Math.round(n/1024))+' KB';
   body.innerHTML=`
-    <div class="sb-bk-now"><b>${nLive}</b> task${nLive!==1?'s':''} on the ${esc(st)} board right now${dels.length?` · <span class="sb-bk-del">${dels.length} deleted</span>`:''}</div>
+    <div class="sb-bk-h">The calendar</div>
+    ${wbRows.length?`<div class="sb-bk-now"><b>${wbTabs.length}</b> workbook tab${wbTabs.length!==1?'s':''} copied · ${wbRows.length} version${wbRows.length!==1?'s':''} · ${kb(wbRows.reduce((a,r)=>a+(r.bytes||0),0))}
+       <div class="sb-bk-meta">Newest ${wbAge<1?'less than an hour':wbAge+' hour'+(wbAge!==1?'s':'')} ago. A copy is kept each day the schedule is opened, so a mangled or deleted tab can be rebuilt.</div></div>
+      <div class="sb-bk-acts"><button class="btn sm ghost" id="bkWbDown">⤓ Download the workbook copy</button></div>`
+     :`<div class="sb-bk-now">No copy of the workbook yet.
+       <div class="sb-bk-meta">One is taken automatically the next time this board's calendar loads.</div></div>`}
+    <div class="sb-bk-h" style="margin-top:16px">Tasks added in the app</div>
+    <div class="sb-bk-now">${nLive?`<b>${nLive}</b> task${nLive!==1?'s':''} on the ${esc(st)} board`:`None — nobody has added a task to the ${esc(st)} board.`}${dels.length?` · <span class="sb-bk-del">${dels.length} deleted</span>`:''}
+      ${nLive?'':`<div class="sb-bk-meta">The visits on the calendar come from the workbook above, not from here.</div>`}</div>
     <div class="sb-bk-acts">
       <button class="btn sm" id="bkSnap">Take a snapshot now</button>
       <button class="btn sm ghost" id="bkDown">⤓ Download JSON</button>
@@ -5456,7 +5491,7 @@ async function schedBackupRender(){
       <button class="btn sm ghost" id="bkUndel">Undo the ${dels.length} deletion${dels.length!==1?'s':''}</button>
       <div class="sb-bk-dl">${dels.slice(0,6).map(d=>`${esc(d.account)} <span class="muted">(${esc(d.task_date)})</span>`).join(' · ')}${dels.length>6?' …':''}</div>
     </div>`:''}
-    <div class="sb-bk-h">Snapshots</div>
+    <div class="sb-bk-h" style="margin-top:14px">Task snapshots</div>
     ${!(baks.data||[]).length?`<div class="sb-bk-sub">None yet — one is taken automatically every night.</div>`:''}
     <div class="sb-bk-list">${(baks.data||[]).map(b=>`
       <div class="sb-bk-row">
@@ -5479,6 +5514,21 @@ async function schedBackupRender(){
     toast(`Downloaded ${(data||[]).length} task${(data||[]).length!==1?'s':''}`);
   };
 
+  if($('#bkWbDown')) $('#bkWbDown').onclick=async()=>{
+    // newest copy of each tab, as the CSV Google actually served
+    const { data, error }=await supabase.from('schedule_workbook_backups')
+      .select('tab,taken_at,csv').eq('state',st).order('taken_at',{ascending:false});
+    if(error){ toast('Could not export — '+error.message); return; }
+    const newest={}; (data||[]).forEach(r=>{ if(!newest[r.tab]) newest[r.tab]=r; });
+    const tabs=Object.values(newest);
+    if(!tabs.length){ toast('Nothing copied yet'); return; }
+    const blob=new Blob([JSON.stringify({app:'wt-ba-schedule-workbook',state:st,
+      exported_at:new Date().toISOString(),tabs},null,1)],{type:'application/json'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=`schedule-workbook-${st}-${schedIso(new Date())}.json`;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    toast(`Downloaded ${tabs.length} tab${tabs.length!==1?'s':''}`);
+  };
   $('#bkUpBtn').onclick=()=>$('#bkUp').click();
   $('#bkUp').onchange=async e=>{
     const f=e.target.files&&e.target.files[0]; if(!f) return;
