@@ -9,7 +9,7 @@ create table if not exists public.email_template (
 This is a friendly automated reminder from Wizard Trees. {trigger}
 
 Here is the current statement of open invoices on your account:',
-  closing text not null default 'If payment is already on its way, please disregard this note — and thank you! If anything looks off, just reply to this email and we''ll straighten it out.
+  closing text not null default 'If payment is already on its way, please disregard this note — and thank you! If anything looks off, or you have any questions at all, just reply all to this email and our team will straighten it out.
 
 Thank you for your business,
 Wizard Trees — Accounts Receivable',
