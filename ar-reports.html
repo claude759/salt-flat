@@ -1808,7 +1808,7 @@ function applyShared(d){
     if(any) renderTimeSeries();
     if(any) renderMom();
     if(any) renderTiers();   // re-render after the team report arrives (fixes blank Tiers tab on a cold refresh)
-    if(any) renderEmails();
+    if(any){ emInvalidate(); renderEmails(); }
     if(any) renderRepMode();   // refresh whichever report is active (visits/customers/sales/payments/…)
     renderShareBar();
     return any;
@@ -1937,7 +1937,7 @@ function handleFiles(fileList){
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); }
+      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); emInvalidate(); }
     };
     reader.readAsText(f);
   });
@@ -1952,7 +1952,7 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); emInvalidate(); });
 }
 // Clearing a file chip must also retract its derived state + FRESH mark — otherwise the next
 // publish still sends the removed file's data (the builds skip re-assignment when the file is
@@ -2142,6 +2142,7 @@ function build(){
 
 // Apply the current "as of" date to RAW, compute aging, and render. Source-agnostic.
 function rebuild(){
+  emInvalidate();   // INVOICES/asOf feed the Outstanding + Next-remind columns
   if(!RAW || !RAW.length){ $('#reports').classList.add('hidden'); renderNotes(); renderShareBar(); return; }
   asOf = parseDate($('#asof').value) || new Date();
   asOf.setHours(0,0,0,0);
@@ -5407,7 +5408,14 @@ function nyOverdueByAccount(){
    the Distru company directory. Gaps are shown, not hidden: an address or corporate name
    we don't have is a red "missing" cell, because a mailing list is only as good as the
    holes you can see. */
-let emSort={key:'name',dir:1};
+let emSort={key:'out',dir:-1};   // default: biggest outstanding first — that's the work queue
+// emailsData() costs ~50ms (contact matcher + store merge); a render costs ~70ms more. Every
+// keystroke, checkbox and row-click re-renders, so the DATA is cached and only invalidated when
+// an input actually changes (new payload/files, a reminder edit, an as-of change). Interaction
+// renders then pay only the DOM rebuild.
+let EM_CACHE=null;
+function emInvalidate(){ EM_CACHE=null; }
+function emailsDataC(){ if(!EM_CACHE) EM_CACHE=emailsData(); return EM_CACHE; }
 let EM_UNMATCHED=[];
 let EM_OPEN=new Set();   // expanded rows (account keys), survives re-render/sort
 // Reminder cadence + send history, shared across the team (Supabase email_reminders, RLS'd to
@@ -5427,7 +5435,7 @@ async function loadReminders(){
     const {data,error}=await c.from('email_reminders').select('acct_key,d1_before,d1_after,d7_after,last_sent,rep,email,cc').abortSignal(AbortSignal.timeout(8000));
     if(error) throw error;
     (data||[]).forEach(r=>{ EM_REM[r.acct_key]={b1:!!r.d1_before, a1:!!r.d1_after, a7:!!r.d7_after, last:r.last_sent||null, rep:r.rep||'', email:r.email||'', cc:r.cc||''}; });
-    renderEmails();
+    emInvalidate(); renderEmails();
   }catch(e){ EM_REM_LOADED=false; /* offline or not signed in — checkboxes stay unchecked, page still renders */ }
 }
 // EM_REM record for a merged row: host key first, then the alias keys — the SAME order the
@@ -5435,14 +5443,14 @@ async function loadReminders(){
 function emRemFor(keys){ for(const k of (Array.isArray(keys)?keys:[keys])){ if(EM_REM[k]) return EM_REM[k]; } return null; }
 async function setReminder(key,name,field,val,aliasKeys){
   const cur=emRemFor([key,...(aliasKeys||[])])||{b1:false,a1:false,a7:false,last:null,rep:'',email:'',cc:''};
-  const next={...cur,[field]:val}; EM_REM[key]=next; renderEmails();
+  const next={...cur,[field]:val}; EM_REM[key]=next; emInvalidate(); renderEmails();
   try{ const c=sbAuth(); if(!c) throw new Error('not signed in');
     const {error}=await c.from('email_reminders').upsert({acct_key:key, acct_name:name,
       d1_before:next.b1, d1_after:next.a1, d7_after:next.a7, rep:next.rep||null,
       email:next.email||null, cc:next.cc||null,
       updated_at:new Date().toISOString(), updated_by:(AUTH_USER&&AUTH_USER.email)||''});
     if(error) throw error;
-  }catch(e){ EM_REM[key]=cur; renderEmails(); alert('Could not save that reminder setting — '+(e.message||e)); }
+  }catch(e){ EM_REM[key]=cur; emInvalidate(); renderEmails(); alert('Could not save that reminder setting — '+(e.message||e)); }
 }
 // Next reminder = the soonest date any ENABLED offset fires against this account's open invoices.
 // No enabled offsets, or nothing open, means there is nothing to send — shown as "—", not a guess.
@@ -5743,7 +5751,7 @@ function emDetailRow(r){
 function renderEmails(){
   if(APP_STATE==='NY') return;                       // CA-only page
   const wrap=$('#em-wrap'), note=$('#em-note'); if(!wrap) return;
-  const all=emailsData();
+  const all=emailsDataC();
   if(!all.length){ note.innerHTML=''; wrap.innerHTML='<div class="empty">No customers loaded yet — the team report fills this in automatically.</div>'; return; }
   const q=(($('#em-search')||{}).value||'').trim().toLowerCase(), f=($('#em-filter')||{}).value||'';
   let view=all.filter(r=>(!q || r.name.toLowerCase().includes(q) || (r.legal||'').toLowerCase().includes(q) || (r.address||'').toLowerCase().includes(q) || (r.aliasNames||[]).some(n=>n.toLowerCase().includes(q)))
@@ -5824,12 +5832,14 @@ $('#em-wrap').onclick=(ev)=>{
   const key=tr.getAttribute('data-key');
   if(EM_OPEN.has(key)) EM_OPEN.delete(key); else EM_OPEN.add(key);
   renderEmails(); };
-['em-search','em-filter'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderEmails); });
+{ const se=$('#em-search'); if(se){ let t=null;
+    se.addEventListener('input',()=>{ clearTimeout(t); t=setTimeout(renderEmails,150); }); }   // typing re-renders once, not per key
+  const fe=$('#em-filter'); if(fe) fe.addEventListener('input',renderEmails); }
 $('#em-export').onclick=()=>{
   const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
   const out=[['Customer (DBA)','Billing name','Also billed as','Corporate name','Address','Designated rep','Rep source','Contact email','CC','AR contact (no email)',
               'Total outstanding','Overdue','Last reminder','Next reminder','1 day before','1 day after','7 days after','License','Region','Source','Last order']];
-  emailsData().forEach(r=>out.push([r.dba,r.name,(r.aliasNames||[]).join('; '),r.legal,r.address,r.rep,
+  emailsDataC().forEach(r=>out.push([r.dba,r.name,(r.aliasNames||[]).join('; '),r.legal,r.address,r.rep,
     r.repSet?'set in app':r.repFromSheet?'workbook':r.repInf?`inferred (${r.soldBy})`:'',r.email,r.cc,r.arNoEmail,
     (r.out||0).toFixed(2),(r.over||0).toFixed(2),iso(r.lastRem),iso(r.nextRem),r.b1?'yes':'',r.a1?'yes':'',r.a7?'yes':'',
     r.license,r.region,r.source,iso(r.last)]));
@@ -6236,7 +6246,7 @@ function catcxFromWire(w){ return (w||[]).map(a=>({dba:String(a[0]||''),legal:St
 function buildAccts(){
   if(FILES.account_list){ ACCTS=buildAcctRows(); if(ACCTS.length) FRESH.add('accts'); }
   if(FILES.catalyst_contacts){ CATCX=buildCatRows(); if(CATCX.length) FRESH.add('catcx'); }
-  if(FILES.account_list||FILES.catalyst_contacts) renderEmails();
+  if(FILES.account_list||FILES.catalyst_contacts){ emInvalidate(); renderEmails(); }
 }
 function buildPistil(){
   if(FILES.pistil){ PISTIL=buildPistilRows(); if(PISTIL.length) FRESH.add('pistil'); }
