@@ -879,6 +879,7 @@
           <button data-rep="mom">Month over Month</button>
           <button data-rep="time">Sales Over Time</button>
           <button data-rep="nysku" class="hidden">Sales by Type</button>
+          <button data-rep="remit" class="hidden">Remittance</button>
         </div>
       </div>
 
@@ -886,6 +887,7 @@
            ADOPTED into this slot when the mode is active (and re-docked to top level for CA's
            standalone tab), so one set of controls/renderers serves both states. -->
       <div id="rep-nysku" class="hidden"></div>
+      <div id="rep-remit" class="hidden"></div>
 
       <div id="rep-visits" class="hidden">
         <div class="seg-wrap"><div class="seg" id="repv-toggle">
@@ -1132,7 +1134,6 @@
     </div>
 
     <div id="view-hmops" class="hidden">
-      <div id="hmops-remit"></div>
       <div class="toolbar">
         <input type="text" id="hmops-search" placeholder="Search shop / LL# / week…" />
         <select id="hmops-range" title="Which deliveries to show (by delivery date, weekly tab as fallback)">
@@ -4305,13 +4306,16 @@ function hmRemitData(cutoffMs, includeEst){
   }).sort((a,b)=>(a.due-b.due)||String(a.c).localeCompare(String(b.c)));
   const S=(list)=>list.reduce((t,x)=>t+x.out,0);
   const gross=S(rows), invGross=S(rows.filter(x=>!x._pend)), estGross=S(rows.filter(x=>x._pend));
-  const overdueGross=S(rows.filter(x=>x.dpd>0));
+  // overdue the way the HM OPS AR footer splits it: REAL overdue = issued invoices past due;
+  // un-invoiced orders past their ESTIMATED due date are a separate, orange number
+  const overdueInv=S(rows.filter(x=>x.dpd>0&&!x._pend));
+  const overdueEst=S(rows.filter(x=>x.dpd>0&&x._pend));
   const net=gross/1.09, remit=net*0.9;
-  return {rows, gross, invGross, estGross, overdueGross, net, remit};
+  return {rows, gross, invGross, estGross, overdueInv, overdueEst, net, remit};
 }
 let hmRemitIncEst=true;
 function renderHmRemit(){
-  const box=$('#hmops-remit'); if(!box) return;
+  const box=$('#rep-remit'); if(!box) return;
   if(!(NY_INV||[]).length && !(NY_EVENTS||[]).length){ box.innerHTML=''; return; }
   let dEl=$('#hm-remit-date');
   const today=new Date(); const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -4336,7 +4340,8 @@ function renderHmRemit(){
     <div class="tier-cards" style="margin:0 0 10px">
       <div class="card"><div class="lbl">DUE BY ${esc(cutLabel.toUpperCase())}</div><div class="val">${fmt$(D.gross)}</div>
         <div class="sub">${D.rows.length} invoice${D.rows.length!==1?'s':''}${D.estGross>0.005?` · incl. <span style="color:var(--orange)">${fmt$(D.estGross)} est.</span>`:''}</div></div>
-      <div class="card"><div class="lbl">OF WHICH ALREADY OVERDUE</div><div class="val" style="color:${D.overdueGross>0.005?'var(--red)':'var(--text)'}">${fmt$(D.overdueGross)}</div><div class="sub">past due as of today</div></div>
+      <div class="card"><div class="lbl">OF WHICH ALREADY OVERDUE</div><div class="val" style="color:${D.overdueInv>0.005?'var(--red)':'var(--text)'}">${fmt$(D.overdueInv)}</div>
+        <div class="sub">issued invoices past due${D.overdueEst>0.005?` · <span style="color:var(--orange)">+${fmt$(D.overdueEst)} est.</span> on un-invoiced orders`:''}</div></div>
       <div class="card"><div class="lbl">EST. REMITTANCE</div><div class="val" style="color:var(--green)">${fmt$(D.remit)}</div>
         <div class="sub">${fmt$(D.gross)} ÷ 1.09 excise = ${fmt$(D.net)} · × 90% = ${fmt$(D.remit)}</div></div>
     </div>
@@ -4397,7 +4402,6 @@ function hmViewRows(F){ F=F||hmFilterState();
 }
 function renderHmOps(){
   const wrap=$('#hmops-wrap'), cards=$('#hmops-cards'), note=$('#hmops-note'); if(!wrap) return;
-  renderHmRemit();   // remittance forecast rides the NY AR ledger, not the tracker rows below
   const all=HM_OPS||[];
   if(!all.length){ if(cards)cards.innerHTML=''; if(note)note.innerHTML='';
     wrap.innerHTML='<div class="empty">No HM OPS data yet — the tracker fills in after the next scheduled sheet pull.</div>'; return; }
@@ -4995,11 +4999,11 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
     t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary / Sales by Type
-  const NY_REPORTS=['customers','newcust','sales','bydisp','nysku','ba'], NY_ONLY_REPORTS=['nysku'];
+  const NY_REPORTS=['customers','newcust','sales','bydisp','nysku','ba','remit'], NY_ONLY_REPORTS=['nysku','remit'];
   document.querySelectorAll('#rep-toggle button').forEach(b=>{ const rb=b.dataset.rep;
     b.classList.toggle('hidden', APP_STATE==='NY' ? !NY_REPORTS.includes(rb) : NY_ONLY_REPORTS.includes(rb)); });
   if(APP_STATE==='NY'&&!NY_REPORTS.includes(repMode)) setRepMode('customers');
-  if(APP_STATE!=='NY'&&repMode==='nysku') setRepMode('newcust');   // never leave CA parked on a NY-only mode
+  if(APP_STATE!=='NY'&&(repMode==='nysku'||repMode==='remit')) setRepMode('newcust');   // never leave CA parked on a NY-only mode
   if(APP_STATE!==was){
     BA_PIS_RES={}; BA_POS_RES={}; BA_PIS_UN=[]; try{ BA_EXP.clear(); }catch(e){}   // these rollups are per-STATE
     baSort={key:'tier',dir:1};   // the states' column KEYS differ (visitsAll/baVisits, source, up) — a carried-over key sorts by undefined
@@ -6604,7 +6608,7 @@ $('#repv-date-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closes
 // The Reports tab hosts several reports, picked by the #rep-toggle seg:
 // visits (PAD/EDU) · mom (Month over Month) · time (Sales Over Time).
 let repMode='newcust';   // New Customers is the default report on the Reports tab
-const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','ba','mom','time','nysku'];
+const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','ba','mom','time','nysku','remit'];
 // NY Sales by Type as a report mode: adopt the #view-sku node into the Reports pane and render.
 // (activateTab('sku') docks it back to top level for CA's standalone tab — see skuDock.)
 let SKU_HOME=null;
@@ -6614,7 +6618,7 @@ function skuDock(where){ const v=$('#view-sku'); if(!v) return;
   else if(SKU_HOME.parent && v.parentElement!==SKU_HOME.parent) SKU_HOME.parent.insertBefore(v, SKU_HOME.next);
 }
 function renderRepNySku(){ skuDock('reports'); const v=$('#view-sku'); if(v) v.classList.remove('hidden'); renderSku(); }
-function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,ba:renderBaReport,mom:renderMom,time:renderTimeSeries,nysku:renderRepNySku}[repMode]||renderReports)(); }
+function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,ba:renderBaReport,mom:renderMom,time:renderTimeSeries,nysku:renderRepNySku,remit:renderHmRemit}[repMode]||renderReports)(); }
 function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.rep===repMode));
   $('#rep-visits').classList.toggle('hidden', repMode!=='visits');
@@ -6628,6 +6632,7 @@ function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   $('#view-mom').classList.toggle('hidden', repMode!=='mom');
   $('#view-time').classList.toggle('hidden', repMode!=='time');
   $('#rep-nysku').classList.toggle('hidden', repMode!=='nysku');
+  $('#rep-remit').classList.toggle('hidden', repMode!=='remit');
   renderRepMode(); saveView(); }
 document.querySelectorAll('#rep-toggle button').forEach(b=>b.onclick=()=>setRepMode(b.dataset.rep));
 ['rep-months','rep-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderReports); });
