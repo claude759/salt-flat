@@ -1132,6 +1132,7 @@
     </div>
 
     <div id="view-hmops" class="hidden">
+      <div id="hmops-remit"></div>
       <div class="toolbar">
         <input type="text" id="hmops-search" placeholder="Search shop / LL# / week…" />
         <select id="hmops-range" title="Which deliveries to show (by delivery date, weekly tab as fallback)">
@@ -4287,6 +4288,67 @@ function hmDropOf(ll, idx){
   if(d==null) return 2;
   const x=nyDropOf(d); return x ? x.n : 2;
 }
+// ── Remittance forecast ──────────────────────────────────────────────────────
+// "If HM OPS collects everything due by <date>, what should the wire be?" The universe is the
+// SAME receivables ledger the NY AR page shows (nyArAllRows: the distributor's recon invoices
+// with real due dates + shipped LeafLink orders they haven't billed yet, due dates estimated
+// from terms). Outstanding is already NET of the 5% early-pay discounts, so it IS what the
+// retailer will actually pay. The wire math is the standing deal: collected gross ÷ 1.09 backs
+// the NY excise out, × 0.9 takes the distributor's 10% fee off.
+const HM_SHIPPED_RE=/ship|fulfil|complet|deliver/i;
+function hmRemitData(cutoffMs, includeEst){
+  const {all}=nyArAllRows();
+  const rows=all.filter(x=>{
+    if(!(x.out>0.005) || x.due==null || x.due>cutoffMs) return false;
+    if(x._pend && (!includeEst || !HM_SHIPPED_RE.test(x._st||''))) return false;   // placed-but-unshipped can't be collected on time
+    return true;
+  }).sort((a,b)=>(a.due-b.due)||String(a.c).localeCompare(String(b.c)));
+  const S=(list)=>list.reduce((t,x)=>t+x.out,0);
+  const gross=S(rows), invGross=S(rows.filter(x=>!x._pend)), estGross=S(rows.filter(x=>x._pend));
+  const overdueGross=S(rows.filter(x=>x.dpd>0));
+  const net=gross/1.09, remit=net*0.9;
+  return {rows, gross, invGross, estGross, overdueGross, net, remit};
+}
+let hmRemitIncEst=true;
+function renderHmRemit(){
+  const box=$('#hmops-remit'); if(!box) return;
+  if(!(NY_INV||[]).length && !(NY_EVENTS||[]).length){ box.innerHTML=''; return; }
+  let dEl=$('#hm-remit-date');
+  const today=new Date(); const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const dateVal=(dEl&&dEl.value)||iso(today);
+  const pd=dateVal.split('-'); const cutoff=new Date(+pd[0],+pd[1]-1,+pd[2],23,59,59,999).getTime();
+  const D=hmRemitData(cutoff, hmRemitIncEst);
+  const fD=t=>new Date(t).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  const cutLabel=new Date(cutoff).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+  const body=D.rows.map(x=>`<tr>
+    <td>${esc(x.c)}${nyLegalFor(x.c)?`<div class="rep">${esc(nyLegalFor(x.c))}</div>`:''}</td>
+    <td>${x._pend?`${esc(x._ref||'(order)')} <span style="color:var(--orange);font-size:11px">not invoiced · est.</span>`:esc(x.inv)}</td>
+    <td class="num">${fD(x.due)}</td>
+    <td class="num">${x.dpd>0?`<span style="color:var(--red)">overdue ${x.dpd}d</span>`:x.dpd===0?'due today':`due in ${-x.dpd}d`}</td>
+    <td class="num money">${fmt$(x.out)}</td></tr>`).join('');
+  box.innerHTML=`<div class="tpl-body" style="margin:0 0 14px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <b>💰 Remittance forecast</b>
+      <label class="dt">Collected through <input type="date" id="hm-remit-date" value="${dateVal}"></label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer">
+        <input type="checkbox" id="hm-remit-est"${hmRemitIncEst?' checked':''}> include not-yet-invoiced orders (est. due dates)</label>
+    </div>
+    <div class="tier-cards" style="margin:0 0 10px">
+      <div class="card"><div class="lbl">DUE BY ${esc(cutLabel.toUpperCase())}</div><div class="val">${fmt$(D.gross)}</div>
+        <div class="sub">${D.rows.length} invoice${D.rows.length!==1?'s':''}${D.estGross>0.005?` · incl. <span style="color:var(--orange)">${fmt$(D.estGross)} est.</span>`:''}</div></div>
+      <div class="card"><div class="lbl">OF WHICH ALREADY OVERDUE</div><div class="val" style="color:${D.overdueGross>0.005?'var(--red)':'var(--text)'}">${fmt$(D.overdueGross)}</div><div class="sub">past due as of today</div></div>
+      <div class="card"><div class="lbl">EST. REMITTANCE</div><div class="val" style="color:var(--green)">${fmt$(D.remit)}</div>
+        <div class="sub">${fmt$(D.gross)} ÷ 1.09 excise = ${fmt$(D.net)} · × 90% = ${fmt$(D.remit)}</div></div>
+    </div>
+    ${D.rows.length?`<div class="tablewrap" style="max-height:340px;overflow:auto"><table class="ddtable"><thead><tr><th>Dispensary</th><th>Invoice / Order</th><th class="num">Due</th><th class="num">Status</th><th class="num">Outstanding</th></tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr class="totals"><td colspan="4">${D.rows.length} due by ${esc(cutLabel)}</td><td class="num money"><b>${fmt$(D.gross)}</b></td></tr></tfoot></table></div>`
+      :'<div class="empty">Nothing outstanding is due by that date.</div>'}
+    <div class="rep" style="margin-top:8px">Outstanding balances are already net of 5% early-pay discounts, so this is what retailers should actually hand HM OPS by ${esc(cutLabel)}. If they've collected money they haven't wired yet, that comes ON TOP of this estimate. Un-invoiced orders use due dates estimated from LeafLink terms (COD ⇒ due on delivery) and only count once shipped.</div>
+  </div>`;
+  const de=$('#hm-remit-date'); if(de) de.onchange=renderHmRemit;
+  const ce=$('#hm-remit-est'); if(ce) ce.onchange=()=>{ hmRemitIncEst=ce.checked; renderHmRemit(); };
+}
 // The toolbar's filter set + the rows it selects, in ONE place — the table, the summary cards and
 // the CSV export all read from here, so what you export is always what you're looking at.
 function hmFilterState(){
@@ -4335,6 +4397,7 @@ function hmViewRows(F){ F=F||hmFilterState();
 }
 function renderHmOps(){
   const wrap=$('#hmops-wrap'), cards=$('#hmops-cards'), note=$('#hmops-note'); if(!wrap) return;
+  renderHmRemit();   // remittance forecast rides the NY AR ledger, not the tracker rows below
   const all=HM_OPS||[];
   if(!all.length){ if(cards)cards.innerHTML=''; if(note)note.innerHTML='';
     wrap.innerHTML='<div class="empty">No HM OPS data yet — the tracker fills in after the next scheduled sheet pull.</div>'; return; }
