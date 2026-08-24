@@ -5622,6 +5622,20 @@ function resolveContacts(accountKeys){
   // (C10-0001434-LIC) billed under two names; claim-once name matching gave the AP address to OC3
   // and left Halladay blank. Licenses fix that, and correctly keep Catalyst Santa Ana
   // (C10-0000230-LIC → saa.ap@) separate from OC3 (→ oc3.ap@).
+  // Pass 0.4 — SAME ADDRESS, same store. The workbook carries a Location for many rows, and a
+  // street address is premises identity: the sheet's "Sundial - NugxSundial Redding" and the
+  // account "NUG X Sundial Collective" are both 1852 Buenaventura Blvd, which no amount of name
+  // matching would ever connect. Requires the same street key and no zip conflict, and stays
+  // claim-once so an ambiguous building can't hand one row to two accounts.
+  const entryStreet=e=>street(e.v.loc||'');
+  const stBuckets={};
+  entries.forEach(e=>{ const st=entryStreet(e); if(st) (stBuckets[st]||(stBuckets[st]=[])).push(e); });
+  accountKeys.forEach(a=>{ if(res[a.key]) return;
+    const i=custInfo(a.name)||{}; const st=street(i.address||''); if(!st) return;
+    const z=zipOf(i.address||'');
+    const c=(stBuckets[st]||[]).filter(e=>{ if(taken.has(e.k)) return false;
+      const ez=zipOf(e.v.loc||''); return !(z&&ez&&z!==ez); });
+    if(c.length===1){ res[a.key]=c[0].v; taken.add(c[0].k); } });
   const byLic={}, licUsed=new Set();
   Object.values(by).forEach(v=>{ const l=String(v.lic||'').trim().toUpperCase(); if(l) byLic[l]=v; });
   accountKeys.forEach(a=>{ if(res[a.key]) return;
@@ -5731,18 +5745,7 @@ function emailsData(){
   const gid={}; keys.forEach(k=>{ gid[k]=k; });
   const find=k=>{ while(gid[k]!==k) k=gid[k]=gid[gid[k]]; return k; };
   const unite=(a,b)=>{ a=find(a); b=find(b); if(a!==b) gid[a]=b; };
-  const nrm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-  // The street key must identify a PREMISES, not a prefix: house number + the street-name words
-  // through the (synonym-normalized) street type. "123 N Main St, LA" and "123 N Broadway Ave,
-  // Fresno" must NOT collide on "123 n", and "Campo Rd" must equal "Campo Road".
-  const ST_TYPE=/^(st|street|ave|av|avenue|blvd|boulevard|rd|road|dr|drive|way|wy|ln|lane|ct|court|hwy|highway|pkwy|parkway|pl|place|cir|circle|ter|terrace|trl|trail)$/;
-  const ST_MAP={street:'st',avenue:'ave',av:'ave',boulevard:'blvd',road:'rd',drive:'dr',lane:'ln',court:'ct',highway:'hwy',parkway:'pkwy',place:'pl',circle:'cir',terrace:'ter',trail:'trl',wy:'way'};
-  const ST_DIR=/^(n|s|e|w|north|south|east|west)$/;
-  const street=a=>{ const m=nrm(a).match(/^(\d+) (.+)$/); if(!m) return '';
-    const out=[]; for(const w of m[2].split(' ')){ out.push(ST_MAP[w]||w); if(ST_TYPE.test(w)) break; }
-    if(!out.some(w=>!ST_DIR.test(w)&&!ST_TYPE.test(w))) return '';   // a bare directional is not a street name
-    return m[1]+' '+out.join(' '); };
-  const zipOf=a=>{ const m=String(a||'').match(/\b(\d{5})(?:-\d{4})?\s*$/); return m?m[1]:''; };
+  const nrm=addrNrm;
   const topName=k=>groups[k].slice().sort((a,b)=>Math.abs(b.rev)-Math.abs(a.rev))[0].name;
   // identity can live under ANY member spelling (a leading "[At-Risk]" tag keeps the tagged name
   // out of the directory) — scan members biggest-biller first and take the first real entry
@@ -6823,6 +6826,20 @@ const BA_PIS_ALIAS_RAW={
 const BA_PIS_ALIAS={}; Object.entries(BA_PIS_ALIAS_RAW).forEach(([st,acct])=>{ BA_PIS_ALIAS[tierNorm(st)]=tierNorm(acct); });
 const BA_PIS_FILLER=/\b(cannabis|dispensaries|dispensary|collective|company|wellness|caregivers|remedies|supply|co|shop|store|the|rec|llc|inc)\b/gi;
 const baLooseKey=n=>tierNorm(String(n||'').replace(/\(.*?\)/g,' ').replace(/\|/g,' ').replace(BA_PIS_FILLER,' '));
+// ── Premises identity from a street address ─────────────────────────────────
+// Used BOTH to merge one store's several billing names and to attach a workbook row to the
+// account it describes. The key must identify a PREMISES, not a prefix: house number + the
+// street-name words through the (synonym-normalized) street type. "123 N Main St, LA" and
+// "123 N Broadway Ave, Fresno" must NOT collide on "123 n", and "Campo Rd" must equal "Campo Road".
+const addrNrm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const ST_TYPE=/^(st|street|ave|av|avenue|blvd|boulevard|rd|road|dr|drive|way|wy|ln|lane|ct|court|hwy|highway|pkwy|parkway|pl|place|cir|circle|ter|terrace|trl|trail)$/;
+const ST_MAP={street:'st',avenue:'ave',av:'ave',boulevard:'blvd',road:'rd',drive:'dr',lane:'ln',court:'ct',highway:'hwy',parkway:'pkwy',place:'pl',circle:'cir',terrace:'ter',trail:'trl',wy:'way'};
+const ST_DIR=/^(n|s|e|w|north|south|east|west)$/;
+const street=a=>{ const m=addrNrm(a).match(/^(\d+) (.+)$/); if(!m) return '';
+  const out=[]; for(const w of m[2].split(' ')){ out.push(ST_MAP[w]||w); if(ST_TYPE.test(w)) break; }
+  if(!out.some(w=>!ST_DIR.test(w)&&!ST_TYPE.test(w))) return '';   // a bare directional is not a street name
+  return m[1]+' '+out.join(' '); };
+const zipOf=a=>{ const m=String(a||'').match(/\b(\d{5})(?:-\d{4})?\s*$/); return m?m[1]:''; };
 // account key → POS on-hand rollup (no state column in that export — matching against the
 // CA account list IS the geographic filter; the NY Flowery/Strain Stars names don't collide)
 function baPistilPosByKey(){
