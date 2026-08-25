@@ -70,9 +70,22 @@ body.ro .editonly{display:none !important}
 .packb .bbody,.remitb .bbody{border-top-color:var(--filline)}
 .nabisb .bbody{border-top-color:var(--nabline)}
 .settleb .bbody{border-top-color:var(--bubbleline)}
-.runrow{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:8px 0}
-.runrow .rhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px}
+.runrow{padding:9px 0 7px;border-top:1px dashed var(--line)}
+.runrow:first-child{border-top:none}
+.packb .runrow{border-top-color:color-mix(in srgb,var(--filline) 55%,transparent)}
+.nabisb .runrow{border-top-color:color-mix(in srgb,var(--nabline) 55%,transparent)}
+.runrow .rhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:2px}
 .runrow .rtitle{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:7px}
+.rl{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin:5px 0}
+.rl .k{font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.rl input[type=date]{width:120px}
+.rl .rlabel{flex:1;min-width:110px}
+.rl .rnum{width:58px}
+.rl .rmoney{width:76px}
+.samp{display:flex;align-items:center;gap:5px;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-left:auto;cursor:pointer}
+.rl.mat{margin-left:10px;padding-left:8px;border-left:2px solid color-mix(in srgb,var(--filline) 45%,transparent)}
+.rl.mat .rlabel{min-width:88px}
+.mtot{font-size:12px;margin-left:auto}
 .tagchip{font-size:10px;letter-spacing:.05em;text-transform:uppercase;border-radius:20px;padding:1px 8px;background:var(--settle);border:1px solid var(--settleline);color:var(--text2)}
 .tagchip.sample{color:var(--sample);border-color:var(--sample)}
 .frow{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
@@ -184,8 +197,8 @@ const SEED={
     ]
   }],
   runs:[
-    {id:'R-bm-35', pkgId:'PKG-0001',date:'2026-08-25',label:'3.5g units',unitG:3.5,units:347,sample:false,labor:null,materials:null,nabis:{date:'',units:347,ref:''}},
-    {id:'R-bm-15', pkgId:'PKG-0001',date:'2026-08-25',label:'1.5g budtender samples',unitG:1.5,units:100,sample:true,labor:null,materials:null,nabis:{date:'',units:100,ref:''}}
+    {id:'R-bm-35', pkgId:'PKG-0001',date:'2026-08-25',label:'3.5g units',unitG:3.5,units:347,sample:false,labor:null,mats:[],nabis:{date:'',units:347,ref:''}},
+    {id:'R-bm-15', pkgId:'PKG-0001',date:'2026-08-25',label:'1.5g budtender samples',unitG:1.5,units:100,sample:true,labor:null,mats:[],nabis:{date:'',units:100,ref:''}}
   ],
   orders:[],
   settle:{},
@@ -222,9 +235,13 @@ function normalize(s){
   for(const r of (Array.isArray(s.runs)?s.runs:[])){
     if(!r||typeof r!=='object'||!pkgIds.has(normId(r.pkgId,'PKG'))) continue;
     const nb=(r.nabis&&typeof r.nabis==='object')?r.nabis:{};
+    const mats=(Array.isArray(r.mats)?r.mats:[]).filter(m=>m&&typeof m==='object')
+      .map(m=>({id:normId(m.id,'M'),name:normStr(m.name),qty:normNum(m.qty),unit:normNum(m.unit)}));
+    const legacy=normNum(r.materials); // pre-itemization saves carried one number
+    if(legacy!=null&&legacy!==0&&!mats.length) mats.push({id:uid('M'),name:'materials',qty:1,unit:legacy});
     out.runs.push({id:normId(r.id,'R'),pkgId:normId(r.pkgId,'PKG'),date:normStr(r.date),label:normStr(r.label),
       unitG:normNum(r.unitG)??0,units:normNum(r.units)??0,sample:!!r.sample,
-      labor:normNum(r.labor),materials:normNum(r.materials),
+      labor:normNum(r.labor),mats,
       nabis:{date:normStr(nb.date),units:normNum(nb.units)??0,ref:normStr(nb.ref)}});
   }
   for(const o of (Array.isArray(s.orders)?s.orders:[])){
@@ -362,12 +379,13 @@ function settleFor(pkgId){
   return state.settle[pkgId];
 }
 function runGrams(r){return (r.units||0)*(r.unitG||0)}
+function matTotal(r){return (r.mats||[]).reduce((a,m)=>a+(m.qty||0)*(m.unit||0),0)}
 function orderTotal(o){return o.total??((o.units||0)*(o.price||0))}
 function calcPkg(p){
   const rs=runsFor(p.id);
   const packaged=rs.reduce((a,r)=>a+runGrams(r),0);
   const labor=rs.reduce((a,r)=>a+(r.labor||0),0);
-  const materials=rs.reduce((a,r)=>a+(r.materials||0),0);
+  const materials=rs.reduce((a,r)=>a+matTotal(r),0);
   const unitsSellable=rs.filter(r=>!r.sample).reduce((a,r)=>a+(r.units||0),0);
   const unitsSample=rs.filter(r=>r.sample).reduce((a,r)=>a+(r.units||0),0);
   const unitsToNabis=rs.filter(r=>!r.sample).reduce((a,r)=>a+(r.nabis.units||0),0);
@@ -480,21 +498,30 @@ function packBody(p){
   const dis=canEdit?'':' disabled';
   const rows=runsFor(p.id).map(r=>`
     <div class="runrow" data-run="${r.id}">
-      <div class="rhead">
-        <div class="rtitle">Run
-          <span class="tagchip sample" id="chip-${r.id}"${r.sample?'':' style="display:none"'}>Sample</span>
-        </div>
+      <div class="rl">
+        <input type="date" value="${esc(r.date)}" data-f="date" data-id="${r.id}"${dis}>
+        <input type="text" class="rlabel" value="${esc(r.label)}" placeholder="label" data-f="label" data-id="${r.id}"${dis}>
+        <span class="tagchip sample" id="chip-${r.id}"${r.sample?'':' style="display:none"'}>Sample</span>
         <button class="small danger editonly" data-act="delRun" data-id="${r.id}">&#10005;</button>
       </div>
-      <div class="frow">
-        <div class="fld"><label>Date</label><input type="date" value="${esc(r.date)}" data-f="date" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>Label</label><input type="text" class="wide" value="${esc(r.label)}" data-f="label" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>Units</label><input type="number" min="0" value="${r.units??''}" data-f="units" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>g / unit</label><input type="number" min="0" step="0.1" value="${r.unitG??''}" data-f="unitG" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>Labor $</label><input type="number" min="0" step="0.01" value="${r.labor??''}" data-f="labor" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>Materials $</label><input type="number" min="0" step="0.01" value="${r.materials??''}" data-f="materials" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>Sample</label><input type="checkbox" ${r.sample?'checked':''} data-f="sample" data-id="${r.id}" style="width:20px;height:20px"${dis}></div>
+      <div class="rl">
+        <input type="number" class="rnum" min="0" value="${r.units??''}" title="units" data-f="units" data-id="${r.id}"${dis}>
+        <span class="k">&times;</span>
+        <input type="number" class="rnum" min="0" step="0.1" value="${r.unitG??''}" title="grams per unit" data-f="unitG" data-id="${r.id}"${dis}>
+        <span class="k">g</span>
+        <span class="k" style="margin-left:8px">labor $</span><input type="number" class="rmoney" min="0" step="0.01" value="${r.labor??''}" data-f="labor" data-id="${r.id}"${dis}>
+        <label class="samp"><input type="checkbox" ${r.sample?'checked':''} data-f="sample" data-id="${r.id}"${dis}>sample</label>
       </div>
+      ${(r.mats||[]).map(m=>`
+      <div class="rl mat">
+        <input type="text" class="rlabel" value="${esc(m.name)}" placeholder="jars / labels / stickers&hellip;" data-mf="name" data-run="${r.id}" data-id="${m.id}"${dis}>
+        <input type="number" class="rnum" min="0" value="${m.qty??''}" title="quantity" data-mf="qty" data-run="${r.id}" data-id="${m.id}"${dis}>
+        <span class="k">&times; $</span>
+        <input type="number" class="rmoney" min="0" step="0.001" value="${m.unit??''}" title="cost per piece" data-mf="unit" data-run="${r.id}" data-id="${m.id}"${dis}>
+        <b class="mtot" id="mt-${m.id}"></b>
+        <button class="small danger editonly" data-act="delMat" data-run="${r.id}" data-id="${m.id}">&#10005;</button>
+      </div>`).join('')}
+      <div class="editonly" style="margin:4px 0 0 10px"><button class="small" data-act="addMat" data-run="${r.id}">+ material</button></div>
       <div class="rcalc" id="rc-${r.id}"></div>
     </div>`).join('');
   return (rows||'<div class="rcalc">Nothing packaged from this bulk yet.</div>')
@@ -506,10 +533,11 @@ function nabisBody(p){
   const rows=runsFor(p.id).map(r=>`
     <div class="runrow">
       <div class="rhead"><div class="rtitle">${esc(r.label||'Run')} <span id="nb-${r.id}"></span></div></div>
-      <div class="frow">
-        <div class="fld"><label>Date sent</label><input type="date" value="${esc(r.nabis.date)}" data-f="nabisDate" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>Units</label><input type="number" min="0" value="${r.nabis.units??''}" data-f="nabisUnits" data-id="${r.id}"${dis}></div>
-        <div class="fld"><label>Ref / PO</label><input type="text" class="wide" value="${esc(r.nabis.ref)}" data-f="nabisRef" data-id="${r.id}"${dis}></div>
+      <div class="rl">
+        <input type="date" value="${esc(r.nabis.date)}" title="date sent" data-f="nabisDate" data-id="${r.id}"${dis}>
+        <input type="number" class="rnum" min="0" value="${r.nabis.units??''}" title="units sent" data-f="nabisUnits" data-id="${r.id}"${dis}>
+        <span class="k">units</span>
+        <input type="text" class="rlabel" value="${esc(r.nabis.ref)}" placeholder="ref / PO" data-f="nabisRef" data-id="${r.id}"${dis}>
       </div>
     </div>`).join('');
   const os=ordersFor(p.id);
@@ -609,7 +637,9 @@ function refreshCalc(){
     if(ss) ss.innerHTML=`Net <b class="${c.net<0?'neg':'pos'}">${money(c.net)}</b>`;
     for(const r of c.runs){
       const rc=document.getElementById('rc-'+r.id);
-      if(rc) rc.innerHTML=`Uses <b>${g1(runGrams(r))} g</b> of bulk`+((r.labor||r.materials)?` &middot; ${money((r.labor||0)+(r.materials||0))} cost`:'');
+      const rcost=(r.labor||0)+matTotal(r);
+      if(rc) rc.innerHTML=`Uses <b>${g1(runGrams(r))} g</b> of bulk`+(rcost?` &middot; ${money(rcost)} cost`:'');
+      for(const m of (r.mats||[])){const el=document.getElementById('mt-'+m.id);if(el)el.textContent=money((m.qty||0)*(m.unit||0));}
       const nb=document.getElementById('nb-'+r.id);
       if(nb) nb.innerHTML=r.nabis.date?`<span class="sent">Sent ${esc(r.nabis.date)}</span>`:'<span class="pending">Pending</span>';
       const ch=document.getElementById('chip-'+r.id);
@@ -719,10 +749,15 @@ document.addEventListener('input',e=>{
     }
     else if(f==='unitG') r.unitG=num(el.value)??0;
     else if(f==='labor') r.labor=num(el.value);
-    else if(f==='materials') r.materials=num(el.value);
     else if(f==='nabisDate') r.nabis.date=el.value;
     else if(f==='nabisUnits') r.nabis.units=num(el.value)??0;
     else if(f==='nabisRef') r.nabis.ref=el.value;
+    save();refreshCalc();
+  }else if(el.dataset.mf){ // material line items
+    const r=state.runs.find(x=>x.id===el.dataset.run); if(!r) return;
+    const m=(r.mats||[]).find(x=>x.id===el.dataset.id); if(!m) return;
+    if(el.dataset.mf==='name') m.name=el.value;
+    else m[el.dataset.mf]=num(el.value);
     save();refreshCalc();
   }else if(el.dataset.sf){ // settlement fields
     const s=settleFor(el.dataset.pkg);
@@ -772,8 +807,16 @@ document.addEventListener('click',e=>{
   if(!canEdit) return;
   if(b.dataset.act==='addRun'){
     state.runs.push({id:uid('R'),pkgId:b.dataset.pkg,date:new Date().toISOString().slice(0,10),
-      label:'3.5g units',unitG:3.5,units:0,sample:false,labor:null,materials:null,nabis:{date:'',units:0,ref:''}});
+      label:'3.5g units',unitG:3.5,units:0,sample:false,labor:null,mats:[],nabis:{date:'',units:0,ref:''}});
     expanded.add(XK(b.dataset.pkg,'pack'));
+    save();render();
+  }else if(b.dataset.act==='addMat'){
+    const r=state.runs.find(x=>x.id===b.dataset.run); if(!r) return;
+    (r.mats=r.mats||[]).push({id:uid('M'),name:'',qty:r.units||null,unit:null});
+    save();render();
+  }else if(b.dataset.act==='delMat'){
+    const r=state.runs.find(x=>x.id===b.dataset.run); if(!r) return;
+    r.mats=(r.mats||[]).filter(x=>x.id!==b.dataset.id);
     save();render();
   }else if(b.dataset.act==='delRun'){
     const r=state.runs.find(x=>x.id===b.dataset.id);
