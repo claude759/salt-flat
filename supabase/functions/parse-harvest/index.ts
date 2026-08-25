@@ -110,6 +110,22 @@ const cleanTime = (v: unknown) => {
   if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) return null;
   return m[1].padStart(2, "0") + ":" + m[2];
 };
+// An Anthropic ACCOUNT failure is not "this photo is unreadable" — it is a
+// billing or key problem nobody in the field can act on. Say which, in a
+// sentence a warehouse manager can act on, instead of pasting raw API JSON.
+function accountError(status: number, body: string): string | null {
+  const b = (body || "").toLowerCase();
+  if (b.includes("credit balance is too low") || b.includes("insufficient_quota") || b.includes("billing"))
+    return "The sheet reader has run out of Anthropic API credit, so it can't read photos right now. " +
+           "Send Gianni this message so he can top up the balance. You can still type the hours in by hand with + row.";
+  if (status === 401 || b.includes("invalid x-api-key") || b.includes("authentication_error"))
+    return "The sheet reader's API key was rejected. Send Gianni this message. " +
+           "You can still type the hours in by hand with + row.";
+  if (status === 403)
+    return "The sheet reader was refused by the API. Send Gianni this message. " +
+           "You can still type the hours in by hand with + row.";
+  return null;
+}
 function cleanLocation(s: unknown){
   if (typeof s !== "string") return null;
   const t = s.toLowerCase();
@@ -215,7 +231,13 @@ Deno.serve(async (req) => {
       body: JSON.stringify({ model, max_tokens: 8000,
         messages: [{ role: "user", content: typeof content === "string" ? [{ type: "text", text: content }] : content }] }),
     });
-    if (!res.ok) return json({ ok: false, error: `anthropic ${res.status}` }, 502);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("anthropic", res.status, body.slice(0, 300));
+      const acct = accountError(res.status, body);
+      if (acct) return json({ ok: false, error: "ocr_unavailable", message: acct }, 200);
+      return json({ ok: false, error: `anthropic ${res.status}` }, 502);
+    }
     const data = await res.json();
     const out = (data?.content ?? []).map((c: any) => c?.text ?? "").join("").trim();
     const parsed = parseJsonLoose(out) ?? {};
