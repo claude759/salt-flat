@@ -60,11 +60,12 @@ const HARVEST_INSTR =
   '- A row giving ONLY a weekday ("Monday - 8am-5pm"): date null, and START the note with that weekday name.\n' +
   '- If a weekday and a date disagree ("sat 8/11" when 8/11 is not a Saturday), KEEP the written date but ' +
   'start the note with "DATE?" and the discrepancy (e.g. "DATE? sat vs 8/11 — maybe 7/11") so a human resolves it. Never move a date yourself.\n' +
-  '- PAY: NORMA is paid $25/hr; everyone else is $20/hr. Set "rate" 25 for a Norma row, 20 otherwise.\n' +
+  '- PAY: NORMA is paid her own rate; everyone else is the base rate. The server sets the final "rate" from ' +
+  'the work date, so leave "rate" null and never guess a dollar amount.\n' +
   '- SEPARATE NORMA: whenever "Norma" (or "+norma") is part of a crew, output her as her OWN row ' +
-  '(worker "Norma", people 1, rate 25) for that same date/location/task/time, AND do NOT count her in the crew. ' +
-  'Example: "8 people + norma" -> a crew row {people 8, rate 20} PLUS a separate {worker "Norma", people 1, rate 25}. ' +
-  'A bare number of people is that count at rate 20.\n' +
+  '(worker "Norma", people 1) for that same date/location/task/time, AND do NOT count her in the crew. ' +
+  'Example: "8 people + norma" -> a crew row {people 8} PLUS a separate {worker "Norma", people 1}. ' +
+  'A bare number of people is that count as one base-rate crew row.\n' +
   '- A specific named person (Esmeralda, Issac, Stefani, Elmer, Oscar, Lili, Andres, Norma, Nouri, ...) -> ' +
   'worker = that name, people = 1 unless a count is given. One row per date for that person.\n' +
   '- Times: "7 to 5pm" -> 07:00/17:00; "8:30 to 4pm" -> 08:30/16:00; "10:50-2:00" -> 10:50/14:00; ' +
@@ -163,6 +164,26 @@ const cleanBreak = (v: unknown) => {
   if (typeof v === "string"){ const b = breakFromToken(v); if (b !== null) return b; }
   return 0;
 };
+// Dated pay-rate changes. A row is paid at the LAST entry whose `from` is on or
+// before its work date; with no match the flat fallback below stands. Record a
+// raise by ADDING a row here, never by editing one, which would reprice history.
+const RATE_CHANGES = [
+  { match: /norma/i, from: "2026-08-15", rate: 26 },
+];
+// null when the row has no date (an undated row must never pick up the NEW rate)
+// or nothing matches. Dates are 'YYYY-MM-DD' and compared as plain strings: a Date
+// here would shift the boundary by a timezone and mis-pay a whole day.
+function datedRate(name: string | null, workDate: string | null){
+  if (!name || !workDate) return null;
+  const d = String(workDate).slice(0, 10);
+  let best: { from: string; rate: number } | null = null;
+  for (const c of RATE_CHANGES){
+    if (!c.match.test(name)) continue;
+    if (d < c.from) continue;
+    if (!best || c.from > best.from) best = c;
+  }
+  return best ? best.rate : null;
+}
 function normNote(r: any){
   if (!r || typeof r !== "object") return null;
   let people = Number(r.people); if (!isFinite(people) || people < 1) people = 1; people = Math.round(people);
@@ -177,14 +198,15 @@ function normNote(r: any){
   let task = typeof r.task === "string" ? r.task.trim() : null;
   let brk = cleanBreak(r.break_min);
   if (task){ const b = breakFromToken(task); if (b !== null){ task = null; if (!brk) brk = b; } }
+  const date = isDate(r.date) ? r.date : null;
   const row = {
     category,
-    date: isDate(r.date) ? r.date : null,
+    date,
     location,
     task,
     break_min: brk,
     worker,
-    rate: isNorma ? 25 : 20,
+    rate: datedRate(worker, date) ?? (isNorma ? 25 : 20),
     people: isNorma ? 1 : people,
     time_in: cleanTime(r.time_in),
     time_out: cleanTime(r.time_out),

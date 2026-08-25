@@ -1082,8 +1082,33 @@ function tsCalcHours(ci, co, brk){
 }
 const tsCalcTotal = (hours, rate, people=1) => (hours==null||rate==null||isNaN(rate)) ? null : Math.round(hours*rate*(Number(people)||1)*100)/100;
 
-// Norma is paid $25/hr; everyone else $20 (roster default_rate wins for matched names)
-function rateForName(emp, last, first){
+// Dated pay-rate changes. A shift is paid at the LAST entry whose `from` is on
+// or before its work_date. With no matching entry the roster default_rate wins,
+// then the flat fallback. Record a raise by ADDING a row here, never by editing
+// the roster number, which would reprice history.
+const RATE_CHANGES = [
+  { match: /norma/i, from: '2026-08-15', rate: 26 },
+];
+// work_date is a 'YYYY-MM-DD' string and is compared as one: no Date objects,
+// so no timezone can shove a shift across the boundary and mis-pay a day.
+function datedRate(last, first, workDate){
+  if (!workDate) return null;
+  const name = ((last||'')+' '+(first||'')).trim();
+  const d = String(workDate).slice(0,10);
+  let best = null;
+  for (const c of RATE_CHANGES){
+    if (!c.match.test(name)) continue;
+    if (d < c.from) continue;
+    if (!best || c.from > best.from) best = c;
+  }
+  return best ? best.rate : null;
+}
+// Dated raise first, then the roster default_rate, then $25 Norma / $20 flat.
+// The order is the point: Norma's roster row stays at 25 as the pre-raise
+// baseline, so consulting the roster first would pay her 25 forever.
+function rateForName(emp, last, first, workDate){
+  const dr = datedRate(last, first, workDate);
+  if (dr != null) return dr;
   if (emp && emp.default_rate != null) return +emp.default_rate;
   return /norma/i.test((last||'')+' '+(first||'')) ? 25 : 20;
 }
@@ -1244,6 +1269,13 @@ function renderRoster(){
     '<option value="' + esc(x) + '"' + ((t || '') === x ? ' selected' : '') + '>' + (x || '—') + '</option>').join('');
   const coOpt = c => [''].concat(TS_COMPANIES).map(x =>
     '<option value="' + esc(x) + '"' + ((c || '') === x ? ' selected' : '') + '>' + (x || '—') + '</option>').join('');
+  // someone in RATE_CHANGES: this number is only their pre-raise base
+  const rateTip = p => {
+    const name = ((p.last || '') + ' ' + (p.first || '')).trim();
+    // descending: the LATEST raise on file, same rule datedRate applies
+    const c = RATE_CHANGES.filter(x => x.match.test(name)).sort((a, b) => a.from > b.from ? -1 : 1)[0];
+    return c ? ' title="Base rate only; a dated raise to $' + c.rate + '/hr is in effect from ' + c.from + '."' : '';
+  };
   box.innerHTML = '<div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px">'
     + '<h3 style="margin:0 0 4px;font-size:15px">Packaging crew roster</h3>'
     + '<div class="faint" style="font-size:12.5px;margin-bottom:10px">Names auto-fill timesheet rows with the person’s team, company and rate. '
@@ -1258,7 +1290,7 @@ function renderRoster(){
       + '<td><input data-f="first" value="' + esc(p.first || '') + '"></td>'
       + '<td><select data-f="team">' + teamOpt(p.team) + '</select></td>'
       + '<td><select data-f="default_company">' + coOpt(p.default_company) + '</select></td>'
-      + '<td><input data-f="default_rate" type="number" step="0.5" min="0" value="' + (p.default_rate == null ? '' : p.default_rate) + '"></td>'
+      + '<td><input data-f="default_rate" type="number" step="0.5" min="0"' + rateTip(p) + ' value="' + (p.default_rate == null ? '' : p.default_rate) + '"></td>'
       + '<td><input data-f="aliases" value="' + esc((p.aliases || []).join(', ')) + '" placeholder="—"></td>'
       + '<td style="text-align:center"><input data-f="active" type="checkbox"' + (p.active !== false ? ' checked' : '') + '></td>'
       + '<td><button class="rowdel" data-f="del" title="Remove from the roster (saved hours keep the name)">✕</button></td></tr>').join('')
@@ -2245,7 +2277,7 @@ function wireTsShell(){
         if (cell.dataset.f === 'first' && s.first) cell.value = s.first;
         markShiftDirty(s, 'roster_id'); markShiftDirty(s, 'last'); markShiftDirty(s, 'first');
         if (!s.team){ s.team = m.team || teamForName(m, s.last, s.first); markShiftDirty(s, 'team'); }
-        if (!s.rate){ s.rate = rateForName(m, s.last, s.first); markShiftDirty(s, 'rate'); }
+        if (!s.rate){ s.rate = rateForName(m, s.last, s.first, s.work_date); markShiftDirty(s, 'rate'); }
       }
       else if (!s.team){ s.team = teamForName(null, s.last, s.first); markShiftDirty(s, 'team'); }
       const tsel = cell.closest('tr').querySelector('[data-f="team"]'); if (tsel) tsel.value = s.team || '';
@@ -2439,7 +2471,7 @@ function openTsReview(res, dataUrl, path){
       team: teamForName(m, r.last, r.first),
       clock_in: r.time_in||'', clock_out: r.time_out||'',
       break_minutes: r.break_minutes ?? 0,
-      rate: rateForName(m, r.last, r.first),
+      rate: rateForName(m, r.last, r.first, sheetDate),
       roster_id: m ? m.id : null, matched: !!m,
     };
   });
@@ -2496,16 +2528,26 @@ function drawTsReview(){
       r.last = parts[0]||''; r.first = parts.slice(1).join(' ');
       const m = rosterMatch(r.last, r.first);
       r.matched = !!m; r.roster_id = m ? m.id : null;
-      if (m){ r.team = m.team || r.team; r.rate = rateForName(m, r.last, r.first); }
+      if (m){ r.team = m.team || r.team; r.rate = rateForName(m, r.last, r.first, r.work_date || rv.sheet_date); }
       return;
     }
-    if (f === 'work_date'){   // date drives the missed-last-PP flag/banner — redraw so it stays truthful
+    if (f === 'work_date'){   // the date drives the RATE as well as the missed-last-PP flag — re-derive both
       r[f] = cell.value;
+      if (!r._rateEdited){
+        const nr = rateForName(rosterMatch(r.last, r.first), r.last, r.first, r.work_date || rv.sheet_date);
+        if (nr !== r.rate){
+          r.rate = nr;
+          const tr0 = cell.closest('tr');
+          const rc = tr0.querySelector('[data-f="rate"]'); if (rc) rc.value = nr;
+          const tc = tr0.querySelector('.c-t');
+          if (tc) tc.textContent = tsMoney(tsCalcTotal(tsCalcHours(r.clock_in, r.clock_out, r.break_minutes), nr));
+        }
+      }
       if ((rv.payTo||'natural') === 'current') drawTsReview();
       return;
     }
     if (f === 'break_minutes') r[f] = +cell.value||0;
-    else if (f === 'rate') r[f] = cell.value===''?null:+cell.value;
+    else if (f === 'rate'){ r._rateEdited = true; r[f] = cell.value===''?null:+cell.value; }   // a typed rate is never re-derived
     else r[f] = cell.value;
     const h = tsCalcHours(r.clock_in, r.clock_out, r.break_minutes);
     const tr = cell.closest('tr');
@@ -2520,7 +2562,7 @@ function drawTsReview(){
       r.last = parts[0]||''; r.first = parts.slice(1).join(' ');
       const m = rosterMatch(r.last, r.first);
       r.matched = !!m; r.roster_id = m ? m.id : null;
-      if (m){ r.team = m.team || r.team; r.rate = rateForName(m, r.last, r.first); }
+      if (m){ r.team = m.team || r.team; r.rate = rateForName(m, r.last, r.first, r.work_date || rv.sheet_date); }
       drawTsReview();
     }
   });
@@ -2554,21 +2596,38 @@ function drawTsReview(){
   };
 }
 /* ---- harvest notes review: parsed rows -> check -> save -------------------- */
+// A harvest row's rate follows its date: the dated raise first, else the rate the
+// row opened with. Writes the Rate input and Total too, so the three can't disagree.
+function setHarvestRate(r, tr){
+  const nr = datedRate(r.worker, '', r.work_date) ?? r._baseRate ?? 20;
+  if (nr === r.rate) return;
+  r.rate = nr;
+  if (!tr) return;
+  const rc = tr.querySelector('[data-f="rate"]'); if (rc) rc.value = nr;
+  const tc = tr.querySelector('.c-t');
+  if (tc) tc.textContent = tsMoney(tsCalcTotal(tsCalcHours(r.clock_in, r.clock_out, r.break_min), nr, r.people));
+}
 function openHarvestReview(parsed, dataUrl, path, filledRows){
   const rows = (parsed||[]).map(r => {
     // workers mix distro + grow-site hours in one list; Claude classifies each
     // row and the Type column lets you flip anything it got wrong
     const category = r.category === 'distro' ? 'distro' : 'harvest';
+    const wd = r.date || todayISO();   // harvest rows carry their own date; there is no sheet-level date here
+    // the rate to fall back on whenever no dated raise applies. Stashed so a later
+    // date edit re-derives from it instead of from the (already raised) r.rate
+    const base = (r.worker && /norma/i.test(r.worker)) ? 25 : (r.rate || 20);
     const row = {
       include: true,
       category,
       unsure: r.category == null || /(unread|illegible|cross|smudg|no se lee|ilegible|\?\?\?)/i.test(r.note || ''),   // parser couldn't tell/read — highlight until touched
-      location: r.location || '', work_date: r.date || todayISO(),
+      location: r.location || '', work_date: wd,
       task: r.task || '', worker: r.worker || '',
       people: r.people || 1,
       break_min: Math.max(0, +r.break_min || 0),
       clock_in: r.time_in || '', clock_out: r.time_out || '',
-      rate: (r.worker && /norma/i.test(r.worker)) ? 25 : (r.rate || 20),
+      _baseRate: base,
+      // r.date, NOT wd: an undated row must never pick up the raise off today's date
+      rate: datedRate(r.worker, '', r.date) ?? base,
       note: r.note || '',
     };
     if (category === 'distro') applyDistroDefaults(row);
@@ -2579,11 +2638,16 @@ function openHarvestReview(parsed, dataUrl, path, filledRows){
   drawHarvestReview();
 }
 // a distro row must show exactly what will save: a real company in the select,
-// and the matched roster member's rate when the parser only had the generic $20
+// and the row's real rate when the parser only had the generic $20: the dated
+// raise first, then the matched roster member's base rate
 function applyDistroDefaults(r){
   if (!TS_COMPANIES.includes(r.location)) r.location = TS_COMPANIES[0];
-  const { m } = compareNameMatch(r.worker);
-  if (m && m.default_rate != null && (r.rate == null || r.rate === 20)) r.rate = +m.default_rate;
+  const { m, first, last } = compareNameMatch(r.worker);
+  if (r.rate == null || r.rate === 20){   // only fill an unset/generic rate, never one that was typed in
+    const dr = datedRate(last, first, r.work_date);
+    if (dr != null) r.rate = dr;
+    else if (m && m.default_rate != null) r.rate = +m.default_rate;
+  }
 }
 // split a self-reported name (usually "First Last") and match it to the roster
 function compareNameMatch(worker){
@@ -2690,20 +2754,20 @@ function drawHarvestReview(){
       if (r.category === 'harvest' && r.location === 'Portal') r.location = '';
       drawHarvestReview(); return;
     }
-    if (f === 'work_date'){   // date drives the missed-last-PP flag/banner — redraw so it stays truthful
+    if (f === 'work_date'){   // the date drives the RATE as well as the missed-last-PP flag — re-derive both
       r[f] = cell.value;
+      if (!r._rateEdited) setHarvestRate(r, cell.closest('tr'));
       if ((rv.payTo||'natural') === 'current') drawHarvestReview();
       return;
     }
     if (f === 'people') r[f] = +cell.value||1;
-    else if (f === 'rate') r[f] = cell.value===''?null:+cell.value;
+    else if (f === 'rate'){ r._rateEdited = true; r[f] = cell.value===''?null:+cell.value; }   // a typed rate is never re-derived
     else if (f === 'break_min') r[f] = Math.max(0, +cell.value||0);
     else r[f] = cell.value;
     if (f === 'worker'){   // combobox: live-update the roster ✓/new badge without a full redraw (keeps typing focus)
-      if (/norma/i.test(cell.value)){   // Norma's crew = $25 — also rewrite the Rate input so it can't disagree with the Total
-        r.rate = 25;
-        const rc = cell.closest('tr').querySelector('[data-f="rate"]');
-        if (rc) rc.value = 25;
+      if (!r._rateEdited && /norma/i.test(cell.value)){   // Norma's crew: base $25 plus any dated raise for THIS row's date
+        r._baseRate = 25;
+        setHarvestRate(r, cell.closest('tr'));
       }
       const badge = cell.parentElement.querySelector('.wmatch');
       if (badge) badge.innerHTML = wBadge(cell.value);
@@ -2747,7 +2811,7 @@ function drawHarvestReview(){
           // distro pay is per person; the page has no crew column, so never
           // let a hidden multiplier ride along — note it for a human instead
           people: 1, clock_in: r.clock_in || null, clock_out: r.clock_out || null,
-          break_minutes: r.break_min || 0, rate: r.rate == null ? rateForName(m, last, first) : r.rate,
+          break_minutes: r.break_min || 0, rate: r.rate == null ? rateForName(m, last, first, r.work_date || todayISO()) : r.rate,
           note: [crew > 1 ? 'crew of ' + crew + ' — add the others as their own rows' : null, r.task, r.note]
             .filter(Boolean).join(' — ') || null,
           seq: rv.rows.indexOf(r) + 1,
