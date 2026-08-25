@@ -144,6 +144,13 @@ tfoot th{border-top:1px solid var(--text2)}
 .fn{color:var(--muted);font-size:12px;margin-top:16px}
 .fn li{margin-bottom:4px}
 @media (max-width:700px){body{padding:16px 10px 50px}}
+@media (max-width:620px){
+  #overlay{padding:10px}
+  .modal{padding:12px 12px 14px}
+  .subbub{padding:9px 10px}
+  .lline{grid-template-columns:minmax(72px,1fr) 46px 16px 62px 58px 20px 20px 20px;gap:4px;margin-left:4px;font-size:12px}
+  .lline input{padding:3px 5px;font-size:12px}
+}
 </style></head><body><div class="wrap">
 
 <div class="topbar">
@@ -237,7 +244,8 @@ let editKey='',canEdit=false;
 // ── normalize: coerce anything (old saves, imports, server payloads) to the schema
 const normNum=v=>{if(v==null||v==='')return null;const n=Number(v);return Number.isFinite(n)?n:null}; // Number(null) is 0 - null must survive as null
 const normStr=v=>typeof v==='string'?v:(v==null?'':String(v));
-const normId=(v,p)=>{const s=normStr(v).replace(/[^\w-]/g,'');return s||uid(p)};
+const normUrl=v=>{const s=normStr(v).trim();return /^https?:\/\//i.test(s)?s:''}; // hrefs from state must never smuggle javascript: etc.
+const normId=(v,p)=>{const s=normStr(v).replace(/[^\w-]/g,'');return (!s||s==='__proto__'||s==='constructor'||s==='prototype')?uid(p):s};
 function normalize(s){
   const out={version:2,transfers:[],runs:[],orders:[],settle:{},payments:[]};
   if(!s||typeof s!=='object') return out;
@@ -245,7 +253,7 @@ function normalize(s){
     if(!t||typeof t!=='object') continue;
     out.transfers.push({id:normId(t.id,'T'),manifest:normStr(t.manifest),date:normStr(t.date),
       from:normStr(t.from),fromLicense:normStr(t.fromLicense),to:normStr(t.to),toLicense:normStr(t.toLicense),
-      fileUrl:normStr(t.fileUrl),
+      fileUrl:normUrl(t.fileUrl),
       packages:(Array.isArray(t.packages)?t.packages:[]).filter(p=>p&&typeof p==='object').map(p=>({
         id:normId(p.id,'PKG'),tag:normStr(p.tag),strain:normStr(p.strain),item:normStr(p.item),
         harvest:normStr(p.harvest),grams:normNum(p.grams)??0,shippedDisplay:normStr(p.shippedDisplay),
@@ -256,7 +264,7 @@ function normalize(s){
     if(!r||typeof r!=='object'||!pkgIds.has(normId(r.pkgId,'PKG'))) continue;
     const nb=(r.nabis&&typeof r.nabis==='object')?r.nabis:{};
     const mats=(Array.isArray(r.mats)?r.mats:[]).filter(m=>m&&typeof m==='object')
-      .map(m=>({id:normId(m.id,'M'),name:normStr(m.name),qty:normNum(m.qty),unit:normNum(m.unit),fileUrl:normStr(m.fileUrl)}));
+      .map(m=>({id:normId(m.id,'M'),name:normStr(m.name),qty:normNum(m.qty),unit:normNum(m.unit),fileUrl:normUrl(m.fileUrl)}));
     const legacy=normNum(r.materials); // pre-itemization saves carried one number
     if(legacy!=null&&legacy!==0&&!mats.length) mats.push({id:uid('M'),name:'materials',qty:1,unit:legacy});
     const labs=(Array.isArray(r.labs)?r.labs:[]).filter(l=>l&&typeof l==='object')
@@ -324,11 +332,19 @@ async function pushRemote(){
     }
     const j=await r.json();
     if(j.ok){rev=j.rev;online=true;showPill();}
-    else if(j.conflict){ // someone else saved; adopt the server version
-      rev=j.rev;state=normalize(j.state);persistLocal();render();online=true;
+    else if(j.conflict){
+      // Another writer (usually the hourly Nabis feed) got there first. Keep OUR edits:
+      // adopt only the feed-owned rows from the server copy, then re-push at the new rev.
+      online=true;rev=j.rev;
+      const srv=normalize(j.state);
+      state.orders=[...state.orders.filter(o=>o.src!=='nabis'),...srv.orders.filter(o=>o.src==='nabis')];
+      persistLocal();dirty=true;
+      const a=document.activeElement;
+      if(a&&a.tagName==='INPUT'){refreshCalc();}else{render();} // never stomp mid-typing
     }
   }catch(e){online=false;dirty=true;}
-  pushing=false;setStatus();
+  finally{pushing=false;} // the bad-token return must not leave the poll loop wedged
+  setStatus();
   if(dirty&&online)pushRemote(); // flush edits that arrived while this push was in flight
 }
 function save(){
@@ -354,6 +370,7 @@ async function pollRemote(){
   if(canEdit&&dirty){pushRemote();return;} // retry an unsent edit before pulling
   try{
     const row=await fetchRemote();online=true;
+    if(pushing||saveT||dirty){setStatus();return;} // an edit landed while this fetch was in flight
     if(row&&row.rev!==rev){
       const a=document.activeElement;
       if(canEdit&&a&&a.tagName==='INPUT'){setStatus();return;} // don't stomp mid-typing
@@ -458,7 +475,9 @@ function render(){
 
 function renderBoard(){
   const board=document.getElementById('board');
+  const sl=[...board.querySelectorAll('.flowwrap')].map(w=>w.scrollLeft); // innerHTML would snap the board back to column one
   board.innerHTML=state.transfers.map(t=>flowHTML(t)).join('');
+  [...board.querySelectorAll('.flowwrap')].forEach((w,i)=>{if(sl[i])w.scrollLeft=sl[i];});
 }
 
 const chev=k=>`<span class="chev">${expanded.has(k)?'&#9662;':'&#9656;'}</span>`;
@@ -532,7 +551,9 @@ function renderModal(){
 }
 function openModal(pkg,kind){modal={pkg,kind};renderModal();refreshCalc();}
 function closeModal(){modal=null;renderModal();}
-document.getElementById('overlay').addEventListener('click',e=>{if(e.target.id==='overlay')closeModal();});
+let ovDown=null; // close only when the PRESS started on the backdrop; a drag-select ending outside the dialog must not close it
+document.getElementById('overlay').addEventListener('pointerdown',e=>{ovDown=e.target;});
+document.getElementById('overlay').addEventListener('click',e=>{if(e.target.id==='overlay'&&ovDown&&ovDown.id==='overlay')closeModal();});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&modal)closeModal();});
 
 function packBody(p){
@@ -889,7 +910,9 @@ document.addEventListener('click',e=>{
     const m=(r.mats||[]).find(x=>x.id===b.dataset.id); if(!m) return;
     const url=prompt('Invoice link for this material (empty to remove):',m.fileUrl||'');
     if(url===null) return;
-    m.fileUrl=url.trim();
+    const u=normUrl(url); // validate BEFORE touching state: a bad paste must not wipe a good link
+    if(url.trim()&&!u){alert('Only http(s) links can be attached; the existing link was kept.');return;}
+    m.fileUrl=u;
     save();render();
   }else if(b.dataset.act==='delMat'){
     const r=state.runs.find(x=>x.id===b.dataset.run); if(!r) return;
