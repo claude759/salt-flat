@@ -584,6 +584,10 @@
       <input type="file" id="ts-photo" accept="image/*,application/pdf,.pdf" hidden>
       <input type="file" id="ts-photo-cam" accept="image/*" capture="environment" hidden>
     </div>
+    <div id="gusto-syncbar" style="display:flex;align-items:center;gap:10px;margin:-6px 0 14px;padding:0 2px">
+      <button class="btn" id="gustoPullBtn" title="Ask the office Mac to pull fresh hours from Gusto right now — takes a few minutes">⟳ Sync Gusto now</button>
+      <span id="gustoPullStatus" class="faint" style="font-size:12.5px"></span>
+    </div>
     <div id="ts-review"></div>
     <div id="ts-roster" hidden></div>
     <div id="ts-compare" hidden></div>
@@ -965,6 +969,7 @@ function renderTimesheets(){
   const isRoster = tsState.category === 'roster', isCompare = tsState.category === 'compare';
   const hideMain = isRoster || isCompare;
   document.getElementById('ts-drop').style.display = hideMain ? 'none' : '';
+  document.getElementById('gusto-syncbar').style.display = hideMain ? 'none' : 'flex';
   document.getElementById('ts-review').style.display = hideMain ? 'none' : '';
   document.getElementById('ts-card').style.display = hideMain ? 'none' : '';
   document.getElementById('ts-roster').hidden = !isRoster;
@@ -2038,6 +2043,59 @@ async function exportShifts(kind){
     }catch(err){ toast(err.message || 'Excel export failed', true); }
   }
 }
+
+/* ---- "Sync Gusto now": queue a pull request the office Mac's worker picks up
+   (every 60s). RLS lets any confirmed staff member request one. The pull runs on
+   Gianni's Mac, so if that machine is asleep the request just waits — say so
+   instead of looking broken. ---- */
+(function wireGustoPull(){
+  const btn = document.getElementById('gustoPullBtn');
+  const status = document.getElementById('gustoPullStatus');
+  if (!btn) return;
+  const showLast = async () => {
+    const { data } = await sb.from('gusto_pull_requests').select('*').order('requested_at', { ascending: false }).limit(1);
+    const r = data && data[0]; if (!r) return null;
+    const when = new Date(r.requested_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    status.textContent = r.status === 'done' ? `Last sync: ✓ ${when}`
+      : r.status === 'error' ? `Last sync: ⚠ ${when} — ${r.detail || 'failed'}`
+      : `Last sync: ⏳ ${r.status} (${when})…`;
+    return r;
+  };
+  showLast();
+  const watch = (id, t0) => {
+    const poll = setInterval(async () => {
+      const { data: r } = await sb.from('gusto_pull_requests').select('*').eq('id', id).single();
+      if (!r) return;
+      const mins = Math.round((Date.now() - t0) / 60000);
+      if (r.status === 'pending') status.textContent = mins >= 3
+        ? '⏳ Still waiting for the sync computer — it may be asleep. The request will run when it wakes.'
+        : '⏳ Waiting for the sync computer to pick this up…';
+      if (r.status === 'running') status.textContent = '⏳ Pulling from Gusto… (takes 5–15 min; hours appear as they land)';
+      if (r.status === 'done' || r.status === 'error' || Date.now() - t0 > 25 * 60000){
+        clearInterval(poll); btn.disabled = false; showLast();
+        if (r.status === 'done') toast('Gusto hours synced ✓');
+        else if (r.status === 'error') toast('Gusto sync failed — ' + (r.detail || 'see the status line'), true);
+      }
+    }, 5000);
+  };
+  btn.onclick = async () => {
+    btn.disabled = true;
+    // a pull already queued or running? watch it — stacking another gains nothing
+    const last = await showLast();
+    if (last && (last.status === 'pending' || last.status === 'running')
+        && Date.now() - new Date(last.requested_at) < 25 * 60000){
+      toast('A sync is already in progress — watching it.');
+      watch(last.id, new Date(last.requested_at).getTime());
+      return;
+    }
+    const { data, error } = await sb.from('gusto_pull_requests')
+      .insert({ requested_by: myId }).select('*').single();
+    if (error){ btn.disabled = false; toast('Couldn’t request the sync — ' + error.message, true); return; }
+    toast('Sync requested — the office Mac picks it up within a minute.');
+    status.textContent = '⏳ Waiting for the sync computer to pick this up…';
+    watch(data.id, Date.now());
+  };
+})();
 
 /* ---- photo → OCR → review → save ------------------------------------------ */
 // An Edge Function validates the caller's JWT LIVE (auth.getUser), where a table
