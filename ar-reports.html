@@ -311,6 +311,8 @@
   select.em-rep.inferred{color:var(--muted);font-style:italic;border-style:dashed}
   .rep-txt{font-size:12px} .rep-txt.unset{color:var(--red)} .rep-txt.inferred{color:var(--muted);font-style:italic;border-bottom:1px dashed var(--line)}
   .cbg{display:inline-block;width:15px;text-align:center;color:var(--line);font-weight:700}
+  .btn.warn{border-color:color-mix(in srgb,var(--red) 45%,var(--line));color:var(--red)}
+  .btn.warn:hover{background:color-mix(in srgb,var(--red) 14%,var(--panel2))}
   .cbg.on{color:var(--accent)}
   #em-edit.on{background:var(--accent);color:#fff;border-color:var(--accent)}
   input.em-cb{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
@@ -5562,7 +5564,10 @@ async function loadReminders(){
 function emRemFor(keys){ for(const k of (Array.isArray(keys)?keys:[keys])){ if(EM_REM[k]) return EM_REM[k]; } return null; }
 async function setReminder(key,name,field,val,aliasKeys){
   const cur=emRemFor([key,...(aliasKeys||[])])||{b1:false,a1:false,a7:false,a30:EM_D30_DEFAULT,last:null,rep:'',email:'',cc:''};
-  const next={...cur,[field]:val}; EM_REM[key]=next; emInvalidate(); renderEmails();
+  const next={...cur,[field]:val}; EM_REM[key]=next; emInvalidate();
+  // text fields: the input on screen ALREADY shows what was typed — rebuilding the table here
+  // would destroy the field mid-flow (and eat the next click). Checkboxes/selects re-render.
+  if(field!=='email'&&field!=='cc') renderEmails();
   try{ const c=sbAuth(); if(!c) throw new Error('not signed in');
     const {error}=await c.from('email_reminders').upsert({acct_key:key, acct_name:name,
       d1_before:next.b1, d1_after:next.a1, d7_after:next.a7, d30_after:next.a30, rep:next.rep||null,
@@ -5929,6 +5934,26 @@ function renderEmTpl(){
 // ── Reminders sub-page: what has been sent (email_sends) + what is queued (computed the same
 // way the sender computes it: armed accounts × enabled offsets × open invoice due dates).
 let EM_SENDS=null, EM_SENDS_LOADED=false;
+let EM_BLOCKS=null, EM_BLOCKS_LOADED=false;   // Set of acct|kind|invoice — mirrors the sender's gate key
+async function loadBlocks(){
+  if(EM_BLOCKS_LOADED) return; EM_BLOCKS_LOADED=true;
+  try{ const c=sbAuth(); if(!c) return;
+    const {data,error}=await c.from('email_blocks').select('acct_key,kind,invoice_no').abortSignal(AbortSignal.timeout(8000));
+    if(error) throw error;
+    EM_BLOCKS=new Set((data||[]).map(b=>b.acct_key+'|'+b.kind+'|'+b.invoice_no));
+    if(emPage==='reminders') renderEmails();
+  }catch(e){ EM_BLOCKS_LOADED=false; }
+}
+async function toggleBlock(key,kind,inv,on){
+  const c=sbAuth(); if(!c){ alert('Sign in to block reminders.'); return; }
+  EM_BLOCKS=EM_BLOCKS||new Set(); const k=key+'|'+kind+'|'+inv;
+  if(on) EM_BLOCKS.add(k); else EM_BLOCKS.delete(k);
+  renderEmails();   // optimistic — revert below on failure
+  try{
+    if(on){ const {error}=await c.from('email_blocks').upsert({acct_key:key, kind, invoice_no:inv, blocked_by:(AUTH_USER&&AUTH_USER.email)||''}); if(error) throw error; }
+    else { const {error}=await c.from('email_blocks').delete().match({acct_key:key, kind, invoice_no:inv}); if(error) throw error; }
+  }catch(e){ if(on) EM_BLOCKS.delete(k); else EM_BLOCKS.add(k); renderEmails(); alert('Could not save that block — '+(e.message||e)); }
+}
 async function loadSends(){
   if(EM_SENDS_LOADED) return; EM_SENDS_LOADED=true;
   try{ const c=sbAuth(); if(!c) return;
@@ -5939,21 +5964,55 @@ async function loadSends(){
 }
 const EM_KIND_LABEL={d1_before:'1 day before due', d1_after:'1 day past due', d7_after:'7 days past due', d30_after:'30 days past due', dry_run:'daily dry-run summary'};
 function renderEmReminders(wrap,note){
+  loadBlocks();
   const rows=emailsDataC();
   const day=864e5, today=new Date(); today.setHours(0,0,0,0);
+  // The next run: today's 9 AM if it hasn't happened yet, else tomorrow's.
+  const now=new Date(); const nextRunT=now.getHours()<9?today.getTime():today.getTime()+day;
+  // What was already SENT for real, per invoice+tier (the sender's own gate, mirrored)
+  const sentSet=new Set();
+  (EM_SENDS||[]).forEach(x=>{ if(x.test) return; const kinds=String(x.kind||'').split('+');
+    let invs=[]; try{ invs=typeof x.invoices==='string'?JSON.parse(x.invoices):(x.invoices||[]); }catch(_){ }
+    kinds.forEach(k=>invs.forEach(i=>sentSet.add((x.acct_key||'')+'|'+k+'|'+(i.no||'')))); });
+  // Mirror the sender's bands exactly: overdue tiers fire AT-OR-PAST the line (backlog → next
+  // run), future invoices at their exact tier dates; one send per invoice per tier.
   const up=[];
   rows.forEach(r=>{ if(!r.email||!(r.b1||r.a1||r.a7||r.a30)) return;
     (INVOICES||[]).forEach(x=>{ if(!(x.outstanding>0.005)||!x.dueDate) return;
       if(!(r.aliasKeys||[r.key]).includes(baRowKey(x.dispensary))) return;
       const due=new Date(x.dueDate); due.setHours(0,0,0,0);
-      [[r.b1,-1,'d1_before'],[r.a1,1,'d1_after'],[r.a7,7,'d7_after'],[r.a30,30,'d30_after']].forEach(([on,off,kind])=>{
-        if(!on) return; const fire=due.getTime()+off*day;
-        if(fire>=today.getTime()) up.push({fire, dba:r.dba, kind, no:x.number||'—', amt:x.outstanding, to:r.email}); }); }); });
-  up.sort((a,b)=>a.fire-b.fire);
-  const fD=t=>new Date(t).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+      const ddNext=Math.round((due.getTime()-nextRunT)/day);   // as the sender will see it
+      const tiers=[['d1_before',r.b1],['d1_after',r.a1],['d7_after',r.a7],['d30_after',r.a30]];
+      const bandAt=dd=>dd===1?'d1_before':(dd<=-1&&dd>-7)?'d1_after':(dd<=-7&&dd>-30)?'d7_after':dd<=-30?'d30_after':null;
+      const push=(kind,fire)=>{ const inv=x.number||'—';
+        if(sentSet.has(r.key+'|'+kind+'|'+inv)) return;
+        up.push({fire, key:r.key, dba:r.dba, kind, no:inv, amt:x.outstanding, to:r.email,
+                 blocked:!!(EM_BLOCKS&&EM_BLOCKS.has(r.key+'|'+kind+'|'+inv))}); };
+      // next run: whatever band the invoice sits in THEN, if that tier is armed
+      const b=bandAt(ddNext); const armed=Object.fromEntries(tiers);
+      if(b&&armed[b]) push(b, nextRunT);
+      // future exact dates: each armed overdue tier whose entry date is after the next run
+      [['d1_after',1],['d7_after',7],['d30_after',30]].forEach(([kind,off])=>{
+        if(!armed[kind]) return; const fire=due.getTime()+off*day;
+        if(fire>nextRunT && bandAt(Math.round((due.getTime()-fire)/day))===kind) push(kind, fire); });
+      if(r.b1 && due.getTime()-day>nextRunT) push('d1_before', due.getTime()-day);
+    }); });
+  up.sort((a,b)=>(a.fire-b.fire)||(b.amt-a.amt));
+  const fD=t=>new Date(t).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
   const inD=t=>{ const d=Math.round((t-today.getTime())/day); return d===0?'today':d===1?'tomorrow':`in ${d} days`; };
-  const upTbl=up.length?`<table class="ddtable"><thead><tr><th>When</th><th>Customer</th><th>Trigger</th><th>Invoice</th><th class="num">Amount</th><th>Goes to</th></tr></thead><tbody>
-      ${up.slice(0,120).map(u=>`<tr><td>${fD(u.fire)} <span class="rep">${inD(u.fire)}</span></td><td>${esc(u.dba)}</td><td>${EM_KIND_LABEL[u.kind]}</td><td>${esc(u.no)}</td><td class="num money">${fmt$(u.amt)}</td><td>${esc(u.to)}</td></tr>`).join('')}</tbody></table>${up.length>120?`<div class="rep" style="padding:6px 0">+${up.length-120} more…</div>`:''}`
+  // group by fire date; the next-run group gets the spotlight
+  const groups=[]; up.forEach(u=>{ const g=groups[groups.length-1];
+    if(g&&g.fire===u.fire) g.rows.push(u); else groups.push({fire:u.fire, rows:[u]}); });
+  const rowHtml=u=>`<tr${u.blocked?' style="opacity:.45"':''}>
+      <td>${esc(u.dba)}</td><td>${EM_KIND_LABEL[u.kind]}</td><td>${esc(u.no)}</td>
+      <td class="num money">${u.blocked?`<s>${fmt$(u.amt)}</s>`:fmt$(u.amt)}</td><td>${esc(u.to)}</td>
+      <td class="num"><button class="btn sm${u.blocked?'':' warn'}" data-blk="${esc(u.key)}|${esc(u.kind)}|${esc(u.no)}" data-on="${u.blocked?'0':'1'}">${u.blocked?'Unblock':'Block'}</button></td></tr>`;
+  const groupHtml=(g,first)=>{ const live=g.rows.filter(u=>!u.blocked);
+    return `<div class="ddhead" style="${first?'color:var(--accent);':''}margin-top:${first?'0':'16px'}">
+      ${first?'📤 NEXT SEND — ':''}${fD(g.fire)} <span class="rep">${inD(g.fire)} · ${live.length} email${live.length!==1?'s':''} · ${fmt$(live.reduce((t,u)=>t+u.amt,0))}${g.rows.length>live.length?` · ${g.rows.length-live.length} blocked`:''}</span></div>
+    <table class="ddtable"><thead><tr><th>Customer</th><th>Trigger</th><th>Invoice</th><th class="num">Amount</th><th>Goes to</th><th></th></tr></thead>
+      <tbody>${g.rows.map(rowHtml).join('')}</tbody></table>`; };
+  const upTbl=groups.length?groups.slice(0,14).map((g,i)=>groupHtml(g,i===0)).join('')+(groups.length>14?`<div class="rep" style="padding:6px 0">+${groups.slice(14).reduce((t,g)=>t+g.rows.length,0)} more further out…</div>`:'')
     :`<div class="empty">Nothing queued — arm accounts on the Accounts sub-page (a cadence box + a contact email) and their reminders appear here.</div>`;
   const sends=EM_SENDS||[];
   const pastTbl=EM_SENDS===null
@@ -5965,13 +6024,29 @@ function renderEmReminders(wrap,note){
         <td class="num money">${x.total!=null?fmt$(x.total):'—'}</td>
         <td>${x.test?'<span class="src" style="background:#4a3b16;color:#ffd76e">TEST</span>':''}</td></tr>`).join('')}</tbody></table>`
     :`<div class="empty">No reminders sent yet.</div>`;
-  wrap.innerHTML=`<div class="ddhead">Upcoming — ${up.length} scheduled reminder${up.length!==1?'s':''}</div>${upTbl}
-    <div class="ddhead" style="margin-top:18px">Sent</div>${pastTbl}`;
-  note.innerHTML=`<b>Reminders</b> — the top table is what the daily 9 AM send is going to do (armed accounts × their cadence boxes × open invoice due dates); the bottom is what it has done, straight from the send log. Every customer email CCs <b>Victoria, Amanda, Gianni and the account's rep</b> on top of the customer's own CC contacts — that's why the template says "reply all". <b>TEST</b> rows went to the test inbox, not the customer — the system stays in test mode until the automation@ sender goes live.`;
+  wrap.innerHTML=`${upTbl}
+    <div class="ddhead" style="margin-top:22px">Sent</div>${pastTbl}`;
+  wrap.querySelectorAll('[data-blk]').forEach(b=>b.onclick=()=>{ const [k,kind,inv]=b.dataset.blk.split('|'); toggleBlock(k,kind,inv,b.dataset.on==='1'); });
+  note.innerHTML=`<b>Reminders</b> — the top table is what the daily 9 AM send is going to do (armed accounts × their cadence boxes × open invoice due dates); the bottom is what it has done, straight from the send log. Every customer email CCs <b>Victoria, Amanda, Gianni and the account's rep</b> on top of the customer's own CC contacts — that's why the template says "reply all". <b>Block</b> silences exactly that one reminder (that account, that tier, that invoice) — future invoices and other tiers are untouched; Unblock re-queues it. <b>TEST</b> rows went to the test inbox, not the customer — the system stays in test mode until the automation@ sender goes live.`;
 }
+let EM_RENDER_PENDING=false, EM_RENDER_TIMER=null;
 function renderEmails(){
   if(APP_STATE==='NY') return;                       // CA-only page
   const wrap=$('#em-wrap'), note=$('#em-note'); if(!wrap) return;
+  // A re-render REPLACES the table's DOM — including the input someone is typing an email into.
+  // Any render request that arrives mid-typing (a background payload refresh, another field's
+  // save) waits until the field blurs; nothing is lost, the rebuild just yields to the human.
+  const ae=document.activeElement;
+  if(ae && ae.classList && ae.classList.contains('em-inp') && wrap.contains(ae)){
+    EM_RENDER_PENDING=true;
+    // focusout normally triggers the catch-up render, but focus events are unreliable in
+    // backgrounded windows — a slow poll guarantees the rebuild lands once typing stops
+    if(!EM_RENDER_TIMER) EM_RENDER_TIMER=setInterval(()=>{ const a2=document.activeElement;
+      if(!(a2&&a2.classList&&a2.classList.contains('em-inp'))){ clearInterval(EM_RENDER_TIMER); EM_RENDER_TIMER=null; if(EM_RENDER_PENDING) renderEmails(); } },1500);
+    return;
+  }
+  EM_RENDER_PENDING=false;
+  if(EM_RENDER_TIMER){ clearInterval(EM_RENDER_TIMER); EM_RENDER_TIMER=null; }
   renderEmTpl();
   const tb=$('#em-toolbar'); if(tb) tb.classList.toggle('hidden', emPage==='reminders');
   if(emPage==='reminders'){ loadSends(); renderEmReminders(wrap,note); return; }
@@ -6051,6 +6126,7 @@ $('#em-wrap').addEventListener('change',(ev)=>{
 });
 $('#em-wrap').addEventListener('keydown',(ev)=>{ const inp=ev.target.closest&&ev.target.closest('input.em-inp');
   if(inp && ev.key==='Enter'){ ev.preventDefault(); inp.blur(); } });
+$('#em-wrap').addEventListener('focusout',(ev)=>{ if(ev.target.closest&&ev.target.closest('input.em-inp')&&EM_RENDER_PENDING) setTimeout(renderEmails,0); });   // focusout bubbles; blur does not
 $('#em-wrap').addEventListener('click',(ev)=>{ const b=ev.target.closest&&ev.target.closest('[data-orders]');
   if(!b) return; ev.stopPropagation(); const {start,end}=repRange('cust'); let ok=null; try{ ok=JSON.parse(b.dataset.okeys||'null'); }catch(_){}
   customerOrdersDrill(b.dataset.orders,start,end,ok); });
