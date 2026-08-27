@@ -325,6 +325,17 @@
     font:inherit;font-size:11.5px;padding:3px 10px;cursor:pointer}
   .blk-btn:hover{border-color:var(--red);color:var(--red)}
   .blk-btn.unb:hover{border-color:var(--green);color:var(--green)}
+  #rem-table tr.remrow{cursor:pointer}
+  #rem-table tr.remrow.open td{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+  /* the preview renders like the customer's inbox will: light card, email typography */
+  .emailprev{background:#ffffff;color:#222;border-radius:10px;padding:18px 20px;margin:6px 0 10px;font:14px/1.6 -apple-system,'Segoe UI',sans-serif;max-width:720px}
+  .emailprev .hdr{font-size:12.5px;color:#555;border-bottom:1px solid #e5e5e5;padding-bottom:10px;margin-bottom:12px}
+  .emailprev .hdr b{color:#222}
+  .emailprev table{border-collapse:collapse;margin:10px 0;min-width:460px}
+  .emailprev th{font-size:12px;color:#666;text-align:left;padding:5px 9px}
+  .emailprev td{padding:5px 9px;border-bottom:1px solid #eee;font-size:13px}
+  .emailprev .tot td{font-weight:700;border-bottom:none}
+  .emailprev p{margin:0 0 10px}
   .cbg.on{color:var(--accent)}
   #em-edit.on{background:var(--accent);color:#fff;border-color:var(--accent)}
   input.em-cb{width:15px;height:15px;cursor:pointer;accent-color:var(--accent)}
@@ -5975,6 +5986,45 @@ async function loadSends(){
   }catch(e){ EM_SENDS_LOADED=false; }
 }
 const EM_KIND_LABEL={d1_before:'1 day before due', d1_after:'1 day past due', d7_after:'7 days past due', d30_after:'30 days past due', dry_run:'daily dry-run summary'};
+// ── What the email will actually say — MIRRORS ar-reminders.mjs (ccFor, fill, composeReminder).
+// If the sender's policy changes, change this preview with it.
+const REM_STANDING_CC=['victoria@wizardtrees.com','amanda@wizardtrees.com','gianni@wizardtrees.com'];
+const REM_REP_EMAILS={Jesse:'jesse@wizardtrees.com',Joanna:'joanna@wizardtrees.com',Amanda:'amanda@wizardtrees.com'};
+const REM_TPL_DEFAULT={subject:'Payment reminder — Wizard Trees — {dba}',
+  intro:'Hi {dba} team,\n\nThis is a friendly automated reminder from Wizard Trees. {trigger}\n\nHere is the current statement of open invoices on your account:',
+  closing:"If payment is already on its way, please disregard this note — and thank you! If anything looks off, or you have any questions at all, just reply all to this email and our team will straighten it out.\n\nThank you for your business,\nWizard Trees — Accounts Receivable"};
+function remCcFor(acct){
+  const custCc=String(acct.cc||'').split(/[;,]/).map(x=>x.trim()).filter(Boolean);
+  const reps=String(acct.rep||'').split(/[+,;]/).map(x=>x.trim()).filter(Boolean);
+  const all=[...custCc,...REM_STANDING_CC,...reps.map(r=>REM_REP_EMAILS[r]||'')].filter(Boolean);
+  const seen=new Set([String(acct.email||'').toLowerCase()]);
+  return all.filter(e=>{const k=e.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true;});
+}
+function remPreviewHtml(u, groupRows){
+  const acct=emailsDataC().find(r=>r.key===u.key); if(!acct) return '<div class="empty">account not found</div>';
+  const invs=(INVOICES||[]).filter(x=>x.outstanding>0.005&&(acct.aliasKeys||[acct.key]).includes(baRowKey(x.dispensary)))
+    .sort((a,b)=>(b.dpd||0)-(a.dpd||0));
+  const firing=groupRows.filter(g=>g.key===u.key&&!g.blocked);
+  const tpl=EM_TPL||REM_TPL_DEFAULT;
+  const trig=firing.map(f=>{const inv=invs.find(x=>(x.number||'—')===f.no);
+    return `Invoice ${f.no} (${fmt$(f.amt)}) is ${EM_KIND_LABEL[f.kind]}.`;}).join(' ');
+  const fill=t=>String(t).replaceAll('{dba}',acct.dba).replaceAll('{trigger}',trig);
+  const paras=t=>esc(t).split(/\n{2,}/).map(x=>`<p>${x.replace(/\n/g,'<br>')}</p>`).join('');
+  const fD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+  const cc=remCcFor(acct);
+  const tbl=`<table><thead><tr><th>Invoice</th><th>Invoiced</th><th>Due</th><th style="text-align:right">Status</th><th style="text-align:right">Amount due</th></tr></thead><tbody>
+    ${invs.map(x=>`<tr><td>${esc(x.number||'—')}</td><td>${fD(x.invoiceDate)}</td><td>${fD(x.dueDate)}</td>
+      <td style="text-align:right${x.dpd>0?';color:#c0392b':''}">${x.dpd>0?x.dpd+' days past due':x.dpd===0?'due today':'due in '+(-x.dpd)+' day'+(x.dpd===-1?'':'s')}</td>
+      <td style="text-align:right;font-weight:600">${fmt$(x.outstanding)}</td></tr>`).join('')}
+    <tr class="tot"><td colspan="4" style="text-align:right">Total outstanding</td><td style="text-align:right">${fmt$(invs.reduce((t,x)=>t+x.outstanding,0))}</td></tr></tbody></table>`;
+  return `<div class="emailprev">
+    <div class="hdr">From: <b>automation@wizardtrees.com</b> (Wizard Trees — Accounts Receivable) · replies to gianni@<br>
+      To: <b>${esc(acct.email||'(no email!)')}</b><br>
+      Cc: ${cc.map(esc).join(', ')||'—'}<br>
+      Subject: <b>${esc(fill(tpl.subject))}</b></div>
+    ${paras(fill(tpl.intro))}${tbl}${paras(fill(tpl.closing))}
+  </div>`;
+}
 function renderEmReminders(wrap,note){
   loadBlocks();
   const rows=emailsDataC();
@@ -6016,20 +6066,22 @@ function renderEmReminders(wrap,note){
   const groups=[]; up.forEach(u=>{ const g=groups[groups.length-1];
     if(g&&g.fire===u.fire) g.rows.push(u); else groups.push({fire:u.fire, rows:[u]}); });
   const TIER_PILL={d1_before:'−1d',d1_after:'+1d',d7_after:'+7d',d30_after:'+30d'};
-  const rowHtml=u=>`<tr${u.blocked?' class="blocked"':''}>
+  const REM_VIEW=[]; let remIdx=0;
+  const rowHtml=(u,g)=>{ const i=remIdx++; REM_VIEW[i]={u,g};
+    return `<tr class="remrow${u.blocked?' blocked':''}" data-ri="${i}" title="Click to preview the exact email">`+`
       <td title="${esc(u.dba)}">${esc(u.dba)}</td>
       <td><span class="tier-pill" title="${EM_KIND_LABEL[u.kind]}">${TIER_PILL[u.kind]}</span></td>
       <td title="${esc(u.no)}">${esc(u.no)}</td>
       <td class="num money">${u.blocked?`<s>${fmt$(u.amt)}</s>`:fmt$(u.amt)}</td>
       <td title="${esc(u.to)}">${esc(u.to)}</td>
-      <td class="num"><button class="blk-btn${u.blocked?' unb':''}" data-blk="${esc(u.key)}|${esc(u.kind)}|${esc(u.no)}" data-on="${u.blocked?'0':'1'}">${u.blocked?'Unblock':'Block'}</button></td></tr>`;
+      <td class="num"><button class="blk-btn${u.blocked?' unb':''}" data-blk="${esc(u.key)}|${esc(u.kind)}|${esc(u.no)}" data-on="${u.blocked?'0':'1'}">${u.blocked?'Unblock':'Block'}</button></td></tr>`; };
   const groupRow=(g,first)=>{ const live=g.rows.filter(u=>!u.blocked);
     return `<tr class="grp${first?' next':''}"><td colspan="6">${first?'📤 NEXT SEND — ':''}${fD(g.fire)}
       <span class="rep" style="font-weight:400"> ${inD(g.fire)} · ${live.length} email${live.length!==1?'s':''} · ${fmt$(live.reduce((t,u)=>t+u.amt,0))}${g.rows.length>live.length?` · ${g.rows.length-live.length} blocked`:''}</span></td></tr>`; };
   const upTbl=groups.length?`<table id="rem-table">
       <colgroup><col class="rc-cust"><col class="rc-trig"><col class="rc-inv"><col class="rc-amt"><col class="rc-to"><col class="rc-act"></colgroup>
       <thead><tr><th>Customer</th><th>Tier</th><th>Invoice</th><th class="num">Amount</th><th>Goes to</th><th></th></tr></thead>
-      <tbody>${groups.slice(0,14).map((g,i)=>groupRow(g,i===0)+g.rows.map(rowHtml).join('')).join('')}</tbody>
+      <tbody>${groups.slice(0,14).map((g,i)=>groupRow(g,i===0)+g.rows.map(u=>rowHtml(u,g)).join('')).join('')}</tbody>
     </table>${groups.length>14?`<div class="rep" style="padding:6px 0">+${groups.slice(14).reduce((t,g)=>t+g.rows.length,0)} more further out…</div>`:''}`
     :`<div class="empty">Nothing queued — arm accounts on the Accounts sub-page (a cadence box + a contact email) and their reminders appear here.</div>`;
   const sends=EM_SENDS||[];
@@ -6044,7 +6096,19 @@ function renderEmReminders(wrap,note){
     :`<div class="empty">No reminders sent yet.</div>`;
   wrap.innerHTML=`${upTbl}
     <div class="ddhead" style="margin-top:22px">Sent</div>${pastTbl}`;
-  wrap.querySelectorAll('[data-blk]').forEach(b=>b.onclick=()=>{ const [k,kind,inv]=b.dataset.blk.split('|'); toggleBlock(k,kind,inv,b.dataset.on==='1'); });
+  wrap.querySelectorAll('[data-blk]').forEach(b=>b.onclick=(ev)=>{ ev.stopPropagation(); const [k,kind,inv]=b.dataset.blk.split('|'); toggleBlock(k,kind,inv,b.dataset.on==='1'); });
+  wrap.querySelectorAll('tr.remrow').forEach(tr=>tr.onclick=(ev)=>{
+    if(ev.target.closest('button')) return;
+    const open=tr.nextElementSibling && tr.nextElementSibling.classList.contains('rem-detail');
+    wrap.querySelectorAll('tr.rem-detail').forEach(d=>d.remove());
+    wrap.querySelectorAll('tr.remrow.open').forEach(o=>o.classList.remove('open'));
+    if(open) return;                                       // clicking an open row closes it
+    const {u,g}=REM_VIEW[+tr.dataset.ri]||{}; if(!u) return;
+    tr.classList.add('open');
+    const d=document.createElement('tr'); d.className='rem-detail';
+    d.innerHTML=`<td colspan="6">${remPreviewHtml(u,g.rows)}</td>`;
+    tr.after(d);
+  });
   note.innerHTML=`<b>Reminders</b> — the top table is what the daily 9 AM send is going to do (armed accounts × their cadence boxes × open invoice due dates); the bottom is what it has done, straight from the send log. Every customer email CCs <b>Victoria, Amanda, Gianni and the account's rep</b> on top of the customer's own CC contacts — that's why the template says "reply all". <b>Block</b> silences exactly that one reminder (that account, that tier, that invoice) — future invoices and other tiers are untouched; Unblock re-queues it. <b>TEST</b> rows went to the test inbox, not the customer — the system stays in test mode until the automation@ sender goes live.`;
 }
 let EM_RENDER_PENDING=false, EM_RENDER_TIMER=null;
