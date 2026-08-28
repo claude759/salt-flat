@@ -480,6 +480,7 @@
             <th colspan="2" class="grp">3.5g jar</th>
             <th colspan="2" class="grp">Budtender</th>
             <th colspan="3" class="grp">3.5g pouch</th>
+            <th colspan="3" class="grp">Vape</th>
             <th colspan="3" class="grp">Total units</th>
             <th colspan="3" class="grp">Labor</th>
             <th colspan="2" class="grp">Pounds</th>
@@ -491,6 +492,7 @@
             <th title="Packed">Pack</th><th title="Labeled">Lbl</th>
             <th title="Packaged">Pack</th><th title="Labeled">Lbl</th>
             <th title="Packed">Pack</th><th title="Labeled">Lbl</th><th title="Prepped">Prep</th>
+            <th title="Filled">Fill</th><th title="Packaged">Pack</th><th title="Labeled">Lbl</th>
             <th title="Packed">Pack</th><th title="Labeled">Lbl</th><th title="Prepped">Prep</th>
             <th>Hours</th><th>Ppl</th><th title="Units per paid hour">U/hr</th>
             <th title="Packed">Pack</th><th title="Labeled">Lbl</th>
@@ -650,18 +652,22 @@ const sb = supabase.createClient(SB_URL, SB_KEY, {
    (source 'edit') with an un-pin control to go back to live derived values. */
 let lpDays = new Map();        // work_date -> stored day row
 const LP_UNIT_COLS = ['p10_prod','p10_pre','p10_post','pk5_prod','pk5_pre','pk5_post',
-  'jar_pack','jar_label','bud_pack','bud_label','pouch_pack','pouch_label','prep'];
+  'jar_pack','jar_label','bud_pack','bud_label','pouch_pack','pouch_label','prep',
+  'vape_fill','vape_pack','vape_label'];
 const LP_TOT_COLS = ['tot_pack','tot_label','tot_prep'];
 const LP_LBS_COLS = ['lbs_pack','lbs_label'];
 const LP_ALL_COLS = [...LP_UNIT_COLS, 'hours','ppl', ...LP_TOT_COLS, 'uph', ...LP_LBS_COLS];
 // which unit columns roll into which totals / pounds column
 const LP_GROUPS = [
-  ['tot_pack',  'lbs_pack',  ['p10_prod','pk5_prod','jar_pack','bud_pack','pouch_pack']],
-  ['tot_label', 'lbs_label', ['p10_pre','p10_post','pk5_pre','pk5_post','jar_label','bud_label','pouch_label']],
+  ['tot_pack',  'lbs_pack',  ['p10_prod','pk5_prod','jar_pack','bud_pack','pouch_pack','vape_fill','vape_pack']],
+  ['tot_label', 'lbs_label', ['p10_pre','p10_post','pk5_pre','pk5_post','jar_label','bud_label','pouch_label','vape_label']],
   ['tot_prep',  null,        ['prep']],
 ];
-// unit weights: 1g pre-rolls, 0.7g per 5pk unit, 1.5g budtenders, 3.5g jars/pouches
+// unit weights: 1g pre-rolls, 0.7g per 5pk unit, 1.5g budtenders, 3.5g jars/pouches.
+// Vape carts are OIL, not flower — they contribute 0 to the pounds columns so the
+// $-per-lb packaging metrics stay flower-only.
 function lpColGrams(c){
+  if (c.startsWith('vape')) return 0;
   if (c.startsWith('bud')) return 1.5;
   if (c.startsWith('p10')) return 1;
   if (c.startsWith('pk5')) return 0.7;
@@ -693,13 +699,14 @@ const PRODUCTS = [
   {name:'Budtender Samples',  match:'budtender samples',  grams:1.5},
   {name:'1g Pre-roll',        match:'1g pre-roll',        grams:1},
   {name:'5pk .7g Pre-roll',   match:'5pk',                grams:0.7},   // counted as single 0.7g pre-rolls, same as the LP page
+  {name:'Vape Carts',         match:'vape',               grams:0},     // oil, not flower — stays out of the pounds math
 ];
 
 
 function mkClass(){ return ''; }   // NY doesn't split rec from void, so nothing is colour-coded
 
-const PACK_RE   = /packaged|packed|produced/;   // packaging hours & cost buckets
-const LABEL_RE  = /labeled/;                    // labeling hours & cost buckets
+const PACK_RE   = /packaged|packed|produced|vape filling|vape packaging/;   // packaging hours & cost buckets
+const LABEL_RE  = /labeled|vape labeling/;                                  // labeling hours & cost buckets
 
 let rows = [];        // historical rows (ny_labor_history — empty in NY)
 
@@ -2671,6 +2678,7 @@ function taskRank(lo){
   if (lo.includes('3.5g jar')) return 6 + (lo.includes('label') ? 1 : 0);                      // 6-7
   if (lo.includes('budtender')) return 8 + (lo.includes('label') ? 1 : 0);                     // 8-9
   if (lo.includes('3.5g pouch')) return lo.includes('prep') ? 12 : 10 + (lo.includes('label') ? 1 : 0);
+  if (lo.includes('vape')) return 13 + (lo.includes('fill') ? 0 : lo.includes('label') ? 2 : 1);   // 13-15
   return 99;
 }
 
@@ -2692,6 +2700,7 @@ const TASK_TYPES = [
   '3.5g jar packed','3.5g jar labeled',
   '1.5g budtender samples (packaged)','1.5g budtender samples (labeled)',
   '3.5g pouch packed','3.5g pouch labeled','3.5g pouch prepped',
+  'Vape filling','Vape packaging','Vape labeling',
 ];
 const NONPACK = 'Non-packaging activity';
 const GENPACK = 'General packaging activities';
@@ -3927,6 +3936,8 @@ function addDaysISO(iso, n){
 }
 // map a task name to its Labor/Packaging unit column
 function lpColFor(lo){
+  if (lo.includes('vape'))
+    return lo.includes('label') ? 'vape_label' : lo.includes('fill') ? 'vape_fill' : 'vape_pack';
   const kind = lo.includes('post coa') ? 'post' : (lo.includes('pre coa') || lo.includes('label')) ? 'pre' : 'prod';
   if (lo.includes('5pk')) return 'pk5_' + kind;
   if (lo.includes('pre-roll')) return 'p10_' + kind;     // NY runs 1g pre-rolls only
@@ -4012,7 +4023,7 @@ function renderLaborPack(){
     const ds = weeks.get(wk);
     const derivedN = ds.filter(d => d.source === 'derived').length;
     const tag = derivedN ? `<span class="wd">\u00B7 ${derivedN === ds.length ? '' : 'new days '}auto-filled \u2014 units from Tasks, labor from the timesheet</span>` : '';
-    html += `<tr class="dayhead"><td colspan="32"><span class="stick">Week of ${fDayMDY(wk)} \u2013 ${fDayMDY(addDaysISO(wk, 6))}${tag}</span></td></tr>`;
+    html += `<tr class="dayhead"><td colspan="35"><span class="stick">Week of ${fDayMDY(wk)} \u2013 ${fDayMDY(addDaysISO(wk, 6))}${tag}</span></td></tr>`;
     const wsum = {};
     for (const d of ds){
       dayCount++;
@@ -4039,7 +4050,7 @@ function renderLaborPack(){
       + `<td class="notes"></td></tr>`;
   }
   document.querySelector('#lpTable tbody').innerHTML =
-    html || '<tr><td colspan="32" class="empty">No data</td></tr>';
+    html || '<tr><td colspan="35" class="empty">No data</td></tr>';
   document.getElementById('lpCount').textContent = dayCount ?
     `${minD ? fDate(minD) : ''} \u2013 ${maxD ? fDate(maxD) : ''} \u00B7 ${dayCount} days \u00B7 shared` : '';
   lpSyncHeaderOffset();

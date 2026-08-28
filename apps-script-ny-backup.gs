@@ -43,6 +43,7 @@ var TABLES = [
   { name: 'ny_units_days', order: 'work_date',
     cols: ['work_date','p10_prod','p10_pre','p10_post','pk5_prod','pk5_pre','pk5_post',
            'jar_pack','jar_label','bud_pack','bud_label','pouch_pack','pouch_label','prep',
+           'vape_fill','vape_pack','vape_label',
            'hours','ppl','tot_pack','tot_label','tot_prep','uph','lbs_pack','lbs_label',
            'source','updated_by','updated_at'] },
   { name: 'ny_notes', order: 'work_date',
