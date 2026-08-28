@@ -5998,6 +5998,11 @@ async function loadSends(){
   }catch(e){ EM_SENDS_LOADED=false; }
 }
 const EM_KIND_LABEL={d1_before:'1 day before due', d1_after:'1 day past due', d7_after:'7 days past due', d30_after:'30 days past due', dry_run:'daily dry-run summary'};
+// Reminded but still unpaid → follow-ups every EM_FU_DAYS past the account's deepest armed tier
+// (30d anchor → follow-up #1 at 44d, #2 at 58d, …). MIRRORS the sender's rule.
+const EM_FU_DAYS=14;
+function emKindLabel(k){ const m=String(k||'').match(/^followup_(\d+)$/);
+  return m?`follow-up #${m[1]} — still unpaid`:(EM_KIND_LABEL[k]||k); }
 // ── What the email will actually say — MIRRORS ar-reminders.mjs (ccFor, fill, composeReminder).
 // If the sender's policy changes, change this preview with it.
 const REM_STANDING_CC=['victoria@wizardtrees.com','amanda@wizardtrees.com','gianni@wizardtrees.com'];
@@ -6019,7 +6024,9 @@ function remPreviewHtml(u, groupRows){
   const firing=groupRows.filter(g=>g.key===u.key&&!g.blocked);
   const tpl=EM_TPL||REM_TPL_DEFAULT;
   const trig=firing.map(f=>{const inv=invs.find(x=>(x.number||'—')===f.no);
-    return `Invoice ${f.no} (${fmt$(f.amt)}) is ${EM_KIND_LABEL[f.kind]}.`;}).join(' ');
+    return String(f.kind).startsWith('followup_')
+      ?`Invoice ${f.no} (${fmt$(f.amt)}) remains unpaid${inv&&inv.dpd>0?`, now ${inv.dpd} days past due`:''} — this is a follow-up reminder.`
+      :`Invoice ${f.no} (${fmt$(f.amt)}) is ${emKindLabel(f.kind)}.`;}).join(' ');
   const fill=t=>String(t).replaceAll('{dba}',acct.dba).replaceAll('{trigger}',trig);
   const paras=t=>esc(t).split(/\n{2,}/).map(x=>`<p>${x.replace(/\n/g,'<br>')}</p>`).join('');
   const fD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
@@ -6037,6 +6044,7 @@ function remPreviewHtml(u, groupRows){
     ${paras(fill(tpl.intro))}${tbl}${paras(fill(tpl.closing))}
   </div>`;
 }
+let emRemView='upcoming';
 function renderEmReminders(wrap,note){
   loadBlocks();
   const rows=emailsDataC();
@@ -6070,6 +6078,14 @@ function renderEmReminders(wrap,note){
         if(!armed[kind]) return; const fire=due.getTime()+off*day;
         if(fire>nextRunT && bandAt(Math.round((due.getTime()-fire)/day))===kind) push(kind, fire); });
       if(r.b1 && due.getTime()-day>nextRunT) push('d1_before', due.getTime()-day);
+      // reminded but still unpaid: the NEXT follow-up for this invoice (one at a time, not a flood)
+      const anchor=r.a30?30:r.a7?7:r.a1?1:0;
+      if(anchor){
+        const nNow=Math.floor((-ddNext-anchor)/EM_FU_DAYS);
+        if(nNow>=1 && !sentSet.has(r.key+'|followup_'+nNow+'|'+(x.number||'—'))) push('followup_'+nNow, nextRunT);
+        else { const nx=Math.max(1,nNow+1); const fire=due.getTime()+(anchor+nx*EM_FU_DAYS)*day;
+          if(fire>nextRunT && !sentSet.has(r.key+'|followup_'+nx+'|'+(x.number||'—'))) push('followup_'+nx, fire); }
+      }
     }); });
   up.sort((a,b)=>(a.fire-b.fire)||(b.amt-a.amt));
   const fD=t=>new Date(t).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
@@ -6077,12 +6093,13 @@ function renderEmReminders(wrap,note){
   // group by fire date; the next-run group gets the spotlight
   const groups=[]; up.forEach(u=>{ const g=groups[groups.length-1];
     if(g&&g.fire===u.fire) g.rows.push(u); else groups.push({fire:u.fire, rows:[u]}); });
-  const TIER_PILL={d1_before:'−1d',d1_after:'+1d',d7_after:'+7d',d30_after:'+30d'};
+  const TIER_PILL=k=>{ const m=String(k).match(/^followup_(\d+)$/);
+    return m?`f/u ${m[1]}`:({d1_before:'−1d',d1_after:'+1d',d7_after:'+7d',d30_after:'+30d'})[k]; };
   const REM_VIEW=[]; let remIdx=0;
   const rowHtml=(u,g)=>{ const i=remIdx++; REM_VIEW[i]={u,g};
     return `<tr class="remrow${u.blocked?' blocked':''}" data-ri="${i}" title="Click to preview the exact email">`+`
       <td title="${esc(u.dba)}">${esc(u.dba)}</td>
-      <td><span class="tier-pill" title="${EM_KIND_LABEL[u.kind]}">${TIER_PILL[u.kind]}</span></td>
+      <td><span class="tier-pill" title="${emKindLabel(u.kind)}">${TIER_PILL(u.kind)}</span></td>
       <td title="${esc(u.no)}">${esc(u.no)}</td>
       <td class="num money">${u.blocked?`<s>${fmt$(u.amt)}</s>`:fmt$(u.amt)}</td>
       <td title="${esc(u.to)}">${esc(u.to)}</td>
@@ -6097,17 +6114,23 @@ function renderEmReminders(wrap,note){
     </table>${groups.length>14?`<div class="rep" style="padding:6px 0">+${groups.slice(14).reduce((t,g)=>t+g.rows.length,0)} more further out…</div>`:''}`
     :`<div class="empty">Nothing queued — arm accounts on the Accounts sub-page (a cadence box + a contact email) and their reminders appear here.</div>`;
   const sends=EM_SENDS||[];
+  const invNos=x=>{ let v=[]; try{ v=typeof x.invoices==='string'?JSON.parse(x.invoices):(x.invoices||[]); }catch(_){ }
+    return v.map(i=>i.no).filter(Boolean).join(', '); };
   const pastTbl=EM_SENDS===null
     ? `<div class="empty">${sbAuth()?'Loading the send log…':'Sign in to see the send log.'}</div>`
-    : sends.length?`<table class="ddtable"><thead><tr><th>Sent</th><th>Customer</th><th>Trigger</th><th>To</th><th class="num">Total</th><th></th></tr></thead><tbody>
+    : sends.length?`<table class="ddtable"><thead><tr><th>Sent</th><th>Customer</th><th>Trigger</th><th>Invoices</th><th>To</th><th class="num">Total</th><th></th></tr></thead><tbody>
       ${sends.map(x=>`<tr><td>${new Date(x.sent_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</td>
-        <td>${esc(x.acct_name||'')}</td><td>${String(x.kind||'').split('+').map(k=>EM_KIND_LABEL[k]||k).join(' + ')}</td>
+        <td>${esc(x.acct_name||'')}</td><td>${String(x.kind||'').split('+').map(emKindLabel).join(' + ')}</td>
+        <td>${esc(invNos(x))}</td>
         <td>${esc(x.to_addr||'')}${x.cc?`<div class="rep">cc ${esc(x.cc)}</div>`:''}</td>
         <td class="num money">${x.total!=null?fmt$(x.total):'—'}</td>
         <td>${x.test?'<span class="src" style="background:#4a3b16;color:#ffd76e">TEST</span>':''}</td></tr>`).join('')}</tbody></table>`
     :`<div class="empty">No reminders sent yet.</div>`;
-  wrap.innerHTML=`${upTbl}
-    <div class="ddhead" style="margin-top:22px">Sent</div>${pastTbl}`;
+  const seg=`<div class="seg" style="display:inline-flex;margin:0 0 12px">
+    <button data-remview="upcoming"${emRemView==='upcoming'?' class="on"':''}>Upcoming</button>
+    <button data-remview="sent"${emRemView==='sent'?' class="on"':''}>Sent${sends.length?` (${sends.length})`:''}</button></div>`;
+  wrap.innerHTML=seg+(emRemView==='upcoming'?upTbl:pastTbl);
+  wrap.querySelectorAll('[data-remview]').forEach(b=>b.onclick=()=>{ emRemView=b.dataset.remview; renderEmails(); });
   wrap.querySelectorAll('[data-blk]').forEach(b=>b.onclick=(ev)=>{ ev.stopPropagation(); const [k,kind,inv]=b.dataset.blk.split('|'); toggleBlock(k,kind,inv,b.dataset.on==='1'); });
   wrap.querySelectorAll('tr.remrow').forEach(tr=>tr.onclick=(ev)=>{
     if(ev.target.closest('button')) return;
@@ -6121,7 +6144,7 @@ function renderEmReminders(wrap,note){
     d.innerHTML=`<td colspan="6">${remPreviewHtml(u,g.rows)}</td>`;
     tr.after(d);
   });
-  note.innerHTML=`<b>Reminders</b> — the top table is what the daily 9 AM send is going to do (armed accounts × their cadence boxes × open invoice due dates); the bottom is what it has done, straight from the send log. Every customer email CCs <b>Victoria, Amanda, Gianni and the account's rep</b> on top of the customer's own CC contacts — that's why the template says "reply all". <b>Block</b> silences exactly that one reminder (that account, that tier, that invoice) — future invoices and other tiers are untouched; Unblock re-queues it. <b>TEST</b> rows went to the test inbox, not the customer — the system stays in test mode until the automation@ sender goes live.`;
+  note.innerHTML=`<b>Reminders</b> — the top table is what the daily 9 AM send is going to do (armed accounts × their cadence boxes × open invoice due dates); the bottom is what it has done, straight from the send log. Every customer email CCs <b>Victoria, Amanda, Gianni and the account's rep</b> on top of the customer's own CC contacts — that's why the template says "reply all". <b>Block</b> silences exactly that one reminder (that account, that tier, that invoice) — future invoices and other tiers are untouched; Unblock re-queues it. Invoices still unpaid after their deepest reminder keep getting <b>follow-ups every ${EM_FU_DAYS} days</b> (f/u pills), each blockable like any other. <b>TEST</b> rows went to the test inbox, not the customer — the system stays in test mode until the automation@ sender goes live.`;
 }
 let EM_RENDER_PENDING=false, EM_RENDER_TIMER=null;
 function renderEmails(){
