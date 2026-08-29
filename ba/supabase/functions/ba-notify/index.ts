@@ -165,21 +165,34 @@ Deno.serve(async (req) => {
       // admins (Maddy/NY, Keelin & Drew/FL), and universal admins who still work a region
       // themselves (home_region set, e.g. Amanda/CA). Pure oversight admins (no region and
       // no home_region — Gianni, Victoria) are never reminded; they're the CC instead.
-      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region,home_region,non_ba").eq("active", true);
+      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region,home_region,non_ba,reminder_cc").eq("active", true);
       const fieldWorkers = (people || []).filter((b) =>
         !b.non_ba && (b.role === "ba" || (b.role === "admin" && (b.region || b.home_region))));
       const { data: subs } = await db.from("submissions").select("ba_id").eq("period_id", period.id).in("status", ["submitted", "approved"]);
       const done = new Set((subs || []).map((s) => s.ba_id));
       const targets = fieldWorkers.filter((b) => !done.has(b.id) && b.email);
 
-      if (dry) return json({ ok: true, period: period.end_date, would_remind: targets.map((b) => ({ name: b.full_name, email: testTo || b.email })) });
+      // Admin address, plus anyone named on that person's profile (a lead who chases
+      // their submissions). Never the recipient themselves, never a duplicate.
+      const ccFor = (b: { email?: string; reminder_cc?: string[] }, to: string) => {
+        if (testTo) return undefined;                    // diverted test sends stay private
+        const list = [...(ADMIN_EMAIL ? [ADMIN_EMAIL] : []), ...(b.reminder_cc ?? [])]
+          .map((e) => String(e || "").trim()).filter(Boolean)
+          .filter((e) => e.toLowerCase() !== String(to).toLowerCase());
+        const seen = new Set<string>();
+        const out = list.filter((e) => { const k = e.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+        return out.length ? out : undefined;
+      };
+      if (dry) return json({ ok: true, period: period.end_date,
+        would_remind: targets.map((b) => ({ name: b.full_name, email: testTo || b.email,
+                                            cc: ccFor(b, testTo || b.email) ?? [] })) });
 
       const sent: any[] = [];
       for (const b of targets) {
         const { subject, html, text } = reminderEmail(b.full_name, period);
         const to = testTo || b.email;
         // CC the admin on every reminder (per Gianni 2026-07-18) — skipped on diverted test sends
-        const cc = (!testTo && ADMIN_EMAIL && ADMIN_EMAIL !== to) ? [ADMIN_EMAIL] : undefined;
+        const cc = ccFor(b, to);
         try { await sendMail(to, subject, html, text, cc); sent.push({ to, ok: true }); }
         catch (e) { sent.push({ to, ok: false, error: String((e as Error)?.message || e) }); }
       }
