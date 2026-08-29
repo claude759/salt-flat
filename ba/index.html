@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-18.105';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-29.106';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -799,22 +799,31 @@ async function boot(){
   if(session) await loadMe();
   render();
 }
+// A stalled request must not become a permanent spinner. supabase-js has no timeout:
+// on a phone that has signal but no working connection (a dead zone, a captive wifi,
+// carrier trouble at midnight) a query can hang indefinitely, and the app sits on
+// "Loading…" with no error, no retry and nothing to tap. Losing the race just shows
+// the existing "Couldn't load your account" card, which already has a Retry button.
+const LOAD_TIMEOUT_MS = 20000;
+const withTimeout = (p, ms=LOAD_TIMEOUT_MS) => Promise.race([p,
+  new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), ms))]);
 async function loadMe(){
   try{
-    const { data: prof, error } = await supabase.from('profiles').select('*').eq('id', state.session.user.id).single();
+    const { data: prof, error } = await withTimeout(
+      supabase.from('profiles').select('*').eq('id', state.session.user.id).single());
     if(error || !prof){ state.loadError = error?.message || 'Your profile could not be found.'; state.profile=null; return; }
     state.loadError = null; state.profile = prof;
     const { data: s } = await supabase.from('app_settings').select('*').eq('id',1).single();
     state.settings = s;
     // make sure today's period exists, then load periods + dispensaries
-    await supabase.rpc('ensure_period');
-    const { data: per } = await supabase.from('pay_periods').select('*').order('start_date',{ascending:false});
+    await withTimeout(supabase.rpc('ensure_period'));
+    const { data: per } = await withTimeout(supabase.from('pay_periods').select('*').order('start_date',{ascending:false}));
     state.periods = per||[];
     const _t = todayISO();
     state.period = state.periods.find(p=>p.start_date<=_t && p.end_date>=_t)   // current
       || state.periods.find(p=>p.end_date<_t)                                  // else most recent past (never default to a future period)
       || state.periods[0] || null;
-    const { data: disp } = await supabase.from('dispensaries').select('*').eq('active',true).order('name');
+    const { data: disp } = await withTimeout(supabase.from('dispensaries').select('*').eq('active',true).order('name'));
     state.dispensaries = (disp||[]).sort(dispSort);
     // labor kinds (admin-editable list); fall back to the defaults if the table isn't reachable
     try{ const { data: lk } = await supabase.from('labor_kinds').select('*').order('sort'); if(lk&&lk.length) state.laborKinds=lk; }catch{}
@@ -837,7 +846,11 @@ async function loadMe(){
       state.schedState = (pick || state.scheduleBoards[0] || {}).state || null;
       state.scheduleWb = schedBoard()?.workbook_id || null;
     }catch(_){ state.scheduleBoards = []; state.schedState = null; state.scheduleWb = null; }
-  }catch(e){ state.loadError = String(e?.message||e); state.profile=null; }
+  }catch(e){
+    state.loadError = /timeout/.test(String(e && e.message))
+      ? 'The connection stalled. Check your signal and tap Retry.'
+      : String(e?.message||e);
+    state.profile=null; }
 }
 // refresh the cached pay-period list (e.g. periods added since the app loaded)
 async function reloadPeriods(){
