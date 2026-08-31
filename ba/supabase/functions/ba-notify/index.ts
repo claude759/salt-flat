@@ -88,6 +88,22 @@ function reopenedEmail(name: string, p: any, closes: string) {
   const text = `Hi ${name || "there"},\n\nThe pay period ${periodLabel(p)} has been reopened so you can add your mileage & expenses. Please add them and tap Submit period before ${closes}, when it closes again: ${APP_URL}`;
   return { subject: `Reopened: add your mileage & expenses for ${periodLabel(p)}`, html, text };
 }
+function submittedForEmail(name: string, p: any, by: string, sub: any) {
+  const t = sub?.totals || {};
+  const lbl = esc(periodLabel(p));
+  const html = shell("Your pay period was submitted for you", `
+    <p style="margin:0 0 12px">Hi ${esc(name || "there")},</p>
+    <p style="margin:0 0 12px"><b>${esc(by || "A manager")}</b> submitted your pay period <b>${lbl}</b> for you, so it's now with us for approval.</p>
+    <table style="width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px">
+      <tr><td style="padding:4px 0;color:#555">Mileage</td><td style="padding:4px 0;text-align:right;font-weight:600">${money(t.mileage)}</td></tr>
+      <tr><td style="padding:4px 0;color:#555">Expenses</td><td style="padding:4px 0;text-align:right;font-weight:600">${money(t.expenses)}</td></tr>
+      <tr><td style="padding:8px 0 0;border-top:1px solid #eee;font-weight:700">Reimburse total</td><td style="padding:8px 0 0;border-top:1px solid #eee;text-align:right;font-weight:700">${money(t.total ?? (Number(t.mileage||0)+Number(t.expenses||0)))}</td></tr>
+    </table>
+    <p style="margin:0 0 14px;padding:9px 12px;background:#fff6e5;border-left:3px solid #e8a33d;border-radius:6px;font-size:13px"><b>This means the period is now read-only for you.</b> If you still have mileage or expenses to add for it, reply to ${esc(by || "your manager")} or Gianni and ask them to reopen it.</p>
+    <p style="margin:0"><a href="${APP_URL}" style="background:#6c5ce7;color:#fff;text-decoration:none;padding:11px 20px;border-radius:999px;font-weight:700;display:inline-block">Open the app →</a></p>`);
+  const text = `Hi ${name || "there"},\n\n${by || "A manager"} submitted your pay period ${periodLabel(p)} for you. Reimburse total ${money(t.total ?? (Number(t.mileage||0)+Number(t.expenses||0)))}.\n\nThis means the period is now READ-ONLY for you. If you still have mileage or expenses to add, ask ${by || "your manager"} or Gianni to reopen it.\n\n${APP_URL}`;
+  return { subject: `${by || "A manager"} submitted your ${periodLabel(p)} period for you`, html, text };
+}
 function submittedEmail(ba: any, p: any, sub: any) {
   const t = sub?.totals || {};
   const lbl = esc(periodLabel(p));
@@ -199,6 +215,27 @@ Deno.serve(async (req) => {
       // stamp so it never re-sends (skip stamping for test/diverted runs)
       if (!testTo && sent.some((s) => s.ok)) await db.from("pay_periods").update({ reminder_sent_at: new Date().toISOString() }).eq("id", period.id);
       return json({ ok: true, period: period.end_date, reminded: sent });
+    }
+
+    if (job === "submitted_for") {
+      const { ba_id, period_id, submitted_by } = body;
+      if (!ba_id || !period_id) return json({ ok: false, error: "ba_id and period_id required" }, 400);
+      const [{ data: ba }, { data: period }, { data: sub }, { data: mgr }] = await Promise.all([
+        db.from("profiles").select("full_name,email,region,home_region").eq("id", ba_id).single(),
+        db.from("pay_periods").select("*").eq("id", period_id).single(),
+        db.from("submissions").select("*").eq("ba_id", ba_id).eq("period_id", period_id).maybeSingle(),
+        submitted_by ? db.from("profiles").select("full_name,email").eq("id", submitted_by).single()
+                     : Promise.resolve({ data: null }),
+      ]);
+      const to = testTo || ba?.email;
+      if (!to) return json({ ok: true, skipped: "the BA has no email on file" });
+      // the manager who did it, plus the usual admin — so the whole chain sees it
+      const cc = testTo ? undefined
+        : [...new Set([ADMIN_EMAIL, mgr?.email].filter((e) => e && e !== to))] as string[];
+      const { subject, html, text } = submittedForEmail(ba?.full_name, period, mgr?.full_name, sub);
+      if (dry) return json({ ok: true, would_notify: to, cc, subject });
+      await sendMail(to, subject, html, text, cc && cc.length ? cc : undefined);
+      return json({ ok: true, notified: to, cc });
     }
 
     if (job === "submitted") {

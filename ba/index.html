@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-08-29.106';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-08-30.107';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -3849,6 +3849,7 @@ async function adminBaDetail(baId){
     perQ(supabase.from('hours').select('*').eq('ba_id',baId)).order('work_date'),
     allPer?{data:null}:supabase.from('submissions').select('*').eq('ba_id',baId).eq('period_id',per.id).maybeSingle(),
   ]);
+  state._admProf=prof||null;      // the action buttons name this person in their confirm
   const mile=(T||[]).reduce((a,x)=>a+ +x.amount,0);
   const {reimb,card}=expSplit(E);
   const labor=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
@@ -3904,6 +3905,7 @@ async function adminBaDetail(baId){
     <div id="admGrid"></div>
     ${(!allPer && (H||[]).some(x=>!x.dispensary_id))?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
     <div class="row wrap" style="margin-top:16px">
+      ${(!allPer && S.status!=='approved' && S.status!=='submitted' && [...(T||[]),...(E||[])].some(x=>x.status==='draft'))?`<button class="btn grow" id="submitForBtn">Submit for them</button>`:''}
       ${(!allPer && S.status!=='approved' && (S.status==='submitted' || [...(T||[]),...(E||[]),...(H||[])].some(x=>x.status==='submitted'||x.status==='draft')))?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
       ${(!allPer && S.status==='approved')?`<button class="btn grow" id="unapproveBtn">↩ Unapprove</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
@@ -3927,6 +3929,7 @@ async function adminBaDetail(baId){
     state._sheetReturn=()=>adminBaDetail(baId);
     adminEditItem('exp', x.id, d=>dgApplyEdit('exp',d), x);
   });
+  $('#submitForBtn')&&($('#submitForBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); submitForBA(baId,per.id,c.T,c.E,c.H,S.status); });
   $('#approveBtn')&&($('#approveBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); approveSubmission(baId,per.id,c.T,c.E,c.H,S.status); });
   $('#unapproveBtn')&&($('#unapproveBtn').onclick=()=>unapprovePeriod(baId,per.id));
   $('#autolinkBtn')&&($('#autolinkBtn').onclick=async()=>{ await flushGrid($('#admGrid')); autoLinkHours(baId,per.id,gridCtx().H||[]); });
@@ -3952,6 +3955,44 @@ async function adminAttachReceipt(e, baId){
 // the BA never submitted — the boss approves anyway, sweeping draft+submitted items,
 // and the submissions row is UPSERTED because it may not exist yet. Rejected items are
 // never swept either way.
+// Submit a period ON BEHALF of a BA. Managers (Maddy for NY) chase their own team, and
+// doing it for someone was previously only possible by accident — an admin submitting in
+// preview mode locked the BA out of their own period with no notice, which is exactly how
+// Terrance lost his last Friday. So this does three things the ad-hoc route didn't:
+// names the person and what's being submitted, records WHO submitted it, and emails them.
+async function submitForBA(baId, periodId, T, E, H, subStatus){
+  const who=state._admProf && state._admProf.id===baId ? state._admProf : {};
+  const first=(who.full_name||'this BA').split(' ')[0];
+  const draft=x=>x.status==='draft';
+  const items=[...(T||[]).filter(draft).map(x=>({...x,_k:'trip'})), ...(E||[]).filter(draft).map(x=>({...x,_k:'exp'}))];
+  if(!items.length) return toast(`${first} has nothing waiting to submit.`);
+  const todoN=items.filter(x=>itemIssues(x).length).length;
+  const mile=(T||[]).filter(x=>draft(x)||x.status==='submitted').reduce((a,x)=>a+Number(x.amount||0),0);
+  const {reimb,card}=expSplit((E||[]).filter(x=>draft(x)||x.status==='submitted'));
+  const labor=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
+  // a period that hasn't ended yet is the trap: submitting freezes them out of the days
+  // they haven't worked yet (Amanda did this to herself twice on day 1 of 14)
+  const per=(state.periods||[]).find(p=>p.id===periodId);
+  const left = per ? Math.round((new Date(per.end_date+'T12:00')-new Date(todayISO()+'T12:00'))/864e5) : 0;
+  const warn = left>0
+    ? `\n\n⚠ This period doesn't end until ${fmtDate(per.end_date)} — ${left} day${left===1?'':'s'} left. ${first} won't be able to add anything after this unless you reopen it.`
+    : `\n\n${first} won't be able to edit this period after you submit it.`;
+  if(!confirm(`Submit this period for ${who.full_name||'this BA'}?\n\n`
+    + `${items.length} item${items.length===1?'':'s'} · ${money(mile)} mileage + ${money(reimb)} expenses = ${money(mile+reimb)} to reimburse`
+    + `${todoN?`\n\n⚠ ${todoN} still have open to-dos (missing receipt, miles, or location).`:''}`
+    + `${warn}\n\nThey'll be emailed that you did this.`)) return;
+  const { error:e1 }=await supabase.from('submissions').upsert({ba_id:baId, period_id:periodId, status:'submitted',
+    submitted_at:new Date().toISOString(), submitted_by:state.session.user.id,
+    totals:{mileage:mile, expenses:reimb, company_card:card, labor, total:mile+reimb}},{onConflict:'ba_id,period_id'});
+  if(e1) return toast('Submit failed: '+e1.message,'err');
+  const { error:e2 }=await supabase.from('trips').update({status:'submitted',reject_note:null}).eq('ba_id',baId).eq('period_id',periodId).eq('status','draft');
+  if(e2) return toast('Submit failed: '+e2.message,'err');
+  const { error:e3 }=await supabase.from('expenses').update({status:'submitted',reject_note:null}).eq('ba_id',baId).eq('period_id',periodId).eq('status','draft');
+  if(e3) return toast('Submit failed: '+e3.message,'err');
+  // The BA is emailed by the submissions trigger (it sees submitted_by <> ba_id) — a
+  // period going read-only without warning is how this went wrong before.
+  toast(`Submitted for ${first} — they've been emailed`,'ok'); closeSheet(); drawAdmin();
+}
 async function approveSubmission(baId,periodId,T,E,H,subStatus){
   const sweep = subStatus!=='submitted';
   const take = x=> x.status==='submitted' || (sweep && x.status==='draft');
