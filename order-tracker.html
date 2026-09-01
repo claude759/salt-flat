@@ -381,6 +381,7 @@ const state = {
   ovScope: 'all',                               // overview scope: all | ca | ny
   ovExclVapes: localStorage.getItem('ot_exclVapes') === '1',   // overview: leave vapes out of the numbers
   ovCat: new Set(),                             // category names expanded on the overview
+  rptCat: new Set(),                            // category names expanded on the report
   ledgerPay: { ca:new Set(), ny:new Set() },    // wires expanded in the ledger
   lastSync: null,
   fetching: false,
@@ -778,14 +779,13 @@ function computeAdjust(m, stateKey){
      payment so vape hardware shows its FULL amount owed until a payment is attributed to it.
      Reuses the payToInv machinery (a negative pay to vape), so the grand total is conserved. */
   if(defaultNonvape){
-    const totC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'total including freight');
-    const dueC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'due');
-    const nydC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'not yet due');
+    // read the sheet's OWN Paid-to-Date. Inferring it as total-minus-open invents a payment
+    // whenever the supplier has filled in a total but left Due/Not-Yet-Due blank (as on
+    // in-transit orders), which would inflate the vape balance by the whole invoice.
+    const paidC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'paid to date');
     for(const r of m.rows){
       if(!isVape(r.type)) continue;
-      const tot = totC ? (money(r.c[totC.i])||0) : 0;
-      const open = (dueC ? (money(r.c[dueC.i])||0) : 0) + (nydC ? (money(r.c[nydC.i])||0) : 0);
-      const paid = tot - open;                           // the sheet's payment on this vape invoice
+      const paid = paidC ? (money(r.c[paidC.i])||0) : 0;
       if(paid > 0.005){ bump(r.src, -paid); payToInv.vape -= paid; }   // explicit attributions still add on top
     }
   }
@@ -1191,15 +1191,22 @@ function reportFor(k){
 
   // vape/non-vape due is the bucket balance less its not-yet-due; account-level
   // adjustments are all due-side money, so the not-yet-due split is the sheet's
+  // an account can be overpaid on its due side; rather than show a negative Due, let the
+  // overpayment come off not-yet-due — Balance = Due + Not yet due still holds either way
+  const split = (bal, nyd) => { const due = bal - nyd;
+    return due < -0.005 ? { bal, due: 0, nyd: bal } : { bal, due, nyd }; };
   const acct = {
-    all:     { bal: adjDue + st.nyd,      due: adjDue,                  nyd: st.nyd },
-    vape:    { bal: b.vape,               due: b.vape - b.vapeNyd,      nyd: b.vapeNyd },
-    nonvape: { bal: b.nonvape,            due: b.nonvape - b.nonvapeNyd, nyd: b.nonvapeNyd },
+    all:     split(adjDue + st.nyd, st.nyd),
+    vape:    split(b.vape,          b.vapeNyd),
+    nonvape: split(b.nonvape,       b.nonvapeNyd),
   };
 
   // on the way = every order the supplier has not marked Delivered
   const zero = () => ({ n:0, val:0, due:0, nyd:0 });
   const way = { all: zero(), vape: zero(), nonvape: zero() };
+  const invC = m.cols.find(c => c.header.toLowerCase() === 'invoice no.');
+  const shipC = find('ship date'), descC = m.cols.find(c => /^desc/i.test(c.header));
+  const wayRows = [];
   for(const r of m.rows){
     if(!osC || isDelivered(r.c[osC.i])) continue;
     const val = totC ? (money(r.c[totC.i])||0) : 0;
@@ -1208,8 +1215,74 @@ function reportFor(k){
     for(const key of ['all', isVape(r.type) ? 'vape' : 'nonvape']){
       way[key].n++; way[key].val += val; way[key].due += due; way[key].nyd += nyd;
     }
+    wayRows.push({ state:k, src:r.src, type:r.type || 'Other', val, due, nyd,
+      inv: invC ? (r.c[invC.i]||'').trim() : '',
+      date: shipC ? (r.c[shipC.i]||'').trim() : '',
+      status: (r.c[osC.i]||'').trim(),
+      desc: descC ? (r.c[descC.i]||'').trim().replace(/\s+/g,' ') : '' });
   }
-  return { acct, way, m };
+  return { acct, way, wayRows, m };
+}
+
+
+/* "On the way" broken out by product category, in the same shape as the Overview's
+   open-balance-by-category report: click a category to see the actual orders. */
+function wayByCategoryHtml(rows){
+  const cats = new Map();
+  for(const r of rows){
+    let c = cats.get(r.type);
+    if(!c){ c = { type:r.type, n:0, val:0, due:0, nyd:0, ca:0, ny:0, rows:[] }; cats.set(r.type, c); }
+    c.n++; c.val += r.val; c.due += r.due; c.nyd += r.nyd; c[r.state] += r.val; c.rows.push(r);
+  }
+  const list = [...cats.values()].sort((a,b) => b.val - a.val || b.n - a.n || a.type.localeCompare(b.type));
+  list.forEach(c => c.rows.sort((a,b) => b.val - a.val));
+  const tot = list.reduce((a,c)=>({n:a.n+c.n, val:a.val+c.val, due:a.due+c.due, nyd:a.nyd+c.nyd,
+                                   ca:a.ca+c.ca, ny:a.ny+c.ny}), {n:0,val:0,due:0,nyd:0,ca:0,ny:0});
+  if(!list.length) return `<div class="panel"><div class="rtitle">On the way` +
+    `<span class="sub">nothing outstanding — every order is marked delivered</span></div></div>`;
+
+  let body = '';
+  for(const c of list){
+    const isOpen = state.rptCat.has(c.type);
+    body += `<tr class="prow" data-rcat="${esc(c.type)}">` +
+      `<td>${tyChip(c.type)}</td>` +
+      `<td class="num">${c.n}</td>` +
+      `<td class="num"><b>${fmtUSD(c.val)}</b></td>` +
+      `<td class="num" style="color:var(--muted)">${fmtUSD(c.ca)}</td>` +
+      `<td class="num" style="color:var(--muted)">${fmtUSD(c.ny)}</td>` +
+      `<td class="num due">${fmtUSD(c.due)}</td>` +
+      `<td class="num nyd">${fmtUSD(c.nyd)}</td>` +
+      `<td class="num faint">${isOpen?'▾':'▸'}</td></tr>`;
+    if(!isOpen) continue;
+    body += `<tr class="catx"><td colspan="8"><div style="overflow-x:auto">` +
+      `<table class="subTbl"><thead><tr><th>Ship date</th><th>Invoice</th><th>Description</th>` +
+      `<th>Status</th><th class="num">Value</th><th class="num">Due</th><th class="num">Not yet due</th>` +
+      `</tr></thead><tbody>` +
+      c.rows.map(r =>
+        `<tr data-gost="${r.state}" data-gosrc="${r.src}" title="Open this order">` +
+        `<td class="faint">${esc(r.date||'—')}</td>` +
+        `<td><b><span class="stbadge">${r.state.toUpperCase()}</span>${esc(r.inv||'—')}</b></td>` +
+        `<td class="desc" title="${esc(r.desc)}">${esc(r.desc||'—')}</td>` +
+        `<td><span class="st ${statusClass(r.status)}">${esc(r.status)}</span></td>` +
+        `<td class="num">${fmtUSD(r.val)}</td>` +
+        `<td class="num" style="color:var(--orange)">${fmtUSD(r.due)}</td>` +
+        `<td class="num" style="color:var(--blue)">${fmtUSD(r.nyd)}</td></tr>`).join('') +
+      `</tbody></table></div></td></tr>`;
+  }
+  return `<div class="panel"><div class="rtitle">On the way` +
+    `<span class="sub">ordered, not delivered yet · ${list.length} categories · value = total incl. freight</span></div>` +
+    `<div style="overflow-x:auto"><table class="repTbl"><thead><tr>` +
+      `<th>Category</th><th class="num">Orders</th><th class="num">Value</th>` +
+      `<th class="num">CA</th><th class="num">NY</th>` +
+      `<th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
+      body +
+      `<tr class="grand"><td><b>Total</b></td><td class="num">${tot.n}</td>` +
+      `<td class="num"><b>${fmtUSD(tot.val)}</b></td>` +
+      `<td class="num">${fmtUSD(tot.ca)}</td><td class="num">${fmtUSD(tot.ny)}</td>` +
+      `<td class="num due">${fmtUSD(tot.due)}</td><td class="num nyd">${fmtUSD(tot.nyd)}</td><td></td></tr>` +
+    `</tbody></table></div>` +
+    `<div class="nolink" style="padding:8px 2px 0">Every order the supplier hasn’t marked Delivered, including Partial Ship. Orders still In Production or Ready to Ship usually carry no price yet, so they add to the count but not the value.</div>` +
+    `</div>`;
 }
 
 function renderReport(){
@@ -1235,12 +1308,7 @@ function renderReport(){
 
   // a bucket can end up overpaid once payments are attributed to the other side — show that
   // as a credit rather than a bare negative, and note it under the table
-  let sawCredit = false;
-  const fmtCell = (v, cls) => {
-    if((cls||'').includes('due') && v < -0.005){ sawCredit = true;
-      return `<span class="credit" title="overpaid — more payment attributed to this account than it currently has due">${fmtUSD(-v)} credit</span>`; }
-    return fmtUSD(v);
-  };
+  const fmtCell = (v) => fmtUSD(v);
   // data-go encodes the drill-down: state|bucket|scope
   const cell = (v, k, bucket, scope, cls) =>
     `<td class="num rc ${cls||''}" data-go="${k}|${bucket}|${scope}" title="Click to see these orders">${fmtCell(v, cls)}</td>`;
@@ -1256,17 +1324,7 @@ function renderReport(){
       g('nonvape','bal') + g('nonvape','due','due') + g('nonvape','nyd','nyd') +
       `</tr>`;
   };
-  const wayRow = (k, r, label, isTot) => {
-    const g = (bucket, field, cls) => isTot
-      ? `<td class="num rc ${cls||''}">${field==='n'?r.way[bucket].n:fmtUSD(r.way[bucket][field])}</td>`
-      : `<td class="num rc ${cls||''}" data-go="${k}|${bucket}|way" title="Click to see these orders">` +
-        `${field==='n'?r.way[bucket].n:fmtUSD(r.way[bucket][field])}</td>`;
-    return `<tr class="${isTot?'grand':'st-row'}"${isTot?'':` data-page="${k}"`}>` +
-      `<td><b>${label}</b></td>` +
-      g('all','n') + g('all','val') + g('all','due','due') + g('all','nyd','nyd') +
-      g('vape','val','vp') + g('nonvape','val') +
-      `</tr>`;
-  };
+
 
   cardsEl.innerHTML =
     `<div class="panel" style="margin-bottom:12px"><div class="rtitle">Balances by state and account` +
@@ -1279,19 +1337,10 @@ function renderReport(){
       `<th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th></tr></thead><tbody>` +
       acctRow('ca', R.ca, 'CA') + acctRow('ny', R.ny, 'NY') + acctRow('', T, 'Total', true) +
     `</tbody></table></div>` +
-    (sawCredit ? `<div class="nolink" style="padding:8px 2px 0">A “credit” means more payment has been attributed to that account than it currently has due — it sits against its not-yet-due invoices. Balance = Due + Not yet due throughout.</div>` : '') +
+    `<div class="nolink" style="padding:8px 2px 0">Balance = Due + Not yet due throughout. Where an account has taken more payment than it currently has due, the excess comes off its not-yet-due rather than showing a negative.</div>` +
     `</div>` +
 
-    `<div class="panel"><div class="rtitle">On the way` +
-      `<span class="sub">ordered, not delivered yet · value = total incl. freight</span></div>` +
-    `<div style="overflow-x:auto"><table class="repTbl"><thead><tr>` +
-      `<th>State</th><th class="num">Orders</th><th class="num">Value</th>` +
-      `<th class="num">Due</th><th class="num">Not yet due</th>` +
-      `<th class="num grp vp">💨 Vape value</th><th class="num grp">Non-vape value</th></tr></thead><tbody>` +
-      wayRow('ca', R.ca, 'CA') + wayRow('ny', R.ny, 'NY') + wayRow('', T, 'Total', true) +
-    `</tbody></table></div>` +
-    `<div class="nolink" style="padding:8px 2px 0">“On the way” is every order the supplier hasn’t marked Delivered — including Partial Ship. Orders still In Production or Ready to Ship usually carry no price yet, so they add to the count but not the value.</div>` +
-    `</div>`;
+    wayByCategoryHtml([...R.ca.wayRows, ...R.ny.wayRows]);
 
   cardsEl.querySelectorAll('[data-go]').forEach(td => td.addEventListener('click', e => {
     e.stopPropagation();
@@ -1301,6 +1350,14 @@ function renderReport(){
     gotoFilter(k, { types, statuses: scope === 'way' ? wayStatuses(m) : [] });
   }));
   cardsEl.querySelectorAll('tr.st-row').forEach(tr => tr.addEventListener('click', () => goPage(tr.dataset.page)));
+  cardsEl.querySelectorAll('tr.prow[data-rcat]').forEach(tr => tr.addEventListener('click', () => {
+    const c = tr.dataset.rcat;
+    state.rptCat.has(c) ? state.rptCat.delete(c) : state.rptCat.add(c);
+    render();
+  }));
+  cardsEl.querySelectorAll('.subTbl tbody tr[data-gosrc]').forEach(tr => tr.addEventListener('click', e => {
+    e.stopPropagation(); gotoOrder(tr.dataset.gost, parseInt(tr.dataset.gosrc,10));
+  }));
 }
 
 function renderOverview(){
