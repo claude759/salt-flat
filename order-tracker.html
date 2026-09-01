@@ -89,6 +89,26 @@
   .catbtns{display:flex;gap:6px;margin:0 0 8px;flex-wrap:wrap;align-items:center}
   .catbtns .lbl{font-size:11px;color:var(--faint);font-weight:700}
 
+  /* ---- report page ---- */
+  .repTbl{width:100%;border-collapse:collapse;font-size:13px}
+  .repTbl th{font-size:11px;font-weight:700;color:var(--muted);padding:7px 12px;
+    border-bottom:1px solid var(--line);text-align:left;white-space:nowrap;vertical-align:bottom}
+  .repTbl th.grp{text-align:center;color:var(--text);border-bottom:1px solid var(--accent);
+    font-size:11.5px;letter-spacing:.4px;text-transform:uppercase}
+  .repTbl th.grp.vp{color:var(--accent2);border-bottom-color:var(--accent2)}
+  .repTbl th.num{text-align:right}
+  .repTbl td{padding:9px 12px;border-bottom:1px solid rgba(42,47,58,.55);white-space:nowrap}
+  .repTbl td.num{text-align:right;font-variant-numeric:tabular-nums;font-weight:700}
+  .repTbl td.due{color:var(--orange)} .repTbl td.nyd{color:var(--blue)}
+  .repTbl td.vp{color:var(--accent2)}
+  .repTbl tr.st-row td{cursor:pointer}
+  .repTbl tr.st-row:hover td{background:rgba(124,92,255,.07)}
+  .repTbl td.rc[data-go]{cursor:pointer}
+  .repTbl td.rc[data-go]:hover{background:rgba(124,92,255,.18);border-radius:6px}
+  .repTbl tr.grand td{background:#131722;color:var(--accent2);font-weight:800;border-bottom:0}
+  .repTbl tr.grand td.due{color:var(--orange)} .repTbl tr.grand td.nyd{color:var(--blue)}
+  .credit{color:var(--green);font-weight:800}
+
   /* ---- overview state table ---- */
   .stateTbl{width:100%;font-size:13.5px}
   .stateTbl th{cursor:default}
@@ -340,7 +360,7 @@ function fetchT(url, opts = {}, ms = 30000){
   return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
 }
 
-const PAGE_KEYS = ['overview','ca','ny'];
+const PAGE_KEYS = ['overview','report','ca','ny'];
 const hashPage = () => {
   const k = location.hash.replace('#','').toLowerCase();
   return PAGE_KEYS.includes(k) ? k : 'overview';
@@ -1140,6 +1160,149 @@ function gotoType(stateKey, type){
   goPage(stateKey);
 }
 
+
+/* ---------- Report page ---------- */
+const isDelivered = st => /^delivered/i.test((st||'').trim());
+
+/* jump into a state page with a specific filter preset */
+function gotoFilter(stateKey, opts){
+  const f = state.filters[stateKey];
+  f.q = ''; f.st.clear(); f.ty.clear();
+  (opts.types || []).forEach(t => f.ty.add(t));
+  (opts.statuses || []).forEach(x => f.st.add(x));
+  goPage(stateKey);
+}
+const nonVapeTypes = m => [...new Set(m.rows.map(r => r.type).filter(t => t && !isVape(t)))];
+const wayStatuses = m => {
+  const c = m.cols.find(x => x.orderStatus); if(!c) return [];
+  return [...new Set(m.rows.map(r => (r.c[c.i]||'').trim()).filter(v => v && !isDelivered(v)))];
+};
+
+/* every figure the report shows, for one state */
+function reportFor(k){
+  const m = state.data[k]; if(!m) return null;
+  const adj = computeAdjust(m, k), b = bucketBalances(m, adj), st = stateTotals(m);
+  const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+  const totC = find('total including freight'), dueC = find('due'), nydC = find('not yet due');
+  const osC = m.cols.find(c => c.orderStatus);
+  const dSum = Object.values(adj.delta).reduce((a,d)=>a+d,0);
+  const payTotal = adj.payToInv.vape + adj.payToInv.nonvape;
+  const adjDue = st.due - dSum + payTotal - (adj.extraPaid.vape + adj.extraPaid.nonvape);
+
+  // vape/non-vape due is the bucket balance less its not-yet-due; account-level
+  // adjustments are all due-side money, so the not-yet-due split is the sheet's
+  const acct = {
+    all:     { bal: adjDue + st.nyd,      due: adjDue,                  nyd: st.nyd },
+    vape:    { bal: b.vape,               due: b.vape - b.vapeNyd,      nyd: b.vapeNyd },
+    nonvape: { bal: b.nonvape,            due: b.nonvape - b.nonvapeNyd, nyd: b.nonvapeNyd },
+  };
+
+  // on the way = every order the supplier has not marked Delivered
+  const zero = () => ({ n:0, val:0, due:0, nyd:0 });
+  const way = { all: zero(), vape: zero(), nonvape: zero() };
+  for(const r of m.rows){
+    if(!osC || isDelivered(r.c[osC.i])) continue;
+    const val = totC ? (money(r.c[totC.i])||0) : 0;
+    const due = (dueC ? (money(r.c[dueC.i])||0) : 0) - (adj.delta[r.src]||0);
+    const nyd = nydC ? (money(r.c[nydC.i])||0) : 0;
+    for(const key of ['all', isVape(r.type) ? 'vape' : 'nonvape']){
+      way[key].n++; way[key].val += val; way[key].due += due; way[key].nyd += nyd;
+    }
+  }
+  return { acct, way, m };
+}
+
+function renderReport(){
+  $('#openSheet').href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
+  const pp = $('#payPanel'), cardsEl = $('#cards'), wrapEl = document.querySelector('.wrap');
+  cardsEl.className = 'cards plain';
+  wrapEl.style.display = 'none';
+  $('#toolbar').innerHTML = '';
+  pp.style.display = 'none'; pp.innerHTML = '';
+  if(!state.data.ca || !state.data.ny){
+    cardsEl.innerHTML = '<div class="tblbox"><div class="loading">Loading order data…</div></div>';
+    return;
+  }
+  const R = { ca: reportFor('ca'), ny: reportFor('ny') };
+  const add = (a,b) => ({ bal:a.bal+b.bal, due:a.due+b.due, nyd:a.nyd+b.nyd });
+  const addW = (a,b) => ({ n:a.n+b.n, val:a.val+b.val, due:a.due+b.due, nyd:a.nyd+b.nyd });
+  const T = {
+    acct: { all:add(R.ca.acct.all,R.ny.acct.all), vape:add(R.ca.acct.vape,R.ny.acct.vape),
+            nonvape:add(R.ca.acct.nonvape,R.ny.acct.nonvape) },
+    way:  { all:addW(R.ca.way.all,R.ny.way.all), vape:addW(R.ca.way.vape,R.ny.way.vape),
+            nonvape:addW(R.ca.way.nonvape,R.ny.way.nonvape) },
+  };
+
+  // a bucket can end up overpaid once payments are attributed to the other side — show that
+  // as a credit rather than a bare negative, and note it under the table
+  let sawCredit = false;
+  const fmtCell = (v, cls) => {
+    if((cls||'').includes('due') && v < -0.005){ sawCredit = true;
+      return `<span class="credit" title="overpaid — more payment attributed to this account than it currently has due">${fmtUSD(-v)} credit</span>`; }
+    return fmtUSD(v);
+  };
+  // data-go encodes the drill-down: state|bucket|scope
+  const cell = (v, k, bucket, scope, cls) =>
+    `<td class="num rc ${cls||''}" data-go="${k}|${bucket}|${scope}" title="Click to see these orders">${fmtCell(v, cls)}</td>`;
+
+  const acctRow = (k, r, label, isTot) => {
+    const g = (bucket, field, cls) => isTot
+      ? `<td class="num rc ${cls||''}">${fmtCell(r.acct[bucket][field], cls)}</td>`
+      : cell(r.acct[bucket][field], k, bucket, 'acct', cls);
+    return `<tr class="${isTot?'grand':'st-row'}"${isTot?'':` data-page="${k}"`}>` +
+      `<td><b>${label}</b></td>` +
+      g('all','bal') + g('all','due','due') + g('all','nyd','nyd') +
+      g('vape','bal','vp') + g('vape','due','due') + g('vape','nyd','nyd') +
+      g('nonvape','bal') + g('nonvape','due','due') + g('nonvape','nyd','nyd') +
+      `</tr>`;
+  };
+  const wayRow = (k, r, label, isTot) => {
+    const g = (bucket, field, cls) => isTot
+      ? `<td class="num rc ${cls||''}">${field==='n'?r.way[bucket].n:fmtUSD(r.way[bucket][field])}</td>`
+      : `<td class="num rc ${cls||''}" data-go="${k}|${bucket}|way" title="Click to see these orders">` +
+        `${field==='n'?r.way[bucket].n:fmtUSD(r.way[bucket][field])}</td>`;
+    return `<tr class="${isTot?'grand':'st-row'}"${isTot?'':` data-page="${k}"`}>` +
+      `<td><b>${label}</b></td>` +
+      g('all','n') + g('all','val') + g('all','due','due') + g('all','nyd','nyd') +
+      g('vape','val','vp') + g('nonvape','val') +
+      `</tr>`;
+  };
+
+  cardsEl.innerHTML =
+    `<div class="panel" style="margin-bottom:12px"><div class="rtitle">Balances by state and account` +
+      `<span class="sub">every figure is clickable · vape = AIO hardware</span></div>` +
+    `<div style="overflow-x:auto"><table class="repTbl"><thead>` +
+      `<tr><th rowspan="2">State</th><th colspan="3" class="grp">All</th>` +
+      `<th colspan="3" class="grp vp">💨 Vape</th><th colspan="3" class="grp">Non-vape</th></tr>` +
+      `<tr><th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th>` +
+      `<th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th>` +
+      `<th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th></tr></thead><tbody>` +
+      acctRow('ca', R.ca, 'CA') + acctRow('ny', R.ny, 'NY') + acctRow('', T, 'Total', true) +
+    `</tbody></table></div>` +
+    (sawCredit ? `<div class="nolink" style="padding:8px 2px 0">A “credit” means more payment has been attributed to that account than it currently has due — it sits against its not-yet-due invoices. Balance = Due + Not yet due throughout.</div>` : '') +
+    `</div>` +
+
+    `<div class="panel"><div class="rtitle">On the way` +
+      `<span class="sub">ordered, not delivered yet · value = total incl. freight</span></div>` +
+    `<div style="overflow-x:auto"><table class="repTbl"><thead><tr>` +
+      `<th>State</th><th class="num">Orders</th><th class="num">Value</th>` +
+      `<th class="num">Due</th><th class="num">Not yet due</th>` +
+      `<th class="num grp vp">💨 Vape value</th><th class="num grp">Non-vape value</th></tr></thead><tbody>` +
+      wayRow('ca', R.ca, 'CA') + wayRow('ny', R.ny, 'NY') + wayRow('', T, 'Total', true) +
+    `</tbody></table></div>` +
+    `<div class="nolink" style="padding:8px 2px 0">“On the way” is every order the supplier hasn’t marked Delivered — including Partial Ship. Orders still In Production or Ready to Ship usually carry no price yet, so they add to the count but not the value.</div>` +
+    `</div>`;
+
+  cardsEl.querySelectorAll('[data-go]').forEach(td => td.addEventListener('click', e => {
+    e.stopPropagation();
+    const [k, bucket, scope] = td.dataset.go.split('|');
+    const m = state.data[k];
+    const types = bucket === 'vape' ? [VAPE_TYPE] : bucket === 'nonvape' ? nonVapeTypes(m) : [];
+    gotoFilter(k, { types, statuses: scope === 'way' ? wayStatuses(m) : [] });
+  }));
+  cardsEl.querySelectorAll('tr.st-row').forEach(tr => tr.addEventListener('click', () => goPage(tr.dataset.page)));
+}
+
 function renderOverview(){
   $('#openSheet').href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
   const pp = $('#payPanel'), cardsEl = $('#cards'), wrapEl = document.querySelector('.wrap');
@@ -1287,6 +1450,7 @@ function render(){
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===state.page));
   $('#q').style.display = state.page==='overview' ? 'none' : '';
   if(state.page === 'overview'){ renderOverview(); return; }
+  if(state.page === 'report'){ renderReport(); return; }
   $('#cards').className = 'cards';                      // undo the overview layout
   document.querySelector('.wrap').style.display = '';
   const m = currentModel();
@@ -1948,7 +2112,7 @@ function goPage(k){
   $('#q').value = state.filters[k] ? state.filters[k].q : '';
   render();
 }
-$('#seg').innerHTML = [{key:'overview',label:'Overview'},...TABS].map(t =>
+$('#seg').innerHTML = [{key:'overview',label:'Overview'},{key:'report',label:'📋 Report'},...TABS].map(t =>
   `<button data-key="${t.key}">${t.label}</button>`).join('');
 document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => goPage(b.dataset.key)));
 window.addEventListener('hashchange', () => { const k = hashPage(); if(k !== state.page) goPage(k); });
