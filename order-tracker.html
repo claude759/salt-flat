@@ -625,6 +625,9 @@ function payDates(m, nowMs){
    consistently even where several events share a date. */
 function ledger(m, adj, pdates){
   const totC = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'total including freight');
+  const dueC2 = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'due');
+  const nydC2 = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'not yet due');
+  const paidC2 = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'paid to date');
   const invC = m.cols.find(c => c.header.toLowerCase() === 'invoice no.');
   const descC = m.cols.find(c => /^desc/i.test(c.header));
   const cell = (r,c) => c ? (r.c[c.i]||'').trim() : '';
@@ -637,7 +640,14 @@ function ledger(m, adj, pdates){
     return wires.get(key);
   };
   for(const r of m.rows){
-    evs.push({ kind:'order', r, key:'o'+r.src, date:r.date, amt: totC ? (money(r.c[totC.i])||0) : 0 });
+    // charge = what the supplier has actually invoiced (due + not-yet-due + paid); an order
+    // whose balance cells are still blank charges nothing yet, so the running balance always
+    // lands on the open-balance cards. The shortfall is carried for display.
+    const total = totC ? (money(r.c[totC.i])||0) : 0;
+    const invoiced = (dueC2 ? (money(r.c[dueC2.i])||0) : 0) + (nydC2 ? (money(r.c[nydC2.i])||0) : 0)
+                   + (paidC2 ? (money(r.c[paidC2.i])||0) : 0);
+    evs.push({ kind:'order', r, key:'o'+r.src, date:r.date, amt: invoiced,
+               uninv: total - invoiced > 0.01 ? total - invoiced : 0, total });
     const app = (amt, note) => ({ r, src:r.src, amt, note, inv: cell(r,invC), desc: cell(r,descC) });
     for(const p of paymentsOf(m, r)){
       const w = wire(p.key);
@@ -1195,11 +1205,10 @@ function reportFor(k){
   // overpayment come off not-yet-due — Balance = Due + Not yet due still holds either way
   const split = (bal, nyd) => { const due = bal - nyd;
     return due < -0.005 ? { bal, due: 0, nyd: bal } : { bal, due, nyd }; };
-  const acct = {
-    all:     split(adjDue + st.nyd, st.nyd),
-    vape:    split(b.vape,          b.vapeNyd),
-    nonvape: split(b.nonvape,       b.nonvapeNyd),
-  };
+  const vape = split(b.vape, b.vapeNyd), nonvape = split(b.nonvape, b.nonvapeNyd);
+  // All = the two buckets after clamping, so every column cross-foots exactly
+  const acct = { vape, nonvape,
+    all: { bal: vape.bal + nonvape.bal, due: vape.due + nonvape.due, nyd: vape.nyd + nonvape.nyd } };
 
   // on the way = every order the supplier has not marked Delivered
   const zero = () => ({ n:0, val:0, due:0, nyd:0 });
@@ -1678,7 +1687,11 @@ function render(){
         const v = (r.c[c.i]||'').trim();
         let cell = esc(v);
         if(c.virtual === 'type') cell = r.type ? tyChip(r.type) : '';
-        else if(c.virtual === 'amount') cell = totCol ? fmtUSD(money(r.c[totCol.i])||0) : '';
+        else if(c.virtual === 'amount'){
+          cell = ev.uninv > 0.01
+            ? `<span class="inferred" title="order total ${fmtUSD(ev.total)} — ${fmtUSD(ev.uninv)} not yet invoiced by the supplier (blank Due/Not-yet-due in the sheet)">${fmtUSD(ev.amt)}</span>`
+            : fmtUSD(ev.amt);
+        }
         else if(c.virtual === 'balance') cell = ev[balField] == null ? '' : fmtUSD(ev[balField]);
         if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
         if(delta && (c===paidCol || c===dueCol)){
