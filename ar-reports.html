@@ -1180,6 +1180,7 @@
           <button data-terms="cod">COD</button>
         </div>
         <div class="grow"></div>
+        <a class="btn" id="hmops-open-sheet" href="https://docs.google.com/spreadsheets/d/1SckEftdpPhT1G-zmEsFKLit0y-32WkmK8kpYV0roVOA/edit" target="_blank" rel="noopener" title="Open the distributor's HM OPS Order Queue sheet in Google Sheets (needs view access from HM OPS)">↗ Open sheet</a>
         <button class="btn" id="hmops-export">⬇ Export CSV</button>
       </div>
       <div class="tier-cards" id="hmops-cards"></div>
@@ -1804,6 +1805,10 @@ function applyShared(d){
     // the Jul 13 2026 morning publishes capture empty projected-sales snapshots (files were
     // wiped mid-publish by the fetch landing after the drop).
     if(Object.values(FILES).some(f=>f)) return false;
+    // An OLDER payload after a newer one must not roll the app backwards. Two jsonp responses can
+    // be in flight (boot fetch, the 90s retry, the Refresh button); a slow one landing late used
+    // to rewind the header, every as-of badge, the orders — and overwrite the cache with them.
+    if(SHARED && SHARED.uploadedAt && d && d.uploadedAt && Date.parse(d.uploadedAt) < Date.parse(SHARED.uploadedAt)) return false;
     const data=normShared(d && d.data);
     let any=false;
     if(data.ar && data.ar.records && data.ar.records.length){
@@ -1852,14 +1857,18 @@ function applyShared(d){
     if(data.nyQboPay && data.nyQboPay.length){ NY_QBO_PAY=nyQboPayFromWire(data.nyQboPay); any=true; }
     if(data.nyQboAsOf) NY_QBO_ASOF=data.nyQboAsOf;   // when the QBO data was actually pulled (staleness badge)
     if(data.nyAsOf) NY_ASOF=data.nyAsOf;             // when LeafLink orders were last scraped
-    // Repaint whichever NY view is on screen — without this, a payload landing (or Refresh)
-    // while NY AR / HM OPS is open left stale or blank content until a manual tab switch.
-    try{ if(APP_STATE==='NY'){ const at=(document.querySelector('.tab.active')||{}).dataset||{};
-      if(at.tab==='ar') renderArNY(); else if(at.tab==='hmops') renderHmOps(); else if(at.tab==='nysc') renderNySc(); }}catch(e){}
     if(data.nyQboItems && data.nyQboItems.length){ NY_QBO_ITEMS=nyQboItemsFromWire(data.nyQboItems); any=true; }
     if(data.hmops && data.hmops.length){ HM_OPS=hmOpsFromWire(data.hmops); any=true; }   // HM OPS Order Queue (Wizard Trees rows)
     if(data.hmopsAsOf) HMOPS_ASOF=data.hmopsAsOf;
     if(data.nyRItems && data.nyRItems.length){ NY_RITEMS=nyRItemsFromWire(data.nyRItems); any=true; }   // NY recon line items (invoice drill-down)
+    // Repaint whichever NY view is on screen — without this, a payload landing (or Refresh)
+    // while NY AR / HM OPS is open left stale or blank content until a manual tab switch.
+    // This MUST come after every NY key above: it used to sit before HM_OPS / NY_RITEMS were
+    // assigned, so the HM OPS Tracker painted the PREVIOUS payload after boot (Gianni's Sep 2
+    // screenshot: sheet "last read 18h ago" beside a 6:57 AM QuickBooks stamp) and the AR ledger
+    // lost every LeafLink order # until a tab switch.
+    try{ if(APP_STATE==='NY'){ const at=(document.querySelector('.tab.active')||{}).dataset||{};
+      if(at.tab==='ar') renderArNY(); else if(at.tab==='hmops') renderHmOps(); else if(at.tab==='nysc') renderNySc(); }}catch(e){}
     SCORECARD_SNAPS = (data.scorecard && data.scorecard.snaps) || {};
     SC_DETAIL = (data.scorecard && data.scorecard.detail) || null;
     SHARED = any ? {uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy} : null;
@@ -4350,8 +4359,11 @@ function hmDropIndex(){ const m={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(
 function hmTermsIndex(){ const m={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(e.ref||'').trim(); if(r && !m[r]) m[r]=e.terms||''; }); return m; }
 const hmTermsKind=t=>/cod/i.test(t||'')?'cod':(/net\s*30/i.test(t||'')?'net30':'');
 let hmTermsFilter='all';
-function hmDropOf(ll, idx){
-  const fb=()=>{ const l=nyDropLatest(); return l?l.n:2; };
+// row = the sheet row, for the fallback: an LL# the LeafLink export doesn't know (10 of 432 on
+// 2026-09-02) is placed by its OWN delivery / tab date, not pinned to the newest drop — that put
+// June deliveries in Drop 5 and made a July week's card read "Drop 3.2 + 4 + 5".
+function hmDropOf(ll, idx, row){
+  const fb=()=>{ const t=row?hmRowDate(row):null; const x=t!=null?nyDropOf(t):null; if(x) return x.n; const l=nyDropLatest(); return l?l.n:2; };
   const ref=String(ll||'').trim(); if(!ref) return fb();
   const d=idx ? idx[ref] : (((NY_EVENTS||[]).find(e=>String(e.ref||'').trim()===ref)||{}).d);
   if(d==null) return fb();
@@ -4460,7 +4472,7 @@ function hmFilterState(){
 }
 function hmViewRows(F){ F=F||hmFilterState();
   return hmDedupe(HM_OPS||[]).filter(x=>F.inRange(x))
-    .filter(x=>F.dropSel==='all' || String(hmDropOf(x.ll,F.idx))===F.dropSel)
+    .filter(x=>F.dropSel==='all' || String(hmDropOf(x.ll,F.idx,x))===F.dropSel)
     .filter(x=>hmTermsFilter==='all' || hmTermsKind(F.termsOf(x))===hmTermsFilter)
     .filter(x=>!F.q || [x.shop,x.ll,x.wk,x.brands,x.notes,x.st].some(v=>String(v).toLowerCase().includes(F.q)))
     // "This week" reads as a delivery schedule (Mon→Fri); wider ranges read as history (newest first).
@@ -4479,7 +4491,7 @@ function renderHmOps(){
   const isDone=x=>/fulfil|deliver|complete|done/i.test(x.st);
   const open=view.filter(x=>!isDone(x)), held=view.filter(x=>hmFlag(x.hold)), rets=view.filter(x=>hmFlag(x.ret));
   const tot=view.reduce((s,x)=>s+x.total,0);
-  const dropsIn=[...new Set(view.map(x=>hmDropOf(x.ll,idx)))].sort((a,b)=>+a-+b);
+  const dropsIn=[...new Set(view.map(x=>hmDropOf(x.ll,idx,x)))].sort((a,b)=>+a-+b);
   if(cards) cards.innerHTML=[
     ['Wizard Trees orders', String(view.length), (()=>{ const sched=view.filter(x=>hmDelivTs(x.dl)!=null).length;
       return rangeLabel+(sched<view.length?` · ${view.length-sched} not scheduled`:'');})()],
@@ -4496,7 +4508,7 @@ function renderHmOps(){
   const flags=x=>[ hmFlag(x.ret)?'<span class="pill" style="color:var(--orange)">return pickup</span>':'',
     hmFlag(x.disc)?'<span class="pill">5% disc</span>':'', hmFlag(x.sop)?'<span class="pill">state/past</span>':'',
     hmFlag(x.email)?'<span class="pill" style="color:var(--green)">email sent</span>':'' ].filter(Boolean).join(' ');
-  const body=view.map(x=>{ const dn=hmDropOf(x.ll,idx); const dv=hmFmtDeliv(x); return `<tr>
+  const body=view.map(x=>{ const dn=hmDropOf(x.ll,idx,x); const dv=hmFmtDeliv(x); return `<tr>
     <td class="num">${dv?`<b>${esc(dv)}</b>`:'<span class="neg">not scheduled</span>'}</td>
     <td>${esc(x.wk)}</td><td>${esc(x.ll||'—')}${termsOf(x)?`<div class="rep">${esc(termsOf(x))}</div>`:''}</td>
     <td class="num"><span class="pill" style="color:${nyDropColor(dn)}">Drop ${dn}</span>${(()=>{ const dd=nyDropDefs().find(z=>String(z.n)===String(dn)); return dd&&dd.inv?`<div class="rep" title="The Wizard Trees NY invoice to HM OPS this order is linked to">inv ${esc(dd.inv)}</div>`:''; })()}</td>
@@ -4510,9 +4522,9 @@ function renderHmOps(){
     <tfoot><tr class="totals"><td colspan="7">${view.length} order${view.length!==1?'s':''}${open.length?` · ${open.length} open`:''}</td><td class="num money">${fmt$(tot)}</td><td colspan="2"></td></tr></tfoot></table>`;
   }
   if(note){ const asOf=HMOPS_ASOF?new Date(HMOPS_ASOF):null;
-    const age=asOf?Math.round((Date.now()-asOf.getTime())/36e5):null;
+    const age=asOf?Math.floor((Date.now()-asOf.getTime())/36e5):null;   // floor: "3h ago" must mean at least 3h
     const dupes=(HM_OPS||[]).length-hmDedupe(HM_OPS||[]).length;
-    note.innerHTML=`<b>HM OPS Order Queue — Wizard Trees only.</b> Rows from the distributor's shared logistics sheet whose <b>Box Count/Brands</b> names Wizard Trees — spelled out <i>or</i> abbreviated <b>WT</b> ("3 WT + display", "5 WT Prerolls") — across every weekly tab. Re-read every hourly refresh through the reports backend, so edits to the sheet land here within the hour (the sheet stays private — no public sharing needed).${asOf?` Sheet last read <b>${asOf.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</b>${age>=3?` <span style="color:var(--red)">(${age}h ago — feed may be stale)</span>`:''}.`:''} Sorted and filtered by <b>Delivery</b> date (the sheet's DELIVERY DATE; orders without one fall back to their weekly tab and show as <i>not scheduled</i>). <b>LL#</b> matches the LeafLink order number on the other NY pages, and <b>Drop</b> links each order to the Wizard Trees NY drop invoice its LeafLink order date falls under (${nyDropBounds()}); an order with no matching LeafLink order is counted in the newest drop${nyDropLatest()?` (Drop ${nyDropLatest().n})`:''}. The drop list comes from the drop invoices in QuickBooks, so a new drop appears here the hour its invoice is entered.${dupes>0?` An order that slips its week is re-listed on the next tab — <b>${dupes}</b> such duplicate${dupes!==1?'s are':' is'} shown once (latest delivery) so totals aren't double-counted.`:''}`; }
+    note.innerHTML=`<b>HM OPS Order Queue — Wizard Trees only.</b> Rows from the distributor's shared logistics sheet whose <b>Box Count/Brands</b> names Wizard Trees — spelled out <i>or</i> abbreviated <b>WT</b> ("3 WT + display", "5 WT Prerolls") — across every weekly tab. Re-read every hourly refresh through the reports backend, so edits to the sheet land here within the hour (the sheet stays private — no public sharing needed).${asOf?` Sheet last read <b>${asOf.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</b>${age>=3?` <span style="color:var(--red)">(${age}h ago — feed may be stale)</span>`:''}.`:''} Sorted and filtered by <b>Delivery</b> date (the sheet's DELIVERY DATE; orders without one fall back to their weekly tab and show as <i>not scheduled</i>). <b>LL#</b> matches the LeafLink order number on the other NY pages, and <b>Drop</b> links each order to the Wizard Trees NY drop invoice its LeafLink order date falls under (${nyDropBounds()}); an order with no matching LeafLink order is placed by its own delivery date. The drop list comes from the drop invoices in QuickBooks, so a new drop appears here the hour its invoice is entered.${dupes>0?` An order that slips its week is re-listed on the next tab — <b>${dupes}</b> such duplicate${dupes!==1?'s are':' is'} shown once (latest delivery) so totals aren't double-counted.`:''}`; }
 }
 // NY recon LINE ITEMS — what an invoice is actually made of (product, units, price, per-line discount).
 let NY_RITEMS=[];   // {inv, c, product, qty, price, gross, disc}
@@ -5084,6 +5096,7 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   const was=APP_STATE; APP_STATE=st;
   document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.state===APP_STATE));
   $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are CA AR
+  { const a=document.querySelector('.asof'); if(a&&a.classList) a.classList.toggle('hidden', APP_STATE==='NY'); }   // the As-of picker only re-ages CA invoices; a visible control must not be inert
   // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the
   // NY-only tabs. (Access is by STATE now — applyStateAccess gates which states you can reach.)
   const NY_TABS=['ar','nysc','tiers','reports','credits','hmops'], NY_ONLY=['nysc','credits','hmops'];   // 'emails' is CA-only: absent from NY_TABS (hidden in NY), absent from NY_ONLY (visible in CA)   // Sales by Type is a Reports mode in NY (2026-07-21), a standalone tab in CA
@@ -5120,7 +5133,10 @@ function nyArData(){
   // BEFORE that fix still carries them — filter here too so no AR view can double-count a merged
   // order whose successor already holds the full amount.
   return (NY_EVENTS||[]).filter(e=>!/combin/i.test(e.st||'')).map(e=>{ const days=nyTermsDays(e.terms);
-    const due=days==null?null:(e.d+days*86400000);
+    // terms run from SHIP, not from placement: a COD order is due on delivery, and the recon's own
+    // due dates are ship + terms on 226/228 invoices (order + terms lands 1–12 days early)
+    const shipT=(NY_SHIP||{})[String(e.ref||'').trim()]; const base=shipT!=null?shipT:e.d;
+    const due=days==null?null:(base+days*86400000);
     const dpd=due==null?null:Math.floor((now.getTime()-due)/86400000);
     return {...e, due, dpd}; }).sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
 }
@@ -5207,8 +5223,13 @@ function nyQboDrill(inv){
 // pending rows; an unparseable set can't collapse the cutoff to 0 and double-count the recon).
 function nyPendCutoff(){ const dCap=Date.now()+45*86400000;
   return (NY_INV||[]).reduce((m,x)=>(x.d&&x.d<=dCap)?Math.max(m,x.d):m,0); }
+// Recon invoices are dated at SHIP (218/228 matched pairs on 2026-09-02), while e.d is the
+// LeafLink ORDER date. Cutting on the order date hid an order placed before the newest invoice
+// but shipped after it (LL-47438, $992): in neither list. Compare the ship date when LeafLink
+// has one; the order date is only the fallback.
+const nyShipD=r=>{ const t=(NY_SHIP||{})[String(r.ref||'').trim()]; return t!=null?t:r.d; };
 function nyPendOrders(maxInvD){ if(maxInvD==null) maxInvD=nyPendCutoff();
-  return maxInvD?nyArData().filter(r=>r.d && r.d>maxInvD):[]; }
+  return maxInvD?nyArData().filter(r=>r.d && nyShipD(r)>maxInvD):[]; }
 function nyInvOrderMap(){
   const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+t.gross; });
   const idx={}; (NY_EVENTS||[]).forEach(e=>{ const k=String(e.c||'').toLowerCase()+'|'+Math.round((e.amt||0)*100); (idx[k]||(idx[k]=[])).push(e); });
@@ -5437,7 +5458,9 @@ function renderArNY(){
     const _now=Date.now();
     NY_INV.forEach(x=>out.push([x.c,x.inv,om[x.inv]||'',x.so||'',drop(rd[om[x.inv]]!=null?rd[om[x.inv]]:x.d),iso(x.d),iso(x.due),x.st,x.disc.toFixed(2),x.total.toFixed(2),x.paid.toFixed(2),((x.due&&x.due<_now&&x.out>0.005)?x.out:0).toFixed(2),x.out.toFixed(2)]));
     // un-invoiced LeafLink orders, same basis as the on-screen table
-    nyPendOrders().forEach(r=>out.push([r.c,'',r.ref||'','',drop(r.d),iso(r.d),iso(r.due),/ship|fulfil|complet|deliver/i.test(r.st||'')?'shipped · not invoiced':((r.st||'placed').toLowerCase()+' · not shipped'),'','','',(r.amt||0).toFixed(2)]));
+    // 13 columns like the header — this row was one short, so every un-invoiced amount exported
+    // under "Overdue" and "Outstanding" came out blank ($784k misfiled on 2026-09-02)
+    nyPendOrders().forEach(r=>out.push([r.c,'',r.ref||'','',drop(r.d),iso(r.d),iso(r.due),/ship|fulfil|complet|deliver/i.test(r.st||'')?'shipped · not invoiced':((r.st||'placed').toLowerCase()+' · not shipped'),'','','','',(r.amt||0).toFixed(2)]));
     // per-dispensary rollup (same grouping as the By Dispensary view)
     const gb=nyArBuyerGroups(nyArAllRows().all);
     out.push([],['— BY DISPENSARY (open balances) —'],['Dispensary','Open','Current','1-30','31-60','61-90','>90','Total Overdue','Total Outstanding']);
@@ -5473,7 +5496,7 @@ applyHmPreset('week');   // show the active window in the boxes from the start (
 { const el=$('#hmops-export'); if(el) el.onclick=()=>{
   const F=hmFilterState();   // export exactly what the toolbar is showing (date range, drop, terms, search)
   const out=[['Delivery Date','Week','Submitted','LL#','Drop','Terms','Shop','Status','Box Count/Brands','PK','MN','Total','5% DISC','STATE OR PAST','HOLD','RETURN PICKUP','DELIVERY EMAIL SENT','Notes']];
-  hmViewRows(F).forEach(x=>out.push([x.dl,x.wk,x.sub,x.ll,hmDropOf(x.ll,F.idx),F.termsOf(x),x.shop,x.st,x.brands,x.pk,x.mn,x.total.toFixed(2),x.disc,x.sop,x.hold,x.ret,x.email,x.notes]));
+  hmViewRows(F).forEach(x=>out.push([x.dl,x.wk,x.sub,x.ll,hmDropOf(x.ll,F.idx,x),F.termsOf(x),x.shop,x.st,x.brands,x.pk,x.mn,x.total.toFixed(2),x.disc,x.sop,x.hold,x.ret,x.email,x.notes]));
   downloadCSV('hm-ops-wizard-trees.csv',out); }; }
 
 // ── NY Sales by Type: LeafLink line items grouped by product format → strain, with Drop cohorts ──
