@@ -5228,8 +5228,31 @@ function nyPendCutoff(){ const dCap=Date.now()+45*86400000;
 // but shipped after it (LL-47438, $992): in neither list. Compare the ship date when LeafLink
 // has one; the order date is only the fallback.
 const nyShipD=r=>{ const t=(NY_SHIP||{})[String(r.ref||'').trim()]; return t!=null?t:r.d; };
+// ORPHANS: shipped orders on or before the recon cutoff that no invoice accounts for. Before
+// 2026-09-02 these vanished from both lists (four real August receivables, $9,120). "No invoice"
+// must survive the recon's own spelling of a store ("Hii - NYC" for "Hii NYC - Williamsburg"), so
+// an order is orphaned only when no UNMATCHED invoice of the same gross exists for a similarly
+// named customer (≥60% common prefix, the rule the Paid-vs-Unpaid ingester validated): a name
+// variant is not a missing invoice, and a chain sibling's invoice is not this order's.
+const nyNameKey=x=>String(x||'').replace(/\s*\([^)]*\)\s*$/,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+function nyOrphanOrders(maxInvD){
+  if(!maxInvD || !(NY_INV||[]).length) return [];
+  const om=nyInvOrderMap(); const claimed=new Set(Object.values(om));
+  // compare on the invoice's GROSS (line items, else total + discount): an invoice Total is net of
+  // the 5% early-pay discount, and a discounted invoice is not a missing one
+  const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+t.gross; });
+  const grossOf=x=>gross[x.inv]!=null?gross[x.inv]:((x.total||0)+(x.disc||0));
+  const free=(NY_INV||[]).filter(x=>!om[x.inv]);   // invoices no order claimed — the spelling-variant pool
+  const lcp=(a,b)=>{ let i=0; while(i<a.length&&i<b.length&&a[i]===b[i]) i++; return i; };
+  const shippedSt=st=>/ship|fulfil|complet|deliver/i.test(st||'');
+  return nyArData().filter(r=>{
+    if(!r.d || !shippedSt(r.st) || nyShipD(r)>maxInvD || claimed.has(r.ref)) return false;
+    const n=nyNameKey(r.c);
+    return !free.some(x=>Math.abs(grossOf(x)-(r.amt||0))<0.011 && Math.abs((x.d||0)-nyShipD(r))<=45*864e5 && (()=>{ const m=nyNameKey(x.c); return lcp(m,n)>=0.6*Math.min(m.length,n.length) && Math.min(m.length,n.length)>=5; })());
+  }).map(r=>({...r, _orphan:true}));
+}
 function nyPendOrders(maxInvD){ if(maxInvD==null) maxInvD=nyPendCutoff();
-  return maxInvD?nyArData().filter(r=>r.d && nyShipD(r)>maxInvD):[]; }
+  return maxInvD?nyArData().filter(r=>r.d && nyShipD(r)>maxInvD).concat(nyOrphanOrders(maxInvD)):[]; }
 function nyInvOrderMap(){
   const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+t.gross; });
   const idx={}; (NY_EVENTS||[]).forEach(e=>{ const k=String(e.c||'').toLowerCase()+'|'+Math.round((e.amt||0)*100); (idx[k]||(idx[k]=[])).push(e); });
@@ -5252,7 +5275,7 @@ function nyArAllRows(){
   const maxInvD=nyPendCutoff();
   const pendRows=nyPendOrders(maxInvD).map(r=>({
     inv:'', so:'', c:r.c, d:r.d, due:r.due, st:'', total:0, paid:0, out:r.amt||0, disc:0, dsum:'',
-    dpd:dpdOf(r.due), _pend:true, _ref:r.ref||'', _terms:r.terms||'', _st:r.st||'' }));
+    dpd:dpdOf(r.due), _pend:true, _orphan:!!r._orphan, _ref:r.ref||'', _terms:r.terms||'', _st:r.st||'' }));
   return {invRows, pendRows, maxInvD, all:invRows.concat(pendRows)
     .sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due))};
 }
@@ -5323,7 +5346,9 @@ function renderArNYRecon(){
   // (Remittance waterfall removed per Gianni 2026-07-21 — the WTNY QuickBooks section above is now
   // the what-we-receive view. The nyRecon() math survives for the Net PO economics + tests.)
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
-  const statusCell=x=>{ if(x._pend) return shippedSt(x._st)
+  const statusCell=x=>{ if(x._pend) return x._orphan
+      ? `<span style="color:var(--red)" title="Shipped before the newest recon invoice, and no invoice in the recon matches it — ask HM OPS whether it was billed">shipped · no invoice found</span>`
+      : shippedSt(x._st)
       ? `<span style="color:var(--orange)">shipped · not invoiced</span>`
       : `<span class="muted2">${esc((x._st||'placed').toLowerCase())} · not shipped</span>`;
     if(x.out<=0.005) return '<span style="color:var(--green)">paid</span>';
