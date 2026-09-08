@@ -206,13 +206,13 @@ tfoot th{border-top:1px solid var(--text2)}
 
 <div class="card">
   <h2>Settlement summary</h2>
-  <p class="hint">Per strain: delivered sales minus deductions and packaging costs = what goes back to Olympic. Profit / lb = that net (before the $0 floor, samples and all packaging included) per pound of bulk received.</p>
+  <p class="hint">Per strain: <b>Owed to Olympic</b> = cash remitted by Nabis minus Nabis fees, other, and packaging costs (floored at $0), so it rises in step with remittances. Profit / lb = the economic result on delivered sales (before remittance timing and the $0 floor) per pound of bulk received.</p>
   <div id="summary"></div>
 </div>
 
 <ul class="fn">
   <li>Click a bubble to open its editor dialog (Esc or click outside to close); bubble headers always show the live totals. Strain rows expand in place.</li>
-  <li><b>Net to Olympic</b> per strain = delivered sales &minus; discounts &minus; credits &minus; Nabis fees &minus; other &minus; packaging labor &minus; packaging materials, floored at $0: while costs run ahead of sales the board shows the amount still to recover instead of a negative.</li>
+  <li><b>Owed to Olympic</b> per strain = remitted cash (lines with a Nabis Remitted Date, net of their discounts and credits) &minus; Nabis fees &minus; other &minus; packaging labor &minus; packaging materials, floored at $0: while costs run ahead of remitted cash the board shows the amount still to recover instead of a negative. A retailer paying Nabis is "paid", not remitted.</li>
   <li><b>Nabis</b> shows what was received (the transfer invoice with this strain's lines highlighted, value = its share of the invoice) and the on-hand snapshot; <b>Nabis to retailers</b> shows sell-through. Only DELIVERED order lines count as sales; scheduled ones are pipeline.</li>
   <li>When a strain has Nabis order rows, its gross / discounts / credits are computed from those rows (marked <span class="tagchip">auto</span>); Nabis fees and Other stay manual.</li>
   <li>Order rows marked <span class="srcchip">Nabis</span> arrive automatically from the hourly Nabis export, matched on the batch codes in the strain row; they refresh every run and are not hand-editable.</li>
@@ -316,6 +316,7 @@ function normalize(s){
       orderNo:normStr(o.orderNo),date:normStr(o.date),customer:normStr(o.customer),
       units:normNum(o.units)??0,price:normNum(o.price),total:normNum(o.total),
       discount:normNum(o.discount),credit:normNum(o.credit),remitDate:normStr(o.remitDate),
+      payStatus:normStr(o.payStatus).toUpperCase(),paidAt:normStr(o.paidAt),
       status:normStr(o.status).toUpperCase(),note:normStr(o.note)});
   }
   if(s.nabisOrders&&typeof s.nabisOrders==='object'&&!Array.isArray(s.nabisOrders)){ // whole-order context from the feed
@@ -491,30 +492,34 @@ function calcPkg(p){
   const retailers=new Set(orders.map(o=>o.customer.trim().toLowerCase()).filter(Boolean)).size;
   const deductions=discounts+credits+(s.nabisFees||0)+(s.other||0);
   const netSales=gross-deductions;
-  const netRaw=netSales-labor-materials;   // can be negative while costs run ahead of sales
-  const net=Math.max(0,netRaw);            // what is actually owed to Olympic today
-  const unrecovered=Math.max(0,-netRaw);   // packaging cost not yet covered by sales
-  // Remitted = cash Nabis has actually paid out to Filifera (order lines with a remit date)
+  const netRaw=netSales-labor-materials;   // economic result on delivered sales (drives Profit / lb)
+  // Remitted = cash Nabis has actually paid out to Filifera: ONLY lines with a Remitted Date
+  // (a retailer paying Nabis is 'paid', not remitted). Net of that line's discount and credit.
   const remitted=auto
     ?sold.filter(o=>o.remitDate).reduce((a,o)=>a+orderTotal(o)-(o.discount||0)-(o.credit||0),0)
     :(s.remitted||0);
+  const paidNotRemitted=auto?sold.filter(o=>!o.remitDate&&(o.payStatus==='PAID'||o.paidAt)).reduce((a,o)=>a+orderTotal(o)-(o.discount||0)-(o.credit||0),0):0;
   const remitPending=Math.max(0,(gross-discounts-credits)-remitted);
+  // Owed to Olympic follows the cash: remitted minus Nabis fees, other, and packaging costs
+  const owedRaw=remitted-(s.nabisFees||0)-(s.other||0)-labor-materials;
+  const net=Math.max(0,owedRaw);            // what Filifera can send Olympic today
+  const unrecovered=Math.max(0,-owedRaw);   // packaging cost not yet covered by remitted cash
   const shipLines=(state.shipments||[]).flatMap(sh=>sh.lines.filter(l=>l.pkgId===p.id).map(l=>({...l,ship:sh})));
   const transferValue=shipLines.reduce((a,l)=>a+(l.total||0),0);
   const transferUnits=shipLines.reduce((a,l)=>a+(l.units||0),0);
   return {packaged,remaining:p.grams-packaged,labor,materials,unitsSellable,unitsSample,unitsToNabis,samplesToNabis,
     orders,sold,pipeline,auto,gross,discounts,credits,pipelineGross,unitsSold,unitsPipeline,retailers,
-    deductions,netSales,net,netRaw,unrecovered,remitted,remitPending,shipLines,transferValue,transferUnits,settle:s,runs:rs};
+    deductions,netSales,net,netRaw,owedRaw,unrecovered,remitted,paidNotRemitted,remitPending,shipLines,transferValue,transferUnits,settle:s,runs:rs};
 }
 function totals(){
   const pk=allPackages();
-  const t={bulk:0,packaged:0,labor:0,materials:0,unitsSellable:0,unitsSample:0,unitsToNabis:0,samplesToNabis:0,gross:0,deductions:0,net:0,netRaw:0,unrecovered:0,remitted:0,remitPending:0,pipelineGross:0,unitsSold:0,unitsPipeline:0,transferValue:0};
+  const t={bulk:0,packaged:0,labor:0,materials:0,unitsSellable:0,unitsSample:0,unitsToNabis:0,samplesToNabis:0,gross:0,deductions:0,net:0,netRaw:0,unrecovered:0,remitted:0,paidNotRemitted:0,remitPending:0,pipelineGross:0,unitsSold:0,unitsPipeline:0,transferValue:0};
   for(const p of pk){const c=calcPkg(p);
     t.bulk+=p.grams;t.packaged+=c.packaged;t.labor+=c.labor;t.materials+=c.materials;
     t.unitsSellable+=c.unitsSellable;t.unitsSample+=c.unitsSample;
     t.unitsToNabis+=c.unitsToNabis;t.samplesToNabis+=c.samplesToNabis;
     t.gross+=c.gross;t.deductions+=c.deductions;t.net+=c.net;t.netRaw+=c.netRaw;t.unrecovered+=c.unrecovered;
-    t.remitted+=c.remitted;t.remitPending+=c.remitPending;
+    t.remitted+=c.remitted;t.paidNotRemitted+=c.paidNotRemitted;t.remitPending+=c.remitPending;
     t.pipelineGross+=c.pipelineGross;t.unitsSold+=c.unitsSold;t.unitsPipeline+=c.unitsPipeline;t.transferValue+=c.transferValue;}
   t.remaining=t.bulk-t.packaged;
   t.paid=state.payments.reduce((a,p)=>a+(p.amount||0),0);
@@ -756,7 +761,7 @@ function remitBody(p){
     const val=orderTotal(o)-(o.discount||0)-(o.credit||0);
     return `<tr><td>${esc(o.orderNo)||'&mdash;'}</td><td style="text-align:left">${esc(o.customer)}</td><td>${money(val)}</td>
       <td>${lock
-        ?(o.remitDate?`<span class="sent">${esc(usDate(o.remitDate))}</span>`:'<span class="pending">Pending</span>')
+        ?(o.remitDate?`<span class="sent">remitted ${esc(usDate(o.remitDate))}</span>`:(o.payStatus==='PAID'||o.paidAt)?`<span class="tagchip">paid${o.paidAt?' '+esc(usDate(o.paidAt)):''} &middot; awaiting remit</span>`:'<span class="pending">Unpaid</span>')
         :`<input type="date" value="${esc(o.remitDate||'')}" data-of="remitDate" data-id="${o.id}"${dis}>`}</td></tr>`;
   }).join('');
   return `<div class="rcalc" style="margin:4px 0 2px">Nabis payouts to Filifera, per order line (net of line discounts and credits). Auto rows fill from the hourly export.</div>
@@ -800,9 +805,9 @@ function refreshCalc(){
     <div class="hero"><div class="lbl">Packaged</div><div class="val">${g1(t.packaged)} g</div><div class="note">${g1(t.remaining)} g bulk remaining</div></div>
     <div class="hero"><div class="lbl">Units to Nabis</div><div class="val">${cnt(t.unitsToNabis)}</div><div class="note">+ ${cnt(t.samplesToNabis)} samples${t.unitsToNabis!==t.unitsSellable?` &middot; ${cnt(t.unitsSellable)} packaged`:''}</div></div>
     <div class="hero"><div class="lbl">Packaging cost</div><div class="val">${money(t.labor+t.materials)}</div><div class="note">${money(t.labor)} labor &middot; ${money(t.materials)} materials</div></div>
-    <div class="hero"><div class="lbl">Remitted to Filifera</div><div class="val">${money(t.remitted)}</div><div class="note">${money(t.remitPending)} still with Nabis</div></div>
+    <div class="hero"><div class="lbl">Remitted to Filifera</div><div class="val">${money(t.remitted)}</div><div class="note">${money(t.remitPending)} still with Nabis${t.paidNotRemitted>0.005?` (${money(t.paidNotRemitted)} paid by retailers, awaiting remit)`:''}</div></div>
     <div class="hero"><div class="lbl">Sold to retailers</div><div class="val">${money(t.gross)}</div><div class="note">${cnt(t.unitsSold)} units delivered${t.pipelineGross?` &middot; ${money(t.pipelineGross)} scheduled`:''}</div></div>
-    <div class="hero"><div class="lbl">Net owed to Olympic</div><div class="val">${money(t.net)}</div><div class="note">${t.unrecovered>0.005?`<span style="color:var(--filDot)">${money(t.unrecovered)}</span> of costs not yet covered by sales`:`${money(t.gross)} gross &minus; ${money(t.deductions)} deductions &minus; costs`}</div></div>
+    <div class="hero"><div class="lbl">Owed to Olympic</div><div class="val">${money(t.net)}</div><div class="note">${t.unrecovered>0.005?`<span style="color:var(--filDot)">${money(t.unrecovered)}</span> of costs not yet covered by remitted cash`:`${money(t.remitted)} remitted &minus; fees &minus; packaging`}</div></div>
     <div class="hero"><div class="lbl">Paid so far</div><div class="val">${money(t.paid)}</div><div class="note">Balance: <b class="${t.balance>0.005?'neg':'pos'}">${money(t.balance)}</b></div></div>`;
 
   for(const p of allPackages()){
@@ -819,13 +824,13 @@ function refreshCalc(){
     const rts=document.getElementById('retails-'+p.id);
     if(rts) rts.innerHTML=`${cnt(c.retailers)} retailers &middot; ${cnt(c.unitsSold)} sold <b>${money(c.gross)}</b>${c.unitsPipeline?` &middot; ${cnt(c.unitsPipeline)} pending`:''}`;
     const rsum=document.getElementById('remits-'+p.id);
-    if(rsum) rsum.innerHTML=`<b>${money(c.remitted)}</b> remitted &middot; ${money(c.remitPending)} pending`;
+    if(rsum) rsum.innerHTML=`<b>${money(c.remitted)}</b> remitted${c.paidNotRemitted>0.005?` &middot; ${money(c.paidNotRemitted)} paid, awaiting remit`:''} &middot; ${money(c.remitPending)} pending`;
     const rt=document.getElementById('rt-'+p.id);
     if(rt){rt.textContent=money(c.remitted);document.getElementById('rp-'+p.id).textContent=money(c.remitPending)+' pending';}
     const ss=document.getElementById('settles-'+p.id);
     if(ss) ss.innerHTML=c.unrecovered>0.005
-      ?`Net <b>$0.00</b> &middot; <span style="color:var(--filDot)">${money(c.unrecovered)} to recover</span>`
-      :`Net <b class="pos">${money(c.net)}</b>`;
+      ?`Owed <b>$0.00</b> &middot; <span style="color:var(--filDot)">${money(c.unrecovered)} to recover</span>`
+      :`Owed <b class="pos">${money(c.net)}</b>`;
     for(const r of c.runs){
       const rc=document.getElementById('rc-'+r.id);
       const rcost=laborTotal(r)+matTotal(r);
@@ -850,11 +855,14 @@ function refreshCalc(){
     }
     const sc=document.getElementById('sc-'+p.id);
     if(sc) sc.innerHTML=`
-      <div class="srow"><span>Net sales</span><b>${money(c.netSales)}</b></div>
+      <div class="srow"><span>Remitted to Filifera</span><b>${money(c.remitted)}</b></div>
+      <div class="srow"><span>&minus; Nabis fees</span><span>${money(c.settle.nabisFees||0)}</span></div>
+      <div class="srow"><span>&minus; Other</span><span>${money(c.settle.other||0)}</span></div>
       <div class="srow"><span>&minus; Labor</span><span>${money(c.labor)}</span></div>
       <div class="srow"><span>&minus; Materials</span><span>${money(c.materials)}</span></div>
-      ${c.unrecovered>0.005?`<div class="srow"><span>Costs ahead of sales</span><span style="color:var(--filDot)">${money(c.unrecovered)}</span></div>`:''}
-      <div class="srow net"><span>Net to Olympic</span><b class="pos">${money(c.net)}</b></div>`;
+      ${c.remitPending>0.005?`<div class="srow" style="color:var(--muted)"><span>Delivered, not yet remitted</span><span>${money(c.remitPending)}</span></div>`:''}
+      ${c.unrecovered>0.005?`<div class="srow"><span>Costs ahead of remitted cash</span><span style="color:var(--filDot)">${money(c.unrecovered)}</span></div>`:''}
+      <div class="srow net"><span>Owed to Olympic</span><b class="pos">${money(c.net)}</b></div>`;
     const ou=document.getElementById('ou-'+p.id);
     if(ou){
       ou.textContent=cnt(c.unitsSold);
@@ -884,7 +892,7 @@ function renderSummary(t){
     <td class="${c.netRaw<0?'warn':'pos'}">${money(c.netRaw/(p.grams/G_PER_LB||1))}</td></tr>`}).join('');
   document.getElementById('summary').innerHTML=`
   <table><thead><tr><th>Strain</th><th>Bulk g</th><th>Packaged g</th><th>Remaining g</th><th>Units</th>
-    <th>Labor</th><th>Materials</th><th>Gross sales</th><th>Remitted</th><th>Deductions</th><th>Net to Olympic</th><th title="Delivered sales minus discounts, credits, Nabis fees and every packaging cost (samples included), per pound of bulk received">Profit / lb</th></tr></thead>
+    <th>Labor</th><th>Materials</th><th>Gross sales</th><th>Remitted</th><th>Deductions</th><th>Owed to Olympic</th><th title="Delivered sales minus discounts, credits, Nabis fees and every packaging cost (samples included), per pound of bulk received">Profit / lb</th></tr></thead>
   <tbody>${rows}</tbody>
   <tfoot><tr><th>Total</th><th>${g1(t.bulk)}</th><th>${g1(t.packaged)}</th><th>${g1(t.remaining)}</th>
     <th>${cnt(t.unitsToNabis)}${t.unitsToNabis!==t.unitsSellable?` <span style="color:var(--muted)">of ${cnt(t.unitsSellable)}</span>`:''}</th><th>${money(t.labor)}</th><th>${money(t.materials)}</th>
