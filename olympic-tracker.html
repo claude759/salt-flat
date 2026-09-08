@@ -383,6 +383,9 @@ async function pushRemote(){
       online=true;rev=j.rev;
       const srv=normalize(j.state);
       state.orders=[...state.orders.filter(o=>o.src!=='nabis'),...srv.orders.filter(o=>o.src==='nabis')];
+      state.nabisOrders=srv.nabisOrders; state.shipments=srv.shipments;
+      for(const t of state.transfers) for(const p of t.packages){ // on-hand snapshots are feed-owned
+        const sp=srv.transfers.flatMap(x=>x.packages).find(x=>x.id===p.id); if(sp) p.nabisStock=sp.nabisStock; }
       persistLocal();dirty=true;
       const a=document.activeElement;
       if(a&&a.tagName==='INPUT'){refreshCalc();}else{render();} // never stomp mid-typing
@@ -465,6 +468,8 @@ function settleFor(pkgId){
   if(!state.settle[pkgId]) state.settle[pkgId]={gross:null,discounts:null,credits:null,nabisFees:null,other:null,remitted:null};
   return state.settle[pkgId];
 }
+const isDelivered=o=>!o.status||/^DELIVERED/.test(o.status); // DELIVERED_WITH_EDITS counts; manual rows have no status
+const isSampleLine=o=>o.note==='sample';
 function runGrams(r){return (r.units||0)*(r.unitG||0)}
 function matTotal(r){return (r.mats||[]).reduce((a,m)=>a+(m.qty||0)*(m.unit||0),0)}
 function laborTotal(r){return (r.labs||[]).reduce((a,l)=>a+(l.qty||0)*(l.unit||0),0)}
@@ -482,14 +487,13 @@ function calcPkg(p){
   const auto=orders.length>0;
   const s=settleFor(p.id);
   // Only DELIVERED lines count as sales; scheduled/unscheduled orders are pipeline (manual rows have no status and count)
-  const isDelivered=o=>!o.status||o.status==='DELIVERED';
   const sold=orders.filter(isDelivered), pipeline=orders.filter(o=>!isDelivered(o));
   const gross=auto?sold.reduce((a,o)=>a+orderTotal(o),0):(s.gross||0);
   const discounts=auto?sold.reduce((a,o)=>a+(o.discount||0),0):(s.discounts||0);
   const credits=auto?sold.reduce((a,o)=>a+(o.credit||0),0):(s.credits||0);
   const pipelineGross=pipeline.reduce((a,o)=>a+orderTotal(o),0);
-  const unitsSold=sold.reduce((a,o)=>a+(o.units||0),0), unitsPipeline=pipeline.reduce((a,o)=>a+(o.units||0),0);
-  const retailers=new Set(orders.map(o=>o.customer.trim().toLowerCase()).filter(Boolean)).size;
+  const unitsSold=sold.filter(o=>!isSampleLine(o)).reduce((a,o)=>a+(o.units||0),0), unitsPipeline=pipeline.filter(o=>!isSampleLine(o)).reduce((a,o)=>a+(o.units||0),0);
+  const retailers=new Set(orders.filter(o=>!isSampleLine(o)).map(o=>o.customer.trim().toLowerCase()).filter(Boolean)).size;
   const deductions=discounts+credits+(s.nabisFees||0)+(s.other||0);
   const netSales=gross-deductions;
   const netRaw=netSales-labor-materials;   // economic result on delivered sales (drives Profit / lb)
@@ -710,8 +714,7 @@ function retailBody(p){
     const g=groups.get(o.orderNo)||{orderNo:o.orderNo,rows:[]}; g.rows.push(o); groups.set(o.orderNo,g);
   }
   const first=g=>g.manual||g.rows[0];
-  const isDel=o=>!o.status||o.status==='DELIVERED';
-  const list=[...groups.values()].sort((x,y)=>{const a=first(x),b=first(y);return (isDel(a)?0:1)-(isDel(b)?0:1)||((a.date||'')<(b.date||'')?-1:1)});
+  const list=[...groups.values()].sort((x,y)=>{const a=first(x),b=first(y);return (isDelivered(a)?0:1)-(isDelivered(b)?0:1)||((a.date||'')<(b.date||'')?-1:((a.date||'')>(b.date||'')?1:0))});
   const docs=state.nabisOrders||{};
   const html=list.map(g=>{
     if(g.manual){
@@ -725,7 +728,7 @@ function retailBody(p){
     const units=rs.reduce((a,o)=>a+(o.units||0),0), total=rs.reduce((a,o)=>a+orderTotal(o),0);
     const disc=rs.reduce((a,o)=>a+(o.discount||0),0), cred=rs.reduce((a,o)=>a+(o.credit||0),0);
     const open=!!doc&&expandedOrders.has(g.orderNo);
-    const stat=f.status?`<span class="${f.status==='DELIVERED'?'sent':'pending'}">${esc(f.status.toLowerCase())}</span>`:'';
+    const stat=f.status?`<span class="${isDelivered(f)?'sent':'pending'}">${esc(f.status.toLowerCase().replace(/_/g,' '))}</span>`:'';
     let row=`<tr class="orow${doc?' can':''}" data-otoggle="${esc(g.orderNo)}" title="${doc?'Show the whole Nabis order':''}">
       <td><span class="chev">${doc?(open?'&#9662;':'&#9656;'):''}</span>${esc(g.orderNo)}</td><td>${esc(f.date)}</td><td style="text-align:left">${esc(f.customer)}</td><td>${stat}</td>
       <td>${cnt(units)}</td><td>${rs.length===1?money(f.price||0):'<span class="dim">mixed</span>'}</td><td>${money(total)}</td><td>${money(disc)}</td><td>${money(cred)}</td>
@@ -756,7 +759,7 @@ function remitBody(p){
     return `<div class="rcalc" style="margin-top:6px">No order lines yet - enter what Nabis has paid out to Filifera for this strain.</div>
       <div class="srow" style="margin-top:6px"><span>Remitted $</span><input type="number" step="0.01" value="${s.remitted??''}" data-sf="remitted" data-pkg="${p.id}"${dis}></div>`;
   }
-  const rows=os.map(o=>{
+  const rows=os.filter(o=>o.src!=='nabis'||isDelivered(o)).map(o=>{
     const lock=o.src==='nabis';
     const val=orderTotal(o)-(o.discount||0)-(o.credit||0);
     return `<tr><td>${esc(o.orderNo)||'&mdash;'}</td><td style="text-align:left">${esc(o.customer)}</td><td>${money(val)}</td>
@@ -764,7 +767,7 @@ function remitBody(p){
         ?(o.remitDate?`<span class="sent">remitted ${esc(usDate(o.remitDate))}</span>`:(o.payStatus==='PAID'||o.paidAt)?`<span class="tagchip">paid${o.paidAt?' '+esc(usDate(o.paidAt)):''} &middot; awaiting remit</span>`:'<span class="pending">Unpaid</span>')
         :`<input type="date" value="${esc(o.remitDate||'')}" data-of="remitDate" data-id="${o.id}"${dis}>`}</td></tr>`;
   }).join('');
-  return `<div class="rcalc" style="margin:4px 0 2px">Nabis payouts to Filifera, per order line (net of line discounts and credits). Auto rows fill from the hourly export.</div>
+  return `<div class="rcalc" style="margin:4px 0 2px">Nabis payouts to Filifera for <b>delivered</b> order lines (net of that line's discount and credit; scheduled orders appear once delivered). Remitted means Nabis has paid Filifera; a retailer paying Nabis only shows as paid.</div>
     <div class="otable"><table><thead><tr><th>Order #</th><th style="text-align:left">Customer</th><th>Amount</th><th>Remitted</th></tr></thead>
     <tbody>${rows}</tbody>
     <tfoot><tr><th>Remitted</th><th></th><th id="rt-${p.id}"></th><th id="rp-${p.id}"></th></tr></tfoot></table></div>`;
