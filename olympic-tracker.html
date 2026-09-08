@@ -72,6 +72,13 @@ body.ro .editonly{display:none !important}
 .shipcard table tr.hl td{background:color-mix(in srgb,var(--olyDot) 18%,transparent);font-weight:600}
 .shipcard table td.dim{color:var(--muted)}
 .stockline{font-size:12.5px;color:var(--text2);margin:6px 0 2px}
+.orow.can{cursor:pointer}
+.orow.can:hover td{background:color-mix(in srgb,var(--retDot) 10%,transparent)}
+.orow .chev{display:inline-block;width:12px;margin:0 2px 0 0}
+.odetail td{padding:0 0 10px 0;border-bottom:none}
+.odbox{margin:2px 0 0 16px;border-left:3px solid var(--retDot);padding:8px 12px 10px;background:color-mix(in srgb,var(--ret) 55%,transparent);border-radius:0 12px 12px 0}
+.odbox table tr.hl td{background:color-mix(in srgb,var(--olyDot) 18%,transparent);font-weight:600}
+.dim{color:var(--muted)}
 .stockline b{color:var(--text)}
 .bhead{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:none;border:none;padding:11px 14px;cursor:pointer;text-align:left;border-radius:20px;color:inherit}
 .runrow{border-radius:12px}
@@ -151,7 +158,7 @@ th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;whit
 th:first-child,td:first-child{text-align:left}
 thead th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
 tfoot th{border-top:1px solid var(--text2)}
-.pos{color:var(--pos);font-weight:600}.neg{color:var(--neg);font-weight:600}
+.pos{color:var(--pos);font-weight:600}.neg{color:var(--neg);font-weight:600}.warn{color:var(--filDot);font-weight:600}
 .fn{color:var(--muted);font-size:12px;margin-top:16px}
 .fn li{margin-bottom:4px}
 @media (max-width:700px){body{padding:16px 10px 50px}}
@@ -199,7 +206,7 @@ tfoot th{border-top:1px solid var(--text2)}
 
 <div class="card">
   <h2>Settlement summary</h2>
-  <p class="hint">Per strain: sales at Nabis minus deductions and packaging costs = what goes back to Olympic.</p>
+  <p class="hint">Per strain: delivered sales minus deductions and packaging costs = what goes back to Olympic. Profit / lb = that net (before the $0 floor, samples and all packaging included) per pound of bulk received.</p>
   <div id="summary"></div>
 </div>
 
@@ -260,7 +267,7 @@ const normStr=v=>typeof v==='string'?v:(v==null?'':String(v));
 const normUrl=v=>{const s=normStr(v).trim();return /^https?:\/\//i.test(s)?s:''}; // hrefs from state must never smuggle javascript: etc.
 const normId=(v,p)=>{const s=normStr(v).replace(/[^\w-]/g,'');return (!s||s==='__proto__'||s==='constructor'||s==='prototype')?uid(p):s};
 function normalize(s){
-  const out={version:2,transfers:[],runs:[],orders:[],shipments:[],settle:{},payments:[]};
+  const out={version:2,transfers:[],runs:[],orders:[],shipments:[],nabisOrders:{},settle:{},payments:[]};
   if(!s||typeof s!=='object') return out;
   for(const t of (Array.isArray(s.transfers)?s.transfers:[])){
     if(!t||typeof t!=='object') continue;
@@ -310,6 +317,15 @@ function normalize(s){
       units:normNum(o.units)??0,price:normNum(o.price),total:normNum(o.total),
       discount:normNum(o.discount),credit:normNum(o.credit),remitDate:normStr(o.remitDate),
       status:normStr(o.status).toUpperCase(),note:normStr(o.note)});
+  }
+  if(s.nabisOrders&&typeof s.nabisOrders==='object'&&!Array.isArray(s.nabisOrders)){ // whole-order context from the feed
+    for(const [k,v] of Object.entries(s.nabisOrders)){
+      const key=normStr(k).replace(/[^\w-]/g,''); if(!key||key==='__proto__'||key==='constructor'||key==='prototype'||!v||typeof v!=='object') continue;
+      out.nabisOrders[key]={orderNo:normStr(v.orderNo)||key,customer:normStr(v.customer),date:normStr(v.date),status:normStr(v.status).toUpperCase(),
+        subtotal:normNum(v.subtotal)??0,discount:normNum(v.discount)??0,credit:normNum(v.credit)??0,creditNote:normStr(v.creditNote),
+        lines:(Array.isArray(v.lines)?v.lines:[]).filter(l=>l&&typeof l==='object').map(l=>({sku:normStr(l.sku),batch:normStr(l.batch),
+          units:normNum(l.units)??0,ppu:normNum(l.ppu)??0,total:normNum(l.total)??0,pkgId:l.pkgId&&pkgIds.has(normId(l.pkgId,'PKG'))?normId(l.pkgId,'PKG'):null,sample:!!l.sample}))};
+    }
   }
   if(s.settle&&typeof s.settle==='object'&&!Array.isArray(s.settle)){
     for(const [k,v] of Object.entries(s.settle)){
@@ -436,6 +452,7 @@ const uid=p=>p+'-'+Math.random().toString(36).slice(2,8);
 
 const expanded=new Set(); // per-viewer UI state: which bubbles are open ("PKG-0001:pack" etc.)
 const collapsedFlows=new Set(); // transfers whose whole section is folded up (open by default)
+const expandedOrders=new Set(); // retail orders opened to show the whole Nabis order
 const XK=(pkg,kind)=>pkg+':'+kind;
 const usDate=d=>{const m=String(d||'').match(/^(\d{4})-(\d\d)-(\d\d)/);return m?`${+m[2]}/${+m[3]}/${m[1]}`:String(d||'')};
 
@@ -680,21 +697,48 @@ function nabisBody(p){
 function retailBody(p){
   const dis=canEdit?'':' disabled';
   const c=calcPkg(p);
-  const os=ordersFor(p.id).slice().sort((a,b)=>(a.status==='DELIVERED'?0:1)-(b.status==='DELIVERED'?0:1)||(a.date<b.date?-1:1));
-  const orows=os.map(o=>{
-    const lock=o.src==='nabis';
-    const cell=(f,cls)=>lock
-      ?`<td>${f==='units'?cnt(o[f]):(f==='orderNo'||f==='date'||f==='customer')?esc(o[f]):money(o[f])}</td>`
-      :`<td><input class="${cls}" type="${f==='date'?'date':(f==='orderNo'||f==='customer')?'text':'number'}"${(f==='orderNo'||f==='customer'||f==='units'||f==='date')?'':' step="0.01"'} value="${esc(o[f]??'')}" data-of="${f}" data-id="${o.id}"${dis}></td>`;
-    const stat=o.status?`<span class="${o.status==='DELIVERED'?'sent':'pending'}">${esc(o.status.toLowerCase())}</span>`:'';
-    return `<tr>${cell('orderNo','oref')}${cell('date','oref')}${cell('customer','ocust')}<td>${stat}</td>${cell('units','onum')}${cell('price','onum')}
-      <td id="ot-${o.id}">${money(orderTotal(o))}</td>${cell('discount','onum')}${cell('credit','onum')}
-      <td>${lock?'<span class="srcchip">Nabis</span>':'manual'}</td>
-      <td>${lock?'':`<button class="small danger editonly" data-act="delOrder" data-id="${o.id}">&#10005;</button>`}</td></tr>`;
+  const os=ordersFor(p.id);
+  // feed rows are grouped one row per Nabis order (jar + sample lines of the same order fold together); manual rows stay individual
+  const groups=new Map();
+  for(const o of os){
+    if(o.src!=='nabis'){groups.set('m:'+o.id,{manual:o});continue;}
+    const g=groups.get(o.orderNo)||{orderNo:o.orderNo,rows:[]}; g.rows.push(o); groups.set(o.orderNo,g);
+  }
+  const first=g=>g.manual||g.rows[0];
+  const isDel=o=>!o.status||o.status==='DELIVERED';
+  const list=[...groups.values()].sort((x,y)=>{const a=first(x),b=first(y);return (isDel(a)?0:1)-(isDel(b)?0:1)||((a.date||'')<(b.date||'')?-1:1)});
+  const docs=state.nabisOrders||{};
+  const html=list.map(g=>{
+    if(g.manual){
+      const o=g.manual;
+      const cell=(f,cls)=>`<td><input class="${cls}" type="${f==='date'?'date':(f==='orderNo'||f==='customer')?'text':'number'}"${(f==='orderNo'||f==='customer'||f==='units'||f==='date')?'':' step="0.01"'} value="${esc(o[f]??'')}" data-of="${f}" data-id="${o.id}"${dis}></td>`;
+      return `<tr>${cell('orderNo','oref')}${cell('date','oref')}${cell('customer','ocust')}<td></td>${cell('units','onum')}${cell('price','onum')}
+        <td id="ot-${o.id}">${money(orderTotal(o))}</td>${cell('discount','onum')}${cell('credit','onum')}<td>manual</td>
+        <td><button class="small danger editonly" data-act="delOrder" data-id="${o.id}">&#10005;</button></td></tr>`;
+    }
+    const rs=g.rows, f=rs[0], doc=docs[g.orderNo];
+    const units=rs.reduce((a,o)=>a+(o.units||0),0), total=rs.reduce((a,o)=>a+orderTotal(o),0);
+    const disc=rs.reduce((a,o)=>a+(o.discount||0),0), cred=rs.reduce((a,o)=>a+(o.credit||0),0);
+    const open=!!doc&&expandedOrders.has(g.orderNo);
+    const stat=f.status?`<span class="${f.status==='DELIVERED'?'sent':'pending'}">${esc(f.status.toLowerCase())}</span>`:'';
+    let row=`<tr class="orow${doc?' can':''}" data-otoggle="${esc(g.orderNo)}" title="${doc?'Show the whole Nabis order':''}">
+      <td><span class="chev">${doc?(open?'&#9662;':'&#9656;'):''}</span>${esc(g.orderNo)}</td><td>${esc(f.date)}</td><td style="text-align:left">${esc(f.customer)}</td><td>${stat}</td>
+      <td>${cnt(units)}</td><td>${rs.length===1?money(f.price||0):'<span class="dim">mixed</span>'}</td><td>${money(total)}</td><td>${money(disc)}</td><td>${money(cred)}</td>
+      <td><span class="srcchip">Nabis</span></td><td></td></tr>`;
+    if(open){
+      const share=l=>doc.subtotal>0?l.total/doc.subtotal:0;
+      const lines=doc.lines.map(l=>`<tr class="${l.pkgId===p.id?'hl':''}"><td style="text-align:left">${esc(l.sku)}${l.pkgId&&l.pkgId!==p.id?' <span class="tagchip">olympic</span>':''}${l.sample?' <span class="tagchip sample">sample</span>':''}</td>
+        <td class="dim">${esc(l.batch)}</td><td>${cnt(l.units)}</td><td>${money(l.ppu)}</td><td>${money(l.total)}</td><td>${money(doc.discount*share(l))}</td><td>${money(doc.credit*share(l))}</td><td class="dim">${(share(l)*100).toFixed(1)}%</td></tr>`).join('');
+      row+=`<tr class="odetail"><td colspan="11"><div class="odbox">
+        <div class="rcalc" style="margin:0 0 6px">Whole order <b>${esc(doc.orderNo)}</b> &middot; ${esc(doc.customer)} &middot; subtotal <b>${money(doc.subtotal)}</b> &middot; order discount <b>${money(doc.discount)}</b> &middot; credit <b>${money(doc.credit)}</b>${doc.creditNote?` <span class="dim">(${esc(doc.creditNote)})</span>`:''} &middot; ${doc.lines.length} line${doc.lines.length===1?'':'s'}. <span style="color:var(--olyDot);font-weight:600">${esc(p.strain)}</span> lines highlighted; the discount and credit are spread by each line's share of the subtotal.</div>
+        <table><thead><tr><th style="text-align:left">Product</th><th>Batch</th><th>Units</th><th>$/u</th><th>Line</th><th>Disc share</th><th>Credit share</th><th>Share</th></tr></thead><tbody>${lines}</tbody>
+        <tfoot><tr><th style="text-align:left">Order</th><th></th><th>${cnt(doc.lines.reduce((a,l)=>a+(l.units||0),0))}</th><th></th><th>${money(doc.subtotal)}</th><th>${money(doc.discount)}</th><th>${money(doc.credit)}</th><th></th></tr></tfoot></table></div></td></tr>`;
+    }
+    return row;
   }).join('');
-  return `<div class="rcalc" style="margin:4px 0 6px"><b>${cnt(c.retailers)}</b> retailers &middot; delivered <b>${cnt(c.unitsSold)}</b> units / <b>${money(c.gross)}</b> &middot; scheduled or unscheduled ${cnt(c.unitsPipeline)} units / ${money(c.pipelineGross)} (not counted as sales until delivered). Order-level discounts and credits are spread across lines by each line's share of the order.</div>
+  return `<div class="rcalc" style="margin:4px 0 6px"><b>${cnt(c.retailers)}</b> retailers &middot; delivered <b>${cnt(c.unitsSold)}</b> units / <b>${money(c.gross)}</b> &middot; scheduled or unscheduled ${cnt(c.unitsPipeline)} units / ${money(c.pipelineGross)} (not counted as sales until delivered). Click an order to see the whole Nabis order with the Olympic lines highlighted.</div>
     <div class="otable"><table><thead><tr><th>Order #</th><th>Date</th><th style="text-align:left">Customer</th><th>Status</th><th>Units</th><th>$/u</th><th>Total</th><th>Disc</th><th>Credit</th><th>Src</th><th></th></tr></thead>
-      <tbody>${orows||`<tr><td colspan="11" style="color:var(--muted)">No orders yet${p.nabisBatches?'':' - add batch codes on the strain row to enable the auto feed'}</td></tr>`}</tbody>
+      <tbody>${html||`<tr><td colspan="11" style="color:var(--muted)">No orders yet${p.nabisBatches?'':' - add batch codes on the strain row to enable the auto feed'}</td></tr>`}</tbody>
       <tfoot><tr><th>Delivered</th><th></th><th></th><th></th><th id="ou-${p.id}"></th><th></th><th id="og-${p.id}"></th><th id="od-${p.id}"></th><th id="oc-${p.id}"></th><th></th><th></th></tr></tfoot></table></div>
     <div class="editonly" style="margin-top:8px"><button class="small" data-act="addOrder" data-pkg="${p.id}">+ Add order line</button></div>`;
 }
@@ -836,15 +880,16 @@ function renderSummary(t){
     <td>${cnt(c.unitsToNabis)}${c.unitsToNabis!==c.unitsSellable?` <span style="color:var(--muted)">of ${cnt(c.unitsSellable)}</span>`:''}${c.samplesToNabis?` <span style="color:var(--muted)">+${cnt(c.samplesToNabis)}s</span>`:''}</td>
     <td>${money(c.labor)}</td><td>${money(c.materials)}</td>
     <td>${money(c.gross)}</td><td>${money(c.remitted)}</td><td>${money(c.deductions)}</td>
-    <td class="pos">${money(c.net)}${c.unrecovered>0.005?` <span style="color:var(--muted)">(${money(c.unrecovered)} to recover)</span>`:''}</td></tr>`}).join('');
+    <td class="pos">${money(c.net)}${c.unrecovered>0.005?` <span style="color:var(--muted)">(${money(c.unrecovered)} to recover)</span>`:''}</td>
+    <td class="${c.netRaw<0?'warn':'pos'}">${money(c.netRaw/(p.grams/G_PER_LB||1))}</td></tr>`}).join('');
   document.getElementById('summary').innerHTML=`
   <table><thead><tr><th>Strain</th><th>Bulk g</th><th>Packaged g</th><th>Remaining g</th><th>Units</th>
-    <th>Labor</th><th>Materials</th><th>Gross sales</th><th>Remitted</th><th>Deductions</th><th>Net to Olympic</th></tr></thead>
+    <th>Labor</th><th>Materials</th><th>Gross sales</th><th>Remitted</th><th>Deductions</th><th>Net to Olympic</th><th title="Delivered sales minus discounts, credits, Nabis fees and every packaging cost (samples included), per pound of bulk received">Profit / lb</th></tr></thead>
   <tbody>${rows}</tbody>
   <tfoot><tr><th>Total</th><th>${g1(t.bulk)}</th><th>${g1(t.packaged)}</th><th>${g1(t.remaining)}</th>
     <th>${cnt(t.unitsToNabis)}${t.unitsToNabis!==t.unitsSellable?` <span style="color:var(--muted)">of ${cnt(t.unitsSellable)}</span>`:''}</th><th>${money(t.labor)}</th><th>${money(t.materials)}</th>
     <th>${money(t.gross)}</th><th>${money(t.remitted)}</th><th>${money(t.deductions)}</th>
-    <th class="pos">${money(t.net)}</th></tr></tfoot></table>`;
+    <th class="pos">${money(t.net)}</th><th class="${t.netRaw<0?'warn':'pos'}">${money(t.netRaw/(t.bulk/G_PER_LB||1))}</th></tr></tfoot></table>`;
 }
 
 // ── arrows ───────────────────────────────────────────────────────────────────
@@ -937,6 +982,12 @@ document.addEventListener('input',e=>{
 });
 
 document.addEventListener('click',e=>{
+  const ot=e.target.closest('[data-otoggle]');
+  if(ot&&!e.target.closest('input,button,a')){
+    const k=ot.dataset.otoggle;
+    expandedOrders.has(k)?expandedOrders.delete(k):expandedOrders.add(k);
+    renderModal();refreshCalc();return;
+  }
   const ft=e.target.closest('[data-ftoggle]');
   if(ft){
     if(e.target.closest('a')) return; // opening the manifest PDF must not fold the section
