@@ -114,6 +114,11 @@
   .subseg button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
   .wkTbl td.acct{font-weight:700}
   .wkNote{font-size:12px;color:var(--faint);padding:8px 2px 0}
+  .wkRange{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 12px}
+  .wkRange .lbl{font-size:12px;color:var(--faint);margin-right:4px}
+  .wkRange input[type=date]{background:var(--card);border:1px solid var(--line);color:inherit;border-radius:8px;padding:5px 8px;font-size:12.5px}
+  .wkTbl tr.rec td{color:var(--faint);font-style:italic}
+  .wkTbl td.lbl{font-weight:650}
   .repTbl td .cn,.stateTbl td .cn{display:block;font-size:10.5px;color:var(--faint);font-weight:500;margin-top:1px;white-space:nowrap}
   .stateTbl td.rc[data-goprod]{cursor:pointer;color:var(--muted);font-weight:650}
   .stateTbl td.rc[data-goprod]:hover{background:rgba(124,92,255,.18);border-radius:6px}
@@ -382,6 +387,8 @@ const state = {
   linksSig: '',
   filters: { ca:{q:'', st:new Set(), ty:new Set()}, ny:{q:'', st:new Set(), ty:new Set()} },
   expanded: { ca:new Set(), ny:new Set() },     // sheet row numbers with open detail
+  wk: { preset:'7d', custom:null },              // weekly report: date range for new orders
+  wkOpen: new Set(),                            // weekly report: expanded due-week rows
   asc: [],                                      // payment re-ascription rows from Supabase
   ascSig: '',
   ascFailed: false,
@@ -510,15 +517,12 @@ function buildModel(raw){
   // sort newest -> oldest by ship date (fall back to delivery/due date); undated last
   const colIdx = name => { const c = cols.find(c=>c.header.toLowerCase()===name); return c ? c.i : -1; };
   const dateIdxs = ['ship date','delivery date','due date'].map(colIdx).filter(i=>i>=0);
-  const parseDate = v => {
-    const m = /(\d{1,2})\/{1,2}(\d{1,2})\/(\d{2,4})/.exec(v||'');
-    if(!m) return null;
-    const y = m[3].length===2 ? 2000+ +m[3] : +m[3];
-    return new Date(y, +m[1]-1, +m[2]).getTime();
-  };
+  const ddIdx = headers.findIndex(h => h.toLowerCase() === 'due date');
   for(const r of rows){
     r.date = null;
-    for(const di of dateIdxs){ r.date = parseDate(r.c[di]); if(r.date!==null) break; }
+    for(const di of dateIdxs){ r.date = parseSheetDate(r.c[di]); if(r.date!==null) break; }
+    r.orderedTs = parseSheetDate(r.ordered);                       // when it was placed (PO number)
+    r.dueTs = ddIdx >= 0 ? parseSheetDate(r.c[ddIdx]) : null;      // the supplier's due date
   }
   rows.sort((a,b) => (b.date ?? -Infinity) - (a.date ?? -Infinity));
 
@@ -526,6 +530,37 @@ function buildModel(raw){
 }
 
 const payKeyOf = h => h.split('\n')[0].trim();
+
+/* sheet dates are M/D/YYYY (occasionally M//D/YY); local midnight, or null */
+const parseSheetDate = v => {
+  const m = /(\d{1,2})\/{1,2}(\d{1,2})\/(\d{2,4})/.exec(v||'');
+  if(!m) return null;
+  const y = m[3].length===2 ? 2000+ +m[3] : +m[3];
+  if(y < 2015) return null;      // a formula on a blank cell yields 1/29/1900 on the sheet
+  return new Date(y, +m[1]-1, +m[2]).getTime();
+};
+const DAY = 86400000;
+const startOfDay = ts => { const d = new Date(ts); d.setHours(0,0,0,0); return d.getTime(); };
+const endOfDay = ts => startOfDay(ts) + DAY - 1;
+const mondayOf = ts => { const d = new Date(startOfDay(ts)); return d.getTime() - ((d.getDay()+6)%7)*DAY; };
+const fmtDay  = ts => new Date(ts).toLocaleDateString('en-US', { month:'short', day:'numeric' });
+const fmtDayY = ts => new Date(ts).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
+const WK_PRESETS = [['7d','Last 7 days'],['lastweek','Last week (Mon to Sun)'],['14d','Last 14 days'],
+                    ['30d','Last 30 days'],['thismonth','This month'],['lastmonth','Last month'],['custom','Custom']];
+/* the date range the weekly report's "new orders" section covers */
+function wkRangeFor(preset, nowTs, custom){
+  const t = startOfDay(nowTs ?? Date.now()), d = new Date(t);
+  switch(preset){
+    case '14d': return { start: t - 13*DAY, end: endOfDay(t) };
+    case '30d': return { start: t - 29*DAY, end: endOfDay(t) };
+    case 'lastweek': { const mon = mondayOf(t) - 7*DAY; return { start: mon, end: mon + 7*DAY - 1 }; }
+    case 'thismonth': return { start: new Date(d.getFullYear(), d.getMonth(), 1).getTime(), end: endOfDay(t) };
+    case 'lastmonth': return { start: new Date(d.getFullYear(), d.getMonth()-1, 1).getTime(),
+                               end: new Date(d.getFullYear(), d.getMonth(), 1).getTime() - 1 };
+    case 'custom': if(custom && custom.start != null && custom.end != null) return { start: startOfDay(custom.start), end: endOfDay(custom.end) };
+  }
+  return { start: t - 6*DAY, end: endOfDay(t) };                  // last 7 days, today included
+}
 
 /* PO numbers are YYMMDDNN: the date the order was placed plus a sequence, e.g. 26082602 */
 function orderedFromPO(po){
@@ -1449,40 +1484,110 @@ const reportSubNav = active =>
 const bindSubNav = el => el.querySelectorAll('.subseg [data-sub]').forEach(b =>
   b.addEventListener('click', () => goPage(b.dataset.sub)));
 
-/* the weekly report's numbers: one place, used by the page and by the Monday email */
-function weeklyReportData(){
+/* the weekly report's numbers: one place, used by the page and by the Monday email.
+   range = the window for "new orders" (orders dated by their PO number); nowTs anchors
+   the due-date weeks. */
+function weeklyReportData(range, nowTs){
+  const now = nowTs ?? Date.now();
+  range = range || wkRangeFor(state.wk.preset, now, state.wk.custom);
   const R = { ca: reportFor('ca'), ny: reportFor('ny') };
   if(!R.ca || !R.ny) return null;
   const pick = a => ({ bal:a.bal, due:a.due, nyd:a.nyd });
-  const acct = r => ({ vape: pick(r.acct.vape), nonvape: pick(r.acct.nonvape), all: pick(r.acct.all),
-                       inprod: r.acct.all.inprod });
   const sum = (a,b) => ({ bal:a.bal+b.bal, due:a.due+b.due, nyd:a.nyd+b.nyd });
-  const ca = acct(R.ca), ny = acct(R.ny);
+  const today = startOfDay(now), thisMon = mondayOf(today);
+
+  const block = (k, r) => {
+    const m = r.m;
+    const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+    const totC = find('total including freight'), dueC = find('due'), nydC = find('not yet due'), paidC = find('paid to date');
+    const invC = find('invoice no.'), descC = m.cols.find(c => /^desc/i.test(c.header)), osC = m.cols.find(c => c.orderStatus);
+    const num = (c, r) => c ? (money(r.c[c.i])||0) : 0;
+    const item = r => {
+      const tot = num(totC, r), booked = num(dueC, r) + num(nydC, r) + num(paidC, r);
+      return { state:k, src:r.src, inv: invC ? (r.c[invC.i]||'').trim() : '',
+        desc: descC ? (r.c[descC.i]||'').trim().replace(/\s+/g,' ') : '', type: r.type || 'Other', vape: isVape(r.type),
+        status: osC ? (r.c[osC.i]||'').trim() : '', ordered: r.orderedTs, due: r.dueTs, ship: r.date,
+        value: tot > 0.005 ? tot : booked, open: num(dueC, r) + num(nydC, r) };
+    };
+    // new orders = placed inside the range, by the date in the PO number
+    const newOrders = m.rows.filter(r => r.orderedTs != null && r.orderedTs >= range.start && r.orderedTs <= range.end)
+      .map(item).sort((a,b) => b.ordered - a.ordered || b.value - a.value);
+    const nsum = { n:newOrders.length, val:0, vape:0, nonvape:0, unpriced:0 };
+    for(const o of newOrders){ nsum.val += o.value; nsum[o.vape?'vape':'nonvape'] += o.value; if(o.value < 0.005) nsum.unpriced++; }
+    const undated = m.rows.filter(r => r.orderedTs == null).length;
+    // coming due = every open invoice (the sheet's own Due + Not yet due), by due-date week
+    const buckets = new Map();
+    for(const r of m.rows){
+      const it = item(r); if(it.open < 0.005) continue;
+      const key = it.due == null ? 'nodate' : it.due < today ? 'overdue' : String(mondayOf(it.due));
+      const ord = it.due == null ? Infinity : it.due < today ? -Infinity : mondayOf(it.due);
+      let b = buckets.get(key); if(!b){ b = { key, ord, n:0, vape:0, nonvape:0, total:0, items:[] }; buckets.set(key, b); }
+      b.n++; b.total += it.open; b[it.vape?'vape':'nonvape'] += it.open; b.items.push(it);
+    }
+    const due = [...buckets.values()].sort((a,b) => a.ord - b.ord);
+    for(const b of due){
+      b.items.sort((x,y) => (x.due ?? Infinity) - (y.due ?? Infinity) || y.open - x.open);
+      b.label = b.key === 'overdue' ? `Overdue (oldest ${fmtDayY(Math.min(...b.items.map(i => i.due)))})`
+              : b.key === 'nodate' ? 'No due date on the sheet'
+              : b.ord === thisMon ? `This week (to ${fmtDay(b.ord + 6*DAY)})`
+              : b.ord === thisMon + 7*DAY ? `Next week (${fmtDay(b.ord)} to ${fmtDay(b.ord + 6*DAY)})`
+              : `Week of ${fmtDayY(b.ord)}`;
+    }
+    const sheetOpen = { vape:0, nonvape:0 };
+    for(const b of due){ sheetOpen.vape += b.vape; sheetOpen.nonvape += b.nonvape; }
+    // payments attributed between the two accounts in the tracker live at account level, not on
+    // the supplier's invoices; this line ties the by-date breakdown back to the balances above
+    const reconcile = { vape: r.acct.vape.bal - sheetOpen.vape, nonvape: r.acct.nonvape.bal - sheetOpen.nonvape };
+    reconcile.total = reconcile.vape + reconcile.nonvape;
+    return { vape: pick(r.acct.vape), nonvape: pick(r.acct.nonvape), all: pick(r.acct.all), inprod: r.acct.all.inprod,
+             newOrders, nsum, undated, due, reconcile };
+  };
+  const ca = block('ca', R.ca), ny = block('ny', R.ny);
   const total = { vape: sum(ca.vape, ny.vape), nonvape: sum(ca.nonvape, ny.nonvape), all: sum(ca.all, ny.all),
-                  inprod: addProd(ca.inprod, ny.inprod) };
-  return { asOf: (state.lastSync || new Date()).getTime(), ca, ny, total };
+                  inprod: addProd(ca.inprod, ny.inprod),
+                  nsum: { n: ca.nsum.n + ny.nsum.n, val: ca.nsum.val + ny.nsum.val, vape: ca.nsum.vape + ny.nsum.vape,
+                          nonvape: ca.nsum.nonvape + ny.nsum.nonvape, unpriced: ca.nsum.unpriced + ny.nsum.unpriced } };
+  return { asOf: (state.lastSync || new Date()).getTime(), now, range, ca, ny, total };
 }
 
 const fmtAsOf = ms => new Date(ms).toLocaleString('en-US', { weekday:'short', month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+const fmtRange = r => `${fmtDayY(r.start)} to ${fmtDayY(r.end)}`;
+const hasRec = rec => Math.abs(rec.vape) > 0.005 || Math.abs(rec.nonvape) > 0.005;
+const REC_LABEL = 'Payments attributed between the two accounts in the tracker (not on the supplier’s invoices)';
 
 /* inline-styled HTML for the email (Gmail strips <style>), built from the same data */
 function weeklyEmailHtml(d, link){
   const money = v => fmtUSD(v);
-  const cell = (v, color, bold) => `<td style="padding:7px 12px;text-align:right;border-bottom:1px solid #e6e8ef;color:${color||'#1a1d26'};font-weight:${bold?700:500};font-variant-numeric:tabular-nums">${money(v)}</td>`;
-  const block = (title, a) =>
-    `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:680px;margin:0 0 18px;font-size:14px">` +
-    `<tr><th colspan="4" style="text-align:left;padding:8px 12px;background:#efe9ff;color:#4b2fd6;font-size:13px;letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid #d9d0ff">${title}</th></tr>` +
-    `<tr style="color:#6b6f80;font-size:12px"><th style="text-align:left;padding:6px 12px;font-weight:600">Account</th><th style="text-align:right;padding:6px 12px;font-weight:600">Balance</th><th style="text-align:right;padding:6px 12px;font-weight:600">Due</th><th style="text-align:right;padding:6px 12px;font-weight:600">Not yet due</th></tr>` +
-    `<tr><td style="padding:7px 12px;border-bottom:1px solid #e6e8ef">Vape (AIO hardware)</td>${cell(a.vape.bal)}${cell(a.vape.due,'#b45309')}${cell(a.vape.nyd,'#1d4ed8')}</tr>` +
-    `<tr><td style="padding:7px 12px;border-bottom:1px solid #e6e8ef">Non-vape</td>${cell(a.nonvape.bal)}${cell(a.nonvape.due,'#b45309')}${cell(a.nonvape.nyd,'#1d4ed8')}</tr>` +
-    `<tr><td style="padding:7px 12px;font-weight:700;border-bottom:2px solid #c9cddb">Total</td>${cell(a.all.bal,null,true)}${cell(a.all.due,'#b45309',true)}${cell(a.all.nyd,'#1d4ed8',true)}</tr>` +
-    `</table>`;
-  return `<div style="font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1d26;max-width:720px">` +
+  const TD = 'padding:7px 12px;border-bottom:1px solid #e6e8ef', TH = 'padding:6px 12px;font-weight:600';
+  const cell = (v, color, bold) => `<td style="${TD};text-align:right;color:${color||'#1a1d26'};font-weight:${bold?700:500};font-variant-numeric:tabular-nums">${money(v)}</td>`;
+  const head = (title, sub) => `<tr><th colspan="9" style="text-align:left;padding:8px 12px;background:#efe9ff;color:#4b2fd6;font-size:13px;letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid #d9d0ff">${title}` +
+    (sub ? `<span style="font-weight:500;text-transform:none;letter-spacing:0;color:#6b6f80;margin-left:8px">${sub}</span>` : '') + `</th></tr>`;
+  const table = inner => `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:720px;margin:0 0 18px;font-size:14px">${inner}</table>`;
+  const balances = (title, a) => table(head(title, 'balances') +
+    `<tr style="color:#6b6f80;font-size:12px"><th style="text-align:left;${TH}">Account</th><th style="text-align:right;${TH}">Balance</th><th style="text-align:right;${TH}">Due</th><th style="text-align:right;${TH}">Not yet due</th></tr>` +
+    `<tr><td style="${TD}">Vape (AIO hardware)</td>${cell(a.vape.bal)}${cell(a.vape.due,'#b45309')}${cell(a.vape.nyd,'#1d4ed8')}</tr>` +
+    `<tr><td style="${TD}">Non-vape</td>${cell(a.nonvape.bal)}${cell(a.nonvape.due,'#b45309')}${cell(a.nonvape.nyd,'#1d4ed8')}</tr>` +
+    `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb">Total</td>${cell(a.all.bal,null,true)}${cell(a.all.due,'#b45309',true)}${cell(a.all.nyd,'#1d4ed8',true)}</tr>`);
+  const comingDue = (title, a) => table(head(title, 'coming due, by due date') +
+    `<tr style="color:#6b6f80;font-size:12px"><th style="text-align:left;${TH}">When</th><th style="text-align:right;${TH}">Invoices</th><th style="text-align:right;${TH}">Vape</th><th style="text-align:right;${TH}">Non-vape</th><th style="text-align:right;${TH}">Total</th></tr>` +
+    a.due.map(b => `<tr><td style="${TD}">${esc(b.label)}</td><td style="${TD};text-align:right">${b.n}</td>${cell(b.vape)}${cell(b.nonvape)}${cell(b.total,null,true)}</tr>`).join('') +
+    (hasRec(a.reconcile) ? `<tr><td style="${TD};color:#6b6f80;font-style:italic" colspan="2">${REC_LABEL}</td>${cell(a.reconcile.vape,'#6b6f80')}${cell(a.reconcile.nonvape,'#6b6f80')}${cell(a.reconcile.total,'#6b6f80')}</tr>` : '') +
+    `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb" colspan="2">Balance</td>${cell(a.vape.bal,null,true)}${cell(a.nonvape.bal,null,true)}${cell(a.all.bal,null,true)}</tr>`);
+  const newOrders = (title, a) => table(head(title, `new orders placed ${fmtRange(d.range)}`) +
+    (a.newOrders.length
+      ? `<tr style="color:#6b6f80;font-size:12px"><th style="text-align:left;${TH}">Ordered</th><th style="text-align:left;${TH}">Invoice</th><th style="text-align:left;${TH}">Description</th><th style="text-align:left;${TH}">Status</th><th style="text-align:right;${TH}">Value</th><th style="text-align:left;${TH}">Due</th></tr>` +
+        a.newOrders.map(o => `<tr><td style="${TD}">${fmtDay(o.ordered)}</td><td style="${TD};font-weight:600">${esc(o.inv||'(no invoice yet)')}</td><td style="${TD}">${esc(o.desc)}</td><td style="${TD}">${esc(o.status)}</td>` +
+          `<td style="${TD};text-align:right">${o.value > 0.005 ? money(o.value) : 'not priced yet'}</td><td style="${TD}">${o.due ? fmtDayY(o.due) : ''}</td></tr>`).join('') +
+        `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb" colspan="4">${a.nsum.n} order${a.nsum.n===1?'':'s'}${a.nsum.unpriced?` (${a.nsum.unpriced} not priced yet)`:''} · vape ${money(a.nsum.vape)} · non-vape ${money(a.nsum.nonvape)}</td>${cell(a.nsum.val,null,true)}<td style="${TD};border-bottom:2px solid #c9cddb"></td></tr>`
+      : `<tr><td style="${TD};color:#6b6f80">No orders placed in this period.</td></tr>`));
+  const stateBlock = (title, a) => balances(title, a) + comingDue(title, a) + newOrders(title, a);
+  return `<div style="font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1d26;max-width:760px">` +
     `<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6b6f80">Automated report · Wizard Trees supplier balances (MALLEN TECH)</div>` +
     `<h1 style="font-size:20px;margin:6px 0 2px">Weekly balance report</h1>` +
-    `<div style="color:#6b6f80;font-size:13px;margin:0 0 16px">As of ${fmtAsOf(d.asOf)} · balance = due + not yet due, as invoiced by the supplier</div>` +
-    block('California', d.ca) + block('New York', d.ny) + block('CA + NY combined', d.total) +
+    `<div style="color:#6b6f80;font-size:13px;margin:0 0 16px">As of ${fmtAsOf(d.asOf)} · new orders ${fmtRange(d.range)} · balance = due + not yet due, as invoiced by the supplier</div>` +
+    stateBlock('California', d.ca) + stateBlock('New York', d.ny) + balances('CA + NY combined', d.total) +
     `<p style="font-size:12px;color:#6b6f80;line-height:1.5">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. ` +
+    `New orders are dated by their PO number; coming-due amounts are the supplier’s own Due + Not yet due per invoice by its due date. ` +
     (link ? `Live figures and order detail: <a href="${link}" style="color:#4b2fd6">open the order tracker</a>. ` : '') +
     `Sent automatically every Monday morning.</p></div>`;
 }
@@ -1499,27 +1604,74 @@ function renderWeekly(){
     bindSubNav(cardsEl); return;
   }
   const d = weeklyReportData();
-  const row = (label, a, cls, k, bucket) => {
+  const wk = state.wk;
+  const isoDay = ts => { const x = new Date(ts); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; };
+  const rangeBar = `<div class="wkRange"><span class="lbl">New orders placed:</span>` +
+    WK_PRESETS.map(([k,l]) => `<button class="${wk.preset===k?'on':''}" data-wkp="${k}">${l}</button>`).join('') +
+    (wk.preset === 'custom' ? `<input type="date" data-wkd="start" value="${isoDay(d.range.start)}"> <span class="lbl">to</span> <input type="date" data-wkd="end" value="${isoDay(d.range.end)}">` : '') +
+    `<span class="lbl" style="margin-left:6px">${fmtRange(d.range)}</span></div>`;
+
+  const balRow = (label, a, cls, k, bucket) => {
     const go = k ? ` class="rc" data-go="${k}|${bucket}|acct" title="Click to see these orders"` : '';
     return `<tr class="${cls||''}"><td class="acct">${label}</td>` +
-      `<td class="num"${go}><b>${fmtUSD(a.bal)}</b></td>` +
-      `<td class="num due"${go}>${fmtUSD(a.due)}</td>` +
-      `<td class="num nyd"${go}>${fmtUSD(a.nyd)}</td></tr>`;
+      `<td class="num"${go}><b>${fmtUSD(a.bal)}</b></td><td class="num due"${go}>${fmtUSD(a.due)}</td><td class="num nyd"${go}>${fmtUSD(a.nyd)}</td></tr>`;
   };
-  const block = (title, a, k) =>
-    `<div class="panel" style="margin-bottom:12px"><div class="rtitle">${title}` +
-      `<span class="sub">${k ? 'click a figure to see the orders' : 'both states'}</span></div>` +
-    `<div style="overflow-x:auto"><table class="repTbl wkTbl"><thead><tr><th>Account</th>` +
-      `<th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th></tr></thead><tbody>` +
-      row('💨 Vape (AIO hardware)', a.vape, 'vp', k, 'vape') +
-      row('Non-vape', a.nonvape, '', k, 'nonvape') +
-      row('Total', a.all, 'grand', k, 'all') +
+  const balances = (title, a, k) =>
+    `<div class="panel" style="margin-bottom:12px"><div class="rtitle">${title}<span class="sub">balances${k ? ' · click a figure to see the orders' : ' · both states'}</span></div>` +
+    `<div style="overflow-x:auto"><table class="repTbl wkTbl"><thead><tr><th>Account</th><th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th></tr></thead><tbody>` +
+      balRow('💨 Vape (AIO hardware)', a.vape, 'vp', k, 'vape') + balRow('Non-vape', a.nonvape, '', k, 'nonvape') + balRow('Total', a.all, 'grand', k, 'all') +
     `</tbody></table></div></div>`;
-  cardsEl.innerHTML = reportSubNav('weekly') +
+  const comingDue = (title, a, k) => {
+    let rows = '';
+    for(const b of a.due){
+      const id = `${k}|${b.key}`, isOpen = state.wkOpen.has(id);
+      rows += `<tr class="prow" data-wkb="${id}"><td class="lbl">${esc(b.label)}</td><td class="num">${b.n}</td>` +
+        `<td class="num">${fmtUSD(b.vape)}</td><td class="num">${fmtUSD(b.nonvape)}</td><td class="num"><b>${fmtUSD(b.total)}</b></td><td class="num faint">${isOpen?'▾':'▸'}</td></tr>`;
+      if(!isOpen) continue;
+      rows += `<tr class="catx"><td colspan="6"><div style="overflow-x:auto"><table class="subTbl"><thead><tr><th>Due date</th><th>Invoice</th><th>Type</th><th>Description</th><th>Status</th><th class="num">Open</th></tr></thead><tbody>` +
+        b.items.map(i => `<tr data-gost="${k}" data-gosrc="${i.src}" title="Open this order"><td class="faint">${i.due ? fmtDayY(i.due) : '—'}</td><td><b>${esc(i.inv||'—')}</b></td><td>${tyChip(i.type)}</td>` +
+          `<td class="desc" title="${esc(i.desc)}">${esc(i.desc||'—')}</td><td><span class="st ${statusClass(i.status)}">${esc(i.status)}</span></td><td class="num">${fmtUSD(i.open)}</td></tr>`).join('') +
+        `</tbody></table></div></td></tr>`;
+    }
+    if(hasRec(a.reconcile)) rows += `<tr class="rec"><td colspan="2">${REC_LABEL}</td><td class="num">${fmtUSD(a.reconcile.vape)}</td><td class="num">${fmtUSD(a.reconcile.nonvape)}</td><td class="num">${fmtUSD(a.reconcile.total)}</td><td></td></tr>`;
+    rows += `<tr class="grand"><td colspan="2"><b>Balance</b></td><td class="num">${fmtUSD(a.vape.bal)}</td><td class="num">${fmtUSD(a.nonvape.bal)}</td><td class="num">${fmtUSD(a.all.bal)}</td><td></td></tr>`;
+    return `<div class="panel" style="margin-bottom:12px"><div class="rtitle">${title}<span class="sub">coming due, by due date · click a week to see the invoices</span></div>` +
+      `<div style="overflow-x:auto"><table class="repTbl wkTbl"><thead><tr><th>When</th><th class="num">Invoices</th><th class="num">💨 Vape</th><th class="num">Non-vape</th><th class="num">Total</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  };
+  const newOrders = (title, a, k) => {
+    const body = a.newOrders.length
+      ? a.newOrders.map(o => `<tr data-gost="${k}" data-gosrc="${o.src}" title="Open this order"><td class="faint">${fmtDay(o.ordered)}</td><td><b>${esc(o.inv||'(no invoice yet)')}</b></td><td>${tyChip(o.type)}</td>` +
+          `<td class="desc" title="${esc(o.desc)}">${esc(o.desc||'—')}</td><td><span class="st ${statusClass(o.status)}">${esc(o.status)}</span></td>` +
+          `<td class="num">${o.value > 0.005 ? fmtUSD(o.value) : '<span class="faint">not priced yet</span>'}</td><td class="faint">${o.due ? fmtDayY(o.due) : '—'}</td></tr>`).join('') +
+        `<tr class="grand"><td colspan="5"><b>${a.nsum.n} order${a.nsum.n===1?'':'s'}</b>${a.nsum.unpriced?` · ${a.nsum.unpriced} not priced yet`:''} · vape ${fmtUSD(a.nsum.vape)} · non-vape ${fmtUSD(a.nsum.nonvape)}</td><td class="num"><b>${fmtUSD(a.nsum.val)}</b></td><td></td></tr>`
+      : `<tr><td colspan="7" class="faint">No orders placed ${fmtRange(d.range)}.</td></tr>`;
+    return `<div class="panel" style="margin-bottom:12px"><div class="rtitle">${title}<span class="sub">new orders placed ${fmtRange(d.range)} · dated by PO number${a.undated?` · ${a.undated} order${a.undated===1?'':'s'} without a PO date can’t be placed in time`:''}</span></div>` +
+      `<div style="overflow-x:auto"><table class="subTbl"><thead><tr><th>Ordered</th><th>Invoice</th><th>Type</th><th>Description</th><th>Status</th><th class="num">Value</th><th>Due date</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  };
+  cardsEl.innerHTML = reportSubNav('weekly') + rangeBar +
     `<div class="wkNote" style="padding:0 2px 10px">Weekly balance report · as of ${fmtAsOf(d.asOf)} · balance = due + not yet due, as invoiced by the supplier</div>` +
-    block('California', d.ca, 'ca') + block('New York', d.ny, 'ny') + block('CA + NY combined', d.total, null) +
-    `<div class="wkNote">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. This is the report the Monday morning email is built from.</div>`;
+    balances('California', d.ca, 'ca') + comingDue('California', d.ca, 'ca') + newOrders('California', d.ca, 'ca') +
+    balances('New York', d.ny, 'ny') + comingDue('New York', d.ny, 'ny') + newOrders('New York', d.ny, 'ny') +
+    balances('CA + NY combined', d.total, null) +
+    `<div class="wkNote">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. This is the report the Monday morning email is built from (the email covers the previous Monday to Sunday).</div>`;
   bindSubNav(cardsEl);
+  cardsEl.querySelectorAll('[data-wkp]').forEach(b => b.addEventListener('click', () => {
+    state.wk.preset = b.dataset.wkp;
+    if(state.wk.preset === 'custom' && !state.wk.custom) state.wk.custom = { start: d.range.start, end: d.range.end };
+    render();
+  }));
+  cardsEl.querySelectorAll('[data-wkd]').forEach(inp => inp.addEventListener('change', () => {
+    const ts = parseSheetDate(inp.value.replace(/^(\d{4})-(\d{2})-(\d{2})$/, '$2/$3/$1'));
+    if(ts == null) return;
+    state.wk.custom = { ...(state.wk.custom || {}), [inp.dataset.wkd]: ts };
+    render();
+  }));
+  cardsEl.querySelectorAll('tr.prow[data-wkb]').forEach(tr => tr.addEventListener('click', () => {
+    const id = tr.dataset.wkb; state.wkOpen.has(id) ? state.wkOpen.delete(id) : state.wkOpen.add(id); render();
+  }));
+  cardsEl.querySelectorAll('.subTbl tbody tr[data-gosrc]').forEach(tr => tr.addEventListener('click', e => {
+    e.stopPropagation(); gotoOrder(tr.dataset.gost, parseInt(tr.dataset.gosrc,10));
+  }));
   cardsEl.querySelectorAll('[data-go]').forEach(td => td.addEventListener('click', e => {
     e.stopPropagation();
     const [k, bucket] = td.dataset.go.split('|');
