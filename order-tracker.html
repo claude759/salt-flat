@@ -492,6 +492,14 @@ function buildModel(raw){
     { virtual:'amount',  i:-1, header:'Amount',  num:true, wide:false, status:false, orderStatus:false },
     { virtual:'balance', i:-1, header:'Balance\nwhole account', num:true, wide:false, status:false, orderStatus:false });
 
+  // the dates that frame each order sit right after the frozen block: when it was placed
+  // (decoded from the PO number, YYMMDDNN) and when the supplier says it is due
+  const poIdx = headers.findIndex(h => h.toLowerCase() === 'po number');
+  for(const r of rows) r.ordered = orderedFromPO(poIdx >= 0 ? r.c[poIdx] : '');
+  cols.splice(4, 0, { virtual:'ordered', i:-1, header:'Ordered\nfrom PO no.', num:false, wide:false, status:false, orderStatus:false });
+  const ddPos = cols.findIndex(c => c.header.toLowerCase() === 'due date');
+  if(ddPos > 5) cols.splice(5, 0, cols.splice(ddPos,1)[0]);
+
   const paidIdx = cols.findIndex(c => c.header.toLowerCase() === 'paid to date');
 
   // sort newest -> oldest by ship date (fall back to delivery/due date); undated last
@@ -513,6 +521,15 @@ function buildModel(raw){
 }
 
 const payKeyOf = h => h.split('\n')[0].trim();
+
+/* PO numbers are YYMMDDNN: the date the order was placed plus a sequence, e.g. 26082602 */
+function orderedFromPO(po){
+  const m = /^(\d{2})(\d{2})(\d{2})\d{2}\b/.exec((po||'').trim());
+  if(!m) return null;
+  const mo = +m[2], d = +m[3];
+  if(mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return `${mo}/${d}/${2000 + +m[1]}`;
+}
 
 /* display split of a payment header: CA is two lines ("Payment 30" / "11th May"),
    NY is one ("Payment 1 - Wire 29th May 2026"). Never used as a storage key. */
@@ -1212,8 +1229,8 @@ function inProductionFor(m){
   const num = (c, r) => c ? (money(r.c[c.i])||0) : 0;
   for(const r of m.rows){
     if(!isInProduction(r.c[osC.i])) continue;
-    const booked = num(dueC, r) + num(nydC, r) + num(paidC, r);
-    const val = Math.max(num(totC, r), booked);
+    const booked = num(dueC, r) + num(nydC, r) + num(paidC, r), tot = num(totC, r);
+    const val = tot > 0.005 ? tot : booked;
     for(const key of ['all', isVape(r.type) ? 'vape' : 'nonvape']){
       const o = out[key]; o.n++; o.val += val; o.booked += booked; if(val < 0.005) o.unpriced++;
     }
@@ -1260,7 +1277,8 @@ function reportFor(k){
     const due = (dueC ? (money(r.c[dueC.i])||0) : 0) - (adj.delta[r.src]||0);
     const nyd = nydC ? (money(r.c[nydC.i])||0) : 0;
     const booked = (dueC ? (money(r.c[dueC.i])||0) : 0) + nyd + (paidC2 ? (money(r.c[paidC2.i])||0) : 0);
-    const val = Math.max(totC ? (money(r.c[totC.i])||0) : 0, booked);
+    const tot = totC ? (money(r.c[totC.i])||0) : 0;
+    const val = tot > 0.005 ? tot : booked;        // booked stands in only while the total is blank
     for(const key of ['all', isVape(r.type) ? 'vape' : 'nonvape']){
       way[key].n++; way[key].val += val; way[key].due += due; way[key].nyd += nyd;
     }
@@ -1370,7 +1388,7 @@ function renderReport(){
     const ip = bucket => {
       const p = r.acct[bucket].inprod || zeroProd();
       const note = p.n ? `<span class="cn">${p.n} order${p.n===1?'':'s'}${p.unpriced?` · ${p.unpriced} unpriced`:''}</span>` : '';
-      return isTot
+      return isTot || !p.n
         ? `<td class="num rc oo">${fmtUSD(p.val)}${note}</td>`
         : `<td class="num rc oo" data-go="${k}|${bucket}|prod" title="Orders the supplier is still making. Click to see them">${fmtUSD(p.val)}${note}</td>`;
     };
@@ -1508,7 +1526,7 @@ function renderOverview(){
     : { n: s.n, open: s.adjDue + s.nyd, due: s.adjDue, nyd: s.nyd, prod: s.prod.all };
   const prodCell = (k, p, isTot) => {
     const note = p.n ? `<span class="cn">${p.n} order${p.n===1?'':'s'}${p.unpriced?` · ${p.unpriced} unpriced`:''}</span>` : '';
-    return isTot ? `<td class="num rc">${fmtUSD(p.val)}${note}</td>`
+    return isTot || !p.n ? `<td class="num rc">${fmtUSD(p.val)}${note}</td>`
       : `<td class="num rc" data-goprod="${k}" title="Orders the supplier is still making. Click to see them">${fmtUSD(p.val)}${note}</td>`;
   };
   const row = (k, s, cls, name) => {
@@ -1750,6 +1768,7 @@ function render(){
         const v = (r.c[c.i]||'').trim();
         let cell = esc(v);
         if(c.virtual === 'type') cell = r.type ? tyChip(r.type) : '';
+        else if(c.virtual === 'ordered') cell = r.ordered ? `<span title="placed on ${r.ordered} (from the PO number)">${r.ordered}</span>` : '';
         else if(c.virtual === 'amount'){
           cell = ev.uninv > 0.01
             ? `<span class="inferred" title="order total ${fmtUSD(ev.total)} — ${fmtUSD(ev.uninv)} not yet invoiced by the supplier (blank Due/Not-yet-due in the sheet)">${fmtUSD(ev.amt)}</span>`
