@@ -109,6 +109,11 @@
   .repTbl tr.grand td.due{color:var(--orange)} .repTbl tr.grand td.nyd{color:var(--blue)}
   .credit{color:var(--green);font-weight:800}
   .repTbl td.oo{color:var(--muted);font-weight:650}
+  .subseg{display:flex;gap:6px;margin:0 0 12px}
+  .subseg button{background:var(--card);border:1px solid var(--line);color:var(--muted);padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:650;cursor:pointer}
+  .subseg button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .wkTbl td.acct{font-weight:700}
+  .wkNote{font-size:12px;color:var(--faint);padding:8px 2px 0}
   .repTbl td .cn,.stateTbl td .cn{display:block;font-size:10.5px;color:var(--faint);font-weight:500;margin-top:1px;white-space:nowrap}
   .stateTbl td.rc[data-goprod]{cursor:pointer;color:var(--muted);font-weight:650}
   .stateTbl td.rc[data-goprod]:hover{background:rgba(124,92,255,.18);border-radius:6px}
@@ -364,7 +369,7 @@ function fetchT(url, opts = {}, ms = 30000){
   return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
 }
 
-const PAGE_KEYS = ['overview','report','ca','ny'];
+const PAGE_KEYS = ['overview','report','weekly','ca','ny'];
 const hashPage = () => {
   const k = location.hash.replace('#','').toLowerCase();
   return PAGE_KEYS.includes(k) ? k : 'overview';
@@ -1401,7 +1406,7 @@ function renderReport(){
   };
 
 
-  cardsEl.innerHTML =
+  cardsEl.innerHTML = reportSubNav('report') +
     `<div class="panel" style="margin-bottom:12px"><div class="rtitle">Balances by state and account` +
       `<span class="sub">every figure is clickable · vape = AIO hardware</span></div>` +
     `<div style="overflow-x:auto"><table class="repTbl"><thead>` +
@@ -1424,6 +1429,7 @@ function renderReport(){
     const types = bucket === 'vape' ? [VAPE_TYPE] : bucket === 'nonvape' ? nonVapeTypes(m) : [];
     gotoFilter(k, { types, statuses: scope === 'way' ? wayStatuses(m) : scope === 'prod' ? prodStatuses(m) : [] });
   }));
+  bindSubNav(cardsEl);
   cardsEl.querySelectorAll('tr.st-row').forEach(tr => tr.addEventListener('click', () => goPage(tr.dataset.page)));
   cardsEl.querySelectorAll('tr.prow[data-rcat]').forEach(tr => tr.addEventListener('click', () => {
     const c = tr.dataset.rcat;
@@ -1432,6 +1438,93 @@ function renderReport(){
   }));
   cardsEl.querySelectorAll('.subTbl tbody tr[data-gosrc]').forEach(tr => tr.addEventListener('click', e => {
     e.stopPropagation(); gotoOrder(tr.dataset.gost, parseInt(tr.dataset.gosrc,10));
+  }));
+}
+
+/* ---------- Reports: sub-navigation + Weekly report ---------- */
+const reportSubNav = active =>
+  `<div class="subseg">` +
+  [['report','Default'],['weekly','Weekly report']].map(([k,l]) =>
+    `<button data-sub="${k}" class="${active===k?'on':''}">${l}</button>`).join('') + `</div>`;
+const bindSubNav = el => el.querySelectorAll('.subseg [data-sub]').forEach(b =>
+  b.addEventListener('click', () => goPage(b.dataset.sub)));
+
+/* the weekly report's numbers: one place, used by the page and by the Monday email */
+function weeklyReportData(){
+  const R = { ca: reportFor('ca'), ny: reportFor('ny') };
+  if(!R.ca || !R.ny) return null;
+  const pick = a => ({ bal:a.bal, due:a.due, nyd:a.nyd });
+  const acct = r => ({ vape: pick(r.acct.vape), nonvape: pick(r.acct.nonvape), all: pick(r.acct.all),
+                       inprod: r.acct.all.inprod });
+  const sum = (a,b) => ({ bal:a.bal+b.bal, due:a.due+b.due, nyd:a.nyd+b.nyd });
+  const ca = acct(R.ca), ny = acct(R.ny);
+  const total = { vape: sum(ca.vape, ny.vape), nonvape: sum(ca.nonvape, ny.nonvape), all: sum(ca.all, ny.all),
+                  inprod: addProd(ca.inprod, ny.inprod) };
+  return { asOf: (state.lastSync || new Date()).getTime(), ca, ny, total };
+}
+
+const fmtAsOf = ms => new Date(ms).toLocaleString('en-US', { weekday:'short', month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+
+/* inline-styled HTML for the email (Gmail strips <style>), built from the same data */
+function weeklyEmailHtml(d, link){
+  const money = v => fmtUSD(v);
+  const cell = (v, color, bold) => `<td style="padding:7px 12px;text-align:right;border-bottom:1px solid #e6e8ef;color:${color||'#1a1d26'};font-weight:${bold?700:500};font-variant-numeric:tabular-nums">${money(v)}</td>`;
+  const block = (title, a) =>
+    `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:680px;margin:0 0 18px;font-size:14px">` +
+    `<tr><th colspan="4" style="text-align:left;padding:8px 12px;background:#efe9ff;color:#4b2fd6;font-size:13px;letter-spacing:.04em;text-transform:uppercase;border-bottom:1px solid #d9d0ff">${title}</th></tr>` +
+    `<tr style="color:#6b6f80;font-size:12px"><th style="text-align:left;padding:6px 12px;font-weight:600">Account</th><th style="text-align:right;padding:6px 12px;font-weight:600">Balance</th><th style="text-align:right;padding:6px 12px;font-weight:600">Due</th><th style="text-align:right;padding:6px 12px;font-weight:600">Not yet due</th></tr>` +
+    `<tr><td style="padding:7px 12px;border-bottom:1px solid #e6e8ef">Vape (AIO hardware)</td>${cell(a.vape.bal)}${cell(a.vape.due,'#b45309')}${cell(a.vape.nyd,'#1d4ed8')}</tr>` +
+    `<tr><td style="padding:7px 12px;border-bottom:1px solid #e6e8ef">Non-vape</td>${cell(a.nonvape.bal)}${cell(a.nonvape.due,'#b45309')}${cell(a.nonvape.nyd,'#1d4ed8')}</tr>` +
+    `<tr><td style="padding:7px 12px;font-weight:700;border-bottom:2px solid #c9cddb">Total</td>${cell(a.all.bal,null,true)}${cell(a.all.due,'#b45309',true)}${cell(a.all.nyd,'#1d4ed8',true)}</tr>` +
+    `</table>`;
+  return `<div style="font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1d26;max-width:720px">` +
+    `<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6b6f80">Automated report · Wizard Trees supplier balances (MALLEN TECH)</div>` +
+    `<h1 style="font-size:20px;margin:6px 0 2px">Weekly balance report</h1>` +
+    `<div style="color:#6b6f80;font-size:13px;margin:0 0 16px">As of ${fmtAsOf(d.asOf)} · balance = due + not yet due, as invoiced by the supplier</div>` +
+    block('California', d.ca) + block('New York', d.ny) + block('CA + NY combined', d.total) +
+    `<p style="font-size:12px;color:#6b6f80;line-height:1.5">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. ` +
+    (link ? `Live figures and order detail: <a href="${link}" style="color:#4b2fd6">open the order tracker</a>. ` : '') +
+    `Sent automatically every Monday morning.</p></div>`;
+}
+
+function renderWeekly(){
+  $('#openSheet').href = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit`;
+  const pp = $('#payPanel'), cardsEl = $('#cards'), wrapEl = document.querySelector('.wrap');
+  cardsEl.className = 'cards plain';
+  wrapEl.style.display = 'none';
+  $('#toolbar').innerHTML = '';
+  pp.style.display = 'none'; pp.innerHTML = '';
+  if(!state.data.ca || !state.data.ny){
+    cardsEl.innerHTML = reportSubNav('weekly') + '<div class="tblbox"><div class="loading">Loading order data…</div></div>';
+    bindSubNav(cardsEl); return;
+  }
+  const d = weeklyReportData();
+  const row = (label, a, cls, k, bucket) => {
+    const go = k ? ` class="rc" data-go="${k}|${bucket}|acct" title="Click to see these orders"` : '';
+    return `<tr class="${cls||''}"><td class="acct">${label}</td>` +
+      `<td class="num"${go}><b>${fmtUSD(a.bal)}</b></td>` +
+      `<td class="num due"${go}>${fmtUSD(a.due)}</td>` +
+      `<td class="num nyd"${go}>${fmtUSD(a.nyd)}</td></tr>`;
+  };
+  const block = (title, a, k) =>
+    `<div class="panel" style="margin-bottom:12px"><div class="rtitle">${title}` +
+      `<span class="sub">${k ? 'click a figure to see the orders' : 'both states'}</span></div>` +
+    `<div style="overflow-x:auto"><table class="repTbl wkTbl"><thead><tr><th>Account</th>` +
+      `<th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th></tr></thead><tbody>` +
+      row('💨 Vape (AIO hardware)', a.vape, 'vp', k, 'vape') +
+      row('Non-vape', a.nonvape, '', k, 'nonvape') +
+      row('Total', a.all, 'grand', k, 'all') +
+    `</tbody></table></div></div>`;
+  cardsEl.innerHTML = reportSubNav('weekly') +
+    `<div class="wkNote" style="padding:0 2px 10px">Weekly balance report · as of ${fmtAsOf(d.asOf)} · balance = due + not yet due, as invoiced by the supplier</div>` +
+    block('California', d.ca, 'ca') + block('New York', d.ny, 'ny') + block('CA + NY combined', d.total, null) +
+    `<div class="wkNote">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. This is the report the Monday morning email is built from.</div>`;
+  bindSubNav(cardsEl);
+  cardsEl.querySelectorAll('[data-go]').forEach(td => td.addEventListener('click', e => {
+    e.stopPropagation();
+    const [k, bucket] = td.dataset.go.split('|');
+    const m = state.data[k];
+    gotoFilter(k, { types: bucket === 'vape' ? [VAPE_TYPE] : bucket === 'nonvape' ? nonVapeTypes(m) : [], statuses: [] });
   }));
 }
 
@@ -1594,10 +1687,12 @@ function renderOverview(){
 }
 
 function render(){
-  document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===state.page));
-  $('#q').style.display = state.page==='overview' ? 'none' : '';
+  const navKey = state.page === 'weekly' ? 'report' : state.page;   // both report pages light the Reports tab
+  document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===navKey));
+  $('#q').style.display = state.page==='overview' || state.page==='weekly' ? 'none' : '';
   if(state.page === 'overview'){ renderOverview(); return; }
   if(state.page === 'report'){ renderReport(); return; }
+  if(state.page === 'weekly'){ renderWeekly(); return; }
   $('#cards').className = 'cards';                      // undo the overview layout
   document.querySelector('.wrap').style.display = '';
   const m = currentModel();
@@ -2264,7 +2359,7 @@ function goPage(k){
   $('#q').value = state.filters[k] ? state.filters[k].q : '';
   render();
 }
-$('#seg').innerHTML = [{key:'overview',label:'Overview'},{key:'report',label:'📋 Report'},...TABS].map(t =>
+$('#seg').innerHTML = [{key:'overview',label:'Overview'},{key:'report',label:'📋 Reports'},...TABS].map(t =>
   `<button data-key="${t.key}">${t.label}</button>`).join('');
 document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => goPage(b.dataset.key)));
 window.addEventListener('hashchange', () => { const k = hashPage(); if(k !== state.page) goPage(k); });
