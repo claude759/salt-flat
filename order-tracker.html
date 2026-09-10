@@ -112,6 +112,36 @@
   .subseg{display:flex;gap:6px;margin:0 0 12px}
   .subseg button{background:var(--card);border:1px solid var(--line);color:var(--muted);padding:6px 14px;border-radius:999px;font-size:12.5px;font-weight:650;cursor:pointer}
   .subseg button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  #stateSubNav:not(:empty){padding:14px 16px 0}
+  #stateSubNav .subseg{margin:0}
+  .recentPayments{max-width:1120px;margin:0 auto;padding-bottom:24px}
+  .rpHeading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:12px 0 18px}
+  .rpHeading h1{margin:0 0 5px;font-size:25px}
+  .rpList{border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden;margin:12px 0}
+  .rpRow{display:grid;grid-template-columns:1.1fr 1fr 1fr 1.5fr 14px;gap:18px;align-items:center;padding:16px 18px}
+  .rpColumns{font-size:11px;color:var(--muted);background:var(--panel2);font-weight:700;text-transform:uppercase}
+  .rpPayment{border-top:1px solid var(--line)}
+  .rpPayment>summary{cursor:pointer;list-style:none}.rpPayment>summary::-webkit-details-marker{display:none}
+  .rpPayment>summary:hover{background:rgba(124,92,255,.06)}
+  .rpPayment[open]>summary .wkChevron{transform:rotate(90deg)}
+  .rpPayment small{display:block;font-size:11px;color:var(--muted);margin-top:4px}
+  .rpAmount{font-weight:750;font-variant-numeric:tabular-nums;text-align:right;color:var(--green)}
+  .rpColumns .rpAmount{color:var(--muted);font-weight:700}
+  .rpAccount{font-size:12px}.rpAccount.vape{color:var(--accent2)}.rpAccount.review{color:var(--orange)}
+  .rpDetail{padding:0 18px 16px;color:var(--muted);font-size:12px;line-height:1.7}
+  .rpDetail p{margin:5px 0}.rpSplit{display:flex;gap:20px;flex-wrap:wrap;color:var(--text)}
+  .rpWarning{padding:12px 14px;border:1px solid rgba(240,138,36,.3);border-radius:10px;background:rgba(240,138,36,.06);font-size:12px;margin:12px 0;color:var(--orange)}
+  .rpOther{margin:20px 0;color:var(--muted);font-size:12px}.rpOther>summary{cursor:pointer;padding:8px 0}
+  .rpOther p{line-height:1.7}.rpAllocation{padding:10px 0;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:18px}
+  .rpMore{display:flex;justify-content:center;margin:14px 0}
+  .recentPayments :is(summary,button):focus-visible{outline:2px solid var(--accent2);outline-offset:-3px}
+  @media(max-width:700px){
+    .rpRow{grid-template-columns:1fr auto 12px;gap:7px 12px;padding:14px}
+    .rpColumns{display:none}.rpDate{grid-column:1;grid-row:1}.rpAmount{grid-column:2;grid-row:1}
+    .rpName{grid-column:1;grid-row:2;font-size:12px;color:var(--muted)}
+    .rpAccount{grid-column:2;grid-row:2;text-align:right}.rpRow>.wkChevron{grid-column:3;grid-row:1/3}
+    .rpHeading h1{font-size:22px}.rpDetail{padding:0 14px 14px}
+  }
   /* Weekly owner summary: three headlines, with supporting detail folded away. */
   .weekly{max-width:1120px;margin:0 auto;padding-bottom:24px}
   .wkHeading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:12px 0 24px;flex-wrap:wrap}
@@ -415,6 +445,7 @@
 </header>
 
 <div class="banner" id="banner"></div>
+<div id="stateSubNav"></div>
 <div class="cards" id="cards"></div>
 <div class="toolbar" id="toolbar"></div>
 <div class="paywrap" id="payPanel" style="display:none"></div>
@@ -447,7 +478,7 @@ function fetchT(url, opts = {}, ms = 30000){
   return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
 }
 
-const PAGE_KEYS = ['overview','report','weekly','ca','ny'];
+const PAGE_KEYS = ['overview','report','weekly','ca','ny','ca-payments','ny-payments'];
 const hashPage = () => {
   const k = location.hash.replace('#','').toLowerCase();
   return PAGE_KEYS.includes(k) ? k : 'overview';
@@ -463,6 +494,8 @@ const state = {
   wk: { preset:'7d', custom:null },              // weekly report: date range for new orders
   wkOpen: new Set(),                            // weekly report: expanded inline details
   wkMetric: null,                               // selected headline breakdown
+  recentPayAll: { ca:false, ny:false },          // show older dated payments
+  recentPayOpen: new Set(),                     // preserve expanded payment details across sync
   asc: [],                                      // payment re-ascription rows from Supabase
   ascSig: '',
   ascFailed: false,
@@ -1984,10 +2017,133 @@ function renderOverview(){
   }));
 }
 
+/* One cash payment per supplier column, plus payments recorded before the sheet posts them.
+   Account-only allocations stay separate because they do not identify a source payment. */
+function recentPaymentsData(k, now=Date.now()){
+  const m=state.data[k];
+  if(!m) return null;
+  const adj=computeAdjust(m,k), dates=payDates(m,now);
+  const defaultGeneral=state.asc.some(a=>a.mode==='config' && a.invoice_no==='default_nonvape');
+  const bySrc=new Map(m.rows.map(r=>[r.src,r]));
+  const invCol=m.cols.find(c=>c.header.toLowerCase()==='invoice no.');
+  const byInvoice=new Map();
+  for(const r of m.rows){ const inv=(r.c[invCol.i]||'').trim(); if(inv && !byInvoice.has(inv)) byInvoice.set(inv,r); }
+  const toVape=inv=>isVape(byInvoice.get((inv||'').trim())?.type);
+  const cents=n=>Math.round(Number(n)*100);
+  const payments=[];
+  for(const pm of adj.meta){
+    const amount=cents(pm.wire ?? pm.sheetSum), sheet=cents(pm.sheetSum);
+    if(amount<=0 && sheet<=0) continue;
+    const notes=[], issues=[];
+    const originalVape=pm.cells.filter(c=>isVape(bySrc.get(c.src)?.type)).reduce((sum,c)=>sum+cents(c.amt),0);
+    let vape=defaultGeneral?0:originalVape;
+    const moves=adj.moves[pm.key]||[];
+    for(const mv of moves){ vape+=cents(mv.amount)*((toVape(mv.target)?1:0)-(toVape(mv.source)?1:0)); }
+    if(adj.restated.has(pm.key)){
+      vape-=originalVape;
+      for(const [src,entries] of Object.entries(adj.added))
+        if(isVape(bySrc.get(+src)?.type)) vape+=entries.filter(a=>a.key===pm.key).reduce((sum,a)=>sum+cents(a.amt),0);
+      notes.push('Includes the payment allocation restated in the tracker.');
+    }
+    const linked=adj.bucketEntries.filter(a=>a.payment_key===pm.key);
+    for(const a of linked){
+      if(a.invoice_no==='__vape__') vape+=cents(a.amount);
+      else if(a.invoice_no==='__nonvape__') vape-=cents(a.amount);
+      else if(byInvoice.has((a.invoice_no||'').trim())) vape+=cents(a.amount)*(toVape(a.invoice_no)?1:-1);
+    }
+    if(moves.length || linked.length) notes.push('Includes allocation changes linked to this payment.');
+    if(adj.orphans.some(a=>a.payment_key===pm.key)) issues.push('An allocation references an invoice that is no longer on the sheet.');
+    if(vape<0 || vape>amount) issues.push('The recorded account allocation falls outside this payment amount.');
+    if(sheet>amount+1) issues.push('The supplier’s invoice allocations exceed the stated payment total.');
+    if(pm.wire==null) notes.push('Payment total is missing; amount is the sum of the supplier’s invoice allocations.');
+    else if(Math.abs(sheet-amount)>1) notes.push(`Supplier payment total: ${fmtUSD(amount/100)}. Invoice allocations: ${fmtUSD(sheet/100)}.`);
+    const defaulted=defaultGeneral && !moves.length && !linked.length && !adj.restated.has(pm.key);
+    if(defaulted) notes.push('General balance is the tracker’s default. Account allocations without a source payment are listed separately below.');
+    const pd=dates[pm.key]||{};
+    payments.push({id:'sheet|'+pm.key,name:pm.name||pm.key,amount:amount/100,vape:vape/100,general:(amount-vape)/100,
+      date:pd.label && Number.isFinite(pd.ts)?pd.ts:null,dateLabel:pd.label||'Date not provided',
+      dateNote:pd.label&&!pd.exact?'Year estimated from sheet order':pd.label?'':'No payment date on the supplier sheet',
+      pending:false,defaulted,notes,issues,source:'Supplier sheet',fallback:pm.wire==null});
+  }
+  const sheetPaid=stateTotals(m).paid;
+  for(const a of adj.pendingPays){
+    const amount=Number(a.amount); if(!Number.isFinite(amount) || amount<=0) continue;
+    const paid=payDateOf(a), parts=/^(\d{4})-(\d{2})-(\d{2})$/.exec(a.paid_on||''), day=new Date(paid);
+    const hasDate=!!parts && Number.isFinite(paid) && day.getFullYear()===+parts[1] && day.getMonth()===+parts[2]-1 && day.getDate()===+parts[3];
+    const recorded=new Date(a.created_at).getTime();
+    const risk=postedRisk(a,sheetPaid), notes=[];
+    if(a.note) notes.push(a.note);
+    if(!hasDate && Number.isFinite(recorded)) notes.push(`Recorded ${fmtDayY(recorded)}; a valid payment date was not provided.`);
+    if(risk) notes.push(`The supplier has posted ${fmtUSD(risk.rise)} since this was recorded. Check whether it includes this payment; both entries may be present.`);
+    const vape=a.invoice_no==='__vape__'?amount:0;
+    payments.push({id:'pending|'+a.id,name:'Payment recorded in tracker',amount,vape,general:amount-vape,
+      date:hasDate?paid:null,dateLabel:hasDate?payDateLabel(a):'Date not provided',dateNote:hasDate?'':'Payment date missing',
+      pending:true,defaulted:false,notes,issues:[],source:'Recorded in tracker; not yet confirmed on supplier sheet',risk:!!risk});
+  }
+  const unlinked=adj.bucketEntries.filter(a=>!adj.metaByKey[a.payment_key]).map(a=>({
+    amount:Number(a.amount),note:a.note||'',
+    account:a.invoice_no==='__vape__'?'Vapes':a.invoice_no==='__nonvape__'?'General balance':byInvoice.has((a.invoice_no||'').trim())?(toVape(a.invoice_no)?'Vapes':'General balance'):'Account needs review'
+  }));
+  return {payments:payments.sort((a,b)=>(b.date??-Infinity)-(a.date??-Infinity)),unlinked,defaultGeneral};
+}
+
+function renderStateSubNav(k,active){
+  const el=$('#stateSubNav');
+  el.innerHTML=`<div class="subseg" aria-label="${k.toUpperCase()} sections">`+
+    [[k,'Orders'],[k+'-payments','Recent payments']].map(([page,label])=>`<button data-statepage="${page}" class="${page===active?'on':''}"${page===active?' aria-current="page"':''}>${label}</button>`).join('')+'</div>';
+  el.querySelectorAll('[data-statepage]').forEach(b=>b.addEventListener('click',()=>goPage(b.dataset.statepage)));
+}
+
+function renderRecentPayments(k){
+  const tab=TABS.find(t=>t.key===k), cards=$('#cards');
+  $('#openSheet').href=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/edit#gid=${tab.gid}`;
+  cards.className='cards plain';
+  $('#toolbar').innerHTML=''; $('#payPanel').style.display='none'; $('#payPanel').innerHTML='';
+  document.querySelector('.wrap').style.display='none';
+  const d=recentPaymentsData(k);
+  if(!d){cards.innerHTML='<div class="loading">Loading payments…</div>';return;}
+  const dated=d.payments.filter(p=>p.date!=null), undated=d.payments.filter(p=>p.date==null);
+  const shown=state.recentPayAll[k]?dated:dated.slice(0,10);
+  const disclosure=(id,cls,summary,body)=>`<details class="${cls}" data-rpopen="${esc(k+'|'+id)}"${state.recentPayOpen.has(k+'|'+id)?' open':''}><summary>${summary}</summary>${body}</details>`;
+  const row=p=>{
+    const review=p.issues.length>0;
+    const account=review?'Allocation needs review':p.vape>.005&&p.general>.005?'Vapes + general balance':p.vape>.005?'Vapes':p.defaulted?'General balance (default)':'General balance';
+    const accountClass=review?'review':p.vape>.005?'vape':'';
+    return disclosure(p.id,'rpPayment',`<span class="rpRow"><span class="rpDate">${esc(p.dateLabel)}${p.dateNote?`<small>${esc(p.dateNote)}</small>`:''}</span>`+
+      `<span class="rpName">${esc(p.name)}${p.pending?'<small>Not confirmed on supplier sheet</small>':''}${p.risk?'<small class="due">Possible supplier posting</small>':''}</span>`+
+      `<span class="rpAmount">${fmtUSD(p.amount)}${p.fallback?'<small>From invoice allocations</small>':''}</span>`+
+      `<span class="rpAccount ${accountClass}">${account}</span><span class="wkChevron" aria-hidden="true">›</span></span>`,
+      `<div class="rpDetail"><p>Source: ${esc(p.source)}</p>`+
+      (!review?`<p class="rpSplit"><span>Vapes: <b>${fmtUSD(p.vape)}</b></span><span>General balance: <b>${fmtUSD(p.general)}</b></span></p>`:'')+
+      p.issues.map(n=>`<p class="rpAccount review">${esc(n)}</p>`).join('')+p.notes.map(n=>`<p>${esc(n)}</p>`).join('')+'</div>');
+  };
+  const list=items=>`<div class="rpList"><div class="rpRow rpColumns" aria-hidden="true"><span>Date</span><span>Payment</span><span class="rpAmount">Amount</span><span>Applied to</span><span></span></div>${items.map(row).join('')}</div>`;
+  cards.innerHTML=`<div class="recentPayments"><div class="rpHeading"><div><h1>${k==='ca'?'California':'New York'} · Recent payments</h1>`+
+    `<div class="wkMuted">${shown.length} dated payment${shown.length===1?'':'s'} shown${dated.length>shown.length?` of ${dated.length}`:''} · newest first · click a payment for its split and source</div></div></div>`+
+    (state.ascFailed?'<div class="rpWarning">Payment adjustments could not refresh. Account splits and tracker payments may be incomplete or use previously loaded data.</div>':'')+
+    (d.unlinked.length?`<div class="wkNote">${d.unlinked.length} account allocation${d.unlinked.length===1?' is':'s are'} not linked to a specific payment. Those allocations appear separately below.</div>`:'')+
+    (shown.length?list(shown):'<div class="wkEmpty">No dated payments recorded.</div>')+
+    (dated.length>10?`<div class="rpMore"><button class="btn" id="rpShowAll">${state.recentPayAll[k]?'Show recent 10':`Show all ${dated.length} dated payments`}</button></div>`:'')+
+    (undated.length?disclosure('undated','rpOther',`Payments without dates (${undated.length})`, '<p>No payment date was recorded for these entries, so they are kept out of the dated list.</p>'+list(undated)):'')+
+    (d.unlinked.length?disclosure('unlinked','rpOther','Account allocations without a source payment',
+      '<p>These move existing payment credit between accounts. They are not additional cash payments, and cannot be assigned to a payment date.</p>'+
+      d.unlinked.map(a=>`<div class="rpAllocation"><span>To ${esc(a.account)}${a.note?`<p>${esc(a.note)}</p>`:''}</span><b>${fmtUSD(a.amount)}</b></div>`).join('')):'')+
+    '<p class="wkFoot">General balance means non-vape. Supplier payments use the full payment total where provided; otherwise the amount is totaled from invoice allocations. Dates with an estimated year are labeled. Tracker payments stay separate until confirmed on the supplier sheet.</p></div>';
+  cards.querySelectorAll('[data-rpopen]').forEach(el=>el.addEventListener('toggle',()=>{
+    if(!el.isConnected)return;
+    el.open?state.recentPayOpen.add(el.dataset.rpopen):state.recentPayOpen.delete(el.dataset.rpopen);
+  }));
+  $('#rpShowAll')?.addEventListener('click',()=>{state.recentPayAll[k]=!state.recentPayAll[k];render();$('#rpShowAll')?.focus({preventScroll:true});});
+}
+
 function render(){
-  const navKey = state.page === 'weekly' ? 'report' : state.page;   // both report pages light the Reports tab
+  const paymentPage = /^(ca|ny)-payments$/.test(state.page);
+  const navKey = state.page === 'weekly' ? 'report' : paymentPage ? state.page.slice(0,2) : state.page;   // both report pages light the Reports tab
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===navKey));
-  $('#q').style.display = state.page==='overview' || state.page==='weekly' ? 'none' : '';
+  $('#q').style.display = state.page==='overview' || state.page==='weekly' || paymentPage ? 'none' : '';
+  if(navKey==='ca'||navKey==='ny') renderStateSubNav(navKey,state.page);
+  else $('#stateSubNav').innerHTML='';
+  if(paymentPage){ renderRecentPayments(navKey); return; }
   if(state.page === 'overview'){ renderOverview(); return; }
   if(state.page === 'report'){ renderReport(); return; }
   if(state.page === 'weekly'){ renderWeekly(); return; }
@@ -2605,6 +2761,7 @@ async function sync(){
       const sig = JSON.stringify(links);
       if(sig !== state.linksSig){ state.links = links; state.linksSig = sig; changed = true; }
     }
+    if(state.ascFailed !== !asc) changed = true;
     if(asc){
       const sig = JSON.stringify(asc);
       if(sig !== state.ascSig){ state.asc = asc; state.ascSig = sig; changed = true; }
