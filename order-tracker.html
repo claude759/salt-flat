@@ -194,6 +194,10 @@
   .wkOrderBody{padding:0 0 14px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
   .wkOrderBody p{margin:5px 0 12px}
   .wkOrderBody .btn{font-size:12px}
+  .wkEstimateBasis{padding:10px 12px;border-left:2px solid var(--accent);background:rgba(124,92,255,.05);margin:10px 0}
+  .wkEstimateBasis .btn{white-space:normal;text-align:left;margin:3px 0;max-width:100%}
+  .wkForecast{width:100%;display:flex;align-items:center;justify-content:space-between;gap:14px;text-align:left;padding:14px 18px;margin:0 0 20px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text);cursor:pointer;font:inherit}
+  .wkForecast small{display:block;color:var(--muted);font-size:12px;margin-top:4px}
   .wkEmpty{font-size:12px;color:var(--muted);padding:12px 0}
   .wkFoot{font-size:11px;color:var(--muted);padding:10px 0;line-height:1.6}
   .wkSummaryTable{width:100%;min-width:0;border-collapse:collapse;font-size:13px}
@@ -1588,6 +1592,115 @@ const reportSubNav = active =>
 const bindSubNav = el => el.querySelectorAll('.subseg [data-sub]').forEach(b =>
   b.addEventListener('click', () => goPage(b.dataset.sub)));
 
+/* Forecasts never write to the sheet or participate in balances/payment timing.
+   Only product prices are repeatable; freight and duty remain unestimated. */
+function orderPriceFields(m, r){
+  const cell = name => {
+    const c = m.cols.find(c => !c.virtual && c.header.replace(/\s+/g,' ').trim().toLowerCase() === name);
+    return c ? String(r.c[c.i] || '').trim() : '';
+  };
+  const amounts = ['total including freight','total price','freight and duty','due','not yet due','paid to date'].map(n => money(cell(n)) || 0);
+  const [total,product,freight,due,nyd,paid] = amounts, booked = due + nyd + paid;
+  return {cell, product, freight, value: total > .005 ? total : booked > .005 ? booked : product > .005 ? product + freight : 0,
+    hasValue: [total,product,due,nyd,paid].some(v => Math.abs(v) > .005)};
+}
+function estimateProduct(desc, quantity){
+  // Parenthetical design breakdowns must not multiply an already stated total quantity.
+  const lines = desc.split(/[\r\n]+/).map(s => s.trim()).filter(Boolean);
+  const plain = lines.map(s => s.replace(/\([^)]*\)/g,' ').toLowerCase());
+  const mixed = /\b(bundle|multipack|compliance|ribbon|sleeve|master\s*(case|box)|mesh|cup|lighter|and|with|plus|includes?|including)\b|[+;&]/i;
+  const mixedBags = /\b(mylar|pouch)\b/i.test(desc) && /\b(jars?|tubes?|labels?|stickers?|boxes|box|cones?|booklets?)\b/i.test(desc);
+  if(!lines.length || mixedBags || lines.some(s => mixed.test(s))) return {reason:'Product contents need a closer match.'};
+  const familyOf = s => /\b3\.5\s*g\b/.test(s) && /\bflower\s+mylar\s+bags?\b/.test(s) && !/\b(closure|puller|flap|sticker|box|foil|holographic|embossed|digital|matte|gloss)\b|\d+\s*mm\b/.test(s)
+    ? '3.5g flower mylar bags'
+    : /\b3\.5\s*g\b/.test(s) && /\bjar\s+labels?\b/.test(s) && !/\b(preroll|pre-roll|sticker|case)\b/.test(s)
+    ? '3.5g flower jar labels' : null;
+  const families = plain.map(familyOf), family = families[0] && families.every(f => f === families[0]) ? families[0] : null;
+  if(lines.length > 1 && family !== '3.5g flower jar labels') return {reason:'Mixed or multiple products need a closer match.'};
+  const number = '(\\d[\\d,]*(?:\\.\\d+)?)';
+  let ambiguousQuantity = false;
+  const lineQuantities = plain.map(s => {
+    const explicit = [...s.matchAll(new RegExp('\\s[x×]\\s*' + number + '\\s*(k|pcs?|units?)?(?=\\s|$)','g'))];
+    const matches = explicit.length ? explicit : [...s.matchAll(new RegExp('(?:-\\s*|\\s)' + number + '\\s*(k|pcs|units)\\b','g'))];
+    if(matches.length > 1) ambiguousQuantity = true;
+    return matches.length === 1 ? Number(matches[0][1].replace(/,/g,'')) * (matches[0][2] === 'k' ? 1000 : 1) : null;
+  });
+  if(ambiguousQuantity) return {reason:'Multiple quantities need confirmation before estimating.'};
+  const stated = lineQuantities.every(q => q > 0) ? lineQuantities.reduce((a,b) => a+b,0) : null;
+  const raw = String(quantity || '').trim().replace(/,/g,'');
+  const column = /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : null;
+  if(raw && !(column > 0)) return {reason:'The order quantity needs confirmation.'};
+  if(column && stated && Math.abs(column - stated) > .001) return {reason:'Quantity column and description disagree.'};
+  if(lines.length > 1 && !stated) return {reason:'Quantities for each product line need confirmation.'};
+  const qty = column || stated;
+  if(!(qty > 0)) return {reason:'No reliable quantity is available yet.'};
+  const key = desc.toLowerCase().replace(/wizard trees\b/g,'').replace(/\bele\b/g,'elements')
+    .replace(new RegExp('\\s[x×]\\s*' + number + '\\s*(k|pcs?|units?)?(?=\\s|$)','g'),' ')
+    .replace(new RegExp('(?:-\\s*|\\s)' + number + '\\s*(k|pcs|units)\\b','g'),' ')
+    .replace(/\b(ca|ny)\b/g,'').replace(/[-–—]/g,' ').replace(/\s+/g,' ').trim();
+  return {qty, quantitySource:column ? 'quantity column' : 'order description', key, family};
+}
+function orderEstimatesFor(m, k, now=Date.now()){
+  const entries = m.rows.map(r => {
+    const p = orderPriceFields(m,r), cell=p.cell;
+    const po = cell('po number').replace(/-\d+$/,'');
+    const inv = cell('invoice no.'), invoiceKey = /^INV-/i.test(inv) ? inv.toUpperCase().replace(/^(INV-\d+)-\d+$/,'$1') : '';
+    return {r,p,po,inv,invoiceKey,desc:cell('desc.'),status:cell('order status')};
+  });
+  const pricedPOs = new Set(entries.filter(e => e.p.hasValue && e.po).map(e => e.po));
+  const pricedInvoices = new Set(entries.filter(e => e.p.hasValue && e.invoiceKey).map(e => e.invoiceKey));
+  const eligible = entries.filter(e => !e.p.hasValue && e.desc && !isDelivered(e.status) &&
+    !/cancel|void|return/i.test(e.status) &&
+    !/invoice not required|no charge|free (sample|replacement)/i.test(e.r.c.join(' ')) &&
+    !/^\/$/.test(e.p.cell('total price')) &&
+    !(e.po && pricedPOs.has(e.po)) && !pricedInvoices.has(e.invoiceKey));
+  const histories = entries.filter(e => e.p.product > .005 && e.r.orderedTs != null && e.r.orderedTs <= now &&
+    !/cancel|void|return/i.test(e.status)).map(e => ({...e,shape:estimateProduct(e.desc,e.p.cell('qty in unit'))}));
+  // Repeated priced lines on one PO/invoice may be shipment copies or bundles.
+  // Omit those ambiguous sources instead of weighting one order several times.
+  const uniqueHistories = histories.filter(e => !histories.some(h => h !== e &&
+    ((e.po && e.po === h.po) || (e.invoiceKey && e.invoiceKey === h.invoiceKey))));
+  const output = new Map();
+  for(const e of eligible){
+    const shape = estimateProduct(e.desc,e.p.cell('qty in unit'));
+    let reason = shape.reason;
+    if(eligible.some(other => other !== e && ((e.po && other.po === e.po) || (e.invoiceKey && other.invoiceKey === e.invoiceKey))))
+      reason = 'Multiple rows share this PO or invoice; pricing needs confirmation.';
+    const cutoff = Math.min(e.r.orderedTs ?? now,now);
+    const comparable = reason ? [] : uniqueHistories.filter(h => !h.shape.reason && h.r.src !== e.r.src &&
+      h.r.orderedTs <= cutoff && h.r.orderedTs >= cutoff - 365*DAY &&
+      h.shape.qty >= shape.qty/3 && h.shape.qty <= shape.qty*3);
+    const exact = comparable.filter(h => h.shape.key === shape.key);
+    const candidates = (exact.length ? exact : comparable.filter(h => shape.family && h.shape.family === shape.family))
+      .sort((a,b) => b.r.orderedTs-a.r.orderedTs || b.r.src-a.r.src).slice(0,5);
+    if(!candidates.length){ output.set(e.r.src,{reason:reason || 'No comparable product price in the past year.'}); continue; }
+    const rates = candidates.map(h => h.p.product/h.shape.qty).sort((a,b)=>a-b);
+    const mid = Math.floor(rates.length/2), unit = rates.length%2 ? rates[mid] : (rates[mid-1]+rates[mid])/2;
+    const round = n => Math.round(n*100)/100;
+    output.set(e.r.src,{amount:round(unit*shape.qty),low:round(rates[0]*shape.qty),high:round(rates.at(-1)*shape.qty),
+      unit,qty:shape.qty,knownFreight:e.p.freight,quantitySource:shape.quantitySource,match:exact.length ? 'Same product description' : 'Similar product, different designs',
+      sources:candidates.map(h => ({state:k,src:h.r.src,inv:h.inv,desc:h.desc,ordered:h.r.orderedTs,qty:h.shape.qty,
+        product:h.p.product,unit:h.p.product/h.shape.qty}))});
+  }
+  return output;
+}
+const estimateSummary = orders => {
+  const estimated = orders.filter(o => o.estimate?.amount > .005);
+  return {n:orders.length,estimated:estimated.length,pending:orders.length-estimated.length,
+    amount:estimated.reduce((s,o)=>s+o.estimate.amount,0)};
+};
+const estimatedPriceText = e => e?.amount > .005 ? `Est. ${fmtUSD(e.amount)} + freight` : 'Pricing pending';
+function estimateBasisHtml(e){
+  if(!e) return '';
+  if(e.reason) return `<p>${esc(e.reason)} Awaiting the supplier's price.</p>`;
+  const unit = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});
+  return `<div class="wkEstimateBasis"><p><b>${estimatedPriceText(e)}</b> · products only. Freight and duty are extra. This estimate is excluded from the open balance.</p>` +
+    (e.knownFreight > .005 ? `<p>The sheet currently lists ${fmtUSD(e.knownFreight)} for freight and duty separately.</p>` : '') +
+    `<p>${e.qty.toLocaleString('en-US')} units from the ${e.quantitySource} × ${unit(e.unit)} per unit. ${esc(e.match)}; median of ${e.sources.length} recent comparable order${e.sources.length===1?'':'s'} in this state.</p>` +
+    (e.low !== e.high ? `<p>Comparable prices imply ${fmtUSD(e.low)} to ${fmtUSD(e.high)} for this quantity; artwork and specifications can change the price.</p>` : '<p>The final supplier price may differ.</p>') +
+    e.sources.map(s => `<button class="btn" data-gost="${s.state}" data-gosrc="${s.src}">${esc(s.inv || 'Source order')} · ${fmtDayY(s.ordered)} · ${s.qty.toLocaleString('en-US')} units · ${fmtUSD(s.product)} products (${unit(s.unit)}/unit) ↗</button>`).join(' ') + '</div>';
+}
+
 /* the weekly report's numbers: one place, used by the page and by the Monday email.
    range = the window for "new orders" (orders dated by their PO number); nowTs anchors
    the due-date weeks. */
@@ -1602,23 +1715,28 @@ function weeklyReportData(range, nowTs){
 
   const block = (k, r) => {
     const m = r.m;
+    const estimates = orderEstimatesFor(m,k,now);
     const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
-    const totC = find('total including freight'), dueC = find('due'), nydC = find('not yet due'), paidC = find('paid to date');
+    const dueC = find('due'), nydC = find('not yet due');
     const invC = find('invoice no.'), descC = m.cols.find(c => /^desc/i.test(c.header)), osC = m.cols.find(c => c.orderStatus);
     const num = (c, r) => c ? (money(r.c[c.i])||0) : 0;
     const item = r => {
-      const tot = num(totC, r), booked = num(dueC, r) + num(nydC, r) + num(paidC, r);
       return { state:k, src:r.src, inv: invC ? (r.c[invC.i]||'').trim() : '',
         desc: descC ? (r.c[descC.i]||'').trim().replace(/\s+/g,' ') : '', type: r.type || 'Other', vape: isVape(r.type),
         status: osC ? (r.c[osC.i]||'').trim() : '', ordered: r.orderedTs, due: r.dueTs, ship: r.date,
-        value: tot > 0.005 ? tot : booked, open: num(dueC, r) + num(nydC, r) };
+        value: orderPriceFields(m,r).value, estimate:estimates.get(r.src), open: num(dueC, r) + num(nydC, r) };
     };
     // new orders = placed inside the range, by the date in the PO number
     const newOrders = m.rows.filter(r => r.orderedTs != null && r.orderedTs >= range.start && r.orderedTs <= range.end)
       .map(item).sort((a,b) => b.ordered - a.ordered || b.value - a.value);
-    const nsum = { n:newOrders.length, val:0, vape:0, nonvape:0, unpriced:0 };
-    for(const o of newOrders){ nsum.val += o.value; nsum[o.vape?'vape':'nonvape'] += o.value; if(o.value < 0.005) nsum.unpriced++; }
+    const nsum = { n:newOrders.length, val:0, vape:0, nonvape:0, unpriced:0,estimated:0,estimateVal:0 };
+    for(const o of newOrders){
+      nsum.val += o.value; nsum[o.vape?'vape':'nonvape'] += o.value;
+      if(o.value < 0.005) nsum.unpriced++;
+      if(o.estimate?.amount > .005){nsum.estimated++;nsum.estimateVal+=o.estimate.amount;}
+    }
     const undated = m.rows.filter(r => r.orderedTs == null).length;
+    const unpricedOrders = m.rows.filter(r => estimates.has(r.src)).map(item).sort((a,b)=>(b.ordered||0)-(a.ordered||0));
 
     // coming due = every open invoice (the sheet's own Due + Not yet due), by due-date week
     const buckets = new Map();
@@ -1666,13 +1784,15 @@ function weeklyReportData(range, nowTs){
              : b.key === 'nodate' ? 'not on the sheet' : `${fmtDay(b.ord)} to ${fmtDay(b.ord + 6*DAY)}`;
     }
     return { vape: pick(r.acct.vape), nonvape: pick(r.acct.nonvape), all: pick(r.acct.all), inprod: r.acct.all.inprod,
-             newOrders, nsum, undated, due: due.filter(b => b.n > 0), attributed };
+             newOrders, nsum, undated, unpricedOrders, forecast:estimateSummary(unpricedOrders), due: due.filter(b => b.n > 0), attributed };
   };
   const ca = block('ca', R.ca), ny = block('ny', R.ny);
   const total = { vape: sum(ca.vape, ny.vape), nonvape: sum(ca.nonvape, ny.nonvape), all: sum(ca.all, ny.all),
+                  forecast:estimateSummary([...ca.unpricedOrders,...ny.unpricedOrders]),
                   inprod: addProd(ca.inprod, ny.inprod),
                   nsum: { n: ca.nsum.n + ny.nsum.n, val: ca.nsum.val + ny.nsum.val, vape: ca.nsum.vape + ny.nsum.vape,
-                          nonvape: ca.nsum.nonvape + ny.nsum.nonvape, unpriced: ca.nsum.unpriced + ny.nsum.unpriced } };
+                          nonvape: ca.nsum.nonvape + ny.nsum.nonvape, unpriced: ca.nsum.unpriced + ny.nsum.unpriced,
+                          estimated:ca.nsum.estimated+ny.nsum.estimated,estimateVal:ca.nsum.estimateVal+ny.nsum.estimateVal } };
   return { asOf: (state.lastSync || new Date()).getTime(), now, range, ca, ny, total };
 }
 
@@ -1708,12 +1828,16 @@ function weeklyEmailHtml(d, link){
     (a.newOrders.length
       ? `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px">` +
         a.newOrders.map(o => `<tr><td style="${TD};white-space:nowrap;color:#6b6f80">${fmtDay(o.ordered)}</td><td style="${TD};white-space:nowrap"><b>${esc(o.inv||'(no invoice yet)')}</b><br><span style="font-size:11px;color:#6b6f80">${esc(o.status)}</span></td>` +
-          `<td style="${TD}">${esc(o.desc)}</td><td style="${TD};text-align:right;white-space:nowrap"><b>${o.value > 0.005 ? money(o.value) : '<span style=\"color:#6b6f80;font-weight:500\">not priced yet</span>'}</b>${o.due ? `<br><span style="font-size:11px;color:#6b6f80">due ${fmtDayY(o.due)}</span>` : ''}</td></tr>`).join('') +
-        `<tr><td style="${TD};border-bottom:2px solid #c9cddb" colspan="3"><b>${a.nsum.n} order${a.nsum.n===1?'':'s'}</b>${a.nsum.unpriced?` (${a.nsum.unpriced} not priced yet)`:''} · vape ${money(a.nsum.vape)} · non-vape ${money(a.nsum.nonvape)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(a.nsum.val)}</td></tr></table>`
+          `<td style="${TD}">${esc(o.desc)}</td><td style="${TD};text-align:right;white-space:nowrap"><b>${o.value > 0.005 ? money(o.value) : estimatedPriceText(o.estimate)}</b>${o.due ? `<br><span style="font-size:11px;color:#6b6f80">due ${fmtDayY(o.due)}</span>` : ''}</td></tr>`).join('') +
+        `<tr><td style="${TD};border-bottom:2px solid #c9cddb" colspan="4"><b>${a.nsum.n} order${a.nsum.n===1?'':'s'}</b> · ${weeklyPriceSummary(a.nsum)}<br><span style="color:#6b6f80;font-size:11px">Supplier-priced total: ${money(a.nsum.val)}. Estimated product costs are separate and exclude freight/duty.</span></td></tr></table>`
       : `<div style="font-size:13px;color:#6b6f80;padding:6px 0">No orders placed in this period.</div>`);
   const stateBlock = (title, a) =>
     `<div style="margin:0 0 22px;padding:14px 16px;border:1px solid #d9d0ff;border-radius:12px">` +
-    `<div style="font-size:16px;font-weight:800;color:#4b2fd6;margin-bottom:8px">${title}</div>` + tiles(a) + comingDue(a) + newOrders(a) + `</div>`;
+    `<div style="font-size:16px;font-weight:800;color:#4b2fd6;margin-bottom:8px">${title}</div>` + tiles(a) +
+    (a.forecast.n ? h2('Awaiting vendor pricing', `${a.forecast.n} active orders, across all dates`) +
+      `<p style="font-size:13px">${a.forecast.estimated ? `Est. ${money(a.forecast.amount)} in products, plus freight and duty. ` : ''}Additional to the open balance; based on past comparable orders.${a.forecast.pending ? ` ${a.forecast.pending} without a reliable estimate.` : ''}</p>` +
+      `<ul style="font-size:13px">${a.unpricedOrders.map(o=>`<li>${esc(weeklyPurchaseLabel(o))}: ${estimatedPriceText(o.estimate)}</li>`).join('')}</ul>` : '') +
+    comingDue(a) + newOrders(a) + `</div>`;
   const t = d.total;
   return `<div style="font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1d26;max-width:760px">` +
     `<div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#6b6f80">Automated report · Wizard Trees supplier balances (MALLEN TECH)</div>` +
@@ -1734,12 +1858,16 @@ function weeklyEmailHtml(d, link){
 /* Keep quantities as written by the supplier; expand the row for the full description. */
 const weeklyPurchaseLabel = o => (o.desc || o.type || 'Order').replace(/^Wizard Trees\s*[-–:]\s*/i,'').split(/\s*\(/)[0].trim() || o.type || 'Order';
 const weeklyPurchases = d => [...d.ca.newOrders,...d.ny.newOrders].sort((a,b)=>b.ordered-a.ordered);
+const weeklyPriceSummary = a => !a.n ? 'No orders in this period' : [
+  a.n > a.unpriced ? `${fmtUSD(a.val)} priced` : '',
+  a.estimated ? `Est. ${fmtUSD(a.estimateVal)} + freight` : '',
+  a.unpriced > (a.estimated||0) ? `${a.unpriced-(a.estimated||0)} pricing pending` : ''
+].filter(Boolean).join(' · ');
 
 /* A concise snapshot for pasting into an owner email or message. */
 function weeklySummaryText(d){
   const n = d.total.nsum;
-  const pricing = n.unpriced === n.n && n.n ? 'pricing pending' :
-    `${fmtUSD(n.val)} priced${n.unpriced ? `; ${n.unpriced} awaiting pricing` : ''}`;
+  const pricing = weeklyPriceSummary(n);
   return [
     'Weekly China Report',
     `Current balances as of ${fmtAsOf(d.asOf)}`,
@@ -1747,8 +1875,12 @@ function weeklySummaryText(d){
     `Due per supplier: ${fmtUSD(d.total.all.due)} | Not yet due: ${fmtUSD(d.total.all.nyd)}`,
     `California open balance: ${fmtUSD(d.ca.all.bal)} (${fmtUSD(d.ca.all.due)} due; ${fmtUSD(d.ca.all.nyd)} not yet due)`,
     `New York open balance: ${fmtUSD(d.ny.all.bal)} (${fmtUSD(d.ny.all.due)} due; ${fmtUSD(d.ny.all.nyd)} not yet due)`,
+    ...(d.total.forecast.n ? [
+      `Unpriced orders: ${d.total.forecast.estimated ? `approximately ${fmtUSD(d.total.forecast.amount)} in products across ${d.total.forecast.estimated} estimated orders; freight/duty extra` : 'pricing pending'}${d.total.forecast.pending ? `; ${d.total.forecast.pending} more without a reliable estimate` : ''}. Estimates are additional to the open balance.`,
+      ...['ca','ny'].filter(k=>d[k].forecast.n).map(k=>`${k.toUpperCase()} unpriced orders: ${d[k].forecast.estimated ? `Est. ${fmtUSD(d[k].forecast.amount)} + freight` : 'pricing pending'}${d[k].forecast.pending ? `; ${d[k].forecast.pending} awaiting a product match` : ''}.`)
+    ] : []),
     `New orders, ${fmtRange(d.range)}: ${n.n}${n.n ? ` (${pricing})` : ''}`,
-    ...weeklyPurchases(d).map(o=>`• ${o.state.toUpperCase()} · ${fmtDay(o.ordered)}: ${weeklyPurchaseLabel(o)} (${o.value>.005?fmtUSD(o.value):'pricing pending'})`),
+    ...weeklyPurchases(d).map(o=>`• ${o.state.toUpperCase()} · ${fmtDay(o.ordered)}: ${weeklyPurchaseLabel(o)} (${o.value>.005?fmtUSD(o.value):estimatedPriceText(o.estimate)})`),
     ...(d.ca.undated + d.ny.undated ? [`${d.ca.undated + d.ny.undated} orders without a PO date are excluded from the new-order count.`] : []),
     ...(state.failed || state.ascFailed ? ['Data warning: ' + (state.failed ? 'Sheet refresh failed; balances use the last available data. ' : '') + (state.ascFailed ? 'Payment adjustments could not refresh; balances may include previously loaded adjustments.' : '')] : []),
     'Balances include tracker payment adjustments when available. The date range applies only to new orders.',
@@ -1772,21 +1904,21 @@ function renderWeekly(){
   const chevron = '<span class="wkChevron" aria-hidden="true">›</span>';
   const disclosure = (id, cls, summary, body) =>
     `<details class="${cls}" data-wkdetail="${id}"${state.wkOpen.has(id)?' open':''}><summary>${summary}</summary>${body}</details>`;
-  const priceSummary = a => !a.n ? 'No orders in this period' : a.unpriced === a.n ? 'Pricing pending' :
-    `${fmtUSD(a.val)} priced${a.unpriced?` · ${a.unpriced} awaiting pricing`:''}`;
+  const priceSummary = weeklyPriceSummary;
   const countLabel = items => {
     const invoices = items.filter(i => !i.synthetic).length, adjustments = items.length - invoices;
     return [invoices ? `${invoices} invoice${invoices===1?'':'s'}` : '', adjustments ? `${adjustments} account adjustment${adjustments===1?'':'s'}` : ''].filter(Boolean).join(' + ');
   };
   const orderList = (items, prefix, isNew=false) => items.length ? items.map(i => {
-    const amount = isNew ? (i.value > .005 ? fmtUSD(i.value) : 'Pricing pending') : fmtUSD(i.open);
+    const amount = isNew ? (i.value > .005 ? fmtUSD(i.value) : i.estimate?.amount > .005 ? `Est. ${fmtUSD(i.estimate.amount)}<small>+ freight / duty</small>` : 'Pricing pending') : fmtUSD(i.open);
     const label = isNew ? weeklyPurchaseLabel(i) : i.synthetic ? 'Account adjustment' : i.inv || 'Invoice pending';
-    const sub = [i.state === 'ca' ? 'CA' : 'NY', isNew ? fmtDay(i.ordered) : i.type, isNew ? i.status : i.due ? `due ${fmtDayY(i.due)}` : 'No due date'].filter(Boolean).join(' · ');
+    const sub = [i.state === 'ca' ? 'CA' : 'NY', isNew ? i.ordered ? fmtDay(i.ordered) : 'PO date missing' : i.type, isNew ? i.status : i.due ? `due ${fmtDayY(i.due)}` : 'No due date'].filter(Boolean).join(' · ');
     return disclosure(`${prefix}|${i.state}|${i.src != null ? i.src : i.vape ? 'vape-adjustment' : 'nonvape-adjustment'}`, 'wkOrder',
       `<span class="wkRow"><span class="wkRowName"><span${isNew?' class="wkPurchaseName"':''}>${esc(label)}</span><small>${esc(sub)}</small></span><span class="wkAmt"><b>${amount}</b></span>${chevron}</span>`,
       `<div class="wkOrderBody"><p>${esc(i.desc || 'No description on the supplier sheet.')}</p>` +
       (isNew ? `<p>${esc(i.inv || 'Invoice pending')}${i.due?` · due ${fmtDayY(i.due)}`:''}</p>` : '') +
       (i.status ? `<p>Status: ${esc(i.status)}</p>` : '') +
+      (isNew ? estimateBasisHtml(i.estimate) : '') +
       (i.paidInApp ? `<p>Includes ${fmtUSD(i.paidInApp)} in tracker payments applied oldest first.</p>` : '') +
       (i.src != null ? `<button class="btn" data-gost="${i.state}" data-gosrc="${i.src}">View full order ↗</button>` : '') + '</div>');
   }).join('') : '<div class="wkEmpty">Nothing to show.</div>';
@@ -1805,6 +1937,8 @@ function renderWeekly(){
   const stateCard = (title,a,k) => disclosure(k,'wkState',
     `<span class="wkStateName">${title}</span><span class="wkStateAmount"><small>Open balance</small><b>${fmtUSD(a.all.bal)}</b></span><span class="wkStateAmount wkStateDue"><small>Due per supplier</small><b class="due">${fmtUSD(a.all.due)}</b></span>${chevron}`,
     `<div class="wkStateBody"><div class="wkAccounts">${account(a,k,'vape','Vape (AIO hardware)')}${account(a,k,'nonvape','Non-vape')}</div>` +
+    (a.forecast.n ? disclosure(`${k}|estimates`,'wkDisclosure',`<span>Awaiting vendor pricing <span class="wkMuted">· ${a.forecast.n} order${a.forecast.n===1?'':'s'}${a.forecast.estimated ? ` · Est. ${fmtUSD(a.forecast.amount)} + freight` : ''}</span></span>${chevron}`,
+      `<div class="wkDisclosureBody"><p class="wkNote">Estimates use past product prices and are additional to the open balance. Freight and duty are extra. All active unpriced orders are shown, regardless of the new-order date range. Expand an order to see the source prices.${a.forecast.pending ? ` ${a.forecast.pending} order${a.forecast.pending===1?' has':'s have'} no reliable estimate yet.` : ''}</p>${orderList(a.unpricedOrders,`${k}|estimate|order`,true)}</div>`) : '') +
     disclosure(`${k}|payments`,'wkDisclosure',`<span>Recent payments</span>${chevron}`,
       `<div class="wkDisclosureBody">${recentPaymentsHtml(k)}</div>`) +
     disclosure(`${k}|schedule`,'wkDisclosure', `<span>Payment timing <span class="wkMuted">· by due date</span></span>${chevron}`,
@@ -1821,13 +1955,14 @@ function renderWeekly(){
     `<span>${fmtRange(d.range)} · balances stay current</span></div>` +
     `<div class="wkMetrics">${metric('balance','Open balance',fmtUSD(t.all.bal),`Includes ${fmtUSD(t.all.nyd)} not yet due`)}${metric('due','Due per supplier',fmtUSD(t.all.due),'Across California and New York','due')}${metric('new','New orders',t.nsum.n,priceSummary(t.nsum))}</div>` +
     `<section class="wkBreakdown" id="wkMetricDetail"${metricBody?'':' hidden'}>${metricBody}</section>` +
+    (t.forecast.n ? `<button class="wkForecast" data-wkmetric="forecast" aria-controls="wkStates"><span><b>Awaiting vendor pricing${t.forecast.estimated ? ` · Est. ${fmtUSD(t.forecast.amount)} + freight` : ''}</b><small>${t.forecast.n} active order${t.forecast.n===1?'':'s'} · products only · additional to open balance${t.forecast.pending ? ` · ${t.forecast.pending} without an estimate` : ''}</small></span><span class="wkHint">See estimates ↓</span></button>` : '') +
     `<section class="wkPurchases" id="wkPurchases" aria-labelledby="wkPurchasesTitle"><h2 id="wkPurchasesTitle" tabindex="-1">${wk.preset==='7d'?'Purchased in the past 7 days':'Purchased in the selected period'}</h2><div class="wkMuted">Orders placed ${fmtRange(d.range)} · based on PO date</div>` +
     (t.nsum.n ? orderList(weeklyPurchases(d),'purchases',true) : '<div class="wkEmpty">No orders placed in this period.</div>') +
     (d.ca.undated+d.ny.undated ? disclosure('purchase-notes','wkNotes',`${chevron}<span>About this purchase list</span>`,`<p>${d.ca.undated+d.ny.undated} orders have no usable PO date and are excluded from this period. Quantities are shown as written by the supplier. Pricing pending means the order has no price yet.</p>`) : '') + '</section>' +
-    `<h2 class="wkSectionTitle">By state <span>Expand for balances, recent payments & orders</span></h2>` +
+    `<h2 class="wkSectionTitle" id="wkStates" tabindex="-1">By state <span>Expand for balances, recent payments & orders</span></h2>` +
     stateCard('California',d.ca,'ca') + stateCard('New York',d.ny,'ny') +
     disclosure('notes','wkNotes',`${chevron}<span>How to read this report</span>`,
-      `<p>Open balance = due + not yet due, as invoiced by the supplier, with tracker payment adjustments. Unpaid invoices stay in the open balance even when their due date is in the future or the goods are still in transit. These are current balances, not balances at the end of the selected period.</p><p>The date range only filters new orders, using the date in each PO number. Orders without a usable PO date are excluded; unpriced orders stay marked as pricing pending.</p><p>Vape and non-vape are separate accounts in each state. Payments count toward non-vape unless attributed to vapes in the tracker. Payment timing allocates account credits oldest first; account adjustments are shown separately from invoice rows.</p>`) + '</div>';
+      `<p>Open balance = due + not yet due, as invoiced by the supplier, with tracker payment adjustments. Unpaid invoices stay in the open balance even when their due date is in the future or the goods are still in transit. These are current balances, not balances at the end of the selected period.</p><p>The date range only filters new orders, using the date in each PO number. Orders without a usable PO date are excluded. Active unpriced orders are estimated from up to five recent comparable product prices in the same state, at quantities within three times the order size. Similar designs can cost different amounts. Freight and duty are extra. When the supplier adds a value, its value replaces the estimate on refresh. Orders without a reliable match stay marked as pricing pending.</p><p>Vape and non-vape are separate accounts in each state. Payments count toward non-vape unless attributed to vapes in the tracker. Payment timing allocates account credits oldest first; account adjustments are shown separately from invoice rows.</p>`) + '</div>';
   bindSubNav(cardsEl);
   bindRecentPayments(cardsEl);
   cardsEl.querySelectorAll('[data-wkdetail]').forEach(el=>el.addEventListener('toggle',()=>{
@@ -1836,6 +1971,10 @@ function renderWeekly(){
   }));
   cardsEl.querySelectorAll('[data-wkmetric]').forEach(el=>el.addEventListener('click',()=>{
     const key=el.dataset.wkmetric;
+    if(key==='forecast'){
+      for(const k of ['ca','ny']) if(d[k].forecast.n){state.wkOpen.add(k);state.wkOpen.add(`${k}|estimates`);}
+      render(); $('#wkStates').focus({preventScroll:true}); $('#wkStates').scrollIntoView({block:'start'}); return;
+    }
     if(key==='new'){ $('#wkPurchasesTitle').focus({preventScroll:true}); $('#wkPurchases').scrollIntoView({block:'center'}); return; }
     state.wkMetric=state.wkMetric===key?null:key; render();
     cardsEl.querySelector(`[data-wkmetric="${key}"]`).focus({preventScroll:true});
