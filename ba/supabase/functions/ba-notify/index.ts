@@ -1,5 +1,5 @@
 // ba-notify: outbound email for the BA app. Two jobs, both server-triggered:
-//   job:'reminder'  — cron-driven. At 11am America/Los_Angeles the day after a pay
+//   job:'reminder'  — cron-driven. At 9am America/Los_Angeles the day after a pay
 //                     period ends, email every active BA who hasn't submitted.
 //   job:'submitted' — DB-trigger-driven. The moment a BA's period flips to
 //                     'submitted', email the admin (gianni@wizardtrees.com).
@@ -167,9 +167,11 @@ Deno.serve(async (req) => {
     const testTo = body.test_to as string | undefined; // divert real sends to one address
 
     if (job === "reminder") {
-      const force = body.force === true;    // bypass the 11am/once guards for testing
+      const force = body.force === true;    // bypass the 9am/once guards for testing
       const { date, hour } = laParts();
-      if (!force && hour !== 11) return json({ ok: true, skipped: `not 11am LA (hour ${hour})` });
+      // 9am LA (moved from 11am, 2026-09-12). The cron fires at 16:00 and 17:00 UTC so one of
+      // the two lands on 9am local whichever side of DST we're on; this guard picks it.
+      if (!force && hour !== 9) return json({ ok: true, skipped: `not 9am LA (hour ${hour})` });
       // period that ended "yesterday" in LA (force+ended_on lets a test point at a past period)
       const endedOn = (force && typeof body.ended_on === "string") ? body.ended_on : addDaysISO(date, -1);
       const { data: periods } = await db.from("pay_periods").select("*").eq("end_date", endedOn).limit(1);
