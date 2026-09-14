@@ -1674,8 +1674,18 @@ function jsonp(){
 }
 // Apps Script flakes a few % of the time (HTML error page / transient 5xx) — retry before
 // giving up so a single bad response doesn't strand the app on "offline".
-async function jsonpRetry(tries){ tries=tries||3; let last;
-  for(let i=0;i<tries;i++){ try{ return await jsonp(); }catch(e){ last=e; await new Promise(r=>setTimeout(r,1200)); } }
+//
+// The retries have to be SPREAD OUT, not just repeated. Three tries 1.2s apart all landed inside
+// one ~10s Google blip and failed together: 5 publishes aborted on 2026-09-13 alone ("could not
+// load the existing team report to merge into"). A fast failure (HTML page, network) now waits
+// 2s, 6s, 12s, 20s between tries, ~45s of cover. A 50s TIMEOUT is different — two of those in a
+// row is an outage, not a blip, so stop there rather than stack 250s the publisher can't wait for.
+async function jsonpRetry(tries){ tries=tries||5; let last, slow=0; const gaps=[2000,6000,12000,20000];
+  for(let i=0;i<tries;i++){
+    try{ return await jsonp(); }
+    catch(e){ last=e;
+      if(e && e.message==='timeout' && ++slow>=2) break;
+      if(i<tries-1) await new Promise(r=>setTimeout(r,gaps[Math.min(i,gaps.length-1)])); } }
   throw last;
 }
 
@@ -1895,7 +1905,7 @@ async function loadShared(){
   try{ const c=JSON.parse(localStorage.getItem(SHARED_CACHE_KEY)||'null'); if(c&&c.data) hadCache=applyShared(c); }catch(e){}
   if(!hadCache) renderShareBar('loading');
   try{
-    const d=await jsonpRetry(3);
+    const d=await jsonpRetry();
     if(applyShared(d)){ try{ localStorage.setItem(SHARED_CACHE_KEY, JSON.stringify({uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy,data:d.data})); }catch(e){} }
   }catch(e){ if(!hadCache) renderShareBar('error');
     // A failed load must NOT strand the viewer on the cached payload until they manually
@@ -1923,7 +1933,7 @@ async function publishToTeam(){
     // publish-time fetches) silently wiped the 6/22 + 6/29 2026 weekly snapshots. Abort instead —
     // the hourly automation simply retries next run. (A missing/first-ever payload does NOT
     // throw: the script answers with an empty object, so first publish still works.)
-    try{ const d0=await jsonpRetry(3); cur=normShared(d0 && d0.data); }
+    try{ const d0=await jsonpRetry(); cur=normShared(d0 && d0.data); }
     catch(e){ throw new Error('mergebase'); }
     // Slim payload for reliable transfer: drop heavy drill-down detail (line items,
     // per-format/credit breakdowns). Summary numbers, aging, discounts/credits, brand rollup all survive.
