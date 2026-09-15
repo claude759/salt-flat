@@ -1658,7 +1658,9 @@ function jsonp(){
     // (a deleted name throws an uncaught "__arcb… is not defined", which broke the automated
     // publish Jul 3 2026). Leave a swallow-it stub, clean up minutes later.
     const done=()=>{ settled=true; window[cb]=function(){}; setTimeout(()=>{ try{delete window[cb];}catch(e){} },300000); if(s&&s.parentNode)s.remove(); };
-    window[cb]=d=>{ if(settled) return; res(d); done(); };
+    // v2 of the backend answers its OWN failures as a callback ({ok:false, transient:true}) instead
+    // of an HTML page a <script> tag cannot read: reject, so jsonpRetry treats it as a fast failure.
+    window[cb]=d=>{ if(settled) return; if(d && d.ok===false){ rej(new Error('server: '+(d.error||'error'))); done(); return; } res(d); done(); };
     s=document.createElement('script');
     s.src=REPORTS_SCRIPT_URL+(REPORTS_SCRIPT_URL.includes('?')?'&':'?')+'callback='+cb+'&t='+Date.now();
     s.onerror=()=>{ if(!settled){ rej(new Error('network')); done(); } };
@@ -1906,15 +1908,32 @@ async function loadShared(){
   if(!hadCache) renderShareBar('loading');
   try{
     const d=await jsonpRetry();
+    loadShared._miss=0;
+    if(loadShared._t){ clearTimeout(loadShared._t); loadShared._t=null; }   // a retry armed by an earlier miss is moot now
     if(applyShared(d)){ try{ localStorage.setItem(SHARED_CACHE_KEY, JSON.stringify({uploadedAt:d.uploadedAt,uploadedBy:d.uploadedBy,data:d.data})); }catch(e){} }
   }catch(e){ if(!hadCache) renderShareBar('error');
     // A failed load must NOT strand the viewer on the cached payload until they manually
     // reload (that's how the BA Report's new columns sat empty on 2026-08-12: the payload
     // outgrew the old timeout, every retry died, and the pre-upgrade cache kept painting).
     // Keep retrying quietly; the timer stops the first time a fetch succeeds.
-    if(!loadShared._t) loadShared._t=setTimeout(()=>{ loadShared._t=null; loadShared(); },90000);
+    scheduleReload();
   }
 }
+// The quiet retry used to fire every 90s, five tries each, in EVERY open tab. During a backend
+// wobble a dozen forgotten background tabs kept it saturated, which is how 10-second blips became
+// the 20-30 minute outages of 9/12-9/15 (Google's "Sorry, unable to open the file at this time"
+// page, HTTP 404 after ~40s: the reads were too slow, and our own retries were the load). Now the
+// gap doubles per miss (90s, 3m, 6m, 12m, capped at 15m) with 25% jitter so tabs drift apart,
+// and a hidden tab waits until someone looks at it again instead of retrying from the background.
+function reloadGap(miss){ const base=Math.min(90000*Math.pow(2,Math.max(0,miss-1)),900000); return Math.round(base*(0.75+Math.random()*0.5)); }
+function scheduleReload(){
+  if(loadShared._t) return;
+  const miss=loadShared._miss=(loadShared._miss||0)+1;
+  loadShared._t=setTimeout(()=>{ loadShared._t=null;
+    if(document.hidden){ loadShared._wake=true; return; }   // resumed by the visibilitychange listener
+    loadShared(); },reloadGap(miss));
+}
+if(document.addEventListener) document.addEventListener('visibilitychange',()=>{ if(!document.hidden && loadShared._wake){ loadShared._wake=false; loadShared(); } });
 
 async function publishToTeam(){
   if(isPlaceholder()){ alert('Team sharing isn\'t set up yet. See apps-script-reports.gs for the one-time setup.'); return; }
