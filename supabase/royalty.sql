@@ -81,6 +81,21 @@ end $$;
 revoke all on function public.royalty_read(text) from public;
 grant execute on function public.royalty_read(text) to anon, authenticated;
 
+-- Cheap freshness probe for pollers: rev + generated_at only (a few bytes instead of the ~150 KB
+-- snapshot), so an open tab polling every 5 minutes and the watchdog every 30 minutes cost no
+-- egress until something actually changed. Same key rules as royalty_read.
+create or replace function public.royalty_rev(p_key text)
+returns jsonb language plpgsql security definer set search_path = public stable as $$
+declare s text; snap public.royalty_snapshot%rowtype;
+begin
+  s := public.royalty_scope_of(p_key);
+  if s is null or s = 'producer' then raise exception 'bad key'; end if;
+  select * into snap from public.royalty_snapshot where id = 'main';
+  return jsonb_build_object('ok', true, 'scope', s, 'rev', snap.rev, 'generated_at', snap.generated_at);
+end $$;
+revoke all on function public.royalty_rev(text) from public;
+grant execute on function public.royalty_rev(text) to anon, authenticated;
+
 -- Producer write: replaces data wholesale (every run is a full QBO re-pull, so no rev merge).
 -- Producer-ONLY: the admin key lives in a browser's localStorage, so it must never be able to
 -- rewrite what every viewer sees; the producer token never enters a browser.
