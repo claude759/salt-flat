@@ -7316,7 +7316,8 @@ function renderBaReport(){
     const col=a<=30?'var(--green)':a<=60?'var(--text)':'var(--orange)';
     return `<td class="num${cls?' '+cls:''}" title="${a} day${a!==1?'s':''} ago${what?' — click for '+what:''}"><span style="color:${col}">${fmtD(ms)}</span></td>`; };
   const cols=[['tier','Tier',0],['name','Account',0],...(NY?[]:[['source','Source',0]]),['rev',`Revenue (${months}mo)`,1],['last','Last order',1],[NY?'baVisits':'visitsAll','Visits',1],['lastEdu','Last EDU',1],['lastPad','Last PAD',1],['lastVisit','Last store visit',1],...(NY?[]:[['up','Upcoming',1]]),['pis','WT Inventory',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
-  const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
+  const pisStale=pistilStale(rows,'pis')||pistilStale(rows,'pos');
+  const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}"${key==='pis'&&pisStale?' title="Pistil data is stale: the daily send has not arrived (see the note under the table)" style="color:var(--red)"':''}>${lbl}${key==='pis'&&pisStale?' ⚠':''}</th>`).join('');
   const body=rows.map(r=>{
     const rk=baRowKey(r.name);
     const multiStore=(r.pis&&r.pis.stores.length>1)||(r.pos&&r.pos.stores.length>1);
@@ -7362,13 +7363,29 @@ function renderBaReport(){
   thSortMark(wrap,baSort.key,baSort.dir);
   note.innerHTML=baRepNote(view,months,unmatched);   // note stats over the FULL view — a search box filter must not change coverage numbers
 }
+// Pistil's two sends are DAILY, so a report date two or more calendar days old means the send did not
+// arrive (2026-09-16: Pistil moved to "Pistil Next" and the old schedules died; the BA Report kept
+// showing 9/15 shelf data under a share bar that said "live"). The page-level "updated N min ago" is the
+// hourly publish, not this feed, so the age has to be stated next to the data it applies to. The
+// report date (the mail's send date) is the honest clock; pistilAsOf is the pipeline's last fetch.
+function pistilStaleTag(rd){
+  if(!rd) return '';
+  const today=new Date(new Date().toLocaleDateString('en-US',{timeZone:'America/Los_Angeles'})).getTime();
+  const days=Math.round((today-new Date(rd+'T00:00:00').getTime())/864e5);
+  if(!(days>=2)) return '';
+  return ` <span style="color:var(--red);font-weight:700">STALE: this Pistil report is ${days} days old, the daily send has not arrived since ${rd}</span>`;
+}
+function pistilStale(rows,key){
+  const rd=rows.filter(r=>r[key]).map(r=>r[key].rd).sort().pop();
+  return !!pistilStaleTag(rd);
+}
 function baRepNote(rows,months,unmatched){
   if(APP_STATE==='NY'){
     const withEdu=rows.filter(r=>r.lastEdu).length, withPad=rows.filter(r=>r.lastPad).length,
           withVis=rows.filter(r=>r.baVisits).length, withPos=rows.filter(r=>r.pos).length;
     const posRd=rows.filter(r=>r.pos).map(r=>r.pos.rd).sort().pop();
     let s2=`<b>BA Report — New York</b> — the Customer Tiers accounts (same tiers, thresholds and ${months}-month window, LeafLink revenue) with the field team's columns. <b>Visits, Last EDU, Last PAD and Last store visit all come from the BA field app</b> — New York has no schedule workbook, so what the BA logged (activity kinds “Education talk” / “Demo / PAD”) is the record; ${withVis} account${withVis!==1?'s have':' has'} a logged visit, ${withPad} a demo/PAD, ${withEdu} an education talk. There is deliberately <b>no Upcoming column</b>: no NY scheduling source exists yet — the BA app's schedule tasks are CA-only and carry no state, so an Upcoming column here could only ever be blank.`;
-    if(withPos) s2+=` <b>WT Inventory</b> = TRUE POS units on hand from Pistil's Inventory Report (report of ${posRd||'—'}${PISTIL_POS_ASOF?`, pulled ${new Date(PISTIL_POS_ASOF).toLocaleDateString()}`:''}) — NY is where Pistil's POS coverage lives, so these are real counts, not menu inference; ${withPos} of ${rows.length} accounts matched a POS-connected store.`;
+    if(withPos) s2+=` <b>WT Inventory</b> = TRUE POS units on hand from Pistil's Inventory Report (report of ${posRd||'—'}${PISTIL_POS_ASOF?`, pulled ${new Date(PISTIL_POS_ASOF).toLocaleDateString()}`:''})${pistilStaleTag(posRd)} — NY is where Pistil's POS coverage lives, so these are real counts, not menu inference; ${withPos} of ${rows.length} accounts matched a POS-connected store.`;
     else s2+=` <span style="color:var(--orange)"><b>WT Inventory:</b> no Pistil POS rows matched these accounts yet.</span>`;
     s2+=` <b>AR Outstanding / Overdue</b> come from the distributor recon plus un-invoiced LeafLink orders — the same figures as the NY Accounts Receivable page. Click any cell for its detail.`;
     return s2;
@@ -7382,13 +7399,13 @@ function baRepNote(rows,months,unmatched){
   const matched=new Set(rows.filter(r=>r.pis).map(r=>baRowKey(r.name))).size, total=matched+(unmatched||[]).length;
   if(total){
     const rd=rows.filter(r=>r.pis).map(r=>r.pis.rd).concat((unmatched||[]).map(e=>e.v.rd)).sort().pop();
-    s+=` <b>WT Inventory</b> = Pistil's Stock Report menu crawl (report of ${rd||'—'}${PISTIL_ASOF?`, pulled ${new Date(PISTIL_ASOF).toLocaleDateString()}`:''}): WT SKUs seen on each store's menu, in stock vs out; unit counts only where the menu exposes them. Store names are matched to accounts exact-first, then with filler words stripped, then by unique prefix — ambiguous names are left unmatched, never guessed. ${matched} of ${total} Pistil-tracked CA stores/chains matched accounts on this list.`;
+    s+=` <b>WT Inventory</b> = Pistil's Stock Report menu crawl (report of ${rd||'—'}${PISTIL_ASOF?`, pulled ${new Date(PISTIL_ASOF).toLocaleDateString()}`:''})${pistilStaleTag(rd)}: WT SKUs seen on each store's menu, in stock vs out; unit counts only where the menu exposes them. Store names are matched to accounts exact-first, then with filler words stripped, then by unique prefix — ambiguous names are left unmatched, never guessed. ${matched} of ${total} Pistil-tracked CA stores/chains matched accounts on this list.`;
     if((unmatched||[]).length){ const names=unmatched.slice(0,12).map(e=>esc(e.v.stores.map(g=>g.s).join(' + ')));
       s+=` <span style="color:var(--orange)"><b>Tracked by Pistil but not matched above:</b> ${names.join(', ')}${unmatched.length>12?` +${unmatched.length-12} more`:''}</span> — no sales in this window, or a store↔account name mismatch.`; }
   } else if(!rows.some(r=>r.pos)) s+=` <span style="color:var(--orange)"><b>WT Inventory:</b> no Pistil data loaded yet — the column shows “—”.</span>`;
   const posN=rows.filter(r=>r.pos).length;
   if(posN){ const posRd=rows.filter(r=>r.pos).map(r=>r.pos.rd).sort().pop();
-    s+=` <b>${posN}</b> account${posN!==1?'s':''} show${posN===1?'s':''} a bold “N units” figure — TRUE POS on-hand from Pistil-connected stores (report of ${posRd||'—'}${PISTIL_POS_ASOF?`, pulled ${new Date(PISTIL_POS_ASOF).toLocaleDateString()}`:''}); everyone else shows menu-crawl status only (menus rarely expose counts).`; }
+    s+=` <b>${posN}</b> account${posN!==1?'s':''} show${posN===1?'s':''} a bold “N units” figure — TRUE POS on-hand from Pistil-connected stores (report of ${posRd||'—'}${PISTIL_POS_ASOF?`, pulled ${new Date(PISTIL_POS_ASOF).toLocaleDateString()}`:''})${pistilStaleTag(posRd)}; everyone else shows menu-crawl status only (menus rarely expose counts).`; }
   s+=` Click an empty WT Inventory cell to see WHY it's empty (likely name mismatch vs not tracked by Pistil); 36 store↔account name bridges are already hand-verified by address.`;
   return s;
 }
