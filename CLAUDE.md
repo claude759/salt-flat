@@ -8,8 +8,10 @@ person asking for a change should never have to touch git. These rules keep that
 
 ## Every change, every time
 
-1. **Pull first.** Run `git pull --rebase origin main` before reading or editing anything. Someone
+1. **Pull first.** Run `git pull --rebase --autostash origin main` before reading or editing anything. Someone
    else may have pushed since your last change, and editing a stale copy is how work gets lost.
+   `--autostash` sets aside unsaved edits already in the folder (other people's work in progress)
+   and puts them back afterwards; never discard them to make a pull succeed.
 2. **Make only the requested change.** Edit only the files the request needs.
 3. **Check it.** For the NY Packaging app run `node tests/ny-check.mjs`. If anything fails, fix it
    before pushing. Never push a failing check.
@@ -17,7 +19,7 @@ person asking for a change should never have to touch git. These rules keep that
    this folder holds other people's unfinished work that must not ride along. Write the commit
    message as one plain sentence about what changed for the user.
 5. **Push.** `git push origin main`. If it is rejected because someone pushed first, run
-   `git pull --rebase origin main`, run the check again, and push again. Never force-push. Never
+   `git pull --rebase --autostash origin main`, run the check again, and push again. Never force-push. Never
    rewrite, reset or revert someone else's commit unless the person you are working for asks.
 6. **Confirm it is live.** GitHub Pages takes about a minute. Fetch the live page and look for a
    piece of text from your change before saying it is done.
