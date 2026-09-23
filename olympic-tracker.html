@@ -319,7 +319,7 @@ function normalize(s){
       units:normNum(o.units)??0,price:normNum(o.price),total:normNum(o.total),
       discount:normNum(o.discount),credit:normNum(o.credit),remitDate:normStr(o.remitDate),
       payStatus:normStr(o.payStatus).toUpperCase(),paidAt:normStr(o.paidAt),
-      status:normStr(o.status).toUpperCase(),note:normStr(o.note)});
+      status:normStr(o.status).toUpperCase(),note:normStr(o.note),sku:normStr(o.sku)});
   }
   if(s.nabisOrders&&typeof s.nabisOrders==='object'&&!Array.isArray(s.nabisOrders)){ // whole-order context from the feed
     for(const [k,v] of Object.entries(s.nabisOrders)){
@@ -474,7 +474,9 @@ function settleFor(pkgId){
   return state.settle[pkgId];
 }
 const isDelivered=o=>!o.status||/^DELIVERED/.test(o.status); // DELIVERED_WITH_EDITS counts; manual rows have no status
-const isSampleLine=o=>o.note==='sample';
+const isPouch=o=>o.note==='pouch'||/budtender sample/i.test(o.sku||''); // 1.5g sample pouches: never counted as units sold
+const isFree=o=>o.note==='free'||(o.note==='sample'&&!isPouch(o));     // promo jars Nabis flags Is Sample: delivered, but free
+const isSampleLine=isPouch;
 function runGrams(r){return (r.units||0)*(r.unitG||0)}
 function matTotal(r){return (r.mats||[]).reduce((a,m)=>a+(m.qty||0)*(m.unit||0),0)}
 function laborTotal(r){return (r.labs||[]).reduce((a,l)=>a+(l.qty||0)*(l.unit||0),0)}
@@ -497,7 +499,9 @@ function calcPkg(p){
   const discounts=auto?sold.reduce((a,o)=>a+(o.discount||0),0):(s.discounts||0);
   const credits=auto?sold.reduce((a,o)=>a+(o.credit||0),0):(s.credits||0);
   const pipelineGross=pipeline.reduce((a,o)=>a+orderTotal(o),0);
-  const unitsSold=sold.filter(o=>!isSampleLine(o)).reduce((a,o)=>a+(o.units||0),0), unitsPipeline=pipeline.filter(o=>!isSampleLine(o)).reduce((a,o)=>a+(o.units||0),0);
+  const unitsSold=sold.filter(o=>!isPouch(o)).reduce((a,o)=>a+(o.units||0),0), unitsPipeline=pipeline.filter(o=>!isPouch(o)).reduce((a,o)=>a+(o.units||0),0);
+  const unitsFree=sold.filter(o=>!isPouch(o)&&isFree(o)).reduce((a,o)=>a+(o.units||0),0);
+  const pouchesOut=orders.filter(o=>isPouch(o)&&isDelivered(o)).reduce((a,o)=>a+(o.units||0),0);
   const retailers=new Set(orders.filter(o=>!isSampleLine(o)).map(o=>o.customer.trim().toLowerCase()).filter(Boolean)).size;
   // Nabis fees: from the biweekly Remittance Detail statements, per order, spread over lines by share of the order subtotal
   const FEE_KEYS=['distribution','fuel','caseBreak','labeling','other','makeGood'];
@@ -526,9 +530,10 @@ function calcPkg(p){
   const shipLines=(state.shipments||[]).flatMap(sh=>sh.lines.filter(l=>l.pkgId===p.id).map(l=>({...l,ship:sh})));
   const transferValue=shipLines.reduce((a,l)=>a+(l.total||0),0);
   const transferUnits=shipLines.reduce((a,l)=>a+(l.units||0),0);
+  const transferJars=shipLines.filter(l=>!/budtender sample/i.test(l.product||'')).reduce((a,l)=>a+(l.units||0),0);
   return {packaged,remaining:p.grams-packaged,labor,materials,unitsSellable,unitsSample,unitsToNabis,samplesToNabis,
-    orders,sold,pipeline,auto,gross,discounts,credits,pipelineGross,unitsSold,unitsPipeline,retailers,
-    deductions,netSales,net,netRaw,owedRaw,unrecovered,collected,remitted,paidNotRemitted,remitPending,shipLines,transferValue,transferUnits,settle:s,runs:rs,
+    orders,sold,pipeline,auto,gross,discounts,credits,pipelineGross,unitsSold,unitsPipeline,unitsFree,pouchesOut,retailers,
+    deductions,netSales,net,netRaw,owedRaw,unrecovered,collected,remitted,paidNotRemitted,remitPending,shipLines,transferValue,transferUnits,transferJars,settle:s,runs:rs,
     nabisFees,feesAuto,feeParts,feeRate,feeEstimate,lineFee};
 }
 function totals(){
@@ -610,7 +615,7 @@ function flowHTML(t){
     ${(()=>{const r=t.packages.length+2, T=esc(t.id);
       const cell=(col,lbl,key,color)=>`<div class="ftot" style="grid-row:${r};grid-column:${col}"><span>${lbl}</span><b id="ft-${T}-${key}" style="color:${color}"></b></div>`;
       return cell(1,'Total bulk','bulk','var(--olyDot)')+cell(3,'Packaging cost','pack','var(--filDot)')+cell(5,'Transfer value','nabis','var(--nabDot)')
-        +cell(7,'Sold to retailers','retail','var(--retDot)')+cell(9,'Remitted','remit','var(--filDot)').replace('</b></div>',`</b></div><div class="ftot" style="grid-row:${r+1};grid-column:9;border-top:none;padding-top:0"><span>Collected &minus; Nabis fees</span><b id="ft-${T}-fees" style="color:var(--muted);font-size:12px"></b></div>`)+cell(11,'Owed to Olympic','settle','var(--olyDot)');})()}
+        +cell(7,'Sold to retailers','retail','var(--retDot)')+cell(9,'Remitted','remit','var(--filDot)').replace('</b></div>',`</b></div><div class="ftot" style="grid-row:${r+1};grid-column:9;border-top:none;padding-top:0"><span>Collected</span><b id="ft-${T}-coll" style="color:var(--muted);font-size:12px;white-space:nowrap"></b></div><div class="ftot" style="grid-row:${r+2};grid-column:9;border-top:none;padding-top:0"><span>Nabis fees</span><b id="ft-${T}-fees" style="color:var(--muted);font-size:12px;white-space:nowrap"></b></div>`)+cell(11,'Owed to Olympic','settle','var(--olyDot)');})()}
   </div></div>`;
 }
 
@@ -764,7 +769,7 @@ function retailBody(p){
     }
     return row;
   }).join('');
-  return `<div class="rcalc" style="margin:4px 0 6px"><b>${cnt(c.retailers)}</b> retailers &middot; delivered <b>${cnt(c.unitsSold)}</b> units / <b>${money(c.gross)}</b> &middot; scheduled or unscheduled ${cnt(c.unitsPipeline)} units / ${money(c.pipelineGross)} (not counted as sales until delivered). Click an order to see the whole Nabis order with the Olympic lines highlighted.</div>
+  return `<div class="rcalc" style="margin:4px 0 6px"><b>${cnt(c.retailers)}</b> retailers &middot; delivered <b>${cnt(c.unitsSold)}</b>${c.transferJars?` of ${cnt(c.transferJars)}`:''} jars${c.unitsFree?` (${cnt(c.unitsFree)} free promo)`:''} / <b>${money(c.gross)}</b>${c.pouchesOut?` &middot; ${cnt(c.pouchesOut)} sample pouches handed out`:''} &middot; scheduled or unscheduled ${cnt(c.unitsPipeline)} units / ${money(c.pipelineGross)} (not counted as sales until delivered). Click an order to see the whole Nabis order with the Olympic lines highlighted.</div>
     <div class="otable"><table><thead><tr><th>Order #</th><th>Date</th><th style="text-align:left">Customer</th><th>Status</th><th>Units</th><th>$/u</th><th>Total</th><th>Disc</th><th>Credit</th><th>Src</th><th></th></tr></thead>
       <tbody>${html||`<tr><td colspan="11" style="color:var(--muted)">No orders yet${p.nabisBatches?'':' - add batch codes on the strain row to enable the auto feed'}</td></tr>`}</tbody>
       <tfoot><tr><th>Delivered</th><th></th><th></th><th></th><th id="ou-${p.id}"></th><th></th><th id="og-${p.id}"></th><th id="od-${p.id}"></th><th id="oc-${p.id}"></th><th></th><th></th></tr></tfoot></table></div>
@@ -836,7 +841,7 @@ function refreshCalc(){
     <div class="hero"><div class="lbl">Units to Nabis</div><div class="val">${cnt(t.unitsToNabis)}</div><div class="note">+ ${cnt(t.samplesToNabis)} samples${t.unitsToNabis!==t.unitsSellable?` &middot; ${cnt(t.unitsSellable)} packaged`:''}</div></div>
     <div class="hero"><div class="lbl">Packaging cost</div><div class="val">${money(t.labor+t.materials)}</div><div class="note">${money(t.labor)} labor &middot; ${money(t.materials)} materials</div></div>
     <div class="hero"><div class="lbl">Remitted to Filifera</div><div class="val">${money(t.remitted)}</div><div class="note">${t.collected>0.005?`${money(t.collected)} collected &minus; ${money(t.nabisFees)} Nabis fees`:'nothing paid out by Nabis yet'}</div></div>
-    <div class="hero"><div class="lbl">Sold to retailers</div><div class="val">${money(t.gross)}</div><div class="note">${cnt(t.unitsSold)} units delivered${t.pipelineGross?` &middot; ${money(t.pipelineGross)} scheduled`:''}</div></div>
+    <div class="hero"><div class="lbl">Sold to retailers</div><div class="val">${money(t.gross)}</div><div class="note">${cnt(t.unitsSold)} jars delivered${t.pipelineGross?` &middot; ${money(t.pipelineGross)} on order`:''}</div></div>
     <div class="hero"><div class="lbl">Owed to Olympic</div><div class="val">${money(t.net)}</div><div class="note">${money(t.remitted)} remitted (after Nabis fees) &minus; packaging</div></div>
     <div class="hero"><div class="lbl">Paid so far</div><div class="val">${money(t.paid)}</div><div class="note">Balance: <b class="${t.balance>0.005?'neg':'pos'}">${money(t.balance)}</b></div></div>`;
 
@@ -852,9 +857,9 @@ function refreshCalc(){
           return [...m].map(([k,u])=>`<b>${cnt(u)}</b> ${k}`).join(' &middot; ');})()} &middot; ${money(c.labor+c.materials)}`
       :'none yet';
     const ns=document.getElementById('nabiss-'+p.id);
-    if(ns) ns.innerHTML=`${cnt(c.transferUnits||(c.unitsToNabis+c.samplesToNabis))} received${st?` &middot; ${cnt(st.count)} on hand`:''} &middot; <b>${money(c.transferValue)}</b>`;
+    if(ns) ns.innerHTML=`${cnt(c.transferUnits||(c.unitsToNabis+c.samplesToNabis))} received${st?` &middot; ${cnt(st.count)} on hand (${cnt(st.avail)} unallocated)`:''} &middot; <b>${money(c.transferValue)}</b>`;
     const rts=document.getElementById('retails-'+p.id);
-    if(rts) rts.innerHTML=`${cnt(c.retailers)} retailers &middot; ${cnt(c.unitsSold)} sold <b>${money(c.gross)}</b>${c.unitsPipeline?` &middot; ${cnt(c.unitsPipeline)} pending`:''}`;
+    if(rts) rts.innerHTML=`${cnt(c.retailers)} retailers &middot; ${cnt(c.unitsSold)}${c.transferJars?` of ${cnt(c.transferJars)}`:''} delivered${c.unitsPipeline?` &middot; ${cnt(c.unitsPipeline)} on order`:''} &middot; <b>${money(c.gross)}</b>`;
     const rsum=document.getElementById('remits-'+p.id);
     if(rsum) rsum.innerHTML=`<b>${money(c.remitted)}</b> remitted`;
     const rt=document.getElementById('rt-'+p.id);
@@ -912,7 +917,8 @@ function refreshCalc(){
     for(const p of tr.packages){const c=calcPkg(p);a.bulk+=p.grams;a.pack+=c.labor+c.materials;a.nabis+=c.transferValue;a.retail+=c.gross;a.remit+=c.remitted;a.coll=(a.coll||0)+c.collected;a.fees=(a.fees||0)+c.nabisFees;a.settle+=c.net;}
     f('bulk').textContent=g1(a.bulk)+' g';
     for(const k of ['pack','nabis','retail','remit','settle']) f(k).textContent=money(a[k]);
-    if(f('fees')) f('fees').textContent=money(a.coll||0)+' − '+money(a.fees||0);
+    if(f('coll')) f('coll').textContent=money(a.coll||0);
+    if(f('fees')) f('fees').textContent='−'+money(a.fees||0);
   }
   for(const tr of state.transfers){ // collapsed-section one-line summary
     const el=document.getElementById('ms-'+tr.id); if(!el) continue;
