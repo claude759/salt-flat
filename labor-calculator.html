@@ -1112,6 +1112,14 @@ function rateForName(emp, last, first, workDate){
   if (emp && emp.default_rate != null) return +emp.default_rate;
   return /norma/i.test((last||'')+' '+(first||'')) ? 25 : 20;
 }
+// "Gusto distro" people (roster checkbox): their DISTRO hours are paid through Gusto. They stay on their own
+// crew (Lucero is Norma's Team for deleaf), but their distro rows leave Norma's views and make up the
+// Gusto Distro view, which overlaps Justin's Team (Drea, Thanh, Barry are Gusto packagers too).
+function isGustoDistro(s){
+  if ((s.category || 'distro') === 'harvest') return false;
+  const emp = s.roster_id ? roster.find(r => r.id === s.roster_id) : rosterMatch(s.last, s.first);
+  return !!(emp && emp.gusto_distro);
+}
 // Everyone is Norma's Team except Thanh (Nguyen) and Suong (Pham) = Justin's Team
 function teamForName(emp, last, first){
   if (emp && emp.team) return emp.team;
@@ -1283,7 +1291,7 @@ function renderRoster(){
     + 'Deactivated people drop out of the pickers but their saved hours stay.</div>'
     + '<div class="scroll" style="max-height:60vh"><table id="rosterTable"><thead><tr>'
     + '<th style="width:16%">Last</th><th style="width:16%">First</th><th style="width:14%">Team</th><th style="width:12%">Company</th>'
-    + '<th style="width:9%">Rate $/hr</th><th>Aliases</th><th style="width:52px;text-align:center">Active</th><th style="width:36px"></th>'
+    + '<th style="width:9%">Rate $/hr</th><th>Aliases</th><th style="width:64px;text-align:center" title="Distro hours are paid through Gusto: they show in the Gusto Distro view and drop out of Norma&#39;s Team views (deleaf stays)">Gusto distro</th><th style="width:52px;text-align:center">Active</th><th style="width:36px"></th>'
     + '</tr></thead><tbody>'
     + people.map(p => '<tr data-id="' + p.id + '" class="' + (p.active === false ? 'inactive' : '') + '">'
       + '<td><input data-f="last" value="' + esc(p.last || '') + '"></td>'
@@ -1292,13 +1300,14 @@ function renderRoster(){
       + '<td><select data-f="default_company">' + coOpt(p.default_company) + '</select></td>'
       + '<td><input data-f="default_rate" type="number" step="0.5" min="0"' + rateTip(p) + ' value="' + (p.default_rate == null ? '' : p.default_rate) + '"></td>'
       + '<td><input data-f="aliases" value="' + esc((p.aliases || []).join(', ')) + '" placeholder="—"></td>'
+      + '<td style="text-align:center"><input data-f="gusto_distro" type="checkbox"' + (p.gusto_distro ? ' checked' : '') + '></td>'
       + '<td style="text-align:center"><input data-f="active" type="checkbox"' + (p.active !== false ? ' checked' : '') + '></td>'
       + '<td><button class="rowdel" data-f="del" title="Remove from the roster (saved hours keep the name)">✕</button></td></tr>').join('')
     + '</tbody></table></div>'
     + '<div style="margin-top:10px"><button class="btn sm" id="roster-add">+ Add person</button></div></div>';
   box.querySelector('#roster-add').onclick = () => {
     const p = { id: crypto.randomUUID(), _saved: false, last: '', first: '', team: null,
-      default_company: null, default_rate: null, aliases: [], active: true };
+      default_company: null, default_rate: null, aliases: [], active: true, gusto_distro: false };
     roster.push(p);
     // no sync yet — the first keystroke schedules it, so an accidental click
     // never persists a blank person
@@ -1312,6 +1321,7 @@ function renderRoster(){
     const p = roster.find(x => x.id === tr.dataset.id); if (!p) return;
     const f = e.target.dataset.f; if (!f || f === 'del') return;
     if (f === 'active'){ p.active = e.target.checked; tr.classList.toggle('inactive', !p.active); }
+    else if (f === 'gusto_distro') p.gusto_distro = e.target.checked;
     else if (f === 'aliases') p.aliases = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
     else if (f === 'default_rate') p.default_rate = e.target.value === '' ? null : +e.target.value;
     else p[f] = e.target.value;
@@ -1645,9 +1655,15 @@ function renderCompare(){
   }
   let emps = [...byEmp.keys()].sort((a, b) =>
     ((pairsAll.has(b) ? 1 : 0) - (pairsAll.has(a) ? 1 : 0)) || a.localeCompare(b));
-  if (tsState.compareView === 'norma') emps = emps.filter(k => /norma/i.test(teamOfKey.get(k) || ''));
+  // Norma's Team = her crew minus any Gusto-paid distro rows; Gusto Distro = exactly those rows, whoever's crew
+  const isGustoRow = s => isGustoDistro(s) || /gusto/i.test(s.team || '');
+  if (tsState.compareView === 'norma' || tsState.compareView === 'gusto'){
+    const keep = tsState.compareView === 'gusto' ? isGustoRow : (s => !isGustoRow(s));
+    for (const k of emps) byEmp.set(k, byEmp.get(k).filter(keep));
+  }
+  if (tsState.compareView === 'norma') emps = emps.filter(k => /norma/i.test(teamOfKey.get(k) || '') && byEmp.get(k).length);
   else if (tsState.compareView === 'justin') emps = emps.filter(k => /justin/i.test(teamOfKey.get(k) || ''));
-  else if (tsState.compareView === 'gusto') emps = emps.filter(k => /gusto/i.test(teamOfKey.get(k) || ''));
+  else if (tsState.compareView === 'gusto') emps = emps.filter(k => byEmp.get(k).length);
   const catOf = s => (s.category || 'distro') === 'harvest' ? 'harvest' : 'distro';
   const badge = s => '<span class="cbadge ' + catOf(s) + '">' + (catOf(s) === 'harvest' ? 'Harvest/Deleaf' : 'Distro') + '</span>';
   // grand total for exactly what's shown below (view + team + company + date filters all applied)
@@ -1671,7 +1687,7 @@ function renderCompare(){
       + olderPeriods.map(p => '<option value="' + p + '"' + (tsState.comparePreset === p ? ' selected' : '') + '>' + esc(fPeriodFull(p)) + '</option>').join('')
       + '</select>'
     : '';
-  const CMP_VIEWS = [['cards','By person'],['norma',"Norma's Team"],['justin',"Justin's Team"],['gusto','Gusto Team'],['simplified','By Employee Simplified']];
+  const CMP_VIEWS = [['cards','By person'],['norma',"Norma's Team"],['justin',"Justin's Team"],['gusto','Gusto Distro'],['simplified','By Employee Simplified']];
   const viewSeg = '<div class="seg" id="cmp-view">'
     + CMP_VIEWS.map(([k, l]) => '<button data-v="' + k + '" class="' + (tsState.compareView === k ? 'on' : '') + '">' + l + '</button>').join('')
     + '</div>';
@@ -1722,7 +1738,7 @@ function renderCompare(){
     const pairs = (pairsAll.get(k) || []).filter(([a, b]) => visIds.has(a.id) && visIds.has(b.id));
     const empOverlaps = new Set(list.filter(s => overlapIds.has(s.id)).map(s => s.id));
     const rep = list.find(s => s.last && s.first) || list[0];
-    const team = teamOfKey.get(k) || '';
+    const team = tsState.compareView === 'gusto' ? 'Gusto Distro' : (teamOfKey.get(k) || '');
     CMP_CARDS[k] = { name: displayOf.get(k), rows: list, dH, hH, gross, rangeLabel,
       overlapIds: empOverlaps, overlapCount: empOverlaps.size,
       last: rep.last || '', first: rep.first || '', team };
@@ -1864,7 +1880,7 @@ function renderTsViewseg(){
     });
     return;
   }
-  const views = [['log','Log'],['norma',"Norma's Team"],['justin',"Justin's Team"],['gusto','Gusto Team'],['simplified','By Employee Simplified']];
+  const views = [['log','Log'],['norma',"Norma's Team"],['justin',"Justin's Team"],['gusto','Gusto Distro'],['simplified','By Employee Simplified']];
   seg.innerHTML = views.map(([k,l]) => '<button data-v="'+k+'" class="'+(tsState.view===k?'on':'')+'">'+l+'</button>').join('');
   seg.querySelectorAll('button').forEach(b => b.onclick = () => {
     tsState.view = b.dataset.v;
@@ -2081,8 +2097,10 @@ function renderHarvestLog(){
   hydrateTsThumbs();
 }
 function renderTsByTeam(teamKey){
-  const rx = teamKey==='norma' ? /norma/i : teamKey==='gusto' ? /gusto/i : /justin/i;
-  const rows = filteredShifts().filter(s => rx.test(s.team||'')).slice()
+  const inView = teamKey==='gusto' ? (s => isGustoDistro(s) || /gusto/i.test(s.team||''))
+               : teamKey==='norma' ? (s => /norma/i.test(s.team||'') && !isGustoDistro(s))
+               : (s => /justin/i.test(s.team||''));
+  const rows = filteredShifts().filter(inView).slice()
     .sort((a,b) => { const na=tsFullName(a).toLowerCase(), nb=tsFullName(b).toLowerCase();
       if (na<nb) return -1; if (na>nb) return 1;
       const x=a.work_date||'', y=b.work_date||''; return x<y?1:x>y?-1:0; });
@@ -2090,7 +2108,7 @@ function renderTsByTeam(teamKey){
   tsTotbar([['Rows', rows.length], ['Total hours', tsNum(th)], ['Gross pay', tsMoney(tt), 'sum']]);
   const tbl = document.getElementById('tsTable');
   const head = '<thead><tr><th>Date</th><th>Company</th><th>In</th><th>Out</th><th class="num">Break</th><th class="num">Hours</th><th class="num">Rate</th><th class="num">Total</th></tr></thead>';
-  if (!rows.length){ tbl.innerHTML = head+'<tbody><tr class="emptyrow"><td colspan="8">No '+(teamKey==='norma'?'Norma':'Justin')+"'s Team hours for this filter.</td></tr></tbody>"; return; }
+  if (!rows.length){ tbl.innerHTML = head+'<tbody><tr class="emptyrow"><td colspan="8">No '+(teamKey==='norma'?"Norma's Team":teamKey==='gusto'?'Gusto Distro':"Justin's Team")+" hours for this filter.</td></tr></tbody>"; return; }
   // group case-insensitively so a stray PHAM SUONG never splits from Pham Suong
   const groups = []; const byEmp = new Map(); const displayOf = new Map();
   for (const s of rows){
@@ -3488,7 +3506,7 @@ async function doSyncRoster(id){
       team: p.team || null, default_company: p.default_company || null,
       default_rate: p.default_rate == null || p.default_rate === '' ? null : +p.default_rate,
       aliases: (p.aliases && p.aliases.length) ? p.aliases : null,
-      active: p.active !== false };
+      active: p.active !== false, gusto_distro: !!p.gusto_distro };
     // UPDATE, not upsert: if this person was deleted (here or in another tab)
     // while the save was pending, an upsert would quietly resurrect them.
     const doInsert = !p._saved;
