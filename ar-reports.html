@@ -889,11 +889,11 @@
     </div>
 
     <!-- REPORTS — one tab, multiple reports, picked by the toggle below:
-         PAD/EDU Visits (from the field-schedule sheet) · Month over Month · Sales Over Time -->
+         PAD/EDU Visits (field-schedule sheet) + Drop-ins (BA field app) · Month over Month · Sales Over Time -->
     <div id="view-reports" class="hidden">
       <div class="seg-wrap">
         <div class="seg big" id="rep-toggle">
-          <button data-rep="visits">PAD / EDU Visits</button>
+          <button data-rep="visits">PAD / EDU / Drop-in</button>
           <button data-rep="customers">Customers</button>
           <button class="on" data-rep="newcust">New Customers</button>
           <button data-rep="sales">Sales</button>
@@ -6850,62 +6850,155 @@ const visitGroupKey=c=>{ const cn=visitCanon(c); return tierNorm(cn||c); };
 // Drill helper: prefix the store name when it rolled up to a different display account.
 const visitNote=e=>{ const cn=visitCanon(e.c); const pre=(cn&&tierNorm(e.c)!==tierNorm(cn))?`${e.c} — `:''; return pre+(e.note||'—'); };
 let repSort={key:'total',dir:-1};
-function repData(){
+function repWindow(){
   const months=+(($('#rep-months')||{}).value||0);
   const end=new Date(); end.setHours(23,59,59,999);
   let start=null;
   if(months){ start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0); }
+  return {months,start,end};
+}
+// Drop-in visits (asked for 2026-09-25): a day a BA logged a "Store visit" at the account in the
+// BA field app with no PAD or EDU that day, neither logged in the app ("Demo / PAD", "Education
+// talk") nor on the schedule sheet. One per account per day however many BAs went. Live from the
+// ba_visit_detail RPC (same feed as the Tiers visit drill), CA only like the rest of this report;
+// "All time" starts where the BA app's records do.
+const DROPIN_FLOOR='2026-01-01';
+const visitDay=ms=>{ const d=new Date(ms); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+const visitType=e=>e.drop?'Drop-in':(e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU');
+// Its own feed, not ba_visit_detail's: that RPC labels a BA-day with no picked activity "Store
+// visit" (mostly a day with only an expense charged to the store: event supplies, food for a
+// retailer, parking), about 1 drop-in in 6. ba_visit_kinds (supabase/ba-visit-kinds.sql) is the
+// same rows with the kinds exactly as picked. Until it is applied, fall back to ba_visit_detail
+// and say so in the note.
+let DROPIN_RPC='ba_visit_kinds';
+const DROPIN_C=new Map();   // per-window, like BA_VD_C
+function dropinFetch(start,end){
+  const key=visitDay(start.getTime())+'|'+visitDay(end.getTime());
+  let e=DROPIN_C.get(key);
+  if(!e){
+    e={key,rows:null,err:null};
+    DROPIN_C.set(key,e);
+    if(DROPIN_C.size>4) DROPIN_C.delete(DROPIN_C.keys().next().value);
+    const go=rpc=>fetch(`${SUPABASE_URL}/rest/v1/rpc/${rpc}`,{method:'POST',
+      headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({p_from:key.split('|')[0],p_to:key.split('|')[1]})})
+      .then(r=>r.ok?r.json():r.text().then(t=>Promise.reject(Object.assign(new Error('HTTP '+r.status),{status:r.status,body:t}))));
+    go(DROPIN_RPC)
+      .catch(err=>{ if(DROPIN_RPC==='ba_visit_kinds'&&(err.status===404||/PGRST202|Could not find the function/i.test(err.body||''))){ DROPIN_RPC='ba_visit_detail'; return go(DROPIN_RPC); } throw err; })
+      .then(rows=>{ e.rows=rows; if(repMode==='visits') renderRepMode(); })
+      .catch(err=>{ e.err=String(err.message||err); if(repMode==='visits') renderRepMode(); });
+  }
+  return e;
+}
+function repDropIns(start,end){
+  const f=dropinFetch(start||new Date(DROPIN_FLOOR+'T00:00:00'),end);
+  if(!REG_BYKEY && !REG_ERR) loadRegistry();   // in parallel with the visit feed (used below)
+  if(!f.rows) return {evs:[], loading:!f.err, err:f.err};
+  // The schedule sheet is hand-typed ("Herb n joy", "Kush Alley") while the BA app files a visit
+  // under the store's account key ("herbnjoy hanford"). The store registry's workbook aliases
+  // bridge the two, so a drop-in lands on the SAME row as that store's scheduled PAD/EDU instead
+  // of a second row. Wait for it; without it (fetch failed) rows just split by spelling.
+  if(!REG_BYKEY && !REG_ERR) return {evs:[], loading:true, err:null};
+  const skOf=name=>{ const c=REG_BYKEY&&REG_BYKEY.get(tierNorm(name)); if(!c) return '';
+    const ca=c.filter(g=>g.state==='CA'); return ca.length===1?tierNorm(ca[0].sales_key||''):''; };   // unambiguous only
+  const spell={}, names={};
+  (VISIT_EVENTS||[]).forEach(v=>{ const k=tierNorm(v.c); if(k&&!names[k]) names[k]=v.c;
+    const sk=skOf(v.c); if(!sk) return; const m=spell[sk]||(spell[sk]=new Map()), g=visitGroupKey(v.c);
+    const x=m.get(g)||{c:v.c,n:0}; x.n++; m.set(g,x); });
+  // display name: a Stiiizy store keeps its own name (it rolls up to STIIIZY in grouping and the
+  // drill still says which store); otherwise the schedule's spelling that account uses most (the
+  // sheet spells some stores two ways, e.g. "Buzz Mission Valley" / "Buzz Mission & Sorrento", and
+  // the drop-ins join the busiest row rather than opening a third), else the customer directory's,
+  // else the key itself
+  const nameFor=key=>{ const dba=(CUST_DIR[key]||{}).dba; if(dba&&visitCanon(dba)) return dba;
+    const sp=spell[tierNorm(key)]; if(sp&&sp.size) return [...sp.values()].sort((a,b)=>b.n-a.n)[0].c;
+    return dba||names[key]||String(key).replace(/\b\w/g,ch=>ch.toUpperCase()); };
+  // A scheduled PAD/EDU blocks a drop-in at every CA store its name could mean, ambiguous aliases
+  // included: "Kush Alley" PAD + a BA store visit at Kush Alley North Hills that day is one visit,
+  // not a PAD plus a drop-in. (Naming above stays unambiguous-only.)
+  const schedPE=new Set();
+  (VISIT_EVENTS||[]).forEach(v=>{ if(!v.d) return; const day=visitDay(v.d); schedPE.add(visitGroupKey(v.c)+'|'+day);
+    ((REG_BYKEY&&REG_BYKEY.get(tierNorm(v.c)))||[]).forEach(g=>{ if(g.state==='CA'&&g.sales_key) schedPE.add('sk:'+tierNorm(g.sales_key)+'|'+day); }); });
+  const byKD={};
+  f.rows.forEach(r=>{ if(r.disp_state!=='CA'||!r.sales_key||!r.d) return;
+    const kinds=String(r.activity||'').split(' · ').map(x=>x.trim());
+    const o=byKD[r.sales_key+'|'+r.d]||(byKD[r.sales_key+'|'+r.d]={key:r.sales_key, d:r.d, store:false, pe:false, crew:[]});
+    if(kinds.includes('Store visit')) o.store=true;
+    if(kinds.includes('Demo / PAD')||kinds.includes('Education talk')) o.pe=true;
+    o.crew.push({ba:r.ba||'BA', act:r.activity?baActClean(r.activity):'no activity picked'}); });
+  const evs=[];
+  Object.values(byKD).forEach(o=>{ if(!o.store||o.pe) return;
+    const p=String(o.d).split('-'); const ms=new Date(+p[0],+p[1]-1,+p[2],12).getTime();
+    if(start&&ms<start.getTime()||ms>end.getTime()) return;
+    const c=nameFor(o.key), gk=visitGroupKey(c); if(!gk) return;
+    if(schedPE.has(gk+'|'+o.d)||schedPE.has('sk:'+tierNorm(o.key)+'|'+o.d)) return;   // that day was a scheduled PAD/EDU; it already counts there
+    evs.push({d:ms, c, pad:false, edu:false, drop:true, note:`${baWhoWhat(o.crew)} (BA field app)`}); });
+  return {evs, loading:false, err:null};
+}
+// every visit the report counts in the window: schedule PAD/EDU rows + BA-app drop-ins
+function repEvents(){
+  const {months,start,end}=repWindow();
+  const inWin=e=>e.d&&!(start&&(e.d<start.getTime()||e.d>end.getTime()));
+  const di=repDropIns(start,end);
+  return {months,start,end, evs:(VISIT_EVENTS||[]).filter(inWin).concat(di.evs), dropLoading:di.loading, dropErr:di.err};
+}
+function repData(){
+  const {months,start,end,evs,dropLoading,dropErr}=repEvents();
   const by={};
-  (VISIT_EVENTS||[]).forEach(e=>{
-    if(!e.d||(start&&(e.d<start.getTime()||e.d>end.getTime()))) return;
+  evs.forEach(e=>{
     const k=visitGroupKey(e.c); if(!k) return;
-    const g=by[k]||(by[k]={names:{},pad:0,edu:0,last:null,visits:[]});
-    g.names[visitCanon(e.c)||e.c]=(g.names[visitCanon(e.c)||e.c]||0)+1;
-    if(e.pad) g.pad++; if(e.edu) g.edu++;
+    const g=by[k]||(by[k]={names:{},dnames:{},pad:0,edu:0,drop:0,last:null,visits:[]});
+    const nm=e.drop?g.dnames:g.names;   // drop-in spellings only name a row the schedule never names, so existing rows keep their name
+    nm[visitCanon(e.c)||e.c]=(nm[visitCanon(e.c)||e.c]||0)+1;
+    if(e.pad) g.pad++; if(e.edu) g.edu++; if(e.drop) g.drop++;
     if(g.last==null||e.d>g.last) g.last=e.d;
     g.visits.push(e);
   });
   const rows=Object.values(by).map(g=>({
-    name:Object.entries(g.names).sort((a,b)=>b[1]-a[1])[0][0],   // display the most-used spelling
-    pad:g.pad, edu:g.edu, total:g.visits.length, last:g.last, visits:g.visits }));
-  return {rows, months, start, end};
+    name:Object.entries(Object.keys(g.names).length?g.names:g.dnames).sort((a,b)=>b[1]-a[1])[0][0],   // display the most-used spelling
+    pad:g.pad, edu:g.edu, drop:g.drop, total:g.visits.length, last:g.last, visits:g.visits }));
+  return {rows, months, start, end, dropLoading, dropErr};
 }
+const repDropNote=(loading,err)=>loading?' <span class="neg">Drop-ins are still loading from the BA field app…</span>':err?` <span style="color:var(--orange)">Drop-ins could not be loaded from the BA field app (${esc(err)}); PAD/EDU counts are complete.</span>`
+  :(REG_ERR?` <span style="color:var(--orange)">The store registry did not load (${esc(REG_ERR)}), so a few drop-ins may sit on a row of their own or overlap a scheduled PAD/EDU.</span>`:'')
+  +(DROPIN_RPC!=='ba_visit_kinds'?` <span style="color:var(--orange)">Drop-ins are approximate until a database update is applied: days with only an expense charged to a store (no activity picked) also count, about 1 in 6.</span>`:'');
 function renderVisitsDisp(){
   const wrap=$('#rep-wrap'), note=$('#rep-note'); if(!wrap) return;
-  const {rows,months}=repData();
-  if(!rows.length){ note.innerHTML='';
-    wrap.innerHTML=`<div class="empty">No PAD / EDU visits found${months?` in the last ${months} month${months>1?'s':''}`:''} — the field schedule publishes with the hourly refresh.</div>`; return; }
+  const {rows,months,dropLoading,dropErr}=repData();
+  if(!rows.length){ note.innerHTML=repDropNote(dropLoading,dropErr);
+    wrap.innerHTML=`<div class="empty">No PAD / EDU / drop-in visits found${months?` in the last ${months} month${months>1?'s':''}`:''}${dropLoading?' yet':''}. The field schedule publishes with the hourly refresh.</div>`; return; }
   const q=(($('#rep-search')||{}).value||'').trim().toLowerCase();
   let view=q?rows.filter(r=>r.name.toLowerCase().includes(q)||(r.legal||'').toLowerCase().includes(q)||(APP_STATE==='NY'&&nyLegalFor(r.name).toLowerCase().includes(q))):rows.slice();
   const k=repSort.key, dir=repSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.total-a.total); });
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
-  const cols=[['name','Dispensary',0],['pad','PAD',1],['edu','EDU',1],['total','Visits',1],['last','Last visit',1]];
+  const cols=[['name','Dispensary',0],['pad','PAD',1],['edu','EDU',1],['drop','Drop-in',1],['total','Visits',1],['last','Last visit',1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}" title="Click to see this dispensary's visits">
     <td>${esc(r.name)}</td>
     <td class="num">${r.pad||'<span class="neg">—</span>'}</td>
     <td class="num">${r.edu||'<span class="neg">—</span>'}</td>
+    <td class="num">${r.drop||(dropLoading?'<span class="neg">…</span>':'<span class="neg">—</span>')}</td>
     <td class="num"><b>${r.total}</b></td>
     <td class="num">${fmtD(r.last)}</td>
   </tr>`).join('');
-  const tot=view.reduce((a,r)=>({pad:a.pad+r.pad,edu:a.edu+r.edu,total:a.total+r.total}),{pad:0,edu:0,total:0});
+  const tot=view.reduce((a,r)=>({pad:a.pad+r.pad,edu:a.edu+r.edu,drop:a.drop+r.drop,total:a.total+r.total}),{pad:0,edu:0,drop:0,total:0});
   wrap.innerHTML=`<table id="rep-table"><thead><tr>${thead}</tr></thead><tbody>${body}</tbody>
     <tfoot><tr class="totals"><td>${view.length} dispensar${view.length!==1?'ies':'y'}</td>
-    <td class="num">${tot.pad}</td><td class="num">${tot.edu}</td><td class="num">${tot.total}</td><td></td></tr></tfoot></table>`;
+    <td class="num">${tot.pad}</td><td class="num">${tot.edu}</td><td class="num">${dropLoading?'<span class="neg">…</span>':tot.drop}</td><td class="num">${tot.total}</td><td></td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(repSort.key===key) repSort.dir*=-1; else repSort={key,dir:key==='name'?1:-1}; renderVisitsDisp(); });
   thSortMark(wrap,repSort.key,repSort.dir);
-  note.innerHTML=`<b>PAD &amp; EDU visits</b> mined from the team's field-schedule sheet (tabs with “Schedule” in the name): a scheduled row counts when its <b>Sales Order Notes / Distro Team Notes</b> mention <b>PAD</b>, <b>EDU</b>, or <b>education</b>. A visit mentioning both counts in both columns (once in Visits). All Stiiizy-branded stores (incl. Airfield SJ + Authentic 209 Modesto) roll up to <b>STIIIZY</b> — the drill shows which store each visit was. Click a row for the visit-by-visit detail. Window: ${months?`last ${months} month${months>1?'s':''}`:'all time'} — updated hourly with the schedule sheet.`;
+  note.innerHTML=`<b>PAD &amp; EDU visits</b> mined from the team's field-schedule sheet (tabs with “Schedule” in the name): a scheduled row counts when its <b>Sales Order Notes / Distro Team Notes</b> mention <b>PAD</b>, <b>EDU</b>, or <b>education</b>. A visit mentioning both counts in both columns (once in Visits). <b>Drop-in</b> = a day a BA logged a <b>Store visit</b> at the account in the BA field app with no PAD or EDU that day (in the app or on the schedule); one per account per day, however many BAs went. All Stiiizy-branded stores (incl. Airfield SJ + Authentic 209 Modesto) roll up to <b>STIIIZY</b>; the drill shows which store each visit was. Click a row for the visit-by-visit detail. Window: ${months?`last ${months} month${months>1?'s':''}`:'all time'}, schedule updated hourly, drop-ins live.${repDropNote(dropLoading,dropErr)}`;
 }
 function repDrill(name){
   const {rows}=repData();
   const r=rows.find(x=>x.name===name); if(!r) return;
   const list=r.visits.slice().sort((a,b)=>b.d-a.d);
   const fmtDt=ms=>ms?new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'}):'—';
-  openScModal({title:`${name} — PAD / EDU visits`, sub:`${r.pad} PAD · ${r.edu} EDU · ${r.total} visit${r.total!==1?'s':''} · newest first`,
-    columns:[{l:'Date'},{l:'Type'},{l:'Schedule note'}],
-    rows:list.map(e=>[fmtDt(e.d), e.pad&&e.edu?'PAD + EDU':e.pad?'PAD':'EDU', visitNote(e)])});
+  openScModal({title:`${name}: PAD / EDU / drop-in visits`, sub:`${r.pad} PAD · ${r.edu} EDU · ${r.drop} drop-in${r.drop!==1?'s':''} · ${r.total} visit${r.total!==1?'s':''} · newest first`,
+    columns:[{l:'Date'},{l:'Type'},{l:'Note'}],
+    rows:list.map(e=>[fmtDt(e.d), visitType(e), visitNote(e)])});
 }
 $('#rep-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#rep-wrap').contains(tr)) return; repDrill(tr.getAttribute('data-name')); };
 
@@ -6920,35 +7013,33 @@ function setRepvMode(m){ repvMode=(m==='date')?'date':'disp';
   renderReports(); }
 document.querySelectorAll('#repv-toggle button').forEach(b=>b.onclick=()=>setRepvMode(b.dataset.repv));
 // Window's visits (same lookback + search as By Dispensary), each tagged with its rolled-up store.
-function visitsInWindow(){ const months=+(($('#rep-months')||{}).value||0);
-  const end=new Date(); end.setHours(23,59,59,999); let start=null;
-  if(months){ start=new Date(end); start.setMonth(start.getMonth()-months); start.setHours(0,0,0,0); }
+function visitsInWindow(){ const {evs}=repEvents();
   const q=(($('#rep-search')||{}).value||'').trim().toLowerCase();
-  return (VISIT_EVENTS||[]).filter(v=>{ if(!v.d||(start&&(v.d<start.getTime()||v.d>end.getTime()))) return false;
+  return evs.filter(v=>{
       if(!visitGroupKey(v.c)) return false;   // drop punctuation-only names (matches By Dispensary) so the two views' totals agree
       if(q && !((visitCanon(v.c)||v.c||'').toLowerCase().includes(q))) return false; return true; })
     .map(v=>({...v, disp:visitCanon(v.c)||v.c})); }
 function renderVisitsByDate(){
   const wrap=$('#repv-date-wrap'), note=$('#rep-note'); if(!wrap) return;
-  const months=+(($('#rep-months')||{}).value||0), evs=visitsInWindow();
-  if(!evs.length){ note.innerHTML='';
-    wrap.innerHTML=`<div class="empty">No PAD / EDU visits found${months?` in the last ${months} month${months>1?'s':''}`:''} — the field schedule publishes with the hourly refresh.</div>`; return; }
+  const {months,dropLoading,dropErr}=repEvents(), evs=visitsInWindow();
+  if(!evs.length){ note.innerHTML=repDropNote(dropLoading,dropErr);
+    wrap.innerHTML=`<div class="empty">No PAD / EDU / drop-in visits found${months?` in the last ${months} month${months>1?'s':''}`:''}${dropLoading?' yet':''}. The field schedule publishes with the hourly refresh.</div>`; return; }
   const byDay={};
   evs.forEach(v=>{ const d=new Date(v.d); const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     (byDay[key]||(byDay[key]={key,ms:v.d,items:[]})).items.push(v); });
   const days=Object.values(byDay).sort((a,b)=>b.ms-a.ms);
-  days.forEach(g=>{ g.pad=g.items.filter(v=>v.pad).length; g.edu=g.items.filter(v=>v.edu).length;
+  days.forEach(g=>{ g.pad=g.items.filter(v=>v.pad).length; g.edu=g.items.filter(v=>v.edu).length; g.drop=g.items.filter(v=>v.drop).length;
     g.items.sort((a,b)=>(a.disp||'').toLowerCase()<(b.disp||'').toLowerCase()?-1:1); });
   const fmtDay=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
-  const detail=g=>`<div class="ddhead">${g.items.length} visit${g.items.length!==1?'s':''}</div><table class="ddtable"><thead><tr><th>Dispensary</th><th>Type</th><th>Schedule note</th></tr></thead><tbody>${
-    g.items.map(v=>`<tr><td>${esc(v.disp)}</td><td>${v.pad&&v.edu?'PAD + EDU':v.pad?'PAD':'EDU'}</td><td>${esc(visitNote(v))}</td></tr>`).join('')}</tbody></table>`;
+  const detail=g=>`<div class="ddhead">${g.items.length} visit${g.items.length!==1?'s':''}</div><table class="ddtable"><thead><tr><th>Dispensary</th><th>Type</th><th>Note</th></tr></thead><tbody>${
+    g.items.map(v=>`<tr><td>${esc(v.disp)}</td><td>${visitType(v)}</td><td>${esc(visitNote(v))}</td></tr>`).join('')}</tbody></table>`;
   const body=days.map(g=>`<tr class="parent" data-day="${g.key}"><td><span class="caret">▶</span> ${fmtDay(g.ms)}</td>
-      <td class="num">${g.pad||'<span class="neg">—</span>'}</td><td class="num">${g.edu||'<span class="neg">—</span>'}</td><td class="num"><b>${g.items.length}</b></td></tr>
-    <tr class="detail hidden"><td colspan="4"><div class="detailbox">${detail(g)}</div></td></tr>`).join('');
-  const tot=days.reduce((a,g)=>({pad:a.pad+g.pad,edu:a.edu+g.edu,total:a.total+g.items.length}),{pad:0,edu:0,total:0});
-  wrap.innerHTML=`<table id="repv-date-table"><thead><tr><th>Date</th><th class="num">PAD</th><th class="num">EDU</th><th class="num">Visits</th></tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td>${days.length} day${days.length!==1?'s':''}</td><td class="num">${tot.pad}</td><td class="num">${tot.edu}</td><td class="num">${tot.total}</td></tr></tfoot></table>`;
-  note.innerHTML=`<b>PAD &amp; EDU visits by date</b> — click a day to expand its visits. Stiiizy stores roll up to STIIIZY. Window: ${months?`last ${months} month${months>1?'s':''}`:'all time'} · updated hourly.`;
+      <td class="num">${g.pad||'<span class="neg">—</span>'}</td><td class="num">${g.edu||'<span class="neg">—</span>'}</td><td class="num">${g.drop||(dropLoading?'<span class="neg">…</span>':'<span class="neg">—</span>')}</td><td class="num"><b>${g.items.length}</b></td></tr>
+    <tr class="detail hidden"><td colspan="5"><div class="detailbox">${detail(g)}</div></td></tr>`).join('');
+  const tot=days.reduce((a,g)=>({pad:a.pad+g.pad,edu:a.edu+g.edu,drop:a.drop+g.drop,total:a.total+g.items.length}),{pad:0,edu:0,drop:0,total:0});
+  wrap.innerHTML=`<table id="repv-date-table"><thead><tr><th>Date</th><th class="num">PAD</th><th class="num">EDU</th><th class="num">Drop-in</th><th class="num">Visits</th></tr></thead><tbody>${body}</tbody>
+    <tfoot><tr class="totals"><td>${days.length} day${days.length!==1?'s':''}</td><td class="num">${tot.pad}</td><td class="num">${tot.edu}</td><td class="num">${dropLoading?'<span class="neg">…</span>':tot.drop}</td><td class="num">${tot.total}</td></tr></tfoot></table>`;
+  note.innerHTML=`<b>PAD, EDU &amp; drop-in visits by date</b>: click a day to expand its visits. Drop-in = a BA-logged store visit with no PAD or EDU that day. Stiiizy stores roll up to STIIIZY. Window: ${months?`last ${months} month${months>1?'s':''}`:'all time'}, schedule updated hourly, drop-ins live.${repDropNote(dropLoading,dropErr)}`;
 }
 $('#repv-date-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closest('tr.parent'):null; if(!tr||!$('#repv-date-wrap').contains(tr)) return;
   const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } };
@@ -6986,13 +7077,13 @@ document.querySelectorAll('#rep-toggle button').forEach(b=>b.onclick=()=>setRepM
 $('#rep-export').onclick=()=>{
   const months=+(($('#rep-months')||{}).value||0);
   if(repvMode==='date'){
-    const out=[['Date','Dispensary','Type','Schedule note']];
-    visitsInWindow().sort((a,b)=>b.d-a.d).forEach(v=>out.push([new Date(v.d).toISOString().slice(0,10), v.disp, v.pad&&v.edu?'PAD + EDU':v.pad?'PAD':'EDU', visitNote(v)]));
+    const out=[['Date','Dispensary','Type','Note']];
+    visitsInWindow().sort((a,b)=>b.d-a.d).forEach(v=>out.push([visitDay(v.d), v.disp, visitType(v), visitNote(v)]));
     downloadCSV(months?`pad-edu-visits-by-date-${months}mo.csv`:'pad-edu-visits-by-date.csv',out); return;
   }
   const {rows}=repData();
-  const out=[['Dispensary','PAD Visits','EDU Visits','Total Visits','Last Visit']];
-  rows.sort((a,b)=>b.total-a.total).forEach(r=>out.push([r.name,r.pad,r.edu,r.total,r.last?new Date(r.last).toISOString().slice(0,10):'']));
+  const out=[['Dispensary','PAD Visits','EDU Visits','Drop-in Visits','Total Visits','Last Visit']];
+  rows.sort((a,b)=>b.total-a.total).forEach(r=>out.push([r.name,r.pad,r.edu,r.drop,r.total,r.last?visitDay(r.last):'']));
   downloadCSV(months?`pad-edu-visits-${months}mo.csv`:'pad-edu-visits.csv',out);
 };
 
@@ -7671,8 +7762,8 @@ function loadRegistry(){
     .then(rows=>{ REGISTRY=rows; REG_BYKEY=new Map();
       rows.forEach(g=>{ const ks=new Set([tierNorm(g.name),tierNorm(g.sales_key),tierNorm(g.pistil_name),...(g.aliases||[]).map(tierNorm)]);
         ks.forEach(k=>{ if(!k) return; if(!REG_BYKEY.has(k)) REG_BYKEY.set(k,[]); REG_BYKEY.get(k).push(g); }); });
-      if(repMode==='customers') renderCustomers(); })
-    .catch(e=>{ REG_ERR=String(e.message||e); REG_LOADING=false; });
+      if(repMode==='customers') renderCustomers(); if(repMode==='visits') renderRepMode(); })
+    .catch(e=>{ REG_ERR=String(e.message||e); REG_LOADING=false; if(repMode==='visits') renderRepMode(); });
 }
 // registry rows for a customer name, preferring the app's current state
 function regFor(name){
