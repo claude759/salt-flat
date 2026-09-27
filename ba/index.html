@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-09-14.109';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-09-26.110';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1123,9 +1123,34 @@ function periodPhase(p){ if(!p) return 'none'; const t=todayISO();
   if(p.start_date>t) return 'future';
   if(p.end_date<t){ const g=periodGraceEnd(p); return (g && new Date()<g) ? 'current' : 'past'; }
   return 'current'; }
-// In the BA surface only the current(+grace), open period is editable; upcoming/past are
-// view-only (admins manage those from the admin tools). A real admin outside preview always passes.
-function canEditPeriod(p){ if(!actingAsBA()) return true; return periodPhase(p)==='current' && p?.status!=='closed'; }
+// LATE SUBMIT (Gianni 2026-09-26: reminders keep going out until everyone submits). An ended
+// period that THIS person hasn't submitted stays open to them past the Sunday cutoff, so the
+// daily reminder is always something they can act on. Starts with the period ending 9/25
+// (mirrors CHASE_FROM in ba-notify). It ends when they submit (or tap Nothing to claim), or an
+// admin approves / marks the period done for them. state._mySubs is
+// this user's {period_id: status}, loaded by drawBA before any period is picked.
+const LATE_SUBMIT_FROM='2026-09-25';
+function mySubmitted(pid){ const st=(state._mySubs||{})[pid]; return st==='submitted'||st==='approved'; }
+// local calendar date of a timestamp (a profile's created_at) — compared with period dates
+const localISO = ts => { const d=new Date(ts); return isNaN(d) ? '' : new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
+function lateOpen(p){ const me=state.profile;
+  return !!p && !!p.end_date && p.status!=='closed' && p.end_date>=LATE_SUBMIT_FROM
+    && periodPhase(p)==='past' && !!state._mySubs && !mySubmitted(p.id)
+    // the same people ba-notify chases: field workers with a work region, for periods that
+    // ended on/after they joined (a new hire never owes an older period)
+    && isFieldWorker(me) && !!personRegion(me) && (!me.created_at || localISO(me.created_at)<=p.end_date); }
+// periods this person still owes, oldest first (the Home banner + reminder email are about these)
+const owedPeriods = () => (state.periods||[]).filter(lateOpen).sort((a,b)=>a.end_date.localeCompare(b.end_date));
+// default date for a NEW item: today, clamped into the open period — so adding to a late (or
+// grace) period files the item there instead of in the current period
+function addDefaultDate(){ const p=state.period, t=todayISO();
+  if(!p || isAllPeriods(p) || !p.end_date) return undefined;
+  return t>p.end_date ? p.end_date : (t<p.start_date ? p.start_date : undefined); }
+// In the BA surface only the current(+grace) period, or one this person still owes (lateOpen),
+// is editable; upcoming/past are view-only (admins manage those from the admin tools).
+// A real admin outside preview always passes.
+function canEditPeriod(p){ if(!actingAsBA()) return true; if(p?.status==='closed') return false;
+  return periodPhase(p)==='current' || lateOpen(p); }
 
 const ALL_PERIODS={ id:'all', label:'All pay periods', start_date:'all', end_date:'', status:'open' };
 const isAllPeriods=p=>!!p && p.id==='all';
@@ -1136,7 +1161,8 @@ function periodPicker(onChange, opts={}){
   const html = `<option value="all" ${isAllPeriods(state.period)?'selected':''}>All pay periods</option>` + list.map(p=>{
     const tag = p.status==='closed' ? ' (closed)'
       : periodPhase(p)==='current' ? (p.end_date<todayISO() ? ` (${periodReopened(p)?'reopened':'submit'} — by ${graceLabel(p)})` : ' (current)')
-      : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : '');
+      : (opts.hideFuture && lateOpen(p) ? ' (not submitted yet)'
+      : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : ''));
     return `<option value="${p.id}" ${state.period?.id===p.id?'selected':''}>${esc(p.label)}${tag}</option>`;
   }).join('');
   setTimeout(()=>{ const s=$('#perSel'); if(s) s.onchange=()=>{ state.period = s.value==='all' ? ALL_PERIODS : state.periods.find(p=>p.id===s.value); onChange(); }; },0);
@@ -1208,8 +1234,8 @@ function renderBA(){
   app.innerHTML = topbar() + viewSwitcher() + `<main id="main"></main>` + baTabs();
   wireTop(); wireSwitcher();
   $('#tab-home').onclick=()=>{state.baTab='home';drawBA();};
-  $('#tab-trip').onclick=()=>tripSheet();
-  $('#tab-exp').onclick =()=>expenseSheet();
+  $('#tab-trip').onclick=()=>tripSheet(addDefaultDate());
+  $('#tab-exp').onclick =()=>expenseSheet(addDefaultDate());
   $('#tab-report').onclick=()=>{state.baTab='report';drawBA();};
   const _ts=$('#tab-sched'); if(_ts) _ts.onclick=()=>{state.baTab='sched';drawBA();};
   $('#tab-loc').onclick =()=>{state.baTab='loc';drawBA();};
@@ -1245,15 +1271,24 @@ async function drawBA(){
   // an explicitly tapped, still-editable one (state._baPickPid, set by togglePeriod) wins,
   // else the DATE-current period (matched by date, not phase, so grace doesn't shadow it)
   const t=todayISO();
+  // one query for every period's submission → header status + stored totals (cheap, no per-period
+  // item loads). Loaded BEFORE picking: a period this person still owes stays editable (lateOpen).
+  const { data:subs, error:subErr } = await supabase.from('submissions').select('*').eq('ba_id',state.session.user.id);
+  if(seq !== state._drawSeq) return;
+  if(subErr){
+    // without them we can't tell submitted periods from owed ones: show nothing editable
+    state._mySubs=undefined;
+    m.innerHTML=`<div class="card"><p class="small">Couldn't load your pay periods (${esc(subErr.message||'network error')}).</p><button class="btn block" id="baRetry">Retry</button></div>`;
+    const r=$('#baRetry'); if(r) r.onclick=()=>drawBA();
+    return;
+  }
+  const subByPid={}; (subs||[]).forEach(s=>subByPid[s.period_id]=s);
+  state._mySubs=Object.fromEntries((subs||[]).map(s=>[s.period_id,s.status]));
   const picked  = state._baPickPid ? visible.find(p=>p.id===state._baPickPid && canEditPeriod(p)) : null;
   const current = picked || visible.find(p=>p.start_date<=t && p.end_date>=t) || visible.find(p=>periodPhase(p)==='current') || null;
   const active  = current || visible[0] || null;      // pre-expanded period: the current one, else most recent
   state.period = active; state._activePid = active ? active.id : null;
 
-  // one query for every period's submission → header status + stored totals (cheap, no per-period item loads)
-  const { data:subs } = await supabase.from('submissions').select('*').eq('ba_id',state.session.user.id);
-  if(seq !== state._drawSeq) return;
-  const subByPid={}; (subs||[]).forEach(s=>subByPid[s.period_id]=s);
 
   // load only the active (expanded) period's items; past periods load lazily on expand
   let T=[],E=[],H=[],S=null;
@@ -1279,7 +1314,13 @@ async function drawBA(){
 
   if(!visible.length){ m.innerHTML='<div class="card"><p class="muted small">No pay periods yet.</p></div>'; return; }
 
-  m.innerHTML = visible.map(p=>{
+  const owed=owedPeriods().filter(p=>p.id!==(active&&active.id));
+  const owedBanner = owed.length ? `<div class="card" style="border-color:var(--yellow);margin-bottom:12px">
+      <b style="color:var(--yellow)">Still to submit</b>
+      <div class="small muted" style="margin:4px 0 6px">Open it, add anything missing and submit. No mileage or expenses? Tap “Nothing to claim”. You'll get a reminder each morning until it's in.</div>
+      ${owed.map(p=>`<button class="btn block" data-owed="${p.id}" style="margin-top:6px">Open ${esc(p.label)}</button>`).join('')}
+    </div>` : '';
+  m.innerHTML = owedBanner + visible.map(p=>{
     const open=active && p.id===active.id;
     const sub=subByPid[p.id];
     const headTotal = open ? reimburseTotal() : (sub&&sub.totals? Number(sub.totals.total||0) : null);
@@ -1292,11 +1333,13 @@ async function drawBA(){
 
   if(active && canEdit) wireEditableBody();
   m.querySelectorAll('.perhead').forEach(h=>h.onclick=()=>togglePeriod(h.dataset.pid));
+  m.querySelectorAll('[data-owed]').forEach(b=>b.onclick=()=>{ state._baPickPid=b.dataset.owed; drawBA(); });
 }
 // the expandable header bar for one pay period
 function periodHeadHtml(p, open, total, badge){
   const tag = periodPhase(p)==='current'
     ? '<span class="badge" style="color:var(--accent2);border-color:var(--accent2)">current</span>'
+    : lateOpen(p) ? '<span class="badge" style="color:var(--yellow);border-color:var(--yellow)">not submitted</span>'
     : '<span class="muted small">view only</span>';
   return `<div class="card perhead" data-pid="${p.id}" style="cursor:pointer;padding:13px 15px">
     <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
@@ -1324,8 +1367,8 @@ function editableBodyHtml(S){
     <div id="submitWrap">${submitAreaHtml()}</div>`;
 }
 function wireEditableBody(){
-  $('#ab-trip')&&($('#ab-trip').onclick=()=>tripSheet());
-  $('#ab-exp') &&($('#ab-exp').onclick =()=>expenseSheet());
+  $('#ab-trip')&&($('#ab-trip').onclick=()=>tripSheet(addDefaultDate()));
+  $('#ab-exp') &&($('#ab-exp').onclick =()=>expenseSheet(addDefaultDate()));
   wireSubmit();
   document.querySelectorAll('#items [data-del]').forEach(b=>b.onclick=()=>delItem(b.dataset.kind,b.dataset.del));
   const tbEl=$('#todobar'); if(tbEl) tbEl.onclick=e=>{ const row=e.target.closest('[data-fix-id]'); if(row) fixItemSheet(row.dataset.fixKind, row.dataset.fixId); };
@@ -1673,9 +1716,20 @@ function submitAreaHtml(){
   const pend=pendingTodos();
   if(pend) return `<button class="btn ok block" id="submitBtn" disabled style="opacity:.5;cursor:not-allowed">Submit period for reimbursement</button>
     <p class="small center" style="color:var(--yellow);margin-top:6px">Clear the ${pend} to-do item${pend>1?'s':''} above to submit.</p>`;
+  // nothing logged: once the period has ENDED, let them close it out as "nothing to claim"
+  // (that's what stops the daily reminder). Before it ends there's nothing to do yet —
+  // offering it early is how periods got submitted on day one and locked.
+  const drafts=[...(state._T||[]),...(state._E||[])].filter(x=>x.status==='draft'||x.status==='rejected').length;
+  if(!drafts){
+    if(state.period && state.period.end_date && state.period.end_date<todayISO())
+      return `<button class="btn ok block" id="submitEmptyBtn">Nothing to claim · submit this period</button>
+        <p class="small muted center" style="margin-top:6px">No mileage or expenses for this period? Submit it anyway so we know it's complete.</p>`;
+    return `<p class="small muted center" style="margin:8px 0">Log miles or expenses above. You'll submit once the period ends.</p>`;
+  }
   return `<button class="btn ok block" id="submitBtn">Submit period for reimbursement</button>`;
 }
-function wireSubmit(){ const b=$('#submitBtn'); if(b) b.onclick=()=>submitPeriod(); }
+function wireSubmit(){ const b=$('#submitBtn'); if(b) b.onclick=()=>submitPeriod();
+  const e=$('#submitEmptyBtn'); if(e) e.onclick=()=>submitPeriod({empty:true}); }
 async function delItem(kind,id){
   if(kind==='hours') return;                        // payroll-managed — BAs can never delete hours
   if(!confirm('Delete this item?')) return;
@@ -1684,17 +1738,29 @@ async function delItem(kind,id){
   const arr = kind==='trips'?state._T:state._E; const i=arr.findIndex(x=>x.id===id); if(i>=0) arr.splice(i,1);
   toast('Deleted'); refreshItems(); refreshTotals(); renderGrid();
 }
-async function submitPeriod(){
+async function submitPeriod(opts={}){
   await flushGrid();                          // commit any pending grid edits before snapshotting state
   const T=state._T||[], E=state._E||[];
   const submittable = x => x.status==='draft' || x.status==='rejected';
   const ids=T.filter(submittable).map(x=>x.id), eids=E.filter(submittable).map(x=>x.id);
-  if(!ids.length && !eids.length) return toast('Nothing to submit','err');
+  if(!ids.length && !eids.length){
+    // "Nothing to claim": record the submission with no items so the period counts as done
+    // (stops the daily reminder). Only offered once the period has ended (submitAreaHtml).
+    if(!opts.empty) return toast('Nothing to submit','err');
+    if(!(state.period && state.period.end_date<todayISO())) return toast('You can submit once the period has ended.','err');
+    if(!confirm(`Submit ${state.period.label||'this period'} with no mileage or expenses? You won’t be able to add any after.`)) return;
+  }
   // hard rule: every item must be complete (dispensary linked, miles/odometer set, amount + receipt) before submitting
   const incomplete=[...T.filter(submittable).map(x=>({...x,_k:'trip'})),...E.filter(submittable).map(x=>({...x,_k:'exp'}))]
     .filter(x=>itemIssues(x).length).length;
   if(incomplete) return toast(`Finish the ${incomplete} to-do item${incomplete>1?'s':''} above first — tap each one to fill it in.`,'err');
-  if(!confirm('Submit all items in this period? You won’t be able to edit them after.')) return;
+  if(ids.length || eids.length){
+    const early = state.period && state.period.end_date>=todayISO();
+    const lbl = state.period?.label || 'this period';
+    if(!confirm(early
+      ? `${lbl} doesn’t end until ${fmtDate(state.period.end_date)}. Submitting now locks it, so anything you log after today can’t be added. Submit ${lbl} now anyway?`
+      : `Submit all items in ${lbl}? You won’t be able to edit them after.`)) return;
+  }
   const mile=T.reduce((a,x)=>a+Number(x.amount||0),0); const {reimb,card}=expSplit(E);
   const labor=(state._H||[]).reduce((a,x)=>a+Number(x.amount||0),0);   // recorded for reporting; NOT part of reimburse
   // record the submission FIRST so items are never locked without a workflow row
@@ -3923,7 +3989,10 @@ async function adminBaDetail(baId){
     ${(!allPer && (H||[]).some(x=>!x.dispensary_id))?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
     <div class="row wrap" style="margin-top:16px">
       ${(!allPer && S.status!=='approved' && S.status!=='submitted' && [...(T||[]),...(E||[])].some(x=>x.status==='draft'))?`<button class="btn grow" id="submitForBtn">Submit for them</button>`:''}
-      ${(!allPer && S.status!=='approved' && (S.status==='submitted' || [...(T||[]),...(E||[]),...(H||[])].some(x=>x.status==='submitted'||x.status==='draft')))?`<button class="btn ok grow" id="approveBtn">Approve all</button>`:''}
+      ${(!allPer && S.status!=='approved' && (S.status==='submitted' || [...(T||[]),...(E||[]),...(H||[])].some(x=>x.status==='submitted'||x.status==='draft')))?`<button class="btn ok grow" id="approveBtn">Approve all</button>`
+        // nothing to approve but the period has ENDED: let an admin mark it done (nothing to
+        // claim), which is what stops that person's daily reminder for it
+        :(!allPer && S.status!=='approved' && S.status!=='submitted' && per.end_date && per.end_date<todayISO())?`<button class="btn ok grow" id="approveBtn">Mark done · nothing to claim</button>`:''}
       ${(!allPer && S.status==='approved')?`<button class="btn grow" id="unapproveBtn">↩ Unapprove</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
       <button class="btn grow" id="pdfBtn">🖨 Print / PDF</button>
@@ -4015,6 +4084,10 @@ async function approveSubmission(baId,periodId,T,E,H,subStatus){
   const take = x=> x.status==='submitted' || (sweep && x.status==='draft');
   const pend=[...(T||[]).filter(take).map(x=>({...x,_k:'trip'})), ...(E||[]).filter(take).map(x=>({...x,_k:'exp'}))];
   const todoN=pend.filter(x=>itemIssues(x).length).length;
+  const perL=(state.periods||[]).find(p=>p.id===periodId);
+  if(sweep && !pend.length && !(H||[]).some(x=>x.status==='draft'||x.status==='submitted')){
+    if(!confirm(`Mark ${perL?.label||'this period'} done for this person with nothing to claim? That stops their daily reminder for it.`)) return;
+  } else {
   // Approving a period that hasn't ended freezes the stamped totals while the BA can still
   // log more days — those land outside the approved snapshot. Name the risk with the real
   // end date rather than letting it happen silently (Drew, Jul 21: approved 10 days early).
@@ -4027,6 +4100,7 @@ async function approveSubmission(baId,periodId,T,E,H,subStatus){
     ? `This BA never pressed “Submit period” — approve ALL their current items for this period (${pend.length} item${pend.length===1?'':'s'}, including drafts)?${todoN?`\n\n⚠ ${todoN} still have open to-dos (missing receipt, miles, or location).`:''}${earlyWarn}`
     : `Approve all submitted items for this BA this period?${todoN?`\n\n⚠ ${todoN} still have open to-dos.`:''}${earlyWarn}`;
   if(!confirm(msg)) return;
+  }
   // the stamped TOTALS cover the whole period as it stands AFTER this click (already-
   // approved + what's being approved now) — never just this batch, or an undo→re-approve
   // cycle would overwrite the totals with just the one redone item's amounts.
@@ -4300,7 +4374,9 @@ async function adminReview(m){
 // header line describing the selected period's edit state (admin review)
 function periodEditStatus(p){
   if(periodReopened(p)) return `🔓 Reopened — BAs can edit until ${graceLabel(p)}`;
-  if(periodPhase(p)==='past') return '🔒 Closed for BA edits — reopen to let someone add items';
+  if(periodPhase(p)==='past') return p.end_date>=LATE_SUBMIT_FROM && p.status!=='closed'
+    ? '🔒 Closed for new edits, except people who haven’t submitted yet (reminded daily at 9am until they do)'
+    : '🔒 Closed for BA edits — reopen to let someone add items';
   if(periodPhase(p)==='current' && p.end_date<todayISO()) return `⏳ In grace — BAs can edit through ${graceLabel(p)}`;
   if(periodPhase(p)==='current') return '🟢 Current period — open for edits';
   return 'Upcoming period';

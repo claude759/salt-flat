@@ -1,6 +1,7 @@
 // ba-notify: outbound email for the BA app. Two jobs, both server-triggered:
-//   job:'reminder'  — cron-driven. At 9am America/Los_Angeles the day after a pay
-//                     period ends, email every active BA who hasn't submitted.
+//   job:'reminder'  — cron-driven, 9am America/Los_Angeles EVERY day. Emails every field
+//                     worker who has an ended, not-closed pay period they haven't submitted,
+//                     and keeps doing so each morning until they submit (see CHASE_FROM).
 //   job:'submitted' — DB-trigger-driven. The moment a BA's period flips to
 //                     'submitted', email the admin (gianni@wizardtrees.com).
 // Sends via Gmail SMTP (app password). Callers prove themselves with a shared
@@ -16,6 +17,11 @@ const GMAIL_USER = Deno.env.get("GMAIL_USER") ?? "";
 const GMAIL_PASS = Deno.env.get("GMAIL_APP_PASSWORD") ?? "";
 const FROM_NAME = Deno.env.get("GMAIL_FROM_NAME") ?? "Wizard Trees";
 const ADMIN_EMAIL = Deno.env.get("ADMIN_EMAIL") ?? "";
+// Periods ending on/after this date are chased EVERY morning until each person submits
+// (Gianni 2026-09-26: "keep going out until the BAs submit"). Older periods had the one-time
+// reminder only; starting here means turning this on did not resurrect July. The app mirrors
+// this date (LATE_SUBMIT_FROM) to keep such a period open to anyone who still owes it.
+const CHASE_FROM = "2026-09-25";
 
 const money = (n: unknown) =>
   "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -30,6 +36,17 @@ function laParts(d = new Date()) {
     }).formatToParts(d).map((x) => [x.type, x.value]),
   );
   return { date: `${p.year}-${p.month}-${p.day}`, hour: Number(p.hour) };
+}
+// PostgREST caps every read at max_rows (1000 on this project): page until a short page,
+// and fail loudly rather than decide who to email from a truncated list
+async function readAll(build: () => any): Promise<any[]> {
+  const out: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await build().range(from, from + 999);
+    if (error) throw new Error(error.message);
+    out.push(...(data || []));
+    if (!data || data.length < 1000) return out;
+  }
 }
 // shift a YYYY-MM-DD by n days (noon-anchored so DST can't roll the date)
 function addDaysISO(iso: string, n: number) {
@@ -66,16 +83,32 @@ function shell(title: string, body: string) {
     <div style="border:1px solid #e6e6e6;border-top:0;border-radius:0 0 12px 12px;padding:20px">${body}</div>
   </div>`;
 }
-function reminderEmail(name: string, p: any) {
-  const lbl = esc(periodLabel(p));
-  const html = shell("Time to submit your mileage & expenses", `
+// One email per person per morning, covering every period they still owe (normally one).
+// `prior` = how many earlier mornings they were already reminded about any of them.
+function reminderEmail(name: string, owed: any[], prior: number) {
+  const one = owed.length === 1, p = owed[0];
+  const items = owed.map((x) => `<li style="margin:0 0 4px"><b>${esc(periodLabel(x))}</b> (ended ${esc(x.end_date)})</li>`).join("");
+  const what = one
+    ? `the pay period <b>${esc(periodLabel(p))}</b>, which ended on <b>${esc(p.end_date)}</b>`
+    : `these pay periods:</p><ul style="margin:0 0 12px;padding-left:20px">${items}</ul><p style="margin:0 0 12px">`;
+  const n = prior + 1;
+  const lead = prior === 0
+    ? `<p style="margin:0 0 12px">We don't have your mileage &amp; expenses yet for ${what}</p>`
+    : `<p style="margin:0 0 12px"><b>Reminder ${n}.</b> We're still waiting on your mileage &amp; expenses for ${what}</p>
+       <p style="margin:0 0 12px">It stays open for you until you submit, so you can still add anything missing.</p>`;
+  const html = shell(prior === 0 ? "Time to submit your mileage & expenses" : "Still waiting on your mileage & expenses", `
     <p style="margin:0 0 12px">Hi ${esc(name || "there")},</p>
-    <p style="margin:0 0 12px">The pay period <b>${lbl}</b> ended on <b>${esc(p.end_date)}</b>, and we don't have your mileage &amp; expenses yet.</p>
-    <p style="margin:0 0 18px">Please open the app and submit them so you can be reimbursed on time.</p>
+    ${lead}
+    <p style="margin:0 0 12px">Please open the app and submit so you can be reimbursed on time.</p>
+    <p style="margin:0 0 18px"><b>No mileage or expenses this time?</b> Open the period and tap <b>Nothing to claim</b> so we know it's complete.</p>
     <p style="margin:0 0 8px"><a href="${APP_URL}" style="background:#6c5ce7;color:#fff;text-decoration:none;padding:11px 20px;border-radius:999px;font-weight:700;display:inline-block">Open the app &amp; submit →</a></p>
-    <p style="margin:16px 0 0;color:#888;font-size:12px">If you've already submitted, thank you — you can ignore this.</p>`);
-  const text = `Hi ${name || "there"},\n\nThe pay period ${periodLabel(p)} ended ${p.end_date} and we don't have your mileage & expenses yet. Please submit them: ${APP_URL}\n\nIf you've already submitted, ignore this.`;
-  return { subject: `Reminder: submit your mileage & expenses (period ending ${p.end_date})`, html, text };
+    <p style="margin:16px 0 0;color:#888;font-size:12px">This reminder comes each morning until it's submitted. If you just submitted, thank you, you can ignore this.</p>`);
+  const plain = owed.map((x) => `${periodLabel(x)} (ended ${x.end_date})`).join("; ");
+  const text = `Hi ${name || "there"},\n\n${prior === 0 ? "We don't have" : `Reminder ${n}. We're still waiting on`} your mileage & expenses for ${plain}. Please submit them: ${APP_URL}\n\nNo mileage or expenses this time? Open the period and tap "Nothing to claim" so we know it's complete.\n\nThis reminder comes each morning until it's submitted.`;
+  const tail = one ? `period ending ${p.end_date}` : `${owed.length} pay periods`;
+  // numbered from the 2nd on: identical subjects every morning get grouped by Gmail, which
+  // then folds the repeated body (and its button) out of sight
+  return { subject: `${prior === 0 ? "Reminder" : `Reminder ${n}, still needed`}: submit your mileage & expenses (${tail})`, html, text };
 }
 function reopenedEmail(name: string, p: any, closes: string) {
   const lbl = esc(periodLabel(p));
@@ -167,28 +200,58 @@ Deno.serve(async (req) => {
     const testTo = body.test_to as string | undefined; // divert real sends to one address
 
     if (job === "reminder") {
-      const force = body.force === true;    // bypass the 9am/once guards for testing
+      const force = body.force === true;    // bypass the 9am/once-a-day guards for testing
       const { date, hour } = laParts();
       // 9am LA (moved from 11am, 2026-09-12). The cron fires at 16:00 and 17:00 UTC so one of
       // the two lands on 9am local whichever side of DST we're on; this guard picks it.
       if (!force && hour !== 9) return json({ ok: true, skipped: `not 9am LA (hour ${hour})` });
-      // period that ended "yesterday" in LA (force+ended_on lets a test point at a past period)
-      const endedOn = (force && typeof body.ended_on === "string") ? body.ended_on : addDaysISO(date, -1);
-      const { data: periods } = await db.from("pay_periods").select("*").eq("end_date", endedOn).limit(1);
-      const period = periods?.[0];
-      if (!period) return json({ ok: true, skipped: `no pay period ended ${endedOn}` });
-      if (period.reminder_sent_at && !force) return json({ ok: true, skipped: "reminder already sent for this period" });
+      // Which periods: every one that has ENDED, isn't closed, and ended on/after CHASE_FROM.
+      // force + ended_on pins a single period (manual sends, tests, older periods).
+      const pinned = (force && typeof body.ended_on === "string") ? body.ended_on : null;
+      const { data: pRows } = pinned
+        ? await db.from("pay_periods").select("*").eq("end_date", pinned).limit(1)
+        : await db.from("pay_periods").select("*").lt("end_date", date).gte("end_date", CHASE_FROM).order("end_date");
+      const periods = (pRows || []).filter((p) => pinned || p.status !== "closed");
+      if (!periods.length) return json({ ok: true, skipped: pinned ? `no pay period ended ${pinned}` : "no ended pay period is still open" });
+      const pids = periods.map((p) => p.id);
 
       // Remind FIELD WORKERS: anyone who files their own mileage/hours — BAs, REGIONAL
       // admins (Maddy/NY, Keelin & Drew/FL), and universal admins who still work a region
       // themselves (home_region set, e.g. Amanda/CA). Pure oversight admins (no region and
       // no home_region — Gianni, Victoria) are never reminded; they're the CC instead.
-      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region,home_region,non_ba,reminder_cc").eq("active", true);
+      const { data: people } = await db.from("profiles").select("id,full_name,email,role,region,home_region,non_ba,reminder_cc,created_at").eq("active", true);
+      // A work region is required for BAs too: handle_new_user makes every new login an active,
+      // region-less role 'ba' profile (SSO sign-ins to the other apps on this project), and
+      // those must never be chased daily.
       const fieldWorkers = (people || []).filter((b) =>
-        !b.non_ba && (b.role === "ba" || (b.role === "admin" && (b.region || b.home_region))));
-      const { data: subs } = await db.from("submissions").select("ba_id").eq("period_id", period.id).in("status", ["submitted", "approved"]);
-      const done = new Set((subs || []).map((s) => s.ba_id));
-      const targets = fieldWorkers.filter((b) => !done.has(b.id) && b.email);
+        !b.non_ba && (b.region || b.home_region) && (b.role === "ba" || b.role === "admin"));
+      const key = (ba: string, pid: string) => `${ba}|${pid}`;
+      // done = submitted or approved (an admin approving for them counts)
+      const subs = await readAll(() => db.from("submissions").select("id,ba_id,period_id")
+        .in("period_id", pids).in("status", ["submitted", "approved"]).order("id"));
+      const done = new Set(subs.map((s) => key(s.ba_id, s.period_id)));
+      // earlier reminders: numbers the follow-ups, and stops a second send on the same LA day
+      const logs = await readAll(() => db.from("reminder_log").select("id,ba_id,period_id,sent_on")
+        .in("period_id", pids).order("id"));
+      const prior = new Map<string, number>(), today = new Set<string>(), logged = new Set<string>();
+      for (const l of logs) {
+        const k = key(l.ba_id, l.period_id);
+        logged.add(k);
+        if (l.sent_on === date) today.add(k); else prior.set(k, (prior.get(k) || 0) + 1);
+      }
+      // [3] Only chase a period someone was a field worker for when it ended: its first morning
+      // (the newest ended period) or one they've already been reminded about. Without this, a
+      // reactivated person (or one newly given a region) would owe every period since CHASE_FROM.
+      const newest = pinned ? null : periods[periods.length - 1]?.id;
+      const targets = fieldWorkers.filter((b) => b.email).map((b) => ({
+        b,
+        owed: periods.filter((p) => !done.has(key(b.id, p.id))
+          // someone who joined after a period ended never owed it (compared as LA dates)
+          && (!b.created_at || laParts(new Date(b.created_at)).date <= p.end_date)
+          && (pinned || p.id === newest || logged.has(key(b.id, p.id)))
+          && (force || !today.has(key(b.id, p.id)))),
+      })).filter((t) => t.owed.length);
+      const priorFor = (t: { b: any; owed: any[] }) => Math.max(0, ...t.owed.map((p) => prior.get(key(t.b.id, p.id)) || 0));
 
       // Admin address, plus anyone named on that person's profile (a lead who chases
       // their submissions). Never the recipient themselves, never a duplicate.
@@ -201,22 +264,32 @@ Deno.serve(async (req) => {
         const out = list.filter((e) => { const k = e.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
         return out.length ? out : undefined;
       };
-      if (dry) return json({ ok: true, period: period.end_date,
-        would_remind: targets.map((b) => ({ name: b.full_name, email: testTo || b.email,
-                                            cc: ccFor(b, testTo || b.email) ?? [] })) });
+      if (dry) return json({ ok: true, date, periods: periods.map((p) => p.end_date),
+        would_remind: targets.map((t) => ({ name: t.b.full_name, email: testTo || t.b.email,
+          periods: t.owed.map((p) => p.end_date), reminder_no: priorFor(t) + 1,
+          cc: ccFor(t.b, testTo || t.b.email) ?? [] })) });
 
       const sent: any[] = [];
-      for (const b of targets) {
-        const { subject, html, text } = reminderEmail(b.full_name, period);
-        const to = testTo || b.email;
+      for (const t of targets) {
+        const { subject, html, text } = reminderEmail(t.b.full_name, t.owed, priorFor(t));
+        const to = testTo || t.b.email;
         // CC the admin on every reminder (per Gianni 2026-07-18) — skipped on diverted test sends
-        const cc = ccFor(b, to);
-        try { await sendMail(to, subject, html, text, cc); sent.push({ to, ok: true }); }
-        catch (e) { sent.push({ to, ok: false, error: String((e as Error)?.message || e) }); }
+        const cc = ccFor(t.b, to);
+        try {
+          await sendMail(to, subject, html, text, cc);
+          sent.push({ to, periods: t.owed.map((p) => p.end_date), reminder_no: priorFor(t) + 1, ok: true });
+          // log it (not for diverted test sends) so the same morning never sends twice
+          if (!testTo) await db.from("reminder_log").upsert(
+            t.owed.map((p) => ({ ba_id: t.b.id, period_id: p.id, sent_on: date })),
+            { onConflict: "ba_id,period_id,sent_on", ignoreDuplicates: true });
+        } catch (e) { sent.push({ to, ok: false, error: String((e as Error)?.message || e) }); }
       }
-      // stamp so it never re-sends (skip stamping for test/diverted runs)
-      if (!testTo && sent.some((s) => s.ok)) await db.from("pay_periods").update({ reminder_sent_at: new Date().toISOString() }).eq("id", period.id);
-      return json({ ok: true, period: period.end_date, reminded: sent });
+      // first-reminder stamp on the period (the admin page shows it); later mornings keep it
+      if (!testTo && sent.some((s) => s.ok)) {
+        const first = periods.filter((p) => !p.reminder_sent_at).map((p) => p.id);
+        if (first.length) await db.from("pay_periods").update({ reminder_sent_at: new Date().toISOString() }).in("id", first);
+      }
+      return json({ ok: true, date, periods: periods.map((p) => p.end_date), reminded: sent });
     }
 
     if (job === "submitted_for") {
