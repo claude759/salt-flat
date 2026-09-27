@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-09-26.110';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-09-27.111';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -2636,6 +2636,7 @@ function tripSheet(presetDate, editTrip, opts){
     <h3 style="text-align:center">${headTitle}</h3>
     <div class="small muted" style="margin:-4px 0 8px;text-align:center">${headSub}</div>
     <label class="fl">Date</label><input id="tDate" type="date" value="${editMode?editTrip.trip_date:(presetDate||todayISO())}">
+    ${dayTrips.length>1?`<div class="small muted" style="margin-top:4px">Legs from different days here? Change the date and pick which legs move.</div>`:''}
     <div id="partsHost" style="margin-top:6px"></div>
     <button class="btn ghost block" id="tAddLeg" style="margin-top:10px;display:none">＋ Add another leg</button>
     <button class="btn ghost block" id="tDone" style="margin-top:10px">Done</button>
@@ -2664,15 +2665,41 @@ function tripSheet(presetDate, editTrip, opts){
       if(!editMode && pristine){ closeSheet(); tripSheet(nd); }
       return;
     }
-    if(!confirm(`Move the ${movable.length} saved leg${movable.length>1?'s':''} of this day to ${nd} too?\n(Cancel = only legs saved from now on get the new date)`)) return;
-    await ensurePeriodForDate(nd);
-    let moved=0;
-    for(const q of movable){
-      const {data,error}=await supabase.from('trips').update({trip_date:nd}).eq('id',q.tripId).select('*').single();
-      if(!error && data){ syncT(data); moved++; }
-    }
-    toast(moved===movable.length?`Day moved to ${fmtDate(nd)} ✓`:`Moved ${moved}/${movable.length} legs — the rest are locked`, moved?'ok':'err');
+    // Saved legs on this day: ask WHICH ones move. It used to be all-or-nothing, so legs from
+    // several days logged under one date couldn't be split without re-entering them (Keelin,
+    // Sep 27: "it wouldn't let me change the date of the mileage… it is all under one day").
+    pickLegsToMove(movable, nd);
   };
+  function pickLegsToMove(movable, nd){
+    const row=(q,i)=>`<label class="msel-opt"><input type="checkbox" data-mv="${i}" checked><span>${esc(abbrPlace(q.startLabel||'?',26))} → ${esc(abbrPlace(q.destLabel||'?',26))}${q.miles!=null?` · ${q.miles} mi`:''}${q.note?` <span class="muted">· ${esc(q.note)}</span>`:''}</span></label>`;
+    openSheet2(`<h3>Move legs to ${esc(fmtDate(nd))}</h3>
+      <div class="small muted" style="margin-bottom:8px">Tick the legs driven on ${esc(fmtDate(nd))}. The rest stay on ${esc(fmtDate(date))}.</div>
+      <div class="pklist">${movable.map(row).join('')}</div>
+      <button class="btn primary block" id="mvGo" style="margin-top:12px">Move ticked legs</button>
+      <button class="btn ghost block" id="mvNone" style="margin-top:8px">Move none · use ${esc(fmtDate(nd))} for new legs only</button>
+      <button class="btn ghost block" id="mvCancel" style="margin-top:8px">Cancel</button>`);
+    $('#mvCancel').onclick=()=>{ closeSheet2(); const el=$('#tDate'); if(el) el.value=date; };
+    $('#mvNone').onclick=()=>closeSheet2();
+    $('#mvGo').onclick=async()=>{
+      const pick=[...document.querySelectorAll('#sheet2 [data-mv]:checked')].map(c=>movable[Number(c.dataset.mv)]);
+      if(!pick.length) return toast('Tick at least one leg, or tap “Move none”','err');
+      const btn=$('#mvGo'); busy(btn,true);
+      await ensurePeriodForDate(nd);
+      let moved=0;
+      for(const q of pick){
+        const {data,error}=await supabase.from('trips').update({trip_date:nd}).eq('id',q.tripId).select('*').single();
+        if(!error && data){ syncT(data); moved++; }
+      }
+      busy(btn,false); closeSheet2();
+      toast(moved===pick.length?`Moved ${moved} leg${moved>1?'s':''} to ${fmtDate(nd)} ✓`:`Moved ${moved} of ${pick.length} legs · the rest are locked`, moved?'ok':'err');
+      // reopen what's left of the original day so more legs can be split off; if nothing is
+      // left there, open the day they moved to
+      const T=(typeof gridCtx==='function'&&gridCtx().T)||state._T||[];
+      const back=T.find(t=>String(t.trip_date)===String(date)), there=T.find(t=>String(t.trip_date)===String(nd));
+      closeSheet();
+      if(back) tripSheet(date, back); else if(there) tripSheet(nd, there);
+    };
+  }
   render();
 
   function summaryHtml(p,i){
