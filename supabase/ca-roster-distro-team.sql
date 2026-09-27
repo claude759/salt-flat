@@ -6,3 +6,7 @@
 -- Read by labor-calculator.html and ~/gusto-sync/import-ca-packagers.mjs (which flags Gusto Distro Packagers).
 alter table public.distro_roster drop column if exists distro_team;   -- first draft, never used by any code
 alter table public.distro_roster add column if not exists gusto_distro boolean not null default false;
+
+-- 2026-09-26: date-effective. Distro rows BEFORE gusto_distro_from stay on the person's own crew (Lucero Torres was
+-- onboarded to Gusto on 9/16, so her 9/14-9/15 distro days are Norma's Team). NULL = Gusto for every date.
+alter table public.distro_roster add column if not exists gusto_distro_from date;
