@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-09-27.113';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-09-27.114';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -2575,7 +2575,7 @@ function tripSheet(presetDate, editTrip, opts){
   // The day's drive is logged one LEG at a time: Home → stop → stop → … → Home.
   // Each leg saves as its own trip; the next leg's start auto-fills from this leg's
   // destination. Saved legs collapse to a summary you can tap to re-open/edit.
-  const newPart = (startLabel)=>({ startLabel:startLabel||'', startAddr:startLabel||'', startCoords:null,
+  const newPart = (startLabel)=>({ _start0:startLabel||'', startLabel:startLabel||'', startAddr:startLabel||'', startCoords:null,
     destLabel:'', destAddr:'', destDispId:null, method:'distance', miles:null, milesSrc:null, note:'',
     startOdo:null, endOdo:null, startPath:null, endPath:null, routePath:null, kind:null, tripId:null, saved:false });
   const partFromTrip = (t)=>({ startLabel:t.start_label||'', startAddr:t.start_label||'', startCoords:null,
@@ -2594,6 +2594,10 @@ function tripSheet(presetDate, editTrip, opts){
   // if the sheet is dismissed via ✕/backdrop instead of Done
   let dirty=false;
   const syncT=(rowOrId, del)=>{ dirty=true; const T=(typeof gridCtx==='function'&&gridCtx().T)||state._T; if(!Array.isArray(T)) return;
+    // a leg saved or moved into ANOTHER pay period leaves the on-screen list (it would otherwise
+    // count in this period's totals and Submit), as a moved expense does
+    const cper=(typeof gridCtx==='function' && gridCtx().per) || state.period;
+    if(!del && rowOrId && rowOrId.period_id && cper && !isAllPeriods(cper) && cper.id && rowOrId.period_id!==cper.id){ rowOrId=rowOrId.id; del=true; }
     const id=del?rowOrId:rowOrId.id, ix=T.findIndex(t=>String(t.id)===String(id));
     if(del){ if(ix>=0) T.splice(ix,1); }
     else if(ix>=0) T[ix]={...T[ix],...rowOrId}; else T.push(rowOrId);
@@ -2602,7 +2606,7 @@ function tripSheet(presetDate, editTrip, opts){
   // load THIS day's already-logged trips (from the in-memory grid/period data) as legs, so
   // editing one trip shows the whole day's journey and you can navigate / add / delete legs
   let date = editMode ? editTrip.trip_date : (presetDate || todayISO());   // the day this editor is on (a date change with nothing saved moves it)
-  const dayTrips = (((typeof gridCtx==='function' && gridCtx().T) || state._T || []))
+  const dayTrips = (opts.dayRows || ((typeof gridCtx==='function' && gridCtx().T) || state._T || []))
     .filter(t=>String(t.trip_date)===String(date))
     .sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
   // a saved leg's signature as loaded, to tell an open leg from one holding unsaved edits
@@ -2657,8 +2661,14 @@ function tripSheet(presetDate, editTrip, opts){
       const x=sh.querySelector('.sheetx'); if(x) x.onclick=()=>{ closeSheet(); refresh(); }; } }
   // Unsaved work on a leg (typed destination/miles, odometer or route photos). The open leg's
   // destination is read live: its field only lands in `p` on save.
-  const unsavedWork=q=>!q.tripId && (!!String(q.destLabel||'').trim() || q.miles!=null || q.startOdo!=null
-    || !!q.startPath || !!q.endPath || !!q.routePath || (q===parts[activeIdx] && !!String($('#tDest')?.value||'').trim()));
+  const unsavedWork=q=>{
+    if(q.tripId) return false;
+    const open=q===parts[activeIdx], live=id=>open ? ($('#'+id)?.value ?? null) : null;
+    const start=live('tStartLoc') ?? q.startLabel, kind=live('tKind') ?? q.kind, note=live('tNote') ?? q.note;
+    return !!String(live('tDest') ?? q.destLabel ?? '').trim() || q.miles!=null || q.startOdo!=null || q.endOdo!=null
+      || !!q.startPath || !!q.endPath || !!q.routePath || q.linkDispId!==undefined
+      || String(start||'')!==String(q._start0||'') || !!kind || !!String(note||'').trim();
+  };
   // a saved leg whose form differs from what's in the database (open leg: live fields too)
   const legEdited=q=>{
     if(!q.tripId || q._sig==null) return false;
@@ -2672,26 +2682,43 @@ function tripSheet(presetDate, editTrip, opts){
   // may legs go on day d? '' = yes, else why not. Admins may put them anywhere. BAs only into
   // a period they can still edit and haven't submitted, and never onto a day that hasn't come.
   async function dayLockMsg(d){
-    if(isAdminCtx) return '';
+    if(isAdminCtx){
+      // admins may put legs anywhere, but the period must EXIST before the row moves, or the
+      // trigger leaves the leg in its old period (ensurePeriodForDate re-points state.period)
+      const per0=state.period; await ensurePeriodForDate(d); state.period=per0; return '';
+    }
+    // BAs: decided from the periods already loaded, with no write. Every period a BA may
+    // still edit (current, grace, owed) is in state.periods, so "none covers it" = not theirs.
     if(d>todayISO()) return `${fmtDate(d)} hasn't happened yet. Pick the day you drove.`;
-    const per0=state.period; await ensurePeriodForDate(d); const tp=state.period; state.period=per0;   // ensure… re-points state.period
-    if(!tp || !(tp.start_date<=d && tp.end_date>=d)) return `Couldn't find the pay period for ${fmtDate(d)}. Try again.`;
+    const tp=(state.periods||[]).find(x=>x.start_date<=d && x.end_date>=d);
+    if(!tp) return `${fmtDate(d)} isn't in a pay period you can edit. Ask an admin.`;
     if(mySubmitted(tp.id)) return `${tp.label||'That pay period'} is already submitted. Ask an admin to add legs to it.`;
     if(!canEditPeriod(tp)) return `${tp.label||'That pay period'} is closed. Ask an admin to add legs to it.`;
     return '';
   }
   // open another day's editor in place of this one, keeping an admin's return-to-BA hook for
   // it (firing it now would reload the BA sheet over the new editor)
-  const jumpToDay=nd=>{ const keep=state._sheetReturn; state._sheetReturn=null;
-    closeSheet(); if(dirty) refreshAfter(); tripSheet(nd);
+  const jumpToDay=async nd=>{
+    const cper=(typeof gridCtx==='function' && gridCtx().per) || state.period;
+    let dayRows=null;
+    if(cper && !isAllPeriods(cper) && !(cper.start_date<=nd && cper.end_date>=nd)){
+      // outside the period on screen: the in-memory list doesn't have that day, so a blank
+      // Leg 1 would invite logging it twice. Read the day's legs first.
+      const { data, error }=await supabase.from('trips').select('*').eq('ba_id',forBA).eq('trip_date',nd);
+      if(error) return toast(`Couldn't load ${fmtDate(nd)}: ${error.message}`,'err');
+      dayRows=data||[];
+    }
+    const keep=state._sheetReturn; state._sheetReturn=null;
+    closeSheet(); if(dirty) refreshAfter(); tripSheet(nd, undefined, dayRows?{dayRows}:{});
     if($('#sheet')) state._sheetReturn=keep; else if(keep) keep(); };
   // one Date field rules the day. Nothing saved yet → the day just becomes the new date.
   // Saved legs → pick WHICH move. (It was all-or-nothing, so legs from several days logged
   // under one date couldn't be split; Keelin, Sep 27: "it wouldn't let me change the date".)
   $('#tDate').onchange=async e=>{
     const nd=e.target.value; if(!nd || nd===date) return;
+    const editorEl=$('#sheet');
     const lock=await dayLockMsg(nd);
-    if(e.target.value!==nd) return;                        // changed again while we checked
+    if(!editorEl || !editorEl.isConnected || e.target.value!==nd) return;   // closed or changed again meanwhile
     if(lock){ e.target.value=date; return toast(lock,'err'); }
     const movable=parts.filter(q=>q.tripId && unlockedLeg(q));
     if(!movable.length){
@@ -2709,8 +2736,8 @@ function tripSheet(presetDate, editTrip, opts){
     const fresh=!editMode && !parts.some(unsavedWork);
     const row=(q,i)=>{ const ed=legEdited(q);
       return `<label class="msel-opt"><input type="checkbox" data-mv="${i}"${ed?' disabled':''}><span>${esc(abbrPlace(q.startLabel||'?',26))} → ${esc(abbrPlace(q.destLabel||'?',26))}${q.miles!=null?` · ${q.miles} mi`:''}${q.note?` <span class="muted">· ${esc(q.note)}</span>`:''}${ed?` <span class="muted">· has unsaved changes, save it first</span>`:''}</span></label>`; };
-    document.getElementById('sheet2')?.remove();
-    const sh2=document.createElement('div'); sh2.className='backdrop'; sh2.id='sheet2'; sh2.style.zIndex='70';
+    document.getElementById('sheetMove')?.remove();
+    const sh2=document.createElement('div'); sh2.className='backdrop'; sh2.id='sheetMove'; sh2.style.zIndex='70';
     sh2.innerHTML=`<div class="sheet"><button class="sheetx" aria-label="Close" title="Close">✕</button>
       <h3>Move legs to ${esc(fmtDate(nd))}</h3>
       <div class="small muted" style="margin-bottom:8px">Tick the legs you drove on ${esc(fmtDate(nd))}. The rest stay on ${esc(fmtDate(date))}.</div>
@@ -2731,15 +2758,10 @@ function tripSheet(presetDate, editTrip, opts){
       const pick=[...sh2.querySelectorAll('[data-mv]:checked')].map(c=>movable[Number(c.dataset.mv)]);
       if(!pick.length) return toast('Tick the legs to move','err');
       going=true; const btn=sh2.querySelector('#mvGo'); busy(btn,true);
-      const cper=(typeof gridCtx==='function' && gridCtx().per) || state.period;
       const moved=new Set();
       for(const q of pick){
         const {data,error}=await supabase.from('trips').update({trip_date:nd}).eq('id',q.tripId).select('*').single();
-        if(!error && data){
-          // a leg that left the pay period on screen leaves its list (as a moved expense does)
-          const out = !!(cper && !isAllPeriods(cper) && data.period_id && data.period_id!==cper.id);
-          syncT(out ? data.id : data, out); moved.add(q);
-        }
+        if(!error && data){ syncT(data); moved.add(q); }   // syncT drops it from the list if it left this period
       }
       going=false; sh2.remove();
       toast(moved.size===pick.length?`Moved ${moved.size} leg${moved.size>1?'s':''} to ${fmtDate(nd)} ✓`:`Moved ${moved.size} of ${pick.length} legs · the rest are locked`, moved.size?'ok':'err');
@@ -2749,12 +2771,9 @@ function tripSheet(presetDate, editTrip, opts){
       const keepAct=parts[activeIdx];
       for(let k=parts.length-1;k>=0;k--) if(moved.has(parts[k])) parts.splice(k,1);
       activeIdx = keepAct && !moved.has(keepAct) ? parts.indexOf(keepAct) : -1;
-      if(!parts.some(q=>q.tripId)){
-        // nothing saved left on this day: a half-typed leg goes with the ones that moved;
-        // otherwise this day's editor is done
-        if(parts.some(unsavedWork)){ date=nd; if(el) el.value=nd; render(); return; }
-        closeSheet(); refreshAfter(); return;
-      }
+      // nothing saved or typed left on this day: this day's editor is done. A half-typed leg
+      // stays here on its own day, as the picker said ("the rest stay on …").
+      if(!parts.some(q=>q.tripId) && !parts.some(unsavedWork)){ closeSheet(); refreshAfter(); return; }
       render();
     };
   }
@@ -3050,7 +3069,7 @@ function tripSheet(presetDate, editTrip, opts){
       else dId=legAttribution({ destText:p.destLabel, startText:p.startLabel,
         destDispId:p.destDispId, kind:p.kind, homeAddr });
       // a saved leg keeps its own date (moving it is the date picker's job); new legs take the field's
-      const row={ ba_id:forBA, trip_date:(p.tripId && p.tripDate) ? p.tripDate : $('#tDate').value, dispensary_id:dId,
+      const row={ ba_id:forBA, trip_date:(p.tripId && p.tripDate) ? p.tripDate : date, dispensary_id:dId,
         kind: p.kind || ((dId && /office/i.test(dispName(dId)))?OFFICE_KIND:null),
         method:(p.method==='route'?'distance':p.method), miles:p.miles, miles_source:p.milesSrc,
         dest_label:p.destLabel, start_label:startLoc, note:p.note, roundtrip:false };
