@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-09-27.112';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-09-27.113';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -2601,11 +2601,15 @@ function tripSheet(presetDate, editTrip, opts){
     try{ const c=(typeof gridCtx==='function')&&gridCtx(); if(c&&typeof c.onChange==='function') c.onChange(); }catch(_e){} };
   // load THIS day's already-logged trips (from the in-memory grid/period data) as legs, so
   // editing one trip shows the whole day's journey and you can navigate / add / delete legs
-  const date = editMode ? editTrip.trip_date : (presetDate || todayISO());
+  let date = editMode ? editTrip.trip_date : (presetDate || todayISO());   // the day this editor is on (a date change with nothing saved moves it)
   const dayTrips = (((typeof gridCtx==='function' && gridCtx().T) || state._T || []))
     .filter(t=>String(t.trip_date)===String(date))
     .sort((a,b)=>String(a.created_at||a.id).localeCompare(String(b.created_at||b.id)));
+  // a saved leg's signature as loaded, to tell an open leg from one holding unsaved edits
+  const legSig=q=>JSON.stringify([q.startLabel||'',q.destLabel||'',q.destDispId||null,q.method,q.miles??null,q.note||'',
+    q.kind||null,q.startOdo??null,q.endOdo??null,q.startPath||null,q.endPath||null,q.routePath||null,q.linkDispId===undefined?'~':q.linkDispId]);
   const parts = dayTrips.map(partFromTrip);
+  parts.forEach(q=>{ q._sig=legSig(q); });
   // fix-mode only ever targets legs the BA can actually fix (same rule as the To-do card)
   const legIssues = dayTrips.map(t=>(isAdminCtx||tripFixable(t))?itemIssues({...t,_k:'trip'}):[]);   // aligned 1:1 with parts
   let activeIdx;
@@ -2651,77 +2655,106 @@ function tripSheet(presetDate, editTrip, opts){
     if(sh){ const refresh=()=>{ if(dirty) refreshAfter(); };
       sh.addEventListener('click',e=>{ if(e.target===sh) refresh(); });
       const x=sh.querySelector('.sheetx'); if(x) x.onclick=()=>{ closeSheet(); refresh(); }; } }
-  // one Date field rules the whole day: changing it offers to MOVE the already-saved
-  // legs (else they'd silently split across two dates / two pay periods)
+  // Unsaved work on a leg (typed destination/miles, odometer or route photos). The open leg's
+  // destination is read live: its field only lands in `p` on save.
+  const unsavedWork=q=>!q.tripId && (!!String(q.destLabel||'').trim() || q.miles!=null || q.startOdo!=null
+    || !!q.startPath || !!q.endPath || !!q.routePath || (q===parts[activeIdx] && !!String($('#tDest')?.value||'').trim()));
+  // a saved leg whose form differs from what's in the database (open leg: live fields too)
+  const legEdited=q=>{
+    if(!q.tripId || q._sig==null) return false;
+    if(legSig(q)!==q._sig) return true;
+    if(q!==parts[activeIdx]) return false;
+    const v=id=>{ const el=$('#'+id); return el?el.value:null; };
+    return (v('tDest')!=null && v('tDest').trim()!==(q.destLabel||''))
+      || (v('tNote')!=null && v('tNote')!==(q.note||''))
+      || (v('tMiles')!=null && v('tMiles')!=='' && Number(v('tMiles'))!==Number(q.miles));
+  };
+  // may legs go on day d? '' = yes, else why not. Admins may put them anywhere. BAs only into
+  // a period they can still edit and haven't submitted, and never onto a day that hasn't come.
+  async function dayLockMsg(d){
+    if(isAdminCtx) return '';
+    if(d>todayISO()) return `${fmtDate(d)} hasn't happened yet. Pick the day you drove.`;
+    const per0=state.period; await ensurePeriodForDate(d); const tp=state.period; state.period=per0;   // ensure… re-points state.period
+    if(!tp || !(tp.start_date<=d && tp.end_date>=d)) return `Couldn't find the pay period for ${fmtDate(d)}. Try again.`;
+    if(mySubmitted(tp.id)) return `${tp.label||'That pay period'} is already submitted. Ask an admin to add legs to it.`;
+    if(!canEditPeriod(tp)) return `${tp.label||'That pay period'} is closed. Ask an admin to add legs to it.`;
+    return '';
+  }
+  // open another day's editor in place of this one, keeping an admin's return-to-BA hook for
+  // it (firing it now would reload the BA sheet over the new editor)
+  const jumpToDay=nd=>{ const keep=state._sheetReturn; state._sheetReturn=null;
+    closeSheet(); if(dirty) refreshAfter(); tripSheet(nd);
+    if($('#sheet')) state._sheetReturn=keep; else if(keep) keep(); };
+  // one Date field rules the day. Nothing saved yet → the day just becomes the new date.
+  // Saved legs → pick WHICH move. (It was all-or-nothing, so legs from several days logged
+  // under one date couldn't be split; Keelin, Sep 27: "it wouldn't let me change the date".)
   $('#tDate').onchange=async e=>{
     const nd=e.target.value; if(!nd || nd===date) return;
+    const lock=await dayLockMsg(nd);
+    if(e.target.value!==nd) return;                        // changed again while we checked
+    if(lock){ e.target.value=date; return toast(lock,'err'); }
     const movable=parts.filter(q=>q.tripId && unlockedLeg(q));
     if(!movable.length){
-      // log flow, nothing saved yet: jump the editor to that DAY — load its existing
-      // legs (continuing from the last stop) instead of blindly keeping a lone Leg 1
-      // that would duplicate a day already logged. Only when the open leg is pristine.
-      const act=parts[activeIdx];
-      const pristine=act && !act.saved && !String(act.destLabel||'').trim() && act.miles==null;
-      if(!editMode && pristine){ closeSheet(); tripSheet(nd); }
-      return;
+      // log flow with nothing typed: load that day's own legs instead of a lone Leg 1 that
+      // could duplicate a day already logged. Otherwise keep the typed leg; it saves on nd.
+      if(!editMode && !parts.some(unsavedWork)) return jumpToDay(nd);
+      date=nd; return;
     }
-    // Saved legs on this day: ask WHICH ones move. It used to be all-or-nothing, so legs from
-    // several days logged under one date couldn't be split without re-entering them (Keelin,
-    // Sep 27: "it wouldn't let me change the date of the mileage… it is all under one day").
     pickLegsToMove(movable, nd);
   };
   function pickLegsToMove(movable, nd){
-    // The editor stays open throughout: moved legs just leave this day's list. (Closing and
-    // reopening it lost a half-typed leg, skipped the home refresh, and fired an admin's
-    // return-to-BA reload on top of the reopened editor.)
-    const act=parts[activeIdx];
-    const openSaved = act && act.tripId && unlockedLeg(act) ? act : null;   // expanded saved leg: may hold unsaved edits
-    const fresh = !editMode && act && !act.saved && !String(act.destLabel||'').trim() && act.miles==null;
-    const row=(q,i)=>{ const busyLeg=q===openSaved;
-      return `<label class="msel-opt"><input type="checkbox" data-mv="${i}"${busyLeg?' disabled':''}><span>${esc(abbrPlace(q.startLabel||'?',26))} → ${esc(abbrPlace(q.destLabel||'?',26))}${q.miles!=null?` · ${q.miles} mi`:''}${q.note?` <span class="muted">· ${esc(q.note)}</span>`:''}${busyLeg?` <span class="muted">· open, save it first</span>`:''}</span></label>`; };
-    const sh2=openSheet2(`<h3>Change the date to ${esc(fmtDate(nd))}</h3>
-      ${fresh?`<button class="btn primary block" id="mvLog" style="margin:4px 0 14px">Log a new trip on ${esc(fmtDate(nd))}</button>
-        <div class="small muted" style="margin-bottom:8px">Or move legs already saved on ${esc(fmtDate(date))}. Tick the ones driven on ${esc(fmtDate(nd))}:</div>`
-        :`<div class="small muted" style="margin-bottom:8px">Tick the legs driven on ${esc(fmtDate(nd))}. The rest stay on ${esc(fmtDate(date))}.</div>`}
+    // The editor stays open: moved legs just leave this day's list, and any half-typed leg
+    // stays put. The picker is our own layer so a move in flight can't be "cancelled".
+    const editorEl=$('#sheet');
+    const fresh=!editMode && !parts.some(unsavedWork);
+    const row=(q,i)=>{ const ed=legEdited(q);
+      return `<label class="msel-opt"><input type="checkbox" data-mv="${i}"${ed?' disabled':''}><span>${esc(abbrPlace(q.startLabel||'?',26))} → ${esc(abbrPlace(q.destLabel||'?',26))}${q.miles!=null?` · ${q.miles} mi`:''}${q.note?` <span class="muted">· ${esc(q.note)}</span>`:''}${ed?` <span class="muted">· has unsaved changes, save it first</span>`:''}</span></label>`; };
+    document.getElementById('sheet2')?.remove();
+    const sh2=document.createElement('div'); sh2.className='backdrop'; sh2.id='sheet2'; sh2.style.zIndex='70';
+    sh2.innerHTML=`<div class="sheet"><button class="sheetx" aria-label="Close" title="Close">✕</button>
+      <h3>Move legs to ${esc(fmtDate(nd))}</h3>
+      <div class="small muted" style="margin-bottom:8px">Tick the legs you drove on ${esc(fmtDate(nd))}. The rest stay on ${esc(fmtDate(date))}.</div>
       <div class="pklist">${movable.map(row).join('')}</div>
-      <button class="btn ${fresh?'':'primary '}block" id="mvGo" style="margin-top:12px">Move ticked legs to ${esc(fmtDate(nd))}</button>
-      ${fresh?'':`<button class="btn ghost block" id="mvNone" style="margin-top:8px">Move none · new legs I add go on ${esc(fmtDate(nd))}</button>`}
-      <button class="btn ghost block" id="mvCancel" style="margin-top:8px">Cancel</button>`);
-    // ✕, backdrop and Cancel all mean "never mind": put the day's date back
-    const revert=()=>{ closeSheet2(); const el=$('#tDate'); if(el) el.value=date; };
-    sh2.querySelector('.sheetx').onclick=revert;
-    sh2.addEventListener('click',e=>{ if(e.target===sh2) revert(); });
-    $('#mvCancel').onclick=revert;
-    const none=$('#mvNone'); if(none) none.onclick=()=>closeSheet2();
-    const log=$('#mvLog'); if(log) log.onclick=()=>{
-      // same as picking a date on a fresh sheet: open that day's editor (keeping an admin's
-      // return hook for it instead of firing the parent's reload over it)
-      closeSheet2(); const keep=state._sheetReturn; state._sheetReturn=null;
-      closeSheet(); if(dirty) refreshAfter(); tripSheet(nd);
-      if($('#sheet')) state._sheetReturn=keep; else if(keep) keep();
-    };
+      <button class="btn primary block" id="mvGo" style="margin-top:12px">Move ticked legs</button>
+      ${fresh?`<button class="btn ghost block" id="mvLog" style="margin-top:8px">Move none · log a new trip on ${esc(fmtDate(nd))}</button>`:''}
+      <button class="btn ghost block" id="mvCancel" style="margin-top:8px">Cancel</button></div>`;
+    document.body.appendChild(sh2);
     let going=false;
-    $('#mvGo').onclick=async()=>{
+    // ✕, backdrop and Cancel mean "never mind": put the day's date back (not while a move runs)
+    const revert=()=>{ if(going) return; sh2.remove(); const el=$('#tDate'); if(el && editorEl && editorEl.isConnected) el.value=date; };
+    sh2.addEventListener('click',e=>{ if(e.target===sh2) revert(); });
+    sh2.querySelector('.sheetx').onclick=revert;
+    sh2.querySelector('#mvCancel').onclick=revert;
+    const log=sh2.querySelector('#mvLog'); if(log) log.onclick=()=>{ if(going) return; sh2.remove(); jumpToDay(nd); };
+    sh2.querySelector('#mvGo').onclick=async()=>{
       if(going) return;
       const pick=[...sh2.querySelectorAll('[data-mv]:checked')].map(c=>movable[Number(c.dataset.mv)]);
-      if(!pick.length) return toast('Tick at least one leg to move','err');
-      going=true; const btn=$('#mvGo'); busy(btn,true);
-      // ensurePeriodForDate makes nd's period exist but also re-points state.period at it;
-      // this editor, the home and Submit still belong to the period we started in
-      const per0=state.period; await ensurePeriodForDate(nd); state.period=per0;
+      if(!pick.length) return toast('Tick the legs to move','err');
+      going=true; const btn=sh2.querySelector('#mvGo'); busy(btn,true);
+      const cper=(typeof gridCtx==='function' && gridCtx().per) || state.period;
       const moved=new Set();
       for(const q of pick){
         const {data,error}=await supabase.from('trips').update({trip_date:nd}).eq('id',q.tripId).select('*').single();
-        if(!error && data){ syncT(data); moved.add(q); }
+        if(!error && data){
+          // a leg that left the pay period on screen leaves its list (as a moved expense does)
+          const out = !!(cper && !isAllPeriods(cper) && data.period_id && data.period_id!==cper.id);
+          syncT(out ? data.id : data, out); moved.add(q);
+        }
       }
-      busy(btn,false); going=false; closeSheet2();
-      const el=$('#tDate'); if(el) el.value=date;          // the legs still listed here are on `date`
+      going=false; sh2.remove();
       toast(moved.size===pick.length?`Moved ${moved.size} leg${moved.size>1?'s':''} to ${fmtDate(nd)} ✓`:`Moved ${moved.size} of ${pick.length} legs · the rest are locked`, moved.size?'ok':'err');
+      if(!editorEl || !editorEl.isConnected){ refreshAfter(); return; }   // the editor was closed meanwhile
+      const el=$('#tDate'); if(el) el.value=date;
       if(!moved.size) return;
       const keepAct=parts[activeIdx];
       for(let k=parts.length-1;k>=0;k--) if(moved.has(parts[k])) parts.splice(k,1);
       activeIdx = keepAct && !moved.has(keepAct) ? parts.indexOf(keepAct) : -1;
-      if(!parts.length){ closeSheet(); refreshAfter(); return; }   // nothing left on this day
+      if(!parts.some(q=>q.tripId)){
+        // nothing saved left on this day: a half-typed leg goes with the ones that moved;
+        // otherwise this day's editor is done
+        if(parts.some(unsavedWork)){ date=nd; if(el) el.value=nd; render(); return; }
+        closeSheet(); refreshAfter(); return;
+      }
       render();
     };
   }
@@ -3034,7 +3067,7 @@ function tripSheet(presetDate, editTrip, opts){
       else res=await supabase.from('trips').insert(row).select('*').single();
       busy(btn,false);
       if(res.error) return toast(res.error.message,'err');
-      p.tripId=res.data.id; p.saved=true; p.status=res.data.status||'draft'; p.tripDate=res.data.trip_date;
+      p.tripId=res.data.id; p.saved=true; p.status=res.data.status||'draft'; p.tripDate=res.data.trip_date; p._sig=legSig(p);
       syncT(res.data);
       rememberPlaces(startLoc, p.destLabel);
       toast(wasUpdate?'Trip updated ✓':`Leg ${i+1} saved ✓`,'ok');
