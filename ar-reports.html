@@ -5223,6 +5223,14 @@ function nyscSheetDiff(monday){
 const nyscMonOf=ms=>{ const d=new Date(ms); d.setHours(0,0,0,0); d.setDate(d.getDate()-((d.getDay()+6)%7)); return d; };
 const nyscIso=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 function nyscInWin(r,a,b){ return r.when!=null && r.when>=a.getTime() && r.when<=b.getTime(); }
+// Orders HM OPS hasn't accepted yet count in ONE place: the live week's Projected Deliveries (Gianni,
+// 2026-10-02). Most are accepted within days and ship that week, but they aren't sales until then, so
+// Orders, Total Sales, MTD and every other view leave them out. Dated like nyscRows (sheet, LeafLink
+// ship date, else order date); only the current week ever gets them.
+function nyscPendingFor(monday){ if(monday.getTime()!==scCurrentMonday().getTime()) return [];
+  const {a,b}=nyscWeekWin(monday), idx=nyscDelivIndex();
+  return (NY_ORDERS_ALL||[]).filter(e=>!nyIsAccepted(e)).map(e=>{ const ref=String(e.ref||'').trim(), t=idx[ref]!=null?idx[ref]:((NY_SHIP||{})[ref]!=null?NY_SHIP[ref]:null);
+    return {...e, ref, deliv:t, when:t!=null?t:e.d, sched:t!=null, pending:true}; }).filter(r=>nyscInWin(r,a,b)); }
 function nyscWeekWin(monday){ const a=new Date(monday); const b=new Date(monday); b.setDate(monday.getDate()+6); b.setHours(23,59,59,999); return {a,b}; }
 // MTD window on the DELIVERY-date axis, mirroring the CA scorecard's mtdWindow(): past rows are
 // historical (month start → that row's previous Sunday), the LIVE row runs through today. Future
@@ -5291,7 +5299,9 @@ function renderNySc(){
     const has=r.m.n>0;
     return `<tr${r.isCur?' class="totals"':''}>
       <td>${fmtD(r.monday)}${pill}</td>
-      ${C(r,'tot','num money','<b>'+m$(r.m.tot)+'</b>',has)}
+      ${(()=>{ const pend=r.isCur?nyscPendingFor(r.monday):[], pa=pend.reduce((s,x)=>s+(x.amt||0),0);
+        if(!pend.length) return C(r,'tot','num money','<b>'+m$(r.m.tot)+'</b>',has);
+        return C(r,'tot','num money',`<b>${fmt$(r.m.tot+pa)}</b><div class="rep" style="font-weight:400" title="Orders HM OPS hasn't accepted yet: counted in this projection only">incl. ${fmt$(pa)} awaiting acceptance</div>`,true); })()}
       ${(()=>{ if(!has) return C(r,'vsheet','num money',m$(null),false);
         const sd=nyscSheetDiff(r.monday); const flag=Math.abs(sd.mismatch)>0.005||Math.abs(sd.sheetOnly)>0.005;
         const txt=Math.abs(sd.delta)<=0.005?'<span style="color:var(--green)">✓ match</span>':`<span style="color:${flag?'var(--orange)':'var(--muted)'}">${sd.delta>0?'+':''}${fmt$(sd.delta)}</span>`;
@@ -5379,6 +5389,7 @@ function nyscBoardDrill(dateStr, col){
   else if(col==='cod'){ list=list.filter(r=>/cod/i.test(r.terms||'')); label='COD deliveries'; }
   else if(col==='net'){ list=list.filter(r=>/net/i.test(r.terms||'')); label='Net 30 deliveries'; }
   else if(col==='orders'||col==='accts'||col==='tot'){ label='Projected deliveries'; }
+  if(col==='tot') list=list.concat(nyscPendingFor(monday));   // live week only: orders awaiting HM OPS acceptance
   list=list.slice().sort((x,y)=>(x.when-y.when)||(y.amt-x.amt));
   if(!list.length) return {title:`${label} — week of ${wkLabel}`, empty:'No deliveries behind this cell.'};
   const fmtDt=ms=>new Date(ms).toLocaleDateString('en-US',{weekday:'short',month:'numeric',day:'numeric'});
@@ -5388,12 +5399,13 @@ function nyscBoardDrill(dateStr, col){
       return `<tr><td>${esc(pp.strain+(pp.format?` — ${pp.format}`:''))}</td><td class="num">${u?Math.round(u).toLocaleString():''}</td><td class="num money">${unit?fmt$(unit):''}</td><td class="num money">${fmt$(it.lineTotal)}</td></tr>`; }).join('');
     const tu=its.reduce((s,it)=>s+(it.units||0),0), tl=its.reduce((s,it)=>s+(it.lineTotal||0),0);
     return `<div class="ddhead">Line items</div><table class="ddtable invitems"><thead><tr><th>Product</th><th class="num">Units</th><th class="num">Price/Unit</th><th class="num">Line Total</th></tr></thead><tbody>${body}</tbody><tfoot><tr class="totals"><td>Total</td><td class="num">${tu?Math.round(tu).toLocaleString():''}</td><td></td><td class="num money">${fmt$(tl)}</td></tr></tfoot></table>`; };
-  const accts=new Set(list.map(r=>tierNorm(r.c))).size, unsched=list.filter(r=>!r.sched).length;
+  const accts=new Set(list.map(r=>tierNorm(r.c))).size, unsched=list.filter(r=>!r.sched).length, pend=list.filter(r=>r.pending);
   return {title:`${label} — week of ${wkLabel}`,
-    sub:`${list.length} order${list.length!==1?'s':''} · ${accts} account${accts!==1?'s':''}${unsched?` · ${unsched} not scheduled (shown by order date)`:''} · click an order for its line items`,
+    sub:`${list.length} order${list.length!==1?'s':''} · ${accts} account${accts!==1?'s':''}${unsched?` · ${unsched} not scheduled (shown by order date)`:''}${pend.length?` · ${pend.length} awaiting HM OPS acceptance (${fmt$(pend.reduce((s,r)=>s+r.amt,0))}), counted only in this projection`:''} · click an order for its line items`,
     columns:[{l:'Delivery'},{l:'LL#'},{l:'Drop · WT NY invoice'},{l:'Buyer'},{l:'Status'},{l:'Amount',num:true,money:true}],
-    rows:list.map(r=>[r.sched?fmtDt(r.deliv):`${fmtDt(r.when)} (order date)`, (r.ref||'—')+(r.terms?` · ${r.terms}`:''), r.dropInv||('Drop '+r.drop), r.c, r.st||'—', r.amt]),
-    rowDetails:list.map(r=>itemsTable(r.ref)),
+    rows:list.map(r=>[r.sched?fmtDt(r.deliv):`${fmtDt(r.when)} (order date)`, (r.ref||'—')+(r.terms?` · ${r.terms}`:''), r.pending?'':(r.dropInv||('Drop '+r.drop)), r.c, r.pending?'Awaiting acceptance':(r.st||'—'), r.amt]),
+    rowClass:list.map(r=>r.pending?'row-amber':''),
+    rowDetails:list.map(r=>r.pending?'<div class="rep" style="padding:4px 0">Not accepted by HM OPS yet: counted in this week\'s projection only.</div>':itemsTable(r.ref)),
     totalLabel:'Total', total:list.reduce((s,r)=>s+r.amt,0)};
 }
 { const w=$('#nysc-wrap'); if(w) w.onclick=(ev)=>{ const td=ev.target.closest?ev.target.closest('td.drill'):null; if(!td||!w.contains(td)) return;
@@ -5402,7 +5414,7 @@ function nyscBoardDrill(dateStr, col){
   const board=nyscBoardRows(); if(!board.length) return;
   const drops=board[0].drops;
   const out=[['Week','Projected Deliveries','vs HM OPS Sheet','Orders','Customer Count','Total Sales','Sales by Drop','COD','Net 30','MTD Delivered','Prior Month','4-Wk Avg','On Hand (LeafLink)']];
-  board.forEach(r=>out.push([r.key, r.m.tot.toFixed(2), nyscSheetDiff(r.monday).delta.toFixed(2), r.m.n, r.m.accts.size, r.m.tot.toFixed(2),
+  board.forEach(r=>out.push([r.key, (r.m.tot+(r.isCur?nyscPendingFor(r.monday).reduce((t,x)=>t+(x.amt||0),0):0)).toFixed(2), nyscSheetDiff(r.monday).delta.toFixed(2), r.m.n, r.m.accts.size, r.m.tot.toFixed(2),
     drops.filter(d=>r.m.byDrop[d]).map(d=>'Drop '+d+' '+(r.m.byDrop[d]||0).toFixed(2)).join(' · '), r.m.cod.toFixed(2), r.m.net.toFixed(2),
     r.mtd==null?'':r.mtd.toFixed(2), r.priorMtd==null?'':r.priorMtd.toFixed(2), r.fourWk==null?'':r.fourWk.toFixed(2), r.isCur?nyscOnHandTotal().toFixed(2):'']));
   downloadCSV('ny-scorecard.csv', out); }; }
