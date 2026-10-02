@@ -4548,7 +4548,13 @@ function nyMonthData(ym){
   // paying us directly (Cannabri, Cannacure, Mambo) is already the full amount
   const grossCollected=list=>list.reduce((s,p)=>s+nyPayGross(p),0);
   const {all,maxInvD}=nyArAllRows();
-  const open=all.filter(x=>x.out>0.005 && (!x._pend || nyMonthShipped(x._st)))
+  // an order HM OPS hasn't invoiced yet is owed only once it has actually gone out: its delivery date
+  // (the HM OPS sheet's, else LeafLink's ship date) is on or before today; with no date at all, only
+  // when LeafLink says Complete or Shipped (LeafLink 'Fulfilled' = packed, some with next week's date)
+  const scBy={}; sc.forEach(r=>{ const k=String(r.ref||'').trim(); if(k) scBy[k]=r; });
+  const goneOut=x=>{ const r=scBy[String(x._ref||'').trim()]; if(!r) return false;
+    return r.sched ? r.when<=nowMs : /complet|ship|deliver/i.test(r.st||''); };
+  const open=all.filter(x=>x.out>0.005 && (!x._pend || goneOut(x)))
     .map(x=>({...x, bk:(x.dpd==null||x.dpd< -7)?'current':(x.dpd<=0?'due':'past')}))
     .map(x=>({...x, pb:x.bk!=='past'?'':x.dpd<=15?'past1':x.dpd<=30?'past2':'past3'}));   // past due 1-15 / 16-30 / over 30 days
   const S=a=>a.reduce((s,x)=>s+(x.out||0),0), B=k=>open.filter(x=>x.bk===k||x.pb===k);
@@ -5488,11 +5494,6 @@ function nyQboDrill(inv){
     empty:rows.length?undefined:'No line detail available for this invoice yet (publishes with the next hourly refresh).',
     totalLabel:'Balance due', total:rows.length?x.bal:undefined });
 }
-// Tie each recon invoice back to the LeafLink order it came from. The distributor's Distru
-// (SOWT-#### orders → INVWT#### invoices) and LeafLink (LL-####) share no key, so match on
-// customer + GROSS order total (recon Total is net of discounts; Gross Sale is the order value),
-// disambiguating same-customer/same-amount repeats by order-date proximity. ~96% resolve to
-// exactly one order; the rest fall back to showing the distributor's own sales-order number.
 // The invoiced/un-invoiced boundary, in ONE place: render, export, and any future fix (e.g. the
 // planned match-based cutoff when the July workbook lands) all flow through these two helpers.
 // maxInvD counts only parseable recon dates ≤ today+45d (a future-dated typo can't suppress the
@@ -5507,41 +5508,93 @@ const nyShipD=r=>{ const t=(NY_SHIP||{})[String(r.ref||'').trim()]; return t!=nu
 // ORPHANS: shipped orders on or before the recon cutoff that no invoice accounts for. Before
 // 2026-09-02 these vanished from both lists (four real August receivables, $9,120). "No invoice"
 // must survive the recon's own spelling of a store ("Hii - NYC" for "Hii NYC - Williamsburg"), so
-// an order is orphaned only when no UNMATCHED invoice of the same gross exists for a similarly
-// named customer (≥60% common prefix, the rule the Paid-vs-Unpaid ingester validated): a name
-// variant is not a missing invoice, and a chain sibling's invoice is not this order's.
+// an order is orphaned only when no UNMATCHED invoice of the same amount exists for the same store
+// (the HM OPS sheet's spelling, else ≥60% common prefix): a name variant is not a missing invoice,
+// and a chain sibling's invoice is not this order's. Each unmatched invoice excuses one order.
 const nyNameKey=x=>String(x||'').replace(/\s*\([^)]*\)\s*$/,'').toLowerCase().replace(/[^a-z0-9]/g,'');
 function nyOrphanOrders(maxInvD){
   if(!maxInvD || !(NY_INV||[]).length) return [];
-  const om=nyInvOrderMap(); const claimed=new Set(Object.values(om));
-  // compare on the invoice's GROSS (line items, else total + discount): an invoice Total is net of
-  // the 5% early-pay discount, and a discounted invoice is not a missing one
-  const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+t.gross; });
-  const grossOf=x=>gross[x.inv]!=null?gross[x.inv]:((x.total||0)+(x.disc||0));
-  const free=(NY_INV||[]).filter(x=>!om[x.inv]);   // invoices no order claimed — the spelling-variant pool
-  const lcp=(a,b)=>{ let i=0; while(i<a.length&&i<b.length&&a[i]===b[i]) i++; return i; };
+  const {map, alias, gross}=nyInvOrderMatch(); const claimed=new Set(Object.values(map)), isClaimed=r=>!!String(r.ref||'').trim()&&claimed.has(r.ref);
+  // compare on the invoice's net, gross (total + discount) and line-item gross: an invoice Total is
+  // net of the 5% early-pay discount, and a discounted invoice is not a missing one
+  const free=(NY_INV||[]).filter(x=>!map[x.inv]), spent=new Set();   // invoices no order claimed; each can excuse one order
+  const vals=x=>[x.total, (x.total||0)+(x.disc||0), gross[x.inv]].filter(v=>v>0);
+  const eq=(a,b)=>Math.abs(a-b)<0.011;
+  const sameStore=(x,r)=>{ const a=alias[nyNameKey(x.c)]; return a?a.has(nyNameKey(r.c)):nyNameSimilar(x.c,r.c); };
   const shippedSt=st=>/ship|fulfil|complet|deliver/i.test(st||'');
   return nyArData().filter(r=>{
-    if(!r.d || !shippedSt(r.st) || nyShipD(r)>maxInvD || claimed.has(r.ref)) return false;
-    const n=nyNameKey(r.c);
-    return !free.some(x=>Math.abs(grossOf(x)-(r.amt||0))<0.011 && Math.abs((x.d||0)-nyShipD(r))<=45*864e5 && (()=>{ const m=nyNameKey(x.c); return lcp(m,n)>=0.6*Math.min(m.length,n.length) && Math.min(m.length,n.length)>=5; })());
+    if(!r.d || !shippedSt(r.st) || nyShipD(r)>maxInvD || isClaimed(r)) return false;
+    const x=free.find(x=>!spent.has(x.inv) && sameStore(x,r) && vals(x).some(v=>eq(v,r.amt||0)||eq(v,Math.round((r.amt||0)*95)/100)) && (!x.d || Math.abs(x.d-nyShipD(r))<=45*864e5));   // an undated invoice can still excuse its order
+    if(x){ spent.add(x.inv); return false; }
+    return true;
   }).map(r=>({...r, _orphan:true}));
 }
+// An invoiced order is never pending, even when LeafLink's ship date falls after the recon cutoff.
 function nyPendOrders(maxInvD){ if(maxInvD==null) maxInvD=nyPendCutoff();
-  return maxInvD?nyArData().filter(r=>r.d && nyShipD(r)>maxInvD).concat(nyOrphanOrders(maxInvD)):[]; }
-function nyInvOrderMap(){
-  const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+t.gross; });
-  const idx={}; (NY_EVENTS||[]).forEach(e=>{ const k=String(e.c||'').toLowerCase()+'|'+Math.round((e.amt||0)*100); (idx[k]||(idx[k]=[])).push(e); });
-  const out={};
+  if(!maxInvD) return [];
+  const claimed=new Set(Object.values(nyInvOrderMap()));
+  return nyArData().filter(r=>r.d && nyShipD(r)>maxInvD && !(String(r.ref||'').trim() && claimed.has(r.ref))).concat(nyOrphanOrders(maxInvD)); }
+// Tie each recon invoice to the LeafLink order it came from, ONE-TO-ONE (an order is claimed by at
+// most one invoice). HM OPS's Distru (INVWT####) and LeafLink (LL-####) share no key, so:
+//   store: HM OPS spells some stores its own way ('Hii BayRidge', 'Buzzy Cannabis Salt City
+//     Naturals'); its delivery sheet lists that spelling next to the LL#, so every sheet row teaches
+//     an alias. A spelling never seen on the sheet falls back to the 60%-common-prefix rule.
+//   amount: the order total equals the invoice total + discount (or the total, or its line-item
+//     gross; the recon's line items can carry qty-0 lines, so that sum alone is not trusted), else
+//     the sheet's total for that LL#, else the total is 95% / 90% of the order.
+//   date: the invoice is dated at ship, so compare LeafLink's ship date (or the sheet's delivery
+//     day), within 10 days; an invoice never predates its order.
+// Best rule, then nearest date wins. 2026-10-02 audit: 518 of 518 invoices matched, where the old
+// same-name + line-item-gross rule left 18 unmatched, gave LL-49036 two invoices and double-counted
+// 8 orders ($22,116) as 'shipped, not invoiced'.
+const nyNameSimilar=(a,b)=>{ const m=nyNameKey(a), n=nyNameKey(b); let i=0; while(i<m.length&&i<n.length&&m[i]===n[i]) i++;
+  return Math.min(m.length,n.length)>=5 && i>=0.6*Math.min(m.length,n.length); };
+let NY_MATCH_MEMO=null;
+function nyInvOrderMatch(){
+  const key=[NY_INV,NY_EVENTS,NY_RITEMS,HM_OPS,NY_SHIP], lens=[(NY_INV||[]).length,(NY_EVENTS||[]).length,(NY_RITEMS||[]).length,(HM_OPS||[]).length,Object.keys(NY_SHIP||{}).length].join('|');
+  if(NY_MATCH_MEMO && NY_MATCH_MEMO.lens===lens && NY_MATCH_MEMO.key.every((v,i)=>v===key[i])) return NY_MATCH_MEMO.res;
+  const DAY=864e5, WIN=10*DAY, eq=(a,b)=>a!=null&&b!=null&&Math.abs(a-b)<0.011, K=nyNameKey;
+  const orders=(NY_EVENTS||[]).filter(e=>!/combin/i.test(e.st||'') && String(e.ref||'').trim());   // an order with no LL# can't be claimed
+  const byRef={}; orders.forEach(e=>{ byRef[String(e.ref||'').trim()]=e; });
+  const hmBy={}; (HM_OPS||[]).forEach(h=>{ const r=String(h.ll||'').trim(); if(byRef[r]) (hmBy[r]=hmBy[r]||[]).push(h); });
+  const alias={}, add=(a,b)=>{ if(a) (alias[a]=alias[a]||new Set()).add(b); };
+  orders.forEach(e=>add(K(e.c),K(e.c)));
+  Object.keys(hmBy).forEach(r=>hmBy[r].forEach(h=>add(K(h.shop),K(byRef[r].c))));
+  const byStore={}; orders.forEach(e=>{ (byStore[K(e.c)]=byStore[K(e.c)]||[]).push(e); });
+  const gross={}; (NY_RITEMS||[]).forEach(t=>{ gross[t.inv]=(gross[t.inv]||0)+(t.gross||0); });
+  // the sheet's delivery day ('Thu 6/18') carries no year: take the year nearest the ORDER's own ship
+  // date (anchoring on the invoice would let it claim the same week's order a year earlier)
+  const dlAt=(h,near)=>{ const m=String(h.dl||'').match(/(\d{1,2})\/(\d{1,2})/); if(!m) return null; const y=new Date(near).getFullYear();
+    return [y-1,y,y+1].map(yy=>new Date(yy,+m[1]-1,+m[2]).getTime()).sort((a,b)=>Math.abs(a-near)-Math.abs(b-near))[0]; };
+  const edges=[];
   (NY_INV||[]).forEach(x=>{
-    const g=gross[x.inv]; if(g==null) return;
-    const cands=idx[String(x.c||'').toLowerCase()+'|'+Math.round(g*100)];
-    if(!cands||!cands.length) return;
-    out[x.inv]=(cands.length===1?cands[0]
-      :cands.slice().sort((a,b)=>Math.abs((a.d||0)-(x.d||0))-Math.abs((b.d||0)-(x.d||0)))[0]).ref;
-  });
-  return out;
+    const t=x.total||0, gT=t+(x.disc||0), gR=gross[x.inv]>0?gross[x.inv]:null, S=alias[K(x.c)];
+    let cands, tier;
+    if(S&&S.size===1){ cands=byStore[[...S][0]]||[]; tier=0; }
+    else if(S){ cands=[...S].flatMap(k=>byStore[k]||[]); tier=1; }
+    else { cands=orders.filter(e=>nyNameSimilar(x.c,e.c)); tier=2; }
+    cands.forEach(e=>{
+      const hs=hmBy[String(e.ref||'').trim()]||[];
+      if(!x.d){   // undated invoice (unparseable date): same store and exact amount only, after every dated match
+        if(tier<2 && (eq(e.amt,gT)||eq(e.amt,t)||eq(e.amt,gR))) edges.push({inv:x.inv, ref:e.ref, rank:9, dist:0});
+        return; }
+      if(e.d>x.d+DAY) return;
+      const sd=nyShipD(e), dist=Math.min(...[sd, ...hs.map(h=>dlAt(h,sd)).filter(v=>v!=null)].map(v=>Math.abs(x.d-v)));
+      if(dist>WIN) return;
+      let rule=null;
+      if(eq(e.amt,gT)||eq(e.amt,t)||eq(e.amt,gR)) rule=0;
+      else if(hs.some(h=>eq(+h.total,t)||eq(+h.total,gT))) rule=1;
+      else if(eq(t,Math.round(e.amt*95)/100)||eq(t,Math.round(e.amt*90)/100)) rule=2;
+      if(rule==null || (tier===2&&rule!==0)) return;   // a spelling the sheet never used needs an exact amount
+      edges.push({inv:x.inv, ref:e.ref, rank:rule+3*tier, dist});
+    }); });
+  edges.sort((a,b)=>a.rank-b.rank||a.dist-b.dist||(a.inv<b.inv?-1:a.inv>b.inv?1:0)||(a.ref<b.ref?-1:a.ref>b.ref?1:0));
+  const map={}, used=new Set();
+  edges.forEach(ed=>{ if(map[ed.inv]||used.has(ed.ref)) return; map[ed.inv]=ed.ref; used.add(ed.ref); });
+  const res={map, alias, gross};
+  NY_MATCH_MEMO={key, lens, res}; return res;
 }
+function nyInvOrderMap(){ return nyInvOrderMatch().map; }
 // Combined NY receivables rows (recon invoices + un-invoiced LeafLink orders), dpd-stamped —
 // shared by the ledger render, the By-Dispensary rollup, and the CSV export.
 function nyArAllRows(){
