@@ -905,6 +905,7 @@
           <button data-rep="time">Sales Over Time</button>
           <button data-rep="nysku" class="hidden">Sales by Type</button>
           <button data-rep="remit" class="hidden">Remittance</button>
+          <button data-rep="nymonth" class="hidden">Monthly Summary</button>
         </div>
       </div>
 
@@ -913,6 +914,7 @@
            standalone tab), so one set of controls/renderers serves both states. -->
       <div id="rep-nysku" class="hidden"></div>
       <div id="rep-remit" class="hidden"></div>
+      <div id="rep-nymonth" class="hidden"></div>
 
       <div id="rep-visits" class="hidden">
         <div class="seg-wrap"><div class="seg" id="repv-toggle">
@@ -4463,6 +4465,96 @@ function renderHmRemit(){
   const de=$('#hm-remit-date'); if(de) de.onchange=renderHmRemit;
   const ce=$('#hm-remit-est'); if(ce) ce.onchange=()=>{ hmRemitIncEst=ce.checked; renderHmRemit(); };
 }
+// ── NY Monthly Summary (Victoria, 2026-10-02): the monthly text for Scott and Matt. One
+// definition per line, so the numbers can be traced and do not drift from the other NY views:
+//  · Sales = LeafLink orders DELIVERED in the month (HM OPS delivery-sheet date, else LeafLink's
+//    ship date; shipped / fulfilled / complete only) at the LeafLink amount. This is the
+//    scorecard's delivery axis minus orders that have not gone out yet.
+//  · Customers = distinct stores delivered to in the month.
+//  · AR collected = payments HM OPS made to Wizard Trees in the month (QuickBooks).
+//  · Still outstanding = what dispensaries owe on our product TODAY: HM OPS's latest collection
+//    report plus orders shipped since (estimated from LeafLink terms), split current / due
+//    within 7 days / past due. Orders placed but not shipped are left out.
+let nyMonthSel=null;   // 'YYYY-MM'; null = the last full month
+const nyMonthIso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+const nyMonthName=ym=>{ const [y,m]=ym.split('-').map(Number); return new Date(y,m-1,1).toLocaleDateString('en-US',{month:'long',year:'numeric'}); };
+function nyMonthData(ym){
+  const [y,m]=ym.split('-').map(Number);
+  const win=(yy,mm)=>({a:new Date(yy,mm-1,1).getTime(), b:new Date(yy,mm,0,23,59,59,999).getTime()});
+  const cur=win(y,m), prev=win(m===1?y-1:y, m===1?12:m-1);
+  const prevYm=`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,'0')}`;
+  const nowMs=Date.now();
+  const shipped=st=>/ship|fulfil|complet|deliver/i.test(st||'');
+  const sc=nyscRows();
+  const deliv=sc.filter(r=>r.sched && shipped(r.st) && r.when<=nowMs);
+  const inWin=(list,w)=>list.filter(r=>r.when!=null&&r.when>=w.a&&r.when<=w.b);
+  const sum=a=>a.reduce((s,r)=>s+(r.amt||0),0);
+  const cm=inWin(deliv,cur), pm=inWin(deliv,prev);
+  const sales=sum(cm), prior=sum(pm);
+  const scMonth=sum(inWin(sc,cur));   // the scorecard's own figure for the month (includes orders not delivered yet)
+  const custs=new Set(cm.map(r=>tierNorm(r.c))).size;
+  const pays=(NY_QBO_PAY||[]).filter(p=>p.d!=null&&p.d>=cur.a&&p.d<=cur.b).slice().sort((a,b)=>a.d-b.d);
+  const collected=pays.reduce((s,p)=>s+(+p.amt||0),0);
+  const {all,maxInvD}=nyArAllRows();
+  const open=all.filter(x=>x.out>0.005 && (!x._pend || shipped(x._st)));
+  const S=a=>a.reduce((s,x)=>s+(x.out||0),0);
+  const cur7=open.filter(x=>x.dpd==null||x.dpd< -7), due7=open.filter(x=>x.dpd!=null&&x.dpd>=-7&&x.dpd<=0), past=open.filter(x=>x.dpd!=null&&x.dpd>0);
+  return {ym, prevYm, partial:nowMs>=cur.a&&nowMs<=cur.b, sales, prior, diff:sales-prior, pct:prior>0.005?(sales-prior)/prior:null,
+    custs, orders:cm.length, scMonth, collected, pays, outstanding:S(open), current:S(cur7), due:S(due7), past:S(past),
+    pastEst:S(past.filter(x=>x._pend)), estAll:S(open.filter(x=>x._pend)), maxInvD};
+}
+function nyMonthText(D){
+  const mn=nyMonthName(D.ym).split(' ')[0], pn=nyMonthName(D.prevYm).split(' ')[0];
+  const fmt$=v=>'$'+Math.round(v).toLocaleString('en-US');   // whole dollars in the text that goes out
+  const pct=D.pct==null?'n/a':`${D.pct>=0?'+':''}${(D.pct*100).toFixed(1)}%`;
+  return [`NY sales summary, ${nyMonthName(D.ym)}${D.partial?' (month to date)':''}`,
+    `${mn} sales: ${fmt$(D.sales)}`,
+    `${pn} sales: ${fmt$(D.prior)}`,
+    `Difference: ${pct} (${D.diff>=0?'+':'-'}${fmt$(Math.abs(D.diff))})`,
+    `Customers (${mn}): ${D.custs}`,
+    `AR collected in ${mn}: ${fmt$(D.collected)}`,
+    `AR still outstanding: ${fmt$(D.outstanding)}`,
+    `  • Current: ${fmt$(D.current)}`,
+    `  • Due within 7 days: ${fmt$(D.due)}`,
+    `  • Past due: ${fmt$(D.past)}`].join('\n');
+}
+function renderNyMonth(){
+  const box=$('#rep-nymonth'); if(!box) return;
+  if(!(NY_EVENTS||[]).length){ box.innerHTML='<div class="empty">No NY data yet: the summary fills in after the next NY refresh.</div>'; return; }
+  const months=[]; { const first=Math.min(...NY_EVENTS.map(e=>e.d).filter(Boolean)); const d=new Date(first); d.setDate(1);
+    for(const end=new Date(); d<=end; d.setMonth(d.getMonth()+1)) months.push(nyMonthIso(d)); }
+  if(!nyMonthSel || !months.includes(nyMonthSel)){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); nyMonthSel=months.includes(nyMonthIso(d))?nyMonthIso(d):months[months.length-1]; }
+  const D=nyMonthData(nyMonthSel), text=nyMonthText(D);
+  const mn=nyMonthName(D.ym).split(' ')[0], pn=nyMonthName(D.prevYm).split(' ')[0];
+  const fD=t=>new Date(t).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  const card=(l,v,sub,col)=>`<div class="card"><div class="lbl">${esc(l)}</div><div class="val"${col?` style="color:${col}"`:''}>${v}</div><div class="sub">${sub}</div></div>`;
+  const pctTxt=D.pct==null?'n/a':`${D.pct>=0?'+':''}${(D.pct*100).toFixed(1)}%`;
+  const tot=D.outstanding||1, seg=(v,c,l)=>v>0.005?`<i style="width:${v/tot*100}%;background:${c}" title="${l}: ${fmt$(v)}"></i>`:'';
+  box.innerHTML=`<div class="tpl-body" style="margin:0 0 14px">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <b>NY monthly summary</b>
+      <label class="dt">Month <select id="nymonth-sel">${months.slice().reverse().map(ym=>`<option value="${ym}"${ym===nyMonthSel?' selected':''}>${esc(nyMonthName(ym))}</option>`).join('')}</select></label>
+      <button class="btn" id="nymonth-copy">Copy text</button>
+    </div>
+    <div class="tier-cards" style="margin:0 0 10px">
+      ${card(`${mn} sales${D.partial?' (to date)':''}`, fmt$(D.sales), `${D.orders} orders delivered`)}
+      ${card(`vs ${pn}`, pctTxt, `${pn}: ${fmt$(D.prior)}`, D.pct==null?'':D.pct>=0?'var(--green)':'var(--red)')}
+      ${card(`Customers (${mn})`, String(D.custs), 'stores delivered to')}
+      ${card(`AR collected in ${mn}`, fmt$(D.collected), `${D.pays.length} payment${D.pays.length!==1?'s':''} from HM OPS (QuickBooks)`, 'var(--green)')}
+      ${card('AR still outstanding', fmt$(D.outstanding), `current ${fmt$(D.current)} · due within 7 days ${fmt$(D.due)} · past due ${fmt$(D.past)}<div class="agebar" style="display:flex;height:6px;margin-top:6px;border-radius:3px;overflow:hidden">${seg(D.current,'var(--green)','Current')}${seg(D.due,'var(--yellow)','Due within 7 days')}${seg(D.past,'var(--red)','Past due')}</div>`, 'var(--yellow)')}
+    </div>
+    <textarea id="nymonth-text" readonly rows="10" style="width:100%;max-width:560px;font:13px/1.45 ui-monospace,Menlo,monospace;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--text)">${esc(text)}</textarea>
+    <div class="rep" style="margin-top:8px;max-width:760px">
+      <b>How each line is counted.</b> Sales: LeafLink orders delivered in the month (HM OPS delivery-sheet date, else LeafLink's ship date) at the LeafLink amount. The NY Scorecard shows ${fmt$(D.scMonth)} for ${esc(nyMonthName(D.ym))} because it also counts orders not delivered yet${Math.abs(D.scMonth-D.sales)>0.5?` (${fmt$(D.scMonth-D.sales)})`:''}.
+      Customers: stores delivered to. AR collected: payments HM OPS made to Wizard Trees in the month, from QuickBooks${D.pays.length?` (${D.pays.map(p=>`${fD(p.d)} ${fmt$(p.amt)}${p.inv?' to '+esc(p.inv):''}`).join(', ')})`:''}.
+      Still outstanding: what dispensaries owe on our product as of today, from HM OPS's collection report${D.maxInvD?` through ${fD(D.maxInvD)}`:''} plus orders shipped since${D.estAll>0.005?` (${fmt$(D.estAll)} estimated from LeafLink terms${D.pastEst>0.005?`, of which ${fmt$(D.pastEst)} is in past due`:''})`:''}; orders placed but not shipped are left out.
+    </div>
+  </div>`;
+  const sel=$('#nymonth-sel'); if(sel) sel.onchange=()=>{ nyMonthSel=sel.value; renderNyMonth(); };
+  const cb=$('#nymonth-copy'); if(cb) cb.onclick=()=>{ const done=()=>{ cb.textContent='Copied'; setTimeout(()=>{ cb.textContent='Copy text'; },1500); };
+    try{ navigator.clipboard.writeText(text).then(done,()=>{ const t=$('#nymonth-text'); t.select(); document.execCommand('copy'); done(); }); }
+    catch(e){ const t=$('#nymonth-text'); t.select(); document.execCommand('copy'); done(); } };
+}
 // The toolbar's filter set + the rows it selects, in ONE place — the table, the summary cards and
 // the CSV export all read from here, so what you export is always what you're looking at.
 function hmFilterState(){
@@ -5132,11 +5224,11 @@ function setAppState(st){ st=(st==='NY')?'NY':'CA'; if(!stateAllowed(st)) st=AUT
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
     t.classList.toggle('hidden', APP_STATE==='NY' ? !NY_TABS.includes(tb) : NY_ONLY.includes(tb)); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary / Sales by Type
-  const NY_REPORTS=['customers','newcust','sales','bydisp','nysku','ba','remit'], NY_ONLY_REPORTS=['nysku','remit'];
+  const NY_REPORTS=['customers','newcust','sales','bydisp','nysku','ba','remit','nymonth'], NY_ONLY_REPORTS=['nysku','remit','nymonth'];
   document.querySelectorAll('#rep-toggle button').forEach(b=>{ const rb=b.dataset.rep;
     b.classList.toggle('hidden', APP_STATE==='NY' ? !NY_REPORTS.includes(rb) : NY_ONLY_REPORTS.includes(rb)); });
   if(APP_STATE==='NY'&&!NY_REPORTS.includes(repMode)) setRepMode('customers');
-  if(APP_STATE!=='NY'&&(repMode==='nysku'||repMode==='remit')) setRepMode('newcust');   // never leave CA parked on a NY-only mode
+  if(APP_STATE!=='NY'&&NY_ONLY_REPORTS.includes(repMode)) setRepMode('newcust');   // never leave CA parked on a NY-only mode
   if(APP_STATE!==was){
     BA_PIS_RES={}; BA_POS_RES={}; BA_PIS_UN=[]; try{ BA_EXP.clear(); }catch(e){}   // these rollups are per-STATE
     baSort={key:'tier',dir:1};   // the states' column KEYS differ (visitsAll/baVisits, source, up) — a carried-over key sorts by undefined
@@ -7046,7 +7138,7 @@ $('#repv-date-wrap').onclick=(ev)=>{ const tr=ev.target.closest?ev.target.closes
 // The Reports tab hosts several reports, picked by the #rep-toggle seg:
 // visits (PAD/EDU) · mom (Month over Month) · time (Sales Over Time).
 let repMode='newcust';   // New Customers is the default report on the Reports tab
-const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','ba','mom','time','nysku','remit'];
+const REP_MODES=['visits','customers','newcust','sales','bysku','bydisp','payments','ba','mom','time','nysku','remit','nymonth'];
 // NY Sales by Type as a report mode: adopt the #view-sku node into the Reports pane and render.
 // (activateTab('sku') docks it back to top level for CA's standalone tab — see skuDock.)
 let SKU_HOME=null;
@@ -7056,7 +7148,7 @@ function skuDock(where){ const v=$('#view-sku'); if(!v) return;
   else if(SKU_HOME.parent && v.parentElement!==SKU_HOME.parent) SKU_HOME.parent.insertBefore(v, SKU_HOME.next);
 }
 function renderRepNySku(){ skuDock('reports'); const v=$('#view-sku'); if(v) v.classList.remove('hidden'); renderSku(); }
-function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,ba:renderBaReport,mom:renderMom,time:renderTimeSeries,nysku:renderRepNySku,remit:renderHmRemit}[repMode]||renderReports)(); }
+function renderRepMode(){ ({customers:renderCustomers,newcust:renderNewCustomers,sales:renderSalesReport,bysku:renderBySku,bydisp:renderBydisp,payments:renderPaymentsReport,ba:renderBaReport,mom:renderMom,time:renderTimeSeries,nysku:renderRepNySku,remit:renderHmRemit,nymonth:renderNyMonth}[repMode]||renderReports)(); }
 function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   document.querySelectorAll('#rep-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.rep===repMode));
   $('#rep-visits').classList.toggle('hidden', repMode!=='visits');
@@ -7071,6 +7163,7 @@ function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   $('#view-time').classList.toggle('hidden', repMode!=='time');
   $('#rep-nysku').classList.toggle('hidden', repMode!=='nysku');
   $('#rep-remit').classList.toggle('hidden', repMode!=='remit');
+  $('#rep-nymonth').classList.toggle('hidden', repMode!=='nymonth');
   renderRepMode(); saveView(); }
 document.querySelectorAll('#rep-toggle button').forEach(b=>b.onclick=()=>setRepMode(b.dataset.rep));
 ['rep-months','rep-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderReports); });
