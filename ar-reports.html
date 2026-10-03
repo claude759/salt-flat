@@ -5563,8 +5563,17 @@ const nyShipD=r=>{ const t=(NY_SHIP||{})[String(r.ref||'').trim()]; return t!=nu
 // (the HM OPS sheet's spelling, else ≥60% common prefix): a name variant is not a missing invoice,
 // and a chain sibling's invoice is not this order's. Each unmatched invoice excuses one order.
 const nyNameKey=x=>String(x||'').replace(/\s*\([^)]*\)\s*$/,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+// When an un-invoiced order actually went out: the HM OPS sheet's delivery day, else LeafLink's ship
+// date; with neither, the order date only if LeafLink says Complete/Shipped. A 'Fulfilled' (packed)
+// order with no date hasn't gone out. 'Early' = out before the day of the newest recon invoice: only
+// those can be missing an invoice; the rest (incl. that same day) are simply not on a report yet.
+// (2026-10-03: the 10/1 report moved the cutoff to 10/2 and 13 packed orders read 'no invoice found'.)
+function nyOutEarly(maxInvD){ const idx=nyscDelivIndex(), day=new Date(maxInvD); day.setHours(0,0,0,0);
+  return r=>{ const ref=String(r.ref||'').trim(), t=idx[ref]!=null?idx[ref]:((NY_SHIP||{})[ref]!=null?NY_SHIP[ref]:(/fulfil/i.test(r.st||'')?null:r.d));
+    return t!=null && t<day.getTime(); }; }
 function nyOrphanOrders(maxInvD){
   if(!maxInvD || !(NY_INV||[]).length) return [];
+  const early=nyOutEarly(maxInvD);
   const {map, alias, gross}=nyInvOrderMatch(); const claimed=new Set(Object.values(map)), isClaimed=r=>!!String(r.ref||'').trim()&&claimed.has(r.ref);
   // compare on the invoice's net, gross (total + discount) and line-item gross: an invoice Total is
   // net of the 5% early-pay discount, and a discounted invoice is not a missing one
@@ -5574,7 +5583,7 @@ function nyOrphanOrders(maxInvD){
   const sameStore=(x,r)=>{ const a=alias[nyNameKey(x.c)]; return a?a.has(nyNameKey(r.c)):nyNameSimilar(x.c,r.c); };
   const shippedSt=st=>/ship|fulfil|complet|deliver/i.test(st||'');
   return nyArData().filter(r=>{
-    if(!r.d || !shippedSt(r.st) || nyShipD(r)>maxInvD || isClaimed(r)) return false;
+    if(!r.d || !shippedSt(r.st) || !early(r) || isClaimed(r)) return false;
     const x=free.find(x=>!spent.has(x.inv) && sameStore(x,r) && vals(x).some(v=>eq(v,r.amt||0)||eq(v,Math.round((r.amt||0)*95)/100)) && (!x.d || Math.abs(x.d-nyShipD(r))<=45*864e5));   // an undated invoice can still excuse its order
     if(x){ spent.add(x.inv); return false; }
     return true;
@@ -5584,7 +5593,8 @@ function nyOrphanOrders(maxInvD){
 function nyPendOrders(maxInvD){ if(maxInvD==null) maxInvD=nyPendCutoff();
   if(!maxInvD) return [];
   const claimed=new Set(Object.values(nyInvOrderMap()));
-  return nyArData().filter(r=>r.d && nyShipD(r)>maxInvD && !(String(r.ref||'').trim() && claimed.has(r.ref))).concat(nyOrphanOrders(maxInvD)); }
+  const early=nyOutEarly(maxInvD);
+  return nyArData().filter(r=>r.d && !early(r) && !(String(r.ref||'').trim() && claimed.has(r.ref))).concat(nyOrphanOrders(maxInvD)); }
 // Tie each recon invoice to the LeafLink order it came from, ONE-TO-ONE (an order is claimed by at
 // most one invoice). HM OPS's Distru (INVWT####) and LeafLink (LL-####) share no key, so:
 //   store: HM OPS spells some stores its own way ('Hii BayRidge', 'Buzzy Cannabis Salt City
