@@ -4446,10 +4446,10 @@ function hmDedupe(list){
 // Drop # for an HM OPS row. Reuses the app's ONE assignment (nyDropOf, by LeafLink order date)
 // so this page can't drift from the scorecard or Sales-by-Type; an order not found in LeafLink
 // at all is counted in the newest drop (the sheet is this week's logistics).
-function hmDropIndex(){ const m={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(e.ref||'').trim(); if(r && m[r]==null) m[r]=e.d; }); return m; }
+function hmDropIndex(){ const m={}; (NY_ORDERS_ALL&&NY_ORDERS_ALL.length?NY_ORDERS_ALL:(NY_EVENTS||[])).forEach(e=>{ const r=String(e.ref||'').trim(); if(r && m[r]==null) m[r]=e.d; }); return m; }
 // HM OPS's sheet has no terms column — payment terms come from the matching LeafLink order,
 // the same LL#-join hmDropOf uses for the drop.
-function hmTermsIndex(){ const m={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(e.ref||'').trim(); if(r && !m[r]) m[r]=e.terms||''; }); return m; }
+function hmTermsIndex(){ const m={}; (NY_ORDERS_ALL&&NY_ORDERS_ALL.length?NY_ORDERS_ALL:(NY_EVENTS||[])).forEach(e=>{ const r=String(e.ref||'').trim(); if(r && !m[r]) m[r]=e.terms||''; }); return m; }
 const hmTermsKind=t=>/cod/i.test(t||'')?'cod':(/net\s*30/i.test(t||'')?'net30':'');
 let hmTermsFilter='all';
 // row = the sheet row, for the fallback: an LL# the LeafLink export doesn't know (10 of 432 on
@@ -4542,7 +4542,9 @@ let nyMonthSel=null;   // 'YYYY-MM'; null = the last full month
 const nyMonthIso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 const nyMonthName=ym=>{ const [y,m]=ym.split('-').map(Number); return new Date(y,m-1,1).toLocaleDateString('en-US',{month:'long',year:'numeric'}); };
 const nyMonthShipped=st=>/ship|fulfil|complet|deliver/i.test(st||'');
-const nyPayIsHm=p=>/HM OPS/i.test(p.c||''), nyPayGross=p=>{ const a=+p.amt||0; return nyPayIsHm(p)?a/0.9*1.09:a; };
+// grossed back up to what dispensaries paid: only HM OPS's remittances on DROP invoices; a bulk purchase
+// by HM OPS (0000376788, $51,480) or a store paying us directly is already the full amount (2026-10-05 audit)
+const nyPayIsHm=p=>/HM OPS/i.test(p.c||''), nyPayGrossUp=p=>nyPayIsHm(p)&&/\(\s*drop\s*[\d.]+\s*\)/i.test(p.inv||''), nyPayGross=p=>{ const a=+p.amt||0; return nyPayGrossUp(p)?a/0.9*1.09:a; };
 function nyMonthData(ym){
   const [y,m]=ym.split('-').map(Number);
   const win=(yy,mm)=>({a:new Date(yy,mm-1,1).getTime(), b:new Date(yy,mm,0,23,59,59,999).getTime()});
@@ -4557,7 +4559,9 @@ function nyMonthData(ym){
   // gross -> net to Wizard Trees, per order (the purchase-order basis): discount from HM OPS's own invoice
   // when it has billed the order, else the 5% early-pay its delivery sheet shows, else LeafLink's order credit;
   // excise = 9/109 of what is left; HM OPS's fee = 10% of the rest; net = 90% of (gross - discount) / 1.09
-  const ordMap=nyInvOrderMap(), refDisc={}; (NY_INV||[]).forEach(x=>{ const ref=ordMap[x.inv]; if(ref) refDisc[ref]=(refDisc[ref]||0)+(x.disc||0); });
+  // only a monthly recon carries HM OPS's real discounts: invoices loaded from a Paid-vs-Unpaid export are at
+  // gross with disc 0, so those orders fall through to the sheet's 5% / LeafLink credit (2026-10-05 audit)
+  const ordMap=nyInvOrderMap(), refDisc={}; (NY_INV||[]).forEach(x=>{ if(/Paid-vs-Unpaid export at gross/i.test(x.dsum||'')) return; const ref=ordMap[x.inv]; if(ref) refDisc[ref]=(refDisc[ref]||0)+(x.disc||0); });
   const sheetTot=nyscSheetTotals();
   const netOf=r=>{ const ref=String(r.ref||'').trim(); let disc=0, dsrc='';
     if(refDisc[ref]!=null){ disc=refDisc[ref]; dsrc=disc>0.005?'HM OPS invoice':'HM OPS invoice (none)'; }
@@ -4688,9 +4692,9 @@ function nyMonthDrill(D, key){
       columns:[{l:'Date'},{l:'Paid by'},{l:'Applied to'},{l:'Amount',num:true,money:true}],
       rows:list.map(p=>[fDt(p.d), payer(p), p.inv||'', +p.amt||0]), totalLabel:'Total collected', total:prv?D.collectedPrev:D.collected}; }
   if(key==='paysGross'||key==='paysGrossPrev'){ const prv=key==='paysGrossPrev', list=prv?D.paysPrev:D.pays;
-    return {title:`AR collected in ${prv?pn:mn}, gross`, sub:'HM OPS\'s payments with its 10% fee and the NY excise (9/109) added back: what dispensaries paid behind them. A store that paid us directly is already the full amount.',
+    return {title:`AR collected in ${prv?pn:mn}, gross`, sub:'HM OPS\'s payments on drop invoices with its 10% fee and the NY excise (9/109) added back: what dispensaries paid behind them. A bulk purchase by HM OPS or a store paying us directly is already the full amount.',
       columns:[{l:'Date'},{l:'Paid by'},{l:'Applied to'},{l:'Received',num:true,money:true},{l:'HM OPS fee',num:true,money:true},{l:'NY excise',num:true,money:true},{l:'Gross',num:true,money:true}],
-      rows:list.map(p=>{ const a=+p.amt||0, hm=nyPayIsHm(p), base=hm?a/0.9:a, g=hm?base*1.09:a; return [fDt(p.d), payer(p), p.inv||'', a, base-a, g-base, g]; }), totalLabel:'Total, gross', total:prv?D.collectedPrevGross:D.collectedGross}; }
+      rows:list.map(p=>{ const a=+p.amt||0, hm=nyPayGrossUp(p), base=hm?a/0.9:a, g=hm?base*1.09:a; return [fDt(p.d), payer(p), p.inv||'', a, base-a, g-base, g]; }), totalLabel:'Total, gross', total:prv?D.collectedPrevGross:D.collectedGross}; }
   if(key==='paysChange'||key==='paysChangeGross'){ const gr=key==='paysChangeGross', v=p=>gr?nyPayGross(p):(+p.amt||0);
     const cur=gr?D.collectedGross:D.collected, prv=gr?D.collectedPrevGross:D.collectedPrev;
     const list=[...D.paysPrev.map(p=>({p,m:pn,sign:-1})),...D.pays.map(p=>({p,m:mn,sign:1}))];
@@ -4810,15 +4814,21 @@ function renderHmOps(){
   const F=hmFilterState(), { q, range, dropSel, idx, termsOf, rangeLabel } = F;
   const view=hmViewRows(F);
   const isDone=x=>/fulfil|deliver|complete|done/i.test(x.st);
-  const open=view.filter(x=>!isDone(x)), held=view.filter(x=>hmFlag(x.hold)), rets=view.filter(x=>hmFlag(x.ret));
-  const tot=view.reduce((s,x)=>s+x.total,0);
+  // a sheet row whose LeafLink order was cancelled, rejected or combined is not a live order: listed with a
+  // pill, left out of Open / On hold / Total value (2026-10-05 audit: 18 such rows, $37k, all 5 HOLDs)
+  const liveLL=new Set((NY_ORDERS_ALL||[]).map(e=>String(e.ref||'').trim()).filter(Boolean));
+  const isDead=x=>liveLL.size>0 && !!String(x.ll||'').trim() && !liveLL.has(String(x.ll).trim());
+  const liveV=view.filter(x=>!isDead(x)), dead=view.filter(isDead);
+  const open=liveV.filter(x=>!isDone(x)), held=liveV.filter(x=>hmFlag(x.hold)), rets=liveV.filter(x=>hmFlag(x.ret));
+  const tot=liveV.reduce((s,x)=>s+x.total,0);
   const dropsIn=[...new Set(view.map(x=>hmDropOf(x.ll,idx,x)))].sort((a,b)=>+a-+b);
   if(cards) cards.innerHTML=[
     ['Wizard Trees orders', String(view.length), (()=>{ const sched=view.filter(x=>hmDelivTs(x.dl)!=null).length;
       return rangeLabel+(sched<view.length?` · ${view.length-sched} not scheduled`:'');})()],
     ['Open (not fulfilled)', String(open.length), open.length?('worth '+fmt$(open.reduce((s,x)=>s+x.total,0))):'all fulfilled', open.length?'var(--yellow)':'var(--green)'],
     ['On hold / returns', String(held.length+rets.length), (held.length?held.length+' HOLD':'')+(held.length&&rets.length?' · ':'')+(rets.length?rets.length+' return pickup':'')||'none flagged', (held.length||rets.length)?'var(--red)':'var(--text)'],
-    ['Total value', fmt$(tot), dropsIn.length?('Drop '+dropsIn.join(' + ')):('across '+view.length+' order'+(view.length!==1?'s':''))],
+    ['Total value', fmt$(tot), dropsIn.length?('Drop '+dropsIn.join(' + ')):('across '+liveV.length+' order'+(liveV.length!==1?'s':''))],
+    ...(dead.length?[['Not live in LeafLink', String(dead.length), `worth ${fmt$(dead.reduce((s,x)=>s+x.total,0))} · cancelled, rejected or combined in LeafLink: ask HM OPS to clear them`, 'var(--orange)']]:[]),
   ].map(([l,v,sub,col])=>`<div class="tier-card"><div class="tc-head"><span class="tc-name">${l}</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:${col||'var(--text)'}">${v}</div><div class="tc-blurb">${esc(sub)}</div></div>`).join('');
   if(!view.length){
     wrap.innerHTML=`<div class="empty">No Wizard Trees orders in <b>${esc(rangeLabel)}</b>${dropSel!=='all'?` for <b>Drop ${esc(dropSel)}</b>`:''}${hmTermsFilter!=='all'?` on <b>${hmTermsFilter==='cod'?'COD':'Net 30'}</b> terms`:''}${q?` matching “${esc(q)}”`:''}.<br><span class="muted2">${all.length} order${all.length!==1?'s':''} loaded overall — widen the date range to see them.</span></div>`;
@@ -4826,7 +4836,7 @@ function renderHmOps(){
   const stCell=x=> hmFlag(x.hold)?`<span style="color:var(--red)">HOLD${x.st?' · '+esc(x.st):''}</span>`
     : isDone(x)?`<span style="color:var(--green)">${esc(x.st)}</span>`
     : `<span style="color:var(--yellow)">${esc(x.st||'—')}</span>`;
-  const flags=x=>[ hmFlag(x.ret)?'<span class="pill" style="color:var(--orange)">return pickup</span>':'',
+  const flags=x=>[ isDead(x)?'<span class="pill" style="color:var(--orange)" title="This LL# is no longer a live LeafLink order (cancelled, rejected or combined into another order)">not live in LeafLink</span>':'', hmFlag(x.ret)?'<span class="pill" style="color:var(--orange)">return pickup</span>':'',
     hmFlag(x.disc)?'<span class="pill">5% disc</span>':'', hmFlag(x.sop)?'<span class="pill">state/past</span>':'',
     hmFlag(x.email)?'<span class="pill" style="color:var(--green)">email sent</span>':'' ].filter(Boolean).join(' ');
   const body=view.map(x=>{ const dn=hmDropOf(x.ll,idx,x); const dv=hmFmtDeliv(x); return `<tr>
@@ -5078,8 +5088,11 @@ function tierDataNY(monthsOv){
   // Discounts/credits per account — from the NY recon invoices (invoice-level), joined by
   // normalized account name. LeafLink order totals are GROSS, so % = concessions ÷ revenue.
   const concBy={};
+  // account through the matched LeafLink order (HM OPS spells some stores its own way: 'Hii BayRidge'),
+  // the invoice's own name only when it has no match (2026-10-05 audit: $2,080 dropped for 5 stores)
+  const tierRefAcct={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(e.ref||'').trim(); if(r) tierRefAcct[r]=e.c; }); const tierOm=nyInvOrderMap();
   (NY_INV||[]).forEach(x=>{ if(!x.d||x.d<start.getTime()||x.d>end.getTime()) return;
-    const k=tierNorm(x.c); if(!k) return; concBy[k]=(concBy[k]||0)+(x.disc||0); });
+    const k=tierNorm(tierRefAcct[tierOm[x.inv]]||x.c); if(!k) return; concBy[k]=(concBy[k]||0)+(x.disc||0); });
   const rows=Object.values(acc).filter(g=>Math.abs(g.rev)>0.005).map(g=>{
     const totalConc=concBy[tierNorm(g.name)]||0;
     return {...g, brand:'', source:'LeafLink', tier:g.rev>=t1?1:g.rev>=t2?2:3,
@@ -5126,7 +5139,7 @@ function renderTiersNY(){
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:key==='name'?1:-1}; renderTiers(); });
   thSortMark(wrap,tierSort.key,tierSort.dir);
-  note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (cancelled/rejected orders excluded). Same editable thresholds as California; tiers rank by Gross Sales. <b>Gross Sales</b> = LeafLink order totals. <b>Disc + Credits</b> = invoice-level discounts from the distributor's recon, joined to the account by name; <b>% of Sales</b> = that ÷ gross; <b>Net Sales</b> = gross − discounts/credits. Click a row for the account's orders — each discount there shows the order it was used on. AR isn't tracked per-account for NY yet.`
+  note.innerHTML=`<b>New York</b> tiers by LeafLink order revenue over the <b>last ${months} month${months>1?'s':''}</b> (orders HM OPS has accepted; cancelled, rejected and not-yet-accepted orders excluded). Same editable thresholds as California; tiers rank by Gross Sales. <b>Gross Sales</b> = LeafLink order totals. <b>Disc + Credits</b> = invoice-level discounts from the distributor's recon, joined to the account by name; <b>% of Sales</b> = that ÷ gross; <b>Net Sales</b> = gross − discounts/credits. Click a row for the account's orders — each discount there shows the order it was used on. Per-store receivables are on the NY AR page (By Dispensary).`
     + baNoteHtml('NY', new Set(rows.map(r=>baRowKey(r.name))));
 }
 function nyTierDrill(name,monthsOv){
@@ -5153,7 +5166,8 @@ function nyTierDrill(name,monthsOv){
   // The tier table's "Disc + Credits" column is INVOICE-level discounts from the distributor's
   // recon (not LeafLink credits), joined by normalized name — same filter here, so this section's
   // total ties to the column exactly. Click an invoice # for its line-item + discount detail.
-  const recon=(NY_INV||[]).filter(x=>x.d&&x.d>=start.getTime()&&x.d<=end.getTime()&&tierNorm(x.c)===tierNorm(name)&&(x.disc||0)>0.005)
+  const dRefAcct={}; (NY_EVENTS||[]).forEach(e=>{ const r=String(e.ref||'').trim(); if(r) dRefAcct[r]=e.c; }); const dOm=nyInvOrderMap();
+  const recon=(NY_INV||[]).filter(x=>x.d&&x.d>=start.getTime()&&x.d<=end.getTime()&&tierNorm(dRefAcct[dOm[x.inv]]||x.c)===tierNorm(name)&&(x.disc||0)>0.005)
     .sort((a,b)=>(b.d||0)-(a.d||0));
   const reconTot=recon.reduce((s,x)=>s+x.disc,0);
   // Which LeafLink order a recon discount was used on: the recon carries no LL-#, but its gross
@@ -5216,12 +5230,16 @@ function nyscSheetDiff(monday){
     if(Math.abs(sh-r.amt*0.95)<=0.02){ rows.push({ref, c:r.c, ll:r.amt, sheet:sh, diff:d, why:'5% early-pay discount (sheet = 95% of LeafLink)'}); disc5+=d; }
     else { rows.push({ref, c:r.c, ll:r.amt, sheet:sh, diff:d, why:'AMOUNT MISMATCH — check the sheet entry vs the LeafLink order'}); mismatch+=d; }
   });
-  // sheet rows delivering this week with no matching LeafLink order in the week
+  // sheet rows delivering this week with no LeafLink order behind them. A live LeafLink order is compared
+  // in the week nyscRows dates it (sheet date, else LeafLink ship, else order date), and one HM OPS hasn't
+  // accepted belongs only to the live week's projection, so neither is a sheet-only gap (2026-10-05 audit:
+  // the live week showed a false -$83k from those two cases).
+  const live=new Set((NY_ORDERS_ALL||[]).map(e=>String(e.ref||'').trim()).filter(Boolean));
   hmDedupe(HM_OPS||[]).forEach(x=>{ const ref=String(x.ll||'').trim();
     const d=hmRowDate(x); if(d==null||d<a.getTime()||d>b.getTime()) return;
-    if(ref&&inWeek.has(ref)) return;
+    if(ref&&(inWeek.has(ref)||live.has(ref))) return;
     const t=+x.total||0; if(t<=0.005) return;
-    rows.push({ref:ref||'(no LL#)', c:x.shop||'', ll:null, sheet:t, diff:-t, why:'on the HM OPS sheet only (no matching LeafLink order this week)'}); sheetOnly-=t;
+    rows.push({ref:ref||'(no LL#)', c:x.shop||'', ll:null, sheet:t, diff:-t, why:ref?'on the HM OPS sheet only (its LeafLink order was cancelled, rejected or combined)':'on the HM OPS sheet only (no LL#)'}); sheetOnly-=t;
   });
   const delta=disc5+mismatch+missing+sheetOnly;
   return {delta, rows, disc5, mismatch, missing, sheetOnly};
@@ -5328,7 +5346,7 @@ function renderNySc(){
       <th class="num">COD</th><th class="num">Net 30</th>
       <th class="num">MTD Delivered</th><th class="num">Prior Month</th><th class="num">4-Wk Avg</th><th class="num">On Hand (LeafLink)</th>
     </tr></thead><tbody>${trs}</tbody></table>`;
-  if(note) note.innerHTML=`<b>Click any highlighted number</b> to open the deliveries behind it — each order expands to its line items. One row per week (Monday), like the CA Sales Scorecard: the <span class="pill" style="font-size:9.5px;color:var(--yellow)">next</span> row is deliveries already scheduled for a future week; the <span class="pill live" style="font-size:9.5px">live</span> row is the current week. Orders are placed on the week they <b>deliver</b> — the delivery date comes from the distributor's HM OPS schedule (matched by LL#, refreshed hourly), falling back to <b>LeafLink's own Ship date</b> (crawled from each order page); an order neither source has scheduled counts on its <b>order date</b> and is tagged in the drill. <b>Total Sales</b> is the week's total split by <b>harvest drop</b> when clicked — each drop is one Wizard Trees NY invoice to HM OPS in QuickBooks (${nyDropBounds()}), and every LeafLink order is linked to the drop invoice its order date falls under; the list grows by itself when a new drop invoice is entered. <b>MTD Delivered</b> = month-to-date as of that row (through the previous Sunday for past weeks, through today on the live row). <b>4-Wk Avg</b> = that week + the 3 prior. Amounts are LeafLink order totals — gross, before the distributor's excise + 10% fee waterfall. <b>vs HM OPS Sheet</b> = that week's LeafLink total minus the sheet's hand-entered totals — the expected gap is the 5% early-pay discount (sheet is net of it); orange means unexplained mismatches or membership gaps, and the drill itemizes every order with the reason. <b>On Hand (LeafLink)</b> is a today snapshot of per-SKU inventory at the distributor (Inventory Overview report, hourly) — shown on the live row only; click it for the SKU breakdown incl. Reserved (allocated to open orders) vs Available.`;
+  if(note) note.innerHTML=`<b>Click any highlighted number</b> to open the deliveries behind it — each order expands to its line items. One row per week (Monday), like the CA Sales Scorecard: the <span class="pill" style="font-size:9.5px;color:var(--yellow)">next</span> row is deliveries already scheduled for a future week; the <span class="pill live" style="font-size:9.5px">live</span> row is the current week. Orders are placed on the week they <b>deliver</b> — the delivery date comes from the distributor's HM OPS schedule (matched by LL#, refreshed hourly), falling back to <b>LeafLink's own Ship date</b> (crawled from each order page); an order neither source has scheduled counts on its <b>order date</b> and is tagged in the drill. <b>Total Sales</b> is the week's total split by <b>harvest drop</b> when clicked — each drop is one Wizard Trees NY invoice to HM OPS in QuickBooks (${nyDropBounds()}), and every LeafLink order is linked to the drop invoice its order date falls under; the list grows by itself when a new drop invoice is entered. <b>MTD Delivered</b> = month-to-date as of that row (through the previous Sunday for past weeks, through today on the live row). <b>4-Wk Avg</b> = that week + the 3 prior. Amounts are LeafLink order totals — gross, before the distributor's excise + 10% fee waterfall. <b>vs HM OPS Sheet</b> = that week's LeafLink total minus the sheet's hand-entered totals — the expected gap is the 5% early-pay discount (sheet is net of it); orange means unexplained mismatches or membership gaps, and the drill itemizes every order with the reason. <b>On Hand (LeafLink)</b> is a today snapshot of per-SKU inventory at the distributor (Inventory Overview report, pulled 4 times a day) — shown on the live row only; click it for the SKU breakdown incl. Reserved (allocated to open orders) vs Available.`;
 }
 // Under the Total Sales figure: which drops the week's sales came from, biggest first.
 function nyscDropMini(m){ const ks=Object.keys(m.byDrop).filter(k=>m.byDrop[k]>0).sort((a,b)=>m.byDrop[b]-m.byDrop[a]); if(!ks.length||!m.tot) return '';
@@ -5389,7 +5407,7 @@ function nyscBoardDrill(dateStr, col){
   let list, label, win={a,b};
   if(col==='mtd'){ const mw=nyscMtdWin(monday); if(!mw) return null; win=mw; label='MTD Delivered'; }
   else if(col==='priorMtd'){ win={a:new Date(monday.getFullYear(),monday.getMonth()-1,1), b:new Date(monday.getFullYear(),monday.getMonth(),0,23,59,59,999)}; label='Prior month deliveries'; }
-  else if(col==='fourWk'){ const wa=new Date(monday); wa.setDate(monday.getDate()-21); win={a:wa,b}; label='Last 4 weeks of deliveries'; }
+  else if(col==='fourWk'){ const wa=new Date(monday); wa.setDate(monday.getDate()-21); win={a:wa,b}; label='Last 4 weeks of deliveries (the cell is this total ÷ 4)'; }
   list=rows.filter(r=>nyscInWin(r,win.a,win.b));
   if(col&&col.startsWith('drop')){ const dn=col.slice(4); list=list.filter(r=>String(r.drop)===dn); label=`Drop ${dn} deliveries`; }
   else if(col==='cod'){ list=list.filter(r=>/cod/i.test(r.terms||'')); label='COD deliveries'; }
@@ -5469,7 +5487,7 @@ function nyArData(){
     // terms run from SHIP, not from placement: a COD order is due on delivery, and the recon's own
     // due dates are ship + terms on 226/228 invoices (order + terms lands 1–12 days early)
     const shipT=(NY_SHIP||{})[String(e.ref||'').trim()]; const base=shipT!=null?shipT:e.d;
-    const due=days==null?null:(base+days*86400000);
+    const due=days==null?null:(()=>{ const dd=new Date(base); dd.setDate(dd.getDate()+days); return dd.getTime(); })();   // calendar days (DST-safe)
     const dpd=due==null?null:Math.floor((now.getTime()-due)/86400000);
     return {...e, due, dpd}; }).sort((a,b)=>(a.due==null?Infinity:a.due)-(b.due==null?Infinity:b.due));
 }
@@ -5568,9 +5586,10 @@ const nyNameKey=x=>String(x||'').replace(/\s*\([^)]*\)\s*$/,'').toLowerCase().re
 // order with no date hasn't gone out. 'Early' = out before the day of the newest recon invoice: only
 // those can be missing an invoice; the rest (incl. that same day) are simply not on a report yet.
 // (2026-10-03: the 10/1 report moved the cutoff to 10/2 and 13 packed orders read 'no invoice found'.)
-function nyOutEarly(maxInvD){ const idx=nyscDelivIndex(), day=new Date(maxInvD); day.setHours(0,0,0,0);
-  return r=>{ const ref=String(r.ref||'').trim(), t=idx[ref]!=null?idx[ref]:((NY_SHIP||{})[ref]!=null?NY_SHIP[ref]:(/fulfil/i.test(r.st||'')?null:r.d));
-    return t!=null && t<day.getTime(); }; }
+function nyOutAtFn(){ const idx=nyscDelivIndex();
+  return r=>{ const ref=String(r.ref||'').trim(); return idx[ref]!=null?idx[ref]:((NY_SHIP||{})[ref]!=null?NY_SHIP[ref]:(/complet|ship|deliver/i.test(r.st||'')?r.d:null)); }; }
+function nyOutEarly(maxInvD){ const outAt=nyOutAtFn(), day=new Date(maxInvD); day.setHours(0,0,0,0);
+  return r=>{ const t=outAt(r); return t!=null && t<day.getTime(); }; }
 function nyOrphanOrders(maxInvD){
   if(!maxInvD || !(NY_INV||[]).length) return [];
   const early=nyOutEarly(maxInvD);
@@ -5593,8 +5612,17 @@ function nyOrphanOrders(maxInvD){
 function nyPendOrders(maxInvD){ if(maxInvD==null) maxInvD=nyPendCutoff();
   if(!maxInvD) return [];
   const claimed=new Set(Object.values(nyInvOrderMap()));
-  const early=nyOutEarly(maxInvD);
-  return nyArData().filter(r=>r.d && !early(r) && !(String(r.ref||'').trim() && claimed.has(r.ref))).concat(nyOrphanOrders(maxInvD)); }
+  const early=nyOutEarly(maxInvD), outAt=nyOutAtFn(), now=Date.now();
+  // owed only once it has gone out (2026-10-05 audit: packed 'Fulfilled' orders and next week's
+  // deliveries were counted as shipped receivables on the AR page, BA Report and remittance forecast)
+  return nyArData().filter(r=>{ if(!r.d || early(r) || (String(r.ref||'').trim() && claimed.has(r.ref))) return false; const t=outAt(r); return t!=null && t<=now; })
+    .concat(nyOrphanOrders(maxInvD)); }
+// Accepted orders that haven't gone out yet (packed, or on the sheet for a later day) and aren't on a
+// report: not receivables yet; the AR page lists them in its Packed, not out yet card.
+function nyPackedNotOut(){ const maxInvD=nyPendCutoff(); if(!maxInvD) return [];
+  const claimed=new Set(Object.values(nyInvOrderMap())), early=nyOutEarly(maxInvD), outAt=nyOutAtFn(), now=Date.now();
+  return nyArData().filter(r=>{ if(!r.d || r.d>now || early(r) || (String(r.ref||'').trim() && claimed.has(r.ref))) return false; const t=outAt(r); return t==null || t>now; })
+    .map(r=>({...r, outAt:outAt(r)})).sort((a,b)=>(a.d||0)-(b.d||0)); }
 // Tie each recon invoice to the LeafLink order it came from, ONE-TO-ONE (an order is claimed by at
 // most one invoice). HM OPS's Distru (INVWT####) and LeafLink (LL-####) share no key, so:
 //   store: HM OPS spells some stores its own way ('Hii BayRidge', 'Buzzy Cannabis Salt City
@@ -5736,6 +5764,13 @@ function renderArNYRecon(){
   { const na=nyNotAccepted(); if(na.length){ const fu=na.filter(r=>r.act!=='wait').length;   // orders HM OPS hasn't accepted: not counted above
       cards.insertAdjacentHTML('beforeend', `<div class="tier-card" id="ny-na-card" role="button" tabindex="0" style="cursor:pointer" title="Click for the orders"><div class="tc-head"><span class="tc-name">Not counted</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:var(--muted)">${fmt$(na.reduce((s,r)=>s+(r.amt||0),0))}</div><div class="tc-blurb">${na.length} LeafLink order${na.length!==1?'s':''} HM OPS hasn't accepted${fu?` · ${fu} to follow up`:''}</div></div>`);
       const el=$('#ny-na-card'); if(el){ el.onclick=()=>openScModal(nyNotAcceptedSpec()); el.onkeydown=ev=>{ if(ev.key==='Enter'||ev.key===' '){ ev.preventDefault(); openScModal(nyNotAcceptedSpec()); } }; } } }
+  { const pk=nyPackedNotOut(); if(pk.length){   // accepted but not out yet: owed once it goes out, not before
+      const fD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'numeric',day:'numeric'}):'';
+      const spec=()=>({title:'Accepted by HM OPS, not out yet', sub:'Packed, or on the HM OPS sheet for a later day. Not counted as owed until it goes out (delivery date on the HM OPS sheet, else LeafLink\'s ship date).',
+        columns:[{l:'Ordered'},{l:'LL#'},{l:'Store'},{l:'LeafLink status'},{l:'Goes out'},{l:'Amount',num:true,money:true}],
+        rows:pk.map(r=>[fD(r.d), r.ref, r.c, r.st||'', r.outAt?fD(r.outAt):'no date yet', r.amt||0]), totalLabel:'Total not out yet', total:pk.reduce((t,r)=>t+(r.amt||0),0)});
+      cards.insertAdjacentHTML('beforeend', `<div class="tier-card" id="ny-pk-card" role="button" tabindex="0" style="cursor:pointer" title="Click for the orders"><div class="tc-head"><span class="tc-name">Not out yet</span></div><div class="tc-meta" style="font-size:17px;font-weight:700;color:var(--muted)">${fmt$(pk.reduce((t,r)=>t+(r.amt||0),0))}</div><div class="tc-blurb">${pk.length} accepted order${pk.length!==1?'s':''} packed or scheduled · counted once delivered</div></div>`);
+      const el=$('#ny-pk-card'); if(el){ el.onclick=()=>openScModal(spec()); el.onkeydown=ev=>{ if(ev.key==='Enter'||ev.key===' '){ ev.preventDefault(); openScModal(spec()); } }; } } }
   // (Remittance waterfall removed per Gianni 2026-07-21 — the WTNY QuickBooks section above is now
   // the what-we-receive view. The nyRecon() math survives for the Net PO economics + tests.)
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
@@ -5873,12 +5908,13 @@ function renderArNY(){
     const iso=ms=>ms?new Date(ms).toISOString().slice(0,10):'';
     const rd=hmDropIndex(), drop=ms=>{ const d=nyDropOf(ms); return d?('Drop '+d.n):''; };
     out.push(['— NY RECEIVABLES —'],['Dispensary','Invoice #','LeafLink order #','Distributor SO #','Drop','Invoice / order date','Due date','Status','Discount','Invoiced','Collected','Overdue','Outstanding']);
-    const _now=Date.now();
-    NY_INV.forEach(x=>out.push([x.c,x.inv,om[x.inv]||'',x.so||'',drop(rd[om[x.inv]]!=null?rd[om[x.inv]]:x.d),iso(x.d),iso(x.due),x.st,x.disc.toFixed(2),x.total.toFixed(2),x.paid.toFixed(2),((x.due&&x.due<_now&&x.out>0.005)?x.out:0).toFixed(2),x.out.toFixed(2)]));
+    const _eod=new Date(); _eod.setHours(23,59,59,999);   // overdue = past its due DAY, the page's rule (due today is not overdue)
+    const pastDue=due=>due!=null && Math.floor((_eod.getTime()-due)/864e5)>0;
+    NY_INV.forEach(x=>out.push([x.c,x.inv,om[x.inv]||'',x.so||'',drop(rd[om[x.inv]]!=null?rd[om[x.inv]]:x.d),iso(x.d),iso(x.due),x.st,x.disc.toFixed(2),x.total.toFixed(2),x.paid.toFixed(2),((pastDue(x.due)&&x.out>0.005)?x.out:0).toFixed(2),x.out.toFixed(2)]));
     // un-invoiced LeafLink orders, same basis as the on-screen table
     // 13 columns like the header — this row was one short, so every un-invoiced amount exported
     // under "Overdue" and "Outstanding" came out blank ($784k misfiled on 2026-09-02)
-    nyPendOrders().forEach(r=>out.push([r.c,'',r.ref||'','',drop(r.d),iso(r.d),iso(r.due),/ship|fulfil|complet|deliver/i.test(r.st||'')?'shipped · not invoiced':((r.st||'placed').toLowerCase()+' · not shipped'),'','','','',(r.amt||0).toFixed(2)]));
+    nyPendOrders().forEach(r=>out.push([r.c,'',r.ref||'','',drop(r.d),iso(r.d),iso(r.due),r._orphan?'shipped · no invoice found':'shipped · not invoiced','','','',(pastDue(r.due)?(r.amt||0):0).toFixed(2),(r.amt||0).toFixed(2)]));   // every pending order has gone out (nyPendOrders)
     // per-dispensary rollup (same grouping as the By Dispensary view)
     const gb=nyArBuyerGroups(nyArAllRows().all);
     out.push([],['— BY DISPENSARY (open balances) —'],['Dispensary','Open','Current','1-30','31-60','61-90','>90','Total Overdue','Total Outstanding']);
@@ -7485,8 +7521,12 @@ const orderKey=e=>e.s+'|'+(e.ref? e.ref : ('(no #)|'+(e.c||'')+'|'+(e.d||'')));
 // (billed − discounts/credits, QuickBooks excluded); NY = LeafLink orders as-is. The four
 // order-based reports (Customers / New Customers / Sales / By Dispensary) all consume this.
 function stateOrders(){
-  if(APP_STATE==='NY')
-    return (NY_EVENTS||[]).map(e=>({_k:'LL|'+(e.ref||((e.c||'')+'|'+e.d)), src:'LeafLink', ref:e.ref||'(no #)', cust:e.c, date:e.d, pd:null, net:e.amt||0}));
+  // NY: dated by DELIVERY like the Scorecard and Monthly Summary (HM OPS sheet date, else LeafLink's ship
+  // date, else the order date once LeafLink says Complete/Shipped); an order not out yet isn't a sale yet.
+  // od = order date (drop attribution). 2026-10-05 audit: the reports were labelled 'Delivery date' but
+  // dated by order date.
+  if(APP_STATE==='NY'){ const outAt=nyOutAtFn();
+    return (NY_EVENTS||[]).map(e=>({_k:'LL|'+(e.ref||((e.c||'')+'|'+e.d)), src:'LeafLink', ref:e.ref||'(no #)', cust:e.c, date:outAt(e), od:e.d, pd:null, net:e.amt||0})).filter(o=>o.date!=null); }
   const byRef={};
   (CONC_EVENTS||[]).forEach(e=>{ if(e.s==='QuickBooks') return;
     const k=orderKey(e); const g=byRef[k]||(byRef[k]={_k:k,src:e.s,ref:e.ref||'(no #)',cust:'',date:null,pd:null,net:0});
@@ -8306,7 +8346,8 @@ function renderLedger(prefix, dateField, dateLabel, state, isPay, selfRender){
   const st=state.sort;
   view.sort((a,b)=>{ let av=a[st.key],bv=b[st.key]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-st.dir:av>bv?st.dir:(b.date-a.date); });
   const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
-  const cols=[['date',dateLabel,1],['src','Source',0],['cust','Customer',0],['ref','Order / Inv #',0],['net','Net',1]];
+  const amtLbl=APP_STATE==='NY'?'Gross (LeafLink)':'Net';   // NY: LeafLink order totals, before HM OPS's discounts, excise and fee
+  const cols=[['date',dateLabel,1],['src','Source',0],['cust','Customer',0],['ref','Order / Inv #',0],['net',amtLbl,1]];
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-k="${esc(r._k||'')}" title="Click for this order's contents"><td class="num">${fmtD(r.date)}</td><td><span class="src ${esc(r.src)}">${esc(r.src)}</span></td><td>${esc(r.cust||'—')}</td><td>${esc(r.ref||'—')}</td><td class="num money">${fmt$(r.net)}</td></tr>`).join('');
   const total=view.reduce((s,r)=>s+r.net,0);
@@ -8315,13 +8356,13 @@ function renderLedger(prefix, dateField, dateLabel, state, isPay, selfRender){
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(st.key===key) st.dir*=-1; else state.sort={key,dir:(key==='src'||key==='cust'||key==='ref')?1:-1}; selfRender(); });
   thSortMark(wrap,st.key,st.dir);
-  note.innerHTML=`${isPay?'Payments':'Sales'} by <b>${isPay?'payment':'delivery'} date</b> in <b>${fmtRangeLabel(start,end)}</b>${state.src!=='all'?` · ${state.src} only`:''} — ${view.length} orders, net <b>${fmt$(total)}</b>. Each row is one order (billed − discounts/credits), grouped by source + order #. QuickBooks history excluded.${isPay?' Only orders with a recorded payment date appear.':''}`;
+  note.innerHTML=`${isPay?'Payments':'Sales'} by <b>${isPay?'payment':'delivery'} date</b> in <b>${fmtRangeLabel(start,end)}</b>${state.src!=='all'?` · ${state.src} only`:''} — ${view.length} orders, ${APP_STATE==='NY'?'gross':'net'} <b>${fmt$(total)}</b>. ${APP_STATE==='NY'?'Each row is one LeafLink order HM OPS has accepted, at its gross amount (before HM OPS\'s discounts, NY excise and its 10% fee), dated by delivery: the HM OPS sheet date, else LeafLink\'s ship date.':'Each row is one order (billed − discounts/credits), grouped by source + order #. QuickBooks history excluded.'}${isPay?' Only orders with a recorded payment date appear.':''}`;
 }
 function renderSalesReport(){ renderLedger('sales','d','Delivery date',salesState,false,renderSalesReport); }
 function renderPaymentsReport(){ renderLedger('pay','pd','Payment date',payState,true,renderPaymentsReport); }
 function ledgerExport(prefix,dateField,state,dateLabel,fname){
   const {rows}=orderLedger(prefix,dateField); const q=(($('#'+prefix+'-search')||{}).value||'').trim().toLowerCase();
-  const out=[[dateLabel,'Source','Customer','Order / Inv #','Net']];
+  const out=[[dateLabel,'Source','Customer','Order / Inv #',APP_STATE==='NY'?'Gross (LeafLink)':'Net']];
   rows.filter(r=>(state.src==='all'||r.src===state.src)&&(!q||(r.cust||'').toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)))
     .sort((a,b)=>b.date-a.date).forEach(r=>out.push([new Date(r.date).toISOString().slice(0,10),r.src,r.cust||'',r.ref||'',r.net.toFixed(2)]));
   downloadCSV(fname,out);
@@ -8376,7 +8417,7 @@ function orderDrill(k){
     const dr=ev?nyDropOf(ev.d):null;
     const rows=items.map(it=>{ const p=nyParseProduct(it.product); return [p.strain+(p.format?` — ${p.format}`:''), it.units?Math.round(it.units).toLocaleString():'', it.lineTotal]; });
     openScModal({ title:`${o.ref==='(no #)'?o.cust:('#'+o.ref+' — '+o.cust)}`,
-      sub:['LeafLink','shipped '+drillDt(o.date), dr?dr.label:null, ev&&ev.terms?ev.terms:null].filter(Boolean).join(' · '),
+      sub:['LeafLink','delivered '+drillDt(o.date), dr?dr.label:null, ev&&ev.terms?ev.terms:null].filter(Boolean).join(' · '),
       columns:[{l:'Contents'},{l:'Units',num:true},{l:'Line Total',num:true,money:true}],
       rows: rows.length?rows:[['(line items publish with the next hourly refresh)','',o.net]],
       totalLabel:'Total', total:o.net });
@@ -8403,8 +8444,8 @@ function customerOrdersDrill(name,start,end,aliasKeys){
       return `<div class="ddhead">Contents</div><table class="ddtable"><thead><tr><th>Item</th><th class="num">Units</th><th class="num">Line Total</th></tr></thead><tbody>${
         its.map(it=>{ const p=nyParseProduct(it.product); return `<tr><td>${esc(p.strain)} <span class="rep">${esc(p.format)}</span></td><td class="num">${Math.round(it.units).toLocaleString()}</td><td class="num money">${fmt$(it.lineTotal)}</td></tr>`; }).join('')}</tbody></table>`; };
     openScModal({ title:`${name} — orders`, sub:`${orders.length} LeafLink order${orders.length!==1?'s':''} in the selected range · click an order for its contents`,
-      columns:[{l:'Order #'},{l:'Drop'},{l:'Ship date'},{l:'Net',num:true,money:true}],
-      rows:orders.map(o=>{ const dr=nyDropOf(o.date); return [o.ref, nyDropInv(dr), drillDt(o.date), o.net]; }),
+      columns:[{l:'Order #'},{l:'Drop'},{l:'Delivery date'},{l:'Gross (LeafLink)',num:true,money:true}],
+      rows:orders.map(o=>{ const dr=nyDropOf(o.od); return [o.ref, nyDropInv(dr), drillDt(o.date), o.net]; }),
       rowDetails:orders.map(o=>itemsTable(o.ref)),
       totalLabel:'Total', total:orders.reduce((s2,o)=>s2+o.net,0) });
     return;
