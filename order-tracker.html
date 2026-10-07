@@ -489,7 +489,7 @@ function fetchT(url, opts = {}, ms = 30000){
   return fetch(url, { ...opts, signal: c.signal }).finally(() => clearTimeout(t));
 }
 
-const PAGE_KEYS = ['overview','report','weekly','ca','ny','ca-payments','ny-payments'];
+const PAGE_KEYS = ['overview','report','weekly','ca','ny','eu','ca-payments','ny-payments'];
 const hashPage = () => {
   const k = location.hash.replace('#','').toLowerCase();
   return PAGE_KEYS.includes(k) ? k : 'overview';
@@ -612,7 +612,10 @@ function buildModel(raw){
   // derived product type: virtual column right after Category
   const descIdx = headers.findIndex(h => /^desc/i.test(h));
   const catIdx  = headers.findIndex(h => h.toLowerCase() === 'category');
-  for(const r of rows) r.type = typeOf(descIdx>=0 ? r.c[descIdx] : '', catIdx>=0 ? r.c[catIdx] : '');
+  for(const r of rows){
+    r.type = typeOf(descIdx>=0 ? r.c[descIdx] : '', catIdx>=0 ? r.c[catIdx] : '');
+    r.eu = descIdx >= 0 && vapeMarketOf(r.c[descIdx], '') === 'eu';
+  }
   const catPos = cols.findIndex(c => c.header.toLowerCase() === 'category');
   cols.splice((catPos>=0 ? catPos : 1) + 1, 0,
     { virtual:'type', i:-1, header:'Type', num:false, wide:false, status:false, orderStatus:false });
@@ -1191,6 +1194,7 @@ function filteredRows(m){
   let rows = m.rows;
   if(f.st.size && osCol) rows = rows.filter(r => f.st.has((r.c[osCol.i]||'').trim()));
   if(f.ty.size) rows = rows.filter(r => f.ty.has(r.type));
+  if(f.mk === 'eu') rows = rows.filter(r => r.eu);
   if(f.q){
     const q = f.q.toLowerCase();
     rows = rows.filter(r => (r.type||'').toLowerCase().includes(q) || r.c.some(v => (v||'').toLowerCase().includes(q)));
@@ -1355,6 +1359,12 @@ function gotoOrder(stateKey, src){
     if(el) el.scrollIntoView({block:'center'});
   }, 30);
 }
+/* a vape market's orders: EU opens the EU tab on its vape orders, CA / NY that sheet's vapes */
+function gotoMarket(k){
+  const f = state.filters[k === 'eu' ? 'ca' : k];
+  f.q = ''; f.st.clear(); f.ty.clear(); f.ty.add(VAPE_TYPE);
+  goPage(k);
+}
 function gotoType(stateKey, type){
   const f = state.filters[stateKey];
   f.q = ''; f.st.clear(); f.ty.clear(); f.ty.add(type);
@@ -1498,6 +1508,20 @@ function vapeMarketsFor(k){
   }
   return out;
 }
+/* EU view only: the EU vape invoices' share of the vape payments attributed at account level,
+   as {due, nyd} deltas against the sheet figures (null when not in the EU view or when some EU
+   vape invoices are filtered out, since the share belongs to all of them together) */
+function euVapeAllocation(m, adj, visSrc, f){
+  if(f.mk !== 'eu' || state.page !== 'ca') return null;
+  const vr = m.rows.filter(r => r.eu && isVape(r.type));
+  if(!vr.length || !vr.every(r => visSrc.has(r.src))) return null;
+  const eu = (vapeMarketsFor('ca') || {}).eu; if(!eu) return null;
+  const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+  const dueC = find('due'), nydC = find('not yet due');
+  const due = vr.reduce((s,r) => s + (dueC ? (money(r.c[dueC.i])||0) : 0) - (adj.delta[r.src]||0), 0);
+  const nyd = vr.reduce((s,r) => s + (nydC ? (money(r.c[nydC.i])||0) : 0), 0);
+  return { due: eu.due - due, nyd: eu.nyd - nyd };
+}
 function mergeVapeMarkets(...list){
   const out = {};
   for(const mk of list) for(const g in (mk||{})){
@@ -1637,8 +1661,8 @@ function renderReport(){
         `<div style="overflow-x:auto"><table class="repTbl"><thead><tr><th>Market</th><th>Billed on</th><th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th><th class="num">Open invoices</th></tr></thead><tbody>` +
         VAPE_MARKETS.filter(g => mk[g]).map(g => { const v = mk[g];
           return `<tr class="st-row"><td><b>${VAPE_MARKET_LABEL[g]}</b></td><td class="faint">${v.sheet.toUpperCase()} sheet</td>` +
-            `<td class="num rc vp" data-go="${v.sheet}|vape|acct" title="Click to see these orders">${fmtUSD(v.bal)}</td><td class="num rc due" data-go="${v.sheet}|vape|acct">${fmtUSD(v.due)}</td>` +
-            `<td class="num rc nyd" data-go="${v.sheet}|vape|acct">${fmtUSD(v.nyd)}</td><td class="num">${v.n}</td></tr>`; }).join('') +
+            `<td class="num rc vp" data-vmgo="${g==='eu'?'eu':v.sheet}" title="Click to see these orders">${fmtUSD(v.bal)}</td><td class="num rc due" data-vmgo="${g==='eu'?'eu':v.sheet}">${fmtUSD(v.due)}</td>` +
+            `<td class="num rc nyd" data-vmgo="${g==='eu'?'eu':v.sheet}">${fmtUSD(v.nyd)}</td><td class="num">${v.n}</td></tr>`; }).join('') +
         `<tr class="grand"><td><b>All vapes</b></td><td></td><td class="num">${fmtUSD(tv.bal)}</td><td class="num">${fmtUSD(tv.due)}</td><td class="num">${fmtUSD(tv.nyd)}</td><td></td></tr>` +
         `</tbody></table></div><div class="nolink" style="padding:8px 2px 0">${VAPE_MARKET_NOTE}</div></div>`; })() +
 
@@ -1652,6 +1676,7 @@ function renderReport(){
     gotoFilter(k, { types, statuses: scope === 'way' ? wayStatuses(m) : scope === 'prod' ? prodStatuses(m) : [] });
   }));
   bindSubNav(cardsEl);
+  cardsEl.querySelectorAll('[data-vmgo]').forEach(td => td.addEventListener('click', e => { e.stopPropagation(); gotoMarket(td.dataset.vmgo); }));
   cardsEl.querySelectorAll('tr.st-row').forEach(tr => tr.addEventListener('click', () => goPage(tr.dataset.page)));
   cardsEl.querySelectorAll('tr.prow[data-rcat]').forEach(tr => tr.addEventListener('click', () => {
     const c = tr.dataset.rcat;
@@ -2049,7 +2074,7 @@ function renderWeekly(){
     `<section class="wkBreakdown" id="wkMetricDetail"${metricBody?'':' hidden'}>${metricBody}</section>` +
     `<section class="wkMarkets" aria-labelledby="wkMarketsTitle"><h2 class="wkSectionTitle" id="wkMarketsTitle">Vapes by market <span>AIO hardware · click a market for its orders</span></h2><div class="wkMarketGrid">` +
       VAPE_MARKETS.filter(g => t.vapeMarkets[g]).map(g => { const v = t.vapeMarkets[g];
-        return `<button class="wkMarket" data-vmgo="${v.sheet}"><span class="lbl">${VAPE_MARKET_LABEL[g]} vapes</span><b>${fmtUSD(v.bal)}</b>` +
+        return `<button class="wkMarket" data-vmgo="${g==='eu'?'eu':v.sheet}"><span class="lbl">${VAPE_MARKET_LABEL[g]} vapes</span><b>${fmtUSD(v.bal)}</b>` +
           `<span class="wkMuted"><span class="due">${fmtUSD(v.due)}</span> due · ${fmtUSD(v.nyd)} not yet due</span>` +
           `<span class="wkMuted">${v.n} open invoice${v.n===1?'':'s'}${g==='eu'?' · billed on the CA sheet':''}</span></button>`; }).join('') +
     `</div><p class="wkFoot">${VAPE_MARKET_NOTE}</p></section>` +
@@ -2090,7 +2115,7 @@ function renderWeekly(){
     cardsEl.querySelector(`[data-wkd="${inp.dataset.wkd}"]`).focus({preventScroll:true});
   }));
   cardsEl.querySelectorAll('[data-gosrc]').forEach(el=>el.addEventListener('click',()=>gotoOrder(el.dataset.gost,parseInt(el.dataset.gosrc,10))));
-  cardsEl.querySelectorAll('[data-vmgo]').forEach(el=>el.addEventListener('click',()=>gotoFilter(el.dataset.vmgo,{types:[VAPE_TYPE],statuses:[]})));
+  cardsEl.querySelectorAll('[data-vmgo]').forEach(el=>el.addEventListener('click',()=>gotoMarket(el.dataset.vmgo)));
   $('#wkCopy').addEventListener('click',async()=>{
     try { await navigator.clipboard.writeText(weeklySummaryText(d)); $('#wkCopyStatus').textContent='Copied'; }
     catch { $('#wkCopyStatus').textContent='Copy unavailable in this browser.'; }
@@ -2378,7 +2403,8 @@ function render(){
     state.wkOpen.add(k); state.wkOpen.add(`${k}|payments`);
     state.page='weekly'; history.replaceState(null,'','#weekly');
   }
-  const navKey = state.page === 'weekly' ? 'report' : state.page;
+  if(state.page === 'eu'){ state.page = 'ca'; state.filters.ca.mk = 'eu'; }       // opened at #eu
+  const navKey = state.page === 'weekly' ? 'report' : state.page === 'ca' && state.filters.ca.mk ? 'eu' : state.page;
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===navKey));
   $('#q').style.display = state.page==='overview' || state.page==='weekly' ? 'none' : '';
   if(state.page === 'overview'){ renderOverview(); return; }
@@ -2416,12 +2442,15 @@ function render(){
   const vapeWhole = allShown(true), nonvapeWhole = allShown(false);
   const bucketOffset = (vapeWhole ? (adj.payToInv.nonvape - adj.netToVape - adj.extraPaid.vape) : 0)
                      + (nonvapeWhole ? (adj.payToInv.vape + adj.netToVape - adj.extraPaid.nonvape) : 0);
-  const dueVal = hasAdj ? sumAdj(dueCol, -1) + bucketOffset : sum(dueCol);
+  let dueVal = hasAdj ? sumAdj(dueCol, -1) + bucketOffset : sum(dueCol);
+  const euAlloc = euVapeAllocation(m, adj, visSrc, f);
+  if(euAlloc){ dueVal += euAlloc.due; }
+  const nydShown = (nydVal ?? 0) + (euAlloc ? euAlloc.nyd : 0);
   const cardDefs = [
-    { lbl:'Orders' + (f.q||f.st.size||f.ty.size?' (filtered)':''), val: rows.length, cls:'' },
-    { lbl:'Open balance', val: (dueVal??0) + (nydVal??0), sheet: hasAdj ? (sum(dueCol)??0)+(nydVal??0) : null, cls:'', usd:true, sub:'Includes due and not yet due' },
+    { lbl:(f.mk === 'eu' ? 'EU orders' : 'Orders') + (f.q||f.st.size||f.ty.size?' (filtered)':''), val: rows.length, cls:'' },
+    { lbl:'Open balance', val: (dueVal??0) + nydShown, sheet: hasAdj ? (sum(dueCol)??0)+(nydVal??0) : null, cls:'', usd:true, sub: f.mk === 'eu' ? 'EU orders only · billed on the CA sheet' : 'Includes due and not yet due' },
     { lbl:'Due', val: dueVal, sheet: hasAdj ? sum(dueCol) : null, cls:'due', usd:true },
-    { lbl:'Not yet due', val: nydVal, cls:'nyd', usd:true },
+    { lbl:'Not yet due', val: nydVal === null ? null : nydShown, cls:'nyd', usd:true },
   ];
   if(adj.overall > 0.005)
     cardDefs.push({ lbl:'On overall balance', val: adj.overall, cls:'', usd:true, sub:'re-ascribed, not on an invoice' });
@@ -2458,7 +2487,8 @@ function render(){
   $('#toolbar').innerHTML = chips +
     `<span class="chip payChip ${state.payOpen[state.page]?'on':''}">💸 Payments <span class="n">${m.payCols.length}</span></span>` +
     `<span class="count">${rows.length} of ${m.rows.length} orders` +
-      ((f.q||f.st.size||f.ty.size) ? ' · Balance stays whole-account' : '') + `</span>` +
+      (f.mk === 'eu' ? ' · EU orders on the CA sheet · Balance = EU orders only'
+        : (f.q||f.st.size||f.ty.size) ? ' · Balance stays whole-account' : '') + `</span>` +
     tyChips;
   document.querySelectorAll('#toolbar .chip').forEach(ch => ch.addEventListener('click', () => {
     if(ch.classList.contains('payChip')){
@@ -2503,14 +2533,30 @@ function render(){
   const dateOf = key => (pdates[key] || {});
 
   const visible = new Set(rows.map(r => r.src));
-  const anyFilter = !!(f.q || f.st.size || f.ty.size);
+  const anyFilter = !!(f.q || f.st.size || f.ty.size || f.mk);
+  const euView = f.mk === 'eu';
   const rawEvents = ledger(m, adj, pdates);
   const orderEvts = rawEvents.filter(ev => ev.kind === 'order' && visible.has(ev.r.src));
   // "vape account" view: filtered so only vape invoices show. Render it as a statement —
   // invoices are charges, bucket attributions to vapes are payments, balance = vape account.
-  const vapeView = anyFilter && orderEvts.length > 0 && orderEvts.every(ev => isVape(ev.r.type));
+  const vapeView = !euView && anyFilter && orderEvts.length > 0 && orderEvts.every(ev => isVape(ev.r.type));
   let events, balField = 'bal';
-  if(vapeView){
+  if(euView){
+    const parts = [...orderEvts];
+    for(const ev of rawEvents){
+      if(ev.kind !== 'pay') continue;
+      const apps = ev.apps.filter(a => visible.has(a.src));
+      const amt = apps.reduce((s,a) => s + a.amt, 0);
+      if(amt > 0.005) parts.push({ ...ev, amt: -amt, wireAmt: ev.amt, apps, superseded: [], euPart: true });
+    }
+    if(euAlloc && Math.abs(euAlloc.due + euAlloc.nyd) > 0.005)
+      parts.push({ kind:'bucketpay', key:'Beu', date: Date.now(), amt: euAlloc.due + euAlloc.nyd,
+                   note: 'Vape payments attributed in the tracker, applied to the oldest vape invoices first' });
+    parts.sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
+    let run = 0; parts.forEach(ev => { run += ev.amt; ev.vbal = run; });
+    events = parts.reverse();
+    balField = 'vbal';
+  } else if(vapeView){
     const bucketpays = state.asc
       .filter(a => a.state === state.page && a.mode === 'bucket' && a.invoice_no === '__vape__')
       .map(a => { const pd = pdates[a.payment_key] || {};   // dated by the source wire, when known
@@ -2536,6 +2582,7 @@ function render(){
   const thead = '<tr>' + m.cols.map((c,idx) => {
     let parts = c.header.split('\n');
     if(c.virtual === 'balance' && vapeView) parts = ['Balance', 'vape account'];
+    if(c.virtual === 'balance' && euView) parts = ['Balance', 'EU orders'];
     const label = esc(parts[0]) + parts.slice(1).map(p=>`<span class="hsub">${esc(p)}</span>`).join('');
     return `<th class="${c.num&&idx>1?'num ':''}${stickyCls(idx)}${c.virtual==='balance'?' balcell':''}">${label}</th>`;
   }).join('') + '</tr>';
@@ -2624,8 +2671,8 @@ function render(){
       `<td class="sticky s1"><span class="${d.exact?'':'inferred'}" title="${esc(d.label ? (d.exact ? d.label : d.label+' — year inferred from the payment order; the sheet gives no year') : 'this payment column has no date in the sheet; placed by its column position')}">${esc(d.label || '—')}</span></td>` +
       `<td class="sticky s2"><span class="chev">▶</span>${esc(nm)}</td>` +
       `<td class="num pay-amt">−${fmtUSD(-ev.amt)}</td>` +
-      `<td class="num balcell">${fmtUSD(ev.bal)}</td>` +
-      (restCols ? `<td colspan="${restCols}">applied to ${n} invoice${n===1?'':'s'}` +
+      `<td class="num balcell">${fmtUSD(ev[balField])}</td>` +
+      (restCols ? `<td colspan="${restCols}">${ev.euPart ? `EU share of a ${fmtUSD(-ev.wireAmt)} wire · ` : ''}applied to ${n} invoice${n===1?'':'s'}` +
         (ev.re ? '<span class="retag">re-ascribed in app</span>'
                : wireMoves.length ? `<span class="retag">${wireMoves.length} reallocated ⇄</span>` : '') + '</td>' : '') +
       '</tr>';
@@ -3046,15 +3093,18 @@ function tickSyncLabel(){
 
 /* ---------- wiring ---------- */
 function goPage(k){
+  // EU is not its own sheet: it is the CA sheet narrowed to the orders tagged EU
+  if(k === 'eu'){ state.filters.ca.mk = 'eu'; k = 'ca'; }
+  else if(k === 'ca') state.filters.ca.mk = null;
   state.page = k;
-  history.replaceState(null,'','#'+k);
+  history.replaceState(null,'','#'+(k === 'ca' && state.filters.ca.mk ? 'eu' : k));
   $('#q').value = state.filters[k] ? state.filters[k].q : '';
   render();
 }
-$('#seg').innerHTML = [{key:'overview',label:'Overview'},{key:'report',label:'📋 Reports'},...TABS].map(t =>
+$('#seg').innerHTML = [{key:'overview',label:'Overview'},{key:'report',label:'📋 Reports'},...TABS,{key:'eu',label:'EU'}].map(t =>
   `<button data-key="${t.key}">${t.label}</button>`).join('');
 document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => goPage(b.dataset.key === 'report' ? 'weekly' : b.dataset.key)));
-window.addEventListener('hashchange', () => { const k = hashPage(); if(k !== state.page) goPage(k); });
+window.addEventListener('hashchange', () => { const k = hashPage(), cur = state.page === 'ca' && state.filters.ca.mk ? 'eu' : state.page; if(k !== cur) goPage(k); });
 
 $('#q').addEventListener('input', e => {
   if(!state.filters[state.page]) return;
