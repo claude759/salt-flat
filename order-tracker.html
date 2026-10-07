@@ -209,6 +209,16 @@
   .wkNotes>summary{display:flex;gap:9px;align-items:center}
   .wkNotes p{max-width:850px;line-height:1.7}
   .wkCopyStatus{font-size:12px;color:var(--accent2)}
+  .wkMarkets{margin:0 0 24px}
+  .wkMarketGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+  .wkMarket{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;cursor:pointer;min-width:0}
+  .wkMarket:hover{border-color:var(--accent2)}
+  .wkMarket .lbl{font-size:12px;font-weight:650;color:var(--muted)}
+  .wkMarket b{font-size:21px;color:var(--accent2);font-variant-numeric:tabular-nums;margin:2px 0}
+  .wkMarketLine{color:#c3b2ff}
+  .wkSummaryTable tr.wkMarketRow td{padding-top:6px;padding-bottom:6px;font-size:12px}
+  .wkSummaryTable tr.wkMarketRow td:first-child{padding-left:28px}
+  @media(max-width:700px){.wkMarketGrid{grid-template-columns:1fr}}
   .weekly :is(button,summary,select,input,a):focus-visible{outline:2px solid var(--accent2);outline-offset:4px}
   @media(max-width:700px){
     .wkHeading{margin-bottom:18px}.wkHeading h1{font-size:24px}
@@ -881,6 +891,18 @@ function paymentsMeta(m){
 const VAPE_TYPE = 'Vapes (AIO)';
 const isVape = t => t === VAPE_TYPE;
 
+/* vape hardware is ordered per market: CA and EU both bill to the CA sheet, NY to the NY sheet.
+   The market comes from the description (EU / NY / CA), else the sheet the order sits on. */
+const VAPE_MARKETS = ['ca','eu','ny'];
+const VAPE_MARKET_LABEL = { ca:'CA', eu:'EU', ny:'NY' };
+function vapeMarketOf(desc, stateKey){
+  const d = desc || '';
+  if(/\bEU\b/.test(d) || /europe/i.test(d)) return 'eu';
+  if(/\bNY\b/.test(d)) return 'ny';
+  if(/\bCA\b/.test(d)) return 'ca';
+  return stateKey;
+}
+
 /* an app-recorded payment is dated by paid_on (a plain date — read it as local noon so a
    timezone shift can never roll it to the previous day), else by when it was entered */
 function payDateOf(a){
@@ -1440,6 +1462,54 @@ function reportFor(k){
 }
 
 
+/* one state's vape account split by market. Payment attributions live at account level, so
+   they are applied to the oldest vape invoices first (due before not yet due), the same rule the
+   weekly report's payment timing uses: the markets always add up to the state's vape balance,
+   due and not yet due. */
+function vapeMarketsFor(k){
+  const r = reportFor(k); if(!r) return null;
+  const m = r.m, adj = computeAdjust(m, k);
+  const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+  const dueC = find('due'), nydC = find('not yet due'), descC = m.cols.find(c => /^desc/i.test(c.header));
+  const num = (c, row) => c ? (money(row.c[c.i])||0) : 0;
+  const items = m.rows.filter(row => isVape(row.type)).map(row => {
+    let due = num(dueC, row) - (adj.delta[row.src]||0), nyd = num(nydC, row);
+    if(due < 0){ nyd += due; due = 0; }
+    return { src:row.src, market: vapeMarketOf(descC ? row.c[descC.i] : '', k), dueTs: row.dueTs, due, nyd };
+  });
+  const resid = r.acct.vape.bal - items.reduce((s,i) => s + i.due + i.nyd, 0);
+  if(resid < -0.005){
+    let credit = -resid;
+    const byAge = [...items].sort((a,b) => (a.dueTs ?? Infinity) - (b.dueTs ?? Infinity));
+    for(const f of ['due','nyd']) for(const i of byAge){
+      if(credit < 0.005) break;
+      const take = Math.min(Math.max(i[f], 0), credit); i[f] -= take; credit -= take;
+    }
+    if(credit > 0.005) items.push({ src:null, market:k, dueTs:null, due:0, nyd:-credit });
+  } else if(resid > 0.005){
+    // money moved off vapes in the tracker reopens the account on the sheet's own market
+    items.push({ src:null, market:k, dueTs:null, due:resid, nyd:0 });
+  }
+  const out = {};
+  for(const g of VAPE_MARKETS){
+    const its = items.filter(i => i.market === g); if(!its.length) continue;
+    const due = its.reduce((s,i) => s + i.due, 0), nyd = its.reduce((s,i) => s + i.nyd, 0);
+    out[g] = { bal: due + nyd, due, nyd, sheet: k, n: its.filter(i => i.src != null && i.due + i.nyd > 0.005).length };
+  }
+  return out;
+}
+function mergeVapeMarkets(...list){
+  const out = {};
+  for(const mk of list) for(const g in (mk||{})){
+    const a = out[g] || { bal:0, due:0, nyd:0, n:0, sheet: mk[g].sheet }, b = mk[g];
+    out[g] = { bal:a.bal+b.bal, due:a.due+b.due, nyd:a.nyd+b.nyd, n:a.n+b.n, sheet:a.sheet };
+  }
+  return out;
+}
+const vapeMarkets = () => mergeVapeMarkets(vapeMarketsFor('ca'), vapeMarketsFor('ny'));
+const vapeMarketLine = mk => VAPE_MARKETS.filter(g => mk && mk[g]).map(g => `${VAPE_MARKET_LABEL[g]} ${fmtUSD(mk[g].bal)}`).join(' · ');
+const VAPE_MARKET_NOTE = 'EU hardware is billed on the California sheet. Payments attributed to vapes are applied to the oldest vape invoices first, so each market shows what is still unpaid on its own invoices.';
+
 /* "On the way" broken out by product category, in the same shape as the Overview's
    open-balance-by-category report: click a category to see the actual orders. */
 function wayByCategoryHtml(rows){
@@ -1562,6 +1632,15 @@ function renderReport(){
     `</tbody></table></div>` +
     `<div class="nolink" style="padding:8px 2px 0">Balance = Due + Not yet due = what the supplier has invoiced (matches their sheet and QuickBooks). <b>In production</b> = orders they are still making, valued at the order total or, when the total is still blank, at what they have booked so far (that part already sits in Not yet due, since they book production orders before shipping); orders with no price yet add to the count only. Where an account has taken more payment than it currently has due, the excess comes off its not-yet-due rather than showing a negative.</div>` +
     `</div>` +
+    (()=>{ const mk = vapeMarkets(), tv = T.acct.vape;
+      return `<div class="panel" style="margin-bottom:12px"><div class="rtitle">Vapes by market<span class="sub">AIO hardware · click a market for its orders</span></div>` +
+        `<div style="overflow-x:auto"><table class="repTbl"><thead><tr><th>Market</th><th>Billed on</th><th class="num">Balance</th><th class="num">Due</th><th class="num">Not yet due</th><th class="num">Open invoices</th></tr></thead><tbody>` +
+        VAPE_MARKETS.filter(g => mk[g]).map(g => { const v = mk[g];
+          return `<tr class="st-row"><td><b>${VAPE_MARKET_LABEL[g]}</b></td><td class="faint">${v.sheet.toUpperCase()} sheet</td>` +
+            `<td class="num rc vp" data-go="${v.sheet}|vape|acct" title="Click to see these orders">${fmtUSD(v.bal)}</td><td class="num rc due" data-go="${v.sheet}|vape|acct">${fmtUSD(v.due)}</td>` +
+            `<td class="num rc nyd" data-go="${v.sheet}|vape|acct">${fmtUSD(v.nyd)}</td><td class="num">${v.n}</td></tr>`; }).join('') +
+        `<tr class="grand"><td><b>All vapes</b></td><td></td><td class="num">${fmtUSD(tv.bal)}</td><td class="num">${fmtUSD(tv.due)}</td><td class="num">${fmtUSD(tv.nyd)}</td><td></td></tr>` +
+        `</tbody></table></div><div class="nolink" style="padding:8px 2px 0">${VAPE_MARKET_NOTE}</div></div>`; })() +
 
     wayByCategoryHtml([...R.ca.wayRows, ...R.ny.wayRows]);
 
@@ -1784,10 +1863,12 @@ function weeklyReportData(range, nowTs){
              : b.key === 'nodate' ? 'not on the sheet' : `${fmtDay(b.ord)} to ${fmtDay(b.ord + 6*DAY)}`;
     }
     return { vape: pick(r.acct.vape), nonvape: pick(r.acct.nonvape), all: pick(r.acct.all), inprod: r.acct.all.inprod,
+             vapeMarkets: vapeMarketsFor(k),
              newOrders, nsum, undated, unpricedOrders, forecast:estimateSummary(unpricedOrders), due: due.filter(b => b.n > 0), attributed };
   };
   const ca = block('ca', R.ca), ny = block('ny', R.ny);
   const total = { vape: sum(ca.vape, ny.vape), nonvape: sum(ca.nonvape, ny.nonvape), all: sum(ca.all, ny.all),
+                  vapeMarkets: mergeVapeMarkets(ca.vapeMarkets, ny.vapeMarkets),
                   forecast:estimateSummary([...ca.unpricedOrders,...ny.unpricedOrders]),
                   inprod: addProd(ca.inprod, ny.inprod),
                   nsum: { n: ca.nsum.n + ny.nsum.n, val: ca.nsum.val + ny.nsum.val, vape: ca.nsum.vape + ny.nsum.vape,
@@ -1848,6 +1929,13 @@ function weeklyEmailHtml(d, link){
       `<div style="font-size:24px;font-weight:800">${money(t.all.bal)} <span style="font-size:13px;font-weight:500;color:#6b6f80">owed</span></div>` +
       `<div style="font-size:13px;color:#6b6f80;margin-top:2px"><b style="color:#b45309">${money(t.all.due)}</b> due · <b style="color:#1d4ed8">${money(t.all.nyd)}</b> not yet due · CA <b style="color:#1a1d26">${money(d.ca.all.bal)}</b> · NY <b style="color:#1a1d26">${money(d.ny.all.bal)}</b> · vape <b style="color:#4b2fd6">${money(t.vape.bal)}</b> · non-vape <b style="color:#1a1d26">${money(t.nonvape.bal)}</b>` +
       ` · ${t.nsum.n} new order${t.nsum.n===1?'':'s'} ${fmtRange(d.range)}</div></div>` +
+    h2('Vapes by market', 'AIO hardware') +
+    `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;margin:0 0 6px">` +
+    `<tr><th style="text-align:left;${TH}">Market</th><th style="text-align:right;${TH}">Open balance</th><th style="text-align:right;${TH}">Due</th><th style="text-align:right;${TH}">Not yet due</th></tr>` +
+    VAPE_MARKETS.filter(g => t.vapeMarkets[g]).map(g => { const v = t.vapeMarkets[g];
+      return `<tr><td style="${TD}"><b>${VAPE_MARKET_LABEL[g]} vapes</b>${g==='eu'?'<span style="color:#6b6f80;font-size:11px"> billed on the CA sheet</span>':''}</td><td style="${TD};text-align:right;font-weight:700;color:#4b2fd6">${money(v.bal)}</td><td style="${TD};text-align:right;color:#b45309">${money(v.due)}</td><td style="${TD};text-align:right;color:#1d4ed8">${money(v.nyd)}</td></tr>`; }).join('') +
+    `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb">All vapes</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.bal)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.due)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.nyd)}</td></tr></table>` +
+    `<div style="font-size:11px;color:#6b6f80;margin:0 0 18px">${VAPE_MARKET_NOTE}</div>` +
     stateBlock('California', d.ca) + stateBlock('New York', d.ny) +
     `<p style="font-size:12px;color:#6b6f80;line-height:1.5">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. ` +
     `New orders are dated by their PO number. ` +
@@ -1875,6 +1963,7 @@ function weeklySummaryText(d){
     `Due per supplier: ${fmtUSD(d.total.all.due)} | Not yet due: ${fmtUSD(d.total.all.nyd)}`,
     `California open balance: ${fmtUSD(d.ca.all.bal)} (${fmtUSD(d.ca.all.due)} due; ${fmtUSD(d.ca.all.nyd)} not yet due)`,
     `New York open balance: ${fmtUSD(d.ny.all.bal)} (${fmtUSD(d.ny.all.due)} due; ${fmtUSD(d.ny.all.nyd)} not yet due)`,
+    `Vapes by market: ${VAPE_MARKETS.filter(g => d.total.vapeMarkets[g]).map(g => { const v = d.total.vapeMarkets[g]; return `${VAPE_MARKET_LABEL[g]} ${fmtUSD(v.bal)} (${fmtUSD(v.due)} due)`; }).join('; ')}. EU hardware is billed on the California sheet.`,
     ...(d.total.forecast.n ? [
       `Unpriced orders: ${d.total.forecast.estimated ? `approximately ${fmtUSD(d.total.forecast.amount)} in products across ${d.total.forecast.estimated} estimated orders; freight/duty extra` : 'pricing pending'}${d.total.forecast.pending ? `; ${d.total.forecast.pending} more without a reliable estimate` : ''}. Estimates are additional to the open balance.`,
       ...['ca','ny'].filter(k=>d[k].forecast.n).map(k=>`${k.toUpperCase()} unpriced orders: ${d[k].forecast.estimated ? `Est. ${fmtUSD(d[k].forecast.amount)} + freight` : 'pricing pending'}${d[k].forecast.pending ? `; ${d[k].forecast.pending} awaiting a product match` : ''}.`)
@@ -1929,10 +2018,13 @@ function renderWeekly(){
   ).join('') : '<div class="wkEmpty">Nothing open.</div>';
   const balanceTable = field => `<table class="wkSummaryTable"><thead><tr><th>State / account</th><th class="num">${field==='bal'?'Open balance':'Due per supplier'}</th>${field==='bal'?'<th class="num">Includes not yet due</th>':''}</tr></thead><tbody>` +
     ['ca','ny'].map(k => `<tr><td><b>${k==='ca'?'California':'New York'}</b></td><td class="num"><b>${fmtUSD(d[k].all[field])}</b></td>${field==='bal'?`<td class="num">${fmtUSD(d[k].all.nyd)}</td>`:''}</tr>` +
-      ['vape','nonvape'].map(account => `<tr><td class="muted">${account==='vape'?'Vape (AIO hardware)':'Non-vape'}</td><td class="num">${fmtUSD(d[k][account][field])}</td>${field==='bal'?`<td class="num">${fmtUSD(d[k][account].nyd)}</td>`:''}</tr>`).join('')).join('') + '</tbody></table>';
+      ['vape','nonvape'].map(account => `<tr><td class="muted">${account==='vape'?'Vape (AIO hardware)':'Non-vape'}</td><td class="num">${fmtUSD(d[k][account][field])}</td>${field==='bal'?`<td class="num">${fmtUSD(d[k][account].nyd)}</td>`:''}</tr>` +
+        (account==='vape' && Object.keys(d[k].vapeMarkets||{}).length > 1 ? VAPE_MARKETS.filter(g => d[k].vapeMarkets[g]).map(g => { const v = d[k].vapeMarkets[g];
+          return `<tr class="wkMarketRow"><td class="muted">${VAPE_MARKET_LABEL[g]} vapes</td><td class="num">${fmtUSD(v[field])}</td>${field==='bal'?`<td class="num">${fmtUSD(v.nyd)}</td>`:''}</tr>`; }).join('') : '')).join('')).join('') + '</tbody></table>';
   const metric = (key,label,value,sub,cls='') => `<button class="wkMetric ${cls}" data-wkmetric="${key}"${key==='new'?' aria-controls="wkPurchases"':` aria-expanded="${state.wkMetric===key}" aria-controls="wkMetricDetail"`}><span class="lbl">${label}</span><span class="val">${value}</span><span class="wkMuted">${sub}</span><span class="wkHint">${key==='new'?'See purchases ↓':state.wkMetric===key?'Hide details ↑':'View details ↓'}</span></button>`;
   const account = (a,k,bucket,label) => disclosure(`${k}|${bucket}`,`wkAccount${bucket==='vape'?' vp':''}`,
-    `<span><span class="wkAccountName">${label}</span><b>${fmtUSD(a[bucket].bal)}</b><span class="wkMuted">Open balance · includes due and not yet due</span><span class="wkMuted">${fmtUSD(a[bucket].due)} due · ${fmtUSD(a[bucket].nyd)} not yet due</span></span>${chevron}`,
+    `<span><span class="wkAccountName">${label}</span><b>${fmtUSD(a[bucket].bal)}</b><span class="wkMuted">Open balance · includes due and not yet due</span><span class="wkMuted">${fmtUSD(a[bucket].due)} due · ${fmtUSD(a[bucket].nyd)} not yet due</span>` +
+      (bucket==='vape' && Object.keys(a.vapeMarkets||{}).length > 1 ? `<span class="wkMuted wkMarketLine">${vapeMarketLine(a.vapeMarkets)}</span>` : '') + `</span>${chevron}`,
     `<div class="wkAccountBody">${orderList(a.due.flatMap(b=>b.items).filter(i=>i.vape===(bucket==='vape')),`${k}|${bucket}|order`)}</div>`);
   const stateCard = (title,a,k) => disclosure(k,'wkState',
     `<span class="wkStateName">${title}</span><span class="wkStateAmount"><small>Open balance</small><b>${fmtUSD(a.all.bal)}</b></span><span class="wkStateAmount wkStateDue"><small>Due per supplier</small><b class="due">${fmtUSD(a.all.due)}</b></span>${chevron}`,
@@ -1955,6 +2047,12 @@ function renderWeekly(){
     `<span>${fmtRange(d.range)} · balances stay current</span></div>` +
     `<div class="wkMetrics">${metric('balance','Open balance',fmtUSD(t.all.bal),`Includes ${fmtUSD(t.all.nyd)} not yet due`)}${metric('due','Due per supplier',fmtUSD(t.all.due),'Across California and New York','due')}${metric('new','New orders',t.nsum.n,priceSummary(t.nsum))}</div>` +
     `<section class="wkBreakdown" id="wkMetricDetail"${metricBody?'':' hidden'}>${metricBody}</section>` +
+    `<section class="wkMarkets" aria-labelledby="wkMarketsTitle"><h2 class="wkSectionTitle" id="wkMarketsTitle">Vapes by market <span>AIO hardware · click a market for its orders</span></h2><div class="wkMarketGrid">` +
+      VAPE_MARKETS.filter(g => t.vapeMarkets[g]).map(g => { const v = t.vapeMarkets[g];
+        return `<button class="wkMarket" data-vmgo="${v.sheet}"><span class="lbl">${VAPE_MARKET_LABEL[g]} vapes</span><b>${fmtUSD(v.bal)}</b>` +
+          `<span class="wkMuted"><span class="due">${fmtUSD(v.due)}</span> due · ${fmtUSD(v.nyd)} not yet due</span>` +
+          `<span class="wkMuted">${v.n} open invoice${v.n===1?'':'s'}${g==='eu'?' · billed on the CA sheet':''}</span></button>`; }).join('') +
+    `</div><p class="wkFoot">${VAPE_MARKET_NOTE}</p></section>` +
     (t.forecast.n ? `<button class="wkForecast" data-wkmetric="forecast" aria-controls="wkStates"><span><b>Awaiting vendor pricing${t.forecast.estimated ? ` · Est. ${fmtUSD(t.forecast.amount)} + freight` : ''}</b><small>${t.forecast.n} active order${t.forecast.n===1?'':'s'} · products only · additional to open balance${t.forecast.pending ? ` · ${t.forecast.pending} without an estimate` : ''}</small></span><span class="wkHint">See estimates ↓</span></button>` : '') +
     `<section class="wkPurchases" id="wkPurchases" aria-labelledby="wkPurchasesTitle"><h2 id="wkPurchasesTitle" tabindex="-1">${wk.preset==='7d'?'Purchased in the past 7 days':'Purchased in the selected period'}</h2><div class="wkMuted">Orders placed ${fmtRange(d.range)} · based on PO date</div>` +
     (t.nsum.n ? orderList(weeklyPurchases(d),'purchases',true) : '<div class="wkEmpty">No orders placed in this period.</div>') +
@@ -1992,6 +2090,7 @@ function renderWeekly(){
     cardsEl.querySelector(`[data-wkd="${inp.dataset.wkd}"]`).focus({preventScroll:true});
   }));
   cardsEl.querySelectorAll('[data-gosrc]').forEach(el=>el.addEventListener('click',()=>gotoOrder(el.dataset.gost,parseInt(el.dataset.gosrc,10))));
+  cardsEl.querySelectorAll('[data-vmgo]').forEach(el=>el.addEventListener('click',()=>gotoFilter(el.dataset.vmgo,{types:[VAPE_TYPE],statuses:[]})));
   $('#wkCopy').addEventListener('click',async()=>{
     try { await navigator.clipboard.writeText(weeklySummaryText(d)); $('#wkCopyStatus').textContent='Copied'; }
     catch { $('#wkCopyStatus').textContent='Copy unavailable in this browser.'; }
@@ -2117,7 +2216,9 @@ function renderOverview(){
   const bucketCards =
     `<div class="cards" style="padding:0 0 14px">` +
     `<div class="card big"${excl?' style="opacity:.65"':''}><div class="lbl">💨 Vape balance <span class="faint">(AIO hardware)</span></div>` +
-      `<div class="val" style="color:var(--accent2)">${fmtUSD(bs.vape)}</div>${bsub(bs.vape, bs.vapeSheet)}${split(s=>s.vape)}` +
+      `<div class="val" style="color:var(--accent2)">${fmtUSD(bs.vape)}</div>${bsub(bs.vape, bs.vapeSheet)}` +
+      (()=>{ const mk = scope === 'all' ? vapeMarkets() : vapeMarketsFor(scope);
+             return Object.keys(mk||{}).length > 1 ? `<div class="sub">${vapeMarketLine(mk)}</div>` : ''; })() +
       (excl?`<div class="sub">excluded from the table and reports below</div>`:'') + `</div>` +
     `<div class="card big"><div class="lbl">Non-vape balance</div>` +
       `<div class="val">${fmtUSD(bs.nonvape)}</div>${bsub(bs.nonvape, bs.nonvapeSheet)}${split(s=>s.nonvape)}</div>` +
