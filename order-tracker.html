@@ -895,7 +895,8 @@ const VAPE_TYPE = 'Vapes (AIO)';
 const isVape = t => t === VAPE_TYPE;
 
 /* vape hardware is ordered per market: CA and EU both bill to the CA sheet, NY to the NY sheet.
-   The market comes from the description (EU / NY / CA), else the sheet the order sits on. */
+   A row's market is the sheet it sits on, except CA-sheet rows whose description says EU /
+   Europe, which are the EU market. A NY or CA tag in a description does not move a row. */
 const VAPE_MARKETS = ['ca','eu','ny'];
 const VAPE_MARKET_LABEL = { ca:'CA', eu:'EU', ny:'NY' };
 function vapeMarketOf(desc, stateKey){
@@ -1195,6 +1196,7 @@ function filteredRows(m){
   if(f.st.size && osCol) rows = rows.filter(r => f.st.has((r.c[osCol.i]||'').trim()));
   if(f.ty.size) rows = rows.filter(r => f.ty.has(r.type));
   if(f.mk === 'eu') rows = rows.filter(r => r.eu);
+  if(f.mk === 'ca') rows = rows.filter(r => !r.eu);
   if(f.q){
     const q = f.q.toLowerCase();
     rows = rows.filter(r => (r.type||'').toLowerCase().includes(q) || r.c.some(v => (v||'').toLowerCase().includes(q)));
@@ -1210,7 +1212,6 @@ function stateTotals(m){
 }
 
 function purchasesReport(scope, exclVapes){
-  const src = scope === 'all' ? ['ca','ny'] : [scope];
   const now = new Date();
   const months = [];
   for(let k=3;k>=1;k--){
@@ -1218,12 +1219,11 @@ function purchasesReport(scope, exclVapes){
     months.push({ y:d.getFullYear(), m:d.getMonth(),
                   label: d.toLocaleString('en-US',{month:'short'})+' '+d.getFullYear(), sum:0 });
   }
-  for(const key of src){
-    const m = state.data[key]; if(!m) continue;
+  for(const { m, keep } of scopeParts(scope)){
     const tc = m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === 'total including freight');
     if(!tc) continue;
     for(const r of m.rows){
-      if(r.date == null) continue;
+      if(r.date == null || !keep(r)) continue;
       if(exclVapes && isVape(r.type)) continue;
       const d = new Date(r.date);
       const slot = months.find(x => x.y===d.getFullYear() && x.m===d.getMonth());
@@ -1235,22 +1235,23 @@ function purchasesReport(scope, exclVapes){
 
 /* per-category open balance, due and not-yet-due (adjusted for re-ascriptions) */
 function categoryReport(scope){
-  const keys = scope === 'all' ? ['ca','ny'] : [scope];
+  const parts = scopeParts(scope);
   const cats = new Map();
-  for(const k of keys){
-    const m = state.data[k]; if(!m) continue;
+  for(const { k, m, keep } of parts){
     const adj = computeAdjust(m, k);
     const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
     const dueC = find('due'), nydC = find('not yet due'), invC = find('invoice no.'),
           shipC = find('ship date'), descC = m.cols.find(c => /^desc/i.test(c.header));
     for(const r of m.rows){
+      if(!keep(r)) continue;
       const t = r.type || 'Other';
       const due = (dueC ? (money(r.c[dueC.i])||0) : 0) - (adj.delta[r.src]||0);
       const nyd = nydC ? (money(r.c[nydC.i])||0) : 0;
       let c = cats.get(t);
       if(!c){ c = { type:t, n:0, due:0, nyd:0, rows:[], states:new Set() }; cats.set(t, c); }
-      c.n++; c.due += due; c.nyd += nyd; c.states.add(k);
-      c.rows.push({ state:k, src:r.src, adj: !!adj.delta[r.src], due, nyd, open: due+nyd,
+      const mk = k === 'ca' && r.eu ? 'eu' : k;
+      c.n++; c.due += due; c.nyd += nyd; c.states.add(mk);
+      c.rows.push({ state:k, market: mk, src:r.src, adj: !!adj.delta[r.src], due, nyd, open: due+nyd,
                     inv: invC ? (r.c[invC.i]||'').trim() : '',
                     date: shipC ? (r.c[shipC.i]||'').trim() : '',
                     desc: descC ? (r.c[descC.i]||'').trim().replace(/\s+/g,' ') : '' });
@@ -1262,17 +1263,31 @@ function categoryReport(scope){
   // BALANCE (which the bucket attributions live at), and reconcile the difference (the
   // payments re-ascribed to vapes, owed on non-vape but not tied to a category).
   let vapeBal = 0, stateOpen = 0, vapeShifted = false, pendNonvape = 0;
-  for(const k of keys){
-    const m = state.data[k]; if(!m) continue;
-    const adj = computeAdjust(m, k), b = bucketBalances(m, adj), st = stateTotals(m);
-    const xp = adj.extraPaid;
-    vapeBal += b.vape;                                  // already net of the vape-side pending
-    stateOpen += st.due + st.nyd - xp.vape - xp.nonvape;
-    pendNonvape += xp.nonvape;
-    if(Math.abs(b.vapeSheet - b.vape) > 0.005) vapeShifted = true;
+  if(scope === 'all'){
+    for(const { k, m } of parts){
+      const adj = computeAdjust(m, k), b = bucketBalances(m, adj), st = stateTotals(m);
+      const xp = adj.extraPaid;
+      vapeBal += b.vape;                                // already net of the vape-side pending
+      stateOpen += b.vape + b.nonvape;                // the account balance, incl. moves and restated wires
+      pendNonvape += xp.nonvape;
+      if(Math.abs(b.vapeSheet - b.vape) > 0.005) vapeShifted = true;
+    }
+  } else {
+    // one market: its share of each account; recorded payments sit with the sheet's own market
+    const mb = marketBalances(scope);
+    vapeBal = mb.vape.bal; stateOpen = mb.all.bal;
+    vapeShifted = Math.abs(mb.vape.sheetOpen - mb.vape.bal) > 0.005;
+    // recorded general payments go with the market that took the non-vape credit
+    for(const { k, m } of parts){
+      const xp = computeAdjust(m, k).extraPaid.nonvape; if(xp < 0.005) continue;
+      const sp = marketSplitFor(k), took = Object.values(sp).reduce((a,x) => a + x.nonvape.credit, 0);
+      pendNonvape += took > 0.005 ? xp * Math.min(1, ((sp[scope] && sp[scope].nonvape.credit) || 0) / took) : (scope === k ? xp : 0);
+    }
   }
   const vapeCat = list.find(c => c.type === VAPE_TYPE);
-  if(vapeCat && vapeShifted){ vapeCat.open = vapeBal; vapeCat.due = vapeBal - vapeCat.nyd; vapeCat.adjusted = true; }
+  // compare against the category's own figure: the sheet's paid credit can coincide with the
+  // tracker's attribution (NY: both 51,000), leaving the raw sheet and the balance equal
+  if(vapeCat && (vapeShifted || Math.abs(vapeCat.open - vapeBal) > 0.005)){ vapeCat.open = vapeBal; vapeCat.due = vapeBal - vapeCat.nyd; vapeCat.adjusted = true; }
 
   list.forEach(c => c.rows.sort((a,b) => b.open - a.open || b.due - a.due));
   list.sort((a,b) => b.open - a.open || b.n - a.n || a.type.localeCompare(b.type));
@@ -1313,14 +1328,14 @@ function catReportHtml(scope, exclVapes){
     rows += `<tr class="catx"><td colspan="6">` +
       `<div class="catbtns"><span class="lbl">${c.n} order${c.n===1?'':'s'} · click one to open it</span>` +
       [...c.states].map(k => `<button class="btn" style="padding:3px 10px;font-size:11.5px" ` +
-        `data-goty="${esc(c.type)}" data-gost="${k}">filter the ${k.toUpperCase()} page ↗</button>`).join('') +
+        `data-goty="${esc(c.type)}" data-gost="${k}"${k === 'ca' ? ' data-gomk="1"' : ''}>filter the ${k.toUpperCase()} page ↗</button>`).join('') +
       `</div><div style="overflow-x:auto"><table class="subTbl"><thead><tr>` +
       `<th>Ship date</th><th>Invoice</th><th>Description</th>` +
       `<th class="num">Open</th><th class="num">Due</th><th class="num">Not yet due</th></tr></thead><tbody>` +
       c.rows.map(r =>
         `<tr data-gost="${r.state}" data-gosrc="${r.src}">` +
         `<td class="faint">${esc(r.date||'—')}</td>` +
-        `<td><b>${showState?`<span class="stbadge">${r.state.toUpperCase()}</span>`:''}${esc(r.inv||'—')}</b></td>` +
+        `<td><b>${showState?`<span class="stbadge">${MARKET_LABEL[r.market] || r.state.toUpperCase()}</span>`:''}${esc(r.inv||'—')}</b></td>` +
         `<td class="desc" title="${esc(r.desc)}">${esc(r.desc||'—')}</td>` +
         `<td class="num">${fmtUSD(r.open)}${r.adj?'<span class="adjmark" title="adjusted by app re-ascriptions">✱</span>':''}</td>` +
         `<td class="num" style="color:var(--orange)">${fmtUSD(r.due)}</td>` +
@@ -1329,7 +1344,7 @@ function catReportHtml(scope, exclVapes){
   }
 
   return `<div class="panel"><div class="rtitle">Open balance by category` +
-    `<span class="sub">${scope==='all'?'CA + NY':scope.toUpperCase()} · ${list.length} categories${exclVapes?' · vapes excluded':''}</span></div>` +
+    `<span class="sub">${scopeLabel(scope)} · ${list.length} categories${exclVapes?' · vapes excluded':''}</span></div>` +
     `<div style="overflow-x:auto"><table class="payTbl"><thead><tr><th>Category</th><th class="num">Orders</th>` +
     `<th class="num">Open balance</th><th class="num">Due</th><th class="num">Not yet due</th><th></th></tr></thead><tbody>` +
     rows +
@@ -1365,11 +1380,14 @@ function gotoMarket(k){
   f.q = ''; f.st.clear(); f.ty.clear(); f.ty.add(VAPE_TYPE);
   goPage(k);
 }
-function gotoType(stateKey, type){
-  const f = state.filters[stateKey];
+function gotoType(stateKey, type, onlyMarket){
+  const f = state.filters[stateKey === 'eu' ? 'ca' : stateKey];
   f.q = ''; f.st.clear(); f.ty.clear(); f.ty.add(type);
   goPage(stateKey);
+  if(onlyMarket && stateKey === 'ca' && hasEU()){ f.mk = 'ca'; render(); }
 }
+/* the CA market = the CA sheet without its EU orders */
+function gotoCaMarket(){ goPage('ca'); if(hasEU()){ state.filters.ca.mk = 'ca'; render(); } }
 
 
 /* ---------- Report page ---------- */
@@ -1377,11 +1395,12 @@ const isDelivered = st => /^delivered/i.test((st||'').trim());
 
 /* jump into a state page with a specific filter preset */
 function gotoFilter(stateKey, opts){
-  const f = state.filters[stateKey];
+  const f = state.filters[stateKey === 'eu' ? 'ca' : stateKey];
   f.q = ''; f.st.clear(); f.ty.clear();
   (opts.types || []).forEach(t => f.ty.add(t));
   (opts.statuses || []).forEach(x => f.st.add(x));
   goPage(stateKey);
+  if(opts.onlyMarket && stateKey === 'ca' && hasEU()){ f.mk = 'ca'; render(); }
 }
 const nonVapeTypes = m => [...new Set(m.rows.map(r => r.type).filter(t => t && !isVape(t)))];
 const wayStatuses = m => {
@@ -1400,7 +1419,7 @@ const prodStatuses = m => {
 };
 const addProd = (a,b) => ({ n:a.n+b.n, val:a.val+b.val, unpriced:a.unpriced+b.unpriced, booked:a.booked+b.booked });
 const zeroProd = () => ({ n:0, val:0, unpriced:0, booked:0 });
-function inProductionFor(m){
+function inProductionFor(m, keep = () => true){
   const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
   const totC = find('total including freight'), dueC = find('due'), nydC = find('not yet due'), paidC = find('paid to date');
   const osC = m.cols.find(c => c.orderStatus);
@@ -1408,7 +1427,7 @@ function inProductionFor(m){
   if(!osC) return out;
   const num = (c, r) => c ? (money(r.c[c.i])||0) : 0;
   for(const r of m.rows){
-    if(!isInProduction(r.c[osC.i])) continue;
+    if(!keep(r) || !isInProduction(r.c[osC.i])) continue;
     const booked = num(dueC, r) + num(nydC, r) + num(paidC, r), tot = num(totC, r);
     const val = tot > 0.005 ? tot : booked;
     for(const key of ['all', isVape(r.type) ? 'vape' : 'nonvape']){
@@ -1472,55 +1491,132 @@ function reportFor(k){
 }
 
 
-/* one state's vape account split by market. Payment attributions live at account level, so
-   they are applied to the oldest vape invoices first (due before not yet due), the same rule the
-   weekly report's payment timing uses: the markets always add up to the state's vape balance,
-   due and not yet due. */
-function vapeMarketsFor(k){
-  const r = reportFor(k); if(!r) return null;
-  const m = r.m, adj = computeAdjust(m, k);
-  const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
-  const dueC = find('due'), nydC = find('not yet due'), descC = m.cols.find(c => /^desc/i.test(c.header));
-  const num = (c, row) => c ? (money(row.c[c.i])||0) : 0;
-  const items = m.rows.filter(row => isVape(row.type)).map(row => {
-    let due = num(dueC, row) - (adj.delta[row.src]||0), nyd = num(nydC, row);
-    if(due < 0){ nyd += due; due = 0; }
-    return { src:row.src, market: vapeMarketOf(descC ? row.c[descC.i] : '', k), dueTs: row.dueTs, due, nyd };
-  });
-  const resid = r.acct.vape.bal - items.reduce((s,i) => s + i.due + i.nyd, 0);
-  if(resid < -0.005){
-    let credit = -resid;
-    const byAge = [...items].sort((a,b) => (a.dueTs ?? Infinity) - (b.dueTs ?? Infinity));
-    for(const f of ['due','nyd']) for(const i of byAge){
-      if(credit < 0.005) break;
-      const take = Math.min(Math.max(i[f], 0), credit); i[f] -= take; credit -= take;
-    }
-    if(credit > 0.005) items.push({ src:null, market:k, dueTs:null, due:0, nyd:-credit });
-  } else if(resid > 0.005){
-    // money moved off vapes in the tracker reopens the account on the sheet's own market
-    items.push({ src:null, market:k, dueTs:null, due:resid, nyd:0 });
-  }
-  const out = {};
-  for(const g of VAPE_MARKETS){
-    const its = items.filter(i => i.market === g); if(!its.length) continue;
-    const due = its.reduce((s,i) => s + i.due, 0), nyd = its.reduce((s,i) => s + i.nyd, 0);
-    out[g] = { bal: due + nyd, due, nyd, sheet: k, n: its.filter(i => i.src != null && i.due + i.nyd > 0.005).length };
+/* markets: EU orders are billed on the CA sheet but tracked as their own market, so the
+   tracker reports CA (the CA sheet without its EU orders), NY and EU side by side */
+const MARKETS = ['ca','ny','eu'];
+const MARKET_LABEL = { ca:'CA', ny:'NY', eu:'EU' };
+const MARKET_NAME = { ca:'California', ny:'New York', eu:'Europe' };
+/* the sheet rows that make up a market */
+function marketSheets(market){
+  const out = [];
+  for(const k of ['ca','ny']){
+    const m = state.data[k]; if(!m) continue;
+    if(market === 'eu'){ if(k === 'ca' && m.rows.some(r => r.eu)) out.push({ k, m, keep: r => r.eu }); }
+    else if(market === k) out.push({ k, m, keep: k === 'ca' ? (r => !r.eu) : (() => true) });
   }
   return out;
 }
-/* EU view only: the EU vape invoices' share of the vape payments attributed at account level,
-   as {due, nyd} deltas against the sheet figures (null when not in the EU view or when some EU
-   vape invoices are filtered out, since the share belongs to all of them together) */
-function euVapeAllocation(m, adj, visSrc, f){
-  if(f.mk !== 'eu' || state.page !== 'ca') return null;
-  const vr = m.rows.filter(r => r.eu && isVape(r.type));
-  if(!vr.length || !vr.every(r => visSrc.has(r.src))) return null;
-  const eu = (vapeMarketsFor('ca') || {}).eu; if(!eu) return null;
+/* every row of the selected overview scope ('all' = both sheets whole) */
+const scopeParts = scope => scope === 'all'
+  ? ['ca','ny'].filter(k => state.data[k]).map(k => ({ k, m: state.data[k], keep: () => true }))
+  : marketSheets(scope);
+const hasEU = () => !!(state.data.ca && state.data.ca.rows.some(r => r.eu));
+const scopeLabel = scope => scope === 'all' ? (hasEU() ? 'CA, NY and EU' : 'CA + NY') : MARKET_LABEL[scope];
+
+/* one sheet's vape and non-vape balances split by market (EU vs the sheet's own state).
+   BALANCE: payment adjustments live at account level (attributions, recorded payments), so the
+   account's net credit pays whole invoices, oldest due date first (the weekly payment-timing
+   rule); a net increase stays with the sheet's own market. Markets add up to the account.
+   DUE / NOT YET DUE, two readings, each adding up to its own account figure:
+   - report (due, nyd): the Reports-page rule. Credit comes off Due first, oldest first, and the
+     market dues are trued up to the account's due (which moves an overpayment into not yet due).
+   - sheet (odue, onyd): the Overview / state-tab rule. Not yet due stays the sheet's own and
+     every adjustment is due-side money. */
+function marketSplitFor(k){
+  const r = reportFor(k); if(!r) return {};
+  const m = r.m, adj = computeAdjust(m, k);
   const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
   const dueC = find('due'), nydC = find('not yet due');
-  const due = vr.reduce((s,r) => s + (dueC ? (money(r.c[dueC.i])||0) : 0) - (adj.delta[r.src]||0), 0);
-  const nyd = vr.reduce((s,r) => s + (nydC ? (money(r.c[nydC.i])||0) : 0), 0);
-  return { due: eu.due - due, nyd: eu.nyd - nyd };
+  const num = (c, row) => c ? (money(row.c[c.i])||0) : 0;
+  const out = {};
+  const slot = (mk, bucket) => (out[mk] ??= { vape: zeroMarket(), nonvape: zeroMarket() })[bucket];
+  const byAge = list => [...list].sort((a,b) => (a.dueTs ?? Infinity) - (b.dueTs ?? Infinity));
+  for(const bucket of ['vape','nonvape']){
+    const acct = r.acct[bucket];
+    const items = m.rows.filter(row => isVape(row.type) === (bucket === 'vape')).map(row => {
+      const sd = num(dueC, row), sn = num(nydC, row), d = sd - (adj.delta[row.src]||0);
+      return { src:row.src, market: k === 'ca' && row.eu ? 'eu' : k, dueTs: row.dueTs,
+               open: d + sn, due: d, nyd: sn, sheetOpen: sd + sn, credit: 0 };
+    });
+    slot(k, bucket);
+    const resid = acct.bal - items.reduce((s,i) => s + i.open, 0);
+    let homeOpen = 0, homeDue = 0;
+    if(resid < -0.005){
+      let c = -resid;                                        // balance: whole invoices, oldest first
+      for(const i of byAge(items)){ if(c < 0.005) break; const t = Math.min(Math.max(i.open, 0), c); i.open -= t; i.credit = t; c -= t; }
+      homeOpen -= c;
+      let c2 = -resid;                                       // report due: Due first, oldest first
+      for(const i of byAge(items)){ if(c2 < 0.005) break; const t = Math.min(Math.max(i.due, 0), c2); i.due -= t; c2 -= t; }
+    } else if(resid > 0.005){ homeOpen += resid; homeDue += resid; }
+    for(const i of items){
+      const sl = slot(i.market, bucket);
+      sl.bal += i.open; sl.due += i.due; sl.onyd += i.nyd; sl.credit += i.credit;
+      sl.orders++; sl.sheetOpen += i.sheetOpen; if(i.open > 0.005) sl.n++;
+    }
+    const home = slot(k, bucket);
+    home.bal += homeOpen; home.due += homeDue;
+    home.credit += Math.max(0, -resid) - items.reduce((s,i) => s + i.credit, 0);
+    // true the report dues up to the account's own due (its overpayment clamp, odd rows)
+    home.due += acct.due - Object.values(out).reduce((s,x) => s + x[bucket].due, 0);
+  }
+  // a market's report Due can go negative (an attribution onto a not-yet-due invoice, a credit
+  // memo); the account nets it against its other Due, so net it against the other markets' Due
+  for(const bucket of ['vape','nonvape']){
+    const sls = Object.values(out).map(x => x[bucket]);
+    let deficit = sls.reduce((s,x) => s + Math.max(0, -x.due), 0);
+    if(deficit < 0.005) continue;
+    for(const x of sls) if(x.due < 0) x.due = 0;
+    for(const x of [...sls].sort((a,b) => b.due - a.due)){ if(deficit < 0.005) break; const t = Math.min(x.due, deficit); x.due -= t; deficit -= t; }
+  }
+  const cents = x => Math.round(x * 100) / 100 + 0;          // no float noise ("-$0.00")
+  for(const mk in out) for(const bucket of ['vape','nonvape']){
+    const sl = out[mk][bucket];
+    sl.bal = cents(sl.bal); sl.due = cents(sl.due); sl.onyd = cents(sl.onyd);
+    sl.nyd = cents(sl.bal - sl.due); sl.odue = cents(sl.bal - sl.onyd);
+  }
+  return out;
+}
+function zeroMarket(){ return { bal:0, due:0, nyd:0, odue:0, onyd:0, n:0, orders:0, sheetOpen:0, credit:0 }; }
+/* a market's balances across the sheets it appears on: {vape, nonvape, all} */
+function marketBalances(market){
+  const out = { vape: zeroMarket(), nonvape: zeroMarket() };
+  for(const { k } of marketSheets(market)){
+    const sp = marketSplitFor(k)[market]; if(!sp) continue;
+    for(const bucket of ['vape','nonvape']) for(const f in out[bucket]) out[bucket][f] += sp[bucket][f];
+  }
+  out.all = { bal: out.vape.bal + out.nonvape.bal, due: out.vape.due + out.nonvape.due, nyd: out.vape.nyd + out.nonvape.nyd };
+  return out;
+}
+/* one sheet's vape account by market (the "Vapes by market" figures) */
+function vapeMarketsFor(k){
+  const sp = marketSplitFor(k), out = {};
+  for(const g of VAPE_MARKETS){
+    const v = sp[g] && sp[g].vape;
+    if(!v || (!v.orders && Math.abs(v.bal) < 0.005)) continue;
+    out[g] = { bal: v.bal, due: v.due, nyd: v.nyd, sheet: k, n: v.n };
+  }
+  return out;
+}
+/* market views of the CA tab (EU, or CA without EU): the market's share of the payment
+   adjustments recorded at account level, as {due, nyd} deltas against the sheet figures, per
+   account (applied only when all of that account's market invoices are on screen) */
+function euVapeAllocation(m, adj, visSrc, f){
+  if((f.mk !== 'eu' && f.mk !== 'ca') || state.page !== 'ca') return null;
+  const mk = marketSplitFor('ca')[f.mk]; if(!mk) return null;
+  const inMarket = f.mk === 'eu' ? (r => r.eu) : (r => !r.eu);
+  const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+  const dueC = find('due');
+  const out = { due:0, nyd:0 }; let any = false;
+  for(const bucket of ['vape','nonvape']){
+    const rs = m.rows.filter(r => inMarket(r) && isVape(r.type) === (bucket === 'vape'));
+    // an account with no rows in this market (just a share of the account's credit) counts only
+    // when nothing filters the view, or the type filter is that account's alone
+    const emptyOk = !f.q && !f.st.size && (!f.ty.size || [...f.ty].every(t => isVape(t) === (bucket === 'vape')));
+    if(rs.length ? !rs.every(r => visSrc.has(r.src)) : !emptyOk) continue;
+    const due = rs.reduce((s,r) => s + (dueC ? (money(r.c[dueC.i])||0) : 0) - (adj.delta[r.src]||0), 0);
+    out.due += mk[bucket].odue - due; any = true;               // not yet due stays the sheet's
+  }
+  return any ? out : null;
 }
 function mergeVapeMarkets(...list){
   const out = {};
@@ -1811,64 +1907,73 @@ function estimateBasisHtml(e){
 function weeklyReportData(range, nowTs){
   const now = nowTs ?? Date.now();
   range = range || wkRangeFor(state.wk.preset, now, state.wk.custom);
-  const R = { ca: reportFor('ca'), ny: reportFor('ny') };
-  if(!R.ca || !R.ny) return null;
+  if(!reportFor('ca') || !reportFor('ny')) return null;
   const pick = a => ({ bal:a.bal, due:a.due, nyd:a.nyd });
   const sum = (a,b) => ({ bal:a.bal+b.bal, due:a.due+b.due, nyd:a.nyd+b.nyd });
   const today = startOfDay(now), thisMon = mondayOf(today);
 
-  const block = (k, r) => {
-    const m = r.m;
-    const estimates = orderEstimatesFor(m,k,now);
-    const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
-    const dueC = find('due'), nydC = find('not yet due');
-    const invC = find('invoice no.'), descC = m.cols.find(c => /^desc/i.test(c.header)), osC = m.cols.find(c => c.orderStatus);
-    const num = (c, r) => c ? (money(r.c[c.i])||0) : 0;
-    const item = r => {
-      return { state:k, src:r.src, inv: invC ? (r.c[invC.i]||'').trim() : '',
+  // one block per market: CA (the CA sheet without its EU orders), NY, EU
+  const block = market => {
+    const parts = marketSheets(market), mb = marketBalances(market);
+    const newOrders = [], unpricedOrders = [], open = [];
+    let undated = 0, orders = 0, inprod = zeroProd();
+    for(const { k, m, keep } of parts){
+      const estimates = orderEstimatesFor(m,k,now);
+      const find = n => m.cols.find(c => c.header.replace(/\s+/g,' ').toLowerCase() === n);
+      const dueC = find('due'), nydC = find('not yet due');
+      const invC = find('invoice no.'), descC = m.cols.find(c => /^desc/i.test(c.header)), osC = m.cols.find(c => c.orderStatus);
+      const num = (c, r) => c ? (money(r.c[c.i])||0) : 0;
+      const item = r => ({ state:k, market, src:r.src, inv: invC ? (r.c[invC.i]||'').trim() : '',
         desc: descC ? (r.c[descC.i]||'').trim().replace(/\s+/g,' ') : '', type: r.type || 'Other', vape: isVape(r.type),
         status: osC ? (r.c[osC.i]||'').trim() : '', ordered: r.orderedTs, due: r.dueTs, ship: r.date,
-        value: orderPriceFields(m,r).value, estimate:estimates.get(r.src), open: num(dueC, r) + num(nydC, r) };
-    };
-    // new orders = placed inside the range, by the date in the PO number
-    const newOrders = m.rows.filter(r => r.orderedTs != null && r.orderedTs >= range.start && r.orderedTs <= range.end)
-      .map(item).sort((a,b) => b.ordered - a.ordered || b.value - a.value);
+        value: orderPriceFields(m,r).value, estimate:estimates.get(r.src), open: num(dueC, r) + num(nydC, r) });
+      for(const r of m.rows){
+        if(!keep(r)) continue;
+        orders++;
+        // new orders = placed inside the range, by the date in the PO number
+        if(r.orderedTs != null && r.orderedTs >= range.start && r.orderedTs <= range.end) newOrders.push(item(r));
+        if(r.orderedTs == null) undated++;
+        if(estimates.has(r.src)) unpricedOrders.push(item(r));
+        const it = item(r); if(it.open >= 0.005) open.push(it);
+      }
+      inprod = addProd(inprod, inProductionFor(m, keep).all);
+    }
+    newOrders.sort((a,b) => b.ordered - a.ordered || b.value - a.value);
+    unpricedOrders.sort((a,b)=>(b.ordered||0)-(a.ordered||0));
     const nsum = { n:newOrders.length, val:0, vape:0, nonvape:0, unpriced:0,estimated:0,estimateVal:0 };
     for(const o of newOrders){
       nsum.val += o.value; nsum[o.vape?'vape':'nonvape'] += o.value;
       if(o.value < 0.005) nsum.unpriced++;
       if(o.estimate?.amount > .005){nsum.estimated++;nsum.estimateVal+=o.estimate.amount;}
     }
-    const undated = m.rows.filter(r => r.orderedTs == null).length;
-    const unpricedOrders = m.rows.filter(r => estimates.has(r.src)).map(item).sort((a,b)=>(b.ordered||0)-(a.ordered||0));
 
     // coming due = every open invoice (the sheet's own Due + Not yet due), by due-date week
     const buckets = new Map();
     const bucketOf = key => {
       let b = buckets.get(key);
-      if(!b){ b = { key, ord: key === 'overdue' ? -Infinity : key === 'nodate' ? Infinity : +key, n:0, vape:0, nonvape:0, total:0, items:[] }; buckets.set(key, b); }
+      if(!b){ b = { key, ord: key === 'overdue' ? -Infinity : key === 'credit' ? Infinity : key === 'nodate' ? Number.MAX_VALUE : +key, n:0, vape:0, nonvape:0, total:0, items:[] }; buckets.set(key, b); }
       return b;
     };
-    for(const r of m.rows){
-      const it = item(r); if(it.open < 0.005) continue;
-      bucketOf(it.due == null ? 'nodate' : it.due < today ? 'overdue' : String(mondayOf(it.due))).items.push(it);
-    }
+    for(const it of open) bucketOf(it.due == null ? 'nodate' : it.due < today ? 'overdue' : String(mondayOf(it.due))).items.push(it);
     // the tracker's payment attributions live at account level, not on the supplier's invoices.
     // Apply them here so the list simply adds up to the balances: extra credit on an account
     // pays its oldest invoices first; money moved off an account reopens its oldest invoices,
     // shown as one line under Overdue.
     const sheetOpen = { vape:0, nonvape:0 };
-    for(const b of buckets.values()) for(const it of b.items) sheetOpen[it.vape?'vape':'nonvape'] += it.open;
-    const attributed = { vape: r.acct.vape.bal - sheetOpen.vape, nonvape: r.acct.nonvape.bal - sheetOpen.nonvape };
+    for(const it of open) sheetOpen[it.vape?'vape':'nonvape'] += it.open;
+    const attributed = { vape: mb.vape.bal - sheetOpen.vape, nonvape: mb.nonvape.bal - sheetOpen.nonvape };
     for(const bucket of ['vape','nonvape']){
       const diff = attributed[bucket]; if(Math.abs(diff) < 0.005) continue;
       const mine = it => it.vape === (bucket === 'vape');
       if(diff < 0){
         let credit = -diff;
         const items = [...buckets.values()].flatMap(b => b.items.filter(mine)).sort((x,y) => (x.due ?? Infinity) - (y.due ?? Infinity));
-        for(const it of items){ if(credit < 0.005) break; const take = Math.min(it.open, credit); it.open -= take; it.paidInApp = (it.paidInApp||0) + take; credit -= take; }
+        for(const it of items){ if(credit < 0.005) break; const take = Math.min(Math.max(it.open, 0), credit); it.open -= take; it.paidInApp = (it.paidInApp||0) + take; credit -= take; }
+        if(credit >= 0.005) bucketOf('credit').items.push({ state: parts[0] ? parts[0].k : market, market, src:null, inv:'', synthetic:true, vape: bucket === 'vape',
+          type: bucket === 'vape' ? VAPE_TYPE : 'Attribution', desc: 'Payment credit not yet applied to an invoice',
+          status:'', ordered:null, due:null, ship:null, value:0, open: -credit });
       } else {
-        bucketOf('overdue').items.push({ state:k, src:null, inv:'', synthetic:true, vape: bucket === 'vape', type: bucket === 'vape' ? VAPE_TYPE : 'Attribution',
+        bucketOf('overdue').items.push({ state: parts[0] ? parts[0].k : market, market, src:null, inv:'', synthetic:true, vape: bucket === 'vape', type: bucket === 'vape' ? VAPE_TYPE : 'Attribution',
           desc: bucket === 'vape' ? 'Vape payments moved to non-vape in the tracker: older vape invoices reopen'
                                   : 'Payments moved to vapes in the tracker: older non-vape invoices reopen',
           status:'', ordered:null, due:null, ship:null, value:0, open: diff });
@@ -1876,40 +1981,44 @@ function weeklyReportData(range, nowTs){
     }
     const due = [...buckets.values()].sort((a,b) => a.ord - b.ord);
     for(const b of due){
-      b.items = b.items.filter(it => it.open > 0.005).sort((x,y) => (x.due ?? Infinity) - (y.due ?? Infinity) || y.open - x.open);
+      b.items = b.items.filter(it => it.open > 0.005 || (it.synthetic && it.open < -0.005)).sort((x,y) => (x.due ?? Infinity) - (y.due ?? Infinity) || y.open - x.open);
       b.n = b.items.length;
       b.vape = b.items.filter(i => i.vape).reduce((s,i) => s + i.open, 0);
       b.nonvape = b.items.filter(i => !i.vape).reduce((s,i) => s + i.open, 0);
       b.total = b.vape + b.nonvape;
       const dated = b.items.filter(i => i.due != null).map(i => i.due);
-      b.label = b.key === 'overdue' ? 'Overdue' : b.key === 'nodate' ? 'No due date'
+      b.label = b.key === 'overdue' ? 'Overdue' : b.key === 'nodate' ? 'No due date' : b.key === 'credit' ? 'Credit on account'
               : b.ord === thisMon ? 'This week' : b.ord === thisMon + 7*DAY ? 'Next week' : `Week of ${fmtDay(b.ord)}`;
       b.when = b.key === 'overdue' ? (dated.length ? `oldest ${fmtDayY(Math.min(...dated))}` : '')
-             : b.key === 'nodate' ? 'not on the sheet' : `${fmtDay(b.ord)} to ${fmtDay(b.ord + 6*DAY)}`;
+             : b.key === 'nodate' ? 'not on the sheet' : b.key === 'credit' ? 'not yet applied to an invoice' : `${fmtDay(b.ord)} to ${fmtDay(b.ord + 6*DAY)}`;
     }
-    return { vape: pick(r.acct.vape), nonvape: pick(r.acct.nonvape), all: pick(r.acct.all), inprod: r.acct.all.inprod,
-             vapeMarkets: vapeMarketsFor(k),
+    return { market, orders, vape: pick(mb.vape), nonvape: pick(mb.nonvape), all: pick(mb.all), inprod,
              newOrders, nsum, undated, unpricedOrders, forecast:estimateSummary(unpricedOrders), due: due.filter(b => b.n > 0), attributed };
   };
-  const ca = block('ca', R.ca), ny = block('ny', R.ny);
-  const total = { vape: sum(ca.vape, ny.vape), nonvape: sum(ca.nonvape, ny.nonvape), all: sum(ca.all, ny.all),
-                  vapeMarkets: mergeVapeMarkets(ca.vapeMarkets, ny.vapeMarkets),
-                  forecast:estimateSummary([...ca.unpricedOrders,...ny.unpricedOrders]),
-                  inprod: addProd(ca.inprod, ny.inprod),
-                  nsum: { n: ca.nsum.n + ny.nsum.n, val: ca.nsum.val + ny.nsum.val, vape: ca.nsum.vape + ny.nsum.vape,
-                          nonvape: ca.nsum.nonvape + ny.nsum.nonvape, unpriced: ca.nsum.unpriced + ny.nsum.unpriced,
-                          estimated:ca.nsum.estimated+ny.nsum.estimated,estimateVal:ca.nsum.estimateVal+ny.nsum.estimateVal } };
-  return { asOf: (state.lastSync || new Date()).getTime(), now, range, ca, ny, total };
+  const ca = block('ca'), ny = block('ny'), eu = block('eu'), blocks = [ca, ny, eu];
+  const add = f => blocks.reduce((a,x) => sum(a, x[f]), { bal:0, due:0, nyd:0 });
+  const nadd = f => blocks.reduce((a,x) => a + x.nsum[f], 0);
+  const total = { vape: add('vape'), nonvape: add('nonvape'), all: add('all'),
+                  vapeMarkets: vapeMarkets(),
+                  forecast:estimateSummary(blocks.flatMap(x => x.unpricedOrders)),
+                  inprod: blocks.reduce((a,x) => addProd(a, x.inprod), zeroProd()),
+                  nsum: { n:nadd('n'), val:nadd('val'), vape:nadd('vape'), nonvape:nadd('nonvape'), unpriced:nadd('unpriced'),
+                          estimated:nadd('estimated'), estimateVal:nadd('estimateVal') } };
+  return { asOf: (state.lastSync || new Date()).getTime(), now, range, ca, ny, eu, total };
 }
+/* the markets a weekly report has something to show for (EU only when it has orders) */
+const wkMarkets = d => MARKETS.filter(mk => d[mk] && (mk !== 'eu' || d[mk].orders));
+const wkUndated = d => MARKETS.reduce((a,mk) => a + ((d[mk] && d[mk].undated) || 0), 0);
 
 const fmtAsOf = ms => new Date(ms).toLocaleString('en-US', { weekday:'short', month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
 const fmtRange = r => `${fmtDayY(r.start)} to ${fmtDayY(r.end)}`;
-const attributionNote = a => {
-  const v = a.attributed.vape;
-  if(Math.abs(v) < 0.005) return '';
-  return v < 0
-    ? `Includes ${fmtUSD(-v)} of payments attributed to vapes in the tracker, applied to the oldest vape invoices first; the same amount reopens older non-vape invoices (one line under Overdue).`
-    : `Includes ${fmtUSD(v)} of vape payments moved to non-vape in the tracker, applied to the oldest non-vape invoices first; the same amount reopens older vape invoices (one line under Overdue).`;
+const attributionNote = (a, d) => {
+  const v = a.attributed.vape, nv = a.attributed.nonvape, s = [];
+  if(v < -0.005) s.push(`Includes ${fmtUSD(-v)} of payment credit on vapes recorded in the tracker, applied to the oldest vape invoices first.`);
+  if(nv < -0.005) s.push(`Includes ${fmtUSD(-nv)} of payment credit on non-vape recorded in the tracker, applied to the oldest non-vape invoices first.`);
+  if(v > 0.005) s.push(`Older vape invoices reopen by ${fmtUSD(v)}: payments moved off vapes in the tracker (one line under Overdue).`);
+  if(nv > 0.005) s.push(`Older non-vape invoices reopen by ${fmtUSD(nv)}: payments moved to vapes in the tracker (one line under Overdue).`);
+  return s.join(' ');
 };
 
 /* inline-styled HTML for the email (Gmail strips <style>), built from the same data */
@@ -1952,7 +2061,7 @@ function weeklyEmailHtml(d, link){
     `<div style="margin:0 0 18px;padding:12px 16px;background:#f5f3ff;border-radius:12px">` +
       `<div style="font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#6b6f80">Both states</div>` +
       `<div style="font-size:24px;font-weight:800">${money(t.all.bal)} <span style="font-size:13px;font-weight:500;color:#6b6f80">owed</span></div>` +
-      `<div style="font-size:13px;color:#6b6f80;margin-top:2px"><b style="color:#b45309">${money(t.all.due)}</b> due · <b style="color:#1d4ed8">${money(t.all.nyd)}</b> not yet due · CA <b style="color:#1a1d26">${money(d.ca.all.bal)}</b> · NY <b style="color:#1a1d26">${money(d.ny.all.bal)}</b> · vape <b style="color:#4b2fd6">${money(t.vape.bal)}</b> · non-vape <b style="color:#1a1d26">${money(t.nonvape.bal)}</b>` +
+      `<div style="font-size:13px;color:#6b6f80;margin-top:2px"><b style="color:#b45309">${money(t.all.due)}</b> due · <b style="color:#1d4ed8">${money(t.all.nyd)}</b> not yet due · ${wkMarkets(d).map(mk => `${MARKET_LABEL[mk]} <b style="color:#1a1d26">${money(d[mk].all.bal)}</b>`).join(' · ')} · vape <b style="color:#4b2fd6">${money(t.vape.bal)}</b> · non-vape <b style="color:#1a1d26">${money(t.nonvape.bal)}</b>` +
       ` · ${t.nsum.n} new order${t.nsum.n===1?'':'s'} ${fmtRange(d.range)}</div></div>` +
     h2('Vapes by market', 'AIO hardware') +
     `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;margin:0 0 6px">` +
@@ -1961,7 +2070,7 @@ function weeklyEmailHtml(d, link){
       return `<tr><td style="${TD}"><b>${VAPE_MARKET_LABEL[g]} vapes</b>${g==='eu'?'<span style="color:#6b6f80;font-size:11px"> billed on the CA sheet</span>':''}</td><td style="${TD};text-align:right;font-weight:700;color:#4b2fd6">${money(v.bal)}</td><td style="${TD};text-align:right;color:#b45309">${money(v.due)}</td><td style="${TD};text-align:right;color:#1d4ed8">${money(v.nyd)}</td></tr>`; }).join('') +
     `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb">All vapes</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.bal)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.due)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.nyd)}</td></tr></table>` +
     `<div style="font-size:11px;color:#6b6f80;margin:0 0 18px">${VAPE_MARKET_NOTE}</div>` +
-    stateBlock('California', d.ca) + stateBlock('New York', d.ny) +
+    wkMarkets(d).map(mk => stateBlock(MARKET_NAME[mk] + (mk === 'eu' ? ' <span style="font-size:12px;font-weight:500;color:#6b6f80">billed on the California sheet; California excludes it</span>' : ''), d[mk])).join('') +
     `<p style="font-size:12px;color:#6b6f80;line-height:1.5">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. ` +
     `New orders are dated by their PO number. ` +
     (link ? `Live figures and order detail: <a href="${link}" style="color:#4b2fd6">open the order tracker</a>. ` : '') +
@@ -1970,7 +2079,7 @@ function weeklyEmailHtml(d, link){
 
 /* Keep quantities as written by the supplier; expand the row for the full description. */
 const weeklyPurchaseLabel = o => (o.desc || o.type || 'Order').replace(/^Wizard Trees\s*[-–:]\s*/i,'').split(/\s*\(/)[0].trim() || o.type || 'Order';
-const weeklyPurchases = d => [...d.ca.newOrders,...d.ny.newOrders].sort((a,b)=>b.ordered-a.ordered);
+const weeklyPurchases = d => MARKETS.flatMap(mk => (d[mk] && d[mk].newOrders) || []).sort((a,b)=>b.ordered-a.ordered);
 const weeklyPriceSummary = a => !a.n ? 'No orders in this period' : [
   a.n > a.unpriced ? `${fmtUSD(a.val)} priced` : '',
   a.estimated ? `Est. ${fmtUSD(a.estimateVal)} + freight` : '',
@@ -1988,14 +2097,15 @@ function weeklySummaryText(d){
     `Due per supplier: ${fmtUSD(d.total.all.due)} | Not yet due: ${fmtUSD(d.total.all.nyd)}`,
     `California open balance: ${fmtUSD(d.ca.all.bal)} (${fmtUSD(d.ca.all.due)} due; ${fmtUSD(d.ca.all.nyd)} not yet due)`,
     `New York open balance: ${fmtUSD(d.ny.all.bal)} (${fmtUSD(d.ny.all.due)} due; ${fmtUSD(d.ny.all.nyd)} not yet due)`,
+    ...(d.eu && d.eu.orders ? [`Europe open balance: ${fmtUSD(d.eu.all.bal)} (${fmtUSD(d.eu.all.due)} due; ${fmtUSD(d.eu.all.nyd)} not yet due; billed on the California sheet, so California above excludes it)`] : []),
     `Vapes by market: ${VAPE_MARKETS.filter(g => d.total.vapeMarkets[g]).map(g => { const v = d.total.vapeMarkets[g]; return `${VAPE_MARKET_LABEL[g]} ${fmtUSD(v.bal)} (${fmtUSD(v.due)} due)`; }).join('; ')}. EU hardware is billed on the California sheet.`,
     ...(d.total.forecast.n ? [
       `Unpriced orders: ${d.total.forecast.estimated ? `approximately ${fmtUSD(d.total.forecast.amount)} in products across ${d.total.forecast.estimated} estimated orders; freight/duty extra` : 'pricing pending'}${d.total.forecast.pending ? `; ${d.total.forecast.pending} more without a reliable estimate` : ''}. Estimates are additional to the open balance.`,
-      ...['ca','ny'].filter(k=>d[k].forecast.n).map(k=>`${k.toUpperCase()} unpriced orders: ${d[k].forecast.estimated ? `Est. ${fmtUSD(d[k].forecast.amount)} + freight` : 'pricing pending'}${d[k].forecast.pending ? `; ${d[k].forecast.pending} awaiting a product match` : ''}.`)
+      ...wkMarkets(d).filter(k=>d[k].forecast.n).map(k=>`${MARKET_LABEL[k]} unpriced orders: ${d[k].forecast.estimated ? `Est. ${fmtUSD(d[k].forecast.amount)} + freight` : 'pricing pending'}${d[k].forecast.pending ? `; ${d[k].forecast.pending} awaiting a product match` : ''}.`)
     ] : []),
     `New orders, ${fmtRange(d.range)}: ${n.n}${n.n ? ` (${pricing})` : ''}`,
-    ...weeklyPurchases(d).map(o=>`• ${o.state.toUpperCase()} · ${fmtDay(o.ordered)}: ${weeklyPurchaseLabel(o)} (${o.value>.005?fmtUSD(o.value):estimatedPriceText(o.estimate)})`),
-    ...(d.ca.undated + d.ny.undated ? [`${d.ca.undated + d.ny.undated} orders without a PO date are excluded from the new-order count.`] : []),
+    ...weeklyPurchases(d).map(o=>`• ${MARKET_LABEL[o.market] || o.state.toUpperCase()} · ${fmtDay(o.ordered)}: ${weeklyPurchaseLabel(o)} (${o.value>.005?fmtUSD(o.value):estimatedPriceText(o.estimate)})`),
+    ...(wkUndated(d) ? [`${wkUndated(d)} orders without a PO date are excluded from the new-order count.`] : []),
     ...(state.failed || state.ascFailed ? ['Data warning: ' + (state.failed ? 'Sheet refresh failed; balances use the last available data. ' : '') + (state.ascFailed ? 'Payment adjustments could not refresh; balances may include previously loaded adjustments.' : '')] : []),
     'Balances include tracker payment adjustments when available. The date range applies only to new orders.',
     'Order detail: https://claude759.github.io/salt-flat/order-tracker.html#weekly'
@@ -2026,7 +2136,7 @@ function renderWeekly(){
   const orderList = (items, prefix, isNew=false) => items.length ? items.map(i => {
     const amount = isNew ? (i.value > .005 ? fmtUSD(i.value) : i.estimate?.amount > .005 ? `Est. ${fmtUSD(i.estimate.amount)}<small>+ freight / duty</small>` : 'Pricing pending') : fmtUSD(i.open);
     const label = isNew ? weeklyPurchaseLabel(i) : i.synthetic ? 'Account adjustment' : i.inv || 'Invoice pending';
-    const sub = [i.state === 'ca' ? 'CA' : 'NY', isNew ? i.ordered ? fmtDay(i.ordered) : 'PO date missing' : i.type, isNew ? i.status : i.due ? `due ${fmtDayY(i.due)}` : 'No due date'].filter(Boolean).join(' · ');
+    const sub = [MARKET_LABEL[i.market] || i.state.toUpperCase(), isNew ? i.ordered ? fmtDay(i.ordered) : 'PO date missing' : i.type, isNew ? i.status : i.due ? `due ${fmtDayY(i.due)}` : 'No due date'].filter(Boolean).join(' · ');
     return disclosure(`${prefix}|${i.state}|${i.src != null ? i.src : i.vape ? 'vape-adjustment' : 'nonvape-adjustment'}`, 'wkOrder',
       `<span class="wkRow"><span class="wkRowName"><span${isNew?' class="wkPurchaseName"':''}>${esc(label)}</span><small>${esc(sub)}</small></span><span class="wkAmt"><b>${amount}</b></span>${chevron}</span>`,
       `<div class="wkOrderBody"><p>${esc(i.desc || 'No description on the supplier sheet.')}</p>` +
@@ -2042,7 +2152,7 @@ function renderWeekly(){
       `<div class="wkDisclosureBody"><div class="wkFoot">Vape ${fmtUSD(b.vape)} · Non-vape ${fmtUSD(b.nonvape)}</div>${orderList(b.items,`${k}|${b.key}|order`)}</div>`)
   ).join('') : '<div class="wkEmpty">Nothing open.</div>';
   const balanceTable = field => `<table class="wkSummaryTable"><thead><tr><th>State / account</th><th class="num">${field==='bal'?'Open balance':'Due per supplier'}</th>${field==='bal'?'<th class="num">Includes not yet due</th>':''}</tr></thead><tbody>` +
-    ['ca','ny'].map(k => `<tr><td><b>${k==='ca'?'California':'New York'}</b></td><td class="num"><b>${fmtUSD(d[k].all[field])}</b></td>${field==='bal'?`<td class="num">${fmtUSD(d[k].all.nyd)}</td>`:''}</tr>` +
+    wkMarkets(d).map(k => `<tr><td><b>${MARKET_NAME[k]}</b></td><td class="num"><b>${fmtUSD(d[k].all[field])}</b></td>${field==='bal'?`<td class="num">${fmtUSD(d[k].all.nyd)}</td>`:''}</tr>` +
       ['vape','nonvape'].map(account => `<tr><td class="muted">${account==='vape'?'Vape (AIO hardware)':'Non-vape'}</td><td class="num">${fmtUSD(d[k][account][field])}</td>${field==='bal'?`<td class="num">${fmtUSD(d[k][account].nyd)}</td>`:''}</tr>` +
         (account==='vape' && Object.keys(d[k].vapeMarkets||{}).length > 1 ? VAPE_MARKETS.filter(g => d[k].vapeMarkets[g]).map(g => { const v = d[k].vapeMarkets[g];
           return `<tr class="wkMarketRow"><td class="muted">${VAPE_MARKET_LABEL[g]} vapes</td><td class="num">${fmtUSD(v[field])}</td>${field==='bal'?`<td class="num">${fmtUSD(v.nyd)}</td>`:''}</tr>`; }).join('') : '')).join('')).join('') + '</tbody></table>';
@@ -2052,12 +2162,13 @@ function renderWeekly(){
       (bucket==='vape' && Object.keys(a.vapeMarkets||{}).length > 1 ? `<span class="wkMuted wkMarketLine">${vapeMarketLine(a.vapeMarkets)}</span>` : '') + `</span>${chevron}`,
     `<div class="wkAccountBody">${orderList(a.due.flatMap(b=>b.items).filter(i=>i.vape===(bucket==='vape')),`${k}|${bucket}|order`)}</div>`);
   const stateCard = (title,a,k) => disclosure(k,'wkState',
-    `<span class="wkStateName">${title}</span><span class="wkStateAmount"><small>Open balance</small><b>${fmtUSD(a.all.bal)}</b></span><span class="wkStateAmount wkStateDue"><small>Due per supplier</small><b class="due">${fmtUSD(a.all.due)}</b></span>${chevron}`,
+    `<span class="wkStateName">${title}${k === 'eu' ? '<small class="wkMuted"> · billed on the CA sheet</small>' : ''}</span><span class="wkStateAmount"><small>Open balance</small><b>${fmtUSD(a.all.bal)}</b></span><span class="wkStateAmount wkStateDue"><small>Due per supplier</small><b class="due">${fmtUSD(a.all.due)}</b></span>${chevron}`,
     `<div class="wkStateBody"><div class="wkAccounts">${account(a,k,'vape','Vape (AIO hardware)')}${account(a,k,'nonvape','Non-vape')}</div>` +
     (a.forecast.n ? disclosure(`${k}|estimates`,'wkDisclosure',`<span>Awaiting vendor pricing <span class="wkMuted">· ${a.forecast.n} order${a.forecast.n===1?'':'s'}${a.forecast.estimated ? ` · Est. ${fmtUSD(a.forecast.amount)} + freight` : ''}</span></span>${chevron}`,
       `<div class="wkDisclosureBody"><p class="wkNote">Estimates use past product prices and are additional to the open balance. Freight and duty are extra. All active unpriced orders are shown, regardless of the new-order date range. Expand an order to see the source prices.${a.forecast.pending ? ` ${a.forecast.pending} order${a.forecast.pending===1?' has':'s have'} no reliable estimate yet.` : ''}</p>${orderList(a.unpricedOrders,`${k}|estimate|order`,true)}</div>`) : '') +
-    disclosure(`${k}|payments`,'wkDisclosure',`<span>Recent payments</span>${chevron}`,
-      `<div class="wkDisclosureBody">${recentPaymentsHtml(k)}</div>`) +
+    (k === 'eu' ? `<p class="wkFoot">EU orders are paid through the California account, so their payments are listed under California.</p>`
+      : disclosure(`${k}|payments`,'wkDisclosure',`<span>Recent payments</span>${chevron}`,
+      `<div class="wkDisclosureBody">${recentPaymentsHtml(k)}</div>`)) +
     disclosure(`${k}|schedule`,'wkDisclosure', `<span>Payment timing <span class="wkMuted">· by due date</span></span>${chevron}`,
       `<div class="wkDisclosureBody"><p class="wkNote">Grouped by invoice due date. “Overdue” may differ from “Due per supplier” above, which follows the supplier’s balance columns. Tracker adjustments are included below.</p>${dueList(a,k)}${Math.abs(a.attributed.vape)>.005||Math.abs(a.attributed.nonvape)>.005?'<p class="wkFoot">Includes payment adjustments recorded in the tracker. Account credits reduce the oldest invoices first; increases appear as account adjustment rows under Overdue.</p>':''}</div>`) +
     disclosure(`${k}|new`,'wkDisclosure',`<span>New orders <span class="wkMuted">· ${a.nsum.n} · ${priceSummary(a.nsum)}</span></span>${chevron}`,
@@ -2070,7 +2181,7 @@ function renderWeekly(){
     `<div class="wkRange"><label for="wkPreset">New orders:</label><select id="wkPreset">${WK_PRESETS.map(([k,l])=>`<option value="${k}"${wk.preset===k?' selected':''}>${l}</option>`).join('')}</select>` +
     (wk.preset==='custom'?`<input aria-label="New orders start date" type="date" data-wkd="start" value="${isoDay(d.range.start)}" max="${isoDay(d.range.end)}"><span>to</span><input aria-label="New orders end date" type="date" data-wkd="end" value="${isoDay(d.range.end)}" min="${isoDay(d.range.start)}">`:'') +
     `<span>${fmtRange(d.range)} · balances stay current</span></div>` +
-    `<div class="wkMetrics">${metric('balance','Open balance',fmtUSD(t.all.bal),`Includes ${fmtUSD(t.all.nyd)} not yet due`)}${metric('due','Due per supplier',fmtUSD(t.all.due),'Across California and New York','due')}${metric('new','New orders',t.nsum.n,priceSummary(t.nsum))}</div>` +
+    `<div class="wkMetrics">${metric('balance','Open balance',fmtUSD(t.all.bal),`Includes ${fmtUSD(t.all.nyd)} not yet due`)}${metric('due','Due per supplier',fmtUSD(t.all.due),d.eu.orders?'Across California, New York and Europe':'Across California and New York','due')}${metric('new','New orders',t.nsum.n,priceSummary(t.nsum))}</div>` +
     `<section class="wkBreakdown" id="wkMetricDetail"${metricBody?'':' hidden'}>${metricBody}</section>` +
     `<section class="wkMarkets" aria-labelledby="wkMarketsTitle"><h2 class="wkSectionTitle" id="wkMarketsTitle">Vapes by market <span>AIO hardware · click a market for its orders</span></h2><div class="wkMarketGrid">` +
       VAPE_MARKETS.filter(g => t.vapeMarkets[g]).map(g => { const v = t.vapeMarkets[g];
@@ -2081,9 +2192,9 @@ function renderWeekly(){
     (t.forecast.n ? `<button class="wkForecast" data-wkmetric="forecast" aria-controls="wkStates"><span><b>Awaiting vendor pricing${t.forecast.estimated ? ` · Est. ${fmtUSD(t.forecast.amount)} + freight` : ''}</b><small>${t.forecast.n} active order${t.forecast.n===1?'':'s'} · products only · additional to open balance${t.forecast.pending ? ` · ${t.forecast.pending} without an estimate` : ''}</small></span><span class="wkHint">See estimates ↓</span></button>` : '') +
     `<section class="wkPurchases" id="wkPurchases" aria-labelledby="wkPurchasesTitle"><h2 id="wkPurchasesTitle" tabindex="-1">${wk.preset==='7d'?'Purchased in the past 7 days':'Purchased in the selected period'}</h2><div class="wkMuted">Orders placed ${fmtRange(d.range)} · based on PO date</div>` +
     (t.nsum.n ? orderList(weeklyPurchases(d),'purchases',true) : '<div class="wkEmpty">No orders placed in this period.</div>') +
-    (d.ca.undated+d.ny.undated ? disclosure('purchase-notes','wkNotes',`${chevron}<span>About this purchase list</span>`,`<p>${d.ca.undated+d.ny.undated} orders have no usable PO date and are excluded from this period. Quantities are shown as written by the supplier. Pricing pending means the order has no price yet.</p>`) : '') + '</section>' +
-    `<h2 class="wkSectionTitle" id="wkStates" tabindex="-1">By state <span>Expand for balances, recent payments & orders</span></h2>` +
-    stateCard('California',d.ca,'ca') + stateCard('New York',d.ny,'ny') +
+    (wkUndated(d) ? disclosure('purchase-notes','wkNotes',`${chevron}<span>About this purchase list</span>`,`<p>${wkUndated(d)} orders have no usable PO date and are excluded from this period. Quantities are shown as written by the supplier. Pricing pending means the order has no price yet.</p>`) : '') + '</section>' +
+    `<h2 class="wkSectionTitle" id="wkStates" tabindex="-1">By market <span>Expand for balances, recent payments & orders</span></h2>` +
+    wkMarkets(d).map(mk => stateCard(MARKET_NAME[mk], d[mk], mk)).join('') +
     disclosure('notes','wkNotes',`${chevron}<span>How to read this report</span>`,
       `<p>Open balance = due + not yet due, as invoiced by the supplier, with tracker payment adjustments. Unpaid invoices stay in the open balance even when their due date is in the future or the goods are still in transit. These are current balances, not balances at the end of the selected period.</p><p>The date range only filters new orders, using the date in each PO number. Orders without a usable PO date are excluded. Active unpriced orders are estimated from up to five recent comparable product prices in the same state, at quantities within three times the order size. Similar designs can cost different amounts. Freight and duty are extra. When the supplier adds a value, its value replaces the estimate on refresh. Orders without a reliable match stay marked as pricing pending.</p><p>Vape and non-vape are separate accounts in each state. Payments count toward non-vape unless attributed to vapes in the tracker. Payment timing allocates account credits oldest first; account adjustments are shown separately from invoice rows.</p>`) + '</div>';
   bindSubNav(cardsEl);
@@ -2095,7 +2206,7 @@ function renderWeekly(){
   cardsEl.querySelectorAll('[data-wkmetric]').forEach(el=>el.addEventListener('click',()=>{
     const key=el.dataset.wkmetric;
     if(key==='forecast'){
-      for(const k of ['ca','ny']) if(d[k].forecast.n){state.wkOpen.add(k);state.wkOpen.add(`${k}|estimates`);}
+      for(const k of wkMarkets(d)) if(d[k].forecast.n){state.wkOpen.add(k);state.wkOpen.add(`${k}|estimates`);}
       render(); $('#wkStates').focus({preventScroll:true}); $('#wkStates').scrollIntoView({block:'start'}); return;
     }
     if(key==='new'){ $('#wkPurchasesTitle').focus({preventScroll:true}); $('#wkPurchases').scrollIntoView({block:'center'}); return; }
@@ -2167,10 +2278,11 @@ function renderOverview(){
      prod:{ all:zeroProd(), vape:zeroProd(), nonvape:zeroProd() },hasAdj:false});
 
   /* scope buttons + vapes toggle */
+  if(state.ovScope === 'eu' && !hasEU()) state.ovScope = 'all';
   const scope = state.ovScope;
   const excl = state.ovExclVapes;
   $('#toolbar').innerHTML = `<div class="seg">` +
-    [['all','All'],['ca','CA'],['ny','NY']].map(([k,l]) =>
+    [['all','All'],['ca','CA'],['ny','NY'],...(hasEU() ? [['eu','EU']] : [])].map(([k,l]) =>
       `<button data-scope="${k}" class="${scope===k?'on':''}">${l}</button>`).join('') + `</div>` +
     `<span class="tglrow ovVapeTgl ${excl?'on':''}" title="Leave the vape (AIO) account out of the table and reports below — the two balance cards always show both accounts">` +
     `💨 Exclude vapes<span class="tgl"></span></span>`;
@@ -2186,7 +2298,7 @@ function renderOverview(){
   const rep = purchasesReport(scope, excl);
   pp.style.display = '';
   pp.innerHTML = `<div class="panel"><div class="rtitle">Average monthly purchases` +
-    `<span class="sub">${scope==='all'?'CA + NY':scope.toUpperCase()} · last 3 full months (by ship date)${excl?' · vapes excluded':''}</span></div>` +
+    `<span class="sub">${scopeLabel(scope)} · last 3 full months (by ship date)${excl?' · vapes excluded':''}</span></div>` +
     `<div class="mrow">` +
     rep.months.map(x => `<div class="mitem"><div class="fl">${esc(x.label)}</div><div class="fv">${fmtUSD(x.sum)}</div></div>`).join('') +
     `<div class="mitem avg"><div class="fl">Monthly average</div><div class="fv">${fmtUSD(rep.avg)}</div></div>` +
@@ -2199,11 +2311,36 @@ function renderOverview(){
     render();
   }));
   pp.querySelectorAll('[data-goty]').forEach(b => b.addEventListener('click', e => {
-    e.stopPropagation(); gotoType(b.dataset.gost, b.dataset.goty);
+    e.stopPropagation(); gotoType(b.dataset.gost, b.dataset.goty, !!b.dataset.gomk);
   }));
   pp.querySelectorAll('.subTbl tbody tr[data-gosrc]').forEach(tr => tr.addEventListener('click', e => {
     e.stopPropagation(); gotoOrder(tr.dataset.gost, parseInt(tr.dataset.gosrc,10));
   }));
+
+  /* the table and the CA / NY / EU scopes show markets: CA is the CA sheet without its EU orders */
+  const mt = {};
+  for(const mk of MARKETS){
+    const parts = marketSheets(mk); if(!parts.length) continue;
+    const b = marketBalances(mk);
+    let prod = { all:zeroProd(), vape:zeroProd(), nonvape:zeroProd() };
+    for(const p of parts){ const x = inProductionFor(p.m, p.keep);
+      prod = { all:addProd(prod.all,x.all), vape:addProd(prod.vape,x.vape), nonvape:addProd(prod.nonvape,x.nonvape) }; }
+    // a market that is a whole sheet keeps that sheet's recorded-payment figures
+    const whole = parts.length === 1 && parts[0].m.rows.every(parts[0].keep), st = whole ? t[parts[0].k] : null;
+    mt[mk] = { market: mk, whole, n: parts.reduce((a,p) => a + p.m.rows.filter(p.keep).length, 0),
+      adjDue: b.vape.odue + b.nonvape.odue, nyd: b.vape.onyd + b.nonvape.onyd, vape: b.vape.bal, nonvape: b.nonvape.bal,
+      vapeSheet: b.vape.sheetOpen, nonvapeSheet: b.nonvape.sheetOpen,
+      vapeNyd: b.vape.onyd, nonvapeNyd: b.nonvape.onyd, vapeN: b.vape.orders, nonvapeN: b.nonvape.orders,
+      xpVape: st ? st.xpVape : 0, xpNonvape: st ? st.xpNonvape : 0,
+      hasAdj: parts.some(p => t[p.k].hasAdj), prod };
+  }
+  const shown = MARKETS.filter(mk => mt[mk] && (mk !== 'eu' || mt[mk].n));
+  const mtTot = shown.reduce((a,mk) => { const x = mt[mk];
+    return { n:a.n+x.n, adjDue:a.adjDue+x.adjDue, nyd:a.nyd+x.nyd, vape:a.vape+x.vape, nonvape:a.nonvape+x.nonvape,
+      vapeNyd:a.vapeNyd+x.vapeNyd, nonvapeNyd:a.nonvapeNyd+x.nonvapeNyd, vapeN:a.vapeN+x.vapeN, nonvapeN:a.nonvapeN+x.nonvapeN,
+      hasAdj:a.hasAdj||x.hasAdj, prod:{ all:addProd(a.prod.all,x.prod.all), vape:addProd(a.prod.vape,x.prod.vape), nonvape:addProd(a.prod.nonvape,x.prod.nonvape) } }; },
+    { n:0, adjDue:0, nyd:0, vape:0, nonvape:0, vapeNyd:0, nonvapeNyd:0, vapeN:0, nonvapeN:0, hasAdj:false,
+      prod:{ all:zeroProd(), vape:zeroProd(), nonvape:zeroProd() } });
 
   const adjMark = s => s.hasAdj ? '<span class="adjmark" title="Includes app re-ascriptions">✱</span>' : '';
   // excluding vapes: the table shows the Non-vape account (its balance, due-side, and
@@ -2228,22 +2365,25 @@ function renderOverview(){
   };
 
   /* Vape vs Non-vape open balance (scope-aware), reflecting payment attributions */
-  const bs = scope === 'all' ? g : t[scope];
+  const bs = scope === 'all' ? g : (mt[scope] || { vape:0, nonvape:0, vapeSheet:0, nonvapeSheet:0, xpVape:0, xpNonvape:0, whole:true });
   // the vape balance differs from the sheet for TWO reasons — money re-ascribed between
   // buckets (zero-sum) and unposted payments (not). Only the first is a "re-ascription".
+  // A market that is only part of a sheet (CA without EU, EU) shows its share, not a split of the two.
+  const partial = scope !== 'all' && bs.whole === false;
   const vShift = (bs.vapeSheet||0) - ((bs.vape||0) + (bs.xpVape||0));
-  const shifted = Math.abs(vShift) > 0.005;
-  const differs = shifted || (bs.xpVape||0) > 0.005 || (bs.xpNonvape||0) > 0.005;
+  const shifted = !partial && Math.abs(vShift) > 0.005;
+  const differs = partial
+    ? Math.abs(bs.vapeSheet - bs.vape) > 0.005 || Math.abs(bs.nonvapeSheet - bs.nonvape) > 0.005
+    : shifted || (bs.xpVape||0) > 0.005 || (bs.xpNonvape||0) > 0.005;
   const bsub = (v, sheet) => differs ? `<div class="sub">sheet: ${fmtUSD(sheet)}</div>` : '';
-  // vape is tracked as its own account per state — show the CA/NY split in All view
+  // vape is tracked as its own account per market: show the CA / EU / NY split in All view
   const split = pick => scope === 'all'
-    ? `<div class="sub">CA ${fmtUSD(pick(t.ca))} · NY ${fmtUSD(pick(t.ny))}</div>` : '';
+    ? `<div class="sub">${['ca','eu','ny'].filter(mk => mt[mk] && (mk !== 'eu' || mt[mk].n)).map(mk => `${MARKET_LABEL[mk]} ${fmtUSD(pick(mt[mk]))}`).join(' · ')}</div>` : '';
   const bucketCards =
     `<div class="cards" style="padding:0 0 14px">` +
     `<div class="card big"${excl?' style="opacity:.65"':''}><div class="lbl">💨 Vape balance <span class="faint">(AIO hardware)</span></div>` +
       `<div class="val" style="color:var(--accent2)">${fmtUSD(bs.vape)}</div>${bsub(bs.vape, bs.vapeSheet)}` +
-      (()=>{ const mk = scope === 'all' ? vapeMarkets() : vapeMarketsFor(scope);
-             return Object.keys(mk||{}).length > 1 ? `<div class="sub">${vapeMarketLine(mk)}</div>` : ''; })() +
+      split(s => s.vape) +
       (excl?`<div class="sub">excluded from the table and reports below</div>`:'') + `</div>` +
     `<div class="card big"><div class="lbl">Non-vape balance</div>` +
       `<div class="val">${fmtUSD(bs.nonvape)}</div>${bsub(bs.nonvape, bs.nonvapeSheet)}${split(s=>s.nonvape)}</div>` +
@@ -2256,12 +2396,14 @@ function renderOverview(){
 
   cardsEl.innerHTML = bucketCards +
     `<div class="tblbox">` +
-    `<table class="stateTbl"><thead><tr><th>State</th><th class="num">Orders</th><th class="num">Open balance${excl?' <span class="hsub" style="display:inline">(non-vape)</span>':''}</th>` +
+    `<table class="stateTbl"><thead><tr><th>Market</th><th class="num">Orders</th><th class="num">Open balance${excl?' <span class="hsub" style="display:inline">(non-vape)</span>':''}</th>` +
     `<th class="num">Due</th><th class="num">Not yet due</th><th class="num">In production<span class="hsub">still being made${excl?' · non-vape':''}</span></th><th></th></tr></thead><tbody>` +
-    row('ca', t.ca, 'st-row', 'CA') + row('ny', t.ny, 'st-row', 'NY') + row('', g, 'grand', 'Total') +
+    shown.map(mk => row(mk, mt[mk], 'st-row', MARKET_LABEL[mk] + (mk === 'eu' ? ' <span class="hsub" style="display:inline">billed on the CA sheet</span>' : ''))).join('') +
+    row('', mtTot, 'grand', 'Total') +
     `</tbody></table></div>` +
+    (mt.eu && mt.eu.n ? `<div class="nolink" style="padding:6px 2px 0;font-size:11.5px;color:var(--faint)">CA excludes the ${mt.eu.n} EU order${mt.eu.n===1?'':'s'}, which are billed on the California sheet. Payments recorded against the CA account are applied to its oldest invoices first, so EU shows what is still unpaid on its own invoices. Clicking CA opens the CA tab without the EU orders; the CA tab button shows the whole California sheet.</div>` : '') +
     `<div class="nolink" style="padding:6px 2px 0;font-size:11.5px;color:var(--faint)">In production = orders the supplier is still making, valued at the order total or at what they have booked so far (already in Not yet due); orders with no price yet add to the count only.</div>` +
-    (g.pending > 0.005 ? `<div style="padding:8px 2px 0;font-size:12px;color:var(--yellow);font-weight:650">${fmtUSD(g.pending)} paid, not yet on the supplier’s sheet <span class="faint" style="font-weight:500">— already off these balances; remove the entry once their sheet shows it (CA/NY page → 💸 Payments)</span></div>` : '') +
+    (g.pending > 0.005 ? `<div style="padding:8px 2px 0;font-size:12px;color:var(--yellow);font-weight:650">${fmtUSD(g.pending)} paid, not yet on the supplier’s sheet <span class="faint" style="font-weight:500">· already off these balances; each one is removed automatically once their sheet shows the wire</span></div>` : '') +
     // the double-count check lives in a collapsed panel two pages away — surface it here too
     (()=>{ const hits=[];
       for(const k of ['ca','ny']){ const mm=state.data[k]; if(!mm) continue;
@@ -2274,11 +2416,11 @@ function renderOverview(){
     (g.overall > 0.005 ? `<div style="padding:8px 2px 0;font-size:12px;color:var(--accent2);font-weight:650">On overall balance: ${fmtUSD(g.overall)} <span class="faint" style="font-weight:500">— re-ascribed, not on an invoice</span></div>` : '') +
     (g.hasAdj ? `<div style="padding:6px 2px 0;font-size:11.5px;color:var(--faint)">✱ adjusted for app payment re-ascriptions (see the Payments panel on each state page); the supplier sheet itself is unchanged.</div>` : '');
   cardsEl.querySelectorAll('tr.st-row').forEach(tr =>
-    tr.addEventListener('click', () => goPage(tr.dataset.page)));
+    tr.addEventListener('click', () => tr.dataset.page === 'ca' ? gotoCaMarket() : goPage(tr.dataset.page)));
   cardsEl.querySelectorAll('[data-goprod]').forEach(td => td.addEventListener('click', e => {
     e.stopPropagation();
-    const k = td.dataset.goprod, m = state.data[k];
-    gotoFilter(k, { types: excl ? nonVapeTypes(m) : [], statuses: prodStatuses(m) });
+    const k = td.dataset.goprod, m = state.data[k === 'eu' ? 'ca' : k];
+    gotoFilter(k, { types: excl ? nonVapeTypes(m) : [], statuses: prodStatuses(m), onlyMarket: k === 'ca' });
   }));
 }
 
@@ -2404,7 +2546,7 @@ function render(){
     state.page='weekly'; history.replaceState(null,'','#weekly');
   }
   if(state.page === 'eu'){ state.page = 'ca'; state.filters.ca.mk = 'eu'; }       // opened at #eu
-  const navKey = state.page === 'weekly' ? 'report' : state.page === 'ca' && state.filters.ca.mk ? 'eu' : state.page;
+  const navKey = state.page === 'weekly' ? 'report' : state.page === 'ca' && state.filters.ca.mk === 'eu' ? 'eu' : state.page;
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===navKey));
   $('#q').style.display = state.page==='overview' || state.page==='weekly' ? 'none' : '';
   if(state.page === 'overview'){ renderOverview(); return; }
@@ -2440,7 +2582,8 @@ function render(){
   const allShown = want => { const rs = m.rows.filter(r => isVape(r.type) === want);
                              return rs.length > 0 && rs.every(r => visSrc.has(r.src)); };
   const vapeWhole = allShown(true), nonvapeWhole = allShown(false);
-  const bucketOffset = (vapeWhole ? (adj.payToInv.nonvape - adj.netToVape - adj.extraPaid.vape) : 0)
+  // a market view takes its share from the market split instead of the whole-account offsets
+  const bucketOffset = f.mk ? 0 : (vapeWhole ? (adj.payToInv.nonvape - adj.netToVape - adj.extraPaid.vape) : 0)
                      + (nonvapeWhole ? (adj.payToInv.vape + adj.netToVape - adj.extraPaid.nonvape) : 0);
   let dueVal = hasAdj ? sumAdj(dueCol, -1) + bucketOffset : sum(dueCol);
   const euAlloc = euVapeAllocation(m, adj, visSrc, f);
@@ -2448,7 +2591,7 @@ function render(){
   const nydShown = (nydVal ?? 0) + (euAlloc ? euAlloc.nyd : 0);
   const cardDefs = [
     { lbl:(f.mk === 'eu' ? 'EU orders' : 'Orders') + (f.q||f.st.size||f.ty.size?' (filtered)':''), val: rows.length, cls:'' },
-    { lbl:'Open balance', val: (dueVal??0) + nydShown, sheet: hasAdj ? (sum(dueCol)??0)+(nydVal??0) : null, cls:'', usd:true, sub: f.mk === 'eu' ? 'EU orders only · billed on the CA sheet' : 'Includes due and not yet due' },
+    { lbl:'Open balance', val: (dueVal??0) + nydShown, sheet: hasAdj ? (sum(dueCol)??0)+(nydVal??0) : null, cls:'', usd:true, sub: f.mk === 'eu' ? 'EU orders only · billed on the CA sheet' : f.mk === 'ca' ? 'CA orders only · EU orders hidden' : 'Includes due and not yet due' },
     { lbl:'Due', val: dueVal, sheet: hasAdj ? sum(dueCol) : null, cls:'due', usd:true },
     { lbl:'Not yet due', val: nydVal === null ? null : nydShown, cls:'nyd', usd:true },
   ];
@@ -2488,9 +2631,12 @@ function render(){
     `<span class="chip payChip ${state.payOpen[state.page]?'on':''}">💸 Payments <span class="n">${m.payCols.length}</span></span>` +
     `<span class="count">${rows.length} of ${m.rows.length} orders` +
       (f.mk === 'eu' ? ' · EU orders on the CA sheet · Balance = EU orders only'
+        : f.mk === 'ca' ? ' · EU orders hidden · Balance = CA orders only'
         : (f.q||f.st.size||f.ty.size) ? ' · Balance stays whole-account' : '') + `</span>` +
+    (f.mk === 'ca' ? `<span class="chip on" data-mkclear="1" title="Show the whole California sheet, EU orders included">CA orders only ✕</span>` : '') +
     tyChips;
   document.querySelectorAll('#toolbar .chip').forEach(ch => ch.addEventListener('click', () => {
+    if(ch.dataset.mkclear){ f.mk = null; render(); return; }
     if(ch.classList.contains('payChip')){
       state.payOpen[state.page] = !state.payOpen[state.page];
       render();
@@ -2534,7 +2680,7 @@ function render(){
 
   const visible = new Set(rows.map(r => r.src));
   const anyFilter = !!(f.q || f.st.size || f.ty.size || f.mk);
-  const euView = f.mk === 'eu';
+  const euView = !!f.mk;                          // a market statement: EU, or CA without EU
   const rawEvents = ledger(m, adj, pdates);
   const orderEvts = rawEvents.filter(ev => ev.kind === 'order' && visible.has(ev.r.src));
   // "vape account" view: filtered so only vape invoices show. Render it as a statement —
@@ -2547,11 +2693,13 @@ function render(){
       if(ev.kind !== 'pay') continue;
       const apps = ev.apps.filter(a => visible.has(a.src));
       const amt = apps.reduce((s,a) => s + a.amt, 0);
-      if(amt > 0.005) parts.push({ ...ev, amt: -amt, wireAmt: ev.amt, apps, superseded: [], euPart: true });
+      if(amt > 0.005) parts.push({ ...ev, amt: -amt, wireAmt: ev.amt, apps, superseded: [], euPart: Math.abs(amt + ev.amt) > 0.005 });
     }
-    if(euAlloc && Math.abs(euAlloc.due + euAlloc.nyd) > 0.005)
-      parts.push({ kind:'bucketpay', key:'Beu', date: Date.now(), amt: euAlloc.due + euAlloc.nyd,
-                   note: 'Vape payments attributed in the tracker, applied to the oldest vape invoices first' });
+    const gap = ((dueVal ?? 0) + nydShown) - parts.reduce((s,ev) => s + ev.amt, 0);
+    if(Math.abs(gap) > 0.005)
+      parts.push({ kind:'bucketpay', key:'Beu', date: Date.now(), amt: gap,
+                   label: gap < 0 ? 'payments applied in the tracker' : 'payments moved in the tracker',
+                   note: 'Payments recorded or attributed in the tracker that are not wire applications on these invoices (account-level shares are applied to the oldest invoices first)' });
     parts.sort((a,b) => (a.date ?? -Infinity) - (b.date ?? -Infinity));
     let run = 0; parts.forEach(ev => { run += ev.amt; ev.vbal = run; });
     events = parts.reverse();
@@ -2582,7 +2730,7 @@ function render(){
   const thead = '<tr>' + m.cols.map((c,idx) => {
     let parts = c.header.split('\n');
     if(c.virtual === 'balance' && vapeView) parts = ['Balance', 'vape account'];
-    if(c.virtual === 'balance' && euView) parts = ['Balance', 'EU orders'];
+    if(c.virtual === 'balance' && euView) parts = ['Balance', f.mk === 'eu' ? 'EU orders' : 'CA orders'];
     const label = esc(parts[0]) + parts.slice(1).map(p=>`<span class="hsub">${esc(p)}</span>`).join('');
     return `<th class="${c.num&&idx>1?'num ':''}${stickyCls(idx)}${c.virtual==='balance'?' balcell':''}">${label}</th>`;
   }).join('') + '</tr>';
@@ -2653,7 +2801,7 @@ function render(){
       const dstr = ev.dlabel ? esc(ev.dlabel) : `${dt.getMonth()+1}/${dt.getDate()}/${dt.getFullYear()}`;
       body += `<tr class="pay app">` +
         `<td class="sticky s1">${dstr}</td>` +
-        `<td class="sticky s2">↳ payment toward vapes</td>` +
+        `<td class="sticky s2">↳ ${esc(ev.label || 'payment toward vapes')}</td>` +
         `<td class="num pay-amt">−${fmtUSD(-ev.amt)}</td>` +
         `<td class="num balcell">${fmtUSD(ev.vbal)}</td>` +
         (restCols ? `<td colspan="${restCols}">${esc(ev.note || 'reallocated toward vapes')}</td>` : '') +
@@ -2672,7 +2820,7 @@ function render(){
       `<td class="sticky s2"><span class="chev">▶</span>${esc(nm)}</td>` +
       `<td class="num pay-amt">−${fmtUSD(-ev.amt)}</td>` +
       `<td class="num balcell">${fmtUSD(ev[balField])}</td>` +
-      (restCols ? `<td colspan="${restCols}">${ev.euPart ? `EU share of a ${fmtUSD(-ev.wireAmt)} wire · ` : ''}applied to ${n} invoice${n===1?'':'s'}` +
+      (restCols ? `<td colspan="${restCols}">${ev.euPart ? `${f.mk === 'eu' ? 'EU' : 'CA'} share of a ${fmtUSD(-ev.wireAmt)} wire · ` : ''}applied to ${n} invoice${n===1?'':'s'}` +
         (ev.re ? '<span class="retag">re-ascribed in app</span>'
                : wireMoves.length ? `<span class="retag">${wireMoves.length} reallocated ⇄</span>` : '') + '</td>' : '') +
       '</tr>';
@@ -3097,14 +3245,14 @@ function goPage(k){
   if(k === 'eu'){ state.filters.ca.mk = 'eu'; k = 'ca'; }
   else if(k === 'ca') state.filters.ca.mk = null;
   state.page = k;
-  history.replaceState(null,'','#'+(k === 'ca' && state.filters.ca.mk ? 'eu' : k));
+  history.replaceState(null,'','#'+(k === 'ca' && state.filters.ca.mk === 'eu' ? 'eu' : k));
   $('#q').value = state.filters[k] ? state.filters[k].q : '';
   render();
 }
 $('#seg').innerHTML = [{key:'overview',label:'Overview'},{key:'report',label:'📋 Reports'},...TABS,{key:'eu',label:'EU'}].map(t =>
   `<button data-key="${t.key}">${t.label}</button>`).join('');
 document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => goPage(b.dataset.key === 'report' ? 'weekly' : b.dataset.key)));
-window.addEventListener('hashchange', () => { const k = hashPage(), cur = state.page === 'ca' && state.filters.ca.mk ? 'eu' : state.page; if(k !== cur) goPage(k); });
+window.addEventListener('hashchange', () => { const k = hashPage(), cur = state.page === 'ca' && state.filters.ca.mk === 'eu' ? 'eu' : state.page; if(k !== cur) goPage(k); });
 
 $('#q').addEventListener('input', e => {
   if(!state.filters[state.page]) return;
