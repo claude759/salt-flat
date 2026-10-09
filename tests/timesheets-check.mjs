@@ -133,11 +133,11 @@ check('phones and narrow windows: a range dropdown replaces the preset buttons, 
   const tail = markup.match(/<div class="ctl-tail">([\s\S]*?)\n {6}<\/div>\n {4}<\/div>/);
   ok(tail && /id="flagChip"/.test(tail[1]) && /id="moreWrap"/.test(tail[1]), 'Flagged only and More are not grouped in .ctl-tail');
   ok(/@media \(max-width:919\.98px\)\{\s*#presets\{display:none\}\s*#presetSel\{display:inline-block\}/.test(src), 'dropdown breakpoint');
-  ok(/\.summary \.brk-sum,\.stats \.brk-sum\{display:none\}/.test(src), 'phones drop the break totals from the summary and section lines');
+  ok(/\.stats \.brk-sum\{display:none\}/.test(src), 'phones drop the break totals from the section lines');
 });
-check('summary line: OT shows only when there is some (like the section lines)', () => {
-  const f = appFn('renderSummary');
-  ok(/\$\{t\.ot_min \|\| t\.dt_min \? h`<span class="ot">OT /.test(f), 'renderSummary always prints OT, even 0.00');
+check('no page-wide summary line (Gianni 2026-10-09: "this is clutter"); the section lines carry the totals', () => {
+  ok(!/id="summary"/.test(src) && !/function renderSummary/.test(src), 'the summary line is back');
+  ok(/function statLine/.test(src), 'section stat lines are gone too');
 });
 check('view tabs: short tooltip (head count), never the member list; the chosen tab is scrolled into sight sideways only', () => {
   const f = appFn('renderViewTabs');
