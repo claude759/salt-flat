@@ -178,12 +178,13 @@ begin
   perform pg_temp.ts_v('A5 anon can execute no ts_ function', null, null,
     $q$select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('anon', p.oid, 'EXECUTE')$q$, '0');
-  -- (the saved-view RPCs from ts-views.sql are checked by ts-views-verify.sql, so this list holds
-  --  with or without that file applied)
+  -- (the saved-view RPCs from ts-views.sql are checked by ts-views-verify.sql, and the view-grant
+  --  functions from ts-view-grants.sql by ts-view-grants-verify.sql, so this list holds with or
+  --  without those files applied)
   perform pg_temp.ts_v('A6 authenticated can execute exactly these ts_ functions', null, null,
     $q$select string_agg(p.proname, ',' order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('authenticated', p.oid, 'EXECUTE')
-          and p.proname not in ('ts_admin_save_view', 'ts_admin_delete_view')$q$,
+          and p.proname not in ('ts_admin_save_view', 'ts_admin_delete_view', 'ts_admin_set_user_views', 'ts_my_view_ids')$q$,
     'ts!_admin!_delete!_user,ts!_admin!_list,ts!_admin!_save!_user,ts!_is!_admin,ts!_me,ts!_my!_email,ts!_my!_grant!_keys,ts!_sync');
   perform pg_temp.ts_v('A7 every ts_ function is security definer with search_path=public', null, null,
     $q$select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
