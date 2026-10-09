@@ -1,4 +1,4 @@
-// node tests/timesheets-check.mjs : checks for the Manager Timesheets page (timesheets.html).
+// node tests/timesheets-check.mjs : checks for the Manager Gusto Timesheets page (timesheets.html).
 // Runs the page's pure logic (<script id="ts-core">) and demo data (<script id="ts-demo">) in a vm,
 // plus static checks on the file. Synthetic data only; nothing here reads or writes the database.
 // Exit 0 = safe to push. Any FAIL = do not push; fix first.
@@ -83,10 +83,93 @@ check('sign-in matches the labor tracker (same project, key, Google client, loca
   ok(src.includes('<script src="https://accounts.google.com/gsi/client" async defer></script>'), 'GSI script');
   ok(src.includes('<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>'), 'supabase-js@2 UMD');
 });
-check('title is "Manager Timesheets" and the no-view message is the agreed text', () => {
-  ok(/<title>Manager Timesheets<\/title>/.test(src), 'title');
+check('the app is called "Manager Gusto Timesheets" (title, sign-in gate, header, print) and the no-view message is the agreed text', () => {
+  ok(/<title>Manager Gusto Timesheets<\/title>/.test(src), 'title');
+  ok(/<div class="login-logo">Manager Gusto Timesheets<\/div>/.test(markup), 'sign-in gate');
+  ok(/<b>Manager Gusto Timesheets<\/b>/.test(markup), 'header brand');
+  ok(/<h1>Manager Gusto Timesheets<\/h1>/.test(block('ts-app')), 'print heading');
+  ok(!/Manager Timesheets/.test(src), 'the old name "Manager Timesheets" is still in the file');
   ok(markup.includes("Your account doesn't have a timesheet view yet. Ask Gianni to add you."), 'no-view message');
   ok(markup.includes('Demo data, not real timesheets'), 'demo banner');
+});
+check('saved views: reads ts_views, saves and deletes through the spec RPCs and argument names', () => {
+  const app = block('ts-app');
+  ok(/sb\.from\('ts_views'\)\.select\('\*'\)\.order\('sort'\)\.order\('label'\)/.test(app), "sb.from('ts_views').select('*').order('sort').order('label')");
+  ok(/sb\.rpc\('ts_admin_save_view', \{ p_id: [^}]*p_label: [^}]*p_sort: [^}]*p_members: /.test(app), 'ts_admin_save_view args');
+  ok(/sb\.rpc\('ts_admin_delete_view', \{ p_id: /.test(app), 'ts_admin_delete_view args');
+});
+check('saved views stay optional and admin-only: a missing table or a failed read never shows an error or blocks the page', () => {
+  const app = block('ts-app');
+  const m = app.match(/async function loadViews\(\) \{[\s\S]*?\n  \}/);
+  ok(m, 'no loadViews()');
+  ok(!/loadErr|throw/.test(m[0]), 'loadViews must not set S.loadErr or throw');
+  ok(/is_admin/.test(m[0]), 'loadViews must skip non-admins');
+  ok(/function viewsEnabled\(\) \{[^\n]*S\.me\.is_admin[^\n]*S\.viewer\.is_admin/.test(app), 'tabs only for admins, and not while previewing a manager');
+  ok(/function baseRows\(\) \{[^\n]*\n[^\n]*view: activeView\(\)/.test(app), 'the active view filters the base rows');
+  ok(/function visibleCompanies\(\) \{ return C\.viewCompanyKeys\(allCompanies\(\), activeView\(\)\); \}/.test(app), 'company chips limited to the active view');
+  ok(/function deptOptions\(base\) \{\s*return C\.departmentOptions\([^\n]*view: activeView\(\)/.test(app), 'department list limited to the active view');
+  ok(/store\.get\('savedView'/.test(app) && /store\.set\('savedView'/.test(app), 'the chosen tab is remembered through the try/catch store');
+});
+check('decluttered layout: no freshness box, no KPI cards, the legend lives in the More menu', () => {
+  ok(!/id="fresh"|class="fresh"|id="kpis"|class="kpi/.test(markup), 'old freshness box or KPI cards still in the markup');
+  ok(/id="freshBtn"/.test(markup) && /id="freshPop"/.test(markup), 'header sync indicator and its popover');
+  const more = markup.match(/<div class="pop" id="morePop"[\s\S]*?\n {6}<\/div>\n {4}<\/div>/);
+  ok(more, 'no More popover');
+  for (const want of ['data-act="fmt"', 'data-act="csv"', 'data-act="print"', 'data-act="key"', 'class="legend"']) ok(more[0].includes(want), 'More menu is missing ' + want);
+  ok((markup.match(/class="legend"/g) || []).length === 1, 'the legend appears once, inside More');
+  ok(/id="viewTabs"/.test(markup.match(/<header id="top">[\s\S]*?<\/header>/)[0]), 'the view tab strip sits in the header');
+});
+// one function's source from ts-app: a one-liner, or up to its closing brace at two-space indent
+const appFn = name => {
+  const m = block('ts-app').match(new RegExp('(?:async )?function ' + name + '\\([^)]*\\) \\{(?:[^\\n]*\\}\\n|[\\s\\S]*?\\n  \\})'));
+  if (!m) throw new Error('no ' + name + '()');
+  return m[0];
+};
+check('phones and narrow windows: a range dropdown replaces the preset buttons, and Flagged only + More wrap as one piece', () => {
+  ok(/<select id="presetSel" aria-label="Date range"><\/select>/.test(markup), 'no #presetSel dropdown');
+  ok(/\$\('presetSel'\)\.addEventListener\('change', e => choosePreset\(e\.target\.value\)\)/.test(block('ts-app')), 'the dropdown is not wired to choosePreset');
+  ok(/case 'preset': choosePreset\(d\.preset\)/.test(block('ts-app')), 'the preset buttons do not share choosePreset');
+  ok(/\$\('presetSel'\)\.value = S\.preset;/.test(appFn('renderControls')), 'renderControls does not keep the dropdown in step');
+  const tail = markup.match(/<div class="ctl-tail">([\s\S]*?)\n {6}<\/div>\n {4}<\/div>/);
+  ok(tail && /id="flagChip"/.test(tail[1]) && /id="moreWrap"/.test(tail[1]), 'Flagged only and More are not grouped in .ctl-tail');
+  ok(/@media \(max-width:919\.98px\)\{\s*#presets\{display:none\}\s*#presetSel\{display:inline-block\}/.test(src), 'dropdown breakpoint');
+  ok(/\.summary \.brk-sum,\.stats \.brk-sum\{display:none\}/.test(src), 'phones drop the break totals from the summary and section lines');
+});
+check('summary line: OT shows only when there is some (like the section lines)', () => {
+  const f = appFn('renderSummary');
+  ok(/\$\{t\.ot_min \|\| t\.dt_min \? h`<span class="ot">OT /.test(f), 'renderSummary always prints OT, even 0.00');
+});
+check('view tabs: short tooltip (head count), never the member list; the chosen tab is scrolled into sight sideways only', () => {
+  const f = appFn('renderViewTabs');
+  ok(!/describeViewMembers/.test(f), 'tab tooltips list every member');
+  ok(/C\.viewHeadcount\(v, S\.people\)/.test(f), 'tab tooltip should be the head count');
+  ok(!/scrollIntoView/.test(f) && /inn\.scrollLeft \+= /.test(f), 'must not scrollIntoView (that can jump the page); adjust scrollLeft');
+  ok(/classList\.toggle\('fade-r'/.test(appFn('stripFade')) && /\.vstrip\.fade-r \.vstrip-in\{[^}]*mask-image/.test(src), 'no fade on the cut-off edge');
+});
+check('Export CSV names the active view in the file name', () => {
+  eq(C.csvFilename('2026-09-26', '2026-10-09', 'trim-crew'), 'timesheets-trim-crew-2026-09-26-to-2026-10-09.csv');
+  eq(C.csvFilename('2026-09-26', '2026-10-09', null), 'timesheets-2026-09-26-to-2026-10-09.csv', 'Everyone');
+  eq(C.csvFilename('2026-09-26', '2026-10-09', '../Odd Name'), 'timesheets-odd-name-2026-09-26-to-2026-10-09.csv', 'only safe characters');
+  ok(/a\.download = C\.csvFilename\(S\.from, S\.to, cur && cur\.id\)/.test(appFn('exportCsv')), 'exportCsv does not pass the active view');
+});
+check('a search that only finds people outside the active view says so and offers Show everyone', () => {
+  const f = appFn('renderContent');
+  ok(/if \(cur && S\.q\) \{/.test(f), 'no outside-the-view check for a search');
+  ok(/!C\.viewHas\(cur, /.test(f) && /outside\.length === hits\.length/.test(f), 'must only fire when every match is outside the view');
+  ok(/' is not in ' \+ cur\.label/.test(f) && /data-act="crew" data-crew="">Show everyone</.test(f), 'message or Show everyone button missing');
+});
+check('view editor: a new view checks the server list before picking its id; errors stay on screen; a thrown call never leaves "Saving..."', () => {
+  const f = appFn('saveViewEditor');
+  const read = f.indexOf("sb.from('ts_views')"), uniq = f.indexOf('C.uniqueViewId('), dup = f.indexOf('Another view already has that name.');
+  ok(read > 0 && /if \(ed\.isNew && !DEMO\) \{\s*const \{ data, error \} = await sb\.from\('ts_views'\)/.test(f), 'new views must re-read ts_views first');
+  ok(read < uniq && read < dup, 'the id and the duplicate-name check must use the fresh list');
+  ok(/\} catch \(e\) \{[\s\S]*?return fail\(/.test(f), 'saveViewEditor needs a catch that shows the error');
+  ok(/try \{ \(\{ error \} = await sb\.rpc\('ts_admin_delete_view'/.test(appFn('deleteView')) && /catch \(e\) \{ error = e; \}/.test(appFn('deleteView')), 'deleteView must catch a thrown call');
+  for (const [msg, field] of [['Give the view a name.', 'vLabel'], ['Order is a whole number, for example 10.', 'vSort'], ['Tick at least one person or department.', 'vFind']])
+    ok(f.includes("fail('" + msg + "', '" + field + "')"), msg + ' should put the cursor in #' + field);
+  ok(/<div class="form-foot">\$\{ed\.err \? h`<div class="inline-err" id="vErr" role="alert">/.test(appFn('viewEditorHtml')), 'the error must sit inside the pinned footer');
+  ok(/\.form-foot\{[^}]*position:sticky;bottom:0/.test(src), 'the form footer is not pinned');
+  ok(/\.overlay\{[^}]*padding:0 16px;border:solid transparent;border-width:40px 0;overflow:auto\}/.test(src), 'the overlay gap must be a border so the pinned footer has nothing under it');
 });
 check('every data-driven innerHTML goes through esc(): one sink, and it only takes h`` output', () => {
   const n = (src.match(/innerHTML/g) || []).length;
@@ -303,6 +386,105 @@ check('viewer filter mirrors ts_can_view (admin, inactive, company/department wi
   eq(C.filterRows(ROWS, { viewer: { active: false, is_admin: true, grants: [] } }).length, 0, 'inactive admin sees nothing');
   eq(C.filterRows(ROWS, { viewer: Object.assign(v([{ company: '*', department: '*' }]), { active: false }) }).length, 0, 'inactive manager sees nothing');
 });
+// saved views: a row is in a view when a member has its company and its person (uuid) or its department
+const V = (...members) => C.normView({ id: 'v', label: 'V', sort: 0, members });
+check('view filter: member by person (uuid), even after the person moved department', () => {
+  const v = V({ company: 'filifera', employee_uuid: 'u7' });
+  eq(C.filterRows(ROWS, { view: v }).map(r => r.employee_name + '@' + r.work_date + '/' + r.department),
+    ['Test Golf@2026-10-05/Trim', 'Test Golf@2026-10-07/Packaging']);
+  ok(C.viewHas(v, 'filifera', 'u7', 'Anything') && !C.viewHas(v, 'filifera', 'u1', 'Trim'), 'viewHas');
+});
+check('view filter: member by whole department, only that department on that day', () => {
+  const v = V({ company: 'filifera', department: 'Trim' });
+  eq(C.filterRows(ROWS, { view: v }).map(r => r.employee_uuid + '@' + r.work_date).sort(),
+    ['u1@2026-10-05', 'u1@2026-10-06', 'u2@2026-10-06', 'u7@2026-10-05'], 'Golf is in only on the day he was in Trim');
+  eq(C.filterRows(ROWS, { view: V({ company: 'imperial', department: 'No department' }) }).map(r => r.employee_name), ['Test Echo'], 'a blank department is "No department"');
+});
+check('view filter: company must match too (same uuid or same department at another company is not in)', () => {
+  eq(C.filterRows(ROWS, { view: V({ company: 'slane', employee_uuid: 'u1' }) }).length, 0, 'uuid at the wrong company');
+  eq(C.filterRows(ROWS, { view: V({ company: 'imperial', department: 'Trim' }) }).length, 0, 'department at the wrong company');
+  ok(!C.viewHas(V(), 'filifera', 'u1', 'Trim'), 'an empty view has nobody');
+  eq(C.filterRows(ROWS, { view: null }).length, ROWS.length, 'no view = everyone');
+});
+check('view filter runs before the other filters, and they still apply inside it', () => {
+  const v = V({ company: 'filifera', department: 'Trim' }, { company: 'slane', employee_uuid: 'u4' });
+  eq(C.filterRows(ROWS, { view: v }).length, 5);
+  eq(C.filterRows(ROWS, { view: v, companies: ['slane'] }).map(r => r.employee_name), ['Test Delta']);
+  eq(C.filterRows(ROWS, { view: v, flaggedOnly: true }).map(r => r.employee_name), ['Test Delta'], 'flagged only inside the view');
+  eq(C.filterRows(ROWS, { view: v, search: 'bravo' }).map(r => r.employee_uuid), ['u2']);
+  eq(C.filterRows(ROWS, { view: v, department: 'Packaging' }).length, 0, 'Golf in Packaging is outside this view');
+});
+check('inside a view, company chips and the department list only offer what the view contains', () => {
+  const all = ['filifera', 'slane', 'wafgus', 'imperial'];
+  const v = V({ company: 'filifera', department: 'Trim' }, { company: 'wafgus', employee_uuid: 'u6' });
+  eq(C.viewCompanyKeys(all, v), ['filifera', 'wafgus']);
+  eq(C.viewCompanyKeys(all, null), all, 'no view: every company');
+  eq(C.viewCompanyKeys(['filifera'], v), ['filifera'], 'never adds a company the viewer cannot see');
+  const ppl = [
+    { company: 'filifera', employee_uuid: 'u1', department: 'Trim', active: true },
+    { company: 'filifera', employee_uuid: 'u3', department: 'Distro/Trim', active: true },
+    { company: 'filifera', employee_uuid: 'u8', department: 'Trim', active: false },
+    { company: 'wafgus', employee_uuid: 'u6', department: 'Operations', active: true },
+    { company: 'wafgus', employee_uuid: 'u9', department: 'Sales', active: true },
+    { company: 'slane', employee_uuid: 'u4', department: 'Harvest', active: true },
+  ];
+  eq(C.departmentOptions(ppl, [], { view: v }), ['Operations', 'Trim']);
+  eq(C.departmentOptions(ppl, [], {}), ['Distro/Trim', 'Harvest', 'Operations', 'Sales', 'Trim'], 'no view');
+  eq(C.departmentOptions(ppl, [], { view: v, selected: ['wafgus'] }), ['Operations'], 'and the selected companies');
+  eq(C.departmentOptions(ppl, [], { view: v, companies: ['filifera'] }), ['Trim'], 'and the visible companies');
+  eq(C.departmentOptions(ppl, [], { view: v, viewer: { active: true, is_admin: false, grants: [{ company: 'wafgus', department: '*' }] } }), ['Operations'], 'and the viewer');
+  const golfPackaging = ROWS.find(r => r.employee_uuid === 'u7' && r.department === 'Packaging');
+  eq(C.departmentOptions([], [golfPackaging], { view: V({ company: 'filifera', employee_uuid: 'u7' }) }), ['Packaging'], 'a department on a loaded day in the view');
+  eq(C.departmentOptions([], [golfPackaging], { view: v }), [], 'a loaded day outside the view adds nothing');
+});
+check('view members: invalid ones dropped, duplicates merged, a person already covered by their whole department dropped', () => {
+  eq(C.normalizeMembers([
+    { company: 'slane', employee_uuid: 'u4' }, { company: 'filifera', department: 'Trim' }, { company: 'slane', employee_uuid: 'u4' },
+    { company: 'filifera', employee_uuid: 'u1', department: 'Trim' },   // both keys
+    { company: 'filifera' }, { employee_uuid: 'u2' }, { company: ' ', department: 'Trim' }, { company: 'filifera', department: '  ' },
+    null, 'x', { company: 'filifera', employee_uuid: 'u2' },
+  ]), [{ company: 'filifera', department: 'Trim' }, { company: 'filifera', employee_uuid: 'u2' }, { company: 'slane', employee_uuid: 'u4' }]);
+  const ppl = [{ company: 'filifera', employee_uuid: 'u2', department: 'Trim', active: true }, { company: 'filifera', employee_uuid: 'u3', department: 'Distro/Trim', active: true }];
+  eq(C.normalizeMembers([{ company: 'filifera', department: 'Trim' }, { company: 'filifera', employee_uuid: 'u2' }, { company: 'filifera', employee_uuid: 'u3' }], ppl),
+    [{ company: 'filifera', department: 'Trim' }, { company: 'filifera', employee_uuid: 'u3' }], 'u2 is inside Trim already');
+  eq(C.normalizeMembers('nope'), []);
+  for (const m of [{ company: 'slane', employee_uuid: 'a\nb' }, { company: 'filifera', department: 'Distro/Trim' }]) eq(C.memberFromKey(C.memberKey(m)), m, 'key round trip');
+});
+check('views load sorted by order then name, with safe defaults', () => {
+  const vs = C.normViews([{ id: 'b', label: 'beta', sort: 5, members: [] }, { id: 'a', label: 'Alpha', sort: 5 }, { id: 'z', label: '', sort: '1' },
+    { id: 'n', label: 'No sort', sort: 'x', members: [{ company: 'slane', department: 'Harvest' }, { company: 'slane' }] }, null, { label: 'no id' }]);
+  eq(vs.map(v => [v.id, v.label, v.sort]), [['n', 'No sort', 0], ['z', 'z', 1], ['a', 'Alpha', 5], ['b', 'beta', 5]]);
+  eq(vs[0].members, [{ company: 'slane', department: 'Harvest' }], 'bad members dropped on load');
+});
+check('a new view id is the label as a slug, unique, and fits the ts_views id rule', () => {
+  eq(C.slugify('Trim / Night Crew'), 'trim-night-crew');
+  eq(C.slugify('  Équipe Été!  '), 'equipe-ete');
+  eq(C.slugify('!!!'), 'view');
+  eq(C.slugify('A'.repeat(70)), 'a'.repeat(40));
+  eq(C.uniqueViewId('Trim Crew', ['trim-crew']), 'trim-crew-2');
+  eq(C.uniqueViewId('Trim Crew', ['trim-crew', 'trim-crew-2']), 'trim-crew-3');
+  eq(C.uniqueViewId('Grow', []), 'grow');
+  const long = C.uniqueViewId('word '.repeat(20), [C.slugify('word '.repeat(20))]);
+  ok(long.length <= 40 && long.endsWith('-2') && !long.includes('--'), long);
+  for (const s of ['Trim / Night Crew', '!!!', 'A'.repeat(70), '-x-', '9 to 5', long]) ok(C.VIEW_ID_RE.test(C.slugify(s)) && C.VIEW_ID_RE.test(long), s);
+});
+check('view summaries: plain-words member list, headcount of active people, picker groups', () => {
+  const ppl = [
+    { company: 'filifera', employee_uuid: 'p1', name: 'Test Alpha', department: 'Trim', active: true },
+    { company: 'filifera', employee_uuid: 'p2', name: 'Test Bravo', department: 'Trim', active: true },
+    { company: 'filifera', employee_uuid: 'p3', name: 'Test Old', department: 'Trim', active: false },
+    { company: 'wafgus', employee_uuid: 'p4', name: 'Test Delta', department: '', active: true },
+  ];
+  const v = V({ company: 'filifera', department: 'Trim' }, { company: 'wafgus', employee_uuid: 'p4' }, { company: 'wafgus', employee_uuid: 'gone' });
+  eq(C.describeViewMembers(v, ppl), 'Filifera: all of Trim · Waf & Gus: someone no longer in Gusto, Test Delta');
+  eq(C.describeViewMembers(V(), ppl), 'Nobody yet');
+  eq(C.viewHeadcount(v, ppl), 3, 'two active in Trim plus one picked');
+  eq(C.viewMemberCounts(v), { people: 2, departments: 1 });
+  const pk = C.viewPicker(ppl, 'filifera', [{ company: 'filifera', department: 'Gone Dept' }, { company: 'filifera', employee_uuid: 'p3' }]);
+  eq(pk.depts.map(d => [d.department, d.idle, d.people.map(p => p.name)]), [['Gone Dept', true, []], ['Trim', false, ['Test Alpha', 'Test Bravo']]]);
+  eq(pk.extras.map(p => p.name), ['Test Old'], 'a picked person who is not active now stays listed');
+  eq(C.viewPicker(ppl, 'wafgus', []).depts.map(d => d.department), ['No department']);
+});
 check('company chips: what the viewer can see, intersected with companies and people that exist', () => {
   const cos = [{ key: 'filifera', region: 'CA' }, { key: 'slane', region: 'CA' }, { key: 'wafgus', region: 'CA' }, { key: 'imperial', region: 'CA' }];
   const ppl = [{ company: 'filifera', department: 'Trim', active: true }, { company: 'imperial', department: 'Trim', active: false },
@@ -354,6 +536,20 @@ check('flag codes match the spec exactly; labels and messages exist; type_unsure
   eq(C.flagMsg({ code: 'few_rest', msg: '1 rest break, 2 expected for 8.00 h' }), '1 rest break, 2 expected for 8.00 h', 'producer msg wins');
   eq(C.flagLabel({ code: 'brand_new_code' }), 'brand new code', 'unknown codes still render');
   eq(C.sortFlags([W('type_unsure', 'info'), W('gusto_mismatch'), W('no_meal')]).map(f => f.code), ['no_meal', 'gusto_mismatch', 'type_unsure']);
+});
+check('flags cell: warnings are pills, info notes are one quiet "i" mark (never a pill), and only warnings count', () => {
+  const info = C.flagsHtml([W('type_unsure', 'info')]).html;
+  ok(!/class="flag\b/.test(info), 'an info flag rendered as a pill: ' + info);
+  eq((info.match(/class="infomark"/g) || []).length, 1, 'one info mark');
+  ok(/title="m type_unsure"/.test(info), 'the mark\'s tooltip lists the note');
+  const both = C.flagsHtml([W('type_unsure', 'info'), W('no_meal'), { code: 'brand_new', sev: 'info', msg: 'second <note>' }]).html;
+  eq((both.match(/class="flag warn"/g) || []).length, 1, 'one warning pill');
+  eq((both.match(/class="infomark"/g) || []).length, 1, 'several info notes still make one mark');
+  ok(both.includes('title="m type_unsure\nsecond &lt;note&gt;"'), 'every note in the tooltip, escaped: ' + both);
+  ok(both.indexOf('flag warn') < both.indexOf('infomark'), 'the mark comes after the pills');
+  eq(C.flagsHtml([]).html, ''); eq(C.flagsHtml(null).html, '');
+  ok(!/flag info|class="flag \$\{/.test(src), 'the page still builds an info pill somewhere');
+  eq(C.totals([row({ company: 'filifera', uuid: 'i1', name: 'Test Info', dept: 'Trim', date: '2026-10-06', flags: [W('type_unsure', 'info')] })]).warn, 0, 'info notes are not counted as flags');
 });
 check('gaps between shifts (off the clock) are measured', () => {
   const s = [{ in: '2026-10-06T10:00:00-07:00', out: '2026-10-06T13:30:00-07:00' }, { in: '2026-10-06T14:15:00-07:00', out: '2026-10-06T18:00:00-07:00' }];
@@ -414,6 +610,21 @@ check('freshness strip text', () => {
   eq(C.freshness({ key: 'filifera', connected: true, last_sync_at: '2026-10-08T17:20:00Z', label_csv_at: '2026-10-08T09:10:00Z' }, now).labels, 'Break labels from Gusto through Oct 7');
   eq(C.freshness({ key: 'slane', connected: true, last_sync_at: '2026-10-08T17:20:00Z', label_csv_at: null }, now).labels, 'Break types estimated from length');
   eq(C.freshness({ key: 'slane', connected: true, last_sync_at: '2026-10-08T13:20:00Z' }, now).stale, true, 'over 3 h is stale');
+});
+check('header sync indicator: oldest connected company, amber when any is stale or pending, grey when none is connected', () => {
+  const now = new Date('2026-10-08T18:00:00Z');   // 11:00 AM PDT
+  const fil = { key: 'filifera', connected: true, last_sync_at: '2026-10-08T17:20:00Z', label_csv_at: '2026-10-08T09:10:00Z' };
+  const waf = { key: 'wafgus', connected: true, last_sync_at: '2026-10-08T16:20:00Z' };
+  const off = { key: 'imperial', connected: false };
+  const s = C.freshSummary([fil, waf, off], now);
+  eq([s.level, s.text, s.oldest], ['ok', 'Synced 9:20 AM', 'wafgus'], 'oldest wins; a company not connected yet does not turn it amber');
+  eq(s.items.map(i => i.key + ': ' + i.sync), ['filifera: Synced 10:20 AM', 'wafgus: Synced 9:20 AM', 'imperial: Not connected yet'], 'every company for the popover');
+  eq(s.items[0].labels, 'Break labels from Gusto through Oct 7');
+  eq(C.freshSummary([fil, { key: 'slane', connected: true, last_sync_at: '2026-10-08T13:20:00Z' }], now).level, 'stale', 'one over 3 h old');
+  eq(C.freshSummary([fil, { key: 'slane', connected: true }], now).level, 'stale', 'one waiting for its first sync');
+  eq([C.freshSummary([off], now).level, C.freshSummary([off], now).text], ['off', 'Not connected yet']);
+  eq(C.freshSummary([{ key: 'slane', connected: true }], now).text, 'First sync pending');
+  eq(C.freshSummary([], now).items.length, 0);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -489,6 +700,7 @@ check('esc() and h`` escape every data value, once', () => {
 // ---------------------------------------------------------------------------------------------
 const NOW = '2026-10-08T18:30:00Z';      // Thu 11:30 AM PDT
 const demo = D.build(NOW);
+const DEMO_VIEW_LABELS = ['Trim Crew', 'Grow Team', 'Ambassadors', 'Office and Drivers'];   // made-up crews, no person's name
 const DAY_COLS = ['id', 'company', 'region', 'employee_uuid', 'employee_name', 'department', 'job_title', 'work_date', 'first_in', 'last_out',
   'shifts', 'span_min', 'worked_min', 'paid_break_min', 'unpaid_break_min', 'reg_min', 'ot_min', 'dt_min', 'ot_src', 'label_src',
   'gusto_total_min', 'approval', 'note', 'flags', 'open', 'hours_only', 'synced_at'];
@@ -516,6 +728,26 @@ check('demo names do not match anyone in the local Gusto exports (if present; na
   const hits = D.NAMES.filter(n => real.has(key(n)) || realLast.has(n.split(' ')[1].toLowerCase()));
   console.log(`          (compared ${D.NAMES.length} demo names with ${real.size} names in ${files.length} local export(s))`);
   ok(!hits.length, 'demo names that collide with a real export: ' + J(hits));
+  // and no real first or last name (4+ letters, as a capitalised word) anywhere in the page source
+  const words = new Set();
+  for (const f of files) {
+    const t = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const m of t.matchAll(/Hours for ([^,\r\n"]+),\s*([^"\r\n]+)/g)) for (const w of (m[1] + ' ' + m[2]).trim().split(/\s+/)) if (/^[A-Z][A-Za-z'-]{3,}$/.test(w)) words.add(w);
+  }
+  const reEsc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const inSrc = [...words].filter(w => new RegExp('(^|[^A-Za-z])' + reEsc(w) + '(?![A-Za-z])').test(src));
+  ok(!inSrc.length, inSrc.length + ' real name word(s) from the local exports appear in the page (not printed here; search the page for them)');
+});
+check('no names in the page except the synthetic demo list (string literals shaped like a name are roster entries)', () => {
+  const demoSrc = block('ts-demo');
+  const allowed = new Set(D.ROSTER.flatMap(r => r.filter(x => typeof x === 'string')).concat(DEMO_VIEW_LABELS));
+  const lits = [...demoSrc.matchAll(/'([A-Z][a-z]+(?: [A-Z][a-z]+)+)'/g)].map(m => m[1]);
+  const strays = [...new Set(lits.filter(s => !allowed.has(s)))];
+  ok(lits.length > 30 && !strays.length, 'name-like literals in ts-demo that are not on the roster: ' + J(strays));
+  const rest = src.replace(demoSrc, '');
+  const leaked = D.NAMES.filter(n => rest.includes(n) || rest.includes(n.split(' ')[1]));
+  ok(!leaked.length, 'demo names used outside the demo block: ' + J(leaked));
+  ok(!/'[A-Z][a-z]+ View'|"[A-Z][a-z]+ View"|>[A-Z][a-z]+ View</.test(src), 'a hard-coded "<Name> View" label; saved views come from the database');
 });
 check('demo covers all four companies, several departments, every flag, both label sources, open + hours-entered days, OT est + Gusto', () => {
   eq([...new Set(demo.rows.map(r => r.company))].sort(), ['filifera', 'imperial', 'slane', 'wafgus']);
@@ -571,6 +803,20 @@ check('demo arithmetic holds: worked = span - unpaid, break totals, CA OT split,
     if (r.work_date >= demo.today) ok(r.shifts.every(s => s.breaks.every(b => b.src === 'rule')), 'today has no Gusto labels yet');
     ok(r.work_date <= demo.today, 'no future rows');
   }
+});
+check('demo views: 3-4 made-up crews over demo people only, valid ids, each with days this pay period', () => {
+  const vs = C.normViews(demo.views);
+  ok(vs.length >= 3 && vs.length <= 4, vs.length + ' views');
+  eq(vs.map(v => v.label), DEMO_VIEW_LABELS, 'labels (in order)');
+  ok(vs.every(v => C.VIEW_ID_RE.test(v.id)) && new Set(vs.map(v => v.id)).size === vs.length, 'ids');
+  const ppl = new Set(demo.people.map(p => p.company + ':' + p.employee_uuid));
+  const depts = new Set(demo.people.map(p => p.company + ':' + p.department));
+  for (const v of vs) {
+    eq(v.members.length, demo.views.find(x => x.id === v.id).members.length, v.id + ' members all valid');
+    for (const m of v.members) ok(m.employee_uuid ? ppl.has(m.company + ':' + m.employee_uuid) && /^demo-/.test(m.employee_uuid) : depts.has(m.company + ':' + m.department), v.id + ' member ' + J(m));
+    ok(C.filterRows(demo.rows, Object.assign({ view: v }, C.presetRange('period', demo.today))).length > 0, v.id + ' has days this period');
+  }
+  ok(vs.some(v => v.members.some(m => m.department)) && vs.some(v => v.members.some(m => m.employee_uuid)), 'whole departments and picked people');
 });
 check('demo runs through the page pipeline (filter, both groupings, CSV) and totals agree', () => {
   const t = C.totals(demo.rows);
