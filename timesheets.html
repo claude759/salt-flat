@@ -371,6 +371,7 @@
   /* narrower: the table scrolls sideways inside its card and the first column stays put */
   @media (max-width:1219.98px){
     table.ts.day-t{min-width:1400px}   /* fixed columns + about 500px of breaks */
+    table.ts.day-t.nojob{min-width:1272px}   /* a saved view with no job titles: no Job column */
     table.ts.emp-t{min-width:1280px}
     /* the card scrolls sideways here, so it is the sticky container: an offset would push the header into the rows */
     .ts thead th{top:0}
@@ -848,6 +849,75 @@
     });
   }
 
+  /* ---------- flat layout (a saved view is on) ----------
+     A saved view is one manager's crew, so it reads as a plain list of people: no company or department
+     headers. One person can be a Gusto employee at two companies (two employee_uuids, one name); in a
+     flat list that is one person. Two people with the same name at the SAME company stay two people. */
+  const pairKey = r => r.company + '\n' + r.employee_uuid;
+  function personKey(name) { return normText(name).replace(/\s+/g, ' '); }
+  // company + employee_uuid -> person id. A name joins the first same-name person who has no uuid at that
+  // company yet; a nameless employee is always their own person.
+  function personIds(rows) {
+    const ents = new Map();
+    for (const r of rows || []) {
+      const k = pairKey(r), e = ents.get(k);
+      if (!e) ents.set(k, { k, company: r.company, uuid: String(r.employee_uuid), date: r.work_date, name: personKey(r.employee_name) });
+      else if (r.work_date > e.date) { e.date = r.work_date; e.name = personKey(r.employee_name); }   // their latest name
+    }
+    const out = new Map(), byName = new Map();
+    const list = [...ents.values()].sort((a, b) => cmpCompany(a.company, b.company) || a.uuid.localeCompare(b.uuid));
+    for (const e of list) {
+      if (!e.name) { out.set(e.k, 'u\n' + e.k); continue; }
+      if (!byName.has(e.name)) byName.set(e.name, []);
+      const same = byName.get(e.name);
+      let p = same.find(x => !x.cos.has(e.company));
+      if (!p) { p = { id: 'n\n' + e.name + '\n' + same.length, cos: new Set() }; same.push(p); }
+      p.cos.add(e.company);
+      out.set(e.k, p.id);
+    }
+    return out;
+  }
+  function flatTotals(rows, ids) {
+    const t = totals(rows);
+    t.people = new Set(rows.map(r => ids.get(pairKey(r)))).size;   // a person at two companies counts once
+    t.days = new Set(rows.map(r => r.work_date)).size;             // a day with rows at two companies is one day
+    return t;
+  }
+  // A-Z by name ignoring case, accents and extra spaces, so one person's rows at two companies sit together,
+  // and those run in clock-in order (then company order)
+  function cmpPersonName(a, b) { return cmpName(personKey(a), personKey(b)); }
+  function cmpClockIn(a, b) {
+    const x = Date.parse(a.first_in), y = Date.parse(b.first_in);
+    return isNaN(x) || isNaN(y) ? isNaN(x) - isNaN(y) : x - y;
+  }
+  function cmpFlatRow(a, b) { return cmpPersonName(a.employee_name, b.employee_name) || cmpClockIn(a, b) || cmpCompany(a.company, b.company) || String(a.employee_uuid).localeCompare(String(b.employee_uuid)); }
+  // By Day, flat: newest date first, each day's rows by name A-Z, whatever company or department they sit in
+  function flatByDay(rows) {
+    const ids = personIds(rows);
+    const byDate = groupBy(rows || [], r => r.work_date);
+    return [...byDate.keys()].sort().reverse().map(date => {
+      const dr = byDate.get(date);
+      return { date, totals: flatTotals(dr, ids), rows: dr.slice().sort(cmpFlatRow) };
+    });
+  }
+  // By Employee, flat: one card per person A-Z, their days oldest first. A person at two companies is one
+  // card; a day they clocked at both keeps both rows (that is real information), earliest clock-in first.
+  function flatByPerson(rows) {
+    const ids = personIds(rows);
+    const byP = groupBy(rows || [], r => ids.get(pairKey(r)));
+    return [...byP.keys()].map(key => {
+      const days = byP.get(key).slice().sort((a, b) => (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0) || cmpClockIn(a, b) || cmpCompany(a.company, b.company));
+      const last = days[days.length - 1];
+      const job = [...days].reverse().map(d => d.job_title).find(j => j) || '';
+      return { key, name: last.employee_name || '', job, rows: days, totals: flatTotals(days, ids) };
+    }).sort((a, b) => cmpPersonName(a.name, b.name) || a.key.localeCompare(b.key));
+  }
+  // what the page shows: Everyone keeps Company > Department; a saved view is flat and drops the company
+  // chips and the department select (search, Flagged only, dates, By Day / By Employee and More stay)
+  function layoutFor(view) { const flat = !!view; return { flat, companyChips: !flat, deptSelect: !flat }; }
+  // the Job column stays unless nobody in the view has a job title
+  function anyJob(rows) { return (rows || []).some(r => r && typeof r.job_title === 'string' && r.job_title.trim() !== ''); }
+
   /* ---------- who sees what (mirrors ts_can_view in SQL) ---------- */
   function canView(viewer, company, department) {
     if (!viewer || viewer.active === false) return false;
@@ -1133,11 +1203,13 @@
       labelSrcText(r.label_src),
       sortFlags(r.flags).map(flagMsg).join('; ')];
   }
+  // opts.flat (a saved view is on): each date's rows by name, like the screen; the columns stay the same
   function buildCsv(rows, opts) {
     const o = opts || {};
     const nameOf = o.companyName || (k => COMPANY_NAMES[k] || k);
-    const sorted = (rows || []).slice().sort((a, b) =>
-      (a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0) || cmpCompany(a.company, b.company) ||
+    const byDate = (a, b) => a.work_date < b.work_date ? -1 : a.work_date > b.work_date ? 1 : 0;
+    const sorted = (rows || []).slice().sort(o.flat ? (a, b) => byDate(a, b) || cmpFlatRow(a, b) : (a, b) =>
+      byDate(a, b) || cmpCompany(a.company, b.company) ||
       cmpDept(deptOf(a), deptOf(b)) || cmpRowName(a, b));
     return [CSV_COLUMNS].concat(sorted.map(r => csvRow(r, nameOf)))
       .map(cols => cols.map(csvCell).join(',')).join('\r\n') + '\r\n';
@@ -1216,6 +1288,7 @@
     fmtDay, fmtMonthDay, fmtRange, fmtHours, hoursPlain, fmtMins,
     flagLabel, flagMsg, flagSev, sortFlags, hasWarn,
     deptOf, normRow, cmpCompany, cmpDept, cmpName, totals, groupByDay, groupByEmployee,
+    personKey, personIds, flatByDay, flatByPerson, layoutFor, anyJob,
     canView, regionCompanyKeys, visibleCompanyKeys, grantKey, grantFromKey, normalizeGrants, pickerDepartments, describeGrants,
     VIEW_ID_RE, VIEW_LABEL_MAX, memberKey, memberFromKey, normalizeMembers, normView, normViews, viewHas, viewCompanyKeys,
     departmentOptions, viewHeadcount, viewMemberCounts, describeViewMembers, viewPicker, slugify, uniqueViewId,
@@ -1593,6 +1666,8 @@
   // Saved view tabs show for admins only, and not while previewing a manager (who has no views).
   function viewsEnabled() { return !!(S.me && S.me.is_admin && (!S.viewer || S.viewer.is_admin) && S.views.length); }
   function activeView() { return viewsEnabled() ? S.views.find(v => v.id === S.crew) || null : null; }
+  // a saved view reads as a flat list of people (Gianni 2026-10-09: no company or department in a crew view)
+  function layout() { return C.layoutFor(activeView()); }
 
   // every company this viewer can see (the sync indicator), and the ones inside the active view (chips)
   function allCompanies() {
@@ -1613,6 +1688,9 @@
 
   /* ---------- render ---------- */
   function render() {
+    const lay = layout();
+    if (!lay.companyChips) S.coSel = [];          // a hidden control must not keep filtering
+    if (!lay.deptSelect) S.dept = '';
     const vis = visibleCompanies();
     S.coSel = S.coSel.filter(k => vis.includes(k));
     const base = baseRows();
@@ -1690,6 +1768,9 @@
     for (const b of document.querySelectorAll('[data-act="view"]')) b.setAttribute('aria-pressed', String(b.dataset.view === S.view));
     for (const b of document.querySelectorAll('[data-act="fmt"]')) b.setAttribute('aria-pressed', String(b.dataset.fmt === S.fmt));
 
+    const lay = layout();
+    $('coChips').hidden = !lay.companyChips;
+    $('deptSel').hidden = !lay.deptSelect;
     const allOn = !S.coSel.length;
     setHTML($('coChips'), h`${vis.length > 1 ? h`<button type="button" class="chip${allOn ? ' active' : ''}" data-act="co" data-co="" aria-pressed="${String(allOn)}">All companies</button>` : ''}${vis.map(k => {
       const on = S.coSel.includes(k) || vis.length === 1;   // a lone company is simply what is shown
@@ -1727,17 +1808,22 @@
   }
 
 
+  // days: count days (a person's card); short: leave out the break sums (each row has its own)
   function statLine(t, o) {
     const opts = o || {};
+    const nd = dayCount(t);
     return h`<div class="stats">
-      ${opts.days ? h`<span><b>${t.rows}</b> ${t.rows === 1 ? 'day' : 'days'}</span>` : h`<span><b>${t.people}</b> ${t.people === 1 ? 'person' : 'people'}</span>`}
+      ${opts.days ? h`<span><b>${nd}</b> ${nd === 1 ? 'day' : 'days'}</span>` : h`<span><b>${t.people}</b> ${t.people === 1 ? 'person' : 'people'}</span>`}
       <span>Hours <b>${hrs(t.worked_min)}</b>${t.open ? h` <span class="faint">+ ${t.open} still clocked in</span>` : ''}</span>
       ${t.ot_min || t.dt_min ? h`<span>OT <b>${hrs(t.ot_min)}</b>${t.dt_min ? h` DT <b>${hrs(t.dt_min)}</b>` : ''}</span>` : ''}
-      <span class="brk-sum">Paid breaks <b>${hrs(t.paid_break_min)}</b></span>
-      <span class="brk-sum">Unpaid breaks <b>${hrs(t.unpaid_break_min)}</b></span>
+      ${opts.short ? '' : h`<span class="brk-sum">Paid breaks <b>${hrs(t.paid_break_min)}</b></span>
+      <span class="brk-sum">Unpaid breaks <b>${hrs(t.unpaid_break_min)}</b></span>`}
       ${t.warn ? h`<span class="sf">${plural(t.warn, 'flag', 'flags')}</span>` : ''}
     </div>`;
   }
+  // flat totals count calendar days (a person clocked at two companies on one day worked one day);
+  // grouped totals have one row per day already
+  function dayCount(t) { return t.days != null ? t.days : t.rows; }
 
   /* cells */
   function estMark(tip) { return h`<abbr class="est" title="${tip}" tabindex="0">est.</abbr>`; }
@@ -1795,13 +1881,17 @@
   }
 
   /* By Day */
-  const DAY_COLS = h`<colgroup><col class="w-emp"><col class="w-job"><col class="w-in"><col class="w-out"><col><col class="w-paid"><col class="w-unpaid"><col class="w-hours"><col class="w-ot"><col class="w-flags"></colgroup>`;
-  const DAY_HEAD = h`<thead><tr><th scope="col" class="c-emp">Employee</th><th scope="col" class="c-job">Job</th><th scope="col" class="num">In</th><th scope="col" class="num">Out</th><th scope="col">Breaks</th><th scope="col" class="num" title="Paid break time (rest). Already inside Hours.">Paid</th><th scope="col" class="num" title="Unpaid break time (meal). Taken out of Hours.">Unpaid</th><th scope="col" class="num" title="Hours worked: clock time minus unpaid breaks">Hours</th><th scope="col" class="num">OT</th><th scope="col">Flags</th></tr></thead>`;
+  // job = false drops the Job column (a saved view where nobody has a job title)
+  const dayCols = job => h`<colgroup><col class="w-emp">${job ? h`<col class="w-job">` : ''}<col class="w-in"><col class="w-out"><col><col class="w-paid"><col class="w-unpaid"><col class="w-hours"><col class="w-ot"><col class="w-flags"></colgroup>`;
+  const dayHead = job => h`<thead><tr><th scope="col" class="c-emp">Employee</th>${job ? h`<th scope="col" class="c-job">Job</th>` : ''}<th scope="col" class="num">In</th><th scope="col" class="num">Out</th><th scope="col">Breaks</th><th scope="col" class="num" title="Paid break time (rest). Already inside Hours.">Paid</th><th scope="col" class="num" title="Unpaid break time (meal). Taken out of Hours.">Unpaid</th><th scope="col" class="num" title="Hours worked: clock time minus unpaid breaks">Hours</th><th scope="col" class="num">OT</th><th scope="col">Flags</th></tr></thead>`;
+  const DAY_COLS = dayCols(true);
+  const DAY_HEAD = dayHead(true);
   function groupRow(kind, label, t) {
     return h`<tr class="g g-${kind}"><th colspan="5" scope="rowgroup"><span class="g-label"><span class="g-name">${label}</span><span class="g-meta">${plural(t.people, 'person', 'people')}</span></span></th><td class="num">${minCell(t.paid_break_min)}</td><td class="num">${minCell(t.unpaid_break_min)}</td><td class="num">${minCell(t.worked_min)}</td><td class="num c-ot">${otSum(t)}</td><td>${t.warn ? h`<span class="g-flags">${plural(t.warn, 'flag', 'flags')}</span>` : ''}</td></tr>`;
   }
-  function dayRow(r) {
-    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-emp">${r.employee_name}${noteMark(r.note)}${r.job_title ? h`<span class="ej">${r.job_title}</span>` : ''}</td><td class="c-job" title="${r.job_title || ''}">${r.job_title || ''}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td></tr>`;
+  function dayRow(r) { return dayRowOf(r, true); }   // one argument: it is used as a .map() callback
+  function dayRowOf(r, job) {
+    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-emp">${r.employee_name}${noteMark(r.note)}${r.job_title ? h`<span class="ej">${r.job_title}</span>` : ''}</td>${job ? h`<td class="c-job" title="${r.job_title || ''}">${r.job_title || ''}</td>` : ''}${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td></tr>`;
   }
   function dayView(rows) {
     const t0 = today();
@@ -1812,6 +1902,16 @@
       </table></div></div>
     </section>`)}`;
   }
+  // a saved view, By Day: one table per day, people A-Z, no company or department rows
+  function flatDayView(rows, job) {
+    const t0 = today();
+    return h`${C.flatByDay(rows).map(d => h`<section class="day">
+      <div class="sec-head"><h3>${C.fmtDay(d.date)}${d.date === t0 ? h`<span class="today">Today</span>` : ''}</h3>${statLine(d.totals, { short: true })}</div>
+      <div class="card"><div class="tablewrap"><table class="ts day-t flat${job ? '' : ' nojob'}">${dayCols(job)}${dayHead(job)}
+        <tbody>${d.rows.map(r => dayRowOf(r, job))}</tbody>
+      </table></div></div>
+    </section>`)}`;
+  }
 
   /* By Employee */
   const EMP_COLS = h`<colgroup><col class="w-date"><col class="w-in"><col class="w-out"><col><col class="w-paid"><col class="w-unpaid"><col class="w-hours"><col class="w-ot"><col class="w-flags"></colgroup>`;
@@ -1819,12 +1919,13 @@
   function empRow(r, e) {
     return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-date">${C.fmtDay(r.work_date)}${noteMark(r.note)}${r.job_title && r.job_title !== e.job ? h`<span class="dj">${r.job_title}</span>` : ''}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td></tr>`;
   }
+  // coKey null: a saved view's flat card, which never names a company or department
   function empCard(e, coKey) {
     const t = e.totals;
     return h`<article class="card emp">
-      <div class="emp-head"><div><span class="emp-name">${e.name}</span>${e.job ? h`<span class="emp-job">${e.job}</span>` : ''} <span class="emp-ctx print-only">${coName(coKey)} · ${e.department}</span></div>${statLine(t, { days: true })}</div>
+      <div class="emp-head"><div><span class="emp-name">${e.name}</span>${e.job ? h`<span class="emp-job">${e.job}</span>` : ''}${coKey ? h` <span class="emp-ctx print-only">${coName(coKey)} · ${e.department}</span>` : ''}</div>${statLine(t, { days: true })}</div>
       <div class="tablewrap"><table class="ts emp-t">${EMP_COLS}${EMP_HEAD}<tbody>${e.rows.map(r => empRow(r, e))}</tbody>
-        <tfoot><tr><th scope="row" colspan="4">Total · ${plural(t.rows, 'day', 'days')}</th><td class="num">${hrs(t.paid_break_min)}</td><td class="num">${hrs(t.unpaid_break_min)}</td><td class="num">${hrs(t.worked_min)}</td><td class="num c-ot">${otSum(t)}</td><td>${t.warn ? h`<span class="g-flags">${plural(t.warn, 'flag', 'flags')}</span>` : ''}</td></tr></tfoot>
+        <tfoot><tr><th scope="row" colspan="4">Total · ${plural(dayCount(t), 'day', 'days')}</th><td class="num">${hrs(t.paid_break_min)}</td><td class="num">${hrs(t.unpaid_break_min)}</td><td class="num">${hrs(t.worked_min)}</td><td class="num c-ot">${otSum(t)}</td><td>${t.warn ? h`<span class="g-flags">${plural(t.warn, 'flag', 'flags')}</span>` : ''}</td></tr></tfoot>
       </table></div>
     </article>`;
   }
@@ -1837,6 +1938,10 @@
       </div>`)}
     </section>`)}`;
   }
+  // a saved view, By Employee: one card per person A-Z (a person at two companies is one card)
+  function flatEmpView(rows) {
+    return h`<section class="flat-emp">${C.flatByPerson(rows).map(e => empCard(e, null))}</section>`;
+  }
 
   function emptyState(title, lines, button) {
     return h`<div class="empty"><h3>${title}</h3>${lines.map(l => h`<p>${l}</p>`)}${button || ''}</div>`;
@@ -1844,7 +1949,12 @@
   function renderContent(rows, base, vis) {
     const el = $('content');
     const v = viewer();
-    if (rows.length) { setHTML(el, S.view === 'emp' ? empView(rows) : dayView(rows)); return; }
+    if (rows.length) {
+      const lay = layout();
+      if (lay.flat) setHTML(el, S.view === 'emp' ? flatEmpView(rows) : flatDayView(rows, C.anyJob(base)));
+      else setHTML(el, S.view === 'emp' ? empView(rows) : dayView(rows));
+      return;
+    }
     if (S.loading) { setHTML(el, emptyState('Loading timesheets...', [])); return; }
     if (v && !v.is_admin && !v.active && !base.length) {
       setHTML(el, emptyState('This sign-in is turned off', ['It sees nothing until Active is ticked for it in Admin.']));
@@ -1858,6 +1968,12 @@
     const sel = S.coSel.length ? S.coSel : vis;
     const off = sel.filter(notConnected);
     if (!base.length && sel.length && off.length === sel.length) {
+      const inView = layout().flat && activeView();   // a saved view never names a company, even here
+      if (inView) {
+        setHTML(el, emptyState('Gusto isn\'t connected for ' + inView.label + ' yet',
+          ['Hours for this view show up here after Gianni connects it.']));
+        return;
+      }
       const names = off.map(coName).join(', ');
       setHTML(el, emptyState(off.length === 1 ? names + " isn't connected to Gusto yet" : 'These companies are not connected to Gusto yet',
         [off.length === 1 ? 'Its hours show up here after Gianni connects it.' : names + '. Their hours show up here after Gianni connects them.']));
@@ -1897,8 +2013,9 @@
 
   function renderPrintHead() {
     const cur = activeView();
+    // a saved view prints like the screen: its name, no company or department
     const parts = [C.fmtRange(S.from, S.to)].concat(cur ? [cur.label] : [],
-      [S.coSel.length ? S.coSel.map(coName).join(', ') : 'All companies', S.dept || 'All departments']);
+      layout().flat ? [] : [S.coSel.length ? S.coSel.map(coName).join(', ') : 'All companies', S.dept || 'All departments']);
     if (S.q) parts.push('Search: ' + S.q);
     if (S.flaggedOnly) parts.push('Flagged only');
     const sum = freshNow();
@@ -2060,7 +2177,7 @@
   function exportCsv() {
     const rows = shownRows(baseRows());
     if (!rows.length) { toast('Nothing to export in this view'); return; }
-    const csv = C.buildCsv(rows, { companyName: coName });
+    const csv = C.buildCsv(rows, { companyName: coName, flat: layout().flat });   // columns stay; a view sorts by name
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);

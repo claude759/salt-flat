@@ -315,7 +315,7 @@ const ROWS = [
   row({ company: 'imperial', uuid: 'u5', name: 'Test Echo', dept: '', date: '2026-10-05' }),
   row({ company: 'filifera', uuid: 'u1', name: 'Test Alpha', dept: 'Trim', date: '2026-10-05', worked: 500, ot: 20, reg: 480, ot_src: 'est' }),
   row({ company: 'filifera', uuid: 'u1', name: 'Test Alpha', dept: 'Trim', date: '2026-10-06' }),
-  row({ company: 'filifera', uuid: 'u2', name: 'test bravo', dept: 'Trim', date: '2026-10-06', flags: [W('type_unsure', 'info')] }),
+  row({ company: 'filifera', uuid: 'u2', name: 'test kilo', dept: 'Trim', date: '2026-10-06', flags: [W('type_unsure', 'info')] }),
   row({ company: 'filifera', uuid: 'u3', name: 'Test Charlie', dept: 'Distro/Trim', date: '2026-10-06', worked: 700, ot: 220, dt: 0 }),
   row({ company: 'slane', uuid: 'u4', name: 'Test Delta', dept: 'Harvest', date: '2026-10-06', flags: [W('no_meal'), W('few_rest')] }),
   row({ company: 'wafgus', uuid: 'u6', name: 'José Testa', dept: 'Operations', date: '2026-10-06', open: true, worked: 0, reg: null }),
@@ -328,7 +328,7 @@ check('By Day: dates newest first, Company > Department > employee name', () => 
   const d6 = g[1];
   eq(d6.companies.map(c => c.company), ['filifera', 'slane', 'wafgus'], 'company order');
   eq(d6.companies[0].departments.map(d => d.department), ['Distro/Trim', 'Trim'], 'departments A-Z');
-  eq(d6.companies[0].departments[1].rows.map(r => r.employee_name), ['Test Alpha', 'test bravo'], 'names, case-insensitive');
+  eq(d6.companies[0].departments[1].rows.map(r => r.employee_name), ['Test Alpha', 'test kilo'], 'names, case-insensitive');
   const d5 = g[2];
   eq(d5.companies.map(c => c.company), ['filifera', 'imperial']);
   eq(d5.companies[1].departments[0].department, 'No department', 'blank department becomes No department');
@@ -338,7 +338,7 @@ check('By Employee: Company > Department > Employee, days oldest first, a mover 
   eq(g.map(c => c.company), ['filifera', 'slane', 'wafgus', 'imperial']);
   const fil = g[0];
   eq(fil.departments.map(d => d.department), ['Distro/Trim', 'Packaging', 'Trim']);
-  eq(fil.departments.map(d => d.employees.map(e => e.name)), [['Test Charlie'], ['Test Golf'], ['Test Alpha', 'test bravo']]);
+  eq(fil.departments.map(d => d.employees.map(e => e.name)), [['Test Charlie'], ['Test Golf'], ['Test Alpha', 'test kilo']]);
   eq(fil.departments[1].employees[0].rows.map(r => r.work_date), ['2026-10-05', '2026-10-07']);
   eq(fil.departments[2].employees[0].rows.map(r => r.work_date), ['2026-10-05', '2026-10-06']);
   eq(fil.departments[2].totals.rows, 3, 'department totals cover its employees\' rows');
@@ -411,7 +411,7 @@ check('view filter runs before the other filters, and they still apply inside it
   eq(C.filterRows(ROWS, { view: v }).length, 5);
   eq(C.filterRows(ROWS, { view: v, companies: ['slane'] }).map(r => r.employee_name), ['Test Delta']);
   eq(C.filterRows(ROWS, { view: v, flaggedOnly: true }).map(r => r.employee_name), ['Test Delta'], 'flagged only inside the view');
-  eq(C.filterRows(ROWS, { view: v, search: 'bravo' }).map(r => r.employee_uuid), ['u2']);
+  eq(C.filterRows(ROWS, { view: v, search: 'kilo' }).map(r => r.employee_uuid), ['u2']);
   eq(C.filterRows(ROWS, { view: v, department: 'Packaging' }).length, 0, 'Golf in Packaging is outside this view');
 });
 check('inside a view, company chips and the department list only offer what the view contains', () => {
@@ -525,6 +525,118 @@ check('grants: plain-words summary and normalisation', () => {
   eq(C.grantFromKey(C.grantKey('filifera', 'Distro/Trim')), { company: 'filifera', department: 'Distro/Trim' });
 });
 
+// ---------------------------------------------------------------------------------------------
+// 6b. a saved view reads flat (Gianni 2026-10-09: a crew view needs no company or department, it has to
+//     be easy to skim). Everyone keeps Company > Department.
+// ---------------------------------------------------------------------------------------------
+const FLAT = [
+  row({ company: 'wafgus', uuid: 'w1', name: 'Test Zulu', dept: 'Sales', date: '2026-10-06' }),
+  row({ company: 'slane', uuid: 's1', name: 'Test  ALPHA', dept: 'Harvest', date: '2026-10-06', job: 'Harvest Tech' }),   // the same person at a second company, same day
+  row({ company: 'filifera', uuid: 'f1', name: 'test alpha', dept: 'Trim', date: '2026-10-06', job: 'Trimmer' }),
+  row({ company: 'slane', uuid: 's1', name: 'Test Alpha', dept: 'Harvest', date: '2026-10-07', job: 'Harvest Tech', flags: [W('no_meal')] }),
+  row({ company: 'filifera', uuid: 'f1', name: 'Test Alpha', dept: 'Trim', date: '2026-10-05', job: 'Trimmer', worked: 300 }),
+  row({ company: 'imperial', uuid: 'i1', name: 'Émile Test', dept: '', date: '2026-10-06' }),
+  row({ company: 'filifera', uuid: 'f2', name: 'Test Mike', dept: 'Packaging', date: '2026-10-07' }),
+  row({ company: 'wafgus', uuid: 'w2', name: 'test oscar', dept: 'Sales', date: '2026-10-07' }),
+];
+const at = r => r.company + ':' + r.employee_uuid + '@' + r.work_date;
+check('flat By Day: newest date first, one A-Z list per day across companies and departments, no group levels', () => {
+  const g = C.flatByDay(FLAT);
+  eq(g.map(d => d.date), ['2026-10-07', '2026-10-06', '2026-10-05']);
+  ok(g.every(d => Array.isArray(d.rows) && !('companies' in d) && !('departments' in d)), 'a flat day must not carry company or department groups');
+  eq(g[1].rows.map(at), ['imperial:i1@2026-10-06', 'filifera:f1@2026-10-06', 'slane:s1@2026-10-06', 'wafgus:w1@2026-10-06'],
+    'A-Z ignoring case and accents (Emile, alpha, Zulu); one person at two companies sits together, in company order');
+  eq(g[0].rows.map(r => r.employee_name), ['Test Alpha', 'Test Mike', 'test oscar'], 'A-Z ignoring case');
+  eq([g[1].totals.rows, g[1].totals.people], [4, 3], 'the person clocked at two companies counts once');
+  eq(g.reduce((a, d) => a + d.totals.worked_min, 0), C.totals(FLAT).worked_min, 'day totals add up to the grand total');
+  eq(g.reduce((a, d) => a + d.rows.length, 0), FLAT.length, 'every row shows once');
+  eq(C.flatByDay([]), []);
+});
+check('flat By Employee: one card per person A-Z; the same name at two companies is ONE card, days in date order, both rows of a double-clocked day kept', () => {
+  const p = C.flatByPerson(FLAT);
+  eq(p.map(e => e.name), ['Émile Test', 'Test Alpha', 'Test Mike', 'test oscar', 'Test Zulu']);
+  const alpha = p[1];
+  eq(alpha.rows.map(at), ['filifera:f1@2026-10-05', 'filifera:f1@2026-10-06', 'slane:s1@2026-10-06', 'slane:s1@2026-10-07']);
+  eq([alpha.totals.rows, alpha.totals.days, alpha.totals.people], [4, 3, 1], '4 rows on 3 calendar days, 1 person');
+  eq(alpha.totals.worked_min, 300 + 480 * 3);
+  eq(alpha.totals.warn, 1);
+  eq(alpha.job, 'Harvest Tech', 'the job from their latest day');
+  ok(!('company' in alpha) && !('department' in alpha), 'a flat card names no company or department');
+  eq(p.reduce((a, e) => a + e.rows.length, 0), FLAT.length, 'every row lands on exactly one card');
+});
+check('flat: one person\'s two rows on the same day run in clock-in order (then company order), in both layouts and the CSV', () => {
+  const two = [
+    row({ company: 'filifera', uuid: 'f9', name: 'Test Quill', dept: 'Packaging', date: '2026-10-06', job: 'Packager', extra: { first_in: '2026-10-06T16:55:00Z' } }),
+    row({ company: 'wafgus', uuid: 'w9', name: 'Test Quill', dept: 'Operations', date: '2026-10-06', job: 'Office', extra: { first_in: '2026-10-06T15:55:00Z' } }),
+    row({ company: 'slane', uuid: 's9', name: 'Test Quill', dept: 'Harvest', date: '2026-10-07', extra: { first_in: null } }),
+    row({ company: 'filifera', uuid: 'f9', name: 'Test Quill', dept: 'Packaging', date: '2026-10-07', extra: { first_in: '2026-10-07T16:00:00Z' } }),
+  ];
+  const card = C.flatByPerson(two);
+  eq(card.length, 1, 'three companies, one person');
+  eq(card[0].rows.map(r => r.company + '@' + r.work_date), ['wafgus@2026-10-06', 'filifera@2026-10-06', 'filifera@2026-10-07', 'slane@2026-10-07'], 'earliest first; no clock-in goes last');
+  eq(C.flatByDay(two).map(d => d.rows.map(r => r.company)), [['filifera', 'slane'], ['wafgus', 'filifera']]);
+  eq(parseCsv(C.buildCsv(two, { flat: true })).slice(1).map(c => c[1]), ['Waf & Gus', 'Filifera', 'Filifera', 'Slane']);
+});
+check('flat: two people with one name at the SAME company stay two; a nameless employee never merges with anyone', () => {
+  const twins = [
+    row({ company: 'filifera', uuid: 't1', name: 'Test Twin', dept: 'Trim', date: '2026-10-06' }),
+    row({ company: 'filifera', uuid: 't2', name: 'Test Twin', dept: 'Packaging', date: '2026-10-06' }),
+    row({ company: 'slane', uuid: 't3', name: 'test twin', dept: 'Harvest', date: '2026-10-07' }),
+    row({ company: 'slane', uuid: 'n1', name: '', dept: 'Harvest', date: '2026-10-06' }),
+    row({ company: 'wafgus', uuid: 'n2', name: '', dept: 'Sales', date: '2026-10-06' }),
+  ];
+  const p = C.flatByPerson(twins);
+  eq(p.length, 4, 'two nameless cards + two Test Twin cards');
+  const tw = p.filter(e => C.personKey(e.name) === 'test twin').map(e => e.rows.map(r => r.company + ':' + r.employee_uuid));
+  eq(tw, [['filifera:t1', 'slane:t3'], ['filifera:t2']], 'the second company joins the first same-name person');
+  eq(C.flatByDay(twins).find(d => d.date === '2026-10-06').totals.people, 4);
+  eq(C.personKey('  Émile   TEST '), 'emile test');
+});
+check('layout: a saved view is flat and hides the company chips and department select; Everyone keeps them and Company > Department', () => {
+  eq(C.layoutFor(null), { flat: false, companyChips: true, deptSelect: true }, 'Everyone');
+  eq(C.layoutFor(V({ company: 'wafgus', department: 'Sales' })), { flat: true, companyChips: false, deptSelect: false }, 'any view, not just one');
+  const g = C.groupByDay(FLAT);
+  eq(g[1].companies.map(c => c.company), ['filifera', 'slane', 'wafgus', 'imperial'], 'Everyone By Day still groups by company');
+  eq(C.groupByEmployee(FLAT).map(c => [c.company, c.departments.map(d => d.department)]),
+    [['filifera', ['Packaging', 'Trim']], ['slane', ['Harvest']], ['wafgus', ['Sales']], ['imperial', ['No department']]], 'Everyone By Employee still groups by company and department');
+  eq(C.groupByEmployee(FLAT).reduce((a, c) => a + c.departments.reduce((b, d) => b + d.employees.length, 0), 0), 6, 'and keeps one card per company login');
+});
+check('Job column: kept unless nobody in the view has a job title', () => {
+  ok(C.anyJob(FLAT), 'jobs present');
+  ok(!C.anyJob(FLAT.map(r => Object.assign({}, r, { job_title: '' }))), 'all blank');
+  ok(!C.anyJob(FLAT.map(r => Object.assign({}, r, { job_title: r.company === 'filifera' ? '  ' : null }))), 'blank and missing');
+  ok(!C.anyJob([]) && !C.anyJob(null), 'no rows');
+});
+check('CSV in a view: same columns (Company and Department stay for spreadsheets), each date sorted by name like the screen', () => {
+  const p = parseCsv(C.buildCsv(FLAT, { flat: true }));
+  eq(p[0], [...C.CSV_COLUMNS], 'columns');
+  eq(p.slice(1).map(c => c[0] + ' ' + c[3] + ' ' + c[1]), [
+    '2026-10-05 Test Alpha Filifera',
+    '2026-10-06 Émile Test Imperial', '2026-10-06 test alpha Filifera', '2026-10-06 Test  ALPHA Slane', '2026-10-06 Test Zulu Waf & Gus',
+    '2026-10-07 Test Alpha Slane', '2026-10-07 Test Mike Filifera', '2026-10-07 test oscar Waf & Gus']);
+  eq(parseCsv(C.buildCsv(FLAT)).slice(1).filter(c => c[0] === '2026-10-06').map(c => c[1]), ['Filifera', 'Slane', 'Waf & Gus', 'Imperial'], 'Everyone keeps company order');
+});
+check('page: a view hides the company chips + department select and renders the flat layout; print and CSV follow it; Everyone renders as before', () => {
+  ok(/function layout\(\) \{ return C\.layoutFor\(activeView\(\)\); \}/.test(block('ts-app')), 'layout() must follow the active view');
+  const rc = appFn('renderControls');
+  ok(rc.includes("$('coChips').hidden = !lay.companyChips;") && rc.includes("$('deptSel').hidden = !lay.deptSelect;"), 'renderControls must hide the chips and department select in a view');
+  ok(!/\$\('(q|flagChip|moreWrap|presets|presetSel)'\)\.hidden/.test(block('ts-app')), 'search, Flagged only, presets and More must stay');
+  const r = appFn('render');
+  ok(/if \(!lay\.companyChips\) S\.coSel = \[\];/.test(r) && /if \(!lay\.deptSelect\) S\.dept = '';/.test(r), 'a hidden control must stop filtering');
+  const c = appFn('renderContent');
+  ok(c.includes("if (lay.flat) setHTML(el, S.view === 'emp' ? flatEmpView(rows) : flatDayView(rows, C.anyJob(base)));"), 'a view renders flat');
+  ok(c.includes("else setHTML(el, S.view === 'emp' ? empView(rows) : dayView(rows));"), 'Everyone renders grouped');
+  const nc = c.slice(c.indexOf('off.length === sel.length'), c.indexOf('const names = off.map(coName)'));
+  ok(/const inView = layout\(\)\.flat && activeView\(\);/.test(nc) && /inView\.label/.test(nc) && !/coName|department/.test(nc) && /return;/.test(nc),
+    'the "not connected" empty state in a view names the view, never a company');
+  for (const f of ['flatDayView', 'flatEmpView']) ok(!/coName|department|groupRow|co-head|dept-head|groupBy(Day|Employee)/.test(appFn(f)), f + ' names a company or department');
+  ok(/C\.flatByDay\(rows\)/.test(appFn('flatDayView')) && /C\.flatByPerson\(rows\)/.test(appFn('flatEmpView')), 'flat views use the TSCore groupings');
+  ok(/empCard\(e, null\)/.test(appFn('flatEmpView')) && /\$\{coKey \? h` <span class="emp-ctx print-only">/.test(appFn('empCard')), 'a flat card never prints the company line');
+  ok(/layout\(\)\.flat \? \[\] : \[/.test(appFn('renderPrintHead')), 'print header lists companies and departments only outside a view');
+  ok(/C\.buildCsv\(rows, \{ companyName: coName, flat: layout\(\)\.flat \}\)/.test(appFn('exportCsv')), 'CSV follows the layout');
+  ok(/function dayRow\(r\) \{ return dayRowOf\(r, true\); \}/.test(block('ts-app')), 'dayRow stays a one-argument .map() callback with the Job column');
+  ok(/@media \(max-width:1219\.98px\)\{[\s\S]*?table\.ts\.day-t\.nojob\{min-width:/.test(src), 'a table without the Job column needs its own min-width');
+});
 // ---------------------------------------------------------------------------------------------
 // 7. flags and breaks
 // ---------------------------------------------------------------------------------------------
@@ -817,6 +929,21 @@ check('demo views: 3-4 made-up crews over demo people only, valid ids, each with
     ok(C.filterRows(demo.rows, Object.assign({ view: v }, C.presetRange('period', demo.today))).length > 0, v.id + ' has days this period');
   }
   ok(vs.some(v => v.members.some(m => m.department)) && vs.some(v => v.members.some(m => m.employee_uuid)), 'whole departments and picked people');
+});
+check('demo views run through the flat pipeline: every row once, totals agree, A-Z, days in order', () => {
+  const p = C.presetRange('period', demo.today);
+  for (const v of C.normViews(demo.views)) {
+    const rows = C.filterRows(demo.rows, Object.assign({ view: v }, p));
+    const day = C.flatByDay(rows), emp = C.flatByPerson(rows);
+    eq(day.reduce((a, d) => a + d.rows.length, 0), rows.length, v.id + ' by day');
+    eq(emp.reduce((a, e) => a + e.rows.length, 0), rows.length, v.id + ' by person');
+    eq(emp.reduce((a, e) => a + e.totals.worked_min, 0), C.totals(rows).worked_min, v.id + ' hours');
+    eq(emp.length, new Set(rows.map(r => r.employee_name)).size, v.id + ' one card per name');
+    const names = emp.map(e => C.personKey(e.name));
+    eq(names, names.slice().sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })), v.id + ' A-Z');
+    for (const d of day) { const n = d.rows.map(r => C.personKey(r.employee_name)); eq(n, n.slice().sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })), v.id + ' ' + d.date + ' A-Z'); }
+    for (const e of emp) ok(e.rows.every((r, i) => !i || e.rows[i - 1].work_date <= r.work_date), v.id + ' ' + e.name + ' days in order');
+  }
 });
 check('demo runs through the page pipeline (filter, both groupings, CSV) and totals agree', () => {
   const t = C.totals(demo.rows);
