@@ -774,7 +774,7 @@
                 <span><span class="brk paid"><span class="bk">Rest</span>paid</span> stays in hours</span>
                 <span><span class="brk unpaid"><span class="bk">Meal</span>unpaid</span> taken out of hours</span>
                 <span><span class="brk gap">Off</span> off the clock between shifts</span>
-                <span><abbr class="est" title="Gusto didn't label this break. Breaks of 20 min or less count as paid rest, longer as unpaid meal.">est.</abbr> estimated, hover for why</span>
+                <span><abbr class="est" title="A break of 21 to 24 min could be either type; it was counted from its length. Overtime marked est. is estimated until Gusto reports it.">est.</abbr> worth a check in Gusto, hover for why</span>
                 <span><span class="flag warn">Flag</span> worth a look, not a legal finding</span>
                 <span><span class="infomark" aria-hidden="true">i</span> a note, for example a break type guessed from its length</span>
                 <span><span class="notemark">note</span> a note on this day in Gusto, hover to read it</span>
@@ -1520,11 +1520,14 @@
   function shiftsText(r) {
     return shiftParts(r).map(p => p.hoursOnly ? 'hours entered' : p.in + ' - ' + (p.open ? 'clocked in' : p.out)).join(', ');
   }
+  // A break Gusto didn't label gets its type from its length: 20 min or less = paid rest, 25 or more =
+  // unpaid meal, right about 99% of the time, so those are shown plainly. Only the 21-24 min gray zone,
+  // where either type is plausible, keeps a visible est. (Gianni 2026-10-09: "are all these est's
+  // necessary"). The tooltip still says how every break's type was decided.
+  function breakUnsure(b) { return !!b && b.src !== 'gusto' && !!b.end && b.min >= 21 && b.min <= 24; }
   // Breaks in one short line: meals, then rests, then time off the clock between shifts, each with its
-  // minutes in clock order. est. means Gusto didn't label the break, so its TYPE (rest or meal) was
-  // guessed from its length; the minutes are exact. ests = per item; allEst = every break of that kind
-  // was guessed, so one mark after the kind says it ("Meal est. 30m"); otherwise each guessed break gets
-  // its own ("Rest 10m, 10m est., 10m"). est = any guessed.
+  // minutes in clock order. ests = per item (unsure only, see breakUnsure); allEst = every break of that
+  // kind is unsure, so one mark after the kind says it; otherwise each unsure break gets its own.
   function breakSummary(r) {
     if (onlyHoursEntered(r)) return { hoursEntered: true, groups: [] };
     const all = (r.shifts || []).filter(s => !s.hours_only).flatMap(s => s.breaks || []);
@@ -1532,7 +1535,7 @@
     for (const kind of ['meal', 'rest']) {
       const bs = all.filter(b => (b.kind === 'meal' ? 'meal' : 'rest') === kind);
       if (!bs.length) continue;
-      const ests = bs.map(b => b.src !== 'gusto');
+      const ests = bs.map(breakUnsure);
       groups.push({ kind, label: kind === 'meal' ? 'Meal' : 'Rest', items: bs.map(b => b.open || !b.end ? 'open' : fmtMins(b.min)),
         ests, est: ests.some(Boolean), allEst: ests.every(Boolean) });
     }
@@ -1672,7 +1675,7 @@
     departmentOptions, viewHeadcount, viewMemberCounts, describeViewMembers, viewPicker, slugify, uniqueViewId,
     viewsFor, ALL_MINE, ALL_MINE_LABEL, crewsFor, pickCrew, describeAccess, viewsToSave, LIVE_URL, viewLink,
     normText, filterRows, gustoMinute, MEAL_GAP_MIN, shiftGaps, labelSrcText, onlyHoursEntered,
-    fmtDayShort, shiftParts, shiftsText, breakSummary, breakSummaryText,
+    fmtDayShort, shiftParts, shiftsText, breakUnsure, breakSummary, breakSummaryText,
     csvCell, buildCsv, csvFilename, freshness, freshSummary,
     esc, SafeHTML, h, flagsHtml,
   };
@@ -2027,7 +2030,7 @@
   // admin panel: section 'users' (who sees what) or 'views' (saved views)
   const A = { section: 'users', editing: null, confirm: '', err: '', busy: false, vEditing: null, vConfirm: '' };
 
-  const EST_BREAK_TIP = "Gusto didn't label this break. Breaks of 20 min or less count as paid rest, longer as unpaid meal.";
+  const EST_BREAK_TIP = "This break is 21 to 24 min, so it could be either type. It was counted from its length; check it in Gusto.";
   const EST_OT_TIP = "Gusto hasn't reported overtime for this day yet. Estimated with California rules: over 8 h a day or 40 h a week is OT, over 12 h a day is double time, and the 7th straight day of the workweek is OT.";
 
   /* ---------- small helpers ---------- */
@@ -2303,13 +2306,15 @@
   }
   function breakChip(b) {
     const kind = b.kind === 'meal' ? 'Meal' : 'Rest';
-    const est = b.src !== 'gusto';
+    const est = C.breakUnsure(b), guessed = b.src !== 'gusto';
     const range = C.fmtClock(b.start) + '-' + (b.end ? C.fmtClock(b.end) : '?');
     // open = Gusto never recorded the end (no end at all, or an end that is just the clock-out)
     const title = kind + ' break, ' + (b.paid ? 'paid' : 'unpaid') + ', ' + C.fmtTime(b.start) + ' to ' +
       (b.end ? C.fmtTime(b.end) : 'no end recorded') + (b.end ? ', ' + b.min + ' min' : '') + '. ' +
       (b.open && b.end ? 'Gusto shows it running until the clock-out, so it may never have been ended. ' : '') +
-      (est ? 'Type guessed from its length.' : 'Labelled by Gusto.');
+      (est ? 'Between 21 and 24 min, so it could be either type: counted as ' + (b.paid ? 'paid rest' : 'unpaid meal') + ' from its length. Check it in Gusto.'
+        : guessed ? 'Type from its length (20 min or less is paid rest, 25 or more is unpaid meal); Gusto confirms it with the next morning\'s export.'
+        : 'Labelled by Gusto.');
     return h`<span class="brk ${b.paid ? 'paid' : 'unpaid'}${b.open ? ' open' : ''}" title="${title}"><span class="bk">${kind}</span><span>${range}</span>${b.end ? h`<span class="bm">${C.fmtMins(b.min)}</span>` : ''}${b.open || !b.end ? h`<span class="bo">open</span>` : ''}${est ? estMark(EST_BREAK_TIP) : ''}</span>`;
   }
   function gapChip(g) {
@@ -2397,7 +2402,7 @@
      clock times, a one-line break summary (and OT), red flags. A tap opens the break chips and notes.
      By Employee: one card per person, one line per day; a tap on a line opens that day.
      Nothing in a closed card relies on a hover tooltip: phones have none. */
-  const EST_BREAK_NOTE = "Breaks marked est. weren't labelled by Gusto, so 20 min or less counts as paid rest and longer as unpaid meal.";
+  const EST_BREAK_NOTE = "A break marked est. is 21 to 24 min, so it could be either type. It was counted from its length; check it in Gusto.";
   const EST_OT_NOTE = 'OT marked est. is estimated with California rules until Gusto reports it.';
   const sepd = (parts, sep) => parts.map((p, i) => h`${i ? h`<span class="bs-sep">${sep}</span>` : ''}${p}`);
   const nbsp = s => String(s).replace(/ /g, '\u00a0');   // "7:57 AM" never splits from its AM
@@ -2431,7 +2436,7 @@
     const fl = C.sortFlags(r.flags);
     const warn = fl.filter(f => C.flagSev(f) === 'warn'), info = fl.filter(f => C.flagSev(f) === 'info');
     const he = C.onlyHoursEntered(r);
-    const guessed = !he && r.shifts.some(s => (s.breaks || []).some(b => b.src !== 'gusto'));
+    const guessed = !he && r.shifts.some(s => (s.breaks || []).some(C.breakUnsure));
     const ot = +r.ot_min || 0, dt = +r.dt_min || 0;
     return h`<div class="pd">
       ${job ? h`<div class="pd-job">${job}</div>` : ''}

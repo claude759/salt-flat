@@ -1129,13 +1129,20 @@ check('card lines: "Mon 9/28", clock times per shift, open and hours-entered day
   eq(C.shiftsText({ shifts: [shift('08:00', '23:59', [], { hours_only: true })] }), 'hours entered');
   eq(C.shiftsText({ shifts: [], first_in: '2026-10-06T08:00:00-07:00', last_out: '2026-10-06T12:00:00-07:00' }), '8:00 AM - 12:00 PM', 'no shifts: first in / last out');
 });
-check('card lines: break summary "Meal 30m · Rest 10m, 10m", est. when guessed, open breaks, time off between shifts', () => {
+check('card lines: break summary "Meal 30m · Rest 10m, 10m", est. only for 21-24 min breaks, open breaks, time off between shifts', () => {
   const r = { shifts: [shift('07:00', '15:30', [brk('09:00', '09:10', 'rest'), brk('11:00', '11:30', 'meal'), brk('13:30', '13:40', 'rest')])] };
   eq(C.breakSummaryText(r), 'Meal 30m · Rest 10m, 10m');
-  eq(C.breakSummaryText({ shifts: [shift('07:00', '15:30', [brk('09:00', '09:10', 'rest', 'rule'), brk('11:00', '11:22', 'meal', 'rule')])] }), 'Meal est. 22m · Rest est. 10m');
-  eq(C.breakSummaryText({ shifts: [shift('07:00', '15:30', [brk('09:00', '09:10', 'rest'), brk('11:00', '11:30', 'meal'), brk('13:00', '13:10', 'rest', 'rule'), brk('14:30', '14:40', 'rest')])] }),
-    'Meal 30m · Rest 10m, 10m est., 10m', 'only the guessed rest carries est., not the whole group');
-  eq(C.breakSummaryText({ shifts: [shift('07:00', '15:30', [brk('09:00', '09:10', 'rest', 'rule'), brk('13:00', '13:10', 'rest', 'rule')])] }), 'Rest est. 10m, 10m', 'every rest guessed: one mark after the kind');
+  // est. only for the 21-24 min gray zone (Gianni 2026-10-09: "are all these est's necessary"); a guessed 10-min
+  // rest or 30-min meal is shown plainly
+  eq(C.breakSummaryText({ shifts: [shift('07:00', '15:30', [brk('09:00', '09:10', 'rest', 'rule'), brk('11:00', '11:22', 'meal', 'rule')])] }), 'Meal est. 22m · Rest 10m');
+  eq(C.breakSummaryText({ shifts: [shift('07:00', '15:30', [brk('09:00', '09:10', 'rest', 'rule'), brk('11:00', '11:31', 'meal', 'rule')])] }), 'Meal 31m · Rest 10m', 'confident guesses carry no mark');
+  eq(C.breakSummaryText({ shifts: [shift('07:00', '15:30', [brk('09:00', '09:10', 'rest'), brk('11:00', '11:30', 'meal'), brk('13:00', '13:22', 'meal', 'rule'), brk('14:30', '14:40', 'rest')])] }),
+    'Meal 30m, 22m est. · Rest 10m, 10m', 'only the unsure break carries est., not the whole group');
+  eq(C.breakSummaryText({ shifts: [shift('07:00', '15:30', [brk('09:00', '09:21', 'meal', 'rule'), brk('13:00', '13:24', 'meal', 'rule')])] }), 'Meal est. 21m, 24m', 'every meal unsure: one mark after the kind');
+  ok(C.breakUnsure({ src: 'rule', end: 'x', min: 21 }) && C.breakUnsure({ src: 'rule', end: 'x', min: 24 }), 'the 21-24 min edges are unsure');
+  ok(!C.breakUnsure({ src: 'rule', end: 'x', min: 20 }) && !C.breakUnsure({ src: 'rule', end: 'x', min: 25 }), '20 and 25 are confident');
+  ok(!C.breakUnsure({ src: 'gusto', end: 'x', min: 22 }), 'a Gusto label is never unsure');
+  ok(!/est = b\.src !== 'gusto'/.test(appFn('breakChip')), 'the desktop chip marks every guessed break again');
   const bl = appFn('breaksLine');
   ok(/g\.allEst \? est : ''/.test(bl) && /!g\.allEst && g\.ests\[i\] \? est : ''/.test(bl), 'the card line marks est. per kind or per break, like breakSummaryText');
   ok(/sepd\(parts, ' ·\\u00a0'\)/.test(bl), 'the " · " separator sticks to the item after it (no dot left at a line end)');
