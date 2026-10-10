@@ -8,7 +8,7 @@
 // secret held in Vault — verified by the ba_notify_authorized() RPC, so this
 // function never holds the raw secret and randoms can't trigger email blasts.
 import { admin, json, preflight } from "../_shared/util.ts";
-import { adminCcList, regionCcList, inviteEmail } from "../_shared/mail.ts";
+import { adminCcList, regionCcList, inviteEmail, mailShell, credBox, btn } from "../_shared/mail.ts";
 import { SMTPClient } from "https://deno.land/x/denomailer@1.6.0/mod.ts";
 
 const APP_URL = "https://claude759.github.io/salt-flat/ba/";
@@ -370,6 +370,34 @@ Deno.serve(async (req) => {
       const { subject, html, text } = inviteEmail(t.full_name, t.email, password);
       const to = testTo || t.email;
       await sendMail(to, subject, html, text, cc);
+      return json({ ok: true, notified: to, cc });
+    }
+
+    if (job === "password_reset") {
+      // Same reset as the admin "Reset password" button (admin-reset-ba-password), but
+      // triggerable server-side (secret-auth) for a user who can't sign in and asked for one
+      // by email (Drew, 2026-10-10). Fresh temp password, must_change_password, the same
+      // "your password was reset" email, admins CC'd. The password is never returned.
+      const { ba_id } = body;
+      if (!ba_id) return json({ ok: false, error: "ba_id required" }, 400);
+      const { data: t } = await db.from("profiles").select("id,email,full_name,region,active").eq("id", ba_id).maybeSingle();
+      if (!t?.email) return json({ ok: false, error: "that person has no email" }, 400);
+      if (t.active === false) return json({ ok: false, error: "that account is deactivated; reactivate it first" }, 400);
+      const cc = testTo ? undefined : await adminCcList(db, t.email, t.region);
+      if (dry) return json({ ok: true, would_notify: testTo || t.email, cc, subject: "Your Wizard Trees app password was reset" });
+      const password = "wt-" + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+      const { error: uErr } = await db.auth.admin.updateUserById(ba_id, { password });
+      if (uErr) return json({ ok: false, error: uErr.message }, 500);
+      await db.from("profiles").update({ must_change_password: true }).eq("id", ba_id);
+      const html = mailShell("Your app password was reset", `
+        <p style="margin:0 0 12px">Hi ${esc(t.full_name || "there")}, your password for the Wizard Trees field app was reset.</p>
+        ${credBox([["Your login", t.email], ["New temporary password", password]])}
+        <p style="margin:0 0 14px;color:#777;font-size:13px">Sign in with it and you'll be prompted to choose a new one.</p>
+        <p style="margin:0 0 12px">${btn(APP_URL, "Open the app →")}</p>
+        <p style="margin:0;color:#888;font-size:12px">If you didn't ask for this, reply to this email.</p>`);
+      const text = `Hi ${t.full_name || "there"}, your Wizard Trees app password was reset.\nLogin: ${t.email}\nNew temporary password: ${password}\nSign in and choose a new one: ${APP_URL}`;
+      const to = testTo || t.email;
+      await sendMail(to, "Your Wizard Trees app password was reset", html, text, cc);
       return json({ ok: true, notified: to, cc });
     }
 
