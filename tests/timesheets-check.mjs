@@ -4,7 +4,8 @@
 // Exit 0 = safe to push. Any FAIL = do not push; fix first.
 //
 // The whole run happens with the machine clock set to New Zealand time, so any place that leans on the
-// viewer's own time zone instead of America/Los_Angeles shows up as a failure.
+// viewer's own time zone instead of the row's company zone (America/Los_Angeles for California,
+// America/New_York for Wizard Trees NY) shows up as a failure.
 process.env.TZ = 'Pacific/Auckland';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
@@ -104,7 +105,7 @@ check('saved views stay optional: a missing table or a failed read never shows a
   ok(m, 'no loadViews()');
   ok(!/loadErr|throw/.test(m[0]), 'loadViews must not set S.loadErr or throw');
   ok(/!S\.me\.is_admin && !\(S\.me\.views \|\| \[\]\)\.length/.test(m[0]), 'loadViews must skip a manager who has no views');
-  ok(/function crewInfo\(\) \{ return C\.crewsFor\(viewer\(\), S\.views\); \}/.test(app), 'the tabs come from crewsFor (Everyone only for admins; a preview gets the previewed sign-in\'s tabs)');
+  ok(/function crewInfo\(\) \{ return C\.crewsFor\(viewer\(\), S\.views, S\.region\); \}/.test(app), 'the tabs come from crewsFor for the active region (Everyone only for admins; a preview gets the previewed sign-in\'s tabs)');
   ok(/function baseRows\(\) \{[^\n]*\n[^\n]*view: activeView\(\)/.test(app), 'the active view filters the base rows');
   ok(/function visibleCompanies\(\) \{ return C\.viewCompanyKeys\(allCompanies\(\), activeView\(\)\); \}/.test(app), 'company chips limited to the active view');
   ok(/function deptOptions\(base\) \{\s*return C\.departmentOptions\([^\n]*view: activeView\(\)/.test(app), 'department list limited to the active view');
@@ -702,6 +703,14 @@ check('crewsFor: admin = Everyone + every view; manager = only their views, "All
   eq(C.crewsFor(MGR(['trim'], [], { active: false }), KNOWN).list, [], 'turned off: no tabs');
   ok(!C.crewsFor(MGR(['trim']), KNOWN).everyone, 'a manager never gets Everyone');
 });
+check('break policy line: one quiet sentence; company names only where the page shows companies', () => {
+  const nm = { filifera: 'Filifera', slane: 'Slane', wafgus: 'Waf & Gus', imperial: 'Imperial' };
+  eq(C.breakPolicyText(['filifera', 'slane', 'wafgus', 'imperial'], k => nm[k]),
+    'Breaks: a paid rest break every 4 hours (10 min at Filifera and Imperial, 15 min at Slane and Waf & Gus), and an unpaid 30-min meal by the 5th hour (a second after 10 hours).');
+  eq(C.breakPolicyText(['filifera', 'wafgus'], null), 'Breaks: a paid 10 or 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).', 'a crew list never names companies');
+  eq(C.breakPolicyText(['wafgus'], null), 'Breaks: a paid 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).');
+  ok(/el\.textContent = C\.breakPolicyText\(keys, lay\.flat \? null : coName, S\.region\)/.test(src), 'renderPolicy must pass no names in a flat (crew) layout, the active region, and set text, not HTML');
+});
 check('marks explain themselves on click or tap: i, est., note and flag pills open a bubble (hover alone did nothing on phones)', () => {
   ok(/<div id="tipPop" class="tip-pop" role="tooltip" hidden><\/div>/.test(src), 'the shared bubble element is missing');
   ok(/const TIP_SEL = '\.infomark, abbr\.est, \.notemark, \.flag';/.test(src), 'the marks that open the bubble');
@@ -721,7 +730,7 @@ check('full viewer (every company and department granted, not admin): the admin\
   ok(!C.fullViewer(MGR(['trim'], ALL, { active: false })), 'turned off: not a full viewer');
   ok(!C.fullViewer({ active: true, is_admin: true, grants: ALL }), 'an admin is an admin, not a full viewer');
   eq(C.crewsFor(MGR(['trim', 'missing'], ALL), KNOWN).list.map(x => x.id), ['trim'], 'a view whose members did not load is left out, Everyone still works');
-  ok(/function managerMode\(\) \{[^}]*!C\.fullViewer\(v\)/.test(src), 'managerMode must exclude full viewers (they get the grouped Everyone page)');
+  ok(/function managerMode\(\) \{[^}]*!C\.fullViewer\(v, S\.region\)/.test(src), 'managerMode must exclude full viewers (they get the grouped Everyone page), in California only');
   ok(/\$\('adminBtn'\)\.hidden = !\(me && me\.is_admin\)/.test(src), 'the Admin button stays admins-only');
 });
 check('pickCrew: a ?view= link the sign-in may use, else the remembered tab, else Everyone (admin) or the first view (manager)', () => {
@@ -869,7 +878,7 @@ check('Custom date fields: half-typed years are ignored and the fields are never
 check('presets roll over in a tab left open (reload and the visibility / minute checks re-read today)', () => {
   const app = block('ts-app');
   ok(/async function reload\(quiet\) \{\s*rollPreset\(\);/.test(app), 'reload() must start by moving the preset to today');
-  ok(/function rolledPreset\(\) \{[\s\S]*?C\.presetRange\(S\.preset, today\(\)\)/.test(app), 'rolledPreset() recomputes from today()');
+  ok(/function rolledPreset\(\) \{[\s\S]*?C\.presetRange\(S\.preset, today\(\), regionDef\(\)\)/.test(app), 'rolledPreset() recomputes from today() on the active region\'s calendar');
   ok(/visibilitychange[\s\S]{0,300}rolledPreset\(\)/.test(app), 'coming back to the tab checks for a rolled preset');
   ok(/setInterval\(\(\) => \{[\s\S]{0,200}rolledPreset\(\)/.test(app), 'a tab kept on screen checks too');
   eq(C.presetRange('period', '2026-10-10'), { from: '2026-10-10', to: '2026-10-23' }, 'Sat Oct 10 is the next period');
@@ -974,7 +983,8 @@ check('esc() and h`` escape every data value, once', () => {
 // ---------------------------------------------------------------------------------------------
 const NOW = '2026-10-08T18:30:00Z';      // Thu 11:30 AM PDT
 const demo = D.build(NOW);
-const DEMO_VIEW_LABELS = ['Trim Crew', 'Grow Team', 'Ambassadors', 'Office and Drivers'];   // made-up crews, no person's name
+const DEMO_VIEW_LABELS = ['Trim Crew', 'Grow Team', 'Ambassadors', 'Office and Drivers', 'Packing and Distro'];   // made-up crews, no person's name
+const DEMO_CA_VIEWS = 4;   // the first four are California crews; the last is the New York one
 const DAY_COLS = ['id', 'company', 'region', 'employee_uuid', 'employee_name', 'department', 'job_title', 'work_date', 'first_in', 'last_out',
   'shifts', 'span_min', 'worked_min', 'paid_break_min', 'unpaid_break_min', 'reg_min', 'ot_min', 'dt_min', 'ot_src', 'label_src',
   'gusto_total_min', 'approval', 'note', 'flags', 'open', 'hours_only', 'synced_at'];
@@ -1023,8 +1033,8 @@ check('no names in the page except the synthetic demo list (string literals shap
   ok(!leaked.length, 'demo names used outside the demo block: ' + J(leaked));
   ok(!/'[A-Z][a-z]+ View'|"[A-Z][a-z]+ View"|>[A-Z][a-z]+ View</.test(src), 'a hard-coded "<Name> View" label; saved views come from the database');
 });
-check('demo covers all four companies, several departments, every flag, both label sources, open + hours-entered days, OT est + Gusto', () => {
-  eq([...new Set(demo.rows.map(r => r.company))].sort(), ['filifera', 'imperial', 'slane', 'wafgus']);
+check('demo covers all four CA companies and Wizard Trees NY, several departments, every flag, both label sources, open + hours-entered days, OT est + Gusto', () => {
+  eq([...new Set(demo.rows.map(r => r.company))].sort(), ['filifera', 'imperial', 'slane', 'wafgus', 'wtny']);
   ok(new Set(demo.rows.map(r => r.company + '/' + r.department)).size >= 8, 'want 8+ departments');
   ok(demo.rows.some(r => r.department === 'No department'), 'a No department row');
   const codes = new Set(demo.rows.flatMap(r => r.flags.map(f => f.code)));
@@ -1065,7 +1075,7 @@ check('demo rows have exactly the ts_days shape, shifts and breaks shapes', () =
     }
   }
 });
-check('demo arithmetic holds: worked = span - unpaid, break totals, CA OT split, Gusto labels only before the CSV day', () => {
+check('demo arithmetic holds: worked = span - unpaid, break totals, OT split, Gusto labels only before the CSV day', () => {
   for (const r of demo.rows) {
     const closed = r.shifts.filter(s => s.out && !s.hours_only);
     for (const s of closed) eq(s.worked_min, s.span_min - s.breaks.filter(b => !b.paid).reduce((a, b) => a + b.min, 0), 'shift ' + s.id);
@@ -1074,14 +1084,16 @@ check('demo arithmetic holds: worked = span - unpaid, break totals, CA OT split,
     eq(r.unpaid_break_min, r.shifts.flatMap(s => s.breaks).filter(b => !b.paid).reduce((a, b) => a + b.min, 0), 'unpaid ' + r.id);
     if (r.reg_min != null) eq(r.reg_min + r.ot_min + r.dt_min, r.worked_min, 'reg+ot+dt ' + r.id);
     if (r.flags.some(f => f.code === 'gusto_mismatch')) ok(Math.abs(r.gusto_total_min - r.worked_min) > 1, 'mismatch is real');
-    if (r.work_date >= demo.today) ok(r.shifts.every(s => s.breaks.every(b => b.src === 'rule')), 'today has no Gusto labels yet');
-    ok(r.work_date <= demo.today, 'no future rows');
+    const rToday = demo.todays[r.region];   // each row's own region clock (New York's day starts first)
+    if (r.work_date >= rToday) ok(r.shifts.every(s => s.breaks.every(b => b.src === 'rule')), 'today has no Gusto labels yet');
+    ok(r.work_date <= rToday, 'no future rows');
   }
 });
-check('demo views: 3-4 made-up crews over demo people only, valid ids, each with days this pay period', () => {
+check('demo views: 4 made-up California crews and 1 New York crew over demo people only, valid ids, each with days this pay period', () => {
   const vs = C.normViews(demo.views);
-  ok(vs.length >= 3 && vs.length <= 4, vs.length + ' views');
+  eq(vs.length, 5, 'views');
   eq(vs.map(v => v.label), DEMO_VIEW_LABELS, 'labels (in order)');
+  eq(vs.map(v => C.viewRegions(v).join('+')), ['CA', 'CA', 'CA', 'CA', 'NY'], 'regions');
   ok(vs.every(v => C.VIEW_ID_RE.test(v.id)) && new Set(vs.map(v => v.id)).size === vs.length, 'ids');
   const ppl = new Set(demo.people.map(p => p.company + ':' + p.employee_uuid));
   const depts = new Set(demo.people.map(p => p.company + ':' + p.department));
@@ -1212,7 +1224,7 @@ check('phones render cards (By Day, By Employee, flat and grouped); desktop and 
   ok(/\.dhead\{position:sticky;top:env\(safe-area-inset-top,0px\)/.test(src), 'the day header sticks (below the status bar)');
   ok(/document\.addEventListener\('toggle', e => \{[\s\S]{0,260}S\.openCards\.(add|delete)/.test(block('ts-app')), 'opened cards survive a re-render');
   const db = appFn('detailBody');
-  ok(/C\.flagMsg\(f\)/.test(db) && /r\.note/.test(db) && /breaksCell\(r\)/.test(db), 'the detail body writes out flags, the note and the break chips (phones have no tooltips)');
+  ok(/C\.flagMsg\(f, r\.region\)/.test(db) && /r\.note/.test(db) && /breaksCell\(r\)/.test(db), 'the detail body writes out flags, the note and the break chips (phones have no tooltips)');
 });
 check('phone layout rules: compact header with a menu, two control rows, 40px taps, 15px text, 16px inputs, safe areas, no sideways page scroll', () => {
   const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'));
@@ -1301,6 +1313,252 @@ check('sign-in in a home-screen app: an "open in Safari" hint when Google sign-i
   const gis = appFn('showGISButton');
   ok(/click_listener: \(\) => watchSignInStall\(\d+\)/.test(gis) && /safariHint\(true\)/.test(gis), 'a tap that brings no sign-in, or a script that never loads, shows it');
   ok(/Math\.min\(260, \$\('gsi-button'\)\.clientWidth \|\| 260\)/.test(gis), 'button width follows the box');
+});
+
+// ---------------------------------------------------------------------------------------------
+// 13. New York (Wizard Trees NY, company wtny): its own region tab, Eastern clock times, weekly-only
+//     overtime, its own break rule. California must read exactly as before.
+// ---------------------------------------------------------------------------------------------
+const NYR = o => row(Object.assign({ company: 'wtny', dept: 'Distro Hourly' }, o, { extra: Object.assign({ region: 'NY' }, o.extra || {}) }));
+check('regions: California (Pacific) and New York (Eastern); wtny is New York, every CA company is Pacific', () => {
+  eq(C.REGIONS.map(g => [g.key, g.label, g.tz]), [['CA', 'California', 'America/Los_Angeles'], ['NY', 'New York', 'America/New_York']]);
+  eq(C.REGIONS.find(g => g.key === 'NY').companies, ['wtny']);
+  eq(C.COMPANY_TZ, { filifera: 'America/Los_Angeles', slane: 'America/Los_Angeles', wafgus: 'America/Los_Angeles', imperial: 'America/Los_Angeles', wtny: 'America/New_York' });
+  eq(['filifera', 'wtny', 'nobody'].map(k => C.regionOfCompany(k)), ['CA', 'NY', 'CA'], 'unknown companies are California');
+  eq(C.regionOfCompany('newco', [{ key: 'newco', region: 'NY' }]), 'NY', 'a ts_companies row says where a new company is');
+  eq(C.rowTz({ company: 'wtny' }), 'America/New_York');
+  eq(C.rowTz({ company: 'slane', region: 'CA' }), 'America/Los_Angeles');
+  eq(C.rowTz({ company: 'newco', region: 'NY' }), 'America/New_York', 'unknown company: its region\'s zone');
+  eq(C.rowTz({}), 'America/Los_Angeles');
+  eq(C.COMPANY_NAMES.wtny, 'Wizard Trees NY');
+  eq(C.normRow({ id: 'x', company: 'wtny', employee_uuid: 'n', work_date: '2026-10-06' }).region, 'NY', 'a row without a region takes its company\'s');
+  eq(C.normRow({ id: 'x', company: 'filifera', employee_uuid: 'n', work_date: '2026-10-06' }).region, 'CA');
+});
+check('per-row clock: an 8:00 AM Eastern punch shows 8:00 AM on a New York row, and the same instant 5:00 AM on a California row', () => {
+  const inET = '2026-10-06T08:00:00-04:00', outET = '2026-10-06T16:30:00-04:00';
+  const ny = NYR({ uuid: 'n1', name: 'Test Nyla', date: '2026-10-06', extra: { first_in: inET, last_out: outET, shifts: [{ id: 's', in: inET, out: outET, span_min: 510, worked_min: 480, hours_only: false, breaks: [] }] } });
+  const ca = row({ company: 'filifera', uuid: 'c1', name: 'Test Cali', dept: 'Trim', date: '2026-10-06', extra: { first_in: inET, last_out: outET, shifts: [{ id: 's', in: inET, out: outET, span_min: 510, worked_min: 480, hours_only: false, breaks: [] }] } });
+  eq(C.fmtTime(inET, C.rowTz(ny)), '8:00 AM'); eq(C.fmtTime(inET, C.rowTz(ca)), '5:00 AM');
+  eq(C.fmtTime(inET), '5:00 AM', 'no zone given: Los Angeles, as before');
+  eq(C.shiftsText(ny), '8:00 AM - 4:30 PM'); eq(C.shiftsText(ca), '5:00 AM - 1:30 PM');
+  eq(C.fmtClock('2026-10-06T13:04:00-04:00', 'America/New_York'), '1:04');
+  eq(C.fmtTime('2026-12-01T13:05:00Z', 'America/New_York'), '8:05 AM', 'winter, EST');
+  const p = parseCsv(C.buildCsv([ca, ny], { companyName: k => C.COMPANY_NAMES[k] }));
+  eq(p.slice(1).map(c => [c[1], c[5], c[6]]), [['Filifera', '5:00 AM', '1:30 PM'], ['Wizard Trees NY', '8:00 AM', '4:30 PM']], 'CSV First in / Last out per row');
+});
+check('a late-evening Eastern shift stays on its New York date; "today" turns over at New York midnight', () => {
+  eq(C.zDate('2026-10-08T03:30:00Z', 'America/New_York'), '2026-10-07', '11:30 PM EDT is still the 7th');
+  eq(C.fmtTime('2026-10-08T03:30:00Z', 'America/New_York'), '11:30 PM');
+  eq(C.todayIn('America/New_York', new Date('2026-10-08T04:30:00Z')), '2026-10-08', '12:30 AM EDT');
+  eq(C.todayLA(new Date('2026-10-08T04:30:00Z')), '2026-10-07', 'still 9:30 PM in Los Angeles');
+  eq(C.zIso('2026-10-06', 480, 'America/New_York'), '2026-10-06T08:00:00-04:00');
+  eq(C.zIso('2026-12-01', 480, 'America/New_York'), '2026-12-01T08:00:00-05:00');
+  eq(C.zIso('2026-10-06', 1439 + 59 / 60, 'America/New_York'), '2026-10-06T23:59:59-04:00');
+  eq(C.zIso('2026-10-06', 632, C.TZ), C.laIso('2026-10-06', 632), 'laIso is zIso in Los Angeles');
+  // an automatic 11:59:59 PM clock-out counts as midnight on the row's own clock
+  eq(C.gustoMinute('2026-10-06T23:59:59-04:00', 'America/New_York') - C.gustoMinute('2026-10-06T23:00:00-04:00', 'America/New_York'), 60);
+  eq(C.gustoMinute('2026-10-06T23:59:59-04:00') - C.gustoMinute('2026-10-06T23:00:00-04:00'), 59, 'in Los Angeles that instant is 8:59:59 PM, nothing special');
+});
+check('sync times read on the company\'s clock: "Synced 2:20 PM" for New York is 11:20 AM in California', () => {
+  const now = new Date('2026-10-08T18:30:00Z');
+  const ny = { key: 'wtny', region: 'NY', connected: true, last_sync_at: '2026-10-08T18:20:00Z', label_csv_at: '2026-10-08T09:10:00Z' };
+  const ca = { key: 'filifera', region: 'CA', connected: true, last_sync_at: '2026-10-08T18:20:00Z', label_csv_at: '2026-10-08T09:10:00Z' };
+  eq(C.freshness(ny, now).sync, 'Synced 2:20 PM'); eq(C.freshness(ca, now).sync, 'Synced 11:20 AM');
+  eq(C.freshSummary([ny], now).short, 'Synced 2:20');
+  eq(C.freshness(ny, now).labels, 'Break labels from Gusto through Oct 7');
+  eq(C.freshness({ key: 'wtny', connected: true, last_sync_at: '2026-10-08T03:50:00Z' }, new Date('2026-10-08T05:00:00Z')).sync, 'Synced yesterday, 11:50 PM', 'yesterday on the New York calendar');
+});
+check('presets per region: New York periods end Fridays from 2026-03-13 (the same 14-day grid as California), worked out on its own calendar', () => {
+  const NY = C.regionDef('NY');
+  eq([NY.anchorEnd, C.dow(NY.anchorEnd), NY.weekStart], ['2026-03-13', 5, 6]);
+  for (let d = '2026-01-01'; d <= '2027-03-31'; d = C.addDays(d, 1))
+    for (const id of ['period', 'lastperiod', 'week', 'lastweek']) eq(C.presetRange(id, d, 'NY'), C.presetRange(id, d, 'CA'), id + ' ' + d);
+  eq(C.presetRange('period', '2026-10-08', 'NY'), { from: '2026-09-26', to: '2026-10-09' });
+  eq(C.presetRange('period', '2026-10-08'), C.presetRange('period', '2026-10-08', 'CA'), 'no region = California, as before');
+  // Friday 9:30 PM in California is already Saturday in New York: the New York tab is on the next period
+  const t = new Date('2026-10-10T04:30:00Z');
+  eq(C.presetRange('period', C.todayLA(t), 'CA'), { from: '2026-09-26', to: '2026-10-09' });
+  eq(C.presetRange('period', C.todayIn(NY.tz, t), 'NY'), { from: '2026-10-10', to: '2026-10-23' });
+  // and a region with another anchor computes its own periods
+  eq(C.presetRange('period', '2026-10-08', { key: 'XX', anchorEnd: '2026-10-02', weekStart: 6 }), { from: '2026-10-03', to: '2026-10-16' });
+  ok(/function defaultWindow\(\) \{[\s\S]*?C\.regionsPresent\(S\.companies, \[\]\)[\s\S]*?C\.presetRange\('lastperiod', t, g\)/.test(block('ts-app')), 'the first load covers every region\'s last and current period');
+});
+check('break policy line per region: California unchanged, New York one short sentence', () => {
+  const nm = { filifera: 'Filifera', slane: 'Slane', wafgus: 'Waf & Gus', imperial: 'Imperial' };
+  eq(C.breakPolicyText(['wtny'], k => 'Wizard Trees NY', 'NY'), 'Breaks: an unpaid 30-min meal on shifts over 6 hours; breaks of 20 min or less are paid.');
+  eq(C.breakPolicyText(['wtny'], null, 'NY'), 'Breaks: an unpaid 30-min meal on shifts over 6 hours; breaks of 20 min or less are paid.');
+  eq(C.breakPolicyText(['filifera', 'slane', 'wafgus', 'imperial'], k => nm[k], 'CA'), C.breakPolicyText(['filifera', 'slane', 'wafgus', 'imperial'], k => nm[k]), 'CA with or without the region');
+});
+check('New York flags: same codes, New York words (a meal on a shift over 6 hours); the row\'s own msg always wins', () => {
+  eq(C.FLAG_CODES.length, SPEC_FLAGS.length, 'no new codes');
+  eq(C.flagMsg({ code: 'no_meal' }, 'NY'), 'No meal break on a shift over 6 hours');
+  eq(C.flagMsg({ code: 'short_meal' }, 'NY'), 'Meal break under 30 min');
+  eq(C.flagMsg({ code: 'no_meal' }, 'CA'), 'No meal break on a shift over 5 hours');
+  eq(C.flagMsg({ code: 'no_meal' }), 'No meal break on a shift over 5 hours');
+  eq(C.flagMsg({ code: 'no_meal', msg: 'from the producer' }, 'NY'), 'from the producer');
+  eq(C.flagMsg({ code: 'break_open' }, 'NY'), 'Break never ended in Gusto', 'shared rules keep their words');
+  ok(C.flagsHtml([{ code: 'no_meal', sev: 'warn' }], 'NY').html.includes('title="No meal break on a shift over 6 hours"'), 'the pill tooltip');
+  ok(/C\.flagsHtml\(r\.flags, r\.region\)/.test(appFn('flagsCell')) && /flagMsg\(f, r\.region\)/.test(block('ts-core')), 'table cells and the CSV pass the row region');
+});
+// views over both regions (synthetic)
+const NYVIEWS = C.normViews([
+  { id: 'trim', label: 'Test Trim', sort: 10, members: [{ company: 'filifera', department: 'Trim' }] },
+  { id: 'pack', label: 'Test Pack', sort: 20, members: [{ company: 'wtny', department: 'Distro Hourly' }] },
+  { id: 'both', label: 'Test Both', sort: 30, members: [{ company: 'slane', department: 'Harvest' }, { company: 'wtny', employee_uuid: 'n2' }] },
+]);
+const NYMGR = (views, grants, extra) => Object.assign({ email: 'm@wizardtrees.com', active: true, is_admin: false, grants: grants || [], views: C.viewsFor(views, NYVIEWS) }, extra || {});
+const ADMIN = { email: 'a@wizardtrees.com', active: true, is_admin: true, grants: [], views: [] };
+check('view tabs follow the region: a view whose members are all in the other region is not shown there; Everyone is the region\'s companies', () => {
+  eq(C.crewsFor(ADMIN, NYVIEWS, 'CA').list.map(c => c.id), ['trim', 'both']);
+  eq(C.crewsFor(ADMIN, NYVIEWS, 'NY').list.map(c => c.id), ['pack', 'both']);
+  eq(C.crewsFor(ADMIN, NYVIEWS).list.map(c => c.id), ['trim', 'both'], 'no region = California');
+  eq(C.crewsFor(NYMGR(['pack']), NYVIEWS, 'NY').list.map(c => c.id), ['pack']);
+  eq(C.crewsFor(NYMGR(['pack']), NYVIEWS, 'CA').list.map(c => c.id), [], 'not offered in California');
+  eq(C.crewsFor(NYMGR(['trim', 'pack']), NYVIEWS, 'CA').list.map(c => c.id), ['trim']);
+  eq(C.crewsFor(NYMGR(['pack'], [{ company: 'slane', department: '*' }]), NYVIEWS, 'NY').list.map(c => c.id), ['pack'], '"All my people" only where the grants reach');
+  eq(C.crewsFor(NYMGR(['pack'], [{ company: 'wtny', department: 'BA Hourly' }]), NYVIEWS, 'NY').list.map(c => c.id), ['pack', C.ALL_MINE]);
+  eq(C.viewRegions(NYVIEWS[2]), ['CA', 'NY']); eq(C.viewRegions({ members: [] }), ['CA']);
+  const cos = [{ key: 'filifera', region: 'CA' }, { key: 'wtny', region: 'NY' }];
+  eq(C.visibleCompanyKeys(ADMIN, cos, [], 'NY', []), ['wtny'], 'Everyone in New York = its companies');
+  eq(C.visibleCompanyKeys(ADMIN, cos, [], 'CA', []), ['filifera']);
+  const rows = [NYR({ uuid: 'n1', name: 'Test Nyla', date: '2026-10-06' }), row({ company: 'filifera', uuid: 'c1', name: 'Test Cali', dept: 'Trim', date: '2026-10-06' })];
+  eq(C.filterRows(rows, { region: 'NY' }).map(r => r.company), ['wtny']);
+  eq(C.filterRows(rows, { region: 'CA' }).map(r => r.company), ['filifera']);
+});
+check('region tabs: an admin gets New York once its company or rows exist; anyone else the regions their grants, views and rows reach', () => {
+  const caCos = ['filifera', 'slane', 'wafgus', 'imperial'].map(key => ({ key, region: 'CA' }));
+  const withNY = caCos.concat([{ key: 'wtny', region: 'NY' }]);
+  eq(C.viewerRegions(ADMIN, caCos, []), ['CA'], 'before the wtny row: California only, exactly as today');
+  eq(C.viewerRegions(ADMIN, withNY, []), ['CA', 'NY']);
+  eq(C.viewerRegions(ADMIN, caCos, [NYR({ uuid: 'n1', name: 'Test Nyla', date: '2026-10-06' })]), ['CA', 'NY'], 'or once a New York row loads');
+  eq(C.regionsPresent([], []), ['CA']);
+  eq(C.viewerRegions(NYMGR(['pack']), withNY, []), ['NY'], 'a New York-only manager');
+  eq(C.viewerRegions(NYMGR(['trim']), withNY, []), ['CA']);
+  eq(C.viewerRegions(NYMGR(['trim', 'pack']), withNY, []), ['CA', 'NY']);
+  eq(C.viewerRegions(NYMGR([], [{ company: 'wtny', department: '*' }]), withNY, []), ['NY'], 'a New York grant');
+  eq(C.viewerRegions(NYMGR([], [{ company: 'slane', department: 'Harvest' }]), withNY, []), ['CA']);
+  eq(C.viewerRegions(NYMGR([], []), withNY, [NYR({ uuid: 'n1', name: 'Test Nyla', date: '2026-10-06' })]), ['NY'], 'rows the server let through');
+  eq(C.viewerRegions(NYMGR([], []), withNY, []), ['CA'], 'nothing yet: California (the "nothing shared" page)');
+  eq(C.viewerRegions(NYMGR(['pack'], [], { active: false }), withNY, []), ['CA'], 'turned off');
+  eq(C.pickRegion(['NY'], ['CA']), 'NY', 'a New York-only sign-in lands on New York, whatever was remembered');
+  eq(C.pickRegion(['CA'], ['NY']), 'CA', 'and a California-only one on California');
+  eq(C.pickRegion(['CA', 'NY'], ['', 'NY']), 'NY', 'an admin gets the region remembered in this browser');
+  eq(C.pickRegion(['CA', 'NY'], ['NY', 'CA']), 'NY', 'a ?view= link\'s region comes first');
+  eq(C.pickRegion(['CA', 'NY'], []), 'CA');
+  eq(C.pickRegion([], []), 'CA');
+});
+check('full viewers ("*", "*") stay California: "*" is every CA company (the server rule), never New York', () => {
+  const ALL = [{ company: '*', department: '*' }];
+  const fv = NYMGR([], ALL);
+  ok(C.fullViewer(fv) && C.fullViewer(fv, 'CA') && !C.fullViewer(fv, 'NY'), 'a full viewer in California only');
+  const withNY = [{ key: 'filifera', region: 'CA' }, { key: 'wtny', region: 'NY' }];
+  eq(C.viewerRegions(fv, withNY, []), ['CA'], 'no New York tab');
+  eq(C.viewerRegions(NYMGR(['pack'], ALL), withNY, []), ['CA', 'NY'], 'unless they are also given a New York view');
+  ok(!C.canView(fv, 'wtny', 'Distro Hourly', 'n1', 'NY') && !C.canView(fv, 'wtny', 'Distro Hourly', 'n1'), 'canView: "*" never reaches a New York row');
+  ok(C.canView(fv, 'filifera', 'Trim', 'c1', 'CA') && C.canView(fv, 'imperial', 'Trim'), 'every California row');
+  ok(!C.canView(NYMGR([], [{ company: '*', department: 'Distro Hourly' }]), 'wtny', 'Distro Hourly', 'n1', 'NY'), 'nor does a "*" company with one department');
+  ok(C.canView(NYMGR([], [{ company: 'wtny', department: '*' }]), 'wtny', 'Distro Hourly', 'n1', 'NY'), 'a grant that names wtny does');
+  const rows = [NYR({ uuid: 'n1', name: 'Test Nyla', date: '2026-10-06' }), row({ company: 'filifera', uuid: 'c1', name: 'Test Cali', dept: 'Trim', date: '2026-10-06' })];
+  eq(C.filterRows(rows, { viewer: fv }).map(r => r.company), ['filifera']);
+  eq(C.visibleCompanyKeys(fv, withNY, [], 'NY', [{ company: 'wtny', department: 'Distro Hourly', active: true }]), [], 'no New York company chips');
+  eq(C.visibleCompanyKeys(NYMGR([], [{ company: '*', department: 'Distro Hourly' }]), withNY, [], 'NY', [{ company: 'wtny', department: 'Distro Hourly', active: true }]), []);
+  eq(C.visibleCompanyKeys(fv, withNY, [], 'CA', []), ['filifera']);
+  const c = C.crewsFor(NYMGR(['pack', 'trim'], ALL), NYVIEWS, 'NY');
+  eq([c.everyone, c.list.map(x => x.id)], [false, ['pack']], 'in New York they are a manager with their New York views');
+  eq(C.grantsIn(ALL, 'NY'), []); eq(C.grantsIn(ALL, 'CA'), ALL);
+});
+check('"All CA" plus a New York grant keeps both (the server does): normalised, described, regions, tabs and rows', () => {
+  const both = [{ company: '*', department: '*' }, { company: 'wtny', department: '*' }];
+  eq(C.normalizeGrants(both), both, 'the New York grant is not swallowed by "All CA"');
+  eq(C.normalizeGrants([{ company: 'wtny', department: 'BA Hourly' }, { company: 'slane', department: 'Harvest' }, { company: '*', department: 'Trim' },
+    { company: 'wtny', department: '*' }, { company: '*', department: '*' }]), both, 'California grants it covers go, New York ones stay (whole company wins)');
+  eq(C.normalizeGrants([{ company: 'wtny', department: 'BA Hourly' }, { company: '*', department: '*' }]),
+    [{ company: '*', department: '*' }, { company: 'wtny', department: 'BA Hourly' }]);
+  eq(C.normalizeGrants([{ company: '*', department: '*' }, { company: 'filifera', department: '*' }]), [{ company: '*', department: '*' }], 'California only: as before');
+  eq(C.describeGrants(both), 'All CA · Wizard Trees NY: all departments');
+  eq(C.describeGrants([{ company: '*', department: '*' }, { company: 'wtny', department: 'Distro Hourly' }, { company: 'wtny', department: 'BA Hourly' }]),
+    'All CA · Wizard Trees NY: BA Hourly, Distro Hourly');
+  eq(C.describeAccess({ is_admin: false, views: [], grants: both }, NYVIEWS), 'All CA · Wizard Trees NY: all departments', 'the sign-ins list and the preview bar');
+  const fv = NYMGR([], both), withNY = [{ key: 'filifera', region: 'CA' }, { key: 'wtny', region: 'NY' }];
+  ok(C.fullViewer(fv, 'CA') && !C.fullViewer(fv, 'NY'), 'still the full page in California, a manager in New York');
+  eq(C.viewerRegions(fv, withNY, []), ['CA', 'NY'], 'both region tabs');
+  eq(C.grantsIn(both, 'NY'), [both[1]]); eq(C.grantsIn(both, 'CA'), [both[0]]);
+  eq(C.crewsFor(NYMGR(['pack'], both), NYVIEWS, 'NY').list.map(c => c.id), ['pack', C.ALL_MINE], '"All my people" in New York');
+  ok(C.canView(fv, 'wtny', 'Distro Hourly', 'n1', 'NY') && C.canView(fv, 'filifera', 'Trim', 'c1', 'CA'), 'rows in both regions');
+  ok(/const grants = C\.normalizeGrants\(\[\.\.\.ed\.grants\]\.map\(C\.grantFromKey\)\);/.test(appFn('saveEditor')), 'Save sends the normalised grants');
+});
+check('demo New York: Wizard Trees NY with made-up people in Cultivation Hourly, BA Hourly and Distro Hourly, Eastern punches, a New York view and a New York-only sign-in', () => {
+  const co = demo.companies.find(c => c.key === 'wtny');
+  ok(co && co.region === 'NY' && co.connected && co.name === 'Wizard Trees NY', 'the demo company');
+  const ny = demo.rows.filter(r => r.company === 'wtny');
+  ok(ny.length > 20 && ny.every(r => r.region === 'NY'), 'New York rows');
+  eq([...new Set(ny.map(r => r.department))].sort(), ['BA Hourly', 'Cultivation Hourly', 'Distro Hourly']);
+  ok(ny.every(r => D.NAMES.includes(r.employee_name)), 'made-up names from the roster');
+  ok(ny.every(r => r.shifts.every(s => /-0[45]:00$/.test(s.in))), 'punches carry an Eastern offset');
+  ok(demo.rows.filter(r => r.region === 'CA').every(r => r.shifts.every(s => /-0[78]:00$/.test(s.in))), 'California punches stay Pacific');
+  ok(ny.some(r => r.shifts.some(s => s.out && C.zMinutes(s.out, 'America/New_York') >= 23 * 60 && C.zDate(s.out, 'America/New_York') === r.work_date)), 'a late-evening Eastern shift on its own date');
+  ok(ny.some(r => r.flags.some(f => f.code === 'no_meal' && f.msg === 'No meal break on a shift over 6 hours')), 'a New York no_meal');
+  ok(ny.some(r => r.flags.some(f => f.code === 'short_meal')), 'a New York short_meal');
+  // the producer's New York meal rule: one warning at most, and none once a 30-min meal (or 30 min off the clock) exists
+  const has = (r, c) => r.flags.some(f => f.code === c);
+  ok(ny.every(r => !(has(r, 'no_meal') && has(r, 'short_meal'))), 'never both no_meal and short_meal');
+  ok(ny.every(r => !(has(r, 'no_meal') || has(r, 'short_meal')) || (r.worked_min > 360 &&
+    !r.shifts.some(s => s.breaks.some(b => b.kind === 'meal' && !b.open && b.min >= 30)) && !C.shiftGaps(r.shifts, 'America/New_York').some(g => g.min >= 30))),
+    'a meal warning only on a shift over 6 hours with no 30-min meal');
+  ok(ny.every(r => !has(r, 'short_meal') || r.shifts.some(s => s.breaks.some(b => b.kind === 'meal' && !b.open))), 'short_meal only when there was a meal');
+  const quick = ny.find(r => r.employee_name === 'Clementine Hobnail' && r.note === 'Quick lunch, flower room move');
+  ok(quick && has(quick, 'short_meal') && !has(quick, 'no_meal'), 'the quick-lunch day: only a 25-min meal, short_meal');
+  ok(ny.some(r => r.flags.some(f => f.code === 'missed_out')), 'a New York missed clock-out');
+  ok(ny.every(r => !r.flags.some(f => ['late_meal', 'no_second_meal', 'few_rest', 'short_rest'].includes(f.code))), 'no California-only flags on New York rows');
+  ok(ny.every(r => r.reg_min == null || (r.dt_min === 0 && r.reg_min + r.ot_min === r.worked_min)), 'no double time, reg + OT = worked');
+  // weekly only: in each person's Sat-Fri week, OT starts only once 40 regular hours are used up
+  const weeks = new Map();
+  for (const r of ny) if (r.reg_min != null) { const k = r.employee_uuid + C.weekStart(r.work_date); if (!weeks.has(k)) weeks.set(k, []); weeks.get(k).push(r); }
+  for (const [k, ds] of weeks) {
+    ds.sort((a, b) => a.work_date < b.work_date ? -1 : 1);
+    let reg = 0;
+    for (const d of ds) { ok(!d.ot_min || reg + d.reg_min === 2400, k + ' OT before 40 h'); reg += d.reg_min; }
+    ok(reg <= 2400, k + ' over 40 regular hours');
+  }
+  ok(ny.some(r => r.ot_min > 0 && r.worked_min <= 600), 'weekly OT on an ordinary-length day');
+  ok(ny.some(r => r.worked_min > 480 && !r.ot_min), 'no daily OT over 8 hours');
+  const nyView = C.normViews(demo.views).find(v => v.id === 'packing-and-distro');
+  ok(nyView && C.viewInRegion(nyView, 'NY') && !C.viewInRegion(nyView, 'CA'), 'the New York view');
+  const lead = demo.access.find(a => a.email === 'ny.lead@wizardtrees.com');
+  const as = Object.assign({}, lead, { views: C.viewsFor(lead.views, C.normViews(demo.views)) });
+  eq(C.viewerRegions(as, demo.companies, []), ['NY'], 'the New York lead lands on New York');
+  ok(C.filterRows(demo.rows, { viewer: as }).every(r => r.region === 'NY') && C.filterRows(demo.rows, { viewer: as }).length > 0, 'and sees only New York people');
+  eq(C.viewerRegions(demo.me, demo.companies, demo.rows), ['CA', 'NY'], 'the demo admin gets both tabs');
+  const ops = demo.access.find(a => a.email.startsWith('ops.manager@'));
+  eq(C.viewerRegions(Object.assign({}, ops, { views: [] }), demo.companies, []), ['CA'], 'the demo full viewer stays California');
+  const late = D.build('2026-10-10T04:30:00Z');   // Friday 9:30 PM Pacific, Saturday 12:30 AM Eastern
+  eq(late.todays, { CA: '2026-10-09', NY: '2026-10-10' }, 'the New York day has already turned');
+  ok(late.rows.every(r => r.work_date <= late.todays[r.region]) && late.rows.some(r => r.region === 'NY' && r.work_date === '2026-10-09'), 'each region\'s rows run to its own today');
+});
+check('page: region tabs from the sign-in, every clock time on its row\'s zone, region-aware tips, print and admin', () => {
+  const app = block('ts-app');
+  const rh = appFn('renderHeader');
+  ok(/const regs = regionKeys\(\);/.test(rh) && /C\.REGIONS\.filter\(r => regs\.includes\(r\.key\)\)/.test(rh) && /classList\.toggle\('single', regs\.length < 2\)/.test(rh), 'region tabs only for the regions this sign-in has');
+  ok(/return C\.viewerRegions\(viewer\(\), S\.companies, rows\);/.test(appFn('regionKeys')), 'regionKeys() goes through C.viewerRegions');
+  ok(/const today = \(\) => C\.todayIn\(regionDef\(\)\.tz, new Date\(\)\);/.test(app), 'today() is the active region\'s date');
+  // every clock time the page itself formats names a zone
+  const calls = [...app.matchAll(/C\.fmt(Time|Clock)\(([^()]*(?:\([^()]*\))?[^()]*)\)/g)].map(m => m[2]);
+  ok(calls.length >= 8 && calls.every(a => /,\s*tz\s*$/.test(a)), 'a clock time formatted without its row zone: ' + J(calls.filter(a => !/,\s*tz\s*$/.test(a))));
+  ok(/tz = C\.rowTz\(r\)/.test(appFn('inOutCells')) && /const tz = C\.rowTz\(r\);/.test(appFn('breaksCell')) && /C\.shiftGaps\(r\.shifts, tz\)/.test(appFn('breaksCell')), 'in/out and break chips on the row clock');
+  ok(/r\.work_date < rowToday\(r\)/.test(appFn('inOutCells')) && /r\.work_date < rowToday\(r\)/.test(appFn('timesLine')), 'the stale clocked-in pill uses the row\'s own today');
+  ok(/estMark\(otTip\(r\.region\)\)/.test(appFn('otCell')) && /New York rules: over 40 h in the Saturday to Friday workweek is OT/.test(app), 'the est. OT tip says New York rules on a New York row');
+  ok(/Times are \$\{regionDef\(\)\.tzName\}\./.test(appFn('renderPrintHead')), 'print says Pacific or Eastern');
+  ok(/S\.region = C\.pickRegion\(regionKeys\(\), \[linkRegion\(\), S\.viewer \? '' : store\.get\('region', ''\)\]\);/.test(appFn('startApp')), 'start: a link\'s region, else the remembered one, else the first (NY-only lands on NY)');
+  ok(/C\.presetRange\('period', today\(\), regionDef\(\)\)/.test(appFn('startApp')), 'the opening pay period is on that region\'s calendar');
+  ok(/if \(!pick\.fromLink\) return;\s*(\/\/[^\n]*\n\s*)?if \(!S\.viewer\) \{ store\.set\('savedView', S\.crew\); store\.set\('region', S\.region\); \}/.test(appFn('applyLinkView')),
+    'a ?view= link remembers its view and its region tab (not in a preview), so a reload lands on both');
+  ok(/case 'region': enterRegion\(d\.region\); break;/.test(app) && /regionRange\(\)/.test(appFn('enterRegion')) && /store\.set\('region'/.test(appFn('enterRegion')), 'a region tab moves the presets and is remembered');
+  ok(/S\.region = C\.pickRegion\(regionKeys\(\), \[S\.region\]\)/.test(appFn('startPreview')) && /S\.regionBeforePreview/.test(appFn('exitPreview')), 'Preview of a New York-only sign-in opens New York; Exit preview goes back');
+  const ed = appFn('editorHtml');
+  ok(/const cov = allCA && co\.region === 'CA';/.test(ed), '"All CA companies" never covers New York in the grants editor');
+  ok(/C\.regionsPresent\(S\.companies, \[\.\.\.S\.rows\.values\(\)\]\)/.test(appFn('adminCompanyKeys')) && /adminCompanyKeys\(\)/.test(appFn('viewEditorHtml')), 'the admin editors list every region\'s companies (only California until New York exists)');
+  ok(/\.bar\.regions2 #regionTabs\{order:9;flex:1 1 100%\}/.test(src) && /\$\('topBar'\)\.classList\.toggle\('regions2', regs\.length > 1\)/.test(rh), 'on a phone two region tabs get their own row');
+  ok(/if \(!regs\.includes\(S\.region\)\) \{ S\.region = regs\[0\];/.test(appFn('render')), 'render never shows a region this sign-in does not have');
 });
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name

@@ -143,6 +143,7 @@
   /* Flagged only and More wrap together, so More never sits alone on a line */
   .ctl-tail{display:flex;align-items:center;gap:8px 10px;flex:1 0 auto;justify-content:space-between}
 
+  .policy{margin:2px 2px 12px;font-size:13px;line-height:1.45;color:var(--muted)}
   .loaderr{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;margin:8px 0;
     border:1px solid var(--warn-line);background:rgba(239,77,86,.08);border-radius:12px;color:#ffc2bd;font-size:13px}
 
@@ -548,6 +549,10 @@
     .brand-name .bn-long{display:none}
     .brand-name .bn-short{display:inline}
     #regionTabs.single{display:none}
+    /* two regions (an admin): California | New York get their own full-width row under the header row */
+    .bar.regions2{flex-wrap:wrap;row-gap:8px}
+    .bar.regions2 #regionTabs{order:9;flex:1 1 100%}
+    .bar.regions2 #regionTabs .tab{flex:1 1 0;min-height:40px;font-size:14.5px;padding:0 10px}
     .freshbtn{min-height:40px;padding:0 10px;font-size:13.5px;border-color:var(--line);background:var(--panel2)}
     .freshbtn .fr-long{display:none}
     .freshbtn .fr-short{display:inline}
@@ -704,7 +709,7 @@
 
 <header id="top">
   <div class="banner demo" id="demoBar" hidden><span><b>Demo data, not real timesheets.</b> Every name and hour on this page is made up. Changes in Admin stay in this tab.</span><button type="button" class="btn sm" id="demoMgrBtn" data-act="demo-manager" title="See the page the way a manager with one saved view sees it">Preview as a manager</button></div>
-  <div class="bar">
+  <div class="bar" id="topBar">
     <div class="brand">
       <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></div>
       <div class="brand-txt"><b class="brand-name"><span class="bn-long">Manager Gusto Timesheets</span><span class="bn-short">Timesheets</span></b><span class="sub" id="brandSub">Wizard Trees · CA</span></div>
@@ -792,6 +797,7 @@
     </div>
   </div>
 
+  <p class="policy" id="policyNote" hidden></p>
   <div class="loaderr" id="loadErr" hidden></div>
   <div id="content"></div>
 </main>
@@ -818,19 +824,42 @@
 <script id="ts-core">
 /* Manager Gusto Timesheets core: the pure logic, shared with tests/timesheets-check.mjs (run via vm).
    No DOM in this block. Dates are 'YYYY-MM-DD' strings and calendar math runs in UTC, so daylight
-   saving never moves a day. Clock times always render in America/Los_Angeles, never the viewer's zone. */
+   saving never moves a day. Clock times render in the row's company time zone (California companies in
+   America/Los_Angeles, Wizard Trees NY in America/New_York), never the viewer's zone. */
 (function (root) {
   'use strict';
-  const TZ = 'America/Los_Angeles';
+  const TZ = 'America/Los_Angeles';         // California, and the default for anything unknown
   const PERIOD_ANCHOR_END = '2025-04-11';   // a Friday. Hourly pay periods end here + 14k days (Sat to Fri)
   const WEEK_START_DOW = 6;                 // workweek starts Saturday (JS getDay 6)
   const DAY_MS = 86400000;
   const NO_DEPT = 'No department';
+  // Each region: its time zone, its hourly pay schedule (periods end on anchorEnd + 14k days) and workweek.
+  // New York (Wizard Trees NY, Gusto "Wizard Trees NY LLC"): periods end Fridays from 2026-03-13, the same
+  // 14-day grid as California, and its Gusto workweek runs Saturday to Friday too.
   const REGIONS = [
-    { key: 'CA', label: 'California', companies: ['filifera', 'slane', 'wafgus', 'imperial'] },
+    { key: 'CA', label: 'California', short: 'CA', tz: TZ, tzName: 'Pacific', rules: 'California',
+      anchorEnd: PERIOD_ANCHOR_END, weekStart: WEEK_START_DOW, companies: ['filifera', 'slane', 'wafgus', 'imperial'] },
+    { key: 'NY', label: 'New York', short: 'NY', tz: 'America/New_York', tzName: 'Eastern', rules: 'New York',
+      anchorEnd: '2026-03-13', weekStart: 6, companies: ['wtny'] },
   ];
-  const COMPANY_ORDER = ['filifera', 'slane', 'wafgus', 'imperial'];
-  const COMPANY_NAMES = { filifera: 'Filifera', slane: 'Slane', wafgus: 'Waf & Gus', imperial: 'Imperial' };
+  const COMPANY_ORDER = ['filifera', 'slane', 'wafgus', 'imperial', 'wtny'];
+  const COMPANY_NAMES = { filifera: 'Filifera', slane: 'Slane', wafgus: 'Waf & Gus', imperial: 'Imperial', wtny: 'Wizard Trees NY' };
+  // company -> region and time zone, from the region lists above; a company not listed falls back to its
+  // row's (or ts_companies row's) region, then to California
+  const COMPANY_REGION = {}, COMPANY_TZ = {};
+  for (const g of REGIONS) for (const k of g.companies) { COMPANY_REGION[k] = g.key; COMPANY_TZ[k] = g.tz; }
+  function regionDef(reg) {
+    const k = reg && typeof reg === 'object' ? reg.key : reg;
+    return REGIONS.find(g => g.key === k) || (reg && typeof reg === 'object' ? reg : REGIONS[0]);
+  }
+  function regionOfCompany(key, companies) {
+    const c = (companies || []).find(x => x && x.key === key);
+    if (c && c.region && REGIONS.some(g => g.key === c.region)) return c.region;
+    return COMPANY_REGION[key] || 'CA';
+  }
+  // the zone a row's clock times are shown in: its company's, else its region's
+  function rowTz(r) { return (r && COMPANY_TZ[r.company]) || regionDef(r && r.region).tz; }
+  function companyTz(c) { return (c && COMPANY_TZ[c.key]) || regionDef(c && c.region).tz; }
   const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -853,10 +882,11 @@
     return out;
   }
 
-  /* ---------- pay periods, workweeks, presets ---------- */
-  function payPeriodFor(iso) {
-    const k = Math.ceil(daysBetween(PERIOD_ANCHOR_END, iso) / 14);
-    const to = addDays(PERIOD_ANCHOR_END, 14 * k);
+  /* ---------- pay periods, workweeks, presets (per region) ---------- */
+  function payPeriodFor(iso, anchorEnd) {
+    const a = anchorEnd || PERIOD_ANCHOR_END;
+    const k = Math.ceil(daysBetween(a, iso) / 14);
+    const to = addDays(a, 14 * k);
     return { from: addDays(to, -13), to };
   }
   function weekStart(iso, startDow) {
@@ -871,12 +901,14 @@
     { id: 'lastweek', label: 'Last week', short: 'Last week' },
     { id: 'custom', label: 'Custom', short: 'Custom' },
   ];
-  function presetRange(id, today) {
+  // reg: a region key or object (default California); today is that region's own date (todayIn)
+  function presetRange(id, today, reg) {
+    const g = regionDef(reg), a = g.anchorEnd, w = g.weekStart;
     switch (id) {
-      case 'period': return payPeriodFor(today);
-      case 'lastperiod': return payPeriodFor(addDays(payPeriodFor(today).from, -1));
-      case 'week': return weekFor(today);
-      case 'lastweek': return weekFor(addDays(weekStart(today), -1));
+      case 'period': return payPeriodFor(today, a);
+      case 'lastperiod': return payPeriodFor(addDays(payPeriodFor(today, a).from, -1), a);
+      case 'week': return weekFor(today, w);
+      case 'lastweek': return weekFor(addDays(weekStart(today, w), -1), w);
       default: return null;
     }
   }
@@ -889,35 +921,45 @@
     return { from: a, to: b, clamped };
   }
 
-  /* ---------- clock times in Los Angeles ---------- */
-  let partsFmt = null;
-  function laParts(t) {
+  /* ---------- clock times in a company's zone (tz omitted = Los Angeles) ---------- */
+  const partsFmts = new Map();
+  function zParts(t, tz) {
     if (t == null || t === '') return null;
     const d = t instanceof Date ? t : new Date(t);
     if (isNaN(d.getTime())) return null;
-    partsFmt = partsFmt || new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: '2-digit',
-      day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+    const z = tz || TZ;
+    let f = partsFmts.get(z);
+    if (!f) {
+      f = new Intl.DateTimeFormat('en-US', { timeZone: z, year: 'numeric', month: '2-digit',
+        day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
+      partsFmts.set(z, f);
+    }
     const p = {};
-    for (const x of partsFmt.formatToParts(d)) p[x.type] = x.value;
+    for (const x of f.formatToParts(d)) p[x.type] = x.value;
     return { date: p.year + '-' + p.month + '-' + p.day, h: (+p.hour) % 24, m: +p.minute, s: +p.second };
   }
-  function laDate(t) { const p = laParts(t); return p ? p.date : ''; }
-  function todayLA(now) { return laDate(now == null ? new Date() : now); }
-  function laMinutes(t) { const p = laParts(t); return p ? p.h * 60 + p.m + p.s / 60 : null; }
-  function fmtTime(t) {                     // "10:32 AM"
-    const p = laParts(t); if (!p) return '';
+  function laParts(t) { return zParts(t, TZ); }
+  function zDate(t, tz) { const p = zParts(t, tz); return p ? p.date : ''; }
+  function laDate(t) { return zDate(t, TZ); }
+  function todayIn(tz, now) { return zDate(now == null ? new Date() : now, tz); }
+  function todayLA(now) { return todayIn(TZ, now); }
+  function zMinutes(t, tz) { const p = zParts(t, tz); return p ? p.h * 60 + p.m + p.s / 60 : null; }
+  function laMinutes(t) { return zMinutes(t, TZ); }
+  function fmtTime(t, tz) {                 // "10:32 AM"
+    const p = zParts(t, tz); if (!p) return '';
     return ((p.h % 12) || 12) + ':' + pad2(p.m) + ' ' + (p.h < 12 ? 'AM' : 'PM');
   }
-  function fmtClock(t) {                    // "10:32" (break chips; the In/Out columns carry AM/PM)
-    const p = laParts(t); if (!p) return '';
+  function fmtClock(t, tz) {                // "10:32" (break chips; the In/Out columns carry AM/PM)
+    const p = zParts(t, tz); if (!p) return '';
     return ((p.h % 12) || 12) + ':' + pad2(p.m);
   }
-  // LA wall clock (date + minutes after midnight) to an ISO string with the right offset (-07:00 or -08:00)
-  function laIso(date, minutes) {
+  // wall clock in a zone (date + minutes after midnight) to an ISO string with that moment's offset
+  // (Los Angeles -07:00 or -08:00, New York -04:00 or -05:00)
+  function zIso(date, minutes, tz) {
     const wall = utcOf(date) + Math.round(minutes * 60000);
     let t = wall + 8 * 3600000;
     for (let i = 0; i < 3; i++) {
-      const p = laParts(t);
+      const p = zParts(t, tz);
       const got = utcOf(p.date) + (p.h * 3600 + p.m * 60 + p.s) * 1000;
       if (got === wall) break;
       t += wall - got;
@@ -926,6 +968,7 @@
     return isoOf(wall) + 'T' + pad2(w.getUTCHours()) + ':' + pad2(w.getUTCMinutes()) + ':' + pad2(w.getUTCSeconds()) +
       (off < 0 ? '-' : '+') + pad2(Math.floor(a / 60)) + ':' + pad2(a % 60);
   }
+  function laIso(date, minutes) { return zIso(date, minutes, TZ); }
 
   /* ---------- calendar labels ---------- */
   function fmtDay(iso) {                    // "Mon, Oct 6"
@@ -984,8 +1027,19 @@
     gusto_mismatch: { label: 'Differs from Gusto', msg: "Hours differ from Gusto's total" },
   };
   const FLAG_CODES = Object.keys(FLAGS);
+  // New York uses the same codes with its own rule (a meal of 30 min on a shift over 6 hours, no rest
+  // breaks required, weekly overtime only). The producer writes each row's own msg, which always wins;
+  // these are the fallbacks for a row without one.
+  const REGION_FLAG_MSGS = {
+    NY: { no_meal: 'No meal break on a shift over 6 hours', short_meal: 'Meal break under 30 min' },
+  };
   function flagLabel(f) { const d = f && FLAGS[f.code]; return d ? d.label : String((f && f.code) || 'flag').replace(/_/g, ' '); }
-  function flagMsg(f) { return (f && f.msg) || (f && FLAGS[f.code] && FLAGS[f.code].msg) || flagLabel(f); }
+  function flagMsg(f, region) {
+    if (f && f.msg) return f.msg;
+    const ov = region && REGION_FLAG_MSGS[region];
+    if (f && ov && ov[f.code]) return ov[f.code];
+    return (f && FLAGS[f.code] && FLAGS[f.code].msg) || flagLabel(f);
+  }
   function flagSev(f) {
     if (f && (f.sev === 'warn' || f.sev === 'info')) return f.sev;
     return (f && FLAGS[f.code] && FLAGS[f.code].sev) || 'warn';
@@ -1004,7 +1058,7 @@
     // an hours-entered day has placeholder clock times, so "over 14 hours" never applies to it
     if (r.hours_only) flags = flags.filter(f => !f || f.code !== 'long_day');
     return Object.assign({}, r, {
-      region: r.region || 'CA',
+      region: r.region || regionOfCompany(r.company),
       department: r.department || NO_DEPT,
       shifts: Array.isArray(r.shifts) ? r.shifts : [],
       flags,
@@ -1167,19 +1221,22 @@
      view given to it has the row's person (company + employee_uuid) or the row's department (company +
      department) as a member. viewer.views are view objects with members (see viewsFor); a view whose
      members are not known here adds nothing. A department of '*' or one starting with '@uuid:' never
-     matches a view's department member, and an '@uuid:' grant department matches nothing (both reserved). */
+     matches a view's department member, and an '@uuid:' grant department matches nothing (both reserved).
+     A '*' company grant is every CALIFORNIA company (the server rule: ts_companies.region = 'CA'), so it
+     never reaches New York; region = the row's region (else the company's). */
   const RESERVED_DEPT = d => d === '*' || String(d).slice(0, 6) === '@uuid:';
   function viewMemberHit(view, company, uuid, department) {
     const d = department || NO_DEPT;
     return !!view && view.known !== false && (view.members || []).some(m => m && m.company === company &&
       (m.employee_uuid ? uuid != null && m.employee_uuid === String(uuid) : !RESERVED_DEPT(m.department) && m.department === d));
   }
-  function canView(viewer, company, department, uuid) {
+  function canView(viewer, company, department, uuid, region) {
     if (!viewer || viewer.active === false) return false;
     if (viewer.is_admin) return true;
     if (viewer.active !== true) return false;
+    const ca = (region || regionOfCompany(company)) === 'CA';
     if ((viewer.grants || []).some(g => g && String(g.department).slice(0, 6) !== '@uuid:' &&
-          (g.company === company || g.company === '*') && (g.department === department || g.department === '*'))) return true;
+          (g.company === company || (g.company === '*' && ca)) && (g.department === department || g.department === '*'))) return true;
     return (viewer.views || []).some(v => viewMemberHit(v, company, uuid, department));
   }
   function regionCompanyKeys(companies, regionKey) {
@@ -1188,6 +1245,40 @@
     for (const c of companies || []) if ((c.region || 'CA') === reg.key) keys.add(c.key);
     return [...keys].sort(cmpCompany);
   }
+  /* ---------- regions: which ones a sign-in gets as tabs ----------
+     California is always there. Another region (New York) exists once a ts_companies row or a loaded day
+     row says so (the wtny company row lands before its first sync). */
+  function regionsPresent(companies, rows) {
+    const have = new Set(['CA']);
+    for (const c of companies || []) if (c && c.key) have.add(c.region || regionOfCompany(c.key));
+    for (const r of rows || []) if (r) have.add(r.region || regionOfCompany(r.company));
+    return REGIONS.filter(g => have.has(g.key)).map(g => g.key);
+  }
+  // An admin: every region that exists. Anyone else: the regions their grants, views and rows reach. A '*'
+  // company grant (a full viewer) reaches California only, like the server. Nothing at all: California.
+  function viewerRegions(viewer, companies, rows) {
+    if (!viewer || viewer.active === false) return ['CA'];
+    if (viewer.is_admin) return regionsPresent(companies, rows);
+    const have = new Set();
+    for (const g of normalizeGrants(viewer.grants)) if (String(g.department).slice(0, 6) !== '@uuid:') have.add(g.company === '*' ? 'CA' : regionOfCompany(g.company, companies));
+    for (const v of viewer.views || []) if (v && v.known !== false) for (const m of v.members || []) if (m && m.company) have.add(regionOfCompany(m.company, companies));
+    for (const r of rows || []) if (r) have.add(r.region || regionOfCompany(r.company, companies));
+    const list = REGIONS.filter(g => have.has(g.key)).map(g => g.key);
+    return list.length ? list : ['CA'];
+  }
+  // the tab that opens: the first wanted region this sign-in has (a ?view= link's region, the one
+  // remembered in this browser), else its first region. A sign-in that is only New York lands on New York.
+  function pickRegion(regions, wants) {
+    const list = regions && regions.length ? regions : ['CA'];
+    for (const w of wants || []) if (w && list.includes(w)) return w;
+    return list[0];
+  }
+  // the regions a saved view's members are in; a view with no members counts as California
+  function viewRegions(view, companies) {
+    const s = new Set(((view && view.members) || []).filter(m => m && m.company).map(m => regionOfCompany(m.company, companies)));
+    return s.size ? REGIONS.filter(g => s.has(g.key)).map(g => g.key) : ['CA'];
+  }
+  function viewInRegion(view, regionKey, companies) { return viewRegions(view, companies).includes(regionKey || 'CA'); }
   // Company chips: what this viewer can actually see. Admins get every company that exists (ts_companies,
   // or rows that came back); a manager gets the companies their grants name, a "*" company grant for one
   // department only where an active person (or a loaded row) of that department exists, plus any company
@@ -1204,6 +1295,7 @@
     const out = new Set();
     for (const g of viewer.grants || []) {
       if (g.company !== '*') { out.add(g.company); continue; }
+      if (reg.key !== 'CA') continue;                    // '*' is every California company, never New York
       if (g.department === '*') return all;
       for (const p of people || []) if (p.active !== false && (p.department || NO_DEPT) === g.department) out.add(p.company);
     }
@@ -1213,7 +1305,8 @@
   }
   const grantKey = (company, department) => company + '\n' + department;
   const grantFromKey = k => { const i = k.indexOf('\n'); return { company: k.slice(0, i), department: k.slice(i + 1) }; };
-  // drop duplicates and grants already covered by a wider one; stable order for saving
+  // drop duplicates and grants already covered by a wider one; stable order for saving. ('*','*') covers
+  // every CALIFORNIA grant only (the server rule), so a New York grant next to it is kept.
   function normalizeGrants(list) {
     const seen = new Map();
     for (const g of list || []) {
@@ -1223,7 +1316,7 @@
       seen.set(grantKey(c, d), { company: c, department: d });
     }
     let gs = [...seen.values()];
-    if (seen.has(grantKey('*', '*'))) return [{ company: '*', department: '*' }];
+    if (seen.has(grantKey('*', '*'))) gs = gs.filter(g => (g.company === '*' && g.department === '*') || (g.company !== '*' && regionOfCompany(g.company) !== 'CA'));
     const wholeCo = new Set(gs.filter(g => g.department === '*').map(g => g.company));
     gs = gs.filter(g => g.department === '*' || !wholeCo.has(g.company));
     return gs.sort((a, b) => (a.company === '*' ? -1 : b.company === '*' ? 1 : cmpCompany(a.company, b.company)) ||
@@ -1240,19 +1333,20 @@
     const depts = [...all].sort(cmpDept);
     return { depts, idle: depts.filter(d => !live.has(d)) };
   }
-  // "Filifera: Distro/Trim, Trim · Slane: all departments", or "All CA"
+  // "Filifera: Distro/Trim, Trim · Slane: all departments", "All CA", or "All CA · Wizard Trees NY: all departments"
   function describeGrants(grants, opts) {
     const o = opts || {};
     const nameOf = o.companyName || (k => COMPANY_NAMES[k] || k);
-    const gs = normalizeGrants(grants);
+    let gs = normalizeGrants(grants);
     if (!gs.length) return o.none || 'Nothing yet';
-    if (gs[0].company === '*' && gs[0].department === '*') return o.allLabel || 'All CA';
+    const head = [];
+    if (gs[0].company === '*' && gs[0].department === '*') { head.push(o.allLabel || 'All CA'); gs = gs.slice(1); }
     const byCo = groupBy(gs, g => g.company);
-    return [...byCo.keys()].map(k => {
+    return head.concat([...byCo.keys()].map(k => {
       const ds = byCo.get(k).map(g => g.department);
       const who = k === '*' ? 'Any company' : nameOf(k);
       return who + ': ' + (ds.includes('*') ? 'all departments' : ds.slice().sort(cmpDept).join(', '));
-    }).join(' · ');
+    })).join(' · ');
   }
 
   /* ---------- saved views (ts_views): a named crew, used by admins for now ----------
@@ -1424,18 +1518,31 @@
   // A "full viewer": not an admin, but granted every CA company and department ('*','*'). They get the
   // admin's page (Everyone grouped by company and department, plus their saved views as tabs) without
   // the Admin panel (Gianni 2026-10-12: "give victoria the same view I have with these selectors").
-  function fullViewer(v) {
+  // '*' is every California company, so outside California (regionKey 'NY') nobody is a full viewer: there
+  // they are a manager with whatever New York views they were given.
+  function fullViewer(v, regionKey) {
+    if (regionKey && regionKey !== 'CA') return false;
     return !!v && !v.is_admin && v.active === true && normalizeGrants(v.grants).some(g => g.company === '*' && g.department === '*');
   }
-  function crewsFor(viewer, views) {
+  // the grants that reach a region: a '*' company only California, a named company its own region
+  function grantsIn(grants, regionKey) {
+    const k = regionKey || 'CA';
+    return normalizeGrants(grants).filter(g => (g.company === '*' ? 'CA' : regionOfCompany(g.company)) === k);
+  }
+  // regionKey (default California): the view tabs of that region only; a view whose members are all in
+  // another region is not offered here
+  function crewsFor(viewer, views, regionKey) {
+    const reg = regionKey || 'CA';
+    const here = v => viewInRegion(v, reg);
     const none = { everyone: false, list: [], pending: [] };
     if (!viewer || viewer.active === false) return none;
-    if (viewer.is_admin) return { everyone: true, list: normViews(views), pending: [] };
+    if (viewer.is_admin) return { everyone: true, list: normViews(views).filter(here), pending: [] };
     if (viewer.active !== true) return none;
-    if (fullViewer(viewer)) return { everyone: true, list: viewsFor(viewer.views, views).filter(v => v.known), pending: [] };
-    const mine = viewsFor(viewer.views, views);
-    if (mine.some(v => !v.known)) return { everyone: false, list: [], pending: mine };
-    if (mine.length && normalizeGrants(viewer.grants).length) mine.push({ id: ALL_MINE, label: ALL_MINE_LABEL, all: true, sort: 0, members: [], known: true });
+    if (fullViewer(viewer, reg)) return { everyone: true, list: viewsFor(viewer.views, views).filter(v => v.known && here(v)), pending: [] };
+    const all = viewsFor(viewer.views, views);
+    if (all.some(v => !v.known)) return { everyone: false, list: [], pending: all };
+    const mine = all.filter(here);
+    if (mine.length && grantsIn(viewer.grants, reg).length) mine.push({ id: ALL_MINE, label: ALL_MINE_LABEL, all: true, sort: 0, members: [], known: true });
     return { everyone: false, list: mine, pending: [] };
   }
   // Which tab opens: a ?view=<id> link this sign-in may use, else the tab remembered in this browser,
@@ -1488,7 +1595,7 @@
       if (o.department && deptOf(r) !== o.department) return false;
       if (terms.length) { const hay = normText(r.employee_name); if (!terms.every(t => hay.includes(t))) return false; }
       if (o.flaggedOnly && !hasWarn(r)) return false;
-      if (o.viewer && !canView(o.viewer, r.company, deptOf(r), r.employee_uuid)) return false;
+      if (o.viewer && !canView(o.viewer, r.company, deptOf(r), r.employee_uuid, r.region)) return false;
       return true;
     });
   }
@@ -1496,21 +1603,21 @@
   /* ---------- breaks ---------- */
   // Gusto's minute arithmetic, the same as the producer's: every punch is cut to the minute and an
   // 11:59:59 PM automatic clock-out counts as midnight. Rounding instead would call a 29 min 40 s gap
-  // "30m" on a row the producer flagged for having no meal.
-  function gustoMinute(t) {
+  // "30m" on a row the producer flagged for having no meal. tz = the row's zone (its 11:59:59 PM).
+  function gustoMinute(t, tz) {
     const ms = Date.parse(t);
     if (isNaN(ms)) return NaN;
-    const p = laParts(ms);
+    const p = zParts(ms, tz);
     return Math.floor(ms / 60000) + (p && p.h === 23 && p.m === 59 && p.s === 59 ? 1 : 0);
   }
   const MEAL_GAP_MIN = 30;                   // a gap this long between shifts counts as an off-duty meal
-  function shiftGaps(shifts) {               // time off the clock between consecutive shifts
+  function shiftGaps(shifts, tz) {           // time off the clock between consecutive shifts
     const out = [];
     const ss = (shifts || []).filter(s => !s.hours_only);
     for (let i = 1; i < ss.length; i++) {
       const a = ss[i - 1], b = ss[i];
       if (!a.out || !b.in) continue;
-      const min = gustoMinute(b.in) - gustoMinute(a.out);
+      const min = gustoMinute(b.in, tz) - gustoMinute(a.out, tz);
       if (min > 0) out.push({ start: a.out, end: b.in, min, meal: min >= MEAL_GAP_MIN, afterShift: i - 1 });
     }
     return out;
@@ -1528,7 +1635,8 @@
   // one entry per shift: {in, out} clock times, open (still clocked in), or hoursOnly (hours entered)
   function shiftParts(r) {
     const ss = r && Array.isArray(r.shifts) && r.shifts.length ? r.shifts : [{ in: r && r.first_in, out: r && r.last_out, hours_only: !!(r && r.hours_only) }];
-    return ss.map(s => s.hours_only ? { hoursOnly: true } : { in: fmtTime(s.in), out: s.out ? fmtTime(s.out) : '', open: !s.out });
+    const tz = rowTz(r);
+    return ss.map(s => s.hours_only ? { hoursOnly: true } : { in: fmtTime(s.in, tz), out: s.out ? fmtTime(s.out, tz) : '', open: !s.out });
   }
   // "7:57 AM - 4:20 PM", "10:00 AM - 1:30 PM, 2:15 PM - 6:00 PM", "6:31 AM - clocked in", "hours entered"
   function shiftsText(r) {
@@ -1553,7 +1661,7 @@
       groups.push({ kind, label: kind === 'meal' ? 'Meal' : 'Rest', items: bs.map(b => b.open || !b.end ? 'open' : fmtMins(b.min)),
         ests, est: ests.some(Boolean), allEst: ests.every(Boolean) });
     }
-    const gaps = shiftGaps(r.shifts);
+    const gaps = shiftGaps(r.shifts, rowTz(r));
     if (gaps.length) groups.push({ kind: 'off', label: 'Off', items: gaps.map(g => fmtMins(g.min)), ests: gaps.map(() => false), est: false, allEst: false });
     return { hoursEntered: false, groups };
   }
@@ -1578,13 +1686,13 @@
   function csvRow(r, nameOf) {
     const he = onlyHoursEntered(r);
     return [r.work_date, nameOf(r.company), deptOf(r), r.employee_name || '', r.job_title || '',
-      he ? 'hours entered' : fmtTime(r.first_in),
-      he ? '' : (r.last_out ? fmtTime(r.last_out) : (r.open ? 'clocked in' : '')),
+      he ? 'hours entered' : fmtTime(r.first_in, rowTz(r)),
+      he ? '' : (r.last_out ? fmtTime(r.last_out, rowTz(r)) : (r.open ? 'clocked in' : '')),
       Math.round(+r.paid_break_min || 0), Math.round(+r.unpaid_break_min || 0), hoursPlain(+r.worked_min || 0),
       hoursPlain(r.reg_min), hoursPlain(r.ot_min), hoursPlain(r.dt_min),
       r.ot_src === 'gusto' ? 'Gusto' : r.ot_src === 'est' ? 'Estimated' : '',
       labelSrcText(r.label_src),
-      sortFlags(r.flags).map(flagMsg).join('; ')];
+      sortFlags(r.flags).map(f => flagMsg(f, r.region)).join('; ')];
   }
   // opts.flat (a saved view is on): each date's rows by name, like the screen; the columns stay the same
   function buildCsv(rows, opts) {
@@ -1603,19 +1711,20 @@
     return 'timesheets-' + (v ? v + '-' : '') + from + '-to-' + to + '.csv';
   }
 
-  /* ---------- freshness ---------- */
+  /* ---------- freshness (times in the company's own zone) ---------- */
   function freshness(co, now) {
     const c = co || {};
+    const tz = companyTz(c);
     const nowMs = now instanceof Date ? now.getTime() : (now == null ? Date.now() : +now);
-    const today = todayLA(nowMs);
+    const today = todayIn(tz, nowMs);
     const out = { key: c.key, connected: !!c.connected, sync: '', labels: '', stale: false, labelled: !!c.label_csv_at };
     if (!c.connected) out.sync = 'Not connected yet';
     else if (c.last_sync_at) {
-      const d = laDate(c.last_sync_at), t = fmtTime(c.last_sync_at);
+      const d = zDate(c.last_sync_at, tz), t = fmtTime(c.last_sync_at, tz);
       out.sync = 'Synced ' + (d === today ? t : d === addDays(today, -1) ? 'yesterday, ' + t : fmtMonthDay(d) + ', ' + t);
       out.stale = nowMs - Date.parse(c.last_sync_at) > 3 * 3600000;
     } else out.sync = 'Connected, first sync pending';
-    out.labels = c.label_csv_at ? 'Break labels from Gusto through ' + fmtMonthDay(addDays(laDate(c.label_csv_at), -1))
+    out.labels = c.label_csv_at ? 'Break labels from Gusto through ' + fmtMonthDay(addDays(zDate(c.label_csv_at, tz), -1))
                                 : 'Break types estimated from length';
     return out;
   }
@@ -1640,9 +1749,9 @@
     const f = freshness(oldest, now);
     const stale = synced.length < conn.length || synced.some(c => freshness(c, now).stale);
     const nowMs = now instanceof Date ? now.getTime() : (now == null ? Date.now() : +now);
-    const d = laDate(oldest.last_sync_at), today = todayLA(nowMs);
+    const tz = companyTz(oldest), d = zDate(oldest.last_sync_at, tz), today = todayIn(tz, nowMs);
     // today's time drops AM/PM on a phone: the last sync is never more than a few hours back
-    const when = d === today ? fmtClock(oldest.last_sync_at) : d === addDays(today, -1) ? 'yesterday' : fmtMonthDay(d);
+    const when = d === today ? fmtClock(oldest.last_sync_at, tz) : d === addDays(today, -1) ? 'yesterday' : fmtMonthDay(d);
     return { level: stale ? 'stale' : 'ok', text: f.sync, short: 'Synced ' + when, bare: when === 'yesterday' ? 'Yesterday' : when,
       labels, items, oldest: oldest.key };
   }
@@ -1666,30 +1775,57 @@
 
   // Flags cell: warnings are pills; info notes (sev 'info') collapse into one quiet "i" mark whose tooltip
   // lists them. Only warnings count anywhere (totals, Flagged only, the row stripe).
-  function flagsHtml(flags) {
+  // region: the row's region, for a flag that came without its own msg
+  function flagsHtml(flags, region) {
     const fl = sortFlags(flags);
     const warn = fl.filter(f => flagSev(f) === 'warn'), info = fl.filter(f => flagSev(f) === 'info');
     if (!warn.length && !info.length) return h``;
-    const notes = info.map(flagMsg);
-    return h`<div class="flags">${warn.map(f => h`<span class="flag warn" title="${flagMsg(f)}" tabindex="0">${flagLabel(f)}</span>`)}${info.length ? h`<span class="infomark" title="${notes.join('\n')}" aria-label="${'Note: ' + notes.join('. ')}" tabindex="0">i</span>` : ''}</div>`;
+    const notes = info.map(f => flagMsg(f, region));
+    return h`<div class="flags">${warn.map(f => h`<span class="flag warn" title="${flagMsg(f, region)}" tabindex="0">${flagLabel(f)}</span>`)}${info.length ? h`<span class="infomark" title="${notes.join('\n')}" aria-label="${'Note: ' + notes.join('. ')}" tabindex="0">i</span>` : ''}</div>`;
   }
 
+  // The break policy line at the top of the page (Gianni 2026-10-12). Rest length per company is what Gusto's
+  // own labels show the crews taking (10/12: Filifera + Imperial 10 min, Slane + Waf & Gus 15 min); meals are
+  // 30 min everywhere. Rest every 4 hours worked; meal before the end of the 5th hour, a second after 10 hours.
+  const BREAK_POLICY = { meal: 30, mealBy: 5, secondMealAfter: 10, restEvery: 4, rest: { filifera: 10, imperial: 10, slane: 15, wafgus: 15 }, restDefault: 10 };
+  // New York (Labor Law 162, simplified as the producer flags it): a 30-min meal on a shift over 6 hours, no
+  // rest breaks required; an unlabelled break of 20 min or less counts as paid, like California
+  const BREAK_POLICY_NY = { meal: 30, mealOver: 6, paidMax: 20 };
+  function breakPolicyText(companyKeys, nameOf, regionKey) {
+    if (regionKey === 'NY') {
+      const N = BREAK_POLICY_NY;
+      return 'Breaks: an unpaid ' + N.meal + '-min meal on shifts over ' + N.mealOver + ' hours; breaks of ' + N.paidMax + ' min or less are paid.';
+    }
+    const P = BREAK_POLICY;
+    const keys = [...new Set(companyKeys || [])];
+    const byLen = new Map();
+    for (const k of keys) { const m = P.rest[k] || P.restDefault; if (!byLen.has(m)) byLen.set(m, []); byLen.get(m).push(k); }
+    const lens = [...byLen.keys()].sort((a, b) => a - b);
+    let rest;
+    if (lens.length <= 1) rest = 'a paid ' + (lens[0] || P.restDefault) + '-min rest break every ' + P.restEvery + ' hours';
+    else if (nameOf) rest = 'a paid rest break every ' + P.restEvery + ' hours (' + lens.map(m => m + ' min at ' + joinAnd(byLen.get(m).map(nameOf).sort())).join(', ') + ')';
+    else rest = 'a paid ' + lens.join(' or ') + '-min rest break every ' + P.restEvery + ' hours';
+    return 'Breaks: ' + rest + ', and an unpaid ' + P.meal + '-min meal by the ' + P.mealBy + 'th hour (a second after ' + P.secondMealAfter + ' hours).';
+  }
+  function joinAnd(list) { return list.length < 2 ? (list[0] || '') : list.slice(0, -1).join(', ') + ' and ' + list[list.length - 1]; }
+
   root.TSCore = {
-    TZ, PERIOD_ANCHOR_END, WEEK_START_DOW, NO_DEPT, REGIONS, COMPANY_ORDER, COMPANY_NAMES, PRESETS, FLAGS, FLAG_CODES,
-    CSV_COLUMNS, LABEL_SRC,
+    TZ, PERIOD_ANCHOR_END, WEEK_START_DOW, NO_DEPT, REGIONS, COMPANY_ORDER, COMPANY_NAMES, COMPANY_TZ, PRESETS, FLAGS, FLAG_CODES,
+    REGION_FLAG_MSGS, CSV_COLUMNS, LABEL_SRC,
+    regionDef, regionOfCompany, rowTz, companyTz,
     utcOf, isIsoDate, addDays, daysBetween, dow, eachDate,
     payPeriodFor, weekStart, weekFor, presetRange, clampRange,
-    laParts, laDate, todayLA, laMinutes, fmtTime, fmtClock, laIso,
+    zParts, zDate, todayIn, zMinutes, zIso, laParts, laDate, todayLA, laMinutes, fmtTime, fmtClock, laIso,
     fmtDay, fmtMonthDay, fmtRange, fmtRangeShort, fmtHours, hoursPlain, fmtMins,
     flagLabel, flagMsg, flagSev, sortFlags, hasWarn,
     deptOf, normRow, cmpCompany, cmpDept, cmpName, totals, groupByDay, groupByEmployee,
     personKey, personIds, flatByDay, flatByPerson, layoutFor, anyJob,
-    RESERVED_DEPT, canView, regionCompanyKeys, visibleCompanyKeys, grantKey, grantFromKey, normalizeGrants, pickerDepartments, describeGrants,
+    RESERVED_DEPT, canView, regionCompanyKeys, regionsPresent, viewerRegions, pickRegion, viewRegions, viewInRegion, visibleCompanyKeys, grantKey, grantFromKey, normalizeGrants, pickerDepartments, describeGrants,
     VIEW_ID_RE, VIEW_LABEL_MAX, memberKey, memberFromKey, normalizeMembers, normView, normViews, viewHas, viewCompanyKeys,
     departmentOptions, viewHeadcount, viewMemberCounts, describeViewMembers, viewPicker, slugify, uniqueViewId,
-    viewsFor, ALL_MINE, ALL_MINE_LABEL, fullViewer, crewsFor, pickCrew, describeAccess, viewsToSave, LIVE_URL, viewLink,
+    viewsFor, ALL_MINE, ALL_MINE_LABEL, fullViewer, grantsIn, crewsFor, pickCrew, describeAccess, viewsToSave, LIVE_URL, viewLink,
     normText, filterRows, gustoMinute, MEAL_GAP_MIN, shiftGaps, labelSrcText, onlyHoursEntered,
-    fmtDayShort, shiftParts, shiftsText, breakUnsure, breakSummary, breakSummaryText,
+    fmtDayShort, shiftParts, shiftsText, breakUnsure, breakSummary, breakSummaryText, BREAK_POLICY, BREAK_POLICY_NY, breakPolicyText,
     csvCell, buildCsv, csvFilename, freshness, freshSummary,
     esc, SafeHTML, h, flagsHtml,
   };
@@ -1740,6 +1876,16 @@
     ['Hickory Mumblesworth','imperial', 'Distribution','Driver',           'std',     480],
     ['Aspen Tiddlywink',    'imperial', 'Distribution','Distribution Clerk','std',    480],
     ['Kestrel Muddlecombe', 'imperial', NO_DEPT,       'Seasonal Helper',  'pt',      480],
+    // New York (Wizard Trees NY): start minutes are New York wall clock
+    ['Bramble Featherstone', 'wtny',    'Cultivation Hourly', 'Cultivation Tech', 'std',  480],
+    ['Clementine Hobnail',  'wtny',     'Cultivation Hourly', 'Cultivation Tech', 'long', 450],
+    ['Dewberry Quillon',    'wtny',     'Cultivation Hourly', 'Grow Assistant',   'pt',   540],
+    ['Nutmeg Willowby',     'wtny',     'BA Hourly',   'Brand Ambassador', 'ba',      660],
+    ['Periwinkle Dapple',   'wtny',     'BA Hourly',   'Brand Ambassador', 'ba',      690],
+    ['Gorse Tinderbox',     'wtny',     'Distro Hourly', 'Packager',       'std',     450],
+    ['Mulberry Fiddlesticks','wtny',    'Distro Hourly', 'Packager',       'six',     450],
+    ['Primrose Lockwhistle','wtny',     'Distro Hourly', 'Packaging Lead', 'long',    420],
+    ['Tarragon Bellweather','wtny',     'Distro Hourly', 'Driver',         'std',     480],
   ];
   const NAMES = ROSTER.map(r => r[0]);
 
@@ -1754,7 +1900,7 @@
   };
 
   // Hand-built days, each landing on the nth most recent workday of that person, so every flag shows up.
-  // Break tuples are [start, end|null, kind, opts] in minutes after midnight, LA time.
+  // Break tuples are [start, end|null, kind, opts] in minutes after midnight, the person's own time zone.
   const R = (s, a, len, kind, o) => [s + a, len == null ? null : s + a + len, kind, o || {}];
   const SCENARIOS = {
     'Basil Thornbury':     { n: 3, make: s => ({ note: 'Ran deliveries through lunch',
@@ -1788,6 +1934,15 @@
       shifts: [{ inM: 600, outM: 810, breaks: [R(600, 100, 10, 'rest')] }, { inM: 855, outM: 1080, breaks: [R(855, 90, 10, 'rest')] }] }) },
     'Fennel Brightwater':  { n: 4, make: s => ({ note: 'Left at 2:30 for an appointment, "OK" from lead, back tomorrow',
       shifts: [{ inM: s, outM: s + 450, breaks: [R(s, 110, 10, 'rest'), R(s, 240, 30, 'meal'), R(s, 360, 10, 'rest')] }] }) },
+    // New York: no meal on a 7.5 h shift; only a short meal on a 10 h shift; a late evening event shift; an open shift
+    'Gorse Tinderbox':     { n: 2, make: s => ({
+      shifts: [{ inM: s, outM: s + 450, breaks: [R(s, 120, 10, 'rest'), R(s, 300, 15, 'rest')] }] }) },
+    'Clementine Hobnail':  { n: 3, make: s => ({ note: 'Quick lunch, flower room move',
+      shifts: [{ inM: s, outM: s + 600, breaks: [R(s, 210, 25, 'meal'), R(s, 420, 10, 'rest')] }] }) },
+    'Nutmeg Willowby':     { n: 1, make: () => ({ note: 'Evening pop-up event, stayed to pack up',
+      shifts: [{ inM: 960, outM: 1410, breaks: [R(960, 180, 30, 'meal')] }] }) },
+    'Tarragon Bellweather':{ n: 2, skipToday: true, make: s => ({
+      shifts: [{ inM: s, outM: s + 480, open: true, breaks: [R(s, 200, 30, 'meal')] }] }) },
   };
 
   function hash(s) { let x = 2166136261; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } return x >>> 0; }
@@ -1823,6 +1978,29 @@
     }
     return w;
   }
+  // The producer's New York rules: a meal of 30+ min (or 30+ min off the clock between shifts) on a shift
+  // over 6 hours, no rest-break rules; the other checks are the same as California's
+  function flagsForNY(day, today, tz) {
+    const flags = [];
+    const add = (code, msg, sev) => flags.push({ code, sev: sev || 'warn', msg });
+    if (!day.hours_only) {
+      const worked = day.worked_min;
+      const all = day.shifts.flatMap(s => s.breaks);
+      const meals = all.filter(b => b.kind === 'meal' && !b.open);
+      const offMeal = C.shiftGaps(day.shifts, tz).some(g => g.min >= 30);
+      // one warning, only when no meal of 30+ min and no 30+ min off the clock: short_meal if there were meals, else no_meal
+      if (worked > 360 && !offMeal && !meals.some(m => m.min >= 30))
+        add(meals.length ? 'short_meal' : 'no_meal', meals.length ? 'Meal break under 30 min' : 'No meal break on a shift over 6 hours');
+      if (all.some(b => b.open)) add('break_open', 'Break never ended in Gusto');
+      if (all.some(b => b.src === 'rule' && b.min >= 21 && b.min <= 24)) add('type_unsure', 'Break type guessed from its length', 'info');
+    }
+    if (day.shifts.some(s => !s.out) && day.work_date < today) add('missed_out', 'Still clocked in from a previous day (missed clock-out?)');
+    const clockedSpan = day.shifts.filter(s => !s.hours_only).reduce((a, s) => a + s.span_min, 0);
+    if (clockedSpan > 840 && !day.hours_only) add('long_day', 'Over 14 hours, check for a missed clock-out');
+    if (day.gusto_total_min != null && Math.abs(day.worked_min - day.gusto_total_min) > 1)
+      add('gusto_mismatch', "Hours differ from Gusto's total (Gusto: " + (day.gusto_total_min / 60).toFixed(2) + ' h)');
+    return flags;
+  }
   // The producer's CA flag rules (spec section 4), applied to demo rows
   function flagsFor(day, today) {
     const flags = [];
@@ -1853,7 +2031,8 @@
       add('gusto_mismatch', "Hours differ from Gusto's total (Gusto: " + (day.gusto_total_min / 60).toFixed(2) + ' h)');
     return flags;
   }
-  // CA overtime inside one workweek: daily 8/12, the 7th straight day, and 40 regular hours a week
+  // CA overtime inside one workweek: daily 8/12, the 7th straight day, and 40 regular hours a week.
+  // New York: weekly only, over 40 hours in the Saturday to Friday workweek; no daily OT, no double time.
   function applyOvertime(rows) {
     const weeks = new Map();
     for (const r of rows) { const k = r.employee_uuid + '|' + C.weekStart(r.work_date); if (!weeks.has(k)) weeks.set(k, []); weeks.get(k).push(r); }
@@ -1865,7 +2044,8 @@
         if (d.shifts.every(s => !s.out && !s.hours_only)) { d.reg_min = d.ot_min = d.dt_min = null; d.ot_src = null; continue; }
         const w = d.worked_min;
         let reg, ot, dt;
-        if (allSeven && d.work_date === C.addDays(C.weekStart(d.work_date), 6)) { reg = 0; ot = Math.min(w, 480); dt = Math.max(w - 480, 0); }
+        if (d.region === 'NY') { reg = Math.min(w, Math.max(0, 2400 - weekReg)); ot = w - reg; dt = 0; }
+        else if (allSeven && d.work_date === C.addDays(C.weekStart(d.work_date), 6)) { reg = 0; ot = Math.min(w, 480); dt = Math.max(w - 480, 0); }
         else { reg = Math.min(w, 480); ot = Math.min(Math.max(w - 480, 0), 240); dt = Math.max(w - 720, 0); }
         if (weekReg + reg > 2400) { const over = weekReg + reg - 2400; reg -= over; ot += over; }
         weekReg += reg;
@@ -1889,17 +2069,28 @@
     else if (nowMin >= 350) syncMin = 350;
     else { syncDate = C.addDays(today, -1); syncMin = 21 * 60 + 20; }
     const lastSync = C.laIso(syncDate, syncMin);
-    const labelled = { filifera: true, wafgus: true, slane: false, imperial: false };
+    const labelled = { filifera: true, wafgus: true, slane: false, imperial: false, wtny: true };
+    // each person lives on their company's clock: a New York day, "today" and clock times are Eastern
+    const zone = company => {
+      const tz = C.companyTz({ key: company }), region = C.regionOfCompany(company);
+      if (tz === C.TZ) return { tz, region, today, nowMin, from, csvDate };
+      const t = C.todayIn(tz, now);
+      return { tz, region, today: t, nowMin: C.zMinutes(now, tz), from: C.weekStart(C.addDays(t, -21)), csvDate: C.zDate(csvAt, tz) };
+    };
+    const todays = { CA: today };
 
     const people = [], rows = [];
     let seq = 0;
     ROSTER.forEach(([name, company, department, job, planKey, start], idx) => {
       const uuid = 'demo-' + company + '-' + String(idx + 1).padStart(2, '0');
       people.push({ company, employee_uuid: uuid, name, department, job_title: job, active: true, updated_at: lastSync });
+      const Z = zone(company), iso = (d, m) => C.zIso(d, m, Z.tz);
+      const today = Z.today, nowMin = Z.nowMin, csvDate = Z.csvDate;   // this person's own clock
+      todays[Z.region] = Z.today;
       const plan = PLANS[planKey];
       const sc = SCENARIOS[name];
       const scDate = sc ? nthWorkday(plan, sc.n, today) : null;
-      for (const date of C.eachDate(from, today)) {
+      for (const date of C.eachDate(Z.from, today)) {
         const r = rng(hash(name + '|' + date));
         const isScen = date === scDate;
         const inHarvest = planKey === 'harvest' && date >= harvestFrom && date <= harvestTo;
@@ -1912,21 +2103,21 @@
         const shifts = [];
         for (const sp of dp.shifts) {
           if (isToday && sp.inM > nowMin) continue;                      // not started yet
-          const sh = { id: 'demo-shift-' + (++seq), in: C.laIso(date, sp.inM), out: null, span_min: 0, worked_min: 0, hours_only: !!sp.hoursOnly, breaks: [] };
+          const sh = { id: 'demo-shift-' + (++seq), in: iso(date, sp.inM), out: null, span_min: 0, worked_min: 0, hours_only: !!sp.hoursOnly, breaks: [] };
           if (sp.hoursOnly) {
-            sh.out = C.laIso(date, 1439 + 59 / 60);
+            sh.out = iso(date, 1439 + 59 / 60);
             sh.span_min = sp.hours;          // like the producer: the placeholder clock-out is not a span
             sh.worked_min = sp.hours;
             shifts.push(sh); continue;
           }
           const open = !!sp.open || (isToday && sp.outM > nowMin);
-          if (!open) sh.out = C.laIso(date, sp.outM);
+          if (!open) sh.out = iso(date, sp.outM);
           for (const [s, e, kind, o] of sp.breaks) {
             if (isToday && (e == null ? s : e) > nowMin) continue;          // has not happened yet
             const min = e == null ? 0 : e - s;
             const src = gustoDay && !o.unlabelled ? 'gusto' : 'rule';
             const k = src === 'gusto' ? kind : (min <= 20 ? 'rest' : 'meal');
-            sh.breaks.push({ start: C.laIso(date, s), end: e == null ? null : C.laIso(date, e), min, kind: k, paid: k === 'rest', src, open: e == null });
+            sh.breaks.push({ start: iso(date, s), end: e == null ? null : iso(date, e), min, kind: k, paid: k === 'rest', src, open: e == null });
           }
           if (!open) {
             sh.span_min = sp.outM - sp.inM;
@@ -1939,7 +2130,7 @@
         const srcs = new Set(allBreaks.map(b => b.src));
         const last = shifts[shifts.length - 1];
         const day = {
-          id: company + ':' + uuid + ':' + date, company, region: 'CA', employee_uuid: uuid, employee_name: name,
+          id: company + ':' + uuid + ':' + date, company, region: Z.region, employee_uuid: uuid, employee_name: name,
           department, job_title: job, work_date: date,
           first_in: shifts[0].in, last_out: last.out,
           shifts,
@@ -1960,14 +2151,15 @@
       }
     });
     applyOvertime(rows);
-    for (const d of rows) d.flags = flagsFor(d, today);
+    for (const d of rows) d.flags = d.region === 'NY' ? flagsForNY(d, todays.NY, C.rowTz(d)) : flagsFor(d, today);
 
     const counts = {};
     for (const d of rows) counts[d.company] = (counts[d.company] || 0) + 1;
-    const companies = C.REGIONS[0].companies.map(key => ({
-      key, name: C.COMPANY_NAMES[key], region: 'CA', gusto_uuid: null, connected: true, last_sync_at: lastSync,
-      sync_from: from, sync_to: today, label_csv_at: labelled[key] ? csvAt : null, day_rows: counts[key] || 0, updated_at: lastSync,
-    }));
+    const companies = C.REGIONS[0].companies.concat(['wtny']).map(key => {
+      const Z = zone(key);
+      return { key, name: C.COMPANY_NAMES[key], region: Z.region, gusto_uuid: null, connected: true, last_sync_at: lastSync,
+        sync_from: Z.from, sync_to: Z.today, label_csv_at: labelled[key] ? csvAt : null, day_rows: counts[key] || 0, updated_at: lastSync };
+    });
     // made-up sign-ins: a manager with one saved view, one with two, one with a view plus a department
     // grant, one with grants only, and one turned off. views are ts_views ids (see below).
     const access = [
@@ -1982,6 +2174,9 @@
         grants: [{ company: '*', department: '*' }], views: [] },
       { email: 'ba.coordinator@wizardtrees.com', is_admin: false, active: false, note: 'Paused for now',
         grants: [{ company: 'wafgus', department: 'Brand Ambassadors' }], views: ['ambassadors'] },
+      // New York only: lands straight on the New York tab
+      { email: 'ny.lead@wizardtrees.com', is_admin: false, active: true, note: 'NY packing and distro lead',
+        grants: [], views: ['packing-and-distro'] },
     ];
     const me = { email: 'demo.owner@wizardtrees.com', active: true, is_admin: true, grants: [], views: [] };
     // saved views over the made-up crew: whole departments, hand-picked people, and a mix of both
@@ -1997,8 +2192,11 @@
       { id: 'ambassadors', label: 'Ambassadors', sort: 30, members: [{ company: 'wafgus', department: 'Brand Ambassadors' }] },
       { id: 'office-and-drivers', label: 'Office and Drivers', sort: 40,
         members: [P('Ember Quillfeather'), P('Oakley Whistledown'), P('Basil Thornbury'), P('Clover Mendleton'), P('Hickory Mumblesworth'), P('Aspen Tiddlywink')] },
+      // New York: the whole packing and distro department plus one cultivation tech who helps pack
+      { id: 'packing-and-distro', label: 'Packing and Distro', sort: 50,
+        members: [{ company: 'wtny', department: 'Distro Hourly' }, P('Dewberry Quillon')] },
     ].map(v => Object.assign(v, { updated_at: lastSync, updated_by: me.email }));
-    return { me, companies, people, rows, access, views, today };
+    return { me, companies, people, rows, access, views, today, todays };
   }
 
   root.TSDemo = { NAMES, ROSTER, build };
@@ -2029,7 +2227,7 @@
   const LINK_VIEW = C.VIEW_ID_RE.test(QV) ? QV : '';
   const S = {
     me: null, viewer: null, companies: [], people: [], rows: new Map(), fetched: [], fetchTok: 0,
-    region: 'CA', preset: 'period', from: '', to: '', rangeNote: '',
+    region: 'CA', regionBeforePreview: null, preset: 'period', from: '', to: '', rangeNote: '',
     view: (QV === 'emp' || QV === 'day' ? QV : store.get('view', 'day')) === 'emp' ? 'emp' : 'day',   // ?view=emp links straight to By Employee
     fmt: store.get('fmt', 'dec') === 'hm' ? 'hm' : 'dec',
     coSel: [], dept: '', q: '', flaggedOnly: false,
@@ -2046,9 +2244,14 @@
 
   const EST_BREAK_TIP = "This break is 21 to 24 min, so it could be either type. It was counted from its length; check it in Gusto.";
   const EST_OT_TIP = "Gusto hasn't reported overtime for this day yet. Estimated with California rules: over 8 h a day or 40 h a week is OT, over 12 h a day is double time, and the 7th straight day of the workweek is OT.";
+  const EST_OT_TIP_NY = "Gusto hasn't reported overtime for this day yet. Estimated with New York rules: over 40 h in the Saturday to Friday workweek is OT. New York has no daily overtime or double time.";
+  const otTip = region => region === 'NY' ? EST_OT_TIP_NY : EST_OT_TIP;
 
   /* ---------- small helpers ---------- */
-  const today = () => C.todayLA(new Date());
+  // "today" on the active region's clock (New York's day starts three hours before California's)
+  const today = () => C.todayIn(regionDef().tz, new Date());
+  // a row's own clock: the day it counts as "today" for its stale clocked-in pill, and its zone
+  const rowToday = r => C.todayIn(C.rowTz(r), new Date());
   const hrs = min => C.fmtHours(min, S.fmt);
   const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
   function coName(key) {
@@ -2061,8 +2264,16 @@
   const filterViewer = () => resolved(S.viewer || (DEMO ? S.me : null));   // demo has no RLS, so the page plays it
   // a manager = any sign-in that is not an admin (also an admin previewing one): flat list, no Everyone.
   // A full viewer (every company and department granted) gets the admin's page instead, minus Admin.
-  function managerMode() { const v = S.viewer || S.me; return !!v && !v.is_admin && !C.fullViewer(v); }
-  const regionDef = () => C.REGIONS.find(r => r.key === S.region) || C.REGIONS[0];
+  // A full viewer is California only ('*' is every CA company), so on the New York tab they are a manager.
+  function managerMode() { const v = S.viewer || S.me; return !!v && !v.is_admin && !C.fullViewer(v, S.region); }
+  const regionDef = () => C.regionDef(S.region);
+  // the regions this sign-in (or the previewed one) gets as tabs: California, and New York once it exists
+  // for an admin; for anyone else, wherever their grants, views and rows are
+  function regionKeys() {
+    const fv = S.viewer ? viewer() : null;
+    const rows = [...S.rows.values()].filter(r => !fv || C.canView(fv, r.company, C.deptOf(r), r.employee_uuid, r.region));
+    return C.viewerRegions(viewer(), S.companies, rows);
+  }
   function companyRow(key) { return S.companies.find(c => c.key === key) || null; }
   function notConnected(key) { const c = companyRow(key); return !c || !c.connected; }
   function errText(e) { return (e && (e.message || e.error_description || e.details)) || String(e || 'unknown error'); }
@@ -2078,7 +2289,7 @@
 
   // The tabs: an admin gets Everyone + every saved view; a manager gets the views given to them (and
   // "All my people" when they also have grants). A previewed sign-in gets its own tabs, never the admin's.
-  function crewInfo() { return C.crewsFor(viewer(), S.views); }
+  function crewInfo() { return C.crewsFor(viewer(), S.views, S.region); }
   function currentCrew() {
     const ci = crewInfo();
     return ci.list.find(c => c.id === S.crew) || (ci.everyone ? null : ci.list[0] || null);
@@ -2107,7 +2318,7 @@
   // every company this viewer can see (the sync indicator), and the ones inside the active view (chips)
   function allCompanies() {
     const fv = S.viewer ? viewer() : null;
-    const rows = [...S.rows.values()].filter(r => !fv || C.canView(fv, r.company, C.deptOf(r), r.employee_uuid));
+    const rows = [...S.rows.values()].filter(r => !fv || C.canView(fv, r.company, C.deptOf(r), r.employee_uuid, r.region));
     return C.visibleCompanyKeys(viewer(), S.companies, rows, S.region, S.people);
   }
   function visibleCompanies() { return C.viewCompanyKeys(allCompanies(), activeView()); }
@@ -2130,6 +2341,8 @@
   const PHONE_MQ = window.matchMedia ? window.matchMedia(PHONE_Q) : null;
   function compact() { return !!(PHONE_MQ && PHONE_MQ.matches) && !S.printing; }
   function render() {
+    const regs = regionKeys();
+    if (!regs.includes(S.region)) { S.region = regs[0]; S.coSel = []; S.dept = ''; }
     const lay = layout();
     if (!lay.companyChips) S.coSel = [];          // a hidden control must not keep filtering
     if (!lay.deptSelect) S.dept = '';
@@ -2142,10 +2355,21 @@
     renderHeader();
     renderViewTabs();
     renderControls(base, depts, vis);
+    renderPolicy(vis, lay);
     renderFresh();
     renderLoadErr();
     renderContent(rows, base, vis);
     renderPrintHead();
+  }
+
+  // one quiet line: the break policy for the companies on screen; company names only where the page
+  // shows them (admins' Everyone), never in a crew's flat list
+  function renderPolicy(vis, lay) {
+    const el = $('policyNote');
+    const keys = (vis && vis.length ? vis : allCompanies());
+    if (!S.me || !keys.length) { el.hidden = true; return; }
+    el.textContent = C.breakPolicyText(keys, lay.flat ? null : coName, S.region);
+    el.hidden = false;
   }
 
   function renderHeader() {
@@ -2162,8 +2386,11 @@
     $('menuDemoMgr').hidden = !DEMO || !!S.viewer;
     $('menuA2hs').hidden = standalone();
     $('menuSignOut').hidden = DEMO;
-    $('regionTabs').classList.toggle('single', C.REGIONS.length < 2);
-    setHTML($('regionTabs'), h`${C.REGIONS.map(r => h`<button type="button" class="tab${r.key === S.region ? ' active' : ''}" data-act="region" data-region="${r.key}" aria-pressed="${String(r.key === S.region)}">${r.label}</button>`)}`);
+    // one tab per region this sign-in can see; a lone region is just a label (hidden on phones)
+    const regs = regionKeys();
+    $('regionTabs').classList.toggle('single', regs.length < 2);
+    $('topBar').classList.toggle('regions2', regs.length > 1);
+    setHTML($('regionTabs'), h`${C.REGIONS.filter(r => regs.includes(r.key)).map(r => h`<button type="button" class="tab${r.key === S.region ? ' active' : ''}" data-act="region" data-region="${r.key}" aria-pressed="${String(r.key === S.region)}">${r.label}</button>`)}`);
     $('brandSub').textContent = subtitle();
     const pv = $('previewBar');
     if (S.viewer) {
@@ -2303,47 +2530,49 @@
   function otCell(r) {
     const ot = +r.ot_min || 0, dt = +r.dt_min || 0;
     if (!ot && !dt) return '';
-    return h`<span class="ot">${hrs(ot)}</span>${dt ? h`<span class="dt">DT ${hrs(dt)}</span>` : ''}${r.ot_src === 'est' ? estMark(EST_OT_TIP) : ''}`;
+    return h`<span class="ot">${hrs(ot)}</span>${dt ? h`<span class="dt">DT ${hrs(dt)}</span>` : ''}${r.ot_src === 'est' ? estMark(otTip(r.region)) : ''}`;
   }
-  function otSum(t) {   // group and total rows: OT and DT kept apart, like the day rows
+  function otSum(t) {   // group and total rows: OT and DT kept apart, like the day rows (one region on screen)
     if (!t.ot_min && !t.dt_min) return '';
-    return h`<span class="ot">${hrs(t.ot_min)}</span>${t.dt_min ? h`<span class="dt">DT ${hrs(t.dt_min)}</span>` : ''}${t.ot_est ? estMark(EST_OT_TIP) : ''}`;
+    return h`<span class="ot">${hrs(t.ot_min)}</span>${t.dt_min ? h`<span class="dt">DT ${hrs(t.dt_min)}</span>` : ''}${t.ot_est ? estMark(otTip(S.region)) : ''}`;
   }
-  function flagsCell(r) { return C.flagsHtml(r.flags); }   // warning pills; info notes become one "i" mark
+  function flagsCell(r) { return C.flagsHtml(r.flags, r.region); }   // warning pills; info notes become one "i" mark
+  // clock times on the row's own company clock (Pacific for California, Eastern for New York)
   function inOutCells(r) {
-    const stale = r.work_date < today();
+    const stale = r.work_date < rowToday(r), tz = C.rowTz(r);
     const shifts = r.shifts.length ? r.shifts : [{ in: r.first_in, out: r.last_out, hours_only: r.hours_only }];
     if (shifts.every(s => s.hours_only)) {
       return h`<td class="io he" colspan="2"><span class="pill he" title="Hours were entered in Gusto without clock times">hours entered</span></td>`;
     }
     const pillIn = h`<span class="pill in${stale ? ' stale' : ''}" title="${stale ? 'No clock-out recorded for this day' : 'Still clocked in'}">clocked in</span>`;
-    return h`<td class="io">${shifts.map(s => s.hours_only ? h`<div><span class="pill he">hours entered</span></div>` : h`<div>${C.fmtTime(s.in)}</div>`)}</td><td class="io">${shifts.map(s => s.hours_only ? h`<div>&nbsp;</div>` : s.out ? h`<div>${C.fmtTime(s.out)}</div>` : h`<div>${pillIn}</div>`)}</td>`;
+    return h`<td class="io">${shifts.map(s => s.hours_only ? h`<div><span class="pill he">hours entered</span></div>` : h`<div>${C.fmtTime(s.in, tz)}</div>`)}</td><td class="io">${shifts.map(s => s.hours_only ? h`<div>&nbsp;</div>` : s.out ? h`<div>${C.fmtTime(s.out, tz)}</div>` : h`<div>${pillIn}</div>`)}</td>`;
   }
-  function breakChip(b) {
+  function breakChip(b, tz) {
     const kind = b.kind === 'meal' ? 'Meal' : 'Rest';
     const est = C.breakUnsure(b), guessed = b.src !== 'gusto';
-    const range = C.fmtClock(b.start) + '-' + (b.end ? C.fmtClock(b.end) : '?');
+    const range = C.fmtClock(b.start, tz) + '-' + (b.end ? C.fmtClock(b.end, tz) : '?');
     // open = Gusto never recorded the end (no end at all, or an end that is just the clock-out)
-    const title = kind + ' break, ' + (b.paid ? 'paid' : 'unpaid') + ', ' + C.fmtTime(b.start) + ' to ' +
-      (b.end ? C.fmtTime(b.end) : 'no end recorded') + (b.end ? ', ' + b.min + ' min' : '') + '. ' +
+    const title = kind + ' break, ' + (b.paid ? 'paid' : 'unpaid') + ', ' + C.fmtTime(b.start, tz) + ' to ' +
+      (b.end ? C.fmtTime(b.end, tz) : 'no end recorded') + (b.end ? ', ' + b.min + ' min' : '') + '. ' +
       (b.open && b.end ? 'Gusto shows it running until the clock-out, so it may never have been ended. ' : '') +
       (est ? 'Between 21 and 24 min, so it could be either type: counted as ' + (b.paid ? 'paid rest' : 'unpaid meal') + ' from its length. Check it in Gusto.'
         : guessed ? 'Type from its length (20 min or less is paid rest, 25 or more is unpaid meal); Gusto confirms it with the next morning\'s export.'
         : 'Labelled by Gusto.');
     return h`<span class="brk ${b.paid ? 'paid' : 'unpaid'}${b.open ? ' open' : ''}" title="${title}"><span class="bk">${kind}</span><span>${range}</span>${b.end ? h`<span class="bm">${C.fmtMins(b.min)}</span>` : ''}${b.open || !b.end ? h`<span class="bo">open</span>` : ''}${est ? estMark(EST_BREAK_TIP) : ''}</span>`;
   }
-  function gapChip(g) {
+  function gapChip(g, tz) {
     const rule = g.meal ? 'It counts as a meal period.' : 'Under ' + C.MEAL_GAP_MIN + ' min, so it does not count as a meal period.';
-    return h`<span class="brk gap" title="${'Off the clock between shifts, ' + C.fmtTime(g.start) + ' to ' + C.fmtTime(g.end) + ' (' + g.min + ' min). ' + rule}">Off ${C.fmtClock(g.start)}-${C.fmtClock(g.end)} <span class="bm">${C.fmtMins(g.min)}</span></span>`;
+    return h`<span class="brk gap" title="${'Off the clock between shifts, ' + C.fmtTime(g.start, tz) + ' to ' + C.fmtTime(g.end, tz) + ' (' + g.min + ' min). ' + rule}">Off ${C.fmtClock(g.start, tz)}-${C.fmtClock(g.end, tz)} <span class="bm">${C.fmtMins(g.min)}</span></span>`;
   }
   function breaksCell(r) {
     if (C.onlyHoursEntered(r)) return h`<span class="nobrk">-</span>`;
-    const gaps = C.shiftGaps(r.shifts);
+    const tz = C.rowTz(r);
+    const gaps = C.shiftGaps(r.shifts, tz);
     const parts = [];
     r.shifts.forEach((s, i) => {
-      for (const b of s.breaks || []) parts.push(breakChip(b));
+      for (const b of s.breaks || []) parts.push(breakChip(b, tz));
       const g = gaps.find(x => x.afterShift === i);
-      if (g) parts.push(gapChip(g));
+      if (g) parts.push(gapChip(g, tz));
     });
     if (!parts.length) return h`<span class="nobrk">none</span>`;
     return h`<div class="brks">${parts}</div>`;
@@ -2419,11 +2648,12 @@
      Nothing in a closed card relies on a hover tooltip: phones have none. */
   const EST_BREAK_NOTE = "A break marked est. is 21 to 24 min, so it could be either type. It was counted from its length; check it in Gusto.";
   const EST_OT_NOTE = 'OT marked est. is estimated with California rules until Gusto reports it.';
+  const EST_OT_NOTE_NY = 'OT marked est. is estimated with New York rules (over 40 h a week) until Gusto reports it.';
   const sepd = (parts, sep) => parts.map((p, i) => h`${i ? h`<span class="bs-sep">${sep}</span>` : ''}${p}`);
   const nbsp = s => String(s).replace(/ /g, '\u00a0');   // "7:57 AM" never splits from its AM
   // "7:57 AM - 4:20 PM": a narrow By Employee line may break only after the dash (.dl-times .tm)
   function timesLine(r) {
-    const stale = r.work_date < today();
+    const stale = r.work_date < rowToday(r);
     return sepd(C.shiftParts(r).map(p => p.hoursOnly ? h`<span class="pill he">hours entered</span>`
       : h`<span class="tm">${nbsp(p.in)}&nbsp;- ${p.open ? h`<span class="pill in${stale ? ' stale' : ''}">clocked in</span>` : nbsp(p.out)}</span>`), ', ');
   }
@@ -2457,11 +2687,11 @@
       ${job ? h`<div class="pd-job">${job}</div>` : ''}
       ${he ? h`<p class="pd-fine">Hours were entered in Gusto without clock times.</p>` : h`<div>${breaksCell(r)}</div>`}
       <div class="pd-sums"><span>Paid breaks <b>${hrs(r.paid_break_min)}</b></span><span>Unpaid breaks <b>${hrs(r.unpaid_break_min)}</b></span>${r.reg_min != null ? h`<span>Regular <b>${hrs(r.reg_min)}</b></span>` : ''}${ot ? h`<span class="ot">OT <b class="ot">${hrs(ot)}</b></span>` : ''}${dt ? h`<span class="dt">DT <b class="dt">${hrs(dt)}</b></span>` : ''}</div>
-      ${warn.length ? h`<ul class="pd-list">${warn.map(f => h`<li class="warn">${C.flagMsg(f)}</li>`)}</ul>` : ''}
-      ${info.length ? h`<ul class="pd-list">${info.map(f => h`<li class="info">${C.flagMsg(f)}</li>`)}</ul>` : ''}
+      ${warn.length ? h`<ul class="pd-list">${warn.map(f => h`<li class="warn">${C.flagMsg(f, r.region)}</li>`)}</ul>` : ''}
+      ${info.length ? h`<ul class="pd-list">${info.map(f => h`<li class="info">${C.flagMsg(f, r.region)}</li>`)}</ul>` : ''}
       ${r.note ? h`<p class="pd-note"><span class="pd-k">Note in Gusto</span>${r.note}</p>` : ''}
       ${guessed ? h`<p class="pd-fine">${EST_BREAK_NOTE}</p>` : ''}
-      ${r.ot_src === 'est' && (ot || dt) ? h`<p class="pd-fine">${EST_OT_NOTE}</p>` : ''}
+      ${r.ot_src === 'est' && (ot || dt) ? h`<p class="pd-fine">${r.region === 'NY' ? EST_OT_NOTE_NY : EST_OT_NOTE}</p>` : ''}
     </div>`;
   }
   const openAttr = r => S.openCards.has(r.id) ? h` open` : '';
@@ -2596,7 +2826,7 @@
     if (S.q) parts.push('Search: ' + S.q);
     if (S.flaggedOnly) parts.push('Flagged only');
     const sum = freshNow();
-    setHTML($('printHead'), h`<h1>Manager Gusto Timesheets</h1><p>${parts.join(' · ')}</p><p class="faint">Times are Pacific. Hours shown as ${S.fmt === 'hm' ? 'hours:minutes' : 'decimal hours'}.${sum.text ? ' Gusto: ' + sum.text + '.' : ''}${DEMO ? ' Demo data, not real timesheets.' : ''}</p>`);
+    setHTML($('printHead'), h`<h1>Manager Gusto Timesheets</h1><p>${parts.join(' · ')}</p><p class="faint">Times are ${regionDef().tzName}. Hours shown as ${S.fmt === 'hm' ? 'hours:minutes' : 'decimal hours'}.${sum.text ? ' Gusto: ' + sum.text + '.' : ''}${DEMO ? ' Demo data, not real timesheets.' : ''}</p>`);
   }
 
   /* ---------- range + data ---------- */
@@ -2653,9 +2883,16 @@
       S.views = []; S.viewsState = 'error';
     }
   }
+  // last pay period through this one, on every region's own calendar (New York's day can be a day ahead)
   function defaultWindow() {
-    const t = today();
-    return { from: C.presetRange('lastperiod', t).from, to: C.presetRange('period', t).to };
+    let from = '', to = '';
+    for (const k of C.regionsPresent(S.companies, [])) {
+      const g = C.regionDef(k), t = C.todayIn(g.tz, new Date());
+      const a = C.presetRange('lastperiod', t, g).from, b = C.presetRange('period', t, g).to;
+      if (!from || a < from) from = a;
+      if (!to || b > to) to = b;
+    }
+    return { from, to };
   }
   async function loadAll() {
     try {
@@ -2691,7 +2928,7 @@
   // next one. A tab left open must move with it, or it keeps showing last period's days.
   function rolledPreset() {
     if (S.preset === 'custom') return null;
-    const r = C.presetRange(S.preset, today());
+    const r = C.presetRange(S.preset, today(), regionDef());
     return r && (r.from !== S.from || r.to !== S.to) ? r : null;
   }
   function rollPreset() { const r = rolledPreset(); if (r) { S.from = r.from; S.to = r.to; } }
@@ -2739,8 +2976,22 @@
   // the preset buttons and the narrow-screen dropdown both land here
   function choosePreset(id) {
     if (id === 'custom') { startCustom(); return; }
-    const r = C.presetRange(id, today());
+    const r = C.presetRange(id, today(), regionDef());
     if (r) setRange(r.from, r.to, id);
+  }
+  // A region tab: its companies, its views, and the date presets on its own calendar (loading days the
+  // page does not have yet). The chosen region is remembered in this browser (not during a preview).
+  function enterRegion(key) {
+    if (!regionKeys().includes(key)) return;
+    if (key !== S.region) { S.region = key; S.coSel = []; S.dept = ''; }
+    if (!S.viewer) store.set('region', key);
+    regionRange();
+  }
+  // after the region changed: move a preset to that region's dates (a Custom range stays as typed)
+  function regionRange() {
+    const r = rolledPreset();
+    if (r) setRange(r.from, r.to, S.preset);
+    else render();
   }
   function startCustom() {
     clearTimeout(customT); customT = null;
@@ -2804,11 +3055,15 @@
     $('adminPanel').hidden = true; document.body.classList.remove('modal');
     A.editing = null; A.confirm = ''; A.err = ''; A.vEditing = null; A.vConfirm = '';
   }
+  // every company of every region that exists, California first ("All CA companies" covers only those)
+  function adminCompanyKeys() {
+    return C.regionsPresent(S.companies, [...S.rows.values()]).flatMap(k => C.regionCompanyKeys(S.companies, k).map(key => ({ key, region: k })));
+  }
   function adminCompanies(ed) {
     const grants = [...ed.grants].map(C.grantFromKey);
-    return C.regionCompanyKeys(S.companies, S.region).map(key => {
+    return adminCompanyKeys().map(({ key, region }) => {
       const p = C.pickerDepartments(S.people, key, grants);
-      return { key, name: coName(key), depts: p.depts, idle: new Set(p.idle) };
+      return { key, region, name: coName(key), depts: p.depts, idle: new Set(p.idle) };
     });
   }
   function listHtml() {
@@ -2850,9 +3105,10 @@
         ${ed.is_admin ? h`<p class="hint">Admins see every company and department. These choices only matter if admin is turned off.</p>` : vsec ? h`<p class="hint">Optional, on top of any views: everyone in a whole company or department.</p>` : ''}
         <label class="ck strong"><input type="checkbox" data-gc="*" data-gd="*"${allCA ? ' checked' : ''}> All CA companies <span class="faint">every department, including new ones</span></label>
         <div class="co-grants">${cos.map(co => {
-          const whole = allCA || has(co.key, '*');
-          return h`<div class="co-grant${allCA ? ' covered' : ''}">
-            <label class="ck strong"><input type="checkbox" data-gc="${co.key}" data-gd="*"${whole ? ' checked' : ''}${allCA ? ' disabled' : ''}> ${co.name} <span class="faint">all departments</span></label>
+          const cov = allCA && co.region === 'CA';    // "All CA" never covers New York
+          const whole = cov || has(co.key, '*');
+          return h`<div class="co-grant${cov ? ' covered' : ''}">
+            <label class="ck strong"><input type="checkbox" data-gc="${co.key}" data-gd="*"${whole ? ' checked' : ''}${cov ? ' disabled' : ''}> ${co.name} <span class="faint">all departments</span></label>
             <div class="dept-cks">${co.depts.length ? co.depts.map(d => h`<label class="ck"><input type="checkbox" data-gc="${co.key}" data-gd="${d}"${whole || has(co.key, d) ? ' checked' : ''}${whole ? ' disabled' : ''}> ${d}${co.idle.has(d) ? h` <span class="faint">no active people</span>` : ''}</label>`) : h`<span class="faint">No active people synced yet</span>`}</div>
           </div>`;
         })}</div>
@@ -3006,7 +3262,8 @@
     if (S.viewer && S.viewer.email === email) {
       S.viewer = null;
       if (S.crewBeforePreview != null) S.crew = S.crewBeforePreview;
-      S.crewBeforePreview = null;
+      if (S.regionBeforePreview != null) S.region = S.regionBeforePreview;
+      S.crewBeforePreview = null; S.regionBeforePreview = null;
     }
     A.confirm = ''; A.err = ''; renderAdmin(); render();
     toast('Deleted ' + email);
@@ -3016,17 +3273,19 @@
   function previewOf(u) { return { email: u.email, is_admin: u.is_admin, active: u.active, grants: u.grants.slice(), views: (u.views || []).slice() }; }
   function startPreview(email) {
     const u = S.access.find(x => x.email === email); if (!u) return;
-    if (!S.viewer) S.crewBeforePreview = S.crew;
+    if (!S.viewer) { S.crewBeforePreview = S.crew; S.regionBeforePreview = S.region; }
     S.viewer = previewOf(u);
+    S.region = C.pickRegion(regionKeys(), [S.region]);   // a New York-only sign-in opens on New York
     S.crew = C.pickCrew(crewInfo(), '', '').id;
     S.coSel = []; S.dept = '';
-    closeAdmin(); render(); window.scrollTo(0, 0);
+    closeAdmin(); regionRange(); window.scrollTo(0, 0);
   }
   function exitPreview() {
     S.viewer = null;
     if (S.crewBeforePreview != null) S.crew = S.crewBeforePreview;
-    S.crewBeforePreview = null; S.coSel = []; S.dept = '';
-    render();
+    if (S.regionBeforePreview != null) S.region = C.pickRegion(regionKeys(), [S.regionBeforePreview]);
+    S.crewBeforePreview = null; S.regionBeforePreview = null; S.coSel = []; S.dept = '';
+    regionRange();
   }
 
   /* ---------- admin: saved views ---------- */
@@ -3057,7 +3316,7 @@
     const members = [...ed.members].map(C.memberFromKey);
     const has = m => ed.members.has(C.memberKey(m));
     const count = C.viewHeadcount({ members }, S.people);
-    const cos = C.regionCompanyKeys(S.companies, S.region);
+    const cos = adminCompanyKeys().map(c => c.key);
     return h`<form id="vForm" class="adm-form" novalidate>
       <h3>${ed.isNew ? 'Add a view' : 'Edit view'}</h3>
       <div class="vfld">
@@ -3290,7 +3549,7 @@
         if (S.coSel.length >= vis.length) S.coSel = [];
         render(); break;
       }
-      case 'region': S.region = d.region; S.coSel = []; S.dept = ''; render(); break;
+      case 'region': enterRegion(d.region); break;
       case 'clear-filters':
         S.coSel = []; S.dept = ''; S.q = ''; $('q').value = ''; S.flaggedOnly = false; render(); break;
       case 'csv': setPop(''); exportCsv(); break;
@@ -3428,11 +3687,17 @@
   }
   // ?view=<id>: open that saved view if this sign-in may use it (an admin: any view; a manager: their
   // own), otherwise quietly ignore it. Then it leaves the address, so a reload keeps the tab they pick.
+  // the region a ?view=<id> link belongs to, when this sign-in may open it there
+  function linkRegion() {
+    if (!LINK_VIEW) return '';
+    return regionKeys().find(k => C.crewsFor(viewer(), S.views, k).list.some(c => c.id === LINK_VIEW)) || '';
+  }
   function applyLinkView() {
     const pick = C.pickCrew(crewInfo(), LINK_VIEW, S.crew);
     S.crew = pick.id;
     if (!pick.fromLink) return;
-    if (!S.viewer) store.set('savedView', S.crew);
+    // the view and its region tab (startApp opened the link's region), so a reload lands on both
+    if (!S.viewer) { store.set('savedView', S.crew); store.set('region', S.region); }
     if (QV === 'emp' || QV === 'day') S.view = store.get('view', 'day') === 'emp' ? 'emp' : 'day';   // it was a view's id, not a layout
     try {
       const q = new URLSearchParams(location.search); q.delete('view');
@@ -3442,12 +3707,15 @@
     catch (e) { /* the address keeps it; harmless */ }
   }
   function startApp() {
-    const r = C.presetRange('period', today());
-    S.preset = 'period'; S.from = r.from; S.to = r.to;
     // demo: ?demo&as=trim.lead opens straight onto that made-up sign-in's preview
     const as = DEMO ? String(QS.get('as') || '').toLowerCase() : '';
     const u = as && S.access.find(x => x.email === as || x.email.split('@')[0] === as);
-    if (u) { S.crewBeforePreview = S.crew; S.viewer = previewOf(u); S.crew = ''; }
+    if (u) { S.crewBeforePreview = S.crew; S.regionBeforePreview = S.region; S.viewer = previewOf(u); S.crew = ''; }
+    // the region tab that opens: a ?view= link's, else the one remembered here, else the first this sign-in
+    // has (a New York-only sign-in lands on New York); then the pay period on that region's calendar
+    S.region = C.pickRegion(regionKeys(), [linkRegion(), S.viewer ? '' : store.get('region', '')]);
+    const r = C.presetRange('period', today(), regionDef());
+    S.preset = 'period'; S.from = r.from; S.to = r.to;
     applyLinkView();
     wire(); render(); measureHeader();
     showA2hs(false);
