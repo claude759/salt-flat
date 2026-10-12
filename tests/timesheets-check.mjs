@@ -702,6 +702,28 @@ check('crewsFor: admin = Everyone + every view; manager = only their views, "All
   eq(C.crewsFor(MGR(['trim'], [], { active: false }), KNOWN).list, [], 'turned off: no tabs');
   ok(!C.crewsFor(MGR(['trim']), KNOWN).everyone, 'a manager never gets Everyone');
 });
+check('marks explain themselves on click or tap: i, est., note and flag pills open a bubble (hover alone did nothing on phones)', () => {
+  ok(/<div id="tipPop" class="tip-pop" role="tooltip" hidden><\/div>/.test(src), 'the shared bubble element is missing');
+  ok(/const TIP_SEL = '\.infomark, abbr\.est, \.notemark, \.flag';/.test(src), 'the marks that open the bubble');
+  const oc = appFn('onClick');
+  ok(/const tipEl = e\.target\.closest\(TIP_SEL\);/.test(oc) && /showTip\(tipEl\)/.test(oc), 'a click on a mark must open its bubble');
+  ok(/t\.textContent = text;/.test(appFn('showTip')), 'the bubble text must go in as text, never HTML');
+  ok(/e\.key === 'Enter' \|\| e\.key === ' '/.test(src), 'Enter or Space on a focused mark opens it too');
+  ok(!/hover for why|hover to read it/.test(src), 'the Key still says hover');
+});
+check('full viewer (every company and department granted, not admin): the admin\'s page with their views as tabs, no Admin', () => {
+  const ALL = [{ company: '*', department: '*' }];
+  const fv = MGR(['harvest', 'trim', 'golf'], ALL);
+  ok(C.fullViewer(fv), 'a (*,*) grant makes a full viewer');
+  const c = C.crewsFor(fv, KNOWN);
+  eq([c.everyone, c.list.map(x => x.id)], [true, ['trim', 'golf', 'harvest']], 'Everyone + their views in tab order, no "All my people"');
+  ok(!C.fullViewer(MGR(['trim'], [{ company: '*', department: 'Trim' }])), 'a partial grant is still a manager');
+  ok(!C.fullViewer(MGR(['trim'], ALL, { active: false })), 'turned off: not a full viewer');
+  ok(!C.fullViewer({ active: true, is_admin: true, grants: ALL }), 'an admin is an admin, not a full viewer');
+  eq(C.crewsFor(MGR(['trim', 'missing'], ALL), KNOWN).list.map(x => x.id), ['trim'], 'a view whose members did not load is left out, Everyone still works');
+  ok(/function managerMode\(\) \{[^}]*!C\.fullViewer\(v\)/.test(src), 'managerMode must exclude full viewers (they get the grouped Everyone page)');
+  ok(/\$\('adminBtn'\)\.hidden = !\(me && me\.is_admin\)/.test(src), 'the Admin button stays admins-only');
+});
 check('pickCrew: a ?view= link the sign-in may use, else the remembered tab, else Everyone (admin) or the first view (manager)', () => {
   const admin = C.crewsFor({ active: true, is_admin: true }, KNOWN), mgr = C.crewsFor(MGR(['harvest', 'golf']), KNOWN);
   eq(C.pickCrew(admin, 'harvest', 'trim'), { id: 'harvest', fromLink: true }, 'admin: any view');

@@ -280,6 +280,12 @@
   .infomark{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;
     border:1px solid #3a4252;color:var(--faint);font:italic 700 11px/1 Georgia,"Times New Roman",serif;cursor:help;flex:none}
   .infomark:hover{color:var(--muted);border-color:var(--faint)}
+  /* a click or tap on an i, est., note or flag mark opens its explanation here (hover alone did nothing on
+     phones, and a click did nothing anywhere: Gianni 2026-10-12) */
+  .infomark,abbr.est,.notemark,.flag{cursor:pointer}
+  .tip-pop{position:fixed;z-index:200;max-width:min(300px,calc(100vw - 24px));background:var(--panel2);color:var(--text);
+    border:1px solid var(--line);border-radius:10px;padding:9px 12px;font-size:13px;line-height:1.45;white-space:pre-line;
+    box-shadow:var(--shadow)}
 
   .pill{display:inline-block;font-size:10.5px;font-weight:650;border-radius:999px;padding:0 8px;line-height:18px;white-space:nowrap}
   .pill.in{background:rgba(56,189,248,.14);color:var(--ot-text)}
@@ -774,10 +780,10 @@
                 <span><span class="brk paid"><span class="bk">Rest</span>paid</span> stays in hours</span>
                 <span><span class="brk unpaid"><span class="bk">Meal</span>unpaid</span> taken out of hours</span>
                 <span><span class="brk gap">Off</span> off the clock between shifts</span>
-                <span><abbr class="est" title="A break of 21 to 24 min could be either type; it was counted from its length. Overtime marked est. is estimated until Gusto reports it.">est.</abbr> worth a check in Gusto, hover for why</span>
+                <span><abbr class="est" title="A break of 21 to 24 min could be either type; it was counted from its length. Overtime marked est. is estimated until Gusto reports it.">est.</abbr> worth a check in Gusto, click for why</span>
                 <span><span class="flag warn">Flag</span> worth a look, not a legal finding</span>
                 <span><span class="infomark" aria-hidden="true">i</span> a note, for example a break type guessed from its length</span>
-                <span><span class="notemark">note</span> a note on this day in Gusto, hover to read it</span>
+                <span><span class="notemark">note</span> a note on this day in Gusto, click to read it</span>
               </div>
             </div>
           </div>
@@ -807,6 +813,7 @@
   </div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div>
+<div id="tipPop" class="tip-pop" role="tooltip" hidden></div>
 
 <script id="ts-core">
 /* Manager Gusto Timesheets core: the pure logic, shared with tests/timesheets-check.mjs (run via vm).
@@ -1414,11 +1421,18 @@
   // return a manager's view, there are no tabs and no filtering (pending lists those views by name).
   const ALL_MINE = '*';
   const ALL_MINE_LABEL = 'All my people';
+  // A "full viewer": not an admin, but granted every CA company and department ('*','*'). They get the
+  // admin's page (Everyone grouped by company and department, plus their saved views as tabs) without
+  // the Admin panel (Gianni 2026-10-12: "give victoria the same view I have with these selectors").
+  function fullViewer(v) {
+    return !!v && !v.is_admin && v.active === true && normalizeGrants(v.grants).some(g => g.company === '*' && g.department === '*');
+  }
   function crewsFor(viewer, views) {
     const none = { everyone: false, list: [], pending: [] };
     if (!viewer || viewer.active === false) return none;
     if (viewer.is_admin) return { everyone: true, list: normViews(views), pending: [] };
     if (viewer.active !== true) return none;
+    if (fullViewer(viewer)) return { everyone: true, list: viewsFor(viewer.views, views).filter(v => v.known), pending: [] };
     const mine = viewsFor(viewer.views, views);
     if (mine.some(v => !v.known)) return { everyone: false, list: [], pending: mine };
     if (mine.length && normalizeGrants(viewer.grants).length) mine.push({ id: ALL_MINE, label: ALL_MINE_LABEL, all: true, sort: 0, members: [], known: true });
@@ -1673,7 +1687,7 @@
     RESERVED_DEPT, canView, regionCompanyKeys, visibleCompanyKeys, grantKey, grantFromKey, normalizeGrants, pickerDepartments, describeGrants,
     VIEW_ID_RE, VIEW_LABEL_MAX, memberKey, memberFromKey, normalizeMembers, normView, normViews, viewHas, viewCompanyKeys,
     departmentOptions, viewHeadcount, viewMemberCounts, describeViewMembers, viewPicker, slugify, uniqueViewId,
-    viewsFor, ALL_MINE, ALL_MINE_LABEL, crewsFor, pickCrew, describeAccess, viewsToSave, LIVE_URL, viewLink,
+    viewsFor, ALL_MINE, ALL_MINE_LABEL, fullViewer, crewsFor, pickCrew, describeAccess, viewsToSave, LIVE_URL, viewLink,
     normText, filterRows, gustoMinute, MEAL_GAP_MIN, shiftGaps, labelSrcText, onlyHoursEntered,
     fmtDayShort, shiftParts, shiftsText, breakUnsure, breakSummary, breakSummaryText,
     csvCell, buildCsv, csvFilename, freshness, freshSummary,
@@ -2045,8 +2059,9 @@
   function resolved(v) { return v ? Object.assign({}, v, { views: C.viewsFor(v.views, S.views) }) : null; }
   const viewer = () => resolved(S.viewer || S.me);
   const filterViewer = () => resolved(S.viewer || (DEMO ? S.me : null));   // demo has no RLS, so the page plays it
-  // a manager = any sign-in that is not an admin (also an admin previewing one): flat list, no Everyone
-  function managerMode() { const v = S.viewer || S.me; return !!v && !v.is_admin; }
+  // a manager = any sign-in that is not an admin (also an admin previewing one): flat list, no Everyone.
+  // A full viewer (every company and department granted) gets the admin's page instead, minus Admin.
+  function managerMode() { const v = S.viewer || S.me; return !!v && !v.is_admin && !C.fullViewer(v); }
   const regionDef = () => C.REGIONS.find(r => r.key === S.region) || C.REGIONS[0];
   function companyRow(key) { return S.companies.find(c => c.key === key) || null; }
   function notConnected(key) { const c = companyRow(key); return !c || !c.connected; }
@@ -3214,8 +3229,31 @@
     if (dx) pop.style.transform = 'translateX(' + Math.round(dx) + 'px)';
   }
 
+  /* ---------- explanation bubble for the small marks (i, est., note, flags) ---------- */
+  const TIP_SEL = '.infomark, abbr.est, .notemark, .flag';
+  let tipFor = null;
+  function hideTip() { const t = $('tipPop'); if (t && !t.hidden) { t.hidden = true; } tipFor = null; }
+  function showTip(el) {
+    const text = el.getAttribute('data-tip') || el.getAttribute('title') || el.getAttribute('aria-label') || '';
+    if (!text) return;
+    if (tipFor === el) { hideTip(); return; }          // a second click on the same mark closes it
+    const t = $('tipPop');
+    t.textContent = text;
+    t.hidden = false;
+    const r = el.getBoundingClientRect(), vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    const w = t.offsetWidth, ht = t.offsetHeight;
+    let left = Math.min(Math.max(8, r.left + r.width / 2 - w / 2), vw - w - 8);
+    let top = r.bottom + 8;
+    if (top + ht > vh - 8) top = Math.max(8, r.top - ht - 8);   // no room below: open above
+    t.style.left = Math.round(left) + 'px'; t.style.top = Math.round(top) + 'px';
+    tipFor = el;
+  }
+
   /* ---------- events ---------- */
   function onClick(e) {
+    const tipEl = e.target.closest(TIP_SEL);
+    if (tipEl && !tipEl.closest('summary')) { e.preventDefault(); showTip(tipEl); return; }   // phone card marks open the card instead
+    hideTip();
     if (S.pop && !e.target.closest('.popwrap')) setPop('');     // a click anywhere else closes a popover
     const el = e.target.closest('[data-act]');
     if (!el || el.disabled) return;
@@ -3296,6 +3334,8 @@
     $('adminPanel').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'vFind') e.preventDefault(); });
     $('adminPanel').addEventListener('mousedown', e => { if (e.target === $('adminPanel') && !A.editing && !A.vEditing) closeAdmin(); });
     document.addEventListener('keydown', e => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches(TIP_SEL)) { e.preventDefault(); showTip(e.target); return; }
+      if (e.key === 'Escape' && tipFor) { const back = tipFor; hideTip(); back.focus(); return; }
       if (e.key !== 'Escape') return;
       if (!$('adminPanel').hidden) {
         if (A.section === 'views' && A.vEditing) { A.vEditing = null; renderAdmin(); }
@@ -3305,7 +3345,8 @@
       }
       if (S.pop) { const back = S.pop === 'fresh' ? 'freshBtn' : S.pop === 'menu' ? 'menuBtn' : 'moreBtn'; setPop(''); $(back).focus(); }
     });
-    window.addEventListener('resize', () => { measureHeader(); stripFade(); if (S.pop) setPop(S.pop); });
+    window.addEventListener('resize', () => { hideTip(); measureHeader(); stripFade(); if (S.pop) setPop(S.pop); });
+    window.addEventListener('scroll', hideTip, { passive: true, capture: true });
     // crossing the phone width swaps cards and tables; printing always uses the tables
     if (PHONE_MQ) { if (PHONE_MQ.addEventListener) PHONE_MQ.addEventListener('change', () => render()); else if (PHONE_MQ.addListener) PHONE_MQ.addListener(() => render()); }
     window.addEventListener('beforeprint', () => { if (!S.printing) { S.printing = true; render(); } });
