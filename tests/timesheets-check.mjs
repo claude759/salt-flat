@@ -709,7 +709,10 @@ check('break policy line: one quiet sentence; company names only where the page 
     'Breaks: a paid rest break every 4 hours (10 min at Filifera and Imperial, 15 min at Slane and Waf & Gus), and an unpaid 30-min meal by the 5th hour (a second after 10 hours).');
   eq(C.breakPolicyText(['filifera', 'wafgus'], null), 'Breaks: a paid 10 or 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).', 'a crew list never names companies');
   eq(C.breakPolicyText(['wafgus'], null), 'Breaks: a paid 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).');
-  ok(/el\.textContent = C\.breakPolicyText\(keys, lay\.flat \? null : coName, S\.region\)/.test(src), 'renderPolicy must pass no names in a flat (crew) layout, the active region, and set text, not HTML');
+  ok(/C\.breakPolicyText\(keys, lay\.flat \? null : coName, S\.region\)/.test(src), 'renderPolicy must pass no names in a flat (crew) layout and the active region');
+  const rp = appFn('renderPolicy');
+  ok(/setHTML\(el, h`<span class="pol-k">Break policy<\/span>/.test(rp) && !/innerHTML/.test(rp), 'the policy box goes through setHTML(h``), never raw HTML');
+  ok(/\.policy\{display:flex[^}]*border-left:3px solid var\(--accent\)/.test(src), 'the policy is a highlighted box, not fine print');
 });
 check('marks explain themselves on click or tap: i, est., note and flag pills open a bubble (hover alone did nothing on phones)', () => {
   ok(/<div id="tipPop" class="tip-pop" role="tooltip" hidden><\/div>/.test(src), 'the shared bubble element is missing');
