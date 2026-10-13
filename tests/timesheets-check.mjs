@@ -703,6 +703,13 @@ check('crewsFor: admin = Everyone + every view; manager = only their views, "All
   eq(C.crewsFor(MGR(['trim'], [], { active: false }), KNOWN).list, [], 'turned off: no tabs');
   ok(!C.crewsFor(MGR(['trim']), KNOWN).everyone, 'a manager never gets Everyone');
 });
+check('number columns line up: est. and + hang to the right of the number, never push it left; totals use the same padding', () => {
+  ok(/\.ts \.nslot abbr\.est\{position:absolute;left:100%/.test(src) && /\.ts \.nslot \.plus\{position:absolute;left:100%/.test(src), 'est. and + must sit outside the number');
+  ok(/\.ts th\.c-ot,\.ts td\.c-ot\{padding-right:38px\}/.test(src) && /\.ts th\.c-hours,\.ts td\.c-hours\{padding-right:18px\}/.test(src), 'header and cells share the reserved padding');
+  ok(/<span class="nslot"><span class="ot">\$\{hrs\(ot\)\}<\/span>/.test(appFn('otCell')), 'otCell wraps the number in a slot');
+  ok((src.match(/class="num c-hours">\$\{(minCell|hrs)\(t\.worked_min\)\}/g) || []).length === 2, 'group and total Hours cells need c-hours (else 8px off)');
+  ok(/class="num c-hours" title="Hours worked/.test(src) && /class="num c-ot">OT<\/th>/.test(src), 'headers carry the column classes');
+});
 check('break policy line: one quiet sentence; company names only where the page shows companies', () => {
   const nm = { filifera: 'Filifera', slane: 'Slane', wafgus: 'Waf & Gus', imperial: 'Imperial' };
   eq(C.breakPolicyText(['filifera', 'slane', 'wafgus', 'imperial'], k => nm[k]),
