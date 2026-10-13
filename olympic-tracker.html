@@ -58,6 +58,7 @@ body.ro .editonly{display:none !important}
 .stable tbody td.st:hover{background:color-mix(in srgb,var(--olyDot) 12%,var(--surface))}
 .stable tfoot td{font-weight:700;border-top:2px solid var(--line);border-bottom:none;background:color-mix(in srgb,var(--sc,transparent) 5%,var(--surface))}
 .stable.transit{min-width:0;width:auto}
+.stable:not(.transit){table-layout:fixed}
 .tchip{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--olyDot);border:1px solid var(--olyDot);border-radius:20px;padding:1px 9px}
 .stable tfoot td.st{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
 .mhdr .mdate{font-weight:400;color:var(--text2);font-size:12px}
@@ -292,6 +293,7 @@ function normalize(s){
       from:normStr(t.from),fromLicense:normStr(t.fromLicense),to:normStr(t.to),toLicense:normStr(t.toLicense),
       status:t.status==='intransit'?'intransit':'',shipped:normStr(t.shipped), // set by the Metrc feed
       fileUrl:normUrl(t.fileUrl),
+      fileRef:/^[a-z0-9][a-z0-9._-]{2,100}$/.test(normStr(t.fileRef))?normStr(t.fileRef):'',fileSha:normStr(t.fileSha).replace(/[^0-9a-f]/g,''), // manifest stored by the Metrc feed
       packages:(Array.isArray(t.packages)?t.packages:[]).filter(p=>p&&typeof p==='object').map(p=>({
         id:normId(p.id,'PKG'),tag:normStr(p.tag),strain:normStr(p.strain),item:normStr(p.item),
         harvest:normStr(p.harvest),grams:normNum(p.grams)??0,shippedDisplay:normStr(p.shippedDisplay),
@@ -418,6 +420,7 @@ async function pushRemote(){
         const lt=state.transfers.find(x=>x.id===st.id);
         if(!lt){state.transfers.push(st);continue;}
         if(!lt.shipped) lt.shipped=st.shipped;
+        if(st.fileRef&&!lt.fileUrl){lt.fileRef=st.fileRef;lt.fileSha=st.fileSha;}
         if(lt.status==='intransit'&&st.status!=='intransit'){lt.status=st.status;lt.date=st.date;
           for(const lp of lt.packages){const sp=st.packages.find(x=>x.id===lp.id);if(sp)lp.grams=sp.grams;}}
         for(const sp of st.packages) if(!lt.packages.some(x=>x.id===sp.id)) lt.packages.push(sp);
@@ -497,6 +500,21 @@ const XK=(pkg,kind)=>pkg+':'+kind;
 const usDate=d=>{const m=String(d||'').match(/^(\d{4})-(\d\d)-(\d\d)/);return m?`${+m[2]}/${+m[3]}/${m[1]}`:String(d||'')};
 
 function allPackages(){return state.transfers.filter(t=>t.status!=='intransit').flatMap(t=>t.packages.map(p=>({...p,transfer:t})))} // in-transit bulk isn't Filifera's yet
+// a transfer's manifest: a hand-attached link, or the PDF the Metrc feed stored (opened through olympic_get_file)
+const manifestLink=(t,cls,inner)=>t.fileUrl?`<a class="${cls}" href="${esc(t.fileUrl)}" target="_blank" rel="noopener" title="Open the Metrc manifest PDF">${inner}</a>`
+  :t.fileRef?`<a class="${cls}" href="#" data-fileref="${esc(t.fileRef)}" title="Open the Metrc manifest PDF">${inner}</a>`:'';
+async function openFileRef(name){
+  const w=window.open('','_blank'); // open now: a window opened after an await is treated as a popup and blocked
+  if(w) w.document.write('<p style="font:14px -apple-system,sans-serif;padding:24px;color:#666">Opening the manifest&hellip;</p>');
+  try{
+    const r=await fetch(`${SB_URL}/rest/v1/rpc/olympic_get_file`,{method:'POST',headers:{...SB_H,'Content-Type':'application/json'},body:JSON.stringify({p_name:name})});
+    const j=r.ok?await r.json():null;
+    if(!j||!j.b64) throw new Error('not found');
+    const bin=atob(j.b64), u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i);
+    const url=URL.createObjectURL(new Blob([u],{type:j.mime||'application/pdf'}));
+    if(w) w.location.href=url; else location.href=url;
+  }catch(e){ if(w) w.close(); alert('That file could not be opened. Try again in a minute.'); }
+}
 const asOfDay=s=>{const d=new Date(s||'');return Number.isNaN(d.getTime())?'':d.toLocaleDateString('en-US',{timeZone:'America/Los_Angeles'});};
 function metrcBulkOf(p){ // Metrc's bulk on hand: the Metrc API reading, else Distru's Metrc-synced copy
   if(p.metrcBulk) return {g:p.metrcBulk.g,src:`Metrc API, ${asOfDay(p.metrcBulk.asOf)}`};
@@ -622,13 +640,15 @@ const STAGES=[ // table columns, left to right: [dialog kind, entity, title, [[c
   ['remit','fil','Remitted to Filifera',[['remit','Remitted',1,'Collected by Nabis minus Nabis fees']]],
   ['settle','oly','Back to Olympic',[['owed','Owed',1,'Remitted minus other and packaging, floored at $0']]]];
 const ENTC={oly:'var(--olyDot)',fil:'var(--filDot)',nab:'var(--nabDot)',ret:'var(--retDot)'};
+// column shares (% of the table), the natural widths at a 1243px screen; fixed so every transfer's table lines up
+const COLW={st:9.09,recv:6.14,left:4.71,mleft:5.22,made:6.82,cost:5.89,filu:5.13,nrec:6.14,nval:6.48,open:4.63,nabu:5.13,del:7.41,netsales:6.48,await:6.4,remit:7.15,owed:7.15};
 
 function flowHTML(t){
   const open=!collapsedFlows.has(t.id);
   const header=`<div class="mhdr${open?'':' closed'}" data-ftoggle="${esc(t.id)}">
     <span class="mdate">${esc(usDate(t.date))}</span>
     <b>Manifest ${esc(t.manifest)}</b>
-    ${t.fileUrl?`<a class="matt" href="${esc(t.fileUrl)}" target="_blank" rel="noopener" title="Open the Metrc manifest PDF">&#128206;</a>`:''}
+    ${manifestLink(t,'matt','&#128206;')}
     ${t.status==='intransit'?`<span class="tchip">In transit &middot; shipped ${esc(usDate(t.shipped||t.date))}</span>`:''}
     <span class="chev">${open?'&#9662;':'&#9656;'}</span>
     ${open?'':`<span class="msum" id="ms-${esc(t.id)}"></span>`}
@@ -650,7 +670,8 @@ function flowHTML(t){
   const rows=t.packages.map(p=>`<tr><td class="st" data-modal="${p.id}:src" tabindex="0" title="Metrc bulk, tag and batch codes">${esc(p.strain)}</td>`
     +each((kind,sc,[key,lbl,hl],i)=>`<td class="c${i?'':' gs'}${hl?' k':''}" id="tc-${p.id}-${key}" data-modal="${p.id}:${kind}" tabindex="0" style="--sc:${sc}"></td>`)+'</tr>').join('');
   const foot=`<tr><td class="st">Total</td>`+each((kind,sc,[key,lbl,hl],i)=>`<td class="${i?'':'gs'}${hl?' k':''}" id="tt-${T}-${key}" style="--sc:${sc}"></td>`)+'</tr>';
-  return `<div class="flowwrap">${header}<table class="stable"><thead><tr class="gh"><th class="st" rowspan="2">Strain</th>${gh}</tr><tr class="sh">${sh}</tr></thead>
+  const cols=`<colgroup><col style="width:${COLW.st}%">${STAGES.flatMap(([,,,cs])=>cs.map(([k])=>`<col style="width:${COLW[k]||6}%">`)).join('')}</colgroup>`;
+  return `<div class="flowwrap">${header}<table class="stable">${cols}<thead><tr class="gh"><th class="st" rowspan="2">Strain</th>${gh}</tr><tr class="sh">${sh}</tr></thead>
     <tbody>${rows}</tbody><tfoot>${foot}</tfoot></table></div>`;
 }
 
@@ -663,7 +684,7 @@ function tableVals(p,c){ // per strain: n = numbers for the totals row, v = [cel
   const v={
     recv:[`${g1(p.grams)} g`,`${p.shippedDisplay||lb2(p.grams)+' lb'} received on manifest ${p.transfer?.manifest||''}`],
     left:[`<span class="${c.remaining<-0.001?'neg':''}">${g1(c.remaining)} g</span>`,c.remaining<-0.001?'More was packaged than was received. Check the runs or the manifest weight.':'Bulk not yet packaged, by our count'],
-    mleft:[mb==null?'&mdash;':`${off?'<span class="warn" aria-label="Metrc disagrees with our count">&#9888;</span> ':''}<span class="${off?'warn':''}">${g1(mb)} g</span>`,mb==null?'No Metrc reading yet':(off?`Metrc shows ${g1(Math.abs(mb-c.remaining))} g ${mb>c.remaining?'more':'less'} than our count (${mr.src}). Open for the reconciliation.`:`Matches our count within 60 g (${mr.src})`)],
+    mleft:[mb==null?'<span class="dim">&ndash;</span>':`${off?'<span class="warn" aria-label="Metrc disagrees with our count">&#9888;</span> ':''}<span class="${off?'warn':''}">${g1(mb)} g</span>`,mb==null?'No Metrc reading yet':(off?`Metrc shows ${g1(Math.abs(mb-c.remaining))} g ${mb>c.remaining?'more':'less'} than our count (${mr.src}). Open for the reconciliation.`:`Matches our count within 60 g (${mr.src})`)],
     made:[samp?`${cnt(jars)} + ${cnt(samp)}`:cnt(jars),`${cnt(jars)} jars + ${cnt(samp)} budtender samples`+(adj.length?` · Metrc fixes: ${adj.map(a=>adjAmt(a)+' '+a.item).join(', ')}`:'')],
     cost:[money(n.cost),`${money(c.labor)} labor + ${money(c.materials)} materials`],
     filu:[fs?`${cnt(fs.jars)} jars${fs.pouches?` + ${cnt(fs.pouches)} samples`:''}`:'&mdash;',fs?`${cnt(fs.jars)} jars${fs.pouches?` + ${cnt(fs.pouches)} samples`:''} still at Filifera (Distru, ${usDate(fs.asOf)})`:'No Distru snapshot yet'],
@@ -676,7 +697,12 @@ function tableVals(p,c){ // per strain: n = numbers for the totals row, v = [cel
     remit:[money(c.remitted),`${money(c.collected)} collected − ${money(c.nabisFees)} Nabis fees`],
     await:[money(n.await),'Delivered net sales Nabis has not remitted yet; Nabis fees still come off this'],
     owed:[`<span class="pos">${money(c.net)}</span>`,`${money(c.remitted)} remitted${(c.settle.other||0)>0.005?` − ${money(c.settle.other)} other`:''} − ${money(c.labor+c.materials)} packaging${c.unrecovered>0.005?` · ${money(c.unrecovered)} of costs still ahead`:''}`]};
+  quietStages(v,{pack:!c.runs.length,nabis:!nrec&&!st,retail:!c.orders.length,remit:!(c.collected>0.005)&&!(c.remitted>0.005)});
   return {n,v};
+}
+const STAGE_KEYS={pack:['made','cost','filu'],nabis:['nrec','nval','open','nabu'],retail:['del','netsales','await'],remit:['remit','owed']};
+function quietStages(v,idle){ // a stage that hasn't started shows a quiet dash, not a row of zeros
+  for(const [st,keys] of Object.entries(STAGE_KEYS)) if(idle[st]) for(const k of keys) if(v[k]) v[k]=['<span class="dim">&ndash;</span>','Nothing here yet'];
 }
 
 let modal=null; // {pkg, kind} while a bubble editor dialog is open
@@ -716,7 +742,7 @@ function srcBody(p){
   const gains=adjFor(p.id).filter(a=>a.units>0);
   return `<div class="subbub oly">
       <div class="sbhead"><span class="biglbl" style="flex:1">${esc(p.item||p.strain)}</span>
-        ${t&&t.fileUrl?`<a class="doclink" href="${esc(t.fileUrl)}" target="_blank" rel="noopener" title="Open the Metrc manifest PDF">&#128206; Manifest ${esc(t.manifest)}</a>`:''}</div>
+        ${t?manifestLink(t,'doclink',`&#128206; Manifest ${esc(t.manifest)}`):''}</div>
       <div class="stockline">Metrc tag <b>${esc(p.tag)}</b>${p.harvest?` &middot; harvest ${esc(p.harvest)}`:''}</div>
       ${p.metrcBulk&&p.metrcBulk.tags.length?`<div class="stockline">Re-tagged at Filifera as ${p.metrcBulk.tags.map(x=>`<b title="${esc(x)}">&hellip;${esc(x.slice(-5))}</b>`).join(', ')}</div>`:''}
       ${p.autoBatches?`<div class="stockline">Production batches (from Metrc, matched to Nabis automatically): <b>${esc(p.autoBatches)}</b></div>`:''}
@@ -1014,10 +1040,13 @@ function refreshCalc(){
     const a={};
     for(const p of tr.packages){const {n}=tableVals({...p,transfer:tr},calcPkg(p));for(const k in n)a[k]=(a[k]||0)+n[k];}
     const set=(k,h)=>{const el=f(k);if(el)el.innerHTML=h;};
-    set('recv',g1(a.recv)+' g');set('left',`<span class="${a.left<-0.001?'neg':''}">${g1(a.left)} g</span>`);set('mleft',g1(a.mleft)+' g');set('nval',money(a.nval));set('made',a.samp?`${cnt(a.jars)} + ${cnt(a.samp)}`:cnt(a.jars));
+    set('recv',g1(a.recv)+' g');set('left',`<span class="${a.left<-0.001?'neg':''}">${g1(a.left)} g</span>`);set('mleft',a.mleft?g1(a.mleft)+' g':'<span class="dim">&ndash;</span>');set('nval',money(a.nval));set('made',a.samp?`${cnt(a.jars)} + ${cnt(a.samp)}`:cnt(a.jars));
     set('cost',money(a.cost));set('filu',`${cnt(a.filu)} jars${a.filp?` + ${cnt(a.filp)} samples`:''}`);set('nrec',cnt(a.nrec));set('open',cnt(a.open));set('nabu',cnt(a.nabu));
     set('del',a.of?`${cnt(a.del)} / ${cnt(a.of)}`:cnt(a.del));set('netsales',money(a.net));set('remit',money(a.remit));set('await',money(a.await));
     set('owed',`<span class="pos">${money(a.owed)}</span>`);
+    const tv={};for(const k of Object.values(STAGE_KEYS).flat())tv[k]=1;
+    quietStages(tv,{pack:!a.jars&&!a.samp,nabis:!a.nrec,retail:!a.del&&!a.of&&!a.net,remit:!(a.remit>0.005)});
+    for(const [k,x] of Object.entries(tv)) if(Array.isArray(x)) set(k,x[0]);
   }
   for(const tr of state.transfers){ // collapsed-section one-line summary
     const el=document.getElementById('ms-'+tr.id); if(!el) continue;
@@ -1103,6 +1132,8 @@ document.addEventListener('input',e=>{
 });
 
 document.addEventListener('click',e=>{
+  const fr=e.target.closest('[data-fileref]');
+  if(fr){e.preventDefault();openFileRef(fr.dataset.fileref);return;}
   const ot=e.target.closest('[data-otoggle]');
   if(ot&&!e.target.closest('input,button,a')){
     const k=ot.dataset.otoggle;
