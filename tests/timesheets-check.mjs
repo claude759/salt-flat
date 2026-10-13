@@ -713,8 +713,9 @@ check('number columns line up: est. and + hang to the right of the number, never
 check('break policy line: one quiet sentence; company names only where the page shows companies', () => {
   const nm = { filifera: 'Filifera', slane: 'Slane', wafgus: 'Waf & Gus', imperial: 'Imperial' };
   eq(C.breakPolicyText(['filifera', 'slane', 'wafgus', 'imperial'], k => nm[k]),
-    'Breaks: a paid rest break every 4 hours (10 min at Filifera and Imperial, 15 min at Slane and Waf & Gus), and an unpaid 30-min meal by the 5th hour (a second after 10 hours).');
-  eq(C.breakPolicyText(['filifera', 'wafgus'], null), 'Breaks: a paid 10 or 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).', 'a crew list never names companies');
+    'Breaks: a paid rest break every 4 hours (10 min at Imperial, 15 min at Filifera, Slane and Waf & Gus), and an unpaid 30-min meal by the 5th hour (a second after 10 hours).');
+  eq(C.breakPolicyText(['imperial', 'wafgus'], null), 'Breaks: a paid 10 or 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).', 'a crew list never names companies');
+  eq(C.breakPolicyText(['filifera', 'wafgus'], null), 'Breaks: a paid 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).', 'Filifera moved to 15-min rests on 2026-10-12');
   eq(C.breakPolicyText(['wafgus'], null), 'Breaks: a paid 15-min rest break every 4 hours, and an unpaid 30-min meal by the 5th hour (a second after 10 hours).');
   ok(/C\.breakPolicyText\(keys, lay\.flat \? null : coName, S\.region\)/.test(src), 'renderPolicy must pass no names in a flat (crew) layout and the active region');
   const rp = appFn('renderPolicy');
