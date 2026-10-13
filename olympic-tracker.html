@@ -57,6 +57,8 @@ body.ro .editonly{display:none !important}
 .stable tbody td.st{font-weight:700;font-size:13.5px;color:var(--olyDot);cursor:pointer;--sc:var(--olyDot)}
 .stable tbody td.st:hover{background:color-mix(in srgb,var(--olyDot) 12%,var(--surface))}
 .stable tfoot td{font-weight:700;border-top:2px solid var(--line);border-bottom:none;background:color-mix(in srgb,var(--sc,transparent) 5%,var(--surface))}
+.stable.transit{min-width:0;width:auto}
+.tchip{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--olyDot);border:1px solid var(--olyDot);border-radius:20px;padding:1px 9px}
 .stable tfoot td.st{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
 .mhdr .mdate{font-weight:400;color:var(--text2);font-size:12px}
 .mhdr .matt{text-decoration:none;font-size:14px;line-height:1}
@@ -232,6 +234,7 @@ tfoot th{border-top:1px solid var(--text2)}
   <li>Order rows marked <span class="srcchip">Nabis</span> arrive automatically from the hourly Nabis export, matched on the batch codes in the strain row; they refresh every run and are not hand-editable.</li>
   <li><b>Remitted</b> = cash Nabis has actually paid out to Filifera, per order line (net of line discounts and credits), from the export's Remitted Date; pending = sold but not yet paid out. Colors: green = Olympic, amber = Filifera, blue = Nabis.</li>
   <li>Budtender samples consume bulk and cost labor/materials but produce no revenue (purple Sample chip).</li>
+  <li><b>Metrc</b> data comes straight from the Metrc API (read-only): new Rio Verde transfers are checked hourly and show as <span class="tchip">In transit</span> until Filifera receives them, then join the totals; Metrc's bulk on hand is read daily by tag; production batch codes are picked up automatically and used to match Nabis sales.</li>
   <li>This board is shared and live: everyone with the link sees the same data (refreshes every minute); editing requires the edit key.</li>
 </ul>
 
@@ -287,11 +290,13 @@ function normalize(s){
     if(!t||typeof t!=='object') continue;
     out.transfers.push({id:normId(t.id,'T'),manifest:normStr(t.manifest),date:normStr(t.date),
       from:normStr(t.from),fromLicense:normStr(t.fromLicense),to:normStr(t.to),toLicense:normStr(t.toLicense),
+      status:t.status==='intransit'?'intransit':'',shipped:normStr(t.shipped), // set by the Metrc feed
       fileUrl:normUrl(t.fileUrl),
       packages:(Array.isArray(t.packages)?t.packages:[]).filter(p=>p&&typeof p==='object').map(p=>({
         id:normId(p.id,'PKG'),tag:normStr(p.tag),strain:normStr(p.strain),item:normStr(p.item),
         harvest:normStr(p.harvest),grams:normNum(p.grams)??0,shippedDisplay:normStr(p.shippedDisplay),
-        nabisBatches:normStr(p.nabisBatches),
+        nabisBatches:normStr(p.nabisBatches),autoBatches:normStr(p.autoBatches),
+        metrcBulk:(p.metrcBulk&&typeof p.metrcBulk==='object'&&normNum(p.metrcBulk.g)!=null)?{g:normNum(p.metrcBulk.g),asOf:normStr(p.metrcBulk.asOf),tags:(Array.isArray(p.metrcBulk.tags)?p.metrcBulk.tags:[]).slice(0,20).map(normStr)}:null,
         nabisStock:(p.nabisStock&&typeof p.nabisStock==='object')?{count:normNum(p.nabisStock.count)??0,avail:normNum(p.nabisStock.avail)??0,packed:normNum(p.nabisStock.packed)??0,outgoing:normNum(p.nabisStock.outgoing)??0,asOf:normStr(p.nabisStock.asOf)}:null,
         filiferaStock:(p.filiferaStock&&typeof p.filiferaStock==='object')?{jars:normNum(p.filiferaStock.jars)??0,pouches:normNum(p.filiferaStock.pouches)??0,bulkG:normNum(p.filiferaStock.bulkG)??0,packedForOrders:normNum(p.filiferaStock.packedForOrders)??0,asOf:normStr(p.filiferaStock.asOf)}:null}))});
   }
@@ -408,7 +413,15 @@ async function pushRemote(){
       state.orders=[...state.orders.filter(o=>o.src!=='nabis'),...srv.orders.filter(o=>o.src==='nabis')];
       state.nabisOrders=srv.nabisOrders; state.shipments=srv.shipments;
       for(const t of state.transfers) for(const p of t.packages){ // on-hand snapshots are feed-owned
-        const sp=srv.transfers.flatMap(x=>x.packages).find(x=>x.id===p.id); if(sp){p.nabisStock=sp.nabisStock;p.filiferaStock=sp.filiferaStock;} }
+        const sp=srv.transfers.flatMap(x=>x.packages).find(x=>x.id===p.id); if(sp){p.nabisStock=sp.nabisStock;p.filiferaStock=sp.filiferaStock;p.metrcBulk=sp.metrcBulk;p.autoBatches=sp.autoBatches;} }
+      for(const st of srv.transfers){ // the Metrc feed appends Rio Verde transfers and marks them received
+        const lt=state.transfers.find(x=>x.id===st.id);
+        if(!lt){state.transfers.push(st);continue;}
+        if(!lt.shipped) lt.shipped=st.shipped;
+        if(lt.status==='intransit'&&st.status!=='intransit'){lt.status=st.status;lt.date=st.date;
+          for(const lp of lt.packages){const sp=st.packages.find(x=>x.id===lp.id);if(sp)lp.grams=sp.grams;}}
+        for(const sp of st.packages) if(!lt.packages.some(x=>x.id===sp.id)) lt.packages.push(sp);
+      }
       persistLocal();dirty=true;
       const a=document.activeElement;
       if(a&&a.tagName==='INPUT'){refreshCalc();}else{render();} // never stomp mid-typing
@@ -483,7 +496,12 @@ const expandedOrders=new Set(); // retail orders opened to show the whole Nabis 
 const XK=(pkg,kind)=>pkg+':'+kind;
 const usDate=d=>{const m=String(d||'').match(/^(\d{4})-(\d\d)-(\d\d)/);return m?`${+m[2]}/${+m[3]}/${m[1]}`:String(d||'')};
 
-function allPackages(){return state.transfers.flatMap(t=>t.packages.map(p=>({...p,transfer:t})))}
+function allPackages(){return state.transfers.filter(t=>t.status!=='intransit').flatMap(t=>t.packages.map(p=>({...p,transfer:t})))} // in-transit bulk isn't Filifera's yet
+const asOfDay=s=>{const d=new Date(s||'');return Number.isNaN(d.getTime())?'':d.toLocaleDateString('en-US',{timeZone:'America/Los_Angeles'});};
+function metrcBulkOf(p){ // Metrc's bulk on hand: the Metrc API reading, else Distru's Metrc-synced copy
+  if(p.metrcBulk) return {g:p.metrcBulk.g,src:`Metrc API, ${asOfDay(p.metrcBulk.asOf)}`};
+  const fs=p.filiferaStock; return fs?{g:fs.bulkG,src:`Distru, ${usDate(fs.asOf)}`}:null;
+}
 function findPkg(id){for(const t of state.transfers){const p=t.packages.find(x=>x.id===id);if(p)return p;}return null}
 function runsFor(pkgId){return state.runs.filter(r=>r.pkgId===pkgId)}
 function adjFor(pkgId){return (state.adjustments||[]).filter(a=>a.pkgId===pkgId).sort((a,b)=>a.date.localeCompare(b.date))}
@@ -592,12 +610,12 @@ function render(){
 function renderBoard(){
   const board=document.getElementById('board');
   const sl=[...board.querySelectorAll('.flowwrap')].map(w=>w.scrollLeft); // innerHTML would snap the board back to column one
-  board.innerHTML=state.transfers.map(t=>flowHTML(t)).join('');
+  board.innerHTML=[...state.transfers].sort((a,b)=>String(b.date).localeCompare(String(a.date))).map(t=>flowHTML(t)).join('');
   [...board.querySelectorAll('.flowwrap')].forEach((w,i)=>{if(sl[i])w.scrollLeft=sl[i];});
 }
 
 const STAGES=[ // table columns, left to right: [dialog kind, entity, title, [[cell key, label, headline?, header tooltip]]]
-  ['src','oly','Metrc bulk',[['recv','Received',0,'Bulk received from Olympic on this manifest'],['left','Left, our count',0,'Bulk not yet packaged, by our count: received minus the jars and samples made'],['mleft','Metrc shows',0,'Bulk left according to Metrc (synced through Distru)']]],
+  ['src','oly','Metrc bulk',[['recv','Received',0,'Bulk received from Olympic on this manifest'],['left','Left, our count',0,'Bulk not yet packaged, by our count: received minus the jars and samples made'],['mleft','Metrc shows',0,'Bulk left according to Metrc (read daily from the Metrc API)']]],
   ['pack','fil','Filifera packaging',[['made','Made',0,'Jars + budtender samples packaged'],['cost','Cost',1,'Packaging labor + materials'],['filu','Unsold',0,'Jars still at Filifera (Distru)']]],
   ['nabis','nab','Nabis',[['nrec','Received',0,'Units Nabis received from Filifera'],['nval','Value',0,"This strain's share of the Nabis transfer invoice"],['open','On order',0,'On open retailer orders: placed in Nabis, not delivered yet'],['nabu','Unsold',0,'At Nabis and on no open order']]],
   ['retail','ret','Nabis to retailers',[['del','Delivered',0,'Jars delivered to retailers, of the jars sent to Nabis'],['netsales','Net sales',1,'Delivered sales minus retailer credits and discounts'],['await','Not remitted',0,'Delivered net sales Nabis has not remitted yet (retailer unpaid, or paid and not yet remitted); Nabis fees still come off this']]],
@@ -611,10 +629,21 @@ function flowHTML(t){
     <span class="mdate">${esc(usDate(t.date))}</span>
     <b>Manifest ${esc(t.manifest)}</b>
     ${t.fileUrl?`<a class="matt" href="${esc(t.fileUrl)}" target="_blank" rel="noopener" title="Open the Metrc manifest PDF">&#128206;</a>`:''}
+    ${t.status==='intransit'?`<span class="tchip">In transit &middot; shipped ${esc(usDate(t.shipped||t.date))}</span>`:''}
     <span class="chev">${open?'&#9662;':'&#9656;'}</span>
     ${open?'':`<span class="msum" id="ms-${esc(t.id)}"></span>`}
   </div>`;
   if(!open) return `<div class="flowwrap">${header}</div>`;
+  if(t.status==='intransit'){ // shipped by Rio Verde, not received at Filifera in Metrc yet: no money stages
+    const tot=t.packages.reduce((a,p)=>a+(p.grams||0),0), O='style="--sc:var(--olyDot)"', L='style="--sc:var(--olyDot);text-align:left"';
+    return `<div class="flowwrap">${header}<table class="stable transit"><thead>
+      <tr class="gh"><th class="st" rowspan="2">Strain</th><th colspan="4" class="gs" ${O}><span class="dot" style="background:var(--sc)"></span>Shipped from Rio Verde, not received at Filifera in Metrc yet</th></tr>
+      <tr class="sh"><th class="gs" ${O}>Shipped</th><th ${O}>Pounds</th><th ${L}>Harvest</th><th ${L}>Metrc tag</th></tr></thead>
+      <tbody>${t.packages.map(p=>`<tr><td class="st" data-modal="${p.id}:src" tabindex="0" title="Tag, harvest and batch codes">${esc(p.strain)}</td>
+        <td class="c gs" data-modal="${p.id}:src" ${O}>${g1(p.grams)} g</td><td class="c" data-modal="${p.id}:src" ${O}>${lb2(p.grams)} lb</td>
+        <td class="c" data-modal="${p.id}:src" ${L}>${esc(p.harvest)}</td><td class="c" data-modal="${p.id}:src" ${L} title="${esc(p.tag)}">&hellip;${esc(p.tag.slice(-5))}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td class="st">Total</td><td class="gs" ${O}>${g1(tot)} g</td><td ${O}>${lb2(tot)} lb</td><td colspan="2" ${O}></td></tr></tfoot></table></div>`;
+  }
   const T=esc(t.id), each=f=>STAGES.map(([kind,ent,title,cols])=>cols.map((col,i)=>f(kind,ENTC[ent],col,i)).join('')).join('');
   const gh=STAGES.map(([kind,ent,title,cols])=>`<th colspan="${cols.length}" class="gs${cols.length===1?' one':''}" style="--sc:${ENTC[ent]}"><span class="dot" style="background:var(--sc)"></span>${title}</th>`).join('');
   const sh=each((kind,sc,[key,lbl,hl,tip],i)=>`<th class="${i?'':'gs'}" style="--sc:${sc}" title="${esc(tip)}">${lbl}</th>`);
@@ -627,17 +656,17 @@ function flowHTML(t){
 
 function tableVals(p,c){ // per strain: n = numbers for the totals row, v = [cell html, cell tooltip]
   let jars=0,samp=0; for(const r of c.runs){if(r.sample)samp+=r.units||0;else jars+=r.units||0;}
-  const fs=p.filiferaStock, st=p.nabisStock, mb=fs?fs.bulkG:null, off=mb!=null&&Math.abs(mb-c.remaining)>60; // lab samples and small count fixes stay under this
+  const fs=p.filiferaStock, st=p.nabisStock, mr=metrcBulkOf(p), mb=mr?mr.g:null, off=mb!=null&&Math.abs(mb-c.remaining)>60; // lab samples and small count fixes stay under this
   const net=c.gross-c.discounts-c.credits, nrec=c.transferUnits||(c.unitsToNabis+c.samplesToNabis), adj=adjFor(p.id);
   const n={recv:p.grams,left:c.remaining,mleft:mb||0,jars,samp,cost:c.labor+c.materials,filu:fs?fs.jars:0,filp:fs?fs.pouches:0,nrec,nval:c.transferValue,open:nabisOpen(p),nabu:nabisUnsold(p),
     del:c.unitsSold,of:c.transferJars,net,remit:c.remitted,await:Math.max(0,net-c.collected),owed:c.net};
   const v={
     recv:[`${g1(p.grams)} g`,`${p.shippedDisplay||lb2(p.grams)+' lb'} received on manifest ${p.transfer?.manifest||''}`],
     left:[`<span class="${c.remaining<-0.001?'neg':''}">${g1(c.remaining)} g</span>`,c.remaining<-0.001?'More was packaged than was received. Check the runs or the manifest weight.':'Bulk not yet packaged, by our count'],
-    mleft:[mb==null?'&mdash;':`${off?'<span class="warn" aria-label="Metrc disagrees with our count">&#9888;</span> ':''}<span class="${off?'warn':''}">${g1(mb)} g</span>`,mb==null?'No Distru snapshot yet':(off?`Metrc shows ${g1(Math.abs(mb-c.remaining))} g ${mb>c.remaining?'more':'less'} than our count. Open for the reconciliation.`:`Matches our count within 60 g (Distru, ${usDate(fs.asOf)})`)],
+    mleft:[mb==null?'&mdash;':`${off?'<span class="warn" aria-label="Metrc disagrees with our count">&#9888;</span> ':''}<span class="${off?'warn':''}">${g1(mb)} g</span>`,mb==null?'No Metrc reading yet':(off?`Metrc shows ${g1(Math.abs(mb-c.remaining))} g ${mb>c.remaining?'more':'less'} than our count (${mr.src}). Open for the reconciliation.`:`Matches our count within 60 g (${mr.src})`)],
     made:[samp?`${cnt(jars)} + ${cnt(samp)}`:cnt(jars),`${cnt(jars)} jars + ${cnt(samp)} budtender samples`+(adj.length?` · Metrc fixes: ${adj.map(a=>adjAmt(a)+' '+a.item).join(', ')}`:'')],
     cost:[money(n.cost),`${money(c.labor)} labor + ${money(c.materials)} materials`],
-    filu:[fs?`${cnt(fs.jars)} jars${fs.pouches?` + ${cnt(fs.pouches)} samples`:''}`:'&mdash;',fs?`${cnt(fs.jars)} jars${fs.pouches?` + ${cnt(fs.pouches)} samples`:''} still at Filifera, ${g1(fs.bulkG)} g bulk in Metrc (Distru, ${usDate(fs.asOf)})`:'No Distru snapshot yet'],
+    filu:[fs?`${cnt(fs.jars)} jars${fs.pouches?` + ${cnt(fs.pouches)} samples`:''}`:'&mdash;',fs?`${cnt(fs.jars)} jars${fs.pouches?` + ${cnt(fs.pouches)} samples`:''} still at Filifera (Distru, ${usDate(fs.asOf)})`:'No Distru snapshot yet'],
     nrec:[cnt(nrec),`${cnt(nrec)} units on the Nabis transfer invoice`],
     nval:[money(c.transferValue),"This strain's share of the Nabis transfer invoice"],
     open:[cnt(n.open),'On open retailer orders: placed in Nabis, not delivered yet'],
@@ -681,7 +710,7 @@ document.addEventListener('keydown',e=>{
 
 function srcBody(p){
   const t=state.transfers.find(x=>x.packages.some(y=>y.id===p.id));
-  const c=calcPkg(p), fs=p.filiferaStock, mb=fs?fs.bulkG:null;
+  const c=calcPkg(p), mr=metrcBulkOf(p), mb=mr?mr.g:null, transit=t&&t.status==='intransit';
   const pct=p.grams>0?Math.max(0,Math.min(100,c.packaged/p.grams*100)):0;
   const over=mb!=null?c.packaged+mb-p.grams:0; // Metrc's units made plus its bulk left, beyond what was received
   const gains=adjFor(p.id).filter(a=>a.units>0);
@@ -689,21 +718,25 @@ function srcBody(p){
       <div class="sbhead"><span class="biglbl" style="flex:1">${esc(p.item||p.strain)}</span>
         ${t&&t.fileUrl?`<a class="doclink" href="${esc(t.fileUrl)}" target="_blank" rel="noopener" title="Open the Metrc manifest PDF">&#128206; Manifest ${esc(t.manifest)}</a>`:''}</div>
       <div class="stockline">Metrc tag <b>${esc(p.tag)}</b>${p.harvest?` &middot; harvest ${esc(p.harvest)}`:''}</div>
+      ${p.metrcBulk&&p.metrcBulk.tags.length?`<div class="stockline">Re-tagged at Filifera as ${p.metrcBulk.tags.map(x=>`<b title="${esc(x)}">&hellip;${esc(x.slice(-5))}</b>`).join(', ')}</div>`:''}
+      ${p.autoBatches?`<div class="stockline">Production batches (from Metrc, matched to Nabis automatically): <b>${esc(p.autoBatches)}</b></div>`:''}
       ${t?`<div class="stockline">${esc(t.from)} (${esc(t.fromLicense)}) &rarr; ${esc(t.to)} (${esc(t.toLicense)}) &middot; ${esc(usDate(t.date))}</div>`:''}
-      ${canEdit?`<div class="fld" style="margin-top:8px"><label>Nabis batch codes</label><input type="text" class="wide" value="${esc(p.nabisBatches)}" placeholder="comma-separated" data-bf="nabisBatches" data-pkg="${p.id}"></div>`
+      ${canEdit?`<div class="fld" style="margin-top:8px"><label>${p.autoBatches?'Extra Nabis batch codes':'Nabis batch codes'}</label><input type="text" class="wide" value="${esc(p.nabisBatches)}" placeholder="comma-separated" data-bf="nabisBatches" data-pkg="${p.id}"></div>`
         :(p.nabisBatches?`<div class="stockline">Nabis batches: ${esc(p.nabisBatches)}</div>`:'')}
     </div>
-    <div class="subbub oly">
+    ${transit?`<div class="subbub oly"><div class="sbhead"><span class="biglbl" style="flex:1">In transit</span></div>
+      <div class="srow"><span>Shipped by Rio Verde ${esc(usDate(t.shipped||t.date))}</span><b>${g1(p.grams)} g <span style="color:var(--muted);font-weight:400">(${lb2(p.grams)} lb)</span></b></div>
+      <div class="stockline">Filifera hasn't received this in Metrc yet. It joins the table and the totals once it is received.</div></div>`:`<div class="subbub oly">
       <div class="sbhead"><span class="biglbl" style="flex:1">Bulk</span></div>
       <div class="srow"><span>Received</span><b>${g1(p.grams)} g <span style="color:var(--muted);font-weight:400">(${lb2(p.grams)} lb)</span></b></div>
       <div class="srow"><span>&minus; Packaged into jars and samples</span><span>${g1(c.packaged)} g</span></div>
       <div class="srow" style="border-top:1px dashed var(--line);padding-top:3px"><span>= Bulk left by our count</span><b class="${c.remaining<-0.001?'neg':''}">${g1(c.remaining)} g</b></div>
       <div class="sbar" title="${Math.round(pct)}% of the bulk packaged"><i style="width:${pct.toFixed(1)}%"></i></div>
-      ${mb!=null?`<div class="srow"><span>Metrc shows (via Distru, ${esc(usDate(fs.asOf))})</span><b class="${Math.abs(mb-c.remaining)>60?'warn':''}">${g1(mb)} g</b></div>`:''}
+      ${mb!=null?`<div class="srow"><span>Metrc shows (${esc(mr.src)})</span><b class="${Math.abs(mb-c.remaining)>60?'warn':''}">${g1(mb)} g</b></div>`:''}
       ${mb!=null&&over>60?`<div class="mwarn2">&#9888; <b>Metrc's own numbers don't add up.</b> It records ${g1(c.packaged)} g of jars and samples made and still shows ${g1(mb)} g of bulk: ${g1(c.packaged+mb)} g in all, <b>${g1(over)} g more than the ${g1(p.grams)} g received</b>.
         ${gains.length?`Units were added in Metrc (${gains.map(a=>adjAmt(a)+' '+esc(a.item)).join(', ')}, see Metrc fixes under Packaging) without all of their bulk being deducted, so Metrc's bulk figure is the one that is too high.`:''}
         Weighing the bulk at Filifera settles it; if it matches our count, Filifera adjusts the bulk package in Metrc.</div>`:''}
-    </div>`;
+    </div>`}`;
 }
 
 function packBody(p){
@@ -989,7 +1022,7 @@ function refreshCalc(){
   for(const tr of state.transfers){ // collapsed-section one-line summary
     const el=document.getElementById('ms-'+tr.id); if(!el) continue;
     let g=0,net=0; for(const p of tr.packages){const c=calcPkg(p);g+=p.grams;net+=c.net;}
-    el.innerHTML=`${tr.packages.length} strains &middot; ${g1(g)} g &middot; net <b class="${net<0?'neg':'pos'}">${money(net)}</b>`;
+    el.innerHTML=tr.status==='intransit'?`${tr.packages.length} strains &middot; ${g1(g)} g shipped`:`${tr.packages.length} strains &middot; ${g1(g)} g &middot; net <b class="${net<0?'neg':'pos'}">${money(net)}</b>`;
   }
   document.getElementById('payTotal').textContent=money(t.paid);
   renderSummary(t);
