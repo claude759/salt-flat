@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-10-14.119';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-10-14.120';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4915,7 +4915,7 @@ setTimeout(checkForUpdate, 15000);   // also shortly after open
    from the sheet's gviz CSV endpoint (link-shared → CORS ok), then the messy
    grid — bands of 7 day-blocks across, "Account Name"/"BRAND" headers, banner
    rows — is flattened to visit cards. */
-const SCHED_ALIASES={makennna:'Makenna',makenna:'Makenna',mckenna:'Makenna',mckennna:'Makenna',leticia:'Ledy',ledy:'Ledy','leticia (ledy)':'Ledy',
+const SCHED_ALIASES={makennna:'Makenna',makenna:'Makenna',mckenna:'Makenna',mckennna:'Makenna',leticia:'Ledy',ledy:'Ledy',leti:'Ledy','leticia (ledy)':'Ledy',
   // every way the workbook writes a customer pickup is ONE schedule "person" with its own colour
   pickup:'Pickup','pick up':'Pickup','pick-up':'Pickup','customer pick up':'Pickup','customer pickup':'Pickup','customer pick-up':'Pickup',
   'nabis pick up':'Pickup','nabis pickup':'Pickup'};
@@ -5325,22 +5325,28 @@ function schedAllRows(){ const S=state.sched; return S.rows.concat(S.dbRows, S.s
 function schedApplyOrders(){
   const S=state.sched, orders=S.orders||new Map();
   const onSheet=new Set();
+  // rows that carry an INV total but no SO# (the planner left it blank): matched to an order by day + amount
+  const amtKey=x=>{ const n=parseFloat(String(x??'').replace(/[$,\s]/g,'')); return Number.isFinite(n)&&n>0 ? n.toFixed(2) : ''; };
+  const noSo=new Set();
   for(const v of S.rows.concat(S.dbRows)){
-    if(!v.soNum) continue; const k=schedSoKey(v.soNum); onSheet.add(k);
+    if(!v.soNum){ const a=amtKey(v.inv); if(a) noSo.add(v.iso+'|'+a); continue; }
+    const k=schedSoKey(v.soNum); onSheet.add(k);
+    for(const t of String(v.soNum).toUpperCase().match(/SO-?\d+/g)||[]) onSheet.add(t.replace(/^SO-?/,'SO-'));   // "#SO-0000412 / #SO-0000414"
     const o=orders.get(k);
     if(v._sheetCanon===undefined) v._sheetCanon=v.canon;           // remember the sheet's own driver once
-    const lbl=o&&o.driver_label;
+    const lbl=o&&o.driver_label ? schedCanon(o.driver_label) : '';   // same nickname rules as the sheet (Leti → Ledy)
     v.canon = lbl || v._sheetCanon; v.color=schedColor(v.canon);
     v.metrcDriver = lbl ? (o.driver_name||lbl) : '';
   }
   // only for months whose workbook tabs are loaded: an order may sit on a tab we haven't read yet
   const loaded=iso=>S.tried.has(`${+iso.slice(0,4)}-${+iso.slice(5,7)-1}`);
-  S.synth=[...orders.values()].filter(o=>o.delivery_date && !onSheet.has(o.so_num) && loaded(o.delivery_date)).map(o=>{
+  const sameDelivery=o=>[o.invoice_total,o.order_total].some(a=>{ const k=amtKey(a); return k && noSo.has(o.delivery_date+'|'+k); });
+  S.synth=[...orders.values()].filter(o=>o.delivery_date && !onSheet.has(o.so_num) && !sameDelivery(o) && loaded(o.delivery_date)).map(o=>{
     const reg=o.license ? (state.dispensaries||[]).find(d=>d.license && d.license.trim().toUpperCase()===o.license.toUpperCase()) : null;
     // no Metrc record (older than its 30-day lookback, or not manifested yet): a Nabis order is still
     // a pickup; anything else has no driver yet and shows in a neutral colour
     const nabis=/^nabis\b/i.test(o.customer||'') || (o.license||'').toUpperCase()===NABIS_LICENSE;
-    const canon=o.driver_label || (nabis?'Pickup':'');
+    const canon=o.driver_label ? schedCanon(o.driver_label) : (nabis?'Pickup':'');
     const amt=o.invoice_total!=null?o.invoice_total:o.order_total;
     return { iso:o.delivery_date, account:(reg&&reg.name)||o.customer||o.so_num, region:'', driver:o.driver_name||'',
       inv:amt!=null?String(amt):'', soNotes:o.is_pickup&&o.transporter_name?`Picked up by ${o.transporter_name}`:'',
