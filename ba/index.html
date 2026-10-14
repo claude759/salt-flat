@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-09-27.115';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-10-14.116';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -5247,6 +5247,7 @@ async function schedLoad(center){
     Promise.all(months.map(d=>schedResolveMonth(d,bd).catch(()=>null))),
     schedReloadTasks(),
     schedLoadActivity().catch(()=>{}),
+    schedLoadOrders(bd).catch(()=>{}),
   ]);
   // a month whose fetch never got an answer is UNTRIED, not empty: drop it from
   // S.tried so paging back to it (or ⟳) re-probes instead of showing a blank month
@@ -5277,6 +5278,40 @@ async function schedLoad(center){
   schedBackupWorkbook(bd).catch(()=>{});   // fire-and-forget: never block the calendar
   return S.rows.length>0||S.dbRows.length>0;
 }
+// Distru sales orders behind the CA board's deliveries (COD terms, address, coordinates),
+// published hourly by the sales job (~/ar-automation lib/delivery-orders-feed.mjs) into
+// delivery_orders. Keyed by SO# without the '#'. CA only: the NY board has no deliveries.
+async function schedLoadOrders(bd){
+  const S=state.sched;
+  if(!bd || bd.state!=='CA'){ S.orders=new Map(); return; }
+  const { data, error }=await supabase.from('delivery_orders')
+    .select('so_num,customer,delivery_date,terms_days,is_cod,status,address,license,lat,lng');
+  if(error) throw error;   // keep whatever we had; the badges just don't refresh this load
+  S.orders=new Map((data||[]).map(o=>[o.so_num,o]));
+}
+const schedSoKey=so=>String(so||'').replace(/^#/,'').trim().toUpperCase();
+function schedOrderFor(v){ const S=state.sched; return (v && v.soNum && S && S.orders) ? (S.orders.get(schedSoKey(v.soNum))||null) : null; }
+// a delivery's place: the order's geocoded address, else the store list (by the order's license,
+// then by the schedule's account name). Returns {address, lat, lng} with whatever is known.
+function schedDeliveryPlace(v){
+  const o=schedOrderFor(v);
+  const lic=o&&o.license ? (state.dispensaries||[]).find(d=>d.license && d.license.trim().toUpperCase()===o.license.toUpperCase()) : null;
+  const reg=lic || schedRegistryFor(v.account);
+  const address=(o&&o.address) || (reg&&reg.address) || '';
+  const lat=(o&&o.lat!=null)?o.lat:(reg&&reg.lat!=null?reg.lat:null);
+  const lng=(o&&o.lng!=null)?o.lng:(reg&&reg.lng!=null?reg.lng:null);
+  return { address, lat, lng };
+}
+// where CA deliveries leave from: the '* Office (CA)' location in the store list
+const SCHED_CA_ORIGIN={lat:34.038809, lng:-118.234161};   // 1375 E 6th St, Los Angeles (fallback)
+function schedOrigin(){ const o=(state.dispensaries||[]).find(d=>/^\* Office \(CA\)/.test(d.name||'') && d.lat!=null);
+  return o ? {lat:+o.lat, lng:+o.lng} : SCHED_CA_ORIGIN; }
+// straight-line miles: good enough to order a day's stops, and needs no routing call
+function schedMiles(a,b){ if(!a||!b||a.lat==null||b.lat==null) return null;
+  const R=3958.8, rad=x=>x*Math.PI/180, dLat=rad(b.lat-a.lat), dLng=rad(b.lng-a.lng);
+  const h=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h)); }
+const schedIsPickup=v=>/pick\s*-?\s*up/i.test(v.driver||'');
 // fetch app-created tasks and rebuild the date index (workbook rows + app rows)
 async function schedReloadTasks(){
   const S=state.sched;
@@ -5394,6 +5429,8 @@ function schedCss(){
   .sb-tag.pad{color:#fff;background:var(--orange);border-color:var(--orange)}
   .sb-tag.edu{color:#fff;background:var(--green);border-color:var(--green)}
   .sb-tag.deal{color:var(--yellow,#e7b416);border-color:color-mix(in srgb,var(--yellow,#e7b416) 45%,var(--line))}
+  .sb-tag.cod{color:#fff;background:var(--red);border-color:var(--red)}
+  .sb-grp{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 4px 2px}
   .sb-filt{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:8px 0 0;padding:7px 10px;font-size:12px;
     background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));border-radius:10px}
   .sb-bk-sub{color:var(--muted);font-size:12.5px;line-height:1.5;margin:2px 0 12px}
@@ -5589,7 +5626,20 @@ function schedRegistryFor(account){
 // line, then the notes. App-created tasks (dbId) get an edit pencil.
 function schedDaySheet(iso){
   const S=state.sched, vis=v=>!S.sel||S.sel.has(v.canon);
-  const list=(S.byIso.get(iso)||[]).filter(vis);         // workbook row order, app tasks after
+  const raw=(S.byIso.get(iso)||[]).filter(vis);          // workbook row order, app tasks after
+  // Deliveries (rows with an SO#) come first, grouped by driver, FARTHEST from the office first
+  // (Gianni 2026-10-14), customer pickups last; distance unknown sorts after known within a
+  // driver. Everything else keeps workbook order below them.
+  const origin=schedOrigin();
+  const place=new Map(raw.filter(v=>v.soNum).map(v=>{ const p=schedDeliveryPlace(v); return [v,{...p, mi:schedMiles(origin,p)}]; }));
+  const dels=raw.filter(v=>v.soNum).map((v,i)=>({v,i})).sort((a,b)=>{
+    const pa=schedIsPickup(a.v), pb=schedIsPickup(b.v); if(pa!==pb) return pa?1:-1;
+    const da=(a.v.canon||'').localeCompare(b.v.canon||''); if(da) return da;
+    const ma=place.get(a.v).mi, mb=place.get(b.v).mi;
+    if((ma==null)!==(mb==null)) return ma==null?1:-1;
+    return (mb||0)-(ma||0) || a.i-b.i; }).map(x=>x.v);
+  const rest=raw.filter(v=>!v.soNum);
+  const list=dels.concat(rest);
   const d=new Date(iso+'T12:00:00');
   const DOW=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const items=list.map((v,i)=>{
@@ -5599,8 +5649,10 @@ function schedDaySheet(iso){
       +(SCHED_PAD.test(blob)?'<span class="sb-tag pad">PAD</span>':'')
       +(SCHED_EDU.test(blob)?'<span class="sb-tag edu">EDU</span>':'');
     const inv=schedMoney(v.inv);
+    const ord=schedOrderFor(v), pl=place.get(v);
     const meta=[
       inv?`<span class="inv">${inv}</span>`:'',
+      ord&&ord.is_cod?`<span class="sb-tag cod" title="Due on delivery: collect payment at drop-off">COD</span>`:'',
       v.region?`<span>${esc(v.region)}</span>`:'',
       who?`<span class="sb-who" style="--dv:${v.color}">${esc(who)}</span>`:'',
       v.soNum?`<span class="so">${esc(v.soNum)}</span>`:'',
@@ -5620,10 +5672,14 @@ function schedDaySheet(iso){
     const review=acts.length
       ? `<div class="sb-pv">${acts.map((a,ai)=>`<button class="sb-pvhead" data-sbpv="${i}-${ai}">📋 Post-visit report${a.rep_name?` · ${esc(a.rep_name)}`:''}${a._diff?` <span class="chev">(filed ${a._diff} day${a._diff===1?'':'s'} later)</span>`:''} <span class="chev">›</span></button>`).join('')}</div>`
       : (past&&isVisit?`<div class="sb-pv"><span class="sb-pvmiss">📋 No post-visit report</span></div>`:'');
-    return `<div class="sb-item" style="--dv:${v.color}">
+    const grp = (dels.length && rest.length && i===0) ? `<div class="sb-grp">Deliveries · farthest first</div>`
+      : (dels.length && rest.length && i===dels.length) ? `<div class="sb-grp">Visits &amp; tasks</div>`
+      : (dels.length>1 && !rest.length && i===0) ? `<div class="sb-grp">Deliveries · farthest first</div>` : '';
+    return grp+`<div class="sb-item" style="--dv:${v.color}">
       <div class="acct">${esc(v.account)}${v.dbId?`<button class="sb-edit" data-sbe="${i}" title="Edit task">✎</button>`:''}</div>
       ${meta?`<div class="meta">${meta}</div>`:''}
       ${v.location?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(v.location)}" target="_blank" rel="noopener">📍 ${esc(v.location)}</a></div>`:''}
+      ${(!v.location && pl && pl.address)?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(pl.address)}" target="_blank" rel="noopener">📍 ${esc(pl.address)}</a>${pl.mi!=null&&!schedIsPickup(v)?` <span class="muted">· ~${Math.round(pl.mi)} mi from the office</span>`:''}</div>`:''}
       ${notes?`<div class="notes">${esc(notes)}</div>`:''}
       ${review}</div>`;
   }).join('');
