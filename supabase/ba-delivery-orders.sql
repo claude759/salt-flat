@@ -44,6 +44,7 @@ alter table public.delivery_orders add column if not exists is_pickup        boo
 alter table public.delivery_orders add column if not exists departs_at       text;          -- Metrc estimated departure, LA wall clock 'YYYY-MM-DD HH:MM'
 alter table public.delivery_orders add column if not exists received_at      timestamptz;
 alter table public.delivery_orders add column if not exists order_total      numeric;       -- line items, pre-tax
+alter table public.delivery_orders add column if not exists order_date       date;          -- an open order with no delivery date yet is listed as "needs a date"
 
 comment on table public.delivery_orders is
   'Recent Distru sales orders for the BA app Schedule (COD tag, address, farthest-first sort). '
@@ -75,13 +76,13 @@ begin
   if jsonb_typeof(p_rows) <> 'array' then raise exception 'p_rows must be an array'; end if;
   insert into public.delivery_orders as d (so_num, customer, delivery_date, due_date, terms_days, is_cod,
          status, invoice_no, invoice_total, outstanding, address, license, lat, lng,
-         manifest_no, driver_name, driver_label, transporter_name, is_pickup, departs_at, received_at, order_total, updated_at)
+         manifest_no, driver_name, driver_label, transporter_name, is_pickup, departs_at, received_at, order_total, order_date, updated_at)
   select r->>'so_num', r->>'customer', (r->>'delivery_date')::date, (r->>'due_date')::date,
          (r->>'terms_days')::int, coalesce((r->>'is_cod')::boolean, false), r->>'status', r->>'invoice_no',
          (r->>'invoice_total')::numeric, (r->>'outstanding')::numeric, r->>'address', r->>'license',
          (r->>'lat')::double precision, (r->>'lng')::double precision,
          r->>'manifest_no', r->>'driver_name', r->>'driver_label', r->>'transporter_name', (r->>'is_pickup')::boolean,
-         r->>'departs_at', (r->>'received_at')::timestamptz, (r->>'order_total')::numeric, now()
+         r->>'departs_at', (r->>'received_at')::timestamptz, (r->>'order_total')::numeric, (r->>'order_date')::date, now()
     from jsonb_array_elements(p_rows) r
    where coalesce(r->>'so_num','') ~ '^SO-[0-9]+$'
   on conflict (so_num) do update set
@@ -95,7 +96,7 @@ begin
     -- feed's (ZIP-checked) geocode is the answer, including "no match" (a rejected wrong point)
     lat = case when excluded.address is null then d.lat else excluded.lat end,
     lng = case when excluded.address is null then d.lng else excluded.lng end,
-    order_total = excluded.order_total, manifest_no = coalesce(excluded.manifest_no, d.manifest_no),
+    order_total = excluded.order_total, order_date = excluded.order_date, manifest_no = coalesce(excluded.manifest_no, d.manifest_no),
     -- a run without the Metrc snapshot sends no driver: keep what we knew (a real change is non-null)
     driver_name = coalesce(excluded.driver_name, d.driver_name), driver_label = coalesce(excluded.driver_label, d.driver_label),
     transporter_name = coalesce(excluded.transporter_name, d.transporter_name), is_pickup = coalesce(excluded.is_pickup, d.is_pickup),
@@ -103,7 +104,7 @@ begin
     updated_at = now();
   get diagnostics n_up = row_count;
   delete from public.delivery_orders
-   where (delivery_date >= p_from
+   where ((delivery_date >= p_from or delivery_date is null)       -- undated open orders are re-sent every run too
           and so_num not in (select r->>'so_num' from jsonb_array_elements(p_rows) r where r->>'so_num' is not null))
       or delivery_date < current_date - 120;
   get diagnostics n_del = row_count;

@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-10-14.120';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-10-14.121';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4921,6 +4921,7 @@ const SCHED_ALIASES={makennna:'Makenna',makenna:'Makenna',mckenna:'Makenna',mcke
   'nabis pick up':'Pickup','nabis pickup':'Pickup'};
 const SCHED_COLORS={Joanna:'#4f9dff',Ledy:'#2fbf71',Jesse:'#f08a24',Cesar:'#e7b416',Al:'#ef4d56',AJ:'#9d86ff',Makenna:'#22c6c6',Team:'#b98cff',
   Carlos:'#a3e635', Pickup:'#8d99ae',   // Pickup = Metrc driver who isn't one of ours (or a pickup on the sheet)
+  'Driver needed':'#e879f9',            // an upcoming delivery with no driver on the sheet or in Metrc yet
   // NY field crew
   Rachel:'#ff6fae',Terrance:'#37c8f0',Jackie:'#ffb02e',Chandler:'#7ee081',Maddy:'#c58cff'};
 // the board (state) currently being viewed, and its workbook/layout
@@ -5285,7 +5286,7 @@ async function schedLoadOrders(bd){
   const S=state.sched;
   if(!bd || bd.state!=='CA'){ S.orders=new Map(); return; }
   const { data, error }=await supabase.from('delivery_orders')
-    .select('so_num,customer,delivery_date,terms_days,is_cod,status,address,license,lat,lng,invoice_total,order_total,manifest_no,driver_name,driver_label,transporter_name,is_pickup,departs_at,received_at');
+    .select('so_num,customer,delivery_date,terms_days,is_cod,status,address,license,lat,lng,invoice_total,order_total,manifest_no,driver_name,driver_label,transporter_name,is_pickup,departs_at,received_at,order_date');
   if(error) throw error;   // keep whatever we had; the badges just don't refresh this load
   S.orders=new Map((data||[]).map(o=>[o.so_num,o]));
 }
@@ -5324,7 +5325,7 @@ const schedIsPickup=v=>{ const o=schedOrderFor(v);
 function schedAllRows(){ const S=state.sched; return S.rows.concat(S.dbRows, S.synth||[]); }
 function schedApplyOrders(){
   const S=state.sched, orders=S.orders||new Map();
-  const onSheet=new Set();
+  const onSheet=new Set(), today=schedIso(new Date());
   // rows that carry an INV total but no SO# (the planner left it blank): matched to an order by day + amount
   const amtKey=x=>{ const n=parseFloat(String(x??'').replace(/[$,\s]/g,'')); return Number.isFinite(n)&&n>0 ? n.toFixed(2) : ''; };
   const noSo=new Set();
@@ -5335,18 +5336,21 @@ function schedApplyOrders(){
     const o=orders.get(k);
     if(v._sheetCanon===undefined) v._sheetCanon=v.canon;           // remember the sheet's own driver once
     const lbl=o&&o.driver_label ? schedCanon(o.driver_label) : '';   // same nickname rules as the sheet (Leti → Ledy)
-    v.canon = lbl || v._sheetCanon; v.color=schedColor(v.canon);
+    v.canon = lbl || v._sheetCanon;
+    if(!v.canon && v.iso>=today && !(o&&o.is_pickup)) v.canon='Driver needed';   // upcoming, nobody assigned
+    v.color=schedColor(v.canon);
     v.metrcDriver = lbl ? (o.driver_name||lbl) : '';
   }
   // only for months whose workbook tabs are loaded: an order may sit on a tab we haven't read yet
   const loaded=iso=>S.tried.has(`${+iso.slice(0,4)}-${+iso.slice(5,7)-1}`);
   const sameDelivery=o=>[o.invoice_total,o.order_total].some(a=>{ const k=amtKey(a); return k && noSo.has(o.delivery_date+'|'+k); });
+  S.undated=[...orders.values()].filter(o=>!o.delivery_date).sort((a,b)=>String(a.order_date||'').localeCompare(String(b.order_date||'')));
   S.synth=[...orders.values()].filter(o=>o.delivery_date && !onSheet.has(o.so_num) && !sameDelivery(o) && loaded(o.delivery_date)).map(o=>{
     const reg=o.license ? (state.dispensaries||[]).find(d=>d.license && d.license.trim().toUpperCase()===o.license.toUpperCase()) : null;
     // no Metrc record (older than its 30-day lookback, or not manifested yet): a Nabis order is still
     // a pickup; anything else has no driver yet and shows in a neutral colour
     const nabis=/^nabis\b/i.test(o.customer||'') || (o.license||'').toUpperCase()===NABIS_LICENSE;
-    const canon=o.driver_label ? schedCanon(o.driver_label) : (nabis?'Pickup':'');
+    const canon=o.driver_label ? schedCanon(o.driver_label) : (nabis?'Pickup':(o.delivery_date>=today?'Driver needed':''));
     const amt=o.invoice_total!=null?o.invoice_total:o.order_total;
     return { iso:o.delivery_date, account:(reg&&reg.name)||o.customer||o.so_num, region:'', driver:o.driver_name||'',
       inv:amt!=null?String(amt):'', soNotes:o.is_pickup&&o.transporter_name?`Picked up by ${o.transporter_name}`:'',
@@ -6071,7 +6075,7 @@ function schedRender(m){
     const dim=d.getMonth()!==mo?' dim':'', today=iso===todayIso?' today':'';
     // one extra fits when nothing is hidden (no "+N" line to leave room for)
     const shown=list.length===maxChips+1?list.length:maxChips;
-    const minis=list.slice(0,shown).map(v=>`<div class="sb-mini" style="--dv:${v.color}"><span class="dot"></span>${esc(v.account)}</div>`).join('')
+    const minis=list.slice(0,shown).map(v=>`<div class="sb-mini" style="--dv:${v.color}"${v.canon==='Driver needed'?' title="Driver needed"':''}><span class="dot"></span>${v.canon==='Driver needed'?'⚠︎ ':''}${esc(v.account)}</div>`).join('')
       +(list.length>shown?`<div class="sb-more">+${list.length-shown}</div>`:'');
     return `<div class="sb-cell${dim}${today}" data-sbday="${iso}">
       <div class="sb-dnum">${d.getDate()}${(()=>{const n=schedDayReportCount(iso,list);
@@ -6104,7 +6108,8 @@ function schedRender(m){
     </div>
     ${S.sel?`<div class="sb-filt">Showing only <b>${esc([...S.sel].join(', '))}</b>${moCount?'':' — nothing for them this month'} <button class="btn sm ghost" id="sbClearF">Show everyone</button></div>`:''}
     ${S.netFail?`<div class="sb-warn">⚠︎ Some of the workbook didn't load (connection). Tap ⟳ to try again — a month may look empty until then.</div>`:''}
-    <div class="sb-src">${moCount} visit${moCount!==1?'s':''} in ${SCHED_MONL[mo]} · tap a day for details · source: workbook (${esc(S.label||'')})</div>
+    ${(S.undated&&S.undated.length)?`<div class="sb-warn" title="Open Distru orders with no delivery date yet. They go on the calendar once the date is set in Distru.">📦 Needs a delivery date in Distru: ${S.undated.map(o=>`<b>${esc(o.customer||o.so_num)}</b> (${esc(o.so_num)}${o.order_date?`, ordered ${esc(fmtDate(o.order_date))}`:''})`).join(' · ')}</div>`:''}
+    <div class="sb-src">${moCount} visit${moCount!==1?'s':''} in ${SCHED_MONL[mo]} · tap a day for details · source: workbook + Distru orders (${esc(S.label||'')})</div>
     ${SCHED_NY_WARN.length?`<div class="sb-warn" title="${esc(SCHED_NY_WARN.join('\n'))}">⚠︎ ${SCHED_NY_WARN.length} date cell${SCHED_NY_WARN.length!==1?'s':''} in the workbook look wrong — the week's other days were used instead. Tap to see which.</div>`:''}
   </div>
   <button class="sb-fab" id="sbAdd" title="New task">＋</button>`;
