@@ -373,6 +373,34 @@ Deno.serve(async (req) => {
       return json({ ok: true, notified: to, cc });
     }
 
+    if (job === "create_user") {
+      // Same as the admin "Add a brand ambassador" button (admin-create-ba), triggerable
+      // server-side (secret-auth) when Gianni asks Claude to give someone access. Creates the
+      // login with a temp password (must_change_password), sets the profile, emails the invite.
+      // non_ba=true for staff who only need the schedule / an occasional expense (Carlos, the
+      // delivery driver, 2026-10-14): no submit reminders, expenses filed as Non-BA activity.
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const full_name = String(body.full_name ?? "").trim();
+      const role = body.role === "admin" ? "admin" : "ba";
+      const region = ["CA", "FL", "NY"].includes(body.region) ? body.region : null;
+      const non_ba = body.non_ba === true;
+      if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(email) || !full_name) return json({ ok: false, error: "email and full_name required" }, 400);
+      const { data: existing } = await db.from("profiles").select("id,active").ilike("email", email).maybeSingle();
+      if (existing) return json({ ok: false, error: "a profile with that email already exists", id: existing.id, active: existing.active }, 409);
+      const cc = testTo ? undefined : await adminCcList(db, email, region);
+      if (dry) return json({ ok: true, would_create: { email, full_name, role, region, non_ba }, would_notify: testTo || email, cc });
+      const password = "wt-" + crypto.randomUUID().replace(/-/g, "").slice(0, 8);
+      const { data: created, error: cErr } = await db.auth.admin.createUser({ email, password, email_confirm: true, user_metadata: { full_name, role } });
+      if (cErr || !created?.user) return json({ ok: false, error: cErr?.message ?? "could not create user" }, 400);
+      const { error: pErr } = await db.from("profiles").upsert({ id: created.user.id, email, full_name, role, region, non_ba,
+        must_change_password: true, active: true }, { onConflict: "id" });
+      if (pErr) { await db.auth.admin.deleteUser(created.user.id).catch(() => {}); return json({ ok: false, error: pErr.message }, 400); }
+      const { subject, html, text } = inviteEmail(full_name, email, password);
+      const to = testTo || email;
+      await sendMail(to, subject, html, text, cc);
+      return json({ ok: true, user_id: created.user.id, notified: to, cc });
+    }
+
     if (job === "password_reset") {
       // Same reset as the admin "Reset password" button (admin-reset-ba-password), but
       // triggerable server-side (secret-auth) for a user who can't sign in and asked for one
