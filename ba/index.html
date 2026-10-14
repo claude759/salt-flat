@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-10-14.118';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-10-14.119';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -4915,8 +4915,12 @@ setTimeout(checkForUpdate, 15000);   // also shortly after open
    from the sheet's gviz CSV endpoint (link-shared → CORS ok), then the messy
    grid — bands of 7 day-blocks across, "Account Name"/"BRAND" headers, banner
    rows — is flattened to visit cards. */
-const SCHED_ALIASES={makennna:'Makenna',makenna:'Makenna',mckenna:'Makenna',mckennna:'Makenna',leticia:'Ledy',ledy:'Ledy','leticia (ledy)':'Ledy'};
+const SCHED_ALIASES={makennna:'Makenna',makenna:'Makenna',mckenna:'Makenna',mckennna:'Makenna',leticia:'Ledy',ledy:'Ledy','leticia (ledy)':'Ledy',
+  // every way the workbook writes a customer pickup is ONE schedule "person" with its own colour
+  pickup:'Pickup','pick up':'Pickup','pick-up':'Pickup','customer pick up':'Pickup','customer pickup':'Pickup','customer pick-up':'Pickup',
+  'nabis pick up':'Pickup','nabis pickup':'Pickup'};
 const SCHED_COLORS={Joanna:'#4f9dff',Ledy:'#2fbf71',Jesse:'#f08a24',Cesar:'#e7b416',Al:'#ef4d56',AJ:'#9d86ff',Makenna:'#22c6c6',Team:'#b98cff',
+  Carlos:'#a3e635', Pickup:'#8d99ae',   // Pickup = Metrc driver who isn't one of ours (or a pickup on the sheet)
   // NY field crew
   Rachel:'#ff6fae',Terrance:'#37c8f0',Jackie:'#ffb02e',Chandler:'#7ee081',Maddy:'#c58cff'};
 // the board (state) currently being viewed, and its workbook/layout
@@ -5268,11 +5272,7 @@ async function schedLoad(center){
     }
     S.loadedTabs.push({name:r.name, csv:r.csv});
   }
-  S.byIso=new Map();
-  for(const v of S.rows.concat(S.dbRows)){
-    if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
-  }
-  schedPairActs();   // report→visit ownership follows the visits it was computed from
+  schedRebuildIndex();
   const now=new Date();
   S.label=`${S.loadedTabs.map(t=>t.name).join(', ')} · ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
   schedBackupWorkbook(bd).catch(()=>{});   // fire-and-forget: never block the calendar
@@ -5285,7 +5285,7 @@ async function schedLoadOrders(bd){
   const S=state.sched;
   if(!bd || bd.state!=='CA'){ S.orders=new Map(); return; }
   const { data, error }=await supabase.from('delivery_orders')
-    .select('so_num,customer,delivery_date,terms_days,is_cod,status,address,license,lat,lng');
+    .select('so_num,customer,delivery_date,terms_days,is_cod,status,address,license,lat,lng,invoice_total,order_total,manifest_no,driver_name,driver_label,transporter_name,is_pickup,departs_at,received_at');
   if(error) throw error;   // keep whatever we had; the badges just don't refresh this load
   S.orders=new Map((data||[]).map(o=>[o.so_num,o]));
 }
@@ -5314,8 +5314,49 @@ function schedMiles(a,b){ if(!a||!b||a.lat==null||b.lat==null) return null;
 // pickups: the customer (or Nabis) collects from us, so no drive and no stop address to show
 const NABIS_LICENSE='C11-0000340-LIC';
 const schedIsPickup=v=>{ const o=schedOrderFor(v);
-  return /pick\s*-?\s*up/i.test([v.driver,v.region,v.account].join(' '))
+  if(o && o.is_pickup!=null) return o.is_pickup;   // Metrc knows who carried it
+  return v.canon==='Pickup' || /pick\s*-?\s*up/i.test([v.driver,v.region,v.account].join(' '))
     || /^nabis\b/i.test((o&&o.customer)||'') || ((o&&o.license)||'').toUpperCase()===NABIS_LICENSE; };
+// Every row the calendar shows: workbook rows, app tasks, and (CA) Distru orders that aren't on
+// either (Gianni 2026-10-14: "start populating this schedule with orders from distru, use metrc api
+// for the driver"). Date = Distru's delivery date. When Metrc names the driver, that's who's shown
+// (the sheet's own name stays in the card as "sheet: …"); a driver who isn't ours is 'Pickup'.
+function schedAllRows(){ const S=state.sched; return S.rows.concat(S.dbRows, S.synth||[]); }
+function schedApplyOrders(){
+  const S=state.sched, orders=S.orders||new Map();
+  const onSheet=new Set();
+  for(const v of S.rows.concat(S.dbRows)){
+    if(!v.soNum) continue; const k=schedSoKey(v.soNum); onSheet.add(k);
+    const o=orders.get(k);
+    if(v._sheetCanon===undefined) v._sheetCanon=v.canon;           // remember the sheet's own driver once
+    const lbl=o&&o.driver_label;
+    v.canon = lbl || v._sheetCanon; v.color=schedColor(v.canon);
+    v.metrcDriver = lbl ? (o.driver_name||lbl) : '';
+  }
+  // only for months whose workbook tabs are loaded: an order may sit on a tab we haven't read yet
+  const loaded=iso=>S.tried.has(`${+iso.slice(0,4)}-${+iso.slice(5,7)-1}`);
+  S.synth=[...orders.values()].filter(o=>o.delivery_date && !onSheet.has(o.so_num) && loaded(o.delivery_date)).map(o=>{
+    const reg=o.license ? (state.dispensaries||[]).find(d=>d.license && d.license.trim().toUpperCase()===o.license.toUpperCase()) : null;
+    // no Metrc record (older than its 30-day lookback, or not manifested yet): a Nabis order is still
+    // a pickup; anything else has no driver yet and shows in a neutral colour
+    const nabis=/^nabis\b/i.test(o.customer||'') || (o.license||'').toUpperCase()===NABIS_LICENSE;
+    const canon=o.driver_label || (nabis?'Pickup':'');
+    const amt=o.invoice_total!=null?o.invoice_total:o.order_total;
+    return { iso:o.delivery_date, account:(reg&&reg.name)||o.customer||o.so_num, region:'', driver:o.driver_name||'',
+      inv:amt!=null?String(amt):'', soNotes:o.is_pickup&&o.transporter_name?`Picked up by ${o.transporter_name}`:'',
+      teamNotes:'', soNum:'#'+o.so_num, sheet:'distru', synth:true, canon, color:canon?schedColor(canon):'var(--muted)', time:null,
+      metrcDriver:o.driver_label?(o.driver_name||o.driver_label):'' };
+  });
+}
+function schedRebuildIndex(){
+  const S=state.sched;
+  schedApplyOrders();
+  S.byIso=new Map();
+  for(const v of schedAllRows()){
+    if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
+  }
+  schedPairActs();   // report→visit ownership follows the visits it was computed from
+}
 // fetch app-created tasks and rebuild the date index (workbook rows + app rows)
 async function schedReloadTasks(){
   const S=state.sched;
@@ -5339,11 +5380,7 @@ async function schedReloadTasks(){
     });
   }catch(e){ S.dbRows=S.dbRows||[];        // keep the last good rows rather than blanking
     toast('Couldn’t refresh tasks — showing the last loaded copy'); }
-  S.byIso=new Map();
-  for(const v of S.rows.concat(S.dbRows)){
-    if(!S.byIso.has(v.iso)) S.byIso.set(v.iso,[]); S.byIso.get(v.iso).push(v);
-  }
-  schedPairActs();   // report→visit ownership follows the visits it was computed from
+  schedRebuildIndex();
 }
 function schedCss(){
   if(document.getElementById('sbCss')) return;
@@ -5661,7 +5698,10 @@ function schedDaySheet(iso){
         // not COD: show the order's terms (Distru due date minus delivery/invoice date)
         :(ord&&ord.terms_days>0?`<span class="sb-tag net" title="Payment due ${ord.terms_days} days after delivery">Net ${ord.terms_days}</span>`:''),
       v.region?`<span>${esc(v.region)}</span>`:'',
-      who?`<span class="sb-who" style="--dv:${v.color}">${esc(who)}</span>`:'',
+      who?`<span class="sb-who" style="--dv:${v.color}"${v.metrcDriver?` title="Driver from Metrc: ${esc(v.metrcDriver)}"`:''}>${esc(who)}</span>`:'',
+      (v.metrcDriver && v._sheetCanon && v._sheetCanon!==v.canon)?`<span class="muted small" title="The schedule sheet names a different driver">sheet: ${esc(v._sheetCanon)}</span>`:'',
+      (ord&&ord.is_pickup&&ord.transporter_name&&!v.synth)?`<span class="muted small">${esc(ord.transporter_name)}</span>`:'',
+      v.synth?`<span class="sb-tag" title="Not on the schedule sheet: added from the Distru order">Distru</span>`:'',
       v.soNum?`<span class="so">${esc(v.soNum)}</span>`:'',
       // NY rows carry a written time ("after strain stars", "4-7pm") that no clock
       // parser can turn into a chip — show it verbatim rather than lose it
@@ -6006,7 +6046,7 @@ function schedRender(m){
   const days=[...Array(nWeeks*7)].map((_,i)=>schedAdd(start,i));
   // person chips: counts for THIS month
   const moDrv=new Map(); let moCount=0;
-  for(const v of S.rows.concat(S.dbRows)){ const d=new Date(v.iso+'T12:00:00');
+  for(const v of schedAllRows()){ const d=new Date(v.iso+'T12:00:00');
     if(d.getFullYear()===y&&d.getMonth()===mo){ moDrv.set(v.canon,(moDrv.get(v.canon)||0)+1); if(vis(v)) moCount++; } }
   const chips=[...moDrv.entries()].sort((a,b)=>b[1]-a[1]).filter(([n])=>n&&n!=='—').map(([n,cnt])=>{
     const col=schedColor(n), on=S.sel&&S.sel.has(n);

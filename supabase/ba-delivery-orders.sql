@@ -35,6 +35,16 @@ create table if not exists public.delivery_orders (
   lng            double precision,
   updated_at     timestamptz not null default now()
 );
+-- 2026-10-14 (2nd ask): drivers from Metrc. Only names are stored, never licence numbers or plates.
+alter table public.delivery_orders add column if not exists manifest_no      text;          -- Metrc manifest, from Distru
+alter table public.delivery_orders add column if not exists driver_name      text;          -- Metrc "Name of Person Transporting"
+alter table public.delivery_orders add column if not exists driver_label     text;          -- schedule name (Carlos, Jesse, Al...) or 'Pickup'
+alter table public.delivery_orders add column if not exists transporter_name text;          -- Metrc transporter facility (FILIFERA, NABIFIVE...)
+alter table public.delivery_orders add column if not exists is_pickup        boolean;       -- null = no manifest yet
+alter table public.delivery_orders add column if not exists departs_at       text;          -- Metrc estimated departure, LA wall clock 'YYYY-MM-DD HH:MM'
+alter table public.delivery_orders add column if not exists received_at      timestamptz;
+alter table public.delivery_orders add column if not exists order_total      numeric;       -- line items, pre-tax
+
 comment on table public.delivery_orders is
   'Recent Distru sales orders for the BA app Schedule (COD tag, address, farthest-first sort). '
   'Written hourly by ~/ar-automation via delivery_orders_save(); read by CA schedule viewers.';
@@ -64,11 +74,14 @@ begin
   end if;
   if jsonb_typeof(p_rows) <> 'array' then raise exception 'p_rows must be an array'; end if;
   insert into public.delivery_orders as d (so_num, customer, delivery_date, due_date, terms_days, is_cod,
-         status, invoice_no, invoice_total, outstanding, address, license, lat, lng, updated_at)
+         status, invoice_no, invoice_total, outstanding, address, license, lat, lng,
+         manifest_no, driver_name, driver_label, transporter_name, is_pickup, departs_at, received_at, order_total, updated_at)
   select r->>'so_num', r->>'customer', (r->>'delivery_date')::date, (r->>'due_date')::date,
          (r->>'terms_days')::int, coalesce((r->>'is_cod')::boolean, false), r->>'status', r->>'invoice_no',
          (r->>'invoice_total')::numeric, (r->>'outstanding')::numeric, r->>'address', r->>'license',
-         (r->>'lat')::double precision, (r->>'lng')::double precision, now()
+         (r->>'lat')::double precision, (r->>'lng')::double precision,
+         r->>'manifest_no', r->>'driver_name', r->>'driver_label', r->>'transporter_name', (r->>'is_pickup')::boolean,
+         r->>'departs_at', (r->>'received_at')::timestamptz, (r->>'order_total')::numeric, now()
     from jsonb_array_elements(p_rows) r
    where coalesce(r->>'so_num','') ~ '^SO-[0-9]+$'
   on conflict (so_num) do update set
@@ -82,6 +95,11 @@ begin
     -- feed's (ZIP-checked) geocode is the answer, including "no match" (a rejected wrong point)
     lat = case when excluded.address is null then d.lat else excluded.lat end,
     lng = case when excluded.address is null then d.lng else excluded.lng end,
+    order_total = excluded.order_total, manifest_no = coalesce(excluded.manifest_no, d.manifest_no),
+    -- a run without the Metrc snapshot sends no driver: keep what we knew (a real change is non-null)
+    driver_name = coalesce(excluded.driver_name, d.driver_name), driver_label = coalesce(excluded.driver_label, d.driver_label),
+    transporter_name = coalesce(excluded.transporter_name, d.transporter_name), is_pickup = coalesce(excluded.is_pickup, d.is_pickup),
+    departs_at = coalesce(excluded.departs_at, d.departs_at), received_at = coalesce(excluded.received_at, d.received_at),
     updated_at = now();
   get diagnostics n_up = row_count;
   delete from public.delivery_orders
