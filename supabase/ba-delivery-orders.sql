@@ -16,7 +16,7 @@
 --  Write path: token-gated SECURITY DEFINER RPC (the olympic_save / royalty_save pattern);
 --  the token hash is seeded out-of-band, never committed. Read path: anyone who can see the
 --  CA schedule board (schedule_states()), the same people who already see INV TOTAL there.
---  Applied to dhiqhgtmelxwelyoowle 2026-10-14. Safe to re-run.
+--  Applied to dhiqhgtmelxwelyoowle 2026-10-14 (save hardened the same day after review). Safe to re-run.
 -- ============================================================================
 create table if not exists public.delivery_orders (
   so_num         text primary key,          -- 'SO-0000443' (no '#')
@@ -75,8 +75,14 @@ begin
     customer = excluded.customer, delivery_date = excluded.delivery_date, due_date = excluded.due_date,
     terms_days = excluded.terms_days, is_cod = excluded.is_cod, status = excluded.status,
     invoice_no = excluded.invoice_no, invoice_total = excluded.invoice_total,
-    outstanding = excluded.outstanding, address = excluded.address, license = excluded.license,
-    lat = excluded.lat, lng = excluded.lng, updated_at = now();
+    outstanding = excluded.outstanding,
+    -- a run that couldn't read Distru's company directory sends blank addresses: keep what we had
+    address = coalesce(excluded.address, d.address), license = coalesce(excluded.license, d.license),
+    -- keep the old point only when this run knows no address at all; with an address, the
+    -- feed's (ZIP-checked) geocode is the answer, including "no match" (a rejected wrong point)
+    lat = case when excluded.address is null then d.lat else excluded.lat end,
+    lng = case when excluded.address is null then d.lng else excluded.lng end,
+    updated_at = now();
   get diagnostics n_up = row_count;
   delete from public.delivery_orders
    where (delivery_date >= p_from

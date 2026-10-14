@@ -357,7 +357,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-10-14.116';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-10-14.117';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -5291,16 +5291,16 @@ async function schedLoadOrders(bd){
 }
 const schedSoKey=so=>String(so||'').replace(/^#/,'').trim().toUpperCase();
 function schedOrderFor(v){ const S=state.sched; return (v && v.soNum && S && S.orders) ? (S.orders.get(schedSoKey(v.soNum))||null) : null; }
-// a delivery's place: the order's geocoded address, else the store list (by the order's license,
-// then by the schedule's account name). Returns {address, lat, lng} with whatever is known.
+// a delivery's place. Address: the order's (Distru's customer record), else the store list's.
+// Coordinates: the store list matched by the order's LICENSE first (hand-checked points), then
+// the order's own geocode, then the store list matched by the schedule's account name.
 function schedDeliveryPlace(v){
   const o=schedOrderFor(v);
   const lic=o&&o.license ? (state.dispensaries||[]).find(d=>d.license && d.license.trim().toUpperCase()===o.license.toUpperCase()) : null;
-  const reg=lic || schedRegistryFor(v.account);
-  const address=(o&&o.address) || (reg&&reg.address) || '';
-  const lat=(o&&o.lat!=null)?o.lat:(reg&&reg.lat!=null?reg.lat:null);
-  const lng=(o&&o.lng!=null)?o.lng:(reg&&reg.lng!=null?reg.lng:null);
-  return { address, lat, lng };
+  const byName=schedRegistryFor(v.account);
+  const address=(o&&o.address) || (lic&&lic.address) || (byName&&byName.address) || '';
+  const pt=[lic, o, byName].find(x=>x && x.lat!=null && x.lng!=null);
+  return { address, lat:pt?+pt.lat:null, lng:pt?+pt.lng:null };
 }
 // where CA deliveries leave from: the '* Office (CA)' location in the store list
 const SCHED_CA_ORIGIN={lat:34.038809, lng:-118.234161};   // 1375 E 6th St, Los Angeles (fallback)
@@ -5311,7 +5311,11 @@ function schedMiles(a,b){ if(!a||!b||a.lat==null||b.lat==null) return null;
   const R=3958.8, rad=x=>x*Math.PI/180, dLat=rad(b.lat-a.lat), dLng=rad(b.lng-a.lng);
   const h=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;
   return 2*R*Math.asin(Math.sqrt(h)); }
-const schedIsPickup=v=>/pick\s*-?\s*up/i.test(v.driver||'');
+// pickups: the customer (or Nabis) collects from us, so no drive and no stop address to show
+const NABIS_LICENSE='C11-0000340-LIC';
+const schedIsPickup=v=>{ const o=schedOrderFor(v);
+  return /pick\s*-?\s*up/i.test([v.driver,v.region,v.account].join(' '))
+    || /^nabis\b/i.test((o&&o.customer)||'') || ((o&&o.license)||'').toUpperCase()===NABIS_LICENSE; };
 // fetch app-created tasks and rebuild the date index (workbook rows + app rows)
 async function schedReloadTasks(){
   const S=state.sched;
@@ -5679,7 +5683,7 @@ function schedDaySheet(iso){
       <div class="acct">${esc(v.account)}${v.dbId?`<button class="sb-edit" data-sbe="${i}" title="Edit task">✎</button>`:''}</div>
       ${meta?`<div class="meta">${meta}</div>`:''}
       ${v.location?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(v.location)}" target="_blank" rel="noopener">📍 ${esc(v.location)}</a></div>`:''}
-      ${(!v.location && pl && pl.address)?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(pl.address)}" target="_blank" rel="noopener">📍 ${esc(pl.address)}</a>${pl.mi!=null&&!schedIsPickup(v)?` <span class="muted">· ~${Math.round(pl.mi)} mi from the office</span>`:''}</div>`:''}
+      ${(!v.location && pl && pl.address && !schedIsPickup(v))?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(pl.address)}" target="_blank" rel="noopener">📍 ${esc(pl.address)}</a>${pl.mi!=null?` <span class="muted">· ~${Math.round(pl.mi)} mi from the office</span>`:''}</div>`:''}
       ${notes?`<div class="notes">${esc(notes)}</div>`:''}
       ${review}</div>`;
   }).join('');
