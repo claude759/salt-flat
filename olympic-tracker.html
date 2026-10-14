@@ -41,8 +41,8 @@ body.ro .editonly{display:none !important}
 .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text2);margin:-10px 0 14px}
 .mhdr{display:flex;align-items:baseline;gap:9px;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap;margin:0 0 8px}
 /* stage table: one row per strain, stages left to right; every cell opens that stage's dialog */
-.stable{border-collapse:separate;border-spacing:0;width:100%;min-width:1100px;font-size:12.5px;font-variant-numeric:tabular-nums}
-.stable th,.stable td{padding:8px 7px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
+.stable{border-collapse:separate;border-spacing:0;width:100%;min-width:1150px;font-size:12.5px;font-variant-numeric:tabular-nums}
+.stable th,.stable td{padding:8px 6px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
 .stable thead th{white-space:normal;line-height:1.25;vertical-align:bottom}
 .stable thead tr.gh th.one{width:92px}
 .stable thead tr.gh th{font-size:12px;font-weight:700;letter-spacing:0;text-transform:none;text-align:left;color:var(--sc);background:color-mix(in srgb,var(--sc) 17%,var(--surface));border-top:3px solid var(--sc);border-bottom:none}
@@ -233,6 +233,7 @@ tfoot th{border-top:1px solid var(--text2)}
   <li>When a strain has Nabis order rows, its gross / discounts / credits are computed from those rows (marked <span class="tagchip">auto</span>); Nabis fees and Other stay manual.</li>
   <li>Order rows marked <span class="srcchip">Nabis</span> arrive automatically from the hourly Nabis export, matched on the batch codes in the strain row; they refresh every run and are not hand-editable.</li>
   <li><b>Remitted</b> = cash Nabis has actually paid out to Filifera, per order line (net of line discounts and credits), from the export's Remitted Date; pending = sold but not yet paid out. Colors: green = Olympic, amber = Filifera, blue = Nabis.</li>
+  <li><b>Est. sold out</b> = what Olympic should be owed once everything from that manifest has sold: what's remitted, plus delivered sales Nabis hasn't paid out, open orders, unsold jars, jars that left Filifera outside Nabis, and the bulk still to package, each after typical credits and Nabis fees, minus all packaging (done and still ahead) and Other. Prices, fee rates, yield and packaging cost come from the strain's own history, or from all strains when it has none yet. Click the cell for the breakdown.</li>
   <li>Budtender samples consume bulk and cost labor/materials but produce no revenue (purple Sample chip).</li>
   <li><b>Metrc</b> data comes straight from the Metrc API (read-only): new Rio Verde transfers are checked hourly and show as <span class="tchip">In transit</span> until Filifera receives them, then join the totals; Metrc's bulk on hand is read daily by tag; production batch codes are picked up automatically and used to match Nabis sales.</li>
   <li>This board is shared and live: everyone with the link sees the same data (refreshes every minute); editing requires the edit key.</li>
@@ -627,10 +628,10 @@ const STAGES=[ // table columns, left to right: [dialog kind, entity, title, [[c
   ['nabis','nab','Nabis',[['nrec','Received',0,'Units Nabis received from Filifera'],['nval','Value',0,"This strain's share of the Nabis transfer invoice"],['open','On order',0,'On open retailer orders: placed in Nabis, not delivered yet'],['nabu','Unsold',0,'At Nabis and on no open order']]],
   ['retail','ret','Nabis to retailers',[['del','Delivered',0,'Jars delivered to retailers, of the jars sent to Nabis'],['netsales','Net sales',1,'Delivered sales minus retailer credits and discounts'],['await','Not remitted',0,'Delivered net sales Nabis has not remitted yet (retailer unpaid, or paid and not yet remitted); Nabis fees still come off this']]],
   ['remit','fil','Remitted to Filifera',[['remit','Remitted',1,'Collected by Nabis minus Nabis fees']]],
-  ['settle','oly','Back to Olympic',[['owed','Owed',1,'Remitted minus other and packaging, floored at $0']]]];
+  ['settle','oly','Back to Olympic',[['owed','Owed',1,'Remitted minus other and packaging, floored at $0'],['proj','Est. sold out',1,'Estimate of what Olympic is owed once everything from this manifest has sold, after credits, Nabis fees and all packaging. Click for the breakdown.']]]];
 const ENTC={oly:'var(--olyDot)',fil:'var(--filDot)',nab:'var(--nabDot)',ret:'var(--retDot)'};
-// column shares (% of the table), the natural widths at a 1243px screen; fixed so every transfer's table lines up
-const COLW={st:9.09,recv:6.14,left:4.71,mleft:5.22,made:6.82,cost:5.89,filu:5.13,nrec:6.14,nval:6.48,open:4.63,nabu:5.13,del:7.41,netsales:6.48,await:6.4,remit:7.15,owed:7.15};
+// column shares (% of the table), fixed so every transfer's table lines up; they fit a 1243px screen
+const COLW={st:7.9,recv:5.29,left:5.29,mleft:5.12,made:6.73,cost:5.8,filu:4.94,nrec:4.94,nval:6.2,open:4.52,nabu:4.94,del:7.1,netsales:6.39,await:6.15,remit:6.39,owed:6.39,proj:5.9}; // sized to what each column holds (10/14)
 
 function flowHTML(t){
   const open=!collapsedFlows.has(t.id);
@@ -649,22 +650,68 @@ function flowHTML(t){
   const transit=t.status==='intransit', dash='<span class="dim">&ndash;</span>';
   const rows=t.packages.map(p=>`<tr><td class="st" data-modal="${p.id}:src" tabindex="0" title="Metrc bulk, tag and batch codes">${esc(p.strain)}</td>`
     +each((kind,sc,[key,lbl,hl],i)=>transit // not Filifera's yet: shipped weight only, filled here because refreshCalc skips in-transit bulk
-      ?`<td class="c${i?'':' gs'}" style="--sc:${sc}"${key==='recv'?` data-modal="${p.id}:src" tabindex="0" title="Shipped ${esc(usDate(t.shipped||t.date))}, not received at Filifera in Metrc yet"`:''}>${key==='recv'?`${g1(p.grams)} g`:dash}</td>`
+      ?(key==='proj'?`<td class="c k" data-modal="${p.id}:settle" tabindex="0" style="--sc:${sc}" title="Estimate once it has all been packaged and sold. Click for the breakdown."><span class="pos">${dollars(projection(p).owed)}</span></td>`
+       :`<td class="c${i?'':' gs'}" style="--sc:${sc}"${key==='recv'?` data-modal="${p.id}:src" tabindex="0" title="Shipped ${esc(usDate(t.shipped||t.date))}, not received at Filifera in Metrc yet"`:''}>${key==='recv'?`${g1(p.grams)} g`:dash}</td>`)
       :`<td class="c${i?'':' gs'}${hl?' k':''}" id="tc-${p.id}-${key}" data-modal="${p.id}:${kind}" tabindex="0" style="--sc:${sc}"></td>`)+'</tr>').join('');
   const tg=t.packages.reduce((a,p)=>a+(p.grams||0),0);
   const foot=`<tr><td class="st">${transit?'Shipped':'Total'}</td>`+each((kind,sc,[key,lbl,hl],i)=>transit
-      ?`<td class="${i?'':'gs'}" style="--sc:${sc}">${key==='recv'?`${g1(tg)} g`:dash}</td>`
+      ?`<td class="${i?'':'gs'}${key==='proj'?' k':''}" style="--sc:${sc}">${key==='recv'?`${g1(tg)} g`:key==='proj'?`<span class="pos">${dollars(t.packages.reduce((a,p)=>a+projection(p).owed,0))}</span>`:dash}</td>`
       :`<td class="${i?'':'gs'}${hl?' k':''}" id="tt-${T}-${key}" style="--sc:${sc}"></td>`)+'</tr>';
   const cols=`<colgroup><col style="width:${COLW.st}%">${STAGES.flatMap(([,,,cs])=>cs.map(([k])=>`<col style="width:${COLW[k]||6}%">`)).join('')}</colgroup>`;
   return `<div class="flowwrap">${header}<table class="stable">${cols}<thead><tr class="gh"><th class="st" rowspan="2">Strain</th>${gh}</tr><tr class="sh">${sh}</tr></thead>
     <tbody>${rows}</tbody><tfoot>${foot}</tfoot></table></div>`;
 }
 
+// ── projection: what Olympic is owed once everything from a manifest has sold ──
+// Rates come from the strain's own history when it has enough of it, else from every strain on the board.
+function programRates(){
+  let g=0,cd=0,u=0,fees=0,feeBase=0,jars=0,grams=0,cost=0;
+  for(const p of allPackages()){const c=calcPkg(p);
+    g+=c.gross;cd+=c.discounts+c.credits;u+=c.unitsSold;
+    if(c.feesAuto){fees+=c.nabisFees;feeBase+=c.soldRemitted;}
+    jars+=c.unitsSellable;grams+=c.packaged;cost+=c.labor+c.materials;}
+  return {gpj:u?g/u:0,cdr:g?cd/g:0,fee:feeBase?fees/feeBase:0.10,jpg:grams?jars/grams:1/3.5,cpj:jars?cost/jars:0};
+}
+function projection(p){
+  const c=calcPkg(p), P=programRates(), ownSales=c.unitsSold>=50, ownPack=c.unitsSellable>0&&c.packaged>0;
+  const r={gpj:ownSales?c.gross/c.unitsSold:P.gpj, cdr:ownSales&&c.gross>0?(c.discounts+c.credits)/c.gross:P.cdr,
+    fee:ownSales&&c.feesAuto&&c.soldRemitted>0?c.nabisFees/c.soldRemitted:P.fee,
+    jpg:ownPack?c.unitsSellable/c.packaged:P.jpg, cpj:ownPack?(c.labor+c.materials)/c.unitsSellable:P.cpj, ownSales, ownPack};
+  const perJar=r.gpj*(1-r.cdr-r.fee);                 // one more jar through Nabis, after credits and Nabis fees
+  const pending=Math.max(0,c.remitPending-c.feeEstimate); // delivered, Nabis hasn't remitted yet
+  const openNet=c.pipelineGross*(1-r.cdr-r.fee);
+  const fs=p.filiferaStock, unsoldNabis=nabisUnsold(p), unsoldFil=fs?fs.jars:0;
+  const lost=-adjFor(p.id).filter(a=>a.units<0&&/jar/i.test(a.item)).reduce((a,x)=>a+x.units,0);
+  const direct=c.transferJars?Math.max(0,c.unitsSellable-c.transferJars-unsoldFil-lost):0; // left Filifera outside Nabis (Distru direct orders)
+  const directNet=direct*r.gpj*(1-r.cdr);              // no Nabis fee on a direct sale
+  const bulkG=Math.max(0,c.remaining), bulkJars=bulkG*r.jpg;
+  const packNow=c.labor+c.materials, packAhead=bulkJars*r.cpj, other=c.settle.other||0;
+  const raw=c.remitted+pending+openNet+(unsoldNabis+unsoldFil+bulkJars)*perJar+directNet-packNow-packAhead-other;
+  return {c,r,perJar,pending,openNet,unsoldNabis,unsoldFil,direct,directNet,bulkG,bulkJars,packNow,packAhead,other,raw,owed:Math.max(0,raw)};
+}
+const dollars=v=>(v<0?'−':'')+'$'+Math.round(Math.abs(v)).toLocaleString('en-US');
+function projHTML(p){
+  const x=projection(p), r=x.r, R=(l,v,sub)=>`<div class="srow"${sub?' style="color:var(--muted);font-size:11.5px;padding-left:14px"':''}><span>${l}</span><span>${v}</span></div>`;
+  return `<div class="srow" style="font-weight:700;margin-top:2px"><span>When everything has sold (estimate)</span><span></span></div>
+    ${R('Remitted so far',money(x.c.remitted))}
+    ${x.pending>0.5?R('+ Delivered, Nabis hasn’t remitted yet (after est. fees)',dollars(x.pending)):''}
+    ${x.openNet>0.5?R(`+ Open orders (${cnt(x.c.unitsPipeline)} jars, after est. credits and fees)`,dollars(x.openNet)):''}
+    ${x.unsoldNabis+x.unsoldFil>0?R(`+ Unsold jars (${cnt(x.unsoldNabis)} at Nabis, ${cnt(x.unsoldFil)} at Filifera) at ${money(x.perJar)} each`,dollars((x.unsoldNabis+x.unsoldFil)*x.perJar)):''}
+    ${x.bulkG>0.5?R(`+ Bulk still to package: ${g1(x.bulkG)} g &asymp; ${cnt(Math.round(x.bulkJars))} jars at ${money(x.perJar)} each`,dollars(x.bulkJars*x.perJar)):''}
+    ${x.direct>0?R(`+ Jars that left Filifera outside Nabis: ${cnt(x.direct)} (Distru direct orders, priced like Nabis sales; real prices not loaded yet)`,dollars(x.directNet)):''}
+    ${R('&minus; Packaging so far',money(x.packNow))}
+    ${x.packAhead>0.5?R(`&minus; Packaging still ahead (${cnt(Math.round(x.bulkJars))} jars at ${money(r.cpj)})`,dollars(x.packAhead)):''}
+    ${x.other>0.005?R('&minus; Other',money(x.other)):''}
+    <div class="srow net"><span>Est. owed to Olympic when sold out</span><b class="pos">${dollars(x.owed)}</b></div>
+    ${R(`Based on ${money(r.gpj)} a jar gross, ${(r.cdr*100).toFixed(1)}% credits and discounts, ${(r.fee*100).toFixed(1)}% Nabis fees (${r.ownSales?'this strain’s':'all strains’'} sales so far); ${(r.jpg*100).toFixed(1)} jars per 100 g of bulk and ${money(r.cpj)} packaging per jar (${r.ownPack?'this strain’s':'all strains’'} packaging so far).`,'',1)}`;
+}
+
 function tableVals(p,c){ // per strain: n = numbers for the totals row, v = [cell html, cell tooltip]
   let jars=0,samp=0; for(const r of c.runs){if(r.sample)samp+=r.units||0;else jars+=r.units||0;}
   const fs=p.filiferaStock, st=p.nabisStock, mr=metrcBulkOf(p), mb=mr?mr.g:null, off=mb!=null&&Math.abs(mb-c.remaining)>60; // lab samples and small count fixes stay under this
   const net=c.gross-c.discounts-c.credits, nrec=c.transferUnits||(c.unitsToNabis+c.samplesToNabis), adj=adjFor(p.id);
-  const n={recv:p.grams,left:c.remaining,mleft:mb||0,jars,samp,cost:c.labor+c.materials,filu:fs?fs.jars:0,filp:fs?fs.pouches:0,nrec,nval:c.transferValue,open:nabisOpen(p),nabu:nabisUnsold(p),
+  const pj=projection(p);
+  const n={proj:pj.owed,recv:p.grams,left:c.remaining,mleft:mb||0,jars,samp,cost:c.labor+c.materials,filu:fs?fs.jars:0,filp:fs?fs.pouches:0,nrec,nval:c.transferValue,open:nabisOpen(p),nabu:nabisUnsold(p),
     del:c.unitsSold,of:c.transferJars,net,remit:c.remitted,await:Math.max(0,net-c.collected),owed:c.net};
   const v={
     recv:[`${g1(p.grams)} g`,`${p.shippedDisplay||lb2(p.grams)+' lb'} received on manifest ${p.transfer?.manifest||''}`],
@@ -677,15 +724,16 @@ function tableVals(p,c){ // per strain: n = numbers for the totals row, v = [cel
     nval:[money(c.transferValue),"This strain's share of the Nabis transfer invoice"],
     open:[cnt(n.open),'On open retailer orders: placed in Nabis, not delivered yet'],
     nabu:[st?cnt(n.nabu):'&mdash;',st?`Nabis holds ${cnt(st.count)} units (${cnt(st.packed)} packed, ${cnt(st.outgoing)} allocated, ${cnt(st.avail)} unallocated) as of ${usDate(st.asOf)}`:'No Nabis snapshot yet'],
-    del:[c.transferJars?`${cnt(c.unitsSold)} / ${cnt(c.transferJars)}`:cnt(c.unitsSold),`${cnt(c.retailers)} retailers · ${cnt(c.unitsPipeline)} jars on order`],
+    del:[c.transferJars?`${cnt(c.unitsSold)}/${cnt(c.transferJars)}`:cnt(c.unitsSold),`${cnt(c.retailers)} retailers · ${cnt(c.unitsPipeline)} jars on order`],
     netsales:[money(net),`${money(c.gross)} gross − ${money(c.discounts+c.credits)} credits and discounts`],
     remit:[money(c.remitted),`${money(c.collected)} collected − ${money(c.nabisFees)} Nabis fees`],
     await:[money(n.await),'Delivered net sales Nabis has not remitted yet; Nabis fees still come off this'],
+    proj:[`<span class="pos">${dollars(pj.owed)}</span>`,`Estimate once everything has sold: ${dollars(pj.owed)}. Click for the breakdown.`],
     owed:[`<span class="pos">${money(c.net)}</span>`,`${money(c.remitted)} remitted${(c.settle.other||0)>0.005?` − ${money(c.settle.other)} other`:''} − ${money(c.labor+c.materials)} packaging${c.unrecovered>0.005?` · ${money(c.unrecovered)} of costs still ahead`:''}`]};
   quietStages(v,{pack:!c.runs.length,nabis:!nrec&&!st,retail:!c.orders.length,remit:!(c.collected>0.005)&&!(c.remitted>0.005)});
   return {n,v};
 }
-const STAGE_KEYS={pack:['made','cost','filu'],nabis:['nrec','nval','open','nabu'],retail:['del','netsales','await'],remit:['remit','owed']};
+const STAGE_KEYS={pack:['made','cost','filu'],nabis:['nrec','nval','open','nabu'],retail:['del','netsales','await'],remit:['remit','owed']}; // never 'proj': the estimate always shows
 function quietStages(v,idle){ // a stage that hasn't started shows a quiet dash, not a row of zeros
   for(const [st,keys] of Object.entries(STAGE_KEYS)) if(idle[st]) for(const k of keys) if(v[k]) v[k]=['<span class="dim">&ndash;</span>','Nothing here yet'];
 }
@@ -932,7 +980,8 @@ function settleBody(p){
     ${sIn('credits','Credits $')}
     ${sIn('nabisFees','Nabis fees $')}
     ${sIn('other','Other $')}
-    <div class="scalc" id="sc-${p.id}"></div>`;
+    <div class="scalc" id="sc-${p.id}"></div>
+    <div class="scalc" id="sp-${p.id}">${projHTML(p)}</div>`;
 }
 
 function renderPayments(){
@@ -1011,6 +1060,7 @@ function refreshCalc(){
 
       <div class="srow net"><span>Owed to Olympic</span><b class="pos">${money(c.net)}</b></div>
       ${c.unrecovered>0.005?`<div class="srow" style="color:var(--muted);font-size:11.5px"><span>Costs still ahead of remitted cash</span><span>${money(c.unrecovered)}</span></div>`:''}`;
+    const sp=document.getElementById('sp-'+p.id); if(sp) sp.innerHTML=projHTML(p);
     const ou=document.getElementById('ou-'+p.id);
     if(ou){
       ou.textContent=cnt(c.unitsSold);
@@ -1027,8 +1077,8 @@ function refreshCalc(){
     const set=(k,h)=>{const el=f(k);if(el)el.innerHTML=h;};
     set('recv',g1(a.recv)+' g');set('left',`<span class="${a.left<-0.001?'neg':''}">${g1(a.left)} g</span>`);set('mleft',a.mleft?g1(a.mleft)+' g':'<span class="dim">&ndash;</span>');set('nval',money(a.nval));set('made',a.samp?`${cnt(a.jars)} + ${cnt(a.samp)}`:cnt(a.jars));
     set('cost',money(a.cost));set('filu',`${cnt(a.filu)} jars${a.filp?` + ${cnt(a.filp)} samples`:''}`);set('nrec',cnt(a.nrec));set('open',cnt(a.open));set('nabu',cnt(a.nabu));
-    set('del',a.of?`${cnt(a.del)} / ${cnt(a.of)}`:cnt(a.del));set('netsales',money(a.net));set('remit',money(a.remit));set('await',money(a.await));
-    set('owed',`<span class="pos">${money(a.owed)}</span>`);
+    set('del',a.of?`${cnt(a.del)}/${cnt(a.of)}`:cnt(a.del));set('netsales',money(a.net));set('remit',money(a.remit));set('await',money(a.await));
+    set('owed',`<span class="pos">${money(a.owed)}</span>`);set('proj',`<span class="pos">${dollars(a.proj)}</span>`);
     const tv={};for(const k of Object.values(STAGE_KEYS).flat())tv[k]=1;
     quietStages(tv,{pack:!a.jars&&!a.samp,nabis:!a.nrec,retail:!a.del&&!a.of&&!a.net,remit:!(a.remit>0.005)});
     for(const [k,x] of Object.entries(tv)) if(Array.isArray(x)) set(k,x[0]);
