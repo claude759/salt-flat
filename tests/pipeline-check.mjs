@@ -1,6 +1,7 @@
 // Checks the Production Pipeline page's sheet parsers (pipeline.html) on a made-up week laid out
-// the way the DISTRO PIPELINE tab is, and a made-up DISTRO SUPPLY tab.
+// the way the DISTRO PIPELINE tab is, a made-up DISTRO SUPPLY tab, and made-up Batch Label Sheet rows.
 // Run: node tests/pipeline-check.mjs [real pipeline export.csv] [--supply=real supply export.csv]
+//        [--batches=pipeline_batches rows as JSON]
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -11,8 +12,11 @@ const supSrc = html.split('/* ===== SUPPLY PARSER START =====')[1].split('/* ===
 const SUP = new Function('PIPE', `/*${supSrc}; return SUP;`)(PIPE);
 const weekSrc = html.split('/* ===== WEEK MODEL START =====')[1].split('/* ===== WEEK MODEL END ===== */')[0];
 const WEEK = new Function('PIPE', `/*${weekSrc}; return WEEK;`)(PIPE);
+const batSrc = html.split('/* ===== BATCH MODEL START =====')[1].split('/* ===== BATCH MODEL END ===== */')[0];
+const BAT = new Function(`/*${batSrc}; return BAT;`)();
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
-  realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9);
+  realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9),
+  realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10);
 
 // one week band: 14 columns, a (task, detail) pair per day
 const blank = () => Array(14).fill('');
@@ -253,11 +257,56 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.deepEqual([thuTrim.n, thuTrim.m, thuTrim.range], [1, 3, 'THU – SAT']);
 }
 
+// the Batches view: batch codes, statuses, item names and grouping, as the Batch Label Sheet writes them
+{
+  const dc = c => { const d = BAT.decode(c); return [d.room, d.site, d.harvest].join(' '); };
+  assert.equal(dc('F2-BM-9126-S'), 'F2 23RD 2026-09-01');
+  assert.equal(dc('FA-Z-10226-I'), 'FA 15TH ', '10226 reads as 10/2 or 1/02: no harvest guessed');
+  assert.equal(dc('F1-BB-92226-S'), 'F1 23RD 2026-09-22');
+  assert.equal(dc('V-92226-S-5PK'), ' 23RD 2026-09-22', 'a code that starts with the strain has no room');
+  assert.equal(dc('B- LL-31726-I'), 'B 15TH 2026-03-17');
+  assert.equal(dc('A-A-8426-I'), 'A 15TH 2026-08-04', 'room A, strain A (Antidote)');
+  assert.equal(dc('F1-82426-A-F'), 'F1 25TH 2026-08-24', 'strain after the date; the last site letter wins');
+  assert.equal(dc('F1-BL-42026.7-F'), 'F1 25TH 2026-04-20');
+  assert.equal(dc('F2-BM-92826-O'), 'F2 OLYMPIC 2026-09-28');
+  assert.equal(dc('F3-ZB-10232025'), 'F3  2025-10-23', 'old MMDDYYYY codes carry no site');
+  assert.equal(dc('F1-121725ZB'), 'F1  ', 'digits run into letters: nothing read');
+  assert.equal(dc(''), '  ');
+  assert.equal(BAT.codeDate('242026'), null, 'a typo date is not guessed');
+
+  assert.deepEqual(['PACKAGING', 'Awaiting pkg / labeling', 'waiting on coa', 'WAITING FOR TESTING ', 'Failed testing', 'DONE', 'QA HOLD', '']
+    .map(BAT.statusKey), ['PACKAGING', 'AWAITING PKG/LABELING', 'WAITING FOR COA', 'WAITING FOR TESTING', 'FAILED TESTING', 'DONE', 'QA HOLD', '']);
+  assert.equal(BAT.info('QA HOLD').label, 'Qa hold');
+  assert.deepEqual(['FLOWER', '5PK', '1G', '1.0G PREROLL', '1.5g prerolls', '.7g prerolls', 'Infused cone'].map(BAT.itemLabel),
+    ['Flower', '5-pack', '1g pre-roll', '1g pre-roll', '1.5g pre-rolls', '0.7g pre-rolls', 'Infused cone']);
+
+  const row = (sheet_row, status, extra = {}) => ({ sheet_row, status, finished: false, strain: 'TIDE', ...extra });
+  const g = BAT.groups([
+    row(3, 'WAITING FOR TESTING'), row(4, 'WAITING FOR TESTING'), row(14, 'AWAITING PKG/LABELING'), row(24, 'NOT STARTED'),
+    row(30, 'PACKAGING'), row(31, 'PACKAGING'), row(23, 'LABELING BATCH INFO'), row(33, 'DONE'), row(35, 'QA HOLD'),
+    row(234, 'DONE', { finished: true, package_date: '2026-10-02' }), row(238, 'DONE', { finished: true, package_date: '2026-10-02' }),
+    row(220, 'FAILED TESTING', { finished: true, nabis_date: '2026-09-28' }), row(150, 'DONE', { finished: true, coa_date: '2026-10-05' }),
+  ]);
+  assert.deepEqual(g.map(x => `${x.label} ${x.rows.map(r => r.sheet_row).join(',')}`), [
+    'Packaging 30,31', 'Labeling batch info 23', 'Awaiting packaging & labeling 14', 'Qa hold 35',
+    'Waiting for testing 3,4', 'Not started 24', 'Finished 33,150,238,234,220'],
+    'work in progress first, sheet order inside a group; DONE above the divider leads Finished; then newest first');
+  assert.equal(BAT.lastDate({ harvest_date: '2026-08-03', package_date: '2026-09-15', nabis_date: '2026-09-30' }), '2026-09-30');
+}
+
 // optional: a real export of the tab, to see it parses end to end
 if (realSup) {
   const real = SUP.parse(readFileSync(realSup, 'utf8'), 'DISTRO SUPPLY');
   assert.ok(real && real.items.length > 100, 'real supply export parses');
   console.log(`real supply export: ${real.items.length} items, ${real.items.filter(i => i.below).length} below par, sites ${real.sites.join(' ')}`);
+}
+if (realBat) {
+  const rows = JSON.parse(readFileSync(realBat, 'utf8'));
+  const groups = BAT.groups(rows);
+  assert.equal(groups.reduce((a, x) => a + x.rows.length, 0), rows.length, 'every batch lands in a group');
+  assert.ok(groups[groups.length - 1].finished, 'finished batches come last');
+  const coded = rows.filter(r => BAT.decode(r.batch_code).site).length;
+  console.log(`real batches: ${rows.length} rows, ${coded} with a site in the code; ${groups.map(x => `${x.label} ${x.rows.length}`).join(', ')}`);
 }
 if (realPipe) {
   const real = PIPE.parse(readFileSync(realPipe, 'utf8'));
