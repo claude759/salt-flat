@@ -208,6 +208,20 @@
   .wk-bang{margin-right:5px}
   .wk-time{margin-right:6px}
   .wk-pill .wk-fill{background:#FFE8D1}
+  .wk-bub{margin:4px;border:0;border-radius:8px;background:var(--fill);color:#111;padding:6px 9px;text-align:left;cursor:pointer;
+    display:flex;flex-direction:column;justify-content:flex-start;gap:1px;min-width:0;font:inherit;z-index:1;overflow-wrap:anywhere}
+  .wk-bub b{font-size:14px;font-weight:700;line-height:1.25}
+  .wk-bub>span{font-size:13px;color:var(--wk-ink2);line-height:1.3}
+  .wk-bub:hover{outline:2px solid rgba(31,58,147,.35)}
+  .wk-bub.picked{outline:2px solid #1F3A93;outline-offset:1px}
+  .wk-bub.wk-me{outline:3px solid #111;outline-offset:1px}
+  .wk-bub.tbd{box-shadow:inset 0 0 0 1.5px rgba(17,17,17,.45)}
+  .wk-bub.f-urgent,.wk-bub.f-urgent>span{color:#FFFFFF}
+  .wk-bub.wk-crew{background:#F1F3F6}
+  .wk-bub.wk-crew.f-off{background:var(--wk-off)}
+  .wk-bub.wk-crew>span{color:#111;font-size:13px;font-weight:600}
+  .wk-bub.wk-crew em{font-style:normal;font-weight:500;color:var(--wk-ink2);margin-right:3px}
+  .wk-bub.wk-crew.conf{box-shadow:inset 3px 0 0 var(--wk-urgent)}
   .wk-pill .wk-h{font-size:13px;font-weight:600}
   mark.wk-hit{background:#111;color:#FFFFFF;border-radius:2px;padding:0 2px}
   .wk-foot{margin-top:12px;font-size:13px;color:var(--wk-ink2);display:flex;flex-direction:column;gap:6px}
@@ -1942,6 +1956,27 @@ function renderBoard(w, B) {
       L.headTracks.forEach((tr, t) => tr.forEach(b => html.push(barHTML(b, r + t, B))));
       sep(r, n); r += n;
     }
+    if (L.id === 'crew') {
+      html.push(`<div class="wk-lab" style="grid-row:${r}"></div>`);
+      B.days.forEach((d, i) => { const h = crewBubbleHTML(d.date, r); if (h) html.push(h); });
+      sep(r, 1); r += 1;
+      continue;
+    }
+    if (L.id === 'trim' || L.id === 'harvest') {
+      // one bubble per day: the lead and the room; strains and lights are in the day panel
+      const runs = L.rows.flatMap(row => row.tracks.flat());
+      const tracks = [];
+      runs.slice().sort((x, y) => x.a - y.a || (y.b - y.a) - (x.b - x.a)).forEach(b => {
+        let t = tracks.findIndex(tr => tr.every(o => b.a > o.b || b.b < o.a));
+        if (t < 0) { tracks.push([]); t = tracks.length - 1; }
+        tracks[t].push(b);
+      });
+      const n = Math.max(1, tracks.length);
+      html.push(`<div class="wk-lab" style="grid-row:${r} / span ${n}"></div>`);
+      tracks.forEach((tr, t) => tr.forEach(b => b.cells.forEach(c => html.push(bubbleHTML(b, c.date, r + t)))));
+      sep(r, n); r += n;
+      continue;
+    }
     const strainTop = r;
     for (const row of L.rows) {
       if (compact && row.kind === 'strain') continue;
@@ -1967,6 +2002,42 @@ function renderBoard(w, B) {
     board.style.width = Math.max(min, $('wk-scroll').clientWidth - 2) + 'px';
   } else board.style.width = '';
   board.innerHTML = bg + html.join('');
+}
+// a day's crew in one bubble: who leads, who's on distro or on call, who's off
+function crewBubbleHTML(date, gridRow) {
+  if (!MODEL || !MODEL.days.has(date)) return '';
+  const D = WEEK.dayBoard(MODEL, date, { drops: S.drops });
+  const by = st => D.crew.filter(p => p.st === st);
+  const names = list => list.map(p => cap(p.name) + (p.conflict ? ' (on trim!)' : '')).join(', ');
+  const lines = [];
+  if (D.flag) lines.push(`<b>${esc(D.flag === 'NO DISTRO WORK' ? 'No distro work' : 'Distro off')}</b>`);
+  [['LEAD', 'Lead'], ['DISTRO', 'Distro'], ['ON CALL', 'On call'], ['OFF', 'Off'], ['OOO', 'Out'], ['WFH', 'WFH']].forEach(([st, word]) => {
+    const ps = by(st);
+    if (!ps.length) return;
+    lines.push(`<span><em>${word}</em> ${esc(names(ps))}</span>`);
+  });
+  if (!lines.length && D.notes.length) lines.push(`<span>${TP(D.notes[0])}</span>`);
+  if (!lines.length) return '';
+  const i = WEEK.dowIdx(date);
+  const me = S.me && D.crew.some(p => p.name === S.me);
+  const off = D.flag || (D.crew.length && D.crew.every(p => p.st === 'OFF' || p.st === 'OOO'));
+  const conflict = D.crew.some(p => p.conflict);
+  return `<button type="button" class="wk-bub wk-crew${off ? ' f-off' : ''}${conflict ? ' conf' : ''}${S.panel === date && S.panelLane === 'crew' ? ' picked' : ''}${me ? ' wk-me' : ''}" ` +
+    `style="grid-row:${gridRow};grid-column:${i + 2}" data-day="${date}" data-lane="crew" aria-label="${esc(`Who's on ${dowLong(date)}`)}">${lines.join('')}</button>`;
+}
+// a trim or harvest day: who leads it and where
+function bubbleHTML(b, date, gridRow) {
+  const it = b.item, i = WEEK.dowIdx(date);
+  const lead = b.who && b.who.length ? b.who.map(cap).join(' + ') : pretty(b.head);
+  const where = [it.room ? 'Room ' + it.room : '', it.site ? siteName(it.site) : ''].filter(Boolean).join(' · ');
+  const key = [b.lane, b.row, b.kind, b.sig].join('§');
+  const picked = S.panel === date && S.panelKey === key;
+  const me = S.me && (b.who || []).includes(S.me);
+  const cls = b.urgent ? 'f-urgent' : b.lane === 'harvest' ? 'f-harvest' : 'f-trim';
+  return `<button type="button" class="wk-bub ${cls}${b.tbd ? ' tbd' : ''}${picked ? ' picked' : ''}${me ? ' wk-me' : ''}" style="grid-row:${gridRow};grid-column:${i + 2}" ` +
+    `data-day="${date}" data-lane="${b.lane}" data-key="${esc(key)}" aria-label="${esc(`${b.lane === 'harvest' ? 'Harvest' : 'Trim'}: ${lead}${where ? ', ' + where : ''}, ${dowLong(date)}`)}">` +
+    `<b>${b.urgent ? '! ' : ''}${b.tbd ? '<span class="wk-tbd">TBD</span>' : ''}${markHTML(esc(lead || (b.lane === 'harvest' ? 'Harvest' : 'Trim')))}</b>` +
+    (where ? `<span>${esc(where)}</span>` : '') + `</button>`;
 }
 const noListDays = L => [...new Set((L.rows || []).flatMap(r => r.notListed || []))];
 function rowLabelHTML(L, row) {
@@ -2015,7 +2086,7 @@ function renderWeekView() {
     renderBoard(w, B);
     if (phone || window.innerWidth < 1100) requestAnimationFrame(scrollToToday);
   }
-  $('wk-foot').innerHTML = `<div class="wk-key"><span><i class="f-off"></i>Off / out</span><span><i class="o-lead"></i>Distro lead</span><span><i class="o-call"></i>On call</span>` +
+  $('wk-foot').innerHTML = `<div class="wk-key"><span><i class="f-off"></i>Distro off</span>` +
     (dayMode ? '' : `<span><i class="pill"></i>Strain on that day's list, with the sheet's amounts</span><span><i class="nol"></i>No strain list that day</span>`) +
     `<span><i class="tbd"></i>TBD</span><span><i class="f-urgent"></i>Urgent</span></div>` +
     `<div id="wk-read"></div>`;
@@ -2395,6 +2466,7 @@ function renderGoHome() {
     const end = PIPE.addDays(S.svStart, 8 * 7);
     if (tw < S.svStart) away = 1; else if (tw > end) away = -1;
   }
+  if (S.view === 'week' && isPhone() && S.phoneMode === 'day') away = 0;   // the day view's "Back to today" bar does this on phones
   btn.hidden = !away;
   if (away) btn.innerHTML = away < 0 ? 'This week <span aria-hidden="true">›</span>' : '<span aria-hidden="true">‹</span> This week';
   btn.setAttribute('aria-label', 'Back to this week');
