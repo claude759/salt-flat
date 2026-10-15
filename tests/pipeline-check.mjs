@@ -233,7 +233,7 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.equal(rowSpans('prerolls', 'WIZZY'), 'TUE');
   const nl = id => lane('prerolls').rows.find(r => r.key === id).notListed;
   assert.deepEqual([nl('BLUEBANGER'), nl('TIDE'), nl('WIZZY')], [[3], [3], []], 'Thursday lists no strains: hatch only the strains listed next to it');
-  assert.equal(lane('prerolls').total, 'listed: 1,800 5-pack · 1,150 1g');
+  assert.equal(lane('prerolls').total, '3 strains · 1,800 5-packs · 1,150 1g');
   assert.deepEqual(lane('orders').headTracks.flat().map(b => `${span(b)} ${b.head}`), ['MON-TUE PICK SELF DISTRO ORDERS', 'WED NABIS PICKUP']);
   const t = lane('testing').headTracks.flat()[0];
   assert.deepEqual([span(t), t.head, t.tbd], ['FRI', 'TESTING SCHEDULED · NOV DROP 2', true]);
