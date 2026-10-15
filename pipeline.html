@@ -278,6 +278,17 @@
   .wk-tbl tr.hit td{background:#EEF4FF;font-weight:700}
   .wk-tbl tr.hit td:first-child{box-shadow:inset 3px 0 0 #1F3A93}
   .wk-also{margin:22px 0 4px;padding-top:12px;border-top:1px solid var(--wk-line);font-size:14px;font-weight:600;color:var(--wk-ink2)}
+  /* the card that opens next to a clicked bubble or bar */
+  #wk-pop{position:fixed;z-index:35;width:min(360px,calc(100vw - 16px));max-height:min(70vh,560px);overflow:auto;background:#FFFFFF;color:#111;
+    border-radius:12px;box-shadow:0 0 0 1px var(--wk-line),0 12px 32px rgba(0,0,0,.18);padding:6px 12px 12px}
+  .wk-poph{position:sticky;top:-6px;z-index:1;display:flex;align-items:center;gap:8px;margin:0 -12px 2px;padding:8px 8px 6px 12px;background:#FFFFFF}
+  .wk-poph b{flex:1;font-size:14px;font-weight:700}
+  .wk-poph .btn{min-width:32px;height:30px;font-size:16px;padding:0}
+  #wk-pop .wk-card{margin:4px 0 0}
+  #wk-pop .wk-sec{margin-top:6px}
+  .wk-popday{display:block;width:100%;margin-top:10px;background:none;border:1px solid var(--wk-line);border-radius:8px;padding:8px;font-size:14px;font-weight:600;color:#1F3A93;cursor:pointer}
+  .wk-popday:hover{background:#EEF4FF}
+  .wk-nolist.picked{border-style:solid;border-color:#1F3A93}
   /* with the day panel open, the board narrows so the panel never covers it */
   @media (min-width:1100px){ body.wk-panel-open #app{padding-right:416px} }
   .wk-src summary{font-size:13px;font-weight:700;cursor:pointer;margin-top:8px}
@@ -494,6 +505,7 @@
     <div class="wk-dayview" id="wk-day" hidden></div>
     <div class="wk-foot" id="wk-foot"></div>
     <aside id="wk-panel" hidden aria-label="Day details"></aside>
+    <div id="wk-pop" hidden role="dialog" aria-label="Details"></div>
   </section>
   <section id="view-strains" hidden>
     <div class="sv-head">
@@ -1882,7 +1894,8 @@ function barHTML(b, gridRow, B) {
   const n = b.b - b.a + 1, spill = b.b;   // text stays inside the bar's own days
   const isStatus = b.lane === 'crew' && b.kind === 'status';
   const pickedKey = S.panel && S.panelKey === [b.lane, b.row, b.kind, b.sig].join('§');   // this bar was clicked to open the panel
-  const showDetail = !isStatus && (S.density !== 'compact' || b.lane === 'crew' || b.kind === 'head');
+  // testing and orders show just their headline; the strain lists are in the card a click opens
+  const showDetail = !isStatus && b.lane !== 'testing' && b.lane !== 'orders' && (S.density !== 'compact' || b.lane === 'crew' || b.kind === 'head');
   const det = showDetail ? barDetailHTML(b, B) : '';
   const lead = [b.tbd ? '<span class="wk-tbd">TBD</span>' : '', b.urgent ? '<span class="wk-bang">!</span>' : '', b.time ? `<span class="wk-time">${esc(b.time.toUpperCase())}</span>` : ''].join('');
   let head = b.head;
@@ -2283,6 +2296,56 @@ function closePanel() {
   S.panel = null; S.panelDrop = ''; S.panelKey = ''; S.panelLane = '';
   if (redraw && S.view === 'week') renderWeekView(); else closePanelEl();
 }
+// a click on a bubble or bar: just that item, in a card beside it (a day header still opens the whole day)
+let POP = null;   // {el, date}
+function closePop() {
+  const p = $('wk-pop'); if (p) { p.hidden = true; p.innerHTML = ''; }
+  if (POP && POP.el) POP.el.classList.remove('picked');
+  POP = null;
+}
+function popHTML(date, lane, key) {
+  const D = WEEK.dayBoard(MODEL, date, { drops: S.drops });
+  const head = `<div class="wk-poph"><b>${esc(dowLong(date))}, ${esc(md(date))}${date === todayISO() ? ' · Today' : ''}</b>` +
+    `<button type="button" class="btn" data-act="close-pop" aria-label="Close">×</button></div>`;
+  const more = `<button type="button" class="wk-popday" data-day="${date}">See everything on ${esc(dowLong(date))}</button>`;
+  if (lane === 'crew') {
+    let h = `<h3 class="wk-sec">WHO'S ON</h3>`;
+    if (D.flag) h += `<div class="wk-offbar">${esc(D.flag === 'NO DISTRO WORK' ? 'No distro work' : 'Distro off')}</div>`;
+    h += D.crew.map(personLine).join('');
+    D.notes.forEach(n => { h += `<div class="wk-pl note">${TP(n)}</div>`; });
+    if (!D.crew.length && !D.notes.length && !D.flag) h += `<p class="cap">No crew notes in the sheet for ${dowLong(date)}.</p>`;
+    return head + h + more;
+  }
+  const all = [...D.urgent, ...D.cards];
+  let [kl, kr] = String(key || '').split('§');
+  if (!kl) kl = lane;
+  const card = (key && all.find(c => c.key === key)) || all.find(c => c.lane === kl) || null;
+  if (!card) return '';
+  const hit = (kl === 'jars' || kl === 'prerolls') && kr && kr !== '_head' ? kr : '';
+  return head + cardHTML(card, date, hit) + more;
+}
+function placePop() {
+  const p = $('wk-pop'); if (!POP || !p || p.hidden) return;
+  if (!POP.el.isConnected) { closePop(); return; }
+  const r = POP.el.getBoundingClientRect(), w = p.offsetWidth, h = p.offsetHeight, gap = 8;
+  let left, top = r.top;
+  if (r.right + gap + w <= innerWidth - gap) left = r.right + gap;          // beside it, to the right
+  else if (r.left - gap - w >= gap) left = r.left - gap - w;                // or to the left
+  else { left = Math.min(Math.max(gap, r.left), innerWidth - w - gap); top = r.bottom + gap; }   // or below
+  top = Math.max(gap, Math.min(top, innerHeight - h - gap));
+  p.style.left = left + 'px'; p.style.top = top + 'px';
+}
+function openPop(el) {
+  const date = el.dataset.day, html = MODEL ? popHTML(date, el.dataset.lane, el.dataset.key) : '';
+  if (!html) { openDay(date, el.dataset.lane, el.dataset.key, el.dataset.drop); return; }
+  closePop();
+  if (S.panel) closePanel();
+  const p = $('wk-pop'); p.innerHTML = html; p.hidden = false;
+  POP = { el, date }; el.classList.add('picked');
+  placePop();
+}
+window.addEventListener('scroll', placePop, true);
+window.addEventListener('resize', placePop);
 function openDay(date, lane, key, drop) {
   if (isPhone()) {
     S.phoneMode = 'day'; savePref('pipeline.phoneMode', 'day'); S.sel = date; S.week = weekOf(date);
@@ -2429,6 +2492,7 @@ function supRowHTML(it, hasPar, sites, hasVen) {
 
 function render() {
   S.renderOk = false;
+  closePop();
   $('view-week').hidden = S.view !== 'week';
   $('view-strains').hidden = S.view !== 'strains';
   $('view-supplies').hidden = S.view !== 'supplies';
@@ -2611,9 +2675,13 @@ function readHash() {
 document.addEventListener('click', e => {
   // a click outside the day panel closes it (opening another day keeps it open)
   if (S.panel && !e.target.closest('#wk-panel') && !e.target.closest('[data-day]')) closePanel();
+  if (POP && !e.target.closest('#wk-pop') && !e.target.closest('[data-day]')) closePop();
   const b = e.target.closest('[data-act],.views [data-view],[data-go],[data-sf],[data-kpi],[data-day],[data-sel],[data-me],[data-dens],[data-mode],[data-panel]');
   if (!b) return;
-  if (b.dataset.day) { openDay(b.dataset.day, b.dataset.lane, b.dataset.key, b.dataset.drop); return; }
+  if (b.dataset.day) {
+    if (b.dataset.lane && !isPhone() && !b.closest('#wk-pop')) { if (POP && POP.el === b) closePop(); else openPop(b); return; }
+    closePop(); openDay(b.dataset.day, b.dataset.lane, b.dataset.key, b.dataset.drop); return;
+  }
   if (b.dataset.panel) { if (MODEL && MODEL.days.has(b.dataset.panel)) { S.panel = b.dataset.panel; S.panelLane = ''; S.panelKey = ''; renderWeekView(); } return; }
   if (b.dataset.sel) {
     const d = b.dataset.sel;
@@ -2654,6 +2722,7 @@ document.addEventListener('click', e => {
       if (S.panel) { S.panel = null; S.panelDrop = ''; }
       render(); window.scrollTo({ top: 0, behavior: 'smooth' }); break;
     case 'close-panel': closePanel(); break;
+    case 'close-pop': closePop(); break;
     case 'sv-prev': S.svStart = PIPE.addDays(S.svStart, -28); render(); break;
     case 'sv-next': S.svStart = PIPE.addDays(S.svStart, 28); render(); break;
     case 'sv-today': S.svStart = PIPE.addDays(weekOf(todayISO()), -14); render(); break;
@@ -2668,6 +2737,7 @@ let qT = null;
 }));
 document.addEventListener('keydown', e => {
   if (S.view !== 'week') return;
+  if (e.key === 'Escape' && POP) { closePop(); return; }
   if (e.key === 'Escape' && S.panel) { closePanel(); return; }
   if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement && document.activeElement.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === 'ArrowLeft') document.querySelector('[data-act="prev"]').click();
