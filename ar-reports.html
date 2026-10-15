@@ -7011,6 +7011,17 @@ let CUST_DIR={};
 // the account never appeared under "Missing something". A placeholder is a blank.
 const PLACEHOLDER=/^(—|–|-{1,2}|n\/?a|none|null|tbd|unknown)$/i;
 const realVal=v=>{ const t=String(v==null?'':v).trim(); return PLACEHOLDER.test(t)?'':t; };
+// One clean street line, or '' when what we have is not an address. Distru's company list once gave
+// Catalyst OC3 "3\nC10-0001434-LIC 3122 S Halladay St, Santa Ana, CA 92705" (a stray suite line and the
+// licence inside the cell); Nabis pads with double spaces. Licence tokens and lone short lines go,
+// the rest joins with commas. Anything without both a number and a word is not an address.
+const LIC_TOKEN=/\b(?:C\d{1,2}-\d{6,8}-LIC|OCM-[A-Z0-9]+-\d{2}-\d{4,7})\b/gi;
+function cleanAddr(v){
+  const lines=realVal(v).replace(LIC_TOKEN,' ').split(/\r?\n/).map(l=>l.replace(/\s+/g,' ').trim().replace(/^,|,$/g,'').trim())
+    .filter(l=>l && !/^[A-Za-z0-9#-]{1,4}$/.test(l));
+  const a=lines.join(', ').replace(/\s*,\s*,+/g,', ').trim();
+  return /\d/.test(a) && /[A-Za-z]{2}/.test(a) && a.length>=8 ? a : '';
+}
 function buildCustDir(){
   const dir={};
   const scan=(rows,dateCol)=>{ if(!rows) return; rows.forEach(r=>{
@@ -7539,8 +7550,8 @@ function stateOrders(){
 
 // --- Customers (channel + net revenue over a date range) ---
 let custSort={key:'net',dir:-1};
-function customersData(){
-  const {start,end}=repRange('cust');
+function customersData(range){
+  const {start,end}=range||repRange('cust');
   // aggregate per order first (channel/order-count reflect only orders with real net —
   // a sample-only / fully-discounted order shouldn't add a channel or an order to a customer).
   const acc={};
@@ -7551,12 +7562,28 @@ function customersData(){
     if(g.first==null||o.date<g.first)g.first=o.date; if(g.last==null||o.date>g.last)g.last=o.date; });
   return {start,end,rows:Object.values(acc).filter(g=>Math.abs(g.net)>0.005).map(g=>{
     const name=Object.entries(g.names).sort((a,b)=>b[1]-a[1])[0][0];
-    const info=custInfo(name);   // legal name / address / license / region (Nabis-sourced; blank for Distru-only)
+    const info=custInfo(name);   // legal name / address / license / region (Distru company list + Nabis)
     const ny=APP_STATE==='NY';
     return {
-      name, legal:ny?nyLegalFor(name):(info.legal||''), address:ny?nyAddrFor(name):(info.address||''), license:info.license||'', region:info.region||'',
+      name, legal:ny?nyLegalFor(name):(realVal(info.legal)||caRegVal(name,'legal_name')), address:ny?nyAddrFor(name):caAddrFor(name,info),
+      license:realVal(info.license)||(ny?'':caRegVal(name,'license')), region:info.region||'',
       channel:g.src.LeafLink?'LeafLink':(g.src.Distru&&g.src.Nabis?'Distru + Nabis':g.src.Distru?'Distru':'Nabis'),
       orders:g.orders, net:g.net, first:g.first, last:g.last }; })};
+}
+// Every customer with sales in the last `days` days that still has no address after every fallback,
+// per state. Gianni, 2026-10-15: "there should never be a customer that isn't linked to an address."
+// The morning health check (~/ar-automation/lib/addr-gaps.mjs) reads this from the deployed app, so the
+// email and the Customers report can never disagree about who is missing one.
+async function custAddrGaps(days=180){
+  loadRegistry(); for(let i=0;i<80&&!REG_BYKEY&&!REG_ERR;i++) await new Promise(r=>setTimeout(r,250));
+  if(!REG_BYKEY) throw new Error('the store registry did not load'+(REG_ERR?' ('+REG_ERR+')':''));
+  if(!NY_ADDR_LOADED) await loadNyAddr();
+  const keep=APP_STATE, end=Date.now(), start=end-days*864e5, out={};
+  try{ for(const st of ['CA','NY']){ APP_STATE=st;
+    out[st]=customersData({start,end}).rows.filter(r=>!r.address).sort((a,b)=>b.net-a.net)
+      .map(r=>({name:r.name, channel:r.channel, net:Math.round(r.net), last:r.last?new Date(r.last).toISOString().slice(0,10):''})); } }
+  finally{ APP_STATE=keep; }
+  return out;
 }
 // NY dispensary addresses — client-side read (like ny_credits) from the ny_dispensary_addresses
 // view (see supabase/ny-dispensary-addresses.sql). Names match the LeafLink trade names the report
@@ -7568,12 +7595,21 @@ const nyAddrNorm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'');
 // name-only, while the registry indexes aliases. A store whose LeafLink buyer name lives in its
 // aliases (Liberty Buds - Mahattan → canonical row "Liberty Buds") matches the Registry chip but
 // missed here, so the row showed "⚠ Pistil" and no address at once — same store, two answers.
-const nyAddrFor=name=>NY_ADDR[nyAddrNorm(name)]||(regFor(name)||{g:{}}).g.address||'';
+const nyAddrFor=name=>cleanAddr(NY_ADDR[nyAddrNorm(name)])||cleanAddr((regFor(name)||{g:{}}).g.address);
+// CA: the billing systems' own address first (Distru company list, Nabis delivery site), then the
+// central store registry. Before 2026-10-15 CA never looked at the registry, so every Distru-only
+// account with no company address, and all ~22 Pacafi co-op stores (Nabis only knows the co-op's
+// warehouse), exported with a blank address although the registry had each one.
+// legal name / licence the same way: the billing systems first, then the registry row
+const caRegVal=(name,f)=>realVal((regFor(name)||{g:{}}).g[f]);
+const caAddrFor=(name,info)=>cleanAddr((info||custInfo(name)||{}).address)||cleanAddr((regFor(name)||{g:{}}).g.address);
 // Legal name comes straight from the LeafLink buyer parenthetical (captured in buildNyEvents) —
 // ~100% coverage, no directory lookup needed. Map trade name → legal, rebuilt when NY_EVENTS changes.
 let NY_LEGAL={};
 function buildNyLegal(){ NY_LEGAL={}; (NY_EVENTS||[]).forEach(e=>{ const k=nyAddrNorm(e.c); if(k && e.legal && !NY_LEGAL[k]) NY_LEGAL[k]=e.legal; }); }
-const nyLegalFor=name=>NY_LEGAL[nyAddrNorm(name)]||'';
+// then the registry: a LeafLink buyer with no "(LLC)" suffix (Ava Flower Co, Flower Hill, Kushie on
+// 2026-10-15) exported with a blank legal name although the state register names the entity
+const nyLegalFor=name=>NY_LEGAL[nyAddrNorm(name)]||realVal((regFor(name)||{g:{}}).g.legal_name);
 // Legal name for ANY account, whichever state: NY = the LeafLink parenthetical; CA = the Nabis-
 // sourced customer directory. Used to show DBA + legal together on every account list.
 const legalFor=name=>(APP_STATE==='NY'?nyLegalFor(name):'')||((custInfo(name)||{}).legal||'');
@@ -8225,9 +8261,11 @@ function renderCustomers(){
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(custSort.key===key) custSort.dir*=-1; else custSort={key,dir:(['name','legal','address','channel'].includes(key))?1:-1}; renderCustomers(); });
   thSortMark(wrap,custSort.key,custSort.dir);
-  note.innerHTML=APP_STATE==='NY'
+  const noAddr=view.filter(r=>!r.address);
+  const gapNote=!noAddr.length?'':(REG_BYKEY?`<div class="neg" style="margin:0 0 6px;font-weight:600">⚠ ${noAddr.length} customer${noAddr.length!==1?'s have':' has'} no address on file: ${noAddr.slice(0,8).map(r=>esc(r.name)).join(', ')}${noAddr.length>8?`, +${noAddr.length-8} more`:''}. Add it in the BA app (Locations), or link the billing name to the store there.</div>`:'');
+  note.innerHTML=gapNote+(APP_STATE==='NY'
     ? `All New York customers with sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length}, from LeafLink order totals (cancelled/rejected excluded). <b>Customer (DBA)</b> and <b>Legal name</b> are the two halves of the LeafLink buyer name (trade name + the legal LLC in parentheses). <b>Address</b> comes from the NY dispensary directory (OCM license + workbook); a store with no directory match shows “—”. Click a row for the customer's orders and contents.`
-    : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name. <b>Registry</b> = the central store directory (BA app database, one row per store: DBA + legal + Pistil name + address + license) — ⚠ chips mark what that store's row is still missing, <b>✗ not linked</b> means no registry row matches this customer yet; use the checkbox above to hunt them down.`;
+    : `All customers with net sales in <b>${fmtRangeLabel(start,end)}</b> — ${view.length} (${nD} Distru, ${nN} Nabis, ${nB} Distru + Nabis). <b>Channel</b> = which system(s) billed them; <b>Net Revenue</b> = billed − discounts/credits. QuickBooks history excluded; accounts selling through both systems under slightly different names are merged by normalized name. <b>Registry</b> = the central store directory (BA app database, one row per store: DBA + legal + Pistil name + address + license) — ⚠ chips mark what that store's row is still missing, <b>✗ not linked</b> means no registry row matches this customer yet; use the checkbox above to hunt them down.`);
 }
 $('#cust-export').onclick=()=>{
   const {rows}=customersData(); const q=(($('#cust-search')||{}).value||'').trim().toLowerCase();
@@ -8616,7 +8654,8 @@ wireRepRange('bd', renderBydisp, 'all');
 /* ============================ CSV export ============================ */
 function downloadCSV(name,rows){
   const csv=rows.map(r=>r.map(c=>{ c=c==null?'':String(c); return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c; }).join(',')).join('\r\n');
-  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  // the BOM tells Excel the file is UTF-8: without it "Pacafi — Flavors" opened as "Pacafi â€” Flavors"
+  const url=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
   const a=document.createElement('a'); a.href=url; a.download=name; a.click(); URL.revokeObjectURL(url);
 }
 $('#inv-export').onclick=()=>{
