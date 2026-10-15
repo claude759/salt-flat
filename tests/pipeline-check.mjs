@@ -9,6 +9,8 @@ const src = html.split('/* ===== PIPELINE PARSER START =====')[1].split('/* ====
 const PIPE = new Function(`/*${src}; return PIPE;`)();
 const supSrc = html.split('/* ===== SUPPLY PARSER START =====')[1].split('/* ===== SUPPLY PARSER END ===== */')[0];
 const SUP = new Function('PIPE', `/*${supSrc}; return SUP;`)(PIPE);
+const weekSrc = html.split('/* ===== WEEK MODEL START =====')[1].split('/* ===== WEEK MODEL END ===== */')[0];
+const WEEK = new Function('PIPE', `/*${weekSrc}; return WEEK;`)(PIPE);
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
   realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9);
 
@@ -124,6 +126,133 @@ const acc = SUP.parse('Column 1,ITEM,TOTAL QTY,STATUS,PAR ,23RD,25TH,PORTAL,MYLA
 assert.deepEqual([acc.sites[3], acc.items[0].par, acc.items[0].below], ['MYLARS', null, false]);
 assert.equal(SUP.parse('nothing,here\n1,2', 'X'), null, 'a tab without the header row is refused');
 
+// ---------------- Week board model ----------------
+// parser fixes: "5PK .7G PREROLL- 700", and "PREROLLS- ...: SMOOTHIE" naming the strain its lines are for
+assert.deepEqual(PIPE.prerollQtys('5PK .7G PREROLL- 700'), [{ size: '5pk', n: 700, note: '' }]);
+{
+  const [it] = PIPE.structure([{ title: 'PREROLLS- GRIND, PRODUCE, PACKAGE (ADD VERIFICATION STICKER): SMOOTHIE', details: ['1G PREROLL- 500', '5PK .7G PREROLL- 700'] }]);
+  assert.deepEqual(it.lines.map(l => [l.strain, l.size, l.n]), [['SMOOTHIE', '1g', 500], ['SMOOTHIE', '5pk', 700]]);
+  const [j] = PIPE.structure([{ title: 'SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): TIDE', details: ['10 LBS- 3.5G (4-5 NUG MAX)'] }]);
+  assert.equal(j.lines[0].lbsNote, '4-5 NUG MAX', 'jar notes are kept');
+}
+
+// crew lines -> one status per person
+const crew = t => { const r = WEEK.parseCrew(t); return [Object.entries(r.people).map(([n, v]) => `${n} ${v.st}${v.note ? ' (' + v.note + ')' : ''}`).sort().join(', '), r.flag, r.unparsed]; };
+assert.deepEqual(crew('LORENZO @ DISTRO'), ['LORENZO DISTRO', '', false]);
+assert.deepEqual(crew('NOURI ON CALL FOR PORTAL WORK'), ['NOURI ON CALL (PORTAL WORK)', '', false]);
+assert.deepEqual(crew('JUSTIN OFF / LORENZO OFF // DREA DISTRO LEAD'), ['DREA LEAD, JUSTIN OFF, LORENZO OFF', '', false]);
+assert.deepEqual(crew('LORENZO OFF // JUSTIN DISTRO LEAD'), ['JUSTIN LEAD, LORENZO OFF', '', false]);
+assert.deepEqual(crew('DISTRO OFF'), ['', 'DISTRO OFF', false]);
+assert.deepEqual(crew('JUSTIN / DISTRO OFF'), ['JUSTIN OFF', 'DISTRO OFF', false]);
+assert.deepEqual(crew('LORENZO / JUSTIN DISTRO'), ['JUSTIN DISTRO, LORENZO DISTRO', '', false]);
+assert.deepEqual(crew('JUSTIN/NOURI/LORENZO OFF'), ['JUSTIN OFF, LORENZO OFF, NOURI OFF', '', false]);
+assert.deepEqual(crew('LOREZNO & JUSTIN DISTRO'), ['JUSTIN DISTRO, LORENZO DISTRO', '', false]);
+assert.deepEqual(crew('NO DISTRO WORK'), ['', 'NO DISTRO WORK', false]);
+assert.deepEqual(crew('JUSTIN @ TRIM / LORENZO @ DISTRO'), ['JUSTIN TRIM, LORENZO DISTRO', '', false]);
+assert.deepEqual(crew('LORENZO @ DISTRO w/ DREA, JORGE, THANH?'), ['DREA DISTRO, JORGE DISTRO, LORENZO DISTRO, THANH DISTRO', '', false]);
+assert.deepEqual(crew('CARLOS OOO'), ['CARLOS OOO', '', false]);
+assert.equal(WEEK.parseCrew('VIC - NY').unparsed, true, 'unknown wording is shown as written');
+assert.deepEqual(crew('NO DISTRO WORK - JUSTIN / NOURI OFF'), ['JUSTIN OFF, NOURI OFF', 'NO DISTRO WORK', false], 'names after the team phrase take the next status');
+assert.deepEqual(crew('NOURI OFF - CC & JUSTIN ON SCHEDULE'), ['NOURI OFF', '', true], 'a name is not a note; the line is shown as written');
+assert.deepEqual(crew('THANKSGIVING - DISTRO OFF'), ['', 'DISTRO OFF', true], 'a holiday is not a person');
+assert.equal(WEEK.parseCrew('CC ON CALL FOR PORTAL/DISTRO WORK IF NEED').unparsed, true, 'a status for nobody keeps the line visible');
+// light counts stand apart from names; a number after a cross "x" is a pheno
+assert.deepEqual(PIPE.parseStrainLines('(phenos) ZOZA x 2424\n2424 - 7 lights\nM8\n2424 x 2424 #2,9,26').map(l => l.n), [null, 7, null, null]);
+// headlines lose dangling punctuation
+assert.notEqual(WEEK.headline(PIPE.structure([{ title: 'NOURI & JUSTIN PRINT 3.5G  LABELS FOR PREROLLS, 3.5G & 1.5G BUDTENDER SAMPS', details: [] }])[0]).head.slice(-1), ',');
+// testing keeps the sheet's words the parser could not place
+{
+  const it = PIPE.structure([{ title: 'TESTING SCHEDULED FOR 7 STRAINS :DARK MATTER, ZANGBANGER, LIMELIGHT, JUNGLE JUICE (TOAD VENOM) -- RUSH TESTING', details: [] }])[0];
+  const M1 = WEEK.buildModel([{ start: '2026-03-23', days: [0, 1, 2, 3, 4, 5, 6].map(k => ({ date: PIPE.addDays('2026-03-23', k), dow: k, note: '', items: k ? [] : [it] })) }]);
+  const card = WEEK.dayBoard(M1, '2026-03-23', { drops: new Map() }).cards[0];
+  assert.ok(JSON.stringify(card).includes('RUSH TESTING'), 'RUSH TESTING is not dropped');
+}
+{
+  const d = WEEK.crewDay({ note: 'LORENZO OOO', items: [{ type: 'crew', title: 'JUSTIN/NOURI/LORENZO OFF' }] });
+  assert.deepEqual([d.people.LORENZO.st, d.people.JUSTIN.st, d.people.NOURI.st, d.flag], ['OOO', 'OFF', 'OFF', 'DISTRO OFF'], 'OOO beats OFF; all core crew off = distro off');
+}
+
+// headlines: the short bold line a bar leads with
+const hl = (title, drop) => WEEK.headline(Object.assign(PIPE.structure([{ title, details: [] }])[0], drop ? { drop } : {}));
+assert.deepEqual([hl('PREROLLS- GRIND, PRODUCE, PACKAGE, ADD BATCH LABEL (ADD VERIFICATION STICKER)').head, hl('PREROLLS- GRIND, PRODUCE, PACKAGE, ADD BATCH LABEL (ADD VERIFICATION STICKER)').detail],
+  ['GRIND, PRODUCE, PACKAGE', ['ADD BATCH LABEL', 'ADD VERIFICATION STICKER']]);
+assert.equal(hl('FINISH 5PK PREROLLS').head, 'FINISH 5-PACK PRE-ROLLS');
+{
+  const t = hl('TBD TESTING SCHEDULED FOR NOV DROP 2 -  ZANGBANGER, VOODOO, TEA PARTY (2 FACILITIES, 2 CHAIN OF CUSTODIES)');
+  assert.deepEqual([t.head, t.tbd], ['TESTING SCHEDULED · NOV DROP 2', true]);
+}
+assert.deepEqual([hl('FINISH PREROLLS FOR TESTING !!!').head, hl('FINISH PREROLLS FOR TESTING !!!').urgent], ['FINISH PRE-ROLLS FOR TESTING', true]);
+assert.equal(hl('NABISPICKUP - NOV DROP 1').head, 'NABIS PICKUP · NOV DROP 1');
+assert.equal(hl('STAGE NABIS FOR NOV DROP 1').head, 'STAGE NABIS · NOV DROP 1');
+assert.equal(hl('DCR - INSPECTION @ 25TH').head, 'DCR - INSPECTION @ 25TH', 'a one-word left part is not cut');
+assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VOID');
+
+// a made-up week shaped like the sheet's Oct 12 band: repeats on several days must become one bar each
+{
+  const rows2 = [blank()], hdrW = blank();
+  ['OCTOBER, MONDAY 12TH', 'OCTOBER, TUESDAY 13TH', 'OCTOBER, WEDNESDAY 14TH', 'OCTOBER, THURSDAY 15TH', 'OCTOBER, FRIDAY 16TH',
+    'OCTOBER, SATURDAY 17TH', 'OCTOBER,SUNDAY 18TH'].forEach((t, k) => { hdrW[k * 2] = t; });
+  rows2.push(hdrW);
+  const at = (r, day, task, detail) => { while (rows2.length <= r) rows2.push(blank()); rows2[r][day * 2] = task; rows2[r][day * 2 + 1] = detail; };
+  const room2 = 'RIPTIDE 5.5\nKINGTIDE 1.5\nTIDEBANGER 3.5';
+  at(2, 0, 'TRIM - JUSTIN', 'ROOM a @ 15TH - '); at(3, 0, '', 'ZANGBANGER 8\nM8 8');
+  at(4, 0, 'NOURI ON CALL FOR PORTAL WORK', '');
+  at(5, 0, 'PREROLLS- GRIND, PRODUCE, PACKAGE, ADD BATCH LABEL (ADD VERIFICATION STICKER)', '');
+  at(6, 0, 'BLUEBANGER', '5PK .7G -- 500'); at(7, 0, '', '1G PREROLL- 450');
+  at(8, 0, 'TIDE', '5PK .7G -- 700'); at(9, 0, '', '1G PREROLL- 700');
+  at(10, 0, 'PICK SELF DISTRO ORDERS', '');
+  at(2, 1, 'JUSTIN OFF / LORENZO OFF // DREA DISTRO LEAD', '');
+  at(3, 1, 'TIDE', '5PK .7G -- 700'); at(4, 1, '', '1G PREROLL- 700');
+  at(5, 1, 'WIZZY', '5PK .7G -- 600');
+  at(6, 1, 'PICK SELF DISTRO ORDERS', '');
+  at(2, 2, 'BLUEBANGER', '5PK .7G -- 500'); at(3, 2, '', '1G PREROLL- 450');
+  at(4, 2, 'TIDE', '5PK .7G -- 700'); at(5, 2, '', '1G PREROLL- 700');
+  at(6, 2, 'NABIS PICKUP', '');
+  at(2, 3, 'TRIM - JUSTIN', 'ROOM 2 @ 25TH - '); at(3, 3, '', room2);
+  at(4, 3, 'PREROLLS- GRIND, PRODUCE, PACKAGE, ADD BATCH LABEL (ADD VERIFICATION STICKER)', '');
+  at(2, 4, 'TRIM - JUSTIN', 'ROOM 2 @ 25TH - '); at(3, 4, '', room2);
+  at(4, 4, 'FINISH 5PK PREROLLS', '');
+  at(5, 4, 'BLUEBANGER', '5PK .7G -- 500'); at(6, 4, '', '1G PREROLL- 450');
+  at(7, 4, 'TBD TESTING SCHEDULED FOR NOV DROP 2 -  ZANGBANGER, VOODOO', '');
+  at(2, 5, 'DISTRO OFF', ''); at(3, 5, 'TRIM - JUSTIN', 'ROOM 2 @ 25TH - '); at(4, 5, '', room2);
+  at(2, 6, 'JUSTIN / DISTRO OFF', '');
+  const toCsv = rs => rs.map(r => r.map(c => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(',')).join('\n');
+  const wks = PIPE.parse(toCsv(rows2));
+  const M = WEEK.buildModel(wks);
+  const B = WEEK.buildBoard(M, '2026-10-12', { today: '2026-10-15', summary: WEEK.summarize(wks[0]), drops: new Map() });
+  const lane = id => B.lanes.find(l => l.id === id);
+  const span = b => b.a === b.b ? WEEK.DOWS[b.a] : `${WEEK.DOWS[b.a]}-${WEEK.DOWS[b.b]}`;
+  const rowSpans = (id, key) => lane(id).rows.find(r => r.key === key).tracks.flat().map(span).join(' ');
+  assert.equal(rowSpans('trim', '15TH|A'), 'MON');
+  assert.equal(rowSpans('trim', '25TH|2'), 'THU-SAT', 'a room trimmed three days running is one bar');
+  assert.equal(lane('trim').total, '2 rooms · 26.5 lights');
+  assert.deepEqual(lane('prerolls').headTracks.flat().map(b => `${span(b)} ${b.head}`), ['MON-THU GRIND, PRODUCE, PACKAGE', 'FRI FINISH 5-PACK PRE-ROLLS'],
+    'strain-only days take the instruction from Monday');
+  assert.equal(rowSpans('prerolls', 'TIDE'), 'MON-WED');
+  assert.equal(rowSpans('prerolls', 'BLUEBANGER'), 'MON WED FRI', 'a gap shows as separate blocks');
+  assert.equal(rowSpans('prerolls', 'WIZZY'), 'TUE');
+  const nl = id => lane('prerolls').rows.find(r => r.key === id).notListed;
+  assert.deepEqual([nl('BLUEBANGER'), nl('TIDE'), nl('WIZZY')], [[3], [3], []], 'Thursday lists no strains: hatch only the strains listed next to it');
+  assert.equal(lane('prerolls').total, 'listed: 1,800 5-pack · 1,150 1g');
+  assert.deepEqual(lane('orders').headTracks.flat().map(b => `${span(b)} ${b.head}`), ['MON-TUE PICK SELF DISTRO ORDERS', 'WED NABIS PICKUP']);
+  const t = lane('testing').headTracks.flat()[0];
+  assert.deepEqual([span(t), t.head, t.tbd], ['FRI', 'TESTING SCHEDULED · NOV DROP 2', true]);
+  const justin = lane('crew').rows.find(r => r.key === 'JUSTIN').tracks.map(tr => tr.map(b => `${span(b)} ${b.head}`).join(' | '));
+  assert.deepEqual(justin, ['TUE OFF | SUN OFF', 'MON TRIM ROOM A @ 15TH | THU-SAT TRIM ROOM 2 @ 25TH']);
+  assert.deepEqual(B.days.map(d => d.flag), ['', '', '', '', '', 'DISTRO OFF', 'DISTRO OFF']);
+  assert.deepEqual(B.days.map(d => d.tasks), [3, 2, 2, 2, 3, 1, 0], 'strain rows fold into one pre-roll task per day');
+  // the day view
+  const tue = WEEK.dayBoard(M, '2026-10-13', { drops: new Map() }).cards.find(c => c.lane === 'prerolls');
+  assert.deepEqual(tue.changes.map(c => `${c.kind} ${c.strain}`), ['add WIZZY', 'gone BLUEBANGER']);
+  assert.equal(tue.inheritedFrom, '2026-10-12');
+  assert.deepEqual(tue.table.total, { '5pk': 1300, '1g': 700 });
+  const thu = WEEK.dayBoard(M, '2026-10-15', { drops: new Map() });
+  const thuPre = thu.cards.find(c => c.lane === 'prerolls');
+  assert.deepEqual([thuPre.n, thuPre.m, thuPre.borrowedFrom], [4, 5, '2026-10-14'], 'no list on Thursday: show Wednesday\'s, labelled');
+  const thuTrim = thu.cards.find(c => c.lane === 'trim');
+  assert.deepEqual([thuTrim.n, thuTrim.m, thuTrim.range], [1, 3, 'THU – SAT']);
+}
+
 // optional: a real export of the tab, to see it parses end to end
 if (realSup) {
   const real = SUP.parse(readFileSync(realSup, 'utf8'), 'DISTRO SUPPLY');
@@ -134,6 +263,17 @@ if (realPipe) {
   const real = PIPE.parse(readFileSync(realPipe, 'utf8'));
   const n = real.reduce((a, x) => a + x.days.reduce((b, d) => b + d.items.length, 0), 0);
   assert.ok(real.length > 10 && n > 100, 'real export parses');
-  console.log(`real export: ${real.length} weeks, ${n} items, ${real[0].start} to ${real[real.length - 1].start}`);
+  // every week builds a board, and no bar is left without a headline
+  const M = WEEK.buildModel(real);
+  let bars = 0;
+  for (const w of real) {
+    const B = WEEK.buildBoard(M, w.start, { today: '', summary: WEEK.summarize(w), drops: new Map() });
+    for (const l of B.lanes) for (const b of [...l.headTracks.flat(), ...l.rows.flatMap(r => r.tracks.flat())]) {
+      bars++;
+      if (!(l.id === 'jars' || l.id === 'prerolls') || b.kind === 'head') assert.ok(b.head, `bar with no headline in ${w.start} ${l.id}`);
+    }
+    for (const d of w.days) WEEK.dayBoard(M, d.date, { drops: new Map() });
+  }
+  console.log(`real export: ${real.length} weeks, ${n} items, ${bars} bars, ${real[0].start} to ${real[real.length - 1].start}`);
 }
 console.log('pipeline-check: all checks passed');
