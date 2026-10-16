@@ -525,6 +525,21 @@
   .wk-runline span{display:block;color:#1F3A93;margin-top:2px}
   .wk-runline:hover{border-color:#1F3A93}
   .wk-trklink{display:inline-block;margin-top:8px;font-size:13px;font-weight:600}
+  .wk-pv{margin-top:10px;border:1px solid var(--wk-grid);border-radius:8px;padding:7px 9px 8px;background:#FBFCFD}
+  .wk-pvh{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:800;letter-spacing:.05em;color:var(--wk-ink2)}
+  .wk-pvt{margin:4px 0 2px;font-size:14px}
+  .wk-pvt th{font-size:12px}
+  .wk-pvt td{padding:4px}
+  .wk-pvt td:first-child{font-weight:600}
+  .wk-pvt td small{display:block;font-size:11.5px;font-weight:500;color:var(--wk-ink2)}
+  .wk-pvt td.togo{color:var(--wk-ink2)}
+  .wk-pvt td.short{color:#B45309}
+  .wk-pvt td.over{color:#1F3A93}
+  .wk-pvst{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0 2px}
+  .wk-card p.wk-pvnote{font-size:13px;line-height:1.35;color:var(--wk-ink2);margin:6px 0 0}
+  .wk-card p.wk-pvnote.warn{color:#B45309;font-weight:600}
+  .wk-pvlink{display:block;background:none;border:0;padding:0;margin-top:6px;font-family:inherit;font-size:13px;font-weight:700;color:#1F3A93;cursor:pointer}
+  .wk-pvlink:hover{text-decoration:underline}
   /* plan vs actual tab: the same light page as Batches */
   #view-actuals{font-size:14px;font-variant-numeric:tabular-nums;color:#111;
     --pv-cols:minmax(160px,1.3fr) minmax(118px,1fr) repeat(3,minmax(74px,.7fr)) minmax(104px,.9fr) 58px 76px 100px}
@@ -2791,7 +2806,7 @@ function cardHTML(c, date, hit) {
     } else body += `<p class="cap">No strains listed in the sheet.</p>`;
     (c.loose || []).forEach(l => { body += `<p>${fmtN(l.n)} ${esc(sizeWord(l.size))} · strain not named</p>`; });
     if (hit) body += batchLineHTML(c.lane, hit, date);
-    body += runLineHTML(c.lane, date);
+    body += runPvHTML(c.lane, date) || runLineHTML(c.lane, date);
   } else {
     head = `${c.tbd ? '<span class="wk-tbd">TBD</span>' : ''}${c.time ? `<span class="wk-time">${esc(c.time)}</span>` : ''}${TP(c.head)}${c.site && !c.head.includes(c.site) ? ' @ ' + esc(siteName(c.site)) : ''}`;
     if (c.strains && c.strains.length) body += `<p>${T(strainList(c.strains))}</p>`;
@@ -3303,6 +3318,60 @@ function batchLineHTML(lane, strain, date) {
   const say = [sts.join(', '), ...parts].filter(Boolean).join(' · ');
   return `<p class="wk-batline"><b>Batch sheet, ${esc(runDates(r))} run:</b> ${esc(say.charAt(0).toUpperCase() + say.slice(1))}</p>`;
 }
+// plan vs actual inside the board's cards. The variance column reads "left to count" while a run is going and
+// counted minus plan once it's finished; both use the batch sheet count, like the Plan vs actual tab
+const pvGap = g => g.text.replace(/ left to count$/, '').replace(/^(.*) over$/, '+$1').replace('All counted', '0');
+const pvHead = r => `<div class="wk-pvh"><span>PLAN VS ACTUAL · ${esc(runDates(r).toUpperCase())} RUN</span>${r.act.closed ? '' : '<span>SO FAR</span>'}</div>`;
+const pvLink = r => `<button type="button" class="wk-pvlink" data-run="${esc(r.id)}">Whole run in Plan vs actual ›</button>`;
+// one strain: its plan for the run against what the batch sheet counted, with the batch status
+function strainPvHTML(lane, strain, date) {
+  const A = S.act, r = A ? ACT.runOn(A, lane, date) : null;
+  const ls = r ? r.act.lines.filter(l => l.strain === strain) : [];
+  if (!ls.length) return '';
+  const closed = r.act.closed, jars = lane === 'jars';
+  const gapOf = (plan, got, unit) => {
+    if (plan == null || got == null) return { t: '–', c: '' };
+    const v = got - plan, f = x => (unit === 'lb' ? lbText(Math.abs(x)) + ' lb' : fmtN(Math.abs(Math.round(x))));
+    if (!closed) return v < 0 ? { t: f(v), c: 'togo' } : { t: v > 0 ? '+' + f(v) : '0', c: v > 0 ? 'over' : '' };
+    return { t: Math.abs(v) < 0.05 ? '0' : `${v < 0 ? '−' : '+'}${f(v)}`, c: v < 0 ? 'short' : v > 0 ? 'over' : '' };
+  };
+  const row = (name, plan, got, of, gap) => `<tr><td>${esc(name)}</td><td>${plan}</td><td>${got}</td><td>${of}</td><td class="${gap.c}">${esc(gap.t)}</td></tr>`;
+  let rows = '';
+  if (!jars) ls.forEach(l => {
+    rows += row(PROD_WORD[l.size], l.n != null ? fmtN(l.n) : '–', l.counted != null ? fmtN(l.counted) : '–',
+      l.counted != null && l.n ? pct(l.counted, l.n) + '%' : '–', gapOf(l.n, l.counted));
+  });
+  else {
+    const l = ls[0], lb = l.counted != null ? jarLb(l.counted) : null;
+    rows += row('Jars', l.lbs != null ? `${fmtN(l.lbs)} lb<small>≈ ${fmtN(Math.round(l.lbs * ACT.JARS_PER_LB))}</small>` : '–',
+      l.counted != null ? `${fmtN(l.counted)}<small>≈ ${lbText(lb)} lb</small>` : '–', lb != null && l.lbs ? pct(lb, l.lbs) + '%' : '–', gapOf(l.lbs, lb, 'lb'));
+    if (l.cases != null || l.buds != null) rows += row('Samples', l.cases != null ? `${fmtN(l.cases)} cases` : '–', l.buds != null ? `${fmtN(l.buds)} bags` : '–', '–', { t: '–', c: '' });
+  }
+  const sts = statusParts(ls).map(([size, st]) => {
+    const pre = size && !jars ? `${PROD_WORD[size]} ` : '';
+    if (!st) return `<span class="pv-none">${esc(pre)}not on the batch sheet</span>`;
+    const i = BAT.info(st), [fill, acc] = btTone(i.tone);
+    return `<span class="bt-pill" style="--fill:${fill};--acc:${acc}">${esc(pre + i.label)}</span>`;
+  }).join(' ');
+  const notes = [];
+  if (!A.hasBatches) notes.push('Counts come from the Batch Label Sheet once you are signed in.');
+  const whole = runSummary(r);
+  if (whole) notes.push(`The task tracker has no strain, so "made" is only for the whole run: ${whole.replace(/^[^:]+: /, '')}.`);
+  return `<div class="wk-pv">${pvHead(r)}<table class="wk-tbl wk-pvt"><thead><tr><th></th><th>Plan</th><th>Counted</th><th>%</th><th>${closed ? 'Variance' : 'Left'}</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>${sts ? `<div class="wk-pvst">${sts}</div>` : ''}${notes.map(n => `<p class="wk-pvnote">${esc(n)}</p>`).join('')}${pvLink(r)}</div>`;
+}
+// the job's run: plan, made (task tracker), counted (batch sheet) and what's left, per product
+function runPvHTML(lane, date) {
+  const r = S.act ? ACT.runOn(S.act, lane, date) : null;
+  if (!r || r.start > todayISO() || !r.prods.length) return '';
+  const rows = r.prods.filter(p => p.prod !== 'bud' || p.plan != null).map(p => {
+    const c = pvCells(r, p), g = pvGap(c.gap);
+    return `<tr><td>${esc(PROD_WORD[p.prod])}</td><td>${c.plan}</td><td>${c.made}</td><td>${c.counted}</td><td class="${c.gap.cls}">${esc(g)}</td></tr>`;
+  }).join('');
+  const miss = r.act.missing.length ? `<p class="wk-pvnote warn">Nothing in the task tracker on ${esc(r.act.missing.map(d => `${dowOf(d)} ${md(d)}`).join(', '))}.</p>` : '';
+  return `<div class="wk-pv">${pvHead(r)}<table class="wk-tbl wk-pvt"><thead><tr><th></th><th>Plan</th><th>Made</th><th>Counted</th><th>${r.act.closed ? 'Variance' : 'Left'}</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table><p class="wk-pvnote">Made: task tracker${r.lane === 'prerolls' ? ' (5-packs = sticks ÷ 5)' : ''}. Counted: Batch Label Sheet. Left: plan minus counted.</p>${miss}${pvLink(r)}</div>`;
+}
 // a strain's batch status: one label when its sizes agree, else one per size: [[size|null, status]]
 function statusParts(ls) {
   const d = [...new Set(ls.map(l => l.status || ''))];
@@ -3325,7 +3394,7 @@ function strainCardHTML(date, lane, key) {
   if (ch && ch.kind === 'add') body += `<p class="chg">New on the list today (not on ${esc(dowLong(c.comparedTo))}'s)</p>`;
   if (ch && ch.kind === 'qty') body += `<p class="chg">Changed today: ${esc(qtyText(lane, ch.from))} → ${esc(qtyText(lane, ch.lines))}</p>`;
   ls.forEach(l => [l.lbsNote, l.casesNote, ...(l.notes || [])].filter(Boolean).forEach(n => { body += `<p>${TP(n)}</p>`; }));
-  body += batchLineHTML(lane, strain, date);
+  body += strainPvHTML(lane, strain, date) || batchLineHTML(lane, strain, date);
   const names = [strain, sLabel(strain)].map(x => String(x).toUpperCase());
   const src = (c ? c.src : []).map(x => ({ date: x.date, texts: x.texts.filter(t => names.some(n => String(t).toUpperCase().includes(n))) })).filter(x => x.texts.length)
     .map(x => `<div><b>${shortDate(x.date)}:</b> ${x.texts.map(esc).join(' / ')}</div>`).join('');
