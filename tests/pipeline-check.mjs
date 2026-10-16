@@ -65,6 +65,14 @@ rows.push(blank(), hdr2);
 const csv = rows.map(r => r.map(c => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(',')).join('\n');
 
 const weeks = PIPE.parse(csv);
+// every item keeps the sheet cells it came from (row, column of the export), so the sheet's red marks can be tied back
+{
+  const mon = weeks[0].days[0].items;
+  const trim = mon.find(i => i.type === 'trim'), pre = mon.find(i => i.type === 'prerolls');
+  assert.deepEqual(trim.raw[0].at, [[2, 0], [2, 1], [3, 1]], 'the trim title cell and its two detail cells');
+  assert.deepEqual(pre.raw[0].at, [[5, 0]], 'the pre-roll instruction row');
+  assert.deepEqual(pre.lines.find(l => l.strain === 'TIDE' && l.size === '5pk').at, [[8, 0], [8, 1], [9, 1]], 'a strain line keeps its strain row');
+}
 assert.equal(weeks.length, 2, 'two week bands');
 const [w] = weeks;
 assert.equal(w.start, '2026-10-12');
