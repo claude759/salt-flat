@@ -273,6 +273,7 @@
   .wk-card p.cap{font-size:14px;font-weight:700}
   .wk-card p.cap.strong{font-weight:800}
   .wk-card p.chg{font-size:15px;font-weight:800;margin:2px 0}
+  .wk-card p.wk-amt{font-size:16px;font-weight:700;margin:2px 0 6px;font-variant-numeric:tabular-nums}
   .wk-tbl{width:100%;border-collapse:collapse;margin:6px 0 2px;font-size:15px;font-variant-numeric:tabular-nums}
   .wk-tbl th{font-size:13px;font-weight:800;text-align:right;padding:2px 4px}
   .wk-tbl td{padding:4px;border-top:1px solid var(--wk-grid)}
@@ -1978,7 +1979,7 @@ const WEEK = ((PIPE) => {
   }
 
   return { buildModel, buildBoard, dayBoard, parseCrew, crewDay, crewNames, crewDisplay, headline, summarize, norm,
-    dowIdx, mondayOf, shortDay, DOWS, DAYNAMES, ROSTER, LANES, rangeText, dropText };
+    dowIdx, mondayOf, shortDay, DOWS, DAYNAMES, ROSTER, LANES, rangeText, dropText, runInfo };
 })(PIPE);
 /* ===== WEEK MODEL END ===== */
 
@@ -2850,8 +2851,10 @@ function renderDay(el, date, opt) {
     if (picked && (kl === 'jars' || kl === 'prerolls') && kr && kr !== '_head') hit = kr;
   }
   if (picked) {
-    h += `<h3 class="wk-sec">SELECTED${hit ? ' · ' + esc(sLabel(hit).toUpperCase()) : ''}</h3>` + cardHTML(picked, date, hit).replace('class="wk-card ', 'class="wk-card focus ') +
+    const one = hit ? strainCardHTML(date, picked.lane, opt.focus.key) : '';
+    h += `<h3 class="wk-sec">SELECTED</h3>` + (one || cardHTML(picked, date, hit)).replace('class="wk-card ', 'class="wk-card focus ') +
       `<div class="wk-also">Also on ${esc(dowLong(date))}</div>`;
+    if (one) picked = null;   // the day's whole pre-roll card still shows below
   }
   const others = c => c !== picked;
   if (D.urgent.filter(others).length) h += `<h3 class="wk-sec">URGENT</h3>` + D.urgent.filter(others).map(c => cardHTML(c, date)).join('');
@@ -2918,7 +2921,7 @@ function popHTML(date, lane, key) {
   const head = `<div class="wk-poph"><b>${esc(dowLong(date))}, ${esc(md(date))}${date === todayISO() ? ' · Today' : ''}</b>` +
     `<button type="button" class="btn" data-act="close-pop" aria-label="Close">×</button></div>`;
   const more = `<button type="button" class="wk-popday" data-day="${date}">See everything on ${esc(dowLong(date))}</button>`;
-  if (lane === 'made') return head + madeCardHTML(date, key) + more;
+  if (lane === 'made') return head + madeCardHTML(date, key, true) + more;
   if (lane === 'crew') {
     let h = `<h3 class="wk-sec">WHO'S ON</h3>`;
     if (D.flag) h += `<div class="wk-offbar">${esc(D.flag === 'NO DISTRO WORK' ? 'No distro work' : 'Distro off')}</div>`;
@@ -2930,6 +2933,7 @@ function popHTML(date, lane, key) {
   const all = [...D.urgent, ...D.cards];
   let [kl, kr] = String(key || '').split('§');
   if (!kl) kl = lane;
+  if ((kl === 'jars' || kl === 'prerolls') && kr && kr !== '_head') { const one = strainCardHTML(date, kl, key); if (one) return head + one + more; }
   const card = (key && all.find(c => c.key === key)) || all.find(c => c.lane === kl) || null;
   if (!card) return '';
   const hit = (kl === 'jars' || kl === 'prerolls') && kr && kr !== '_head' ? kr : '';
@@ -3291,15 +3295,42 @@ function batchLineHTML(lane, strain, date) {
   const r = S.act && S.act.hasBatches ? ACT.runOn(S.act, lane, date) : null;
   const ls = r ? r.act.lines.filter(l => l.strain === strain) : [];
   if (!ls.length) return '';
-  const parts = ls.map(l => lane === 'jars' ? (l.counted != null ? `${fmtN(l.counted)} jars counted${l.lbs != null ? ` (plan ${fmtN(l.lbs)} lb ≈ ${fmtN(Math.round(l.lbs * ACT.JARS_PER_LB))})` : ''}` : 'jars not counted yet')
-    : `${PROD_WORD[l.size]} ${l.counted != null ? fmtN(l.counted) : '–'} of ${fmtN(l.n)}`);
+  const any = ls.some(l => l.counted != null);
+  const parts = !any ? ['nothing counted yet'] : ls.map(l => lane === 'jars'
+    ? `${fmtN(l.counted)} jars counted${l.lbs != null ? ` (plan ${fmtN(l.lbs)} lb ≈ ${fmtN(Math.round(l.lbs * ACT.JARS_PER_LB))} jars)` : ''}`
+    : l.counted != null ? `${fmtN(l.counted)} of ${fmtN(l.n)} ${PROD_WORD[l.size]} counted` : `${PROD_WORD[l.size]} not counted yet`);
   const sts = statusParts(ls).map(([size, st]) => `${size && lane !== 'jars' ? PROD_WORD[size] + ' ' : ''}${st ? BAT.info(st).label.toLowerCase() : 'not on the sheet'}`);
-  return `<p class="wk-batline"><b>Batch sheet, ${esc(runDates(r))} run:</b> ${esc(parts.join(' · '))}${sts.length ? ` · ${esc(sts.join(', '))}` : ''}</p>`;
+  const say = [sts.join(', '), ...parts].filter(Boolean).join(' · ');
+  return `<p class="wk-batline"><b>Batch sheet, ${esc(runDates(r))} run:</b> ${esc(say.charAt(0).toUpperCase() + say.slice(1))}</p>`;
 }
 // a strain's batch status: one label when its sizes agree, else one per size: [[size|null, status]]
 function statusParts(ls) {
   const d = [...new Set(ls.map(l => l.status || ''))];
   return d.length <= 1 ? (d[0] ? [[null, d[0]]] : []) : ls.map(l => [l.size, l.status || '']);
+}
+// a click on one strain's pill: that strain only. Its amounts that day, the job it sits under, what changed since
+// the day before, the batch sheet's count, and the sheet rows that name it
+function strainCardHTML(date, lane, key) {
+  const strain = String(key || '').split('§')[1];
+  const info = MODEL && MODEL.dayInfo.get(date);
+  const ls = info && info.per[lane] && info.per[lane].get(strain);
+  if (!strain || !ls) return '';
+  const D = WEEK.dayBoard(MODEL, date, { drops: S.drops });
+  const c = [...D.urgent, ...D.cards].find(x => x.lane === lane);
+  const ri = WEEK.runInfo(MODEL, key, date);
+  const runTxt = ri.m > 1 ? `DAY ${ri.n} OF ${ri.m} · ${WEEK.rangeText(ri.start, ri.end)}` : '';
+  let body = `<p class="wk-amt">${esc(qtyText(lane, ls))}</p>`;
+  if (c && c.heads.length) body += `<p class="cap">Job: ${TP(c.heads.join(' / '))}</p>`;
+  const ch = c && c.changes.find(x => x.strain === strain);
+  if (ch && ch.kind === 'add') body += `<p class="chg">New on the list today (not on ${esc(dowLong(c.comparedTo))}'s)</p>`;
+  if (ch && ch.kind === 'qty') body += `<p class="chg">Changed today: ${esc(qtyText(lane, ch.from))} → ${esc(qtyText(lane, ch.lines))}</p>`;
+  ls.forEach(l => [l.lbsNote, l.casesNote, ...(l.notes || [])].filter(Boolean).forEach(n => { body += `<p>${TP(n)}</p>`; }));
+  body += batchLineHTML(lane, strain, date);
+  const names = [strain, sLabel(strain)].map(x => String(x).toUpperCase());
+  const src = (c ? c.src : []).map(x => ({ date: x.date, texts: x.texts.filter(t => names.some(n => String(t).toUpperCase().includes(n))) })).filter(x => x.texts.length)
+    .map(x => `<div><b>${shortDate(x.date)}:</b> ${x.texts.map(esc).join(' / ')}</div>`).join('');
+  return `<div class="wk-card f-pack" data-lane="${lane}" data-key="${esc(key)}"><div class="wk-ct"><span>${lane === 'jars' ? 'JARS' : 'PRE-ROLLS'}</span>${runTxt ? `<span>${esc(runTxt)}</span>` : ''}</div>` +
+    `<div class="wk-ch">${T(sLabel(strain))}</div>${body}${src ? `<details class="wk-src"><summary>Sheet wording</summary>${src}</details>` : ''}</div>`;
 }
 function runLineHTML(lane, date) {
   const r = S.act ? ACT.runOn(S.act, lane, date) : null;
@@ -3324,17 +3355,17 @@ function trackerRowHTML(r) {
     `${bits.length ? `<span>${esc(bits.join(' · '))}</span>` : ''}${r.note ? `<span>${esc(r.note)}</span>` : ''}</div>`;
 }
 // the task tracker's rows for a day: one lane's work first, everything else under "Also logged"
-function madeCardHTML(date, lane) {
+function madeCardHTML(date, lane, only) {
   const A = S.act, day = A && A.days.get(date);
   const rows = day ? day.rows : [];
   const mine = lane ? rows.filter(r => r.kind.prod && (r.kind.market === 'void' ? lane === 'jars' : ACT.LANE_OF[r.kind.prod] === lane)) : rows;
-  const rest = lane ? rows.filter(r => !mine.includes(r)) : [];
+  const rest = lane && !only ? rows.filter(r => !mine.includes(r)) : [];
   const word = lane === 'jars' ? 'jars' : lane === 'prerolls' ? 'pre-rolls' : '';
   let h = `<div class="wk-card f-made" data-lane="made"${lane ? ` data-key="${lane}"` : ''}><div class="wk-ct"><span>TASK TRACKER${word ? ' · ' + word.toUpperCase() : ''}</span></div>`;
   if (mine.length) h += mine.map(trackerRowHTML).join('');
   else h += `<p class="cap">Nothing logged${word ? ' for ' + word : ''} in the task tracker on ${dowLong(date)}.</p>`;
   if (rest.length) h += `<p class="wk-alsolog">Also logged</p>` + rest.map(trackerRowHTML).join('');
-  if (lane) h += runLineHTML(lane, date);
+  if (lane && !only) h += runLineHTML(lane, date);
   return h + `<a class="wk-trklink" href="labor-calculator.html" target="_blank" rel="noopener">Open the task tracker</a></div>`;
 }
 
