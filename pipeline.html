@@ -504,6 +504,11 @@
   .bt-d,.bt-thc{font-size:13px;white-space:nowrap}
   .bt-d.none,.bt-thc.none{color:#B8BEC8}
   .bt-d.fut{color:var(--wk-ink2);font-style:italic}
+  .bt-row.bt-up .bt-nm b{font-weight:600}
+  .bt-uphd{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;padding:7px 12px 5px;background:#F7F8FA;border-top:1px solid var(--wk-grid);font-size:13px}
+  .bt-uphd b{font-weight:700}
+  .bt-uphd em{font-style:normal;color:var(--wk-ink2)}
+  .bt-row.bt-up .bt-sub span:not(.bt-site){color:var(--wk-ink2)}
   .bt-d a{font-weight:700;text-decoration:underline;text-underline-offset:2px}
   .bt-row i:not(.wk-sq){display:none;font-style:normal;color:var(--wk-ink2);font-weight:500;margin-right:4px}
   .bt-thc{text-align:right;font-weight:600}
@@ -3702,6 +3707,61 @@ function btRowHTML(r, g) {
     `<span class="bt-dates">${btDate(harvest, 'Harvest')}${trimmed}${btDate(r.package_date, 'Packaged')}${test}${coaOnly}${btDate(r.nabis_date, 'Nabis P/U')}</span>` +
     `${thc}<span class="bt-uidc">${uid}</span></div>`;
 }
+// trims the pipeline sheet plans that haven't happened yet (or are under way): one row per strain for the Batches
+// view, since a batch only reaches the Batch Label Sheet once it's trimmed. Consecutive days of one room are one trim;
+// the pounds are the trim's estimate (TRIMY) shared out by the sheet's lights, as on the Week board's trim card.
+function upcomingTrims() {
+  if (!S.weeks.length) return [];
+  const today = todayISO(), days = [];
+  for (const w of S.weeks) for (const d of w.days) for (const it of d.items) if (it.type === 'trim' && it.site) days.push({ date: d.date, it });
+  days.sort((a, b) => a.date.localeCompare(b.date));
+  const runs = [];
+  for (const x of days) {
+    const room = String(x.it.room || '').toUpperCase(), k = `${x.it.site}|${room}`;
+    const r = runs.findLast(y => y.k === k);
+    if (r && x.date <= PIPE.addDays(r.end, 1)) { r.end = x.date; r.items.push(x.it); }
+    else runs.push({ k, site: x.it.site, room, start: x.date, end: x.date, items: [x.it] });
+  }
+  const out = [];
+  for (const r of runs) {
+    if (r.end < today) continue;
+    // the strains the trim lists (the latest light count when it changes), in the sheet's order
+    const st = new Map();
+    r.items.forEach(it => (it.strains || []).forEach(x => { const key = PIPE.strainKey(x.strain || ''); if (key) st.set(key, { key, lights: x.n != null ? +x.n : (st.get(key) || {}).lights ?? null }); }));
+    const item = { site: r.site, room: r.room, strains: [...st.values()].map(x => ({ strain: x.key, n: x.lights })) };
+    const est = S.trimEv && S.trimEv.length ? TRIMY.estimate(S.trimEv, item, r.start, S.trimSpread) : null;
+    const per = est && est.sheetLights ? est.lb / est.sheetLights : 0;
+    const crew = r.items.map(it => it.crew).find(Boolean) || '';
+    const now = r.start <= today;
+    r.lb = est ? est.lb : null; r.lights = est ? est.lights : (item.strains.reduce((a, x) => a + (x.n || 0), 0) || null); r.crew = crew; r.now = now;
+    if (!st.size) out.push({ up: true, run: r, key: '', lights: null, lb: null, crew, now, roomOnly: true });
+    st.forEach(x => out.push({ up: true, run: r, key: x.key, lights: x.lights, lb: per && x.lights ? x.lights * per : null, crew, now }));
+  }
+  return out;
+}
+const upText = u => [u.key, sLabel(u.key), siteName(u.run.site), siteTitle(u.run.site), 'ROOM ' + u.run.room, u.crew, 'TRIM'].join(' ').toUpperCase();
+const upMatch = u => !S.q || S.q.toUpperCase().split(/\s+/).every(w => upText(u).includes(w));
+// a planned trim's header row inside "Not trimmed yet": when, which room, who, how much
+function btUpHeadHTML(r) {
+  const crew = r.crew ? pretty(WEEK.crewDisplay(r.crew)) : '';   // crewDisplay fixes the sheet's name typos (LOREZNO)
+  const bits = [crew, r.lights ? `${fmtN(r.lights)} lights` : '', r.lb != null ? `≈ ${Math.round(r.lb)} lb est.` : ''].filter(Boolean).join(' · ');
+  return `<div class="bt-uphd"><b>${esc((r.now ? 'Trimming now · ' : '') + runDates(r))}</b><span>Room ${esc(r.room || '?')}</span>` +
+    `<span class="bt-site" title="${esc(siteTitle(r.site))}">${siteSq(r.site)}${esc(siteName(r.site))}</span>${bits ? `<em>${esc(bits)}</em>` : ''}</div>`;
+}
+function btUpRowHTML(u) {
+  const r = u.run, site = `<span class="bt-site" title="${esc(siteTitle(r.site))}">${siteSq(r.site)}${esc(siteName(r.site))}</span>`;
+  if (u.roomOnly) return `<div class="bt-row bt-up"><span class="bt-nm"><span class="bt-sub">No strains listed on the sheet yet</span></span></div>`;
+  const name = sLabel(u.key);
+  const crew = '';
+  const when = `${u.now ? 'Trimming now · ' : ''}${runDates(r)}`;
+  const tip = `Planned on the pipeline sheet: trim of room ${r.room} at ${siteName(r.site)}, ${runDates(r)}${u.crew ? ', ' + pretty(u.crew) : ''}` +
+    (u.lights != null ? `; ${fmtN(u.lights)} lights` : '') + (u.lb != null ? `; about ${Math.round(u.lb)} lb, from the site's recent trims` : '');
+  return `<div class="bt-row bt-up"><span class="bt-nm" title="${esc(tip)}"><b>${esc(name)}</b><span class="bt-sub">Room ${esc(r.room || '?')}${site}${crew ? `<span>${esc(crew)}</span>` : ''}</span></span>` +
+    `<span class="bt-code"><span class="bt-d none">${u.lights != null ? esc(fmtN(u.lights)) + ' lights' : '–'}</span></span>` +
+    `<span class="bt-dates">${btDate(null, 'Harvest')}<span class="bt-d fut" title="${esc(tip)}"><i>To trim</i>${esc(when)}${u.lb != null ? `<small>≈ ${esc(String(Math.round(u.lb)))} lb est.</small>` : ''}</span>` +
+    `${btDate(null, 'Packaged')}${btDate(null, 'Test')}${btDate(null, 'COA')}${btDate(null, 'Nabis P/U')}</span>` +
+    `<span class="bt-thc none">–</span><span class="bt-uidc"><span class="bt-d none">Not made yet</span></span></div>`;
+}
 function renderBatches() {
   const list = $('bt-list');
   if (!S.bat) {
@@ -3712,7 +3772,12 @@ function renderBatches() {
   const meta = S.bat.meta || {}, all = BAT.groups(S.bat.rows);
   const working = all.filter(g => !g.finished), fin = all.find(g => g.finished);
   const nWork = working.reduce((a, g) => a + g.rows.length, 0), since = meta.finished_since ? md(meta.finished_since) : '';
+  // what's still to be trimmed, from the pipeline sheet: just before Finished
+  const up = upcomingTrims();
+  if (up.length) { all.push({ key: 'NOT TRIMMED', label: 'Not trimmed yet', tone: 'idle', rank: 15, finished: false, upcoming: true, rows: up }); all.sort((a, b) => a.rank - b.rank); }
+  const upStrains = up.filter(u => !u.roomOnly).length;
   $('bt-sentence').textContent = `${nWork} batch${nWork === 1 ? '' : 'es'} in the works` +
+    (upStrains ? ` · ${upStrains} strain${upStrains === 1 ? '' : 's'} still to trim` : '') +
     (fin ? ` · ${fin.rows.length} finished${since ? ' since ' + since : ''}` : '');
   const al = [];
   if (S.batErr) al.push(`<div class="alert">${esc(S.batErr)} Showing the last copy loaded.</div>`);
@@ -3720,7 +3785,7 @@ function renderBatches() {
   if (age != null && age > 3) al.push(`<div class="alert info">The batch list last synced ${Math.round(age)} hours ago. The hourly sync on Gianni's Mac may be off.</div>`);
   $('bt-alerts').innerHTML = al.join('');
 
-  const shown = all.map(g => Object.assign({}, g, { hits: g.rows.filter(btMatch) })).filter(g => g.hits.length);
+  const shown = all.map(g => Object.assign({}, g, { hits: g.rows.filter(g.upcoming ? upMatch : btMatch) })).filter(g => g.hits.length);
   $('bt-chips').innerHTML = shown.map(g => `<button type="button" class="bt-chip" data-jump="${esc(g.key)}"><span class="bt-sw" style="--fill:${btTone(g.tone)[0]}"></span>${esc(g.label)} <b>${g.hits.length}</b></button>`).join('');
   if (!shown.length) {
     list.innerHTML = `<div class="bt-grid"><div class="bt-none">No batches match "${esc(S.q)}".</div></div>`;
@@ -3731,7 +3796,8 @@ function renderBatches() {
       const count = g.hits.length < g.rows.length ? `${g.hits.length} of ${g.rows.length}` : g.rows.length;
       const toggle = g.finished && !S.q ? `<button type="button" class="btn" data-act="bt-fin">${S.batFin ? 'Hide' : 'Show'}</button>` : '';
       return `<div class="bt-band" id="${btSlug(g.key)}"><b><span class="bt-sw" style="--fill:${btTone(g.tone)[0]}"></span>${esc(g.label)}</b>` +
-        `<em>${count}${g.finished && since ? ` · since ${since}` : ''}</em>${toggle}</div>` + (open ? g.hits.map(r => btRowHTML(r, g)).join('') : '');
+        `<em>${count}${g.finished && since ? ` · since ${since}` : ''}${g.upcoming ? ' · trims planned on the pipeline sheet' : ''}</em>${toggle}</div>` +
+        (open ? g.hits.map((r, i) => g.upcoming ? (i === 0 || g.hits[i - 1].run !== r.run ? btUpHeadHTML(r.run) : '') + btUpRowHTML(r) : btRowHTML(r, g)).join('') : '');
     }).join('') + '</div>';
   }
   const edited = meta.file_modified ? new Date(meta.file_modified) : null;
@@ -3739,7 +3805,8 @@ function renderBatches() {
     (edited ? ` The sheet was last edited ${md(todayISOOf(edited))} at ${edited.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.` : '') +
     ' Click a Metrc UID to copy it.' +
     (S.labs && S.labs.size ? ' Blue dotted dates and THC are filled in from Metrc and the Excelbis COA e-mails until the sheet has them (hover for where each came from).' : '') +
-    (S.trimEv ? ' Trimmed comes from the site trim sheets.' : '');
+    (S.trimEv ? ' Trimmed comes from the site trim sheets.' : '') +
+    (up.length ? ' Not trimmed yet lists the trims planned on the pipeline sheet, with pounds estimated from each site\'s recent trims.' : '');
 }
 const todayISOOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
