@@ -540,6 +540,11 @@
   .wk-card p.wk-pvnote.warn{color:#B45309;font-weight:600}
   .wk-pvlink{display:block;background:none;border:0;padding:0;margin-top:6px;font-family:inherit;font-size:13px;font-weight:700;color:#1F3A93;cursor:pointer}
   .wk-pvlink:hover{text-decoration:underline}
+  .wk-bub .wk-yield{font-size:12.5px;font-weight:700;color:#2E5E1F;font-variant-numeric:tabular-nums}
+  .wk-bub .wk-yield.est{font-weight:600;color:#3F6B2E}
+  .wk-card p.wk-amt small{font-size:13px;font-weight:600;color:var(--wk-ink2)}
+  .wk-bub.f-urgent .wk-yield,.wk-bub.f-urgent .wk-yield.est{color:#FFFFFF}
+  .wk-card .wk-pv{color:#111}
   /* plan vs actual tab: the same light page as Batches */
   #view-actuals{font-size:14px;font-variant-numeric:tabular-nums;color:#111;
     --pv-cols:minmax(160px,1.3fr) minmax(118px,1fr) repeat(3,minmax(74px,.7fr)) minmax(104px,.9fr) 58px 76px 100px}
@@ -2292,6 +2297,113 @@ const ACT = ((PIPE) => {
 })(PIPE);
 /* ===== ACTUALS MODEL END ===== */
 
+/* ===== TRIM YIELD MODEL START =====
+   Trim estimates. The site trim workbooks (pipeline_trims, copied hourly from the "2026 TRIM SHEETS" folder) give,
+   for every past trim, the room's lights and the bigs / littles / trim grams per strain. A trim still to come is
+   estimated as the room's lights times the site's pounds per light (bigs + littles) over its last 3 trims. Each 2026
+   trim predicted only from the trims before it, six ways: this one was the most accurate (about 11% off on average,
+   within 10% on 18 of 33); per-strain rates did worse, because strains differ less than one trim from the next.
+   A tab whose lines all reappear on a later tab of the same room is a repeat and is dropped; a partial tab (under
+   1.2 lb per light, like a one-strain early harvest) is folded into the room's next trim. */
+const TRIMY = ((PIPE) => {
+  const LB = 453.592, LAST = 3, PARTIAL = 1.2;   // under 1.2 lb per light: an early or one-strain harvest, not a whole room
+  const dayN = d => Date.parse(d + 'T12:00:00Z') / 864e5;
+  const addDays = PIPE.addDays;
+  const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+  // rows (one per strain line) -> trims, oldest first
+  function events(rows) {
+    const m = new Map();
+    for (const r of rows || []) {
+      if (!r.start_date) continue;
+      const k = `${r.file}|${r.tab}|${r.block}`;
+      if (!m.has(k)) m.set(k, { id: k, site: r.site, room: String(r.room || '').toUpperCase(), start: r.start_date, end: r.end_date || r.start_date,
+        lights: r.lights != null ? +r.lights : null, tab: r.tab, file: r.file, lines: [] });
+      m.get(k).lines.push({ name: r.strain, key: PIPE.strainKey(r.strain || ''), bigs: +r.bigs_g || 0, littles: +r.littles_g || 0, trim: +r.trim_g || 0, line: r.line });
+    }
+    let ev = [...m.values()].sort((a, b) => a.start.localeCompare(b.start) || a.id.localeCompare(b.id));
+    ev.forEach(e => e.lines.sort((a, b) => a.line - b.line));
+    const lbOf = e => e.lines.reduce((a, l) => a + l.bigs + l.littles, 0) / LB;
+    // a dropped or folded tab stays findable as a part of the trim that took it in, with its own dates and pounds
+    const keep = (e, later) => { later.parts = [...(later.parts || []), ...(e.parts || []), { tab: e.tab, start: e.start, end: e.end, lb: lbOf(e) }]; };
+    ev = ev.filter((e, i) => {
+      const later = ev.slice(i + 1).find(x => x.site === e.site && x.room === e.room && dayN(x.start) - dayN(e.end) <= 21);
+      if (!later) return true;
+      if (e.lines.every(l => later.lines.some(x => x.name === l.name && x.bigs === l.bigs && x.littles === l.littles))) { keep(e, later); return false; }
+      if (e.lights && lbOf(e) / e.lights < PARTIAL) {
+        keep(e, later);
+        e.lines.forEach(l => { const x = later.lines.find(y => y.key === l.key); if (x && !x.bigs && !x.littles) Object.assign(x, l); else if (!x) later.lines.push(l); });
+        return false;
+      }
+      return true;
+    });
+    ev.forEach(e => {
+      e.bigsLb = e.lines.reduce((a, l) => a + l.bigs, 0) / LB;
+      e.littlesLb = e.lines.reduce((a, l) => a + l.littles, 0) / LB;
+      e.trimLb = e.lines.reduce((a, l) => a + l.trim, 0) / LB;
+      e.lb = e.bigsLb + e.littlesLb;
+      e.perLight = e.lights ? e.lb / e.lights : null;
+      e.trimPerLight = e.lights ? e.trimLb / e.lights : null;
+    });
+    return ev;
+  }
+  // the site's pounds per light over its last 3 trims that ended before a date (all sites' last 8 if it has none)
+  function rate(ev, site, before) {
+    const prior = ev.filter(e => e.lights && e.end < before && e.perLight >= PARTIAL);   // a partial tab not yet folded never sets the rate
+    let from = prior.filter(e => e.site === site).slice(-LAST), scope = 'site';
+    if (!from.length) { from = prior.slice(-8); scope = 'all'; }
+    if (!from.length) return null;
+    return { perLight: avg(from.map(e => e.perLight)), trimPerLight: avg(from.map(e => e.trimPerLight)), from, scope };
+  }
+  // the room's lights as the trim sheets count them (the latest trim of that room), so lights and rate agree
+  function roomLights(ev, site, room) {
+    const r = String(room || '').toUpperCase();
+    const e = ev.filter(x => x.site === site && x.room === r && x.lights).pop();
+    return e ? e.lights : null;
+  }
+  // the trim sheet tab for a pipeline trim: same site, the day within 3 days of the tab's dates, the same room first
+  function match(ev, site, room, date) {
+    const c = ev.filter(e => e.site === site && dayN(date) >= dayN(e.start) - 3 && dayN(date) <= dayN(e.end) + 3);
+    const r = String(room || '').toUpperCase();
+    return c.find(e => e.room === r) || (c.length === 1 ? c[0] : null);
+  }
+  // a sheet day that was an early harvest now counted inside a later tab: {of: that trim, part: {tab, start, end, lb}}
+  function matchPart(ev, site, room, date) {
+    const r = String(room || '').toUpperCase();
+    for (const e of ev) {
+      if (e.site !== site || (r && e.room !== r)) continue;
+      const p = (e.parts || []).find(x => dayN(date) >= dayN(x.start) - 3 && dayN(date) <= dayN(x.end) + 3);
+      if (p) return { of: e, part: p };
+    }
+    return null;
+  }
+  // how this way of estimating did on the trims so far: each predicted from the trims before it
+  function backtest(ev) {
+    const errs = [];
+    ev.forEach(e => {
+      if (!e.lights || e.perLight < PARTIAL) return;
+      const r = rate(ev, e.site, e.start);
+      if (!r || r.scope !== 'site') return;
+      errs.push((r.perLight * e.lights - e.lb) / e.lb);
+    });
+    if (!errs.length) return null;
+    return { n: errs.length, miss: avg(errs.map(Math.abs)), within10: errs.filter(x => Math.abs(x) <= 0.1).length };
+  }
+  // a trim on the pipeline sheet -> its estimate: lights x the site's rate, with a range of the usual miss
+  // lightsAt: the lights the trim really had (a past trim's own tab), over the room's latest count
+  function estimate(ev, item, date, spread, lightsAt) {
+    const sheetLights = (item.strains || []).reduce((a, s) => a + (s.n || 0), 0) || null;
+    const rl = lightsAt || roomLights(ev, item.site, item.room);
+    const lights = rl || sheetLights;
+    const r = rate(ev, item.site, date);
+    if (!lights || !r) return null;
+    const lb = lights * r.perLight, sp = spread || 0.12;
+    return { lights, lightsFrom: rl ? 'room' : 'sheet', sheetLights, rate: r, lb, lo: lb * (1 - sp), hi: lb * (1 + sp), trimLb: lights * r.trimPerLight,
+      strains: (item.strains || []).filter(s => s.n).map(s => ({ strain: s.strain, lights: s.n, lb: s.n * r.perLight })) };
+  }
+  return { events, rate, roomLights, match, matchPart, backtest, estimate, LB, PARTIAL };
+})(PIPE);
+/* ===== TRIM YIELD MODEL END ===== */
+
 /* ===== app ===== */
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -2418,7 +2530,8 @@ const S = { weeks: [], byStart: new Map(), drops: new Map(), sidx: new Map(), we
   phoneMode: loadPref('pipeline.phoneMode', 'day') === 'week' ? 'week' : 'day',
   sup: null, supAt: 0, supErr: '', sf: new Set(SF_DEFAULT),
   bat: null, batAt: 0, batErr: '', batFin: loadPref('pipeline.batches.fin', '') === '1',
-  trk: null, trkAt: 0, trkErr: '', act: null, pvRun: null };
+  trk: null, trkAt: 0, trkErr: '', act: null, pvRun: null,
+  trims: null, trimsAt: 0, trimsErr: '', trimEv: null, trimBt: null, trimSpread: 0.12 };
 
 function qMatch(text) {
   if (!S.q) return true;
@@ -2598,7 +2711,17 @@ function renderBoard(w, B) {
       // one bubble per day: the lead and the room; strains and lights are in the day panel
       const tracks = pack(L.rows.flatMap(row => row.tracks.flat()).sort((x, y) => x.a - y.a || (y.b - y.a) - (x.b - x.a)).map(b => [b]));
       const n = Math.max(1, tracks.length);
-      tracks.forEach((tr, t) => tr.forEach(b => b.cells.forEach(c => html.push(bubbleHTML(b, c.date, r + t)))));
+      // each trim's pounds print once a week, on its earliest bar, even when the sheet splits the trim into several bars
+      const yieldOn = new Map();
+      if (L.id === 'trim') {
+        const seen = new Set();
+        tracks.flat().filter(b => b.cells.length).sort((x, y) => x.cells[0].date.localeCompare(y.cells[0].date)).forEach(b => {
+          const y = trimYield(b.item, b.cells[0].date, b.start, b.end), k = trimKey(y, b.item);
+          if (!k || seen.has(k)) return;
+          seen.add(k); yieldOn.set(b, { date: b.cells[0].date, y });
+        });
+      }
+      tracks.forEach((tr, t) => tr.forEach(b => b.cells.forEach(c => html.push(bubbleHTML(b, c.date, r + t, yieldOn.get(b))))));
       sep(r, n); r += n;
       continue;
     }
@@ -2658,7 +2781,7 @@ function crewBubbleHTML(date, gridRow) {
     `style="grid-row:${gridRow};grid-column:${i + 1}" data-day="${date}" data-lane="crew" aria-label="${esc(`Who's on ${dowLong(date)}`)}">${lines.join('')}</button>`;
 }
 // a trim or harvest day: who leads it and where
-function bubbleHTML(b, date, gridRow) {
+function bubbleHTML(b, date, gridRow, yd) {
   const it = b.item, i = WEEK.dowIdx(date);
   const lead = b.who && b.who.length ? b.who.map(cap).join(' + ') : pretty(b.head);
   const where = [it.room ? 'Room ' + it.room : '', it.site ? siteName(it.site) : ''].filter(Boolean).join(' · ');
@@ -2669,7 +2792,7 @@ function bubbleHTML(b, date, gridRow) {
   return `<button type="button" class="wk-bub ${cls}${b.tbd ? ' tbd' : ''}${picked ? ' picked' : ''}${me ? ' wk-me' : ''}" style="grid-row:${gridRow};grid-column:${i + 1}" ` +
     `data-day="${date}" data-lane="${b.lane}" data-key="${esc(key)}" aria-label="${esc(`${b.lane === 'harvest' ? 'Harvest' : 'Trim'}: ${lead}${where ? ', ' + where : ''}, ${dowLong(date)}`)}">` +
     `<b>${b.urgent ? '! ' : ''}${b.tbd ? '<span class="wk-tbd">TBD</span>' : ''}${markHTML(esc(lead || (b.lane === 'harvest' ? 'Harvest' : 'Trim')))}</b>` +
-    (where ? `<span>${esc(where)}</span>` : '') + `</button>`;
+    (where ? `<span>${esc(where)}</span>` : '') + (yd && yd.date === date ? trimLineHTML(yd.y) : '') + `</button>`;
 }
 const noListDays = L => [...new Set((L.rows || []).flatMap(r => r.notListed || []))];
 function rowLabelHTML(L, row) {
@@ -2740,6 +2863,7 @@ function renderBanner() {
   else if (S.loadedAt && mins > 30) el.innerHTML = `<div class="wk-banner">Last read from the sheet ${mins} min ago. Tap Refresh.</div>`;
   else el.innerHTML = '';
   if (S.trkErr) el.innerHTML += `<div class="wk-banner">${esc(S.trkErr)} ${S.trk ? 'The Made row shows the last copy read.' : ''}</div>`;
+  if (S.trimsErr) el.innerHTML += `<div class="wk-banner">Couldn't read the trim sheets: ${esc(S.trimsErr)}.${S.trims ? ' Trim pounds show the last copy read.' : ''}</div>`;
   const r = $('wk-read'); if (r) r.textContent = S.loadedAt ? `From the DISTRO PIPELINE sheet · read ${t}` : '';
 }
 
@@ -2781,13 +2905,19 @@ function cardHTML(c, date, hit) {
     if (!c.crew && (it.room || it.site) && c.head && c.head !== 'TRIM') body += `<p><b>${TP(c.head)}</b></p>`;
     (c.detail || []).forEach(d => { body += `<p>${TP(d)}</p>`; });
     const st = it.strains || [];
+    const ri = c.key ? WEEK.runInfo(MODEL, c.key, date) : { start: date, end: date };
+    const y = c.lane === 'trim' ? trimYield(it, date, ri.start, ri.end) : null;
+    const est = y && !y.actual && !y.part && y.est;   // a trim to come: the estimate shared out by the sheet's lights
     if (st.length) {
       const lights = st.reduce((a, s) => a + (s.n || 0), 0);
-      body += `<table class="wk-tbl one"><tbody>${st.map(s => `<tr><td>${T(sLabel(s.strain))}</td><td>${s.n != null ? fmtN(s.n) : ''}</td></tr>`).join('')}` +
-        `<tr class="tot"><td>${st.length} strain${st.length > 1 ? 's' : ''}</td><td>${lights ? fmtN(lights) + ' lights' : ''}</td></tr></tbody></table>`;
+      const per = est && lights ? est.lb / lights : 0;   // each listed light's share, so the column adds up to the estimate
+      body += `<table class="wk-tbl one">${per ? '<thead><tr><th></th><th>Lights</th><th>≈ lb</th></tr></thead>' : ''}<tbody>` +
+        st.map(s => `<tr><td>${T(sLabel(s.strain))}</td><td>${s.n != null ? fmtN(s.n) : ''}</td>${per ? `<td>${s.n ? fmtN(Math.round(s.n * per)) : ''}</td>` : ''}</tr>`).join('') +
+        `<tr class="tot"><td>${st.length} strain${st.length > 1 ? 's' : ''}</td><td>${lights ? fmtN(lights) + (per ? '' : ' lights') : ''}</td>${per ? `<td>${fmtN(Math.round(est.lb))}</td>` : ''}</tr></tbody></table>`;
     }
     (it.notes || []).forEach(n => { body += `<p>${TP(n)}</p>`; });
     (it.sub || []).forEach(s => { body += `<p>${T(sLabel(s.strain))}: ${TP(s.text)}</p>`; });
+    if (y) body += trimYieldHTML(y, date);
   } else if (c.lane === 'jars' || c.lane === 'prerolls') {
     head = TP(c.heads.join(' / '));
     if (c.inheritedFrom) body += `<p class="cap">Sheet lists only strains today; instruction from ${dowLong(c.inheritedFrom)}.</p>`;
@@ -3372,6 +3502,76 @@ function runPvHTML(lane, date) {
   return `<div class="wk-pv">${pvHead(r)}<table class="wk-tbl wk-pvt"><thead><tr><th></th><th>Plan</th><th>Made</th><th>Counted</th><th>${r.act.closed ? 'Variance' : 'Left'}</th></tr></thead>` +
     `<tbody>${rows}</tbody></table><p class="wk-pvnote">Made: task tracker${r.lane === 'prerolls' ? ' (5-packs = sticks ÷ 5)' : ''}. Counted: Batch Label Sheet. Left: plan minus counted.</p>${miss}${pvLink(r)}</div>`;
 }
+
+/* ---- trim estimates: pounds from the site trim workbooks (TRIMY, the TRIM YIELD MODEL block) ---- */
+const lb1 = n => fmtN(Math.round(n * 10) / 10);
+const lb0 = n => fmtN(Math.round(n));
+const perL = n => (Math.round(n * 100) / 100).toFixed(2);
+function ingestTrims() {
+  try {
+    S.trimEv = S.trims ? TRIMY.events(S.trims.rows) : null;
+    const bt = S.trimEv ? TRIMY.backtest(S.trimEv) : null;
+    S.trimBt = bt; S.trimSpread = bt ? Math.min(0.25, Math.max(0.08, Math.round(bt.miss * 100) / 100)) : 0.12;
+  } catch (e) { console.error('trim estimates failed', e); S.trimEv = null; }
+}
+// a trim on the sheet: what the trim sheet recorded for it, else its estimate from the trims before it starts
+function trimYield(item, date, start, end) {
+  const ev = S.trimEv;
+  if (!ev || !ev.length || !item || !item.site) return null;
+  const m = TRIMY.match(ev, item.site, item.room, date);
+  if (m) {
+    const last = (end || date) > m.end ? (end || date) : m.end;   // still being trimmed: the tab is filling up
+    return { actual: m, open: todayISO() <= last, est: TRIMY.estimate(ev, item, m.start, S.trimSpread, m.lights) };
+  }
+  const p = TRIMY.matchPart(ev, item.site, item.room, date);
+  if (p) return { part: p.part, of: p.of };
+  const est = TRIMY.estimate(ev, item, start || date, S.trimSpread);
+  return est ? { est, late: (start || date) < todayISO() } : null;
+}
+// one trim, one key, so its pounds print once on a week's board even when the sheet splits it into several bars
+const trimKey = (y, item) => !y ? '' : y.actual ? 'a:' + y.actual.id : y.part ? 'p:' + y.of.id + '|' + y.part.tab : `e:${item.site}|${item.room}|${Math.round(y.est.lb)}`;
+function trimLineHTML(y) {
+  if (y.actual) return `<span class="wk-yield">${lb0(y.actual.lb)} lb ${y.open ? 'so far' : 'trimmed'}</span>`;
+  if (y.part) return `<span class="wk-yield">${lb0(y.part.lb)} lb trimmed</span>`;
+  return `<span class="wk-yield est">≈ ${lb0(y.est.lb)} lb est.</span>`;
+}
+// trims are old news once the copy is over 3 hours stale or the last read failed
+function trimsStale() {
+  const sy = S.trims && S.trims.meta && S.trims.meta.synced_at ? Date.parse(S.trims.meta.synced_at) : 0;
+  return !!S.trimsErr || (sy && Date.now() - sy > 3 * 3600000) ? (sy ? md(todayISOOf(new Date(sy))) : 'never') : '';
+}
+const trimWhen = e => `${e.start === e.end ? md(e.start) : runDates({ start: e.start, end: e.end })}`;
+function trimYieldHTML(y, date) {
+  const site = x => siteName(x);
+  if (y.part) {
+    const o = y.of;
+    return `<div class="wk-pv"><div class="wk-pvh"><span>EARLY HARVEST · TRIM SHEET</span><span>${esc(y.part.tab.toUpperCase())}</span></div>` +
+      `<p class="wk-amt">${lb1(y.part.lb)} lb of flower</p><p class="wk-pvnote">Counted with this room's ${esc(trimWhen(o))} trim (tab ${esc(o.tab)}), ${lb1(o.lb)} lb in all.</p></div>`;
+  }
+  if (y.actual) {
+    const m = y.actual, e = y.est;
+    const rows = m.lines.filter(l => (l.bigs + l.littles) / TRIMY.LB >= 0.05).map(l => `<tr><td>${T(sLabel(l.key || l.name))}</td><td>${lb1(l.bigs / TRIMY.LB)}</td><td>${lb1(l.littles / TRIMY.LB)}</td><td>${lb1((l.bigs + l.littles) / TRIMY.LB)}</td></tr>`).join('');
+    const vs = e ? Math.round((m.lb - e.lb) / e.lb * 100) : null;
+    return `<div class="wk-pv"><div class="wk-pvh"><span>${y.open ? 'TRIMMING · SO FAR' : 'TRIMMED · TRIM SHEET'}</span><span>${esc(m.tab.toUpperCase())}</span></div>` +
+      `<p class="wk-amt">${lb1(m.lb)} lb of flower${y.open ? ' so far' : ''}</p>` +
+      `<p class="wk-pvnote">${lb1(m.bigsLb)} lb bigs · ${lb1(m.littlesLb)} lb littles · ${lb1(m.trimLb)} lb trim${m.perLight ? ` · ${perL(m.perLight)} lb per light (${fmtN(m.lights)} lights)` : ''}</p>` +
+      (e ? `<p class="wk-pvnote">Estimated before the trim: ≈ ${lb0(e.lb)} lb (${lb0(e.lo)}–${lb0(e.hi)}).${y.open ? '' : ` It came in ${vs > 0 ? '+' : vs < 0 ? '−' : ''}${Math.abs(vs)}%.`}</p>` : '') +
+      `<table class="wk-tbl wk-pvt"><thead><tr><th></th><th>Bigs</th><th>Littles</th><th>lb</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+  const e = y.est, r = e.rate;
+  const from = r.from.slice().reverse().map(x => `${trimWhen(x)} room ${esc(x.room)}: ${perL(x.perLight)}`).join(' · ');
+  const notes = [];
+  notes.push(`${fmtN(e.lights)} lights × ${perL(r.perLight)} lb per light, ${r.scope === 'site' ? `${esc(site(r.from[0].site))}'s average over its last ${r.from.length} trim${r.from.length === 1 ? '' : 's'}` : `the average of the last ${r.from.length} trims at all sites`} (${from}).`);
+  if (e.lightsFrom === 'room' && e.sheetLights && Math.abs(e.sheetLights - e.lights) >= 1) notes.push(`The trim sheets count this room as ${fmtN(e.lights)} lights; the pipeline sheet lists ${fmtN(e.sheetLights)}.`);
+  if (e.lightsFrom === 'sheet') notes.push('No past trim of this room yet, so the lights come from the pipeline sheet.');
+  notes.push(`Plus ≈ ${lb0(e.trimLb)} lb of trim.`);
+  if (S.trimBt) notes.push(`Tried on the ${S.trimBt.n} trims so far, each estimated from the trims before it: off by ${Math.round(S.trimBt.miss * 100)}% on average, within 10% on ${S.trimBt.within10}.`);
+  const stale = trimsStale();
+  if (stale) notes.push(`The trim sheets were last copied ${stale}; newer trims may be missing.`);
+  else if (y.late) notes.push('This trim isn\'t in the trim sheet yet; the actual pounds show here once it is.');
+  return `<div class="wk-pv"><div class="wk-pvh"><span>ESTIMATE</span><span>FROM PAST TRIMS</span></div>` +
+    `<p class="wk-amt">≈ ${lb0(e.lb)} lb of flower <small>(${lb0(e.lo)}–${lb0(e.hi)})</small></p>${notes.map(n => `<p class="wk-pvnote">${n}</p>`).join('')}</div>`;
+}
 // a strain's batch status: one label when its sizes agree, else one per size: [[size|null, status]]
 function statusParts(ls) {
   const d = [...new Set(ls.map(l => l.status || ''))];
@@ -3624,6 +3824,7 @@ function render() {
   if (S.view === 'supplies' && !S.supAt && !S.supErr) loadSupplies(false);
   if (S.view === 'batches' && !S.batAt && !S.batErr) loadBatches(false);
   if ((S.view === 'week' || S.view === 'actuals') && sb) { if (!S.trkAt && !S.trkErr) loadTracker(true); if (!S.batAt && !S.batErr) loadBatches(true); }
+  if (S.view === 'week' && sb && !S.trimsAt && !S.trimsErr) loadTrims(true);
   renderStatus();
   S.renderOk = true;
   const h = `#view=${S.view}${S.week ? '&week=' + S.week : ''}${S.q ? '&q=' + encodeURIComponent(S.q) : ''}${S.view === 'actuals' && S.pvRun && S.pvRun !== 'none' ? '&run=' + S.pvRun : ''}`;
@@ -3818,6 +4019,37 @@ async function loadTracker(quiet) {
   } finally { trkLoading = false; }
   if (fresh) { ingestActuals(); if (S.view === 'week' || S.view === 'actuals') render(); }
 }
+// the site trim workbooks, copied hourly into pipeline_trims: the page checks the one-row meta and reloads the rows only
+// when a run changed them
+const TRIMS_CACHE = 'pipeline.trims.v1';
+let trimsLoading = false;
+async function loadTrims(quiet) {
+  if (trimsLoading || !sb) return;
+  trimsLoading = true;
+  let fresh = false;
+  try {
+    const m = await sb.from('pipeline_trims_meta').select('*').maybeSingle();
+    if (m.error) throw m.error;
+    if (!m.data) throw new Error("the trim sheets haven't been copied yet");
+    if (!quiet || !S.trims || S.trims.meta.changed_at !== m.data.changed_at) {
+      const rows = [];
+      for (let from = 0; ; from += 1000) {
+        const r = await sb.from('pipeline_trims').select('*').order('file').order('tab').order('block').order('line').range(from, from + 999);
+        if (r.error) throw r.error;
+        rows.push(...(r.data || []));
+        if (!r.data || r.data.length < 1000) break;
+      }
+      S.trims = { rows, meta: m.data }; fresh = true;
+      try { localStorage.setItem(TRIMS_CACHE, JSON.stringify({ wb: S.wb, trims: S.trims })); } catch (_) {}
+    } else S.trims.meta = m.data;
+    S.trimsAt = Date.now(); S.trimsErr = '';
+  } catch (e) {
+    const msg = e.message || String(e);
+    S.trimsErr = /does not exist|schema cache|relation/i.test(msg) ? "trim estimates aren't set up on the server yet" : msg;
+    fresh = true;
+  } finally { trimsLoading = false; }
+  if (fresh) { ingestTrims(); if (S.view === 'week') render(); }
+}
 function startApp() {
   $('gate').hidden = true; $('top').hidden = false; $('app').hidden = false;
   // the Batches header row sticks under the top bar, whose height changes with its status text
@@ -3841,15 +4073,21 @@ function startApp() {
     const c = JSON.parse(localStorage.getItem(TRK_CACHE) || 'null');
     if (c && c.wb === S.wb && c.trk) S.trk = c.trk;
   } catch (_) {}
+  try {
+    const c = JSON.parse(localStorage.getItem(TRIMS_CACHE) || 'null');
+    if (c && c.wb === S.wb && c.trims) { S.trims = c.trims; ingestTrims(); }
+  } catch (_) {}
   if (S.bat || S.trk) { ingestActuals(); if (S.weeks.length) render(); }
   if (S.view === 'supplies') { render(); loadSupplies(true); }
   if (S.view === 'batches') { render(); loadBatches(true); }
   if (S.view === 'week' || S.view === 'actuals') { loadTracker(true); loadBatches(true); }
+  if (S.view === 'week') loadTrims(true);
   load(false);
   setInterval(() => {
     if (document.visibilityState !== 'visible') { renderStatus(); return; }
     load(true); if (S.view === 'supplies') loadSupplies(true); if (S.view === 'batches') loadBatches(true);
     if (S.view === 'week' || S.view === 'actuals') { loadTracker(true); loadBatches(true); }
+    if (S.view === 'week') loadTrims(true);
   }, 5 * 60 * 1000);
   setInterval(() => {
     renderStatus();
@@ -3871,6 +4109,7 @@ function startApp() {
     if (S.view === 'supplies' && Date.now() - S.supAt > 2 * 60 * 1000) loadSupplies(true);
     if (S.view === 'batches' && Date.now() - S.batAt > 2 * 60 * 1000) loadBatches(true);
     if ((S.view === 'week' || S.view === 'actuals') && Date.now() - S.trkAt > 2 * 60 * 1000) { loadTracker(true); loadBatches(true); }
+    if (S.view === 'week' && Date.now() - S.trimsAt > 2 * 60 * 1000) loadTrims(true);
   });
 }
 function readHash() {
@@ -3965,6 +4204,7 @@ document.addEventListener('click', e => {
     case 'refresh':
       if (S.view === 'supplies') loadSupplies(false); else if (S.view === 'batches') loadBatches(false); else load(false);
       if (S.view === 'week' || S.view === 'actuals') { loadTracker(false); loadBatches(true); }
+      if (S.view === 'week') loadTrims(false);
       break;
     case 'bt-fin': S.batFin = !S.batFin; savePref('pipeline.batches.fin', S.batFin ? '1' : ''); render(); break;
     case 'signout': signOut(); break;
@@ -4046,7 +4286,7 @@ function signOut() {
   if (!sb) { location.reload(); return; }
   // scope 'local': this device only; 'global' would end every session on the shared project
   sb.auth.signOut({ scope: 'local' }).finally(() => {
-    try { localStorage.removeItem(CACHE); localStorage.removeItem(SUP_CACHE); localStorage.removeItem(BAT_CACHE); localStorage.removeItem(TRK_CACHE); } catch (_) {}
+    try { localStorage.removeItem(CACHE); localStorage.removeItem(SUP_CACHE); localStorage.removeItem(BAT_CACHE); localStorage.removeItem(TRK_CACHE); localStorage.removeItem(TRIMS_CACHE); } catch (_) {}
     if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     location.reload();
   });

@@ -2,7 +2,7 @@
 // the way the DISTRO PIPELINE tab is, a made-up DISTRO SUPPLY tab, made-up Batch Label Sheet rows, and
 // made-up task tracker rows for plan vs actual.
 // Run: node tests/pipeline-check.mjs [real pipeline export.csv] [--supply=real supply export.csv]
-//        [--batches=pipeline_batches rows as JSON] [--tasks=packaging_tasks rows as JSON]
+//        [--batches=pipeline_batches rows as JSON] [--tasks=packaging_tasks rows as JSON] [--trims=pipeline_trims rows as JSON]
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -17,10 +17,13 @@ const batSrc = html.split('/* ===== BATCH MODEL START =====')[1].split('/* =====
 const BAT = new Function(`/*${batSrc}; return BAT;`)();
 const actSrc = html.split('/* ===== ACTUALS MODEL START =====')[1].split('/* ===== ACTUALS MODEL END ===== */')[0];
 const ACT = new Function('PIPE', `/*${actSrc}; return ACT;`)(PIPE);
+const trySrc = html.split('/* ===== TRIM YIELD MODEL START =====')[1].split('/* ===== TRIM YIELD MODEL END ===== */')[0];
+const TRIMY = new Function('PIPE', `/*${trySrc}; return TRIMY;`)(PIPE);
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
   realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9),
   realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10),
-  realTasks = (args.find(a => a.startsWith('--tasks=')) || '').slice(8);
+  realTasks = (args.find(a => a.startsWith('--tasks=')) || '').slice(8),
+  realTrims = (args.find(a => a.startsWith('--trims=')) || '').slice(8);
 
 // one week band: 14 columns, a (task, detail) pair per day
 const blank = () => Array(14).fill('');
@@ -399,6 +402,57 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.equal(ACT.runOn(A, 'prerolls', '2026-10-11').id, 'prerolls-2026-10-07', 'a weekend inside a run belongs to it');
 }
 
+// trim estimates: past trims from the trim sheets -> pounds per light; a trim to come = room lights x the site's last 3
+{
+  const LB = TRIMY.LB;
+  const line = (file, tab, start, end, room, lights, strain, bigs, littles, trim, l, block = 0) =>
+    ({ file, tab, block, line: l, site: file.startsWith('SLANE') ? '23RD' : '25TH', room, start_date: start, end_date: end, lights, strain, bigs_g: bigs, littles_g: littles, trim_g: trim });
+  const lbs = n => n * LB;   // grams for n pounds
+  const rows = [
+    line('SLANE 2026.xlsx', 'Aug 4-5', '2026-08-04', '2026-08-05', '1', 48, 'Tide', lbs(100), lbs(20), lbs(40), 0),       // 2.50 / light
+    line('SLANE 2026.xlsx', 'Aug 19-21', '2026-08-19', '2026-08-21', '3', 45, 'Zang Banger', lbs(110), lbs(25), lbs(45), 0), // 3.00
+    line('SLANE 2026.xlsx', 'Sep 11-13', '2026-09-11', '2026-09-13', '2', 54, 'Wizzy', lbs(120), lbs(15), lbs(54), 0),     // 2.50
+    line('SLANE 2026.xlsx', 'Oct 2-4', '2026-10-02', '2026-10-04', '1', 48, 'Antidote', lbs(80), lbs(16), lbs(30), 0),     // 2.00
+    // a one-strain early harvest, then the room's full trim that repeats it: the early tab is dropped
+    line('FILIFERA 2026.xlsx', 'Oct. 6(RM2 early harvest)', '2026-10-06', '2026-10-06', '2', 21, 'Rip Tide', 5000, 900, 0, 0),
+    line('FILIFERA 2026.xlsx', 'Oct. 15', '2026-10-15', '2026-10-15', '2', 21, 'Bluebanger', lbs(40), lbs(8), lbs(15), 0),
+    line('FILIFERA 2026.xlsx', 'Oct. 15', '2026-10-15', '2026-10-15', '2', 21, 'Rip Tide', 5000, 900, 0, 1),
+    // a partial first tab whose strain shows as zero on the later one: folded in
+    line('FILIFERA 2026.xlsx', 'April 16-(1 strain)', '2026-04-16', '2026-04-16', '1', 37, 'Zoza x Tide #17', lbs(9), lbs(0.4), 0, 0),
+    line('FILIFERA 2026.xlsx', 'April 16 Cont.-(April 30-May 1)', '2026-04-30', '2026-05-01', '1', 37, 'Zoza x Tide #17', 0, 0, 0, 0),
+    line('FILIFERA 2026.xlsx', 'April 16 Cont.-(April 30-May 1)', '2026-04-30', '2026-05-01', '1', 37, 'Tidebanger', lbs(90), lbs(10), lbs(30), 1),
+  ];
+  const ev = TRIMY.events(rows);
+  assert.deepEqual(ev.map(e => e.tab), ['April 16 Cont.-(April 30-May 1)', 'Aug 4-5', 'Aug 19-21', 'Sep 11-13', 'Oct 2-4', 'Oct. 15'],
+    'the repeated early-harvest tab is dropped and the partial April tab is folded into the next one');
+  const apr = ev[0];
+  assert.equal(Math.round(apr.lb * 10) / 10, 109.4, 'the folded strain counts once, in the room\'s full trim');
+  const r = TRIMY.rate(ev, '23RD', '2026-10-17');
+  assert.deepEqual([r.from.map(e => e.tab), Math.round(r.perLight * 1000) / 1000, r.scope], [['Aug 19-21', 'Sep 11-13', 'Oct 2-4'], 2.5, 'site'],
+    'the site\'s last 3 trims before the date: (3.00 + 2.50 + 2.00) / 3');
+  assert.equal(TRIMY.roomLights(ev, '23RD', '1'), 48);
+  const item = { site: '23RD', room: '3', strains: [{ strain: 'ANTIDOTE', n: 8 }, { strain: 'BLUEBANGER', n: null }, { strain: 'RIPTIDE', n: 8 }] };
+  const e = TRIMY.estimate(ev, item, '2026-10-17', 0.1);
+  assert.deepEqual([e.lights, e.lightsFrom, e.sheetLights, Math.round(e.lb * 10) / 10, Math.round(e.lo), Math.round(e.hi)], [45, 'room', 16, 112.5, 101, 124],
+    'the room\'s lights as the trim sheets count them (45) times 2.5 lb, with the usual miss either side');
+  assert.deepEqual(e.strains.map(x => `${x.strain} ${x.lb}`), ['ANTIDOTE 20', 'RIPTIDE 20']);
+  assert.equal(TRIMY.match(ev, '25TH', '2', '2026-10-16').tab, 'Oct. 15', 'a sheet day within 3 days of the tab finds it');
+  assert.equal(TRIMY.match(ev, '25TH', '2', '2026-10-20'), null);
+  assert.equal(TRIMY.estimate(ev, { site: 'OLYMPIC', room: '3', strains: [] }, '2026-12-10'), null, 'no lights anywhere: no estimate');
+  const all = TRIMY.rate(ev, 'OLYMPIC', '2026-12-10');
+  assert.equal(all.scope, 'all', 'a site with no trims yet borrows the last trims of every site');
+  const bt = TRIMY.backtest(ev);
+  assert.ok(bt && bt.n === 4, 'the backtest scores every trim that had earlier trims at its site (3 at Slane, 1 at Filifera)');
+  // the folded early harvests stay findable on their own days, and a past trim's estimate uses its own lights
+  const mp = TRIMY.matchPart(ev, '25TH', '2', '2026-10-06');
+  assert.deepEqual([mp.of.tab, mp.part.tab, Math.round(mp.part.lb * 10) / 10], ['Oct. 15', 'Oct. 6(RM2 early harvest)', 13]);
+  assert.equal(TRIMY.match(ev, '25TH', '2', '2026-10-06'), null);
+  assert.equal(TRIMY.estimate(ev, item, '2026-10-02', 0.1, 40).lights, 40, 'a lights override wins over the room\'s latest count');
+  // an early harvest with no later tab yet never sets the site's rate
+  const early = TRIMY.events([...rows.slice(0, 4), line('SLANE 2026.xlsx', 'Oct 10 (RM2 early)', '2026-10-10', '2026-10-10', '2', 54, 'Wizzy', lbs(20), 0, 0, 0)]);
+  assert.equal(Math.round(TRIMY.rate(early, '23RD', '2026-10-17').perLight * 1000) / 1000, 2.5, 'the 0.37 lb/light early harvest is left out');
+}
+
 // optional: a real export of the tab, to see it parses end to end
 if (realSup) {
   const real = SUP.parse(readFileSync(realSup, 'utf8'), 'DISTRO SUPPLY');
@@ -429,6 +483,12 @@ if (realPipe) {
     for (const d of w.days) WEEK.dayBoard(M, d.date, { drops: new Map() });
   }
   console.log(`real export: ${real.length} weeks, ${n} items, ${bars} bars, ${real[0].start} to ${real[real.length - 1].start}`);
+  if (realTrims) {
+    const ev = TRIMY.events(JSON.parse(readFileSync(realTrims, 'utf8')));
+    const bt = TRIMY.backtest(ev);
+    assert.ok(ev.length >= 40 && bt && bt.miss < 0.2, 'real trims parse and the estimate stays within 20% on average');
+    console.log(`real trims: ${ev.length} trims; estimates off by ${Math.round(bt.miss * 1000) / 10}% on average, within 10% on ${bt.within10} of ${bt.n}`);
+  }
   if (realTasks && realBat) {
     // plan vs actual on the real sheets: September's run is closed, so its figures hold still
     const A = ACT.build(real, JSON.parse(readFileSync(realTasks, 'utf8')), JSON.parse(readFileSync(realBat, 'utf8')), '2026-10-15', BAT.statusKey);
