@@ -1,7 +1,8 @@
 // Checks the Production Pipeline page's sheet parsers (pipeline.html) on a made-up week laid out
-// the way the DISTRO PIPELINE tab is, a made-up DISTRO SUPPLY tab, and made-up Batch Label Sheet rows.
+// the way the DISTRO PIPELINE tab is, a made-up DISTRO SUPPLY tab, made-up Batch Label Sheet rows, and
+// made-up task tracker rows for plan vs actual.
 // Run: node tests/pipeline-check.mjs [real pipeline export.csv] [--supply=real supply export.csv]
-//        [--batches=pipeline_batches rows as JSON]
+//        [--batches=pipeline_batches rows as JSON] [--tasks=packaging_tasks rows as JSON]
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
@@ -14,9 +15,12 @@ const weekSrc = html.split('/* ===== WEEK MODEL START =====')[1].split('/* =====
 const WEEK = new Function('PIPE', `/*${weekSrc}; return WEEK;`)(PIPE);
 const batSrc = html.split('/* ===== BATCH MODEL START =====')[1].split('/* ===== BATCH MODEL END ===== */')[0];
 const BAT = new Function(`/*${batSrc}; return BAT;`)();
+const actSrc = html.split('/* ===== ACTUALS MODEL START =====')[1].split('/* ===== ACTUALS MODEL END ===== */')[0];
+const ACT = new Function('PIPE', `/*${actSrc}; return ACT;`)(PIPE);
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
   realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9),
-  realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10);
+  realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10),
+  realTasks = (args.find(a => a.startsWith('--tasks=')) || '').slice(8);
 
 // one week band: 14 columns, a (task, detail) pair per day
 const blank = () => Array(14).fill('');
@@ -237,7 +241,7 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.equal(rowSpans('prerolls', 'WIZZY'), 'TUE');
   const nl = id => lane('prerolls').rows.find(r => r.key === id).notListed;
   assert.deepEqual([nl('BLUEBANGER'), nl('TIDE'), nl('WIZZY')], [[3], [3], []], 'Thursday lists no strains: hatch only the strains listed next to it');
-  assert.equal(lane('prerolls').total, '3 strains · 1,800 5-packs · 1,150 1g');
+  assert.equal(lane('prerolls').total, '3 strains listed · 1,800 5-packs · 1,150 1g');
   assert.deepEqual(lane('orders').headTracks.flat().map(b => `${span(b)} ${b.head}`), ['MON-TUE PICK SELF DISTRO ORDERS', 'WED NABIS PICKUP']);
   const t = lane('testing').headTracks.flat()[0];
   assert.deepEqual([span(t), t.head, t.tbd], ['FRI', 'TESTING SCHEDULED · NOV DROP 2', true]);
@@ -294,6 +298,107 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.equal(BAT.lastDate({ harvest_date: '2026-08-03', package_date: '2026-09-15', nabis_date: '2026-09-30' }), '2026-09-30');
 }
 
+// plan vs actual: tracker task names and units, runs from the sheet, the batch sheet matched to runs
+{
+  const k = t => { const x = ACT.taskKind(t); return [x.prod, x.step, x.market].join(' '); };
+  assert.equal(k('5pk (.7g) pre-roll produced(rec)'), '5pk made rec');
+  assert.equal(k('5pk (.7g) pre-roll labeled (post COA)(rec)'), '5pk label2 rec');
+  assert.equal(k('1g pre-roll labeled (pre COA)(rec)'), '1g label1 rec');
+  assert.equal(k('1.5g pre-roll produced (rec)'), '1.5g made rec');
+  assert.equal(k('1.5g budtender samples (packaged)(rec)'), 'bud made rec');
+  assert.equal(k('3.5g jar packed (rec)'), 'jar made rec');
+  assert.equal(k('3.5g jar labeled (void)'), 'jar label void');
+  assert.equal(k('3.5g pouch prepped (void)'), 'pouch prep void');
+  assert.equal(k('General packaging activities'), '  rec');
+  assert.equal(ACT.taskKind('Lunch').rest, true);
+  assert.equal(ACT.taskKind('Breaking down 18 Pallets').rest, false, 'breaking down pallets is work, not a break');
+  assert.equal(ACT.units({ packaged: 800, labeled: 0 }, 'label'), 800, 'a count typed in the other column still counts');
+  assert.equal(ACT.units({ packaged: 128, labeled: 128 }, 'made'), 128);
+  const days = ACT.byDay([
+    { work_date: '2026-10-14', task: '5pk (.7g) pre-roll produced(rec)', people: 8, hours: 8.15, packaged: 3400, labeled: 0, begin_at: '08:00:00' },
+    { work_date: '2026-10-14', task: '5pk (.7g) pre-roll produced(rec)', people: 2, hours: 1, packaged: 3, labeled: 0, begin_at: '16:10:00' },
+    { work_date: '2026-10-14', task: 'Lunch', people: 8, hours: 0.5, packaged: 0, labeled: 0, begin_at: '12:00:00' }]);
+  const d = days.get('2026-10-14'), p = d.prods['5pk'];
+  assert.deepEqual([p.sticks, p.made, Math.round(p.madePh * 10) / 10], [3403, 680.6, 67.2], '5-pack sticks are added first, then divided by 5');
+  assert.equal(Math.round(d.ph * 10) / 10, 67.2, 'a lunch row stays out of the day\'s person-hours');
+
+  assert.deepEqual(['PREROLLS FOR CARLOS- GRIND', 'FINISH PREROLLS FOR CARLOS / REC', 'MAKE PREROLLS FOR EVENT  - CUSTOM LABELS',
+    'MAKE 200 TIDEBANGER PREOLLS FOR TORCHES PARTY', 'MAKE PREROLLS FOR CA- 1G PREROLLS', 'FINISH PREROLLS FOR REC',
+    'PREROLLS- START GRINDING FOR PREROLLS', 'PREROLLS- GRIND, PRODUCE, PACKAGE', 'TESTING SCHEDULED FOR NOV DROP 1'].map(ACT.jobOf),
+    ['CARLOS', 'CARLOS', 'EVENT', 'TORCHES PARTY', '', '', '', '', '']);
+
+  // runs: a weekend gap joins when the list carries on; a new jar list a weekend later is its own run; side jobs stay out
+  const it = (type, title, lines) => ({ type, title, lines });
+  const pr = (strain, n5, n1) => [{ strain, size: '5pk', n: n5 }, { strain, size: '1g', n: n1 }];
+  const wk = (start, byDate) => ({ start, days: Object.entries(byDate).map(([date, items]) => ({ date, items })) });
+  const weeks = [
+    wk('2026-10-05', {
+      '2026-10-07': [it('prerolls', 'PREROLLS- GRIND', [...pr('TIDE', 700, 700), ...pr('VOODOO', 500, 400)])],
+      '2026-10-08': [it('prerolls', 'PREROLLS- GRIND', [...pr('TIDE', 700, 700), ...pr('VOODOO', 500, 400)])],
+      '2026-10-10': [it('prerolls', 'PREROLLS- GRIND', pr('TIDE', 700, 650)), it('prerolls', 'PREROLLS FOR CARLOS', pr('M8', 128, 454))] }),
+    wk('2026-10-12', {
+      '2026-10-12': [it('prerolls', 'PREROLLS- GRIND', pr('TIDE', 700, 650))],
+      '2026-10-13': [it('prerolls', 'Pre-rolls', [{ strain: 'WIZZY', size: '5pk', n: 600 }])],
+      '2026-10-15': [it('prerolls', 'PREROLLS- GRIND', [])],
+      '2026-10-19': [it('jars', 'Package to jars', [{ strain: 'SMOOTHIE', lbs: 10, cases: 10 }])],
+      '2026-10-20': [it('jars', 'Package to jars', [{ strain: 'SMOOTHIE', lbs: 10, cases: 10 }])] }),
+    wk('2026-10-26', { '2026-10-26': [it('jars', 'Package to jars', [{ strain: 'NEBULA', lbs: 8, cases: 5 }])] }),
+  ];
+  const runs = ACT.runs(weeks, 'prerolls');
+  assert.equal(runs.length, 1, 'Oct 7-15 is one pre-roll run across the weekend and the empty-list day');
+  const r = runs[0];
+  assert.deepEqual([r.start, r.end, r.days.length], ['2026-10-07', '2026-10-15', 6]);
+  assert.deepEqual([...r.plan.keys()], ['TIDE|5pk', 'TIDE|1g', 'VOODOO|5pk', 'VOODOO|1g', 'WIZZY|5pk'], 'the plan is every strain and size listed, never a sum over days');
+  assert.deepEqual([r.plan.get('TIDE|1g').n, r.plan.get('TIDE|1g').firstN], [650, 700], 'a changed amount keeps the latest and remembers the first');
+  assert.deepEqual(r.side.map(x => `${x.job} ${x.strain} ${x.size}`), ['CARLOS M8 5pk', 'CARLOS M8 1g'], 'a job for Carlos is kept out of the plan');
+  assert.deepEqual(ACT.runs(weeks, 'jars').map(x => `${x.start}..${x.end}`), ['2026-10-19..2026-10-20', '2026-10-26..2026-10-26'], 'new jar strains a weekend later start a new run');
+
+  // the batch sheet: counted rows by strain and size; packaging or not started is not counted
+  const bat = [
+    { strain: 'Tide', item: '5PK', package_date: '2026-10-14', total_units: 700, status: 'LABELING BATCH INFO' },
+    { strain: 'TIDE', item: '1G', package_date: '2026-10-14', total_units: null, status: 'NOT STARTED' },
+    { strain: 'VOODOO', item: '5PK', package_date: '2026-10-14', total_units: 500, status: 'WAITING FOR TESTING' },
+    { strain: 'VOODOO', item: '1G', package_date: '2026-10-14', total_units: 120, status: 'PACKAGING' },
+    { strain: 'BLACK LIGHT', item: '5PK', package_date: '2026-10-14', total_units: 300, status: 'DONE' },
+    { strain: 'SMOOTHIE', item: 'FLOWER', package_date: '2026-10-21', total_units: 1139, budtender_units: 150, status: 'DONE' },
+  ];
+  const tasks = [
+    { work_date: '2026-10-07', task: '5pk (.7g) pre-roll produced(rec)', people: 6, hours: 5.25, packaged: 2500, labeled: 0 },
+    { work_date: '2026-10-08', task: '1g pre-roll produced (rec)', people: 6, hours: 4, packaged: 700, labeled: 0 },
+    { work_date: '2026-10-17', task: '5pk (.7g) pre-roll produced(rec)', people: 6, hours: 1, packaged: 100, labeled: 0 },
+    { work_date: '2026-10-04', task: '1g pre-roll produced (rec)', people: 6, hours: 1, packaged: 50, labeled: 0 },
+    { work_date: '2026-10-21', task: '5pk (.7g) pre-roll produced(rec)', people: 6, hours: 1, packaged: 999, labeled: 0 },
+    { work_date: '2026-10-21', task: 'General packaging activities', people: 6, hours: 1, packaged: 0, labeled: 0 },
+    { work_date: '2026-10-07', task: 'General packaging activities', people: 4, hours: 1, packaged: 0, labeled: 0 },
+    { work_date: '2026-10-28', task: '5pk (.7g) pre-roll labeled (post COA)(rec)', people: 5, hours: 3, packaged: 0, labeled: 1200 },
+  ];
+  const A = ACT.build(weeks, tasks, bat, '2026-10-16', BAT.statusKey);
+  const R = A.byId.get('prerolls-2026-10-07'), line = key => R.act.lines.find(l => l.strain + '|' + l.size === key);
+  assert.deepEqual([line('TIDE|5pk').counted, line('TIDE|1g').counted, line('VOODOO|5pk').counted, line('VOODOO|1g').counted], [700, null, 500, null],
+    'counted = units on the batch sheet past packaging');
+  assert.deepEqual(R.act.extra.map(x => x.strain), ['BLACK LIGHT'], 'a counted batch the plan never listed is shown apart');
+  const five = R.prods.find(x => x.prod === '5pk'), one = R.prods.find(x => x.prod === '1g');
+  assert.deepEqual([five.plan, five.made, five.counted, five.label2], [1800, 520, 1200, 1200],
+    'made counts to 5 days after the run (Oct 17 in, Oct 21 out); after-COA labels count up to 3 weeks on');
+  assert.deepEqual([one.plan, one.made, one.counted], [1050, 750, null], 'and from 3 days before it (Oct 4)');
+  assert.equal(R.act.otherPh, 4, 'general hours on a pre-roll day go to the pre-roll run; Oct 21 is outside every window');
+  assert.deepEqual(R.act.missing, ['2026-10-10', '2026-10-12', '2026-10-13', '2026-10-15'], 'planned past days with nothing logged');
+  assert.equal(R.act.closed, false);
+  const J = A.byId.get('jars-2026-10-19');
+  assert.deepEqual(J.prods.map(x => `${x.prod} ${x.plan} ${x.counted}`), ['jar 10 1139', 'bud 10 150'], 'jars plan in lb, samples in cases; counts in jars and bags');
+  assert.equal(ACT.runForWeek(A, 'prerolls', '2026-10-12').id, 'prerolls-2026-10-07');
+  // labels go to the run that made the product, even when the next run has started; a blank sample count stays blank
+  const B2 = ACT.build(weeks, [
+    { work_date: '2026-10-19', task: '3.5g jar packed (rec)', people: 5, hours: 4, packaged: 1000, labeled: 0 },
+    { work_date: '2026-10-26', task: '3.5g jar labeled (rec)', people: 8, hours: 5, packaged: 0, labeled: 900 },
+  ], [{ strain: 'NEBULA', item: 'FLOWER', package_date: '2026-10-27', total_units: 700, budtender_units: null, status: 'DONE' }], '2026-11-02', BAT.statusKey);
+  const j1 = B2.byId.get('jars-2026-10-19').prods.find(x => x.prod === 'jar'), j2 = B2.byId.get('jars-2026-10-26');
+  assert.deepEqual([j1.made, j1.label, j1.labelPh], [1000, 900, 40], 'Oct 26 labels belong to the Oct 19 run that packed the jars');
+  assert.equal(j2.prods.find(x => x.prod === 'jar').label, 0);
+  assert.equal(j2.act.lines[0].buds, null, 'a blank budtender count is not a zero');
+  assert.equal(ACT.runOn(A, 'prerolls', '2026-10-11').id, 'prerolls-2026-10-07', 'a weekend inside a run belongs to it');
+}
+
 // optional: a real export of the tab, to see it parses end to end
 if (realSup) {
   const real = SUP.parse(readFileSync(realSup, 'utf8'), 'DISTRO SUPPLY');
@@ -324,5 +429,14 @@ if (realPipe) {
     for (const d of w.days) WEEK.dayBoard(M, d.date, { drops: new Map() });
   }
   console.log(`real export: ${real.length} weeks, ${n} items, ${bars} bars, ${real[0].start} to ${real[real.length - 1].start}`);
+  if (realTasks && realBat) {
+    // plan vs actual on the real sheets: September's run is closed, so its figures hold still
+    const A = ACT.build(real, JSON.parse(readFileSync(realTasks, 'utf8')), JSON.parse(readFileSync(realBat, 'utf8')), '2026-10-15', BAT.statusKey);
+    const sep = A.byId.get('prerolls-2026-09-07');
+    assert.ok(sep, 'the Sep 7-15 pre-roll run is found');
+    const f = sep.prods.find(x => x.prod === '5pk'), g = sep.prods.find(x => x.prod === '1g');
+    assert.deepEqual([f.plan, g.plan, f.sticks, f.label2, g.label2], [4450, 3000, 10350, 2773, 1820]);
+    console.log(`real plan vs actual: ${A.runs.prerolls.length} pre-roll runs, ${A.runs.jars.length} jar runs; Sep 7-15 5-packs plan ${f.plan}, made ${f.made}, counted ${f.counted}`);
+  }
 }
 console.log('pipeline-check: all checks passed');
