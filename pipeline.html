@@ -470,7 +470,7 @@
   body[data-view="actuals"] a.btn{text-decoration:none}
   body[data-view="actuals"] .alert{background:#FDE7E7;border-color:#E3A3A3;color:#8A0000}
   body[data-view="actuals"] .alert.info{background:#EEF4FF;border-color:#9DB4E0;color:#1F3A93}
-  #view-batches{font-size:14px;font-variant-numeric:tabular-nums;color:#111;--bt-cols:minmax(150px,1.5fr) minmax(120px,1fr) repeat(5,66px) 54px 200px}
+  #view-batches{font-size:14px;font-variant-numeric:tabular-nums;color:#111;--bt-cols:minmax(150px,1.5fr) minmax(120px,1fr) repeat(6,66px) 54px 200px}
   .bt-top{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;margin-bottom:4px}
   .bt-title{font-size:20px;font-weight:700;letter-spacing:-.01em}
   #view-batches .search{background:#FFFFFF;border-color:var(--wk-line);color:#111;font-size:14px;height:34px;padding:0 11px;width:320px}
@@ -513,7 +513,11 @@
   .bt-uid.ok::after{content:'Copied';position:absolute;left:0;top:-20px;background:#111;color:#FFFFFF;font:700 11px/1 -apple-system,BlinkMacSystemFont,sans-serif;padding:4px 6px;border-radius:4px}
   .bt-none{padding:14px 12px;color:var(--wk-ink2);font-size:14px}
   .bt-foot{margin-top:10px;font-size:13px;color:var(--wk-ink2)}
-  @media (max-width:999px){
+  .bt-d small{display:block;font-size:12px;color:var(--wk-ink2)}
+  .bt-auto{color:#2F4FA2;border-bottom:1px dotted #2F4FA2;cursor:help}
+  .bt-auto a{color:inherit;text-decoration:none}
+  @media (max-width:1099px){ .bt-d small{display:inline;margin-left:4px} }
+  @media (max-width:1099px){
     .bt-row.hd{display:none}
     .bt-row{grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;padding:10px 12px}
     .bt-thc{grid-column:2;grid-row:1;align-self:start}
@@ -2602,7 +2606,7 @@ const S = { weeks: [], byStart: new Map(), drops: new Map(), sidx: new Map(), we
   me: loadPref('pipeline.me', ''), density: loadPref('pipeline.density', 'details') === 'compact' ? 'compact' : 'details',
   phoneMode: loadPref('pipeline.phoneMode', 'day') === 'week' ? 'week' : 'day',
   sup: null, supAt: 0, supErr: '', sf: new Set(SF_DEFAULT),
-  bat: null, batAt: 0, batErr: '', batFin: loadPref('pipeline.batches.fin', '') === '1',
+  bat: null, batAt: 0, batErr: '', batFin: loadPref('pipeline.batches.fin', '') === '1', labs: null, labsAt: 0, labsErr: '',
   trk: null, trkAt: 0, trkErr: '', act: null, pvRun: null,
   trims: null, trimsAt: 0, trimsErr: '', trimEv: null, trimBt: null, trimSpread: 0.12,
   marks: null, marksAt: 0, marksErr: '', markMap: null, grid: null };
@@ -3637,6 +3641,26 @@ function btDate(iso, label, extra) {
   return `<span class="bt-d${fut ? ' fut' : ''}"${fut ? ' title="Planned"' : ''}><i>${label}</i>${extra ? extra(md(iso) + yr) : md(iso) + yr}</span>`;
 }
 const pctTxt = n => n == null ? '' : `${Number(n).toFixed(1)}%`;
+// when the batch's harvest was trimmed: the trim sheet tab of its site (and room, when the code names one) that lists
+// its strain, starting on or after the harvest and within 45 days. Rooms: FA -> A, F2 -> 2 as the trim sheets write them.
+function batchTrim(r) {
+  const ev = S.trimEv;
+  if (!ev || !ev.length) return null;
+  const dc = BAT.decode(r.batch_code), harvest = r.harvest_date || dc.harvest;
+  if (!dc.site || !harvest) return null;
+  const room = dc.room ? dc.room.replace(/^F(?=[0-9A-Z]$)/, '') : '';
+  const TRIM_ALIAS = { M8: 'VOODOO', MEDUSA: 'VOODOO' };   // the trim sheets write the Voodoo plants (code 2912) as M8 / "Medusa (M8)"
+  const base = k => { const b = String(k || '').replace(/\s*#.*$/, '').replace(/\s*\(.*\)\s*$/, '').trim(); return TRIM_ALIAS[b] || b; };
+  const key = base(PIPE.strainKey(r.strain || '')), end = PIPE.addDays(harvest, 45);
+  const hits = ev.filter(e => e.site === dc.site && (!room || e.room === room) && e.start >= harvest && e.start <= end)
+    .map(e => ({ e, ls: e.lines.filter(l => base(l.key) === key) })).filter(x => x.ls.length)
+    .sort((a, b) => a.e.start.localeCompare(b.e.start));
+  if (!hits.length) return null;
+  const h = hits[0];
+  return { ev: h.e, lb: h.ls.reduce((a, l) => a + l.bigs + l.littles, 0) / TRIMY.LB };
+}
+// a blank Test / COA / THC on the sheet, filled from the lab job (Metrc lab manifests + the Excelbis COA e-mails)
+const autoTag = (txt, tip) => `<span class="bt-auto" title="${esc(tip)}">${txt}</span>`;
 function btRowHTML(r, g) {
   const dc = BAT.decode(r.batch_code), k = BAT.statusKey(r.status);
   const harvest = r.harvest_date || dc.harvest;
@@ -3647,16 +3671,32 @@ function btRowHTML(r, g) {
   const site = dc.site ? `<span class="bt-site" title="${esc(siteTitle(dc.site))}">${siteSq(dc.site)}${esc(siteName(dc.site))}</span>` : '';
   const codeTip = [dc.room ? 'Room ' + dc.room : '', dc.site ? `${siteName(dc.site)}${siteTitle(dc.site) ? ' (' + siteTitle(dc.site) + ')' : ''}` : '',
     harvest ? 'harvested ' + md(harvest) : '', r.cult_lic ? 'cultivation ' + r.cult_lic : ''].filter(Boolean).join(' · ');
-  const coa = btDate(r.coa_date, 'COA', t => r.coa_url ? `<a href="${esc(r.coa_url)}" target="_blank" rel="noopener" title="${esc(r.coa_text || 'Open the COA')}">${esc(t)}</a>` : esc(t));
+  const lab = S.labs && r.metrc_uid ? S.labs.get(r.metrc_uid) : null;
+  const fromCoa = lab && lab.source === 'coa' ? `the Excelbis COA e-mail (${lab.coa_file || lab.sample_id || 'sample ' + lab.sample_uid})` : '';
+  let coa = btDate(r.coa_date, 'COA', t => r.coa_url ? `<a href="${esc(r.coa_url)}" target="_blank" rel="noopener" title="${esc(r.coa_text || 'Open the COA')}">${esc(t)}</a>` : esc(t));
+  if (!r.coa_date && !r.coa_url && lab && lab.completed) coa = btDate(lab.completed, 'COA', t => autoTag(lab.lab_url
+    ? `<a href="${esc(lab.lab_url)}" target="_blank" rel="noopener">${esc(t)}</a>` : esc(t),
+    `Not on the sheet yet. COA completed ${md(lab.completed)}${lab.result ? ', ' + lab.result.toLowerCase() : ''}, from ${fromCoa}.${lab.lab_url ? ' Opens the results on Confident LIMS (needs a Confident login).' : ''}`));
   const coaOnly = !r.coa_date && r.coa_url ? `<span class="bt-d"><i>COA</i><a href="${esc(r.coa_url)}" target="_blank" rel="noopener" title="${esc(r.coa_text || 'Open the COA')}">COA</a></span>` : coa;
+  let test = btDate(r.test_date, 'Test');
+  const hasRes = !!(lab && (lab.completed || lab.thc_label != null)) || !!r.coa_date || !!r.coa_url || r.thc != null;
+  if (!r.test_date && lab && (lab.collected || lab.sent_date)) test = btDate(lab.collected || lab.sent_date, 'Test', t => autoTag(esc(t), lab.collected
+    ? `Not on the sheet yet. The lab collected the sample ${md(lab.collected)} (from ${fromCoa}).`
+    : `Not on the sheet yet. A sample (Metrc ${lab.sample_uid || 'tag'}) went to Excelbis on ${md(lab.sent_date)}, the day its Metrc lab manifest was made${hasRes ? '.' : '; no results yet.'}`));
+  const tr = batchTrim(r);
+  const trimmed = tr ? `<span class="bt-d" title="${esc(`Trim sheet tab ${tr.ev.tab}${tr.ev.room ? ', room ' + tr.ev.room : ''}: ${Math.round(tr.lb * 10) / 10} lb of ${strain} (bigs + littles)`)}"><i>Trimmed</i>` +
+    `${esc(md(tr.ev.start))}<small>${esc(String(Math.round(tr.lb * 10) / 10))} lb</small></span>` : btDate(null, 'Trimmed');
   const thcTip = [r.thc != null ? `THC ${pctTxt(r.thc)}` : '', r.cbd != null ? `CBD ${pctTxt(r.cbd)}` : '', r.total_canna != null ? `total ${pctTxt(r.total_canna)}` : '',
     r.tested_by ? `tested by ${r.tested_by}` : ''].filter(Boolean).join(' · ');
-  const thc = r.thc != null ? `<span class="bt-thc" title="${esc(thcTip)}"><i>THC</i>${pctTxt(r.thc)}</span>` : '<span class="bt-thc none">–</span>';
+  const thc = r.thc != null ? `<span class="bt-thc" title="${esc(thcTip)}"><i>THC</i>${pctTxt(r.thc)}</span>`
+    : lab && lab.thc_label != null ? `<span class="bt-thc"><i>THC</i>${autoTag(pctTxt(lab.thc_label), `Not on the sheet yet. Total THC ${Number(lab.total_thc)}% on ${fromCoa}; ` +
+      `the sheet's THC is the label figure, Total THC x 1.10 = ${Number(lab.thc_label).toFixed(2)}%.`)}</span>` : '<span class="bt-thc none">–</span>';
+  const failed = lab && lab.result === 'Fail' && !r.coa_date ? `<span class="bt-pill" style="--fill:${btTone('fail')[0]};--acc:${btTone('fail')[1]}" title="${esc(`The COA (${lab.completed ? md(lab.completed) : ''}) says the batch failed`)}">COA: failed</span>` : '';
   const uid = r.metrc_uid ? `<button type="button" class="bt-uid" data-copy="${esc(r.metrc_uid)}" title="Copy the Metrc UID">${esc(r.metrc_uid.slice(0, -4))}<b>${esc(r.metrc_uid.slice(-4))}</b></button>` : '<span class="bt-d none">No UID</span>';
   const tip = [`Sheet row ${r.sheet_row}`, r.class, r.cross_name, r.notes].filter(Boolean).join(' · ');
-  return `<div class="bt-row"><span class="bt-nm" title="${esc(tip)}"><b>${esc(strain)}</b><span class="bt-sub">${esc(BAT.itemLabel(r.item))}${site}${pill}</span></span>` +
+  return `<div class="bt-row"><span class="bt-nm" title="${esc(tip)}"><b>${esc(strain)}</b><span class="bt-sub">${esc(BAT.itemLabel(r.item))}${site}${pill}${failed}</span></span>` +
     `<span class="bt-code"${codeTip ? ` title="${esc(codeTip)}"` : ''}>${esc(r.batch_code || '–')}</span>` +
-    `<span class="bt-dates">${btDate(harvest, 'Harvest')}${btDate(r.package_date, 'Packaged')}${btDate(r.test_date, 'Test')}${coaOnly}${btDate(r.nabis_date, 'Nabis P/U')}</span>` +
+    `<span class="bt-dates">${btDate(harvest, 'Harvest')}${trimmed}${btDate(r.package_date, 'Packaged')}${test}${coaOnly}${btDate(r.nabis_date, 'Nabis P/U')}</span>` +
     `${thc}<span class="bt-uidc">${uid}</span></div>`;
 }
 function renderBatches() {
@@ -3682,7 +3722,7 @@ function renderBatches() {
   if (!shown.length) {
     list.innerHTML = `<div class="bt-grid"><div class="bt-none">No batches match "${esc(S.q)}".</div></div>`;
   } else {
-    const head = '<div class="bt-row hd"><span>Strain</span><span>Batch code</span><span>Harvest</span><span>Packaged</span><span>Test</span><span>COA</span><span>Nabis P/U</span><span style="text-align:right">THC</span><span>Metrc UID</span></div>';
+    const head = '<div class="bt-row hd"><span>Strain</span><span>Batch code</span><span>Harvest</span><span>Trimmed</span><span>Packaged</span><span>Test</span><span>COA</span><span>Nabis P/U</span><span style="text-align:right">THC</span><span>Metrc UID</span></div>';
     list.innerHTML = '<div class="bt-grid">' + head + shown.map(g => {
       const open = !g.finished || S.batFin || !!S.q;   // Finished folds away unless asked for or searched
       const count = g.hits.length < g.rows.length ? `${g.hits.length} of ${g.rows.length}` : g.rows.length;
@@ -3694,7 +3734,9 @@ function renderBatches() {
   const edited = meta.file_modified ? new Date(meta.file_modified) : null;
   $('bt-foot').textContent = "From Victoria's Batch Label Sheet, copied every hour." +
     (edited ? ` The sheet was last edited ${md(todayISOOf(edited))} at ${edited.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.` : '') +
-    ' Click a Metrc UID to copy it.';
+    ' Click a Metrc UID to copy it.' +
+    (S.labs && S.labs.size ? ' Blue dotted dates and THC are filled in from Metrc and the Excelbis COA e-mails until the sheet has them (hover for where each came from).' : '') +
+    (S.trimEv ? ' Trimmed comes from the site trim sheets.' : '');
 }
 const todayISOOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
@@ -4285,6 +4327,7 @@ function render() {
   if ((S.view === 'week' || S.view === 'actuals') && sb) { if (!S.trkAt && !S.trkErr) loadTracker(true); if (!S.batAt && !S.batErr) loadBatches(true); }
   if (S.view === 'week' && sb && !S.trimsAt && !S.trimsErr) loadTrims(true);
   if (S.view === 'week' && sb && !S.marksAt && !S.marksErr) loadMarks(true);
+  if (S.view === 'batches' && sb) { if (!S.labsAt && !S.labsErr) loadLabs(true); if (!S.trimsAt && !S.trimsErr) loadTrims(true); }
   renderStatus();
   S.renderOk = true;
   const h = `#view=${S.view}${S.week ? '&week=' + S.week : ''}${S.q ? '&q=' + encodeURIComponent(S.q) : ''}${S.view === 'actuals' && S.pvRun && S.pvRun !== 'none' ? '&run=' + S.pvRun : ''}`;
@@ -4446,6 +4489,28 @@ async function loadBatches(quiet) {
   } finally { batLoading = false; }
   if (fresh) ingestActuals();
   if (S.view === 'batches' || (fresh && (S.view === 'week' || S.view === 'actuals'))) render(); else renderStatus();
+  if (S.view === 'batches') { loadLabs(quiet); if (!S.trimsAt && !S.trimsErr) loadTrims(true); }
+}
+// lab results per batch tag (pipeline_batch_labs, hourly from Metrc lab manifests + the Excelbis COA e-mails): the
+// Batches view fills its blank Test / COA / THC cells from them. Reloaded only when a run changed them.
+let labsLoading = false;
+async function loadLabs(quiet) {
+  if (labsLoading || !sb) return;
+  labsLoading = true;
+  let fresh = false;
+  try {
+    const m = await sb.from('pipeline_batch_labs_meta').select('*').maybeSingle();
+    if (m.error) throw m.error;
+    if (m.data && (!quiet || !S.labs || S.labsMeta !== m.data.changed_at)) {
+      const r = await sb.from('pipeline_batch_labs').select('metrc_uid,sample_uid,sample_id,sent_date,collected,completed,result,total_thc,thc_label,lab_url,coa_file,source');
+      if (r.error) throw r.error;
+      S.labs = new Map((r.data || []).map(x => [x.metrc_uid, x])); S.labsMeta = m.data.changed_at; fresh = true;
+    }
+    S.labsAt = Date.now(); S.labsErr = '';
+  } catch (e) {
+    S.labsErr = e.message || String(e);   // the sheet's own values still show; only the filled-in ones are missing
+  } finally { labsLoading = false; }
+  if (fresh && S.view === 'batches') render();
 }
 // the task tracker (labor-calculator.html) logs what the crew did each day in packaging_tasks, which any
 // wizardtrees.com account can read; the page checks the row count and newest edit first and reloads rows only when they moved
@@ -4508,7 +4573,7 @@ async function loadTrims(quiet) {
     S.trimsErr = /does not exist|schema cache|relation/i.test(msg) ? "trim estimates aren't set up on the server yet" : msg;
     fresh = true;
   } finally { trimsLoading = false; }
-  if (fresh) { ingestTrims(); if (S.view === 'week') render(); }
+  if (fresh) { ingestTrims(); if (S.view === 'week' || S.view === 'batches') render(); }
 }
 function startApp() {
   $('gate').hidden = true; $('top').hidden = false; $('app').hidden = false;
