@@ -461,6 +461,32 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.equal(Math.round(TRIMY.rate(early, '23RD', '2026-10-17').perLight * 1000) / 1000, 2.5, 'the 0.37 lb/light early harvest is left out');
 }
 
+// the endless board: any run of days drawn side by side; a job that runs Sunday into Monday is one bar across the line
+{
+  const blankW = () => Array(14).fill('');
+  const hdr = (labels) => { const h = blankW(); labels.forEach((t, k) => { h[k * 2] = t; }); return h; };
+  const g = [blankW(),
+    hdr(['OCTOBER, MONDAY 5TH', 'OCTOBER, TUESDAY 6TH', 'OCTOBER, WEDNESDAY 7TH', 'OCTOBER, THURSDAY 8TH', 'OCTOBER, FRIDAY 9TH', 'OCTOBER, SATURDAY 10TH', 'OCTOBER,SUNDAY 11TH']),
+    blankW(), blankW(), blankW(),
+    hdr(['OCTOBER, MONDAY 12TH', 'OCTOBER, TUESDAY 13TH', 'OCTOBER, WEDNESDAY 14TH', 'OCTOBER, THURSDAY 15TH', 'OCTOBER, FRIDAY 16TH', 'OCTOBER, SATURDAY 17TH', 'OCTOBER,SUNDAY 18TH']),
+    blankW(), blankW(), blankW(), blankW()];
+  // a trim Sat 10 - Mon 12, and a testing note on Fri 9 with room to spill to the right
+  g[2][10] = 'TRIM - JUSTIN'; g[2][11] = 'ROOM 2 @ 25TH'; g[2][12] = 'TRIM - JUSTIN'; g[2][13] = 'ROOM 2 @ 25TH';
+  g[6][0] = 'TRIM - JUSTIN'; g[6][1] = 'ROOM 2 @ 25TH';
+  g[3][8] = 'TESTING SCHEDULED FOR NOV DROP 1 - BLUEBANGER, TIDEBANGER, BLACK MAGIC, SMOOTHIE, WIZZY';
+  const wk = PIPE.parse(g.map(r => r.map(c => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(',')).join('\n'));
+  const M = WEEK.buildModel(wk);
+  const R = WEEK.buildRange(M, '2026-10-05', 14, { today: '', drops: new Map() });
+  assert.deepEqual([R.n, R.days[0].date, R.days[13].date, R.ix('2026-10-12'), R.days[7].dow], [14, '2026-10-05', '2026-10-18', 7, 0]);
+  const trim = R.bars.filter(b => b.lane === 'trim');
+  assert.deepEqual(trim.map(b => [b.a, b.b, b.contL, b.contR]), [[5, 7, false, false]], 'Sat 10 to Mon 12 is one bar across the week line');
+  const w1 = WEEK.buildBoard(M, '2026-10-05', { today: '', drops: new Map() }), w2 = WEEK.buildBoard(M, '2026-10-12', { today: '', drops: new Map() });
+  assert.deepEqual(w1.bars.filter(b => b.lane === 'trim').map(b => [b.a, b.b, b.contR]), [[5, 6, true]], 'the week board still clips it at Sunday');
+  assert.deepEqual(w2.bars.filter(b => b.lane === 'trim').map(b => [b.a, b.b, b.contL]), [[0, 0, true]]);
+  const test = R.bars.find(b => b.lane === 'testing');
+  assert.equal(test.spillEnd, 6, 'a note spills right only to its own Sunday, never into the next week');
+}
+
 // optional: a real export of the tab, to see it parses end to end
 if (realSup) {
   const real = SUP.parse(readFileSync(realSup, 'utf8'), 'DISTRO SUPPLY');
