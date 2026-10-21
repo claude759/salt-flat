@@ -645,7 +645,7 @@ check('page: a view hides the company chips + department select and renders the 
   ok(/C\.flatByDay\(rows\)/.test(appFn('flatDayView')) && /C\.flatByPerson\(rows\)/.test(appFn('flatEmpView')), 'flat views use the TSCore groupings');
   ok(/empCard\(e, null\)/.test(appFn('flatEmpView')) && /\$\{coKey \? h` <span class="emp-ctx print-only">/.test(appFn('empCard')), 'a flat card never prints the company line');
   ok(/layout\(\)\.flat \? \[\] : \[/.test(appFn('renderPrintHead')), 'print header lists companies and departments only outside a view');
-  ok(/C\.buildCsv\(rows, \{ companyName: coName, flat: layout\(\)\.flat \}\)/.test(appFn('exportCsv')), 'CSV follows the layout');
+  ok(/C\.buildCsv\(rows, \{ companyName: coName, flat: layout\(\)\.flat, edits: editsLoaded\(\) \}\)/.test(appFn('exportCsv')), 'CSV follows the layout');
   ok(/function dayRow\(r\) \{ return dayRowOf\(r, true\); \}/.test(block('ts-app')), 'dayRow stays a one-argument .map() callback with the Job column');
   ok(/@media \(max-width:1219\.98px\)\{[\s\S]*?table\.ts\.day-t\.nojob\{min-width:/.test(src), 'a table without the Job column needs its own min-width');
 });
@@ -1260,7 +1260,7 @@ check('phone layout rules: compact header with a menu, two control rows, 40px ta
 check('phone cards stay readable: By Employee times wrap inside their column, the name sticks, secondary marks 13px+ at 4.5:1, nothing reads "0.00 hours" this morning', () => {
   ok(/\.dl-times \.tm,\.dl-times \.pill\{white-space:normal\}/.test(src), 'By Employee times must be able to wrap (they ran under the hours at 320px)');
   const tl = appFn('timesLine');
-  ok(/\$\{nbsp\(p\.in\)\}&nbsp;- /.test(tl) && /nbsp\(p\.out\)/.test(tl), 'each clock time stays whole; the only break is after the dash');
+  ok(/\$\{tint\(p\.edIn, nbsp\(p\.in\)\)\}&nbsp;- /.test(tl) && /tint\(p\.edOut, nbsp\(p\.out\)\)/.test(tl), 'each clock time stays whole; the only break is after the dash');
   ok(/\.ec-head\{[^}]*position:sticky;top:env\(safe-area-inset-top,0px\)/.test(src) && /\.ec\{overflow:hidden;overflow:clip\}/.test(src), "a By Employee card's name sticks while its lines scroll (clip, not hidden, so it can)");
   const rule = sel => { const m = src.match(new RegExp('\\n  ' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\{([^}]*)\\}')); ok(m, 'no rule ' + sel); return m[1]; };
   for (const sel of ['.estm', '.tagm', '.bs-sep']) ok(/color:var\(--muted\)/.test(rule(sel)), sel + ' uses --muted (6.8:1), not --faint (3.65:1)');
@@ -1570,6 +1570,552 @@ check('page: region tabs from the sign-in, every clock time on its row\'s zone, 
   ok(/C\.regionsPresent\(S\.companies, \[\.\.\.S\.rows\.values\(\)\]\)/.test(appFn('adminCompanyKeys')) && /adminCompanyKeys\(\)/.test(appFn('viewEditorHtml')), 'the admin editors list every region\'s companies (only California until New York exists)');
   ok(/\.bar\.regions2 #regionTabs\{order:9;flex:1 1 100%\}/.test(src) && /\$\('topBar'\)\.classList\.toggle\('regions2', regs\.length > 1\)/.test(rh), 'on a phone two region tabs get their own row');
   ok(/if \(!regs\.includes\(S\.region\)\) \{ S\.region = regs\[0\];/.test(appFn('render')), 'render never shows a region this sign-in does not have');
+});
+
+// ---------------------------------------------------------------------------------------------
+// 14. changes made on this page (ts_edits, supabase/ts-edits.sql): the window, the editor's rules
+//     (mirroring ts_edit_submit), the board's overlay of waiting changes, status pills, supersede,
+//     the demo flow, and the page wiring. Synthetic rows only.
+// ---------------------------------------------------------------------------------------------
+const EP = t => '2026-10-06T' + t + ':00-07:00';                     // a Pacific wall time on 2026-10-06
+const EB = (s, e, kind, extra) => Object.assign({ start: EP(s), end: e ? EP(e) : null, min: e ? (+e.slice(0, 2) * 60 + +e.slice(3)) - (+s.slice(0, 2) * 60 + +s.slice(3)) : 0,
+  kind, paid: kind === 'rest', src: 'gusto', open: !e }, extra || {});
+const ES = (id, i, o, breaks) => {
+  const span = o ? (+o.slice(0, 2) * 60 + +o.slice(3)) - (+i.slice(0, 2) * 60 + +i.slice(3)) : 0;
+  return { id, in: EP(i), out: o ? EP(o) : null, span_min: span, worked_min: o ? span - (breaks || []).filter(b => !b.paid).reduce((a, b) => a + b.min, 0) : 0, hours_only: false, breaks: breaks || [] };
+};
+const ED_S1 = ES('s1', '07:00', '15:30', [EB('09:00', '09:10', 'rest'), EB('11:30', '12:00', 'meal')]);
+const edRow = (shifts, extra) => {
+  const all = shifts.flatMap(s => s.breaks);
+  return C.normRow(Object.assign({ id: 'filifera:e1:2026-10-06', company: 'filifera', region: 'CA', employee_uuid: 'e1', employee_name: 'Test Edit', department: 'Trim',
+    job_title: 'Tester', work_date: '2026-10-06', first_in: shifts.length ? shifts[0].in : null, last_out: shifts.length ? shifts[shifts.length - 1].out : null, shifts,
+    span_min: shifts.reduce((a, s) => a + s.span_min, 0), worked_min: shifts.reduce((a, s) => a + s.worked_min, 0),
+    paid_break_min: all.filter(b => b.paid).reduce((a, b) => a + b.min, 0), unpaid_break_min: all.filter(b => !b.paid).reduce((a, b) => a + b.min, 0),
+    reg_min: 480, ot_min: 0, dt_min: 0, ot_src: 'gusto', label_src: 'gusto', gusto_total_min: null, approval: null, note: null, flags: [], open: shifts.some(s => !s.out),
+    hours_only: false, synced_at: '2026-10-07T12:00:00Z' }, extra || {}));
+};
+const EDIT_COLS = ['id', 'day_id', 'company', 'region', 'employee_uuid', 'department', 'work_date', 'shift_id', 'action', 'before', 'after', 'note', 'times_status',
+  'breaks_status', 'times_error', 'breaks_error', 'times_applied_at', 'breaks_applied_at', 'created_by', 'created_at', 'cancelled_by', 'cancelled_at'];
+const ED = o => Object.assign({ id: 'x1', day_id: 'filifera:e1:2026-10-06', company: 'filifera', region: 'CA', employee_uuid: 'e1', department: 'Trim', work_date: '2026-10-06',
+  shift_id: 's1', action: 'update', before: C.shiftSnap(ED_S1), after: null, note: null, times_status: 'none', breaks_status: 'none', times_error: null, breaks_error: null,
+  times_applied_at: null, breaks_applied_at: null, created_by: 'm@wizardtrees.com', created_at: '2026-10-07T15:00:00Z', cancelled_by: null, cancelled_at: null }, o);
+const AFTER = (i, o, breaks) => ({ in: EP(i), out: EP(o), breaks: (breaks || []).map(([s, e, kind]) => ({ start: EP(s), end: EP(e), kind })) });
+const OV = (r, edits, today) => C.overlayDay(r, edits, { today: today || '2026-10-08' });
+const codes = errs => errs.map(e => e.code);
+const SQL_EDITS = (() => { try { return fs.readFileSync(path.join(ROOT, 'supabase', 'ts-edits.sql'), 'utf8'); } catch { return ''; } })();
+
+check('edit window: the current and previous pay period through today, exactly like ts_edit_window (anchor Friday 2026-10-09, 14-day periods)', () => {
+  eq(C.EDIT_ANCHOR_END, '2026-10-09'); eq(C.dow(C.EDIT_ANCHOR_END), 5, 'a Friday');
+  // the SQL formula, written out: period_end = anchor + 14 * ceil((today - anchor) / 14); from = period_end - 27
+  const sqlWin = today => { const end = C.addDays('2026-10-09', 14 * Math.ceil(C.daysBetween('2026-10-09', today) / 14)); return { from: C.addDays(end, -27), to: today }; };
+  for (let d = '2026-01-01'; d <= '2027-12-31'; d = C.addDays(d, 1)) eq(C.editWindow(d), sqlWin(d), d);
+  eq(C.editWindow('2026-10-21'), { from: '2026-09-26', to: '2026-10-21' });
+  eq(C.editWindow('2026-10-10'), { from: '2026-09-26', to: '2026-10-10' }, 'the first day of a period keeps the one before');
+  eq(C.editWindow('2026-10-09'), { from: '2026-09-12', to: '2026-10-09' });
+  ok(C.canEditDate('2026-09-26', '2026-10-21') && !C.canEditDate('2026-09-25', '2026-10-21'), 'the first editable day');
+  ok(C.canEditDate('2026-10-21', '2026-10-21') && !C.canEditDate('2026-10-22', '2026-10-21'), 'never a future day');
+  ok(!C.canEditDate('bad', '2026-10-21') && !C.canEditDate('2026-10-20', ''), 'bad dates');
+  // the same 14-day grid as both regions' pay periods
+  for (const g of C.REGIONS) eq(C.daysBetween(g.anchorEnd, C.EDIT_ANCHOR_END) % 14, 0, g.key + ' grid');
+  if (SQL_EDITS) ok(/date '2026-10-09'/.test(SQL_EDITS) && /period_end - 27/.test(SQL_EDITS), 'supabase/ts-edits.sql has another window');
+  ok(/function canEditRow\(r\) \{ return editsOn\(\) && !!r && C\.canEditDate\(r\.work_date, rowToday\(r\)\); \}/.test(block('ts-app')), 'Edit shows only inside the window, on the row\'s own calendar');
+});
+check('editor rules mirror ts_edit_submit: start and end, the same day or overnight within 16 h, the start on the work date', () => {
+  const v = (a, extra) => codes(C.validateAfter(a, Object.assign({ tz: C.TZ, date: '2026-10-06' }, extra || {})));
+  eq(v(AFTER('07:00', '15:30')), [], 'a normal shift');
+  eq(v({ in: null, out: EP('15:30'), breaks: [] }), ['no_in']); eq(v({ in: EP('07:00'), out: '', breaks: [] }), ['no_out']);
+  eq(v(AFTER('15:30', '07:00')), ['order']); eq(v(AFTER('07:00', '07:00')), ['order'], 'end must be after start');
+  eq(v({ in: EP('22:00'), out: '2026-10-07T06:00:00-07:00', breaks: [] }), [], 'overnight 8 h');
+  eq(v({ in: EP('14:00'), out: '2026-10-07T06:00:00-07:00', breaks: [] }), [], 'overnight exactly 16 h');
+  eq(v({ in: EP('13:59'), out: '2026-10-07T06:00:00-07:00', breaks: [] }), ['overnight'], 'overnight over 16 h');
+  eq(v({ in: EP('22:00'), out: '2026-10-08T01:00:00-07:00', breaks: [] }), ['overnight'], 'two days later');
+  eq(v({ in: EP('00:30'), out: EP('23:59'), breaks: [] }), [], 'one long day is still the same day');
+  eq(v({ in: '2026-10-05T22:00:00-07:00', out: EP('06:00'), breaks: [] }), ['in_date'], 'the start on another day');
+  eq(v({ in: '2026-10-05T22:00:00-07:00', out: EP('06:00'), breaks: [] }, { beforeIn: '2026-10-05T21:30:00-07:00' }), [], 'an update may keep the date its start already has');
+  eq(v({ in: EP('07:00'), out: EP('15:30'), breaks: [] }, { now: Date.parse(EP('15:00')) }), ['future'], 'the page refuses an end later than now');
+  // New York: its own clock decides the day
+  eq(codes(C.validateAfter({ in: '2026-10-06T20:00:00-04:00', out: '2026-10-06T23:30:00-04:00', breaks: [] }, { tz: 'America/New_York', date: '2026-10-06' })), []);
+  eq(codes(C.validateAfter({ in: '2026-10-06T20:00:00-04:00', out: '2026-10-06T23:30:00-04:00', breaks: [] }, { tz: C.TZ, date: '2026-10-06' })), [], 'the same instants in Pacific are 5 PM to 8:30 PM');
+  if (SQL_EDITS) {
+    ok(/interval '16 hours'/.test(SQL_EDITS) && /v_out <= v_in/.test(SQL_EDITS), 'ts_edit_submit has other shift rules');
+    eq(C.EDIT_RULES.overnightMaxSec, 16 * 3600);
+  }
+});
+check('editor rules mirror ts_edit_submit: at most 6 breaks, each 1 to 240 min, rest or meal, inside the shift, none overlapping', () => {
+  const v = (breaks, i, o) => codes(C.validateAfter(AFTER(i || '07:00', o || '15:30', breaks), { tz: C.TZ, date: '2026-10-06' }));
+  eq(v([['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]), []);
+  eq(v([['07:00', '07:10', 'rest'], ['15:00', '15:30', 'meal']]), [], 'a break may start at the clock-in and end at the clock-out');
+  eq(v([['09:00', '09:01', 'rest']]), [], '1 minute');
+  eq(v([['09:00', '13:00', 'meal']]), [], '240 minutes');
+  eq(v([['09:00', '13:01', 'meal']]), ['brk_len'], '241 minutes');
+  eq(v([['09:00', '09:00', 'rest']]), ['brk_order']); eq(v([['09:10', '09:00', 'rest']]), ['brk_order']);
+  eq(v([['06:50', '07:05', 'rest']]), ['brk_outside']); eq(v([['15:20', '15:40', 'rest']]), ['brk_outside']);
+  eq(v([['09:00', '09:30', 'meal'], ['09:20', '09:30', 'rest']]), ['brk_overlap']);
+  eq(v([['09:00', '09:30', 'meal'], ['09:30', '09:40', 'rest']]), [], 'one may start the minute another ends');
+  eq(v([['09:00', '09:10', 'nap']]), ['brk_kind']);
+  eq(v([['08:00', '08:05', 'rest'], ['08:10', '08:15', 'rest'], ['08:20', '08:25', 'rest'], ['08:30', '08:35', 'rest'], ['08:40', '08:45', 'rest'], ['08:50', '08:55', 'rest']]), [], 'six breaks');
+  eq(v([['08:00', '08:05', 'rest'], ['08:10', '08:15', 'rest'], ['08:20', '08:25', 'rest'], ['08:30', '08:35', 'rest'], ['08:40', '08:45', 'rest'], ['08:50', '08:55', 'rest'], ['09:00', '09:05', 'rest']]), ['too_many']);
+  eq(codes(C.validateAfter({ in: EP('07:00'), out: EP('15:30'), breaks: [{ start: EP('09:00'), end: null, kind: 'rest' }] }, { tz: C.TZ })), ['brk_missing']);
+  // seconds count for order like the server (it keeps seconds): a kept 7:00:30 start is after a 7:00 break
+  eq(codes(C.validateAfter({ in: '2026-10-06T07:00:30-07:00', out: EP('15:30'), breaks: [{ start: EP('07:00'), end: EP('07:10'), kind: 'rest' }] }, { tz: C.TZ })), ['brk_outside']);
+  const bi = C.validateAfter(AFTER('07:00', '15:30', [['09:00', '09:10', 'rest'], ['06:00', '06:10', 'rest']]), { tz: C.TZ });
+  eq(bi.map(e => [e.code, e.brk]), [['brk_outside', 1]], 'an error names its break');
+  ok(C.validateAfter(AFTER('07:00', '15:30', [['06:00', '06:10', 'rest']]), { tz: C.TZ })[0].msg.includes('7:00 AM to 3:30 PM'), 'the message says where the shift is');
+  if (SQL_EDITS) ok(/jsonb_array_length\(p_after->'breaks'\) > 6/.test(SQL_EDITS) && /interval '1 minute'/.test(SQL_EDITS) && /interval '240 minutes'/.test(SQL_EDITS) &&
+    /v_bs < v_in or v_be > v_out/.test(SQL_EDITS) && /in \('rest', 'meal'\)/.test(SQL_EDITS), 'ts_edit_submit has other break rules');
+  eq([C.EDIT_RULES.maxBreaks, C.EDIT_RULES.breakMinSec, C.EDIT_RULES.breakMaxSec, C.EDIT_RULES.noteMax], [6, 60, 14400, 500]);
+  if (SQL_EDITS) ok(/length\(note\) between 1 and 500/.test(SQL_EDITS), 'the reason limit differs from the table');
+});
+check('what changed is decided to the minute (seconds never count), like ts_edit_key; add and delete set their parts', () => {
+  const before = C.shiftSnap(ED_S1);
+  eq(C.editParts('update', before, Object.assign({}, before, { in: '2026-10-06T07:00:59-07:00' })), { times: 'none', breaks: 'none' }, 'seconds');
+  eq(C.editParts('update', before, Object.assign({}, before, { out: EP('15:31') })), { times: 'pending', breaks: 'none' });
+  eq(C.editParts('update', before, Object.assign({}, before, { breaks: before.breaks.slice().reverse() })), { times: 'none', breaks: 'none' }, 'break order does not matter');
+  eq(C.editParts('update', before, Object.assign({}, before, { breaks: [before.breaks[0], Object.assign({}, before.breaks[1], { kind: 'rest' })] })), { times: 'none', breaks: 'pending' }, 'a type change');
+  eq(C.editParts('add', null, AFTER('16:00', '18:00')), { times: 'pending', breaks: 'none' });
+  eq(C.editParts('add', null, AFTER('16:00', '18:00', [['17:00', '17:10', 'rest']])), { times: 'pending', breaks: 'pending' });
+  eq(C.editParts('delete', before, null), { times: 'none', breaks: 'pending' }, 'the browser task deletes a shift');
+  ok(C.sameMinute('2026-10-06T14:00:00Z', EP('07:00')), 'the same minute in two spellings');
+  ok(C.sameMinute(null, '') && !C.sameMinute(null, EP('07:00')));
+});
+check('editor fields: an untouched field keeps its timestamp, a changed one is that wall time on the row\'s clock (the next day past midnight)', () => {
+  const en = C.entryOf(Object.assign({}, ED_S1, { out: '2026-10-06T15:30:42-07:00' }), C.TZ);
+  eq([en.inT, en.outT, en.breaks.map(b => [b.startT, b.endT, b.kind])], ['07:00', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]]);
+  eq(C.entryAfter(en, '2026-10-06', C.TZ).out, '2026-10-06T15:30:42-07:00', 'left alone: seconds kept');
+  en.outT = '16:15'; en.inT = '06:45';
+  const a = C.entryAfter(en, '2026-10-06', C.TZ);
+  eq([a.in, a.out], ['2026-10-06T06:45:00-07:00', '2026-10-06T16:15:00-07:00']);
+  eq(C.entryAfter(Object.assign(C.newEntry('n'), { inT: '22:00', outT: '06:00', breaks: [{ startT: '01:00', endT: '01:30', kind: 'meal' }] }), '2026-10-06', C.TZ),
+    { in: '2026-10-06T22:00:00-07:00', out: '2026-10-07T06:00:00-07:00', breaks: [{ start: '2026-10-07T01:00:00-07:00', end: '2026-10-07T01:30:00-07:00', kind: 'meal' }] }, 'past midnight');
+  eq(C.entryAfter(Object.assign(C.newEntry('n'), { inT: '08:00', outT: '16:30' }), '2026-10-06', 'America/New_York'), { in: '2026-10-06T08:00:00-04:00', out: '2026-10-06T16:30:00-04:00', breaks: [] }, 'New York offsets');
+  eq(C.entryAfter(Object.assign(C.newEntry('n'), { inT: '08:00', outT: '16:30' }), '2026-12-01', C.TZ).in, '2026-12-01T08:00:00-08:00', 'winter offset');
+  eq(C.entryAfter(C.newEntry('n'), '2026-10-06', C.TZ), { in: null, out: null, breaks: [] }, 'blank fields');
+  eq([C.parseHhmm('07:05'), C.parseHhmm('7:05'), C.parseHhmm('23:59:00'), C.parseHhmm('24:00'), C.parseHhmm('')].map(x => isNaN(x) ? 'NaN' : x), [425, 425, 1439, 'NaN', 'NaN']);
+  eq([C.fmtHhmm('07:05'), C.fmtHhmm('00:00'), C.fmtHhmm('12:30'), C.fmtHhmm('x')], ['7:05 AM', '12:00 AM', '12:30 PM', '']);
+  ok(C.entryKey(en) !== C.entryKey(C.entryOf(ED_S1, C.TZ)) && C.entryKey(C.entryOf(ED_S1, C.TZ)) === C.entryKey(C.entryOf(ED_S1, C.TZ)), 'entryKey tells a change');
+});
+check('overlay math: a waiting change shows the EDITED times and breaks, worked = span - unpaid, totals and first in / last out follow', () => {
+  const r = edRow([ED_S1]);
+  ok(OV(r, []) === r && OV(r, [ED({ day_id: 'other:day' , times_status: 'pending', after: AFTER('07:30', '15:30') })]) === r, 'a day without edits is the very same row');
+  const t = OV(r, [ED({ times_status: 'pending', after: AFTER('07:30', '16:00', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq([t.first_in, t.last_out, t.span_min, t.worked_min, t.paid_break_min, t.unpaid_break_min], [EP('07:30'), EP('16:00'), 510, 480, 10, 30]);
+  eq(t.shifts[0].edited, { times: 'pending', breaks: null, in: true, out: true }, 'only the times are the edit\'s');
+  ok(t.shifts[0].breaks === ED_S1.breaks, 'breaks stay Gusto\'s when only the times change');
+  eq([t.edit.pending.length, t.edit.attention.length], [1, 0]);
+  const b = OV(r, [ED({ breaks_status: 'pending', after: AFTER('07:00', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal'], ['13:30', '13:52', 'meal']]) })]);
+  eq([b.worked_min, b.paid_break_min, b.unpaid_break_min], [510 - 52, 10, 52]);
+  ok(b.shifts[0].breaks.every(x => x.src === 'edit') && !b.shifts[0].breaks.some(C.breakUnsure), 'a typed break is never a guess (no est. on a 22 min meal)');
+  for (const d of [t, b]) for (const s of d.shifts) eq(s.worked_min, s.span_min - s.breaks.filter(x => !x.paid).reduce((a, x) => a + x.min, 0), 'worked = span - unpaid');
+  // the 11:59:59 PM automatic clock-out counts as midnight, like the producer
+  eq(C.editedShift(null, { in: EP('16:00'), out: EP('23:59').replace(':00-', ':59-'), breaks: [] }, C.TZ).span_min, 480);
+});
+check('overlay: delete, add, Gusto refusing a change, a change already in Gusto, cancelled, and the latest edit of a shift wins', () => {
+  const s2 = ES('s2', '16:00', '18:00');
+  const r = edRow([ED_S1, s2]);
+  const del = OV(r, [ED({ shift_id: 's2', action: 'delete', after: null, breaks_status: 'pending' })]);
+  eq([del.shifts.map(s => s.id), del.worked_min, del.edit.pending.length], [['s1'], 480, 1]);
+  const all = OV(edRow([ED_S1]), [ED({ action: 'delete', after: null, breaks_status: 'pending' })]);
+  eq([all.deleted_all, all.shifts.length, all.worked_min, C.shiftsText(all)], [true, 0, 0, 'shift deleted'], 'every shift waiting to be deleted');
+  const add = OV(edRow([ED_S1]), [ED({ id: 'a1', shift_id: null, action: 'add', before: null, after: AFTER('16:00', '18:00'), times_status: 'pending' })]);
+  eq([add.shifts.map(s => s.id), add.shifts[1].add_edit, add.worked_min, add.last_out], [['s1', 'edit:a1'], 'a1', 600, EP('18:00')]);
+  // Gusto would not take it: Gusto's values, a Needs a look, nothing pending
+  const con = OV(r, [ED({ times_status: 'conflict', times_error: 'clock-in moved', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq([con.first_in, con.worked_min, con.edit.pending.length, con.edit.attention.length], [EP('07:00'), 600, 0, 1]);
+  ok(OV(r, [ED({ times_status: 'failed', after: C.shiftSnap(ED_S1) })]) === r, 'a refused change Gusto already shows needs no look');
+  // in Gusto: shown until the next sync brings it, then Gusto's own row is enough
+  const sent = OV(r, [ED({ times_status: 'applied', times_applied_at: '2026-10-07T13:00:00Z', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq([sent.first_in, sent.edit.pending.length, sent.edit.sent, sent.shifts[0].edited.times], [EP('07:30'), 0, true, 'sent'], 'applied after the last sync: still shown, no pill');
+  ok(OV(r, [ED({ times_status: 'applied', times_applied_at: '2026-10-07T11:00:00Z', after: AFTER('07:30', '15:30') })]) === r, 'applied before the last sync: plain');
+  ok(OV(r, [ED({ times_status: 'cancelled', cancelled_by: 'm@wizardtrees.com', cancelled_at: '2026-10-07T16:00:00Z', after: AFTER('07:30', '15:30') })]) === r, 'cancelled edits never show');
+  const two = OV(r, [ED({ id: 'old', times_status: 'conflict', after: AFTER('07:30', '15:30'), created_at: '2026-10-07T10:00:00Z' }),
+    ED({ id: 'new', times_status: 'pending', after: AFTER('07:45', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]), created_at: '2026-10-07T11:00:00Z' })]);
+  eq([two.first_in, two.edit.attention.length, two.edit.pending.map(e => e.id)], [EP('07:45'), 0, ['new']], 'the newer edit of a shift decides');
+  // an added shift in Gusto and synced, its breaks still waiting: they go on Gusto's new shift, never a second copy
+  const synced = edRow([ED_S1, ES('g9', '16:00', '18:00')]);
+  const tw = OV(synced, [ED({ id: 'a1', shift_id: null, action: 'add', before: null, after: AFTER('16:00', '18:00', [['17:00', '17:10', 'rest']]),
+    times_status: 'applied', times_applied_at: '2026-10-07T11:00:00Z', breaks_status: 'pending' })]);
+  eq([tw.shifts.map(s => s.id), tw.shifts[1].breaks.length, tw.edit.pending.length], [['s1', 'g9'], 1, 1]);
+});
+check('overlay: flags and overtime follow the edited day (estimated), Gusto\'s own total no longer applies', () => {
+  const noMeal = edRow([ES('s1', '07:00', '15:30', [EB('09:00', '09:10', 'rest'), EB('13:00', '13:10', 'rest')])], {
+    flags: [{ code: 'no_meal', sev: 'warn', msg: 'No meal break on a shift over 5 hours' }], gusto_total_min: 510 });
+  const fixed = OV(noMeal, [ED({ breaks_status: 'pending', after: AFTER('07:00', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal'], ['13:00', '13:10', 'rest']]) })]);
+  eq(fixed.flags.map(f => f.code), [], 'the meal is there now: no flag (and no "differs from Gusto")');
+  ok(!C.hasWarn(fixed) && C.hasWarn(noMeal), 'Flagged only follows the board');
+  const long = OV(edRow([ED_S1]), [ED({ times_status: 'pending', after: AFTER('07:00', '17:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq([long.worked_min, long.reg_min, long.ot_min, long.dt_min, long.ot_src], [600, 480, 120, 0, 'est'], 'California daily OT, estimated');
+  eq(C.estOvertime({ region: 'CA', worked_min: 480, reg_min: 0, ot_min: 480, dt_min: 0 }, { worked_min: 540, shifts: [{ out: 'x' }] }), { reg_min: 0, ot_min: 540, dt_min: 0, ot_src: 'est' }, 'a day already all OT (past 40 h) stays all OT');
+  eq(C.estOvertime({ region: 'NY', company: 'wtny', worked_min: 480, reg_min: 300, ot_min: 180, dt_min: 0 }, { worked_min: 540, shifts: [{ out: 'x' }] }), { reg_min: 300, ot_min: 240, dt_min: 0, ot_src: 'est' }, 'New York past 40 h: added minutes are OT');
+  eq(C.estOvertime({ region: 'NY', company: 'wtny', worked_min: 480, reg_min: 480, ot_min: 0, dt_min: 0 }, { worked_min: 600, shifts: [{ out: 'x' }] }), { reg_min: 600, ot_min: 0, dt_min: 0, ot_src: 'est' }, 'New York has no daily OT');
+  const same = OV(edRow([ED_S1], { ot_min: 30, reg_min: 450, ot_src: 'gusto' }), [ED({ times_status: 'pending', after: AFTER('07:30', '16:00', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq([same.reg_min, same.ot_min, same.ot_src], [450, 30, 'gusto'], 'hours unchanged: Gusto\'s overtime stays');
+  const open = OV(edRow([ES('s1', '07:00', null, [EB('09:00', '09:10', 'rest')])], { work_date: '2026-10-06', reg_min: null, flags: [{ code: 'missed_out', sev: 'warn' }] }),
+    [ED({ times_status: 'pending', breaks_status: 'pending', after: AFTER('07:00', '15:00', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal'], ['13:30', '13:40', 'rest']]) })]);
+  eq([open.open, open.worked_min, open.flags.map(f => f.code)], [false, 450, []], 'a missed clock-out filled in: closed, counted, no flag');
+  const timesOnly = OV(edRow([ES('s1', '07:00', null, [EB('09:00', '09:10', 'rest')])], { reg_min: null }), [ED({ times_status: 'pending', after: AFTER('07:00', '15:00', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq([timesOnly.worked_min, timesOnly.shifts[0].breaks.length], [480, 1], 'only the times waiting: the breaks stay Gusto\'s');
+});
+check('status pills: Pending and Needs a look, with a bubble that says what changed, who made it and when it reaches Gusto', () => {
+  const now = Date.parse('2026-10-07T18:30:00Z');   // 11:30 AM Pacific
+  eq(['pending', 'attention', 'applied', 'cancelled', 'none', 'replaced'].map(k => C.EDIT_STATUS_WORDS[k]), ['Pending', 'Needs a look', 'In Gusto', 'Cancelled', 'Undone', 'Replaced']);
+  eq([ED({ times_status: 'pending' }), ED({ times_status: 'conflict', breaks_status: 'pending' }), ED({ breaks_status: 'failed' }), ED({ times_status: 'applied', breaks_status: 'applied' }),
+    ED({ times_status: 'cancelled', cancelled_at: 'x' }), ED({ times_status: 'applied', breaks_status: 'cancelled', cancelled_at: 'x' }), ED({})].map(C.editStatus),
+    ['pending', 'attention', 'attention', 'applied', 'cancelled', 'cancelled', 'none']);
+  const e = ED({ times_status: 'pending', breaks_status: 'pending', note: 'forgot', created_at: '2026-10-07T18:20:00Z', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['12:00', '12:30', 'meal']]) });
+  eq(C.describeEdit(e, C.TZ), ['Start 7:00 AM → 7:30 AM', 'Meal 11:30-12:00 → 12:00-12:30']);
+  const tip = C.editTip(e, C.TZ, now);
+  for (const want of ['Pending: changed here, not in Gusto yet.', 'Start 7:00 AM → 7:30 AM', 'Start and end: going to Gusto within minutes', 'Breaks: going to Gusto at 1 PM today',
+    'By m@wizardtrees.com, Oct 7, 11:20 AM.', 'Reason: forgot']) ok(tip.includes(want), 'tip is missing ' + J(want) + ': ' + tip);
+  // overdue: start and end 30 min after the change, breaks 30 min after the first run that came after it;
+  // the page says Late instead of promising when (nothing reaches Gusto until the workers run)
+  eq(C.EDIT_LATE_SEC, 1800);
+  const at = (t, part, made) => C.partLate(ED({ [part + '_status']: 'pending', created_at: made || '2026-10-07T15:00:00Z' }), part, t);   // made 8:00 AM Pacific
+  eq([at('2026-10-07T15:29:00Z', 'times'), at('2026-10-07T15:30:00Z', 'times')], [false, true], 'start and end: due within 30 minutes');
+  eq([at('2026-10-07T20:29:00Z', 'breaks'), at('2026-10-07T20:30:00Z', 'breaks')], [false, true], 'breaks: the 1 PM run, plus 30 minutes');
+  eq([at('2026-10-08T04:29:00Z', 'breaks', '2026-10-07T20:05:00Z'), at('2026-10-08T04:30:00Z', 'breaks', '2026-10-07T20:05:00Z')], [false, true], 'made at 1:05 PM: the 9 PM run');
+  eq(C.firstBreakRun('2026-10-08T04:30:00Z'), Date.parse('2026-10-08T20:00:00Z') / 1000, 'after 9 PM: the next day\'s 1 PM run');
+  ok(!C.partLate(ED({ times_status: 'applied', created_at: '2026-10-01T15:00:00Z' }), 'times', now) && !C.partLate(ED({ times_status: 'conflict' }), 'times', now), 'only a waiting part is late');
+  const late = ED({ times_status: 'pending', breaks_status: 'pending', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['12:00', '12:30', 'meal']]) });   // made 8:00 AM
+  eq(C.editPartLines(late, C.TZ, now), ['Start and end: late, not in Gusto yet', 'Breaks: going to Gusto at 1 PM today'], 'times late, breaks not due yet');
+  eq(C.editPartLines(late, C.TZ, '2026-10-07T21:00:00Z'), ['Start and end: late, not in Gusto yet', 'Breaks: late, not in Gusto yet']);
+  ok(C.editTip(late, C.TZ, now).startsWith('Late: not in Gusto yet.') && !/within minutes/.test(C.editTip(late, C.TZ, now)), 'the bubble says Late, never the promise');
+  ok(/Deleting it: late, not in Gusto yet/.test(C.editTip(ED({ action: 'delete', after: null, breaks_status: 'pending' }), C.TZ, '2026-10-07T21:00:00Z')), 'a delete waits for the breaks run too');
+  ok(C.editTip(ED({ times_status: 'conflict', times_error: 'Clock-in moved in Gusto.', after: AFTER('07:30', '15:30') }), C.TZ, now).includes('Clock-in moved in Gusto.'), 'the reason Gusto gave');
+  eq(C.describeEdit(ED({ action: 'delete', after: null }), C.TZ), ['Delete the shift 7:00 AM - 3:30 PM']);
+  eq(C.describeEdit(ED({ action: 'add', before: null, after: AFTER('16:00', '18:00', [['17:00', '17:10', 'rest']]) }), C.TZ), ['Add a shift 4:00 PM - 6:00 PM', 'with rest 5:00-5:10']);
+  eq(C.describeEdit(ED({ after: C.shiftSnap(ED_S1) }), C.TZ), ['Back to what Gusto has']);
+  eq(C.describeEdit(ED({ after: AFTER('07:00', '15:30', [['09:00', '09:10', 'rest']]) }), C.TZ), ['Remove meal 11:30-12:00']);
+  eq(C.editPartLines(ED({ times_status: 'cancelled', cancelled_by: 'superseded', cancelled_at: 'x' }), C.TZ, now), ['Replaced by a later change']);
+  eq(C.editPartLines(ED({ times_status: 'cancelled', cancelled_by: 'superseded', cancelled_at: 'x' }), C.TZ, now, ED({ id: 'x2', created_by: 'b@wizardtrees.com', created_at: '2026-10-07T17:05:00Z' })),
+    ["Replaced by b@wizardtrees.com's change, Oct 7, 10:05 AM"], 'naming the change that replaced it');
+  // when breaks reach Gusto: the next 1 PM or 9 PM Pacific run, on the row's clock
+  eq(C.editTimingText(C.TZ, now), 'Start and end times go to Gusto within minutes. Breaks go to Gusto at 1 PM and 9 PM.');
+  eq(C.editTimingText('America/New_York', now), 'Start and end times go to Gusto within minutes. Breaks go to Gusto at 4 PM and midnight.');
+  eq([C.nextBreakRun(now, C.TZ), C.nextBreakRun('2026-10-07T21:00:00Z', C.TZ), C.nextBreakRun('2026-10-08T02:00:00Z', 'America/New_York'), C.nextBreakRun('2026-10-08T05:00:00Z', C.TZ)],
+    ['at 1 PM today', 'at 9 PM today', 'at midnight tonight', 'at 1 PM tomorrow']);
+  // the page: the pills sit above the flag pills, open the same bubble, and never count as flags
+  const app = block('ts-app');
+  ok(/class="flag eatt" title="\$\{tip\(ed\.attention\)\}" tabindex="0">Needs a look</.test(appFn('editPills')) && /class="flag epend" title="\$\{tip\(ed\.pending\)\}" tabindex="0">Pending</.test(appFn('editPills')), 'pills');
+  ok(/C\.flagsHtml\(r\.flags, r\.region\)/.test(appFn('flagsCell')) && /editPills\(r\)/.test(appFn('flagsCell')) && /editPills\(r\)/.test(appFn('flagPills')), 'table cells and phone cards both carry them');
+  ok(/const TIP_SEL = '[^']*\.flag[^']*';/.test(app), 'a pill opens the bubble like a flag');
+  const pend = OV(edRow([ED_S1]), [ED({ times_status: 'pending', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq(C.totals([pend]).warn, pend.flags.filter(f => C.flagSev(f) === 'warn').length, 'a Pending pill is not a flag');
+  ok(pend.flags.every(f => C.FLAG_CODES.includes(f.code)), 'only the spec flag codes');
+  ok(/\.flag\.epend\{/.test(src) && /\.flag\.eatt\{/.test(src), 'pill styles');
+  const leg = markup.match(/<div class="legend">[\s\S]*?\n {14}<\/div>/)[0];
+  ok(/flag epend">Pending</.test(leg) && /flag eatt">Needs a look</.test(leg), 'the Key explains both');
+});
+check('supersede and submit: a later edit of the same shift replaces a waiting one, like ts_edit_submit; the server\'s refusals', () => {
+  const raw = edRow([ED_S1, ES('s2', '16:00', '18:00')]);
+  const ctx = (id, extra) => Object.assign({ email: 'm@wizardtrees.com', now: '2026-10-07T18:00:00Z', today: '2026-10-07', id }, extra || {});
+  let res = C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]), note: '  late bus ' }, ctx('e1'));
+  ok(res.ok, res.error);
+  eq(Object.keys(res.edit).sort(), [...EDIT_COLS].sort(), 'a ts_edits row');
+  eq([res.edit.times_status, res.edit.breaks_status, res.edit.note, res.edit.shift_id, res.edit.created_by], ['pending', 'none', 'late bus', 's1', 'm@wizardtrees.com']);
+  eq(res.edit.before, C.shiftSnap(ED_S1), 'before = the shift as Gusto has it');
+  const marked = res.edits.map(e => Object.assign({}, e, { breaks_status: 'conflict' }));   // pretend its breaks part had failed
+  res = C.submitEdit(marked, raw, { shift_id: 's1', action: 'update', after: AFTER('07:45', '15:30') }, ctx('e2'));
+  ok(res.ok, res.error);
+  const old = res.edits.find(e => e.id === 'e1');
+  eq([old.times_status, old.breaks_status, old.cancelled_by], ['cancelled', 'conflict', 'superseded'], 'waiting parts cancelled, others kept');
+  eq([res.edit.times_status, res.edit.breaks_status], ['pending', 'pending']);
+  const other = C.submitEdit(res.edits, raw, { shift_id: 's2', action: 'delete' }, ctx('e3'));
+  ok(other.ok && other.edits.find(e => e.id === 'e2').times_status === 'pending', 'another shift is left alone');
+  eq([other.edit.times_status, other.edit.breaks_status, other.edit.after], ['none', 'pending', null]);
+  // nothing changed: refused, unless it replaces a waiting edit (putting the shift back as Gusto has it)
+  ok(!C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: C.shiftSnap(ED_S1) }, ctx('x')).ok, 'nothing to change');
+  const back = C.submitEdit(other.edits, raw, { shift_id: 's1', action: 'update', after: C.shiftSnap(ED_S1) }, ctx('e4'));
+  ok(back.ok && back.edit.times_status === 'none' && back.edit.breaks_status === 'none' && back.edits.find(e => e.id === 'e2').cancelled_by === 'superseded', 'a revert replaces the waiting edit');
+  // adds never supersede; the same add twice is refused
+  const a1 = C.submitEdit([], raw, { shift_id: null, action: 'add', after: AFTER('19:00', '20:00') }, ctx('a1'));
+  ok(a1.ok && a1.edit.shift_id === null && a1.edit.before === null);
+  ok(!C.submitEdit(a1.edits, raw, { action: 'add', after: AFTER('19:00', '20:00') }, ctx('a2')).ok, 'the same add again');
+  ok(C.submitEdit(a1.edits, raw, { action: 'add', after: AFTER('19:00', '20:30') }, ctx('a3')).ok, 'another add');
+  // refusals
+  const no = (input, c) => C.submitEdit([], raw, input, c || ctx('n')).error;
+  ok(/pay periods/.test(no({ shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30') }, ctx('n', { today: '2026-11-20' }))), 'outside the window');
+  ok(/not happened yet/.test(no({ shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30') }, ctx('n', { today: '2026-10-05' }))), 'a future day');
+  ok(/not on this day any more/.test(no({ shift_id: 'gone', action: 'update', after: AFTER('07:30', '15:30') })), 'a shift no longer on the row');
+  ok(/no Gusto shift id/.test(no({ shift_id: 's1', action: 'add', after: AFTER('19:00', '20:00') })), 'an add with a shift id');
+  ok(/update, add or delete/.test(no({ shift_id: 's1', action: 'merge' })), 'unknown action');
+  ok(/End must be after|end must be after/i.test(no({ shift_id: 's1', action: 'update', after: AFTER('15:30', '07:30') })), 'the shift rules');
+  ok(/500 characters/.test(no({ shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30'), note: 'x'.repeat(501) })), 'the reason limit');
+  // cancel: the creator or an admin, only while something waits
+  const c1 = C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) }, ctx('c1'));
+  ok(!C.cancelEdit(c1.edits, 'c1', { email: 'someone@wizardtrees.com' }).ok, 'someone else');
+  const cx = C.cancelEdit(c1.edits, 'c1', { email: 'boss@wizardtrees.com', is_admin: true, now: '2026-10-07T19:00:00Z' });
+  ok(cx.ok && cx.edit.times_status === 'cancelled' && cx.edit.breaks_status === 'none' && cx.edit.cancelled_by === 'boss@wizardtrees.com', 'an admin');
+  ok(!C.cancelEdit(cx.edits, 'c1', { email: 'm@wizardtrees.com' }).ok, 'nothing waits any more');
+  ok(C.cancelEdit(c1.edits, 'c1', { email: 'm@wizardtrees.com' }).ok, 'the creator');
+  if (SQL_EDITS) ok(/cancelled_by = 'superseded'/.test(SQL_EDITS) && /'pending' in \(e\.times_status, e\.breaks_status\)/.test(SQL_EDITS) && /This shift is already waiting to be added/.test(SQL_EDITS), 'supersede differs from ts_edit_submit');
+  // an older edit Gusto refused reads as Replaced once a later edit of the shift exists
+  const rep = C.replacedEdits([ED({ id: 'r1', times_status: 'conflict', created_at: '2026-10-07T10:00:00Z' }), ED({ id: 'r2', times_status: 'pending', created_at: '2026-10-07T11:00:00Z' })]);
+  eq([...rep], ['r1']);
+  eq(C.editShownStatus(ED({ id: 'r1', times_status: 'conflict' }), rep), 'replaced');
+});
+check('the day editor: entries as the board shows them, what Save sends (one submit per changed shift), and the preview', () => {
+  const s2 = ES('s2', '16:00', '18:00');
+  const raw = edRow([ED_S1, s2]);
+  const waitDel = ED({ id: 'd1', shift_id: 's2', action: 'delete', after: null, breaks_status: 'pending' });
+  const waitAdd = ED({ id: 'a1', shift_id: null, action: 'add', before: null, after: AFTER('19:00', '20:00'), times_status: 'pending', created_by: 'other@wizardtrees.com' });
+  const edits = [waitDel, waitAdd];
+  const board = OV(raw, edits);
+  const me = { email: 'm@wizardtrees.com', is_admin: false };
+  const en = C.editorEntries(raw, board, edits, me);
+  eq(en.map(e => [e.kind, e.id, !!e.del, e.readonly || '', e.pendingIds]), [['shift', 's1', false, '', []], ['shift', 's2', true, '', ['d1']], ['add', null, false, 'theirs', []]]);
+  ok(C.editorEntries(raw, board, edits, { email: 'boss@wizardtrees.com', is_admin: true })[2].readonly === undefined, 'an admin may change anyone\'s add');
+  const plan0 = C.editPlan(raw, en, {});
+  eq([plan0.ops, plan0.errors], [[], {}], 'nothing touched: nothing sent');
+  // change shift 1's end and keep shift 2 (undo the waiting delete): one update, one revert that replaces the delete
+  en[0].outT = '16:00'; en[0].outT = '15:45'; en[1].del = false;
+  const plan = C.editPlan(raw, en, {});
+  eq(plan.ops.map(o => [o.type, o.action, o.shift_id]), [['submit', 'update', 's1'], ['submit', 'update', 's2']]);
+  eq(plan.ops[0].after.out, EP('15:45'));
+  eq(plan.ops[1].after, C.shiftSnap(s2), 'shift 2 back as Gusto has it');
+  // a new shift, and deleting a shift
+  const en2 = C.editorEntries(raw, OV(raw, []), [], me);
+  en2[1].del = true;
+  en2.push(Object.assign(C.newEntry('n1'), { inT: '19:00', outT: '20:00' }));
+  eq(C.editPlan(raw, en2, {}).ops.map(o => [o.type, o.action, o.shift_id]), [['submit', 'delete', 's2'], ['submit', 'add', null]]);
+  // a waiting add of mine that changes: cancelled and added again; deleted: cancelled
+  const mine = C.editorEntries(raw, OV(raw, [Object.assign({}, waitAdd, { created_by: me.email })]), [Object.assign({}, waitAdd, { created_by: me.email })], me);
+  mine[2].outT = '20:30';
+  eq(C.editPlan(raw, mine, {}).ops.map(o => [o.type, o.id || o.action]), [['cancel', 'a1'], ['submit', 'add']]);
+  mine[2].del = true;
+  eq(C.editPlan(raw, mine, {}).ops.map(o => [o.type, o.id]), [['cancel', 'a1']]);
+  // putting a shift back with nothing waiting sends nothing
+  const en3 = C.editorEntries(raw, OV(raw, []), [], me);
+  en3[0].outT = '16:00'; en3[0].outT = '15:30';
+  eq(C.editPlan(raw, en3, {}).ops, []);
+  // any problem: nothing is sent, the shift with the problem says why
+  en3[0].outT = '06:00'; en3.push(Object.assign(C.newEntry('n2'), { inT: '19:00', outT: '20:00' }));
+  const bad = C.editPlan(raw, en3, {});
+  eq([bad.ops, Object.keys(bad.errors)], [[], [en3[0].key]]);
+  const ov = C.editorEntries(raw, OV(raw, []), [], me); ov.push(Object.assign(C.newEntry('n3'), { inT: '17:00', outT: '19:00' }));
+  eq(C.editPlan(raw, ov, {}).errors.n3.map(e => e.code), ['shift_overlap'], 'a new shift over an existing one');
+  // hours entered: read-only, its hours still count in the preview
+  const he = edRow([Object.assign(ES('h1', '00:00', '23:59'), { hours_only: true, worked_min: 360, span_min: 360 })], { hours_only: true });
+  const hen = C.editorEntries(he, he, [], me);
+  eq([hen[0].readonly, C.editPlan(he, hen, {}).ops, C.entriesPreview(hen, he.work_date, C.TZ).worked], ['hours', [], 360]);
+  // the preview: worked = span - unpaid, as on the board
+  const pv = C.editorEntries(raw, OV(raw, []), [], me);
+  eq(C.entriesPreview(pv, raw.work_date, C.TZ), { worked: 480 + 120, paid: 10, unpaid: 30, incomplete: false });
+  pv[1].breaks.push({ startT: '17:00', endT: '17:30', kind: 'meal', orig: null }); pv[0].outT = '16:00';
+  eq(C.entriesPreview(pv, raw.work_date, C.TZ), { worked: 510 + 90, paid: 10, unpaid: 60, incomplete: false });
+  pv.push(C.newEntry('blank'));
+  ok(C.entriesPreview(pv, raw.work_date, C.TZ).incomplete, 'a shift without times is left out and said so');
+});
+check('demo: made-up edits shaped like ts_edits (waiting, a conflict, a failure, in Gusto, cancelled, a New York add), all inside the window and valid', () => {
+  const es = demo.edits;
+  ok(Array.isArray(es) && es.length >= 6, 'demo edits');
+  const emails = new Set(demo.access.map(a => a.email));
+  for (const e of es) {
+    eq(Object.keys(e).sort(), [...EDIT_COLS].sort(), 'columns of ' + e.id);
+    ok(/^demo-edit-\d+$/.test(e.id), 'id ' + e.id);
+    ok(emails.has(e.created_by) && (!e.cancelled_by || emails.has(e.cancelled_by) || e.cancelled_by === 'superseded'), 'made-up sign-ins only: ' + e.created_by);
+    const r = demo.rows.find(x => x.id === e.day_id);
+    ok(r && r.company === e.company && r.employee_uuid === e.employee_uuid && r.work_date === e.work_date && r.department === e.department, e.id + ' day');
+    ok(C.canEditDate(e.work_date, demo.todays[r.region]), e.id + ' inside the window');
+    if (e.after) eq(C.validateAfter(e.after, { tz: C.rowTz(r), date: r.work_date, beforeIn: e.before && e.before.in }), [], e.id + ' after is valid');
+    if (e.shift_id) ok(r.shifts.some(s => s.id === e.shift_id), e.id + ' shift on the row');
+  }
+  const st = es.map(e => C.editStatus(e));
+  for (const want of ['pending', 'attention', 'applied', 'cancelled']) ok(st.includes(want), 'a ' + want + ' edit');
+  ok(es.some(e => e.times_status === 'conflict') && es.some(e => e.breaks_status === 'failed'), 'a conflict and a failure');
+  ok(es.some(e => e.action === 'add' && e.region === 'NY' && e.times_status === 'pending'), 'a New York shift waiting to be added');
+  ok(es.every(e => !/gianni|kelsey|scott/i.test(e.created_by)), 'no real sign-ins');
+  // the board: waiting changes show, the cancelled one does not, the one in Gusto is plain
+  const idx = new Map(); for (const e of es) { if (!idx.has(e.day_id)) idx.set(e.day_id, []); idx.get(e.day_id).push(e); }
+  for (const [id, list] of idx) {
+    const r = C.normRow(demo.rows.find(x => x.id === id));
+    const o = C.overlayDay(r, list, { today: demo.todays[r.region] });
+    const s = list.map(C.editStatus);
+    if (s.includes('pending')) ok(o.edit && o.edit.pending.length, id + ' Pending');
+    if (s.includes('attention')) ok(o.edit && o.edit.attention.length && o.worked_min === r.worked_min, id + ' Needs a look, Gusto\'s hours');
+    if (s.every(x => x === 'cancelled' || x === 'applied')) ok(o === r, id + ' plain');
+    for (const sh of o.shifts) if (!sh.hours_only && sh.out) eq(sh.worked_min, sh.span_min - sh.breaks.filter(b => !b.paid).reduce((a, b) => a + b.min, 0), id + ' worked = span - unpaid');
+  }
+  // the whole flow in memory, as the demo page runs it: submit, the board shows it, cancel, it is gone
+  const r = C.normRow(demo.rows.filter(x => !x.open && !x.hours_only && x.shifts.length === 1 && x.region === 'CA' && C.canEditDate(x.work_date, demo.todays.CA) && !idx.has(x.id))[0]);
+  const snap = C.shiftSnap(r.shifts[0]);
+  const later = C.zIso(C.zDate(Date.parse(snap.out) + 900000, C.TZ), C.zMinutes(Date.parse(snap.out) + 900000, C.TZ), C.TZ);
+  const sub = C.submitEdit(es, r, { shift_id: r.shifts[0].id, action: 'update', after: Object.assign({}, snap, { out: later }) }, { email: 'trim.lead@wizardtrees.com', now: NOW, id: 'demo-edit-900' });
+  ok(sub.ok, sub.error);
+  const shown = C.overlayDay(r, sub.edits, { today: demo.todays.CA });
+  eq([shown.worked_min - r.worked_min, shown.edit.pending.length], [15, 1]);
+  const gone = C.cancelEdit(sub.edits, 'demo-edit-900', { email: 'trim.lead@wizardtrees.com', now: NOW });
+  ok(gone.ok && C.overlayDay(r, gone.edits, { today: demo.todays.CA }) === r, 'cancelled: the row is Gusto\'s again');
+  // the demo flags still come from the producer's rules, now shared with the board's overlay
+  ok(/const flagsFor = \(day, today\) => C\.dayFlagsCA\(day, today\);/.test(block('ts-demo')) && /const flagsForNY = \(day, today, tz\) => C\.dayFlagsNY\(day, today, tz\);/.test(block('ts-demo')), 'one copy of the flag rules');
+  ok(/S\.edits = new Map\(\(d\.edits \|\| \[\]\)\.map\(e => \[e\.id, e\]\)\); S\.editsState = 'ok';/.test(appFn('loadDemo')), 'the demo page loads them');
+  ok(/C\.submitEdit\(list, raw,/.test(appFn('runEditOp')) && /C\.cancelEdit\(list, op\.id,/.test(appFn('runEditOp')), 'demo saves with the same rules, in memory');
+});
+check('page: reads ts_edits with the days (paged), a missing table turns Edit off without an error, saves through ts_edit_submit / ts_edit_cancel', () => {
+  const app = block('ts-app');
+  const fe = appFn('fetchEdits');
+  ok(/fetchAll\(\(\) => sb\.from\('ts_edits'\)\.select\('\*'\)\.gte\('work_date', from\)\.lte\('work_date', to\)\.order\('created_at'\)\.order\('id'\)\)/.test(fe), 'paged read of the visible dates');
+  ok(/\} catch \(e\) \{/.test(fe) && /isSetupError\(e\) \? 'missing'/.test(fe) && !/loadErr|throw/.test(fe), 'never throws, never shows a page error; a missing table = feature off');
+  ok(/await fetchEdits\(from, to\);/.test(appFn('fetchDays')), 'after the days load');
+  ok(/function editsLoaded\(\) \{ return DEMO \|\| S\.editsState === 'ok' \|\| S\.editsState === 'error'; \}/.test(app) &&
+    /function editsOn\(\) \{ return !!S\.me && editsLoaded\(\) && \(DEMO \|\| !!S\.me\.is_admin \|\| EDITS_FOR_MANAGERS \|\| BETA\); \}/.test(app), 'Edit only while the server has ts_edits');
+  ok(/if \(S\.editsState === 'missing'\) S\.editsState = 'off';/.test(appFn('reload')), 'a reload tries again (the SQL may have been applied since)');
+  const ro = appFn('runEditOp');
+  ok(/sb\.rpc\('ts_edit_submit', \{ p_day_id: raw\.id, p_shift_id: op\.shift_id, p_action: op\.action, p_after: op\.after, p_note: note \|\| null \}\)/.test(ro), 'ts_edit_submit args');
+  ok(/sb\.rpc\('ts_edit_cancel', \{ p_id: op\.id \}\)/.test(ro), 'ts_edit_cancel args');
+  ok(/C\.supersede\(/.test(ro) && /await fetchEdits\(raw\.work_date, raw\.work_date\)/.test(appFn('saveDayEdits')), 'replaced edits marked at once, then the day re-read');
+  if (SQL_EDITS) ok(/function public\.ts_edit_submit\(p_day_id text, p_shift_id text, p_action text,\s*p_after jsonb, p_note text\)/.test(SQL_EDITS) && /function public\.ts_edit_cancel\(p_id uuid\)/.test(SQL_EDITS), 'the RPCs in supabase/ts-edits.sql');
+  ok(/function boardRows\(\) \{ return \[\.\.\.S\.rows\.values\(\)\]\.map\(boardRow\); \}/.test(app) && /C\.filterRows\(boardRows\(\),/.test(appFn('baseRows')), 'the board (tables, cards, totals, CSV) shows waiting changes');
+  ok(/C\.editPlan\(raw0, E\.entries, \{ now: Date\.now\(\) \}\)/.test(appFn('saveDayEdits')) && /if \(Object\.keys\(plan\.errors\)\.length\)/.test(appFn('saveDayEdits')), 'Save checks everything first');
+  ok(/if \(failed\.has\(op\.key\)\) continue;/.test(appFn('saveDayEdits')), 'a failed cancel never lets its new add through');
+});
+check('page: an Edit button at the row end (desktop) and in a card\'s detail (phone), the editor copy, history, and the admin Edits list', () => {
+  const app = block('ts-app');
+  ok(/\$\{editCell\(r\)\}<\/tr>/.test(appFn('dayRowOf')) && /\$\{editCell\(r\)\}<\/tr>/.test(appFn('empRow')), 'the last cell of a day row');
+  ok(/data-act="edit-day" data-k="\$\{r\.id\}"/.test(appFn('editCell')) && /canEditRow\(r\)/.test(appFn('editCell')), 'only inside the window');
+  ok(/edTd\(\)/.test(appFn('groupRow')) && /edTd\(\)/.test(appFn('empCard')), 'group and total rows keep the column count');
+  ok(/canEditRow\(r\) \? h`<div class="pd-act"><button type="button" class="btn" data-act="edit-day"/.test(appFn('detailBody')) && /histList\(r\)/.test(appFn('detailBody')), 'phone: in the detail, with the history');
+  const eb = appFn('editorBody');
+  ok(/C\.editTimingText\(tz\)/.test(eb) && /Times are \$\{C\.regionDef\(raw\.region\)\.tzName\}/.test(eb), 'the editor says when changes reach Gusto, and the time zone');
+  ok(/data-act="ed-add-shift"/.test(eb) && /id="edNote"/.test(eb) && /id="edPreview"/.test(eb) && /editorHistory\(raw, tz\)/.test(eb), 'add a shift, reason, preview, history');
+  const eh = appFn('entryHtml');
+  for (const want of ['Paid rest', 'Unpaid meal', 'data-act="ed-add-brk"', 'data-act="ed-rm-brk"', 'Delete this shift', 'Keep this shift', 'type="time"'])
+    ok(eh.includes(want), 'the editor is missing ' + want);
+  ok(/<div id="editPanel" class="overlay no-print" hidden>/.test(markup) && /<form class="sheet-body" id="edForm" novalidate><\/form>/.test(markup), 'the editor container (never printed)');
+  const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1];
+  ok(/#editPanel\{padding:0;border-width:0\}/.test(phone) && /#editPanel \.sheet\{width:100%;min-height:100%/.test(phone), 'a full-screen sheet on a phone');
+  ok(/#editPanel input,#editPanel select\{font-size:16px;min-height:44px;width:100%;max-width:none\}/.test(phone), '16px fields, 44px taps');
+  ok(/\.ed-brk\{display:grid;grid-template-columns:minmax\(0,1fr\) minmax\(0,1fr\)/.test(phone), 'break rows fit 320px (no sideways scroll)');
+  ok(/env\(safe-area-inset-bottom/.test(phone.slice(phone.indexOf('#editPanel'))), 'Save clears the home indicator');
+  ok(/if \(!\$\('editPanel'\)\.hidden\) \{ requestCloseEditor\(\); return; \}/.test(app) && /editorDirty\(\) && E\.confirm !== 'close'/.test(appFn('requestCloseEditor')), 'Escape asks before throwing typed changes away');
+  ok(/\.ts th\.c-edit,\.ts td\.c-edit,\.ts col\.w-edit\{display:none\}/.test(src.slice(src.indexOf('@media print'))), 'print leaves the Edit column out');
+  ok(/table\.ts\.day-t\.ed\{min-width:1460px\}/.test(src), 'the narrower-window tables make room for the Edit column');
+  const ea = appFn('editsAdminHtml');
+  ok(/\['all', 'All'\], \['pending', 'Pending'\], \['conflict', 'Conflict'\], \['failed', 'Failed'\]/.test(ea) && /e\.work_date >= S\.from && e\.work_date <= S\.to/.test(ea), 'Admin > Edits: the dates on screen, filtered to pending / conflict / failed');
+  ok(/mayCancel\(e\) \? h`<button type="button" class="btn sm danger" data-act="adm-e-x"/.test(appFn('editAdminRow')) && /case 'adm-e-x-yes': adminCancelEdit\(d\.id\); break;/.test(app), 'Cancel for waiting ones, after a confirm');
+  ok(/editsOn\(\) \? \[\['edits', 'Edits'\]\] : \[\]/.test(appFn('renderAdminTabs')), 'the Edits tab only once the server has ts_edits');
+  ok(/\(a\.is_admin \|\| e\.created_by === a\.email\)/.test(appFn('mayCancel')), 'cancel: the creator or an admin, like ts_edit_cancel');
+  ok(!/em dash/.test('') && !src.includes('—'), 'no em dashes');
+});
+
+check('Save never sends from a stale copy: the editor reads the day again when it opens and before Save, and refuses when it changed', () => {
+  const s2 = ES('s2', '16:00', '18:00');
+  const raw = edRow([ED_S1, s2]);
+  const st0 = C.dayStamp(raw, []);
+  eq(C.dayStamp(C.normRow(JSON.parse(JSON.stringify(raw))), []), st0, 'the same day reads the same');
+  eq(C.dayStamp(edRow([ED_S1, s2], { synced_at: '2026-10-08T12:00:00Z' }), []), st0, 'a sync that changed nothing is no change');
+  eq(C.dayStamp(edRow([Object.assign({}, ED_S1, { out: '2026-10-06T15:30:40-07:00' }), s2]), []), st0, 'seconds never count');
+  ok(C.dayStamp(edRow([ES('s1', '07:00', '15:45', ED_S1.breaks), s2]), []) !== st0, 'Gusto moved the end since');
+  ok(C.dayStamp(edRow([ES('s1', '07:00', '15:30', [EB('09:00', '09:10', 'rest'), EB('11:30', '12:00', 'rest')]), s2]), []) !== st0, 'Gusto relabelled a break');
+  ok(C.dayStamp(edRow([ED_S1]), []) !== st0, 'a shift went');
+  const wait = ED({ id: 'w1', times_status: 'pending', after: AFTER('07:30', '15:30') });
+  ok(C.dayStamp(raw, [wait]) !== st0, 'someone else made a change since');
+  ok(C.dayStamp(raw, [Object.assign({}, wait, { times_status: 'applied', times_applied_at: '2026-10-07T13:00:00Z' })]) !== C.dayStamp(raw, [wait]), 'a change went to Gusto since');
+  eq(C.dayStamp(raw, [ED({ id: 'o1', day_id: 'other:day', times_status: 'pending' })]), st0, 'other days do not count');
+  eq(C.dayStamp(null, []), '');
+  const app = block('ts-app');
+  const oe = appFn('openEditor'), sv = appFn('saveDayEdits'), rd = appFn('refreshDay');
+  ok(/sb\.from\('ts_days'\)\.select\('\*'\)\.eq\('id', dayId\)/.test(rd) && /await fetchEdits\(date, date\)/.test(rd) && /if \(DEMO\) return \{ ok: true \};/.test(rd), 'one day: its row by id and its changes');
+  ok(/await refreshDay\(dayId\);/.test(oe) && /if \(tok !== edTok\) return;/.test(oe) && oe.indexOf('await refreshDay(dayId)') < oe.indexOf('C.editorEntries(') && /E\.stamp = C\.dayStamp\(raw, editsFor\(dayId\)\);/.test(oe), 'the form is built after the read, and remembers the day it opened on');
+  ok(/const fresh = await refreshDay\(k\);/.test(sv) && /C\.dayStamp\(raw, editsFor\(k\)\) !== E\.stamp/.test(sv) && sv.indexOf('await refreshDay(k)') < sv.indexOf('runEditOp('), 'Save reads the day again before it sends anything');
+  ok(sv.includes('This day changed since you opened it. Reload it and try again.') && /E\.stale = fresh\.ok;/.test(sv) && /data-act="ed-reload">Reload this day</.test(appFn('editorBody')) && /case 'ed-reload': reloadEditor\(\); break;/.test(app), 'refused, in plain words, with a way to reload the day');
+  ok(/Couldn't check this day for newer changes, so nothing was saved/.test(sv), 'a failed read sends nothing either');
+  ok(/E\.stamp = C\.dayStamp\(S\.rows\.get\(k\), editsFor\(k\)\);/.test(sv), 'what this form saved does not block its own retry');
+  ok(/if \(E\.loading\) return h`<p class="faint ed-load" role="status">/.test(appFn('editorBody')) && /if \(E\.busy \|\| E\.loading\) return;/.test(sv), 'while the day loads: no form, no Save');
+  ok(/return done;/.test(appFn('fetchEdits')), 'fetchEdits says whether it read');
+});
+check('Edit is for admins until the workers send changes to Gusto; a manager gets it only with ?beta or the launch switch', () => {
+  const app = block('ts-app');
+  ok(/const EDITS_FOR_MANAGERS = false;/.test(app), 'the launch switch is off: nothing reaches Gusto yet');
+  ok(/const BETA = QS\.has\('beta'\);/.test(app), '?beta to try it');
+  ok(/edits: editsLoaded\(\)/.test(appFn('exportCsv')), 'the CSV marks changes whenever the board shows them, Edit or not');
+});
+check('overdue: a waiting part past its time reads Late, and the demo shows one on time and one late', () => {
+  const late = demo.edits.filter(e => C.editLate(e, NOW)), onTime = demo.edits.filter(e => C.editStatus(e) === 'pending' && !C.editLate(e, NOW) && e.times_status === 'pending');
+  ok(late.some(e => e.times_status === 'pending'), 'a late start and end in the demo');
+  ok(onTime.length >= 1, 'a start and end still on time in the demo');
+});
+check("today's open shift is read-only in the editor (Still working); a missed clock-out on a past day stays editable", () => {
+  const tdy = '2026-10-21', at = t => '2026-10-21T' + t + ':00-07:00', now = Date.parse('2026-10-21T18:00:00Z');   // 11 AM Pacific
+  const open = { id: 'o1', in: at('06:30'), out: null, span_min: 0, worked_min: 0, hours_only: false, breaks: [{ start: at('09:00'), end: at('09:10'), min: 10, kind: 'rest', paid: true, src: 'gusto' }] };
+  const done = { id: 'o0', in: at('05:00'), out: at('06:00'), span_min: 60, worked_min: 60, hours_only: false, breaks: [] };
+  const raw = C.normRow(Object.assign({}, edRow([]), { id: 'filifera:e1:' + tdy, work_date: tdy, shifts: [done, open], first_in: done.in, last_out: null, open: true }));
+  const me = { email: 'm@wizardtrees.com', is_admin: false };
+  const en = C.editorEntries(raw, raw, [], me, { today: tdy, now });
+  eq(en.map(e => e.readonly || ''), ['', 'open'], 'the open shift only');
+  ok(C.stillWorking(open, tdy, tdy, now) && !C.stillWorking(done, tdy, tdy, now), 'stillWorking');
+  ok(C.stillWorking(Object.assign({}, open, { in: '2026-10-20T22:00:00-07:00' }), '2026-10-20', tdy, now), 'past midnight, started 13 h ago: still going');
+  ok(!C.stillWorking(Object.assign({}, open, { in: '2026-10-20T07:00:00-07:00' }), '2026-10-20', tdy, now), 'yesterday 7 AM, still open: a missed clock-out');
+  eq(C.editPlan(raw, en, { now }).ops, [], 'nothing to send for it');
+  en[0].outT = '06:15';
+  eq(C.editPlan(raw, en, { now }).ops.map(o => [o.shift_id, o.action]), [['o0', 'update']], "the day's other shifts still change");
+  eq(C.entriesPreview(C.editorEntries(raw, raw, [], me, { today: tdy, now }), tdy, C.TZ), { worked: 60, paid: 10, unpaid: 0, incomplete: false }, 'the preview counts it as the board does');
+  const past = C.editorEntries(edRow([ES('s1', '07:00', null, [EB('09:00', '09:10', 'rest')])]), null, [], me, { today: tdy, now });
+  ok(past[0].readonly === undefined && past[0].wasOpen, "a past day's open shift: fill in the clock-out");
+  const eh = appFn('entryHtml');
+  ok(eh.includes('Still working: this shift can be changed here after they clock out.'), 'the editor says why');
+  ok(/C\.editorEntries\(raw, boardRow\(raw\), editsFor\(dayId\), actor\(\), \{ today: rowToday\(raw\), now: Date\.now\(\) \}\)/.test(appFn('openEditor')), "on the row's own clock");
+});
+check('history keeps replaced changes (muted, naming the change that replaced them) and shows the reason on a phone too', () => {
+  const raw = edRow([ED_S1]);
+  const ctx = (id, at, email) => ({ email: email || 'm@wizardtrees.com', now: at, today: '2026-10-07', id });
+  const a = C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]), note: 'late bus' }, ctx('h1', '2026-10-07T16:00:00Z'));
+  const b = C.submitEdit(a.edits, raw, { shift_id: 's1', action: 'update', after: AFTER('07:45', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) }, ctx('h2', '2026-10-07T17:05:00Z', 'b@wizardtrees.com'));
+  const old = b.edits.find(e => e.id === 'h1');
+  eq([C.editStatus(old), C.editShownStatus(old, C.replacedEdits(b.edits))], ['cancelled', 'replaced'], 'replaced, not cancelled');
+  eq(C.replacedBy(old, b.edits).id, 'h2');
+  eq(C.replacedBy(b.edit, b.edits), null, 'the latest replaced nothing');
+  eq(C.editPartLines(old, C.TZ, '2026-10-07T17:10:00Z', C.replacedBy(old, b.edits)), ["Replaced by b@wizardtrees.com's change, Oct 7, 10:05 AM"]);
+  const byUser = C.cancelEdit(a.edits, 'h1', { email: 'm@wizardtrees.com', now: '2026-10-07T16:30:00Z' }).edit;
+  eq(C.editShownStatus(byUser, new Set()), 'cancelled', 'cancelled by its maker stays Cancelled');
+  const app = block('ts-app');
+  ok(!/superseded/.test(appFn('histItems')), 'no edit of the day is left out');
+  ok(/C\.replacedBy\(e, editsFor\(e\.day_id\)\)/.test(appFn('edLines')) && /st === 'replaced' && !e\.cancelled_at/.test(appFn('edLines')), 'one way to word it, in the editor, the phone card and Admin');
+  for (const fn of ['histList', 'editorHistory', 'editAdminRow']) ok(/edLines\(e, /.test(appFn(fn)), fn + ' uses edLines');
+  ok(/oldEdit\(st\) \? ' old' : ''/.test(appFn('histList')) && /oldEdit\(st\) \? h` class="old"` : ''/.test(appFn('editorHistory')) && /\.ed-hist li\.old\{color:var\(--muted\)\}/.test(src), 'muted');
+  ok(/e\.note \? \['Reason: ' \+ e\.note\] : \[\]/.test(appFn('histList')), 'the phone card shows the reason');
+});
+check('the CSV marks a day showing a change Gusto does not have yet, in a last column', () => {
+  const r = edRow([ED_S1]);
+  const pend = OV(r, [ED({ times_status: 'pending', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  const att = OV(edRow([ED_S1], { id: 'filifera:e2:2026-10-06', employee_uuid: 'e2', employee_name: 'Test Other' }), [ED({ day_id: 'filifera:e2:2026-10-06', times_status: 'conflict', after: AFTER('07:30', '15:30') })]);
+  const lines = C.buildCsv([pend, att, edRow([ED_S1], { id: 'filifera:e3:2026-10-06', employee_uuid: 'e3', employee_name: 'Test Plain' })], { edits: true }).trim().split('\r\n');
+  eq(lines[0].split(',').slice(-2), ['Flags', 'Change made here']);
+  eq(lines.slice(1).map(l => [l.split(',')[3], l.split(',').pop()]), [['Test Edit', 'pending'], ['Test Other', 'needs a look'], ['Test Plain', '']]);
+  eq(C.buildCsv([pend]).split('\r\n')[0], C.CSV_COLUMNS.join(','), 'without ts_edits the columns are as before');
+  eq(C.csvEditCell(Object.assign({}, r, { edit: { pending: [1], attention: [1] } })), 'pending; needs a look');
+});
+check('only the time that moved is tinted; a break typed before a day shift starts is outside it (not "ends before it starts")', () => {
+  const r = edRow([ES('s1', '07:00', null, [EB('09:00', '09:10', 'rest')])], { reg_min: null });
+  const filled = OV(r, [ED({ times_status: 'pending', after: AFTER('07:00', '15:00', [['09:00', '09:10', 'rest']]) })]);
+  eq([filled.shifts[0].edited.in, filled.shifts[0].edited.out], [false, true], 'a missed clock-out filled in: the start stays plain');
+  eq(C.shiftParts(filled).map(p => [p.edIn, p.edOut]), [[false, true]]);
+  const add = OV(edRow([ED_S1]), [ED({ id: 'a1', shift_id: null, action: 'add', before: null, after: AFTER('16:00', '18:00'), times_status: 'pending' })]);
+  eq([add.shifts[1].edited.in, add.shifts[1].edited.out], [true, true], 'an added shift: both');
+  ok(/s\.edited && s\.edited\[k\]/.test(appFn('inOutCells')) && /ed\(s, 'in'\)/.test(appFn('inOutCells')) && /ed\(s, 'out'\)/.test(appFn('inOutCells')), 'the table tints In and Out apart');
+  // a 7:00 to 15:30 shift: a 6:55 break stays on its day, so it reads as outside the shift
+  const en = C.entryOf(ED_S1, C.TZ);
+  en.breaks.push({ startT: '06:55', endT: '07:00', kind: 'rest', orig: null });
+  const a = C.entryAfter(en, '2026-10-06', C.TZ);
+  eq([a.breaks[2].start, a.breaks[2].end], [EP('06:55'), EP('07:00')]);
+  eq(codes(C.validateAfter(a, { tz: C.TZ, date: '2026-10-06' })), ['brk_outside']);
+  // past midnight: a break in the after-midnight part goes to the next day (one across midnight too); one
+  // typed before the start stays on its day, outside the shift
+  const night = Object.assign(C.newEntry('n'), { inT: '22:00', outT: '06:00', breaks: [{ startT: '23:50', endT: '00:10', kind: 'rest' }, { startT: '03:00', endT: '03:30', kind: 'meal' }] });
+  const na = C.entryAfter(night, '2026-10-06', C.TZ);
+  eq(na.breaks.map(b => [b.start, b.end]), [['2026-10-06T23:50:00-07:00', '2026-10-07T00:10:00-07:00'], ['2026-10-07T03:00:00-07:00', '2026-10-07T03:30:00-07:00']]);
+  eq(codes(C.validateAfter(na, { tz: C.TZ, date: '2026-10-06' })), []);
+  night.breaks.push({ startT: '21:50', endT: '22:00', kind: 'rest' });
+  const nb = C.entryAfter(night, '2026-10-06', C.TZ);
+  eq([nb.breaks[2].start, nb.breaks[2].end], [EP('21:50'), EP('22:00')]);
+  eq(codes(C.validateAfter(nb, { tz: C.TZ, date: '2026-10-06' })), ['brk_outside']);
+});
+check('after Save the row\'s Edit button gets the focus back; a reason alone keeps the editor open and says why', () => {
+  const ce = appFn('closeEditor');
+  ok(/const to = b && b\.isConnected \? b : rowEditTarget\(k\);/.test(ce) && /const k = E\.rowId;/.test(ce), 'focus goes back to the day\'s new Edit button');
+  ok(/x\.dataset\.k === k && x\.getClientRects\(\)\.length/.test(appFn('rowEditTarget')) && /details\[data-k\]/.test(appFn('rowEditTarget')), 'on a phone, the card when its detail is closed');
+  const sv = appFn('saveDayEdits');
+  ok(sv.includes('A reason needs a change to go with it: change a time or a break, or clear the reason.') && sv.indexOf('A reason needs') < sv.indexOf("toast('Nothing changed')"), 'a reason alone is not thrown away silently');
+  ok(/<th>By <span class="faint">\(Pacific time\)<\/span><\/th>/.test(appFn('editsAdminHtml')) && /C\.stampText\(e\.created_at, C\.TZ\)/.test(appFn('editAdminRow')), 'Admin > Edits: when each change was made, all in Pacific');
 });
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name

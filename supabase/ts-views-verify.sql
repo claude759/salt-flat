@@ -154,12 +154,14 @@ begin
   perform pg_temp.ts_v('A10 the round-1 ts tables still have exactly 5 SELECT policies', null, null,
     $q$select count(*) filter (where cmd = 'SELECT') || '/' || count(*) from pg_policies
         where schemaname = 'public' and tablename in ('ts_companies','ts_people','ts_days','ts_access','ts_grants')$q$, '5/5');
-  -- (the view-grant functions from ts-view-grants.sql are checked by ts-view-grants-verify.sql, so
-  --  this list holds with or without that file applied)
+  -- (the view-grant functions from ts-view-grants.sql are checked by ts-view-grants-verify.sql, and
+  --  the edit RPCs from ts-edits.sql by ts-edits-verify.sql, so this list holds with or without
+  --  those files applied)
   perform pg_temp.ts_v('A11 authenticated can execute exactly the round-1 ts_ functions plus the two view RPCs', null, null,
     $q$select string_agg(p.proname, ',' order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('authenticated', p.oid, 'EXECUTE')
-          and p.proname not in ('ts_admin_set_user_views', 'ts_my_view_ids')$q$,
+          and p.proname not in ('ts_admin_set_user_views', 'ts_my_view_ids',
+                                'ts_edit_submit', 'ts_edit_cancel', 'ts_edits_pending', 'ts_edit_mark')$q$,
     pg_temp.ts_v_lit('ts_admin_delete_user,ts_admin_delete_view,ts_admin_list,ts_admin_save_user,ts_admin_save_view,ts_is_admin,ts_me,ts_my_email,ts_my_grant_keys,ts_sync'));
 
   -- B. anon: no table, no function
