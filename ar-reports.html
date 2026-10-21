@@ -48,6 +48,8 @@
   .last-update .rel{font-size:15px;font-weight:600;color:var(--red);opacity:.82}
   .last-update.none{color:var(--muted)}
   .last-update.none .rel{color:var(--muted)}
+  .last-update.mi-stale,.last-update.mi-stale .rel{color:var(--orange)}
+  .last-update .pill{font-size:13px;align-self:center}
   .sb-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .sb-actions input{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;min-width:150px}
   .btn:disabled{opacity:.45;cursor:not-allowed;border-color:var(--line)}
@@ -554,7 +556,7 @@
       <div class="logo">🧙</div>
       <div>
         <h1>Wizard Trees — Sales Web App</h1>
-        <div class="sub">Combined Distru + Nabis receivables · by invoice and by dispensary <span class="muted2" id="buildtag"></span></div>
+        <div class="sub"><span id="subtxt">Combined Distru + Nabis receivables · by invoice and by dispensary</span> <span class="muted2" id="buildtag"></span></div>
       </div>
     </div>
     <!-- State picker: California = the full app (Distru + Nabis). New York = LeafLink, Tiers only (for now). -->
@@ -603,6 +605,7 @@
     <div class="summary" id="summary"></div>
 
     <div class="tabs">
+      <div class="tab hidden" data-tab="mi">Michigan</div>
       <div class="tab active" data-tab="ar">Accounts Receivable</div>
       <div class="tab hidden" data-tab="nysc">Scorecard</div>
       <div class="tab hidden" data-tab="hmops">HM OPS Tracker</div>
@@ -613,7 +616,6 @@
       <div class="tab" data-tab="reports">Reports</div>
       <div class="tab" data-tab="emails">Automated Emails</div>
       <div class="tab hidden" data-tab="credits">Credits/Discount Tracker</div>
-      <div class="tab hidden" data-tab="mi">Michigan</div>
     </div>
 
     <!-- shared concessions controls (date range + assumptions), shown only for the two Credits/Discounts tabs -->
@@ -1525,13 +1527,36 @@ async function adminRemove(email){
 // Customer/Company = "Nabis". That product is tracked downstream in the Nabis system, so
 // counting these Distru rows too would double-count. Exclude them. EXACT match only — must
 // not catch "…Cannabis…" dispensary names.
-const isNabisCust = s => String(s||'').trim().toLowerCase()==='nabis';
+// Michigan (2026-10-21): MI_ON = Michigan's data is installed in the California globals for viewing
+// (enterMI/leaveMI); MI_BUILD > 0 = the California builders are running over Michigan's files
+// (withMiFiles). Either way the Distru rows are Michigan's, and there an order to one of our own
+// entities is an internal transfer, not a sale, so it drops out the way the Nabis transfer does.
+// California's rule is unchanged: outside Michigan this is still the exact 'nabis' match.
+let MI_ON=false, MI_BUILD=0;
+// MI_DATA = Michigan's bundle decoded from the payload's 'mi' key; MI_LOCAL = the bundle built from
+// mi-*.csv files dropped in this session (wins over MI_DATA for viewing); MI_STASH = California's
+// globals while Michigan is on screen; SUBTXT_CA = the header subtitle to restore.
+let MI_DATA=null, MI_LOCAL=null, MI_STASH=null, SUBTXT_CA=null;
+// When Michigan's own data counts as "not updating" (miFreshness). The pipeline re-publishes Michigan
+// whenever it changes and at least every 2.5 hours (~/ar-automation lib/mi-publish.mjs MI_REPUBLISH_MS),
+// and only while the hourly pipeline runs (about 5 AM to 6 PM PT), so Michigan's age alone would flag
+// every evening. Instead Michigan is stale when the REPORT (California's hourly publish) has moved on
+// more than MI_STALE_LAG_MS past Michigan's stamp, i.e. the pipeline is running and Michigan is not,
+// with MI_STALE_GRACE_MS after each report update for Michigan's publish (it runs right after
+// California's) to land. MI_STALE_AGE_MS catches a pipeline that stopped altogether (the overnight
+// gap is about 11 to 13 hours). tests/mi_publish_test.mjs keeps these consistent with the pipeline.
+const MI_STALE_LAG_MS=180*60e3, MI_STALE_GRACE_MS=15*60e3, MI_STALE_AGE_MS=26*3600e3;
+function miCtx(){ return MI_ON || MI_BUILD>0; }
+const isNabisCust = s => String(s||'').trim().toLowerCase()==='nabis' || (miCtx() && isOwnEntity(s));
 // Filifera's own entity ("Wizard Trees") shows up as the Nabis Site on internal/self orders
 // (samples, transfers, re-labels) — exclude so they don't count as sales to a dispensary.
 // EXACT match on the Site/customer (after stripping the trailing [LLC]); NOT a substring —
 // real orders read "Wizard Trees to <dispensary>" in the Order Name but have a real dispensary
 // as the Site, so a substring match would wrongly drop legitimate sales.
-const isOwnEntity = s => { const c=String(s||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim().toLowerCase(); return c==='wizard trees'||c==='filifera'||c==='filifera, llc'; };
+// Michigan's own company in its Distru ("Wizard Trees - MI", also the vendor and brand on every
+// Michigan line) is ours too. Exact names only, like the rest of this list.
+const MI_OWN_ENTITIES=['wizard trees - mi','wizard trees mi','wizard trees michigan','wizard trees - michigan'];
+const isOwnEntity = s => { const c=String(s||'').replace(/\s*\[[^\]]*\]\s*$/,'').trim().toLowerCase(); return c==='wizard trees'||c==='filifera'||c==='filifera, llc'||MI_OWN_ENTITIES.includes(c); };
 
 function parseDate(s){
   if(!s) return null; s=String(s).trim(); if(!s||s==='-'||s==='N/A') return null;
@@ -1636,7 +1661,23 @@ const bucketClass = b => b==='Current'?'b-Current':b==='1–30'?'b1':b==='31–6
 function bucketCells(x){ return BUCKETS.map(bk=> bk===x.bucket ? `<td class="num money" style="color:${BCOLOR[bk]}">${fmt$(x.outstanding)}</td>` : `<td class="num neg">—</td>`).join(''); }
 
 /* ============================ State ============================ */
-const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, pistil:null, pistil_pos:null, account_list:null, catalyst_contacts:null, leaflink:null, leaflink_items:null, leaflink_meta:null, leaflink_inventory:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null };
+const FILES = { distru_invoice:null, distru_items:null, nabis_aging:null, nabis_detail:null, distru_payments:null, nabis_brand:null, nabis_inventory:null, distru_inventory:null, distru_assets:null, distru_companies:null, visits:null, pistil:null, pistil_pos:null, account_list:null, catalyst_contacts:null, leaflink:null, leaflink_items:null, leaflink_meta:null, leaflink_inventory:null, ny_invoices:null, ny_recon_items:null, ny_qbo_inv:null, ny_qbo_pay:null, ny_qbo_items:null, hm_ops:null,
+  // Michigan's Distru company (mi-*.csv from ~/ar-automation's Michigan lane). Same headers as
+  // California's Distru exports, so they are routed by FILE NAME (miRoute) and never reach a CA slot.
+  mi_distru_invoice:null, mi_distru_items:null, mi_distru_payments:null, mi_distru_inventory:null, mi_distru_assets:null, mi_distru_companies:null };
+// The pipeline's Michigan publish (lib/mi-publish.mjs) refuses to drop mi-*.csv files on a deployed
+// app that lacks this marker: an older app would sort them into California's Distru slots.
+const MI_INGEST_VERSION=1;
+const MI_SLOTS=['distru_invoice','distru_items','distru_payments','distru_inventory','distru_assets','distru_companies'];
+// mi-<anything>.csv that classifies as a Distru report → its mi_ slot. A mi- file that classifies as
+// anything else is refused (unknown) rather than allowed into a California or New York slot.
+function miRoute(name,type){
+  const base=String(name||'').split(/[\\/]/).pop();
+  if(!/^mi-/i.test(base)) return type;
+  return /^distru_/.test(type) ? 'mi_'+type : 'unknown';
+}
+function miFilesLoaded(){ return MI_SLOTS.some(s=>FILES['mi_'+s]); }
+function caFilesLoaded(){ return Object.keys(FILES).some(k=>!/^mi_/.test(k) && FILES[k]); }
 // Provenance of publishable state: which payload keys were rebuilt from ACTUAL FILES this session.
 // loadShared paints the localStorage cache first (stale-while-revalidate), so state can be
 // cache-derived — publishing that would overwrite the (fresher) live payload with stale data.
@@ -1669,7 +1710,13 @@ const LABELS = {
   ny_qbo_items:'WTNY QuickBooks invoice items',
   ny_qbo_pay:'WTNY QuickBooks payments',
   hm_ops:'HM OPS order queue (Wizard Trees rows)',
-  ny_recon_items:'NY recon line items'
+  ny_recon_items:'NY recon line items',
+  mi_distru_invoice:'Michigan Distru invoice history',
+  mi_distru_items:'Michigan Distru sales-order items',
+  mi_distru_payments:'Michigan Distru payments',
+  mi_distru_inventory:'Michigan Distru inventory valuation',
+  mi_distru_assets:'Michigan Distru inventory assets',
+  mi_distru_companies:'Michigan Distru company directory'
 };
 let INVOICES=[];        // combined invoice-level rows (with dpd/bucket for current asOf)
 let DISPENSARIES=[];    // grouped
@@ -1772,6 +1819,7 @@ function payloadToRecords(arr){
 
 function renderLastUpdate(){
   const el=$('#last-update'); if(!el) return;
+  if(MI_ON){ renderMiLastUpdate(el); return; }   // Michigan's tabs show Michigan's own time, never California's
   if(SHARED && SHARED.uploadedAt){
     el.className='last-update';
     el.innerHTML=`Last Update: ${esc(fmtDateTime(SHARED.uploadedAt))} <span class="rel">${relTime(SHARED.uploadedAt)}</span>`;
@@ -1787,10 +1835,11 @@ function renderShareBar(state){
     st.innerHTML='<span class="pill warn">sharing off</span> Team sharing isn\'t set up yet — the app works on this device only. See <b>apps-script-reports.gs</b> for the 5-minute setup.';
     pub.disabled=true; pub.title='Set up team sharing first (see apps-script-reports.gs)'; return;
   }
-  pub.disabled = !((RAW && RAW.length) || (CONC_EVENTS && CONC_EVENTS.length) || (SKU_EVENTS && SKU_EVENTS.length));
+  pub.disabled = !((RAW && RAW.length) || (CONC_EVENTS && CONC_EVENTS.length) || (SKU_EVENTS && SKU_EVENTS.length) || miFreshAny());
   pub.title = pub.disabled ? 'Upload files first, then publish' : 'Publish the current data so the whole team sees it';
   if(state==='loading'){ st.innerHTML='<span class="dot pulse"></span> Loading the team report…'; return; }
   if(state==='error'){ st.innerHTML='<span class="pill warn">offline</span> Couldn\'t reach the team report — check the connection or the script URL.'; return; }
+  if(MI_ON){ st.innerHTML=miShareStatus(); return; }   // Michigan's own update time and freshness
   if(SHARED && SHARED.uploadedAt){
     st.innerHTML=`<span class="pill live">live</span> Team report — updated <b>${relTime(SHARED.uploadedAt)}</b> <span class="muted2">(${fmtDateTime(SHARED.uploadedAt)})</span>`;
   } else if((RAW && RAW.length) || (CONC_EVENTS && CONC_EVENTS.length) || (SKU_EVENTS && SKU_EVENTS.length)){
@@ -1811,7 +1860,15 @@ function normShared(data){
 // page fresh with a cache-busting param. This is what reliably pulls the LATEST app
 // version (past the GitHub Pages cache) AND the latest published report. Current tab
 // is preserved via the URL hash.
+// While Michigan is on screen its data sits in the California globals and FILES is blanked, so
+// California's state is put back first (leaveMI) and Michigan re-entered afterwards.
 async function hardRefresh(){
+  if(!MI_ON) return hardRefreshCore();
+  leaveMI();
+  try{ return await hardRefreshCore(); }
+  finally{ if(APP_STATE==='MI' && !MI_ON) enterMI(); }
+}
+async function hardRefreshCore(){
   // Local files are AUTHORITATIVE while loaded — applyShared refuses to overwrite them (the
   // Jul 13 race guard). Correct for the publisher, but it made Refresh silently do NOTHING for
   // a browser in local-file mode: drop a CSV once and no amount of Refresh ever shows team data
@@ -1854,7 +1911,16 @@ async function hardRefresh(){
   location.replace(base+'?v='+Date.now()+(location.hash||''));
 }
 // Apply a team payload (freshly fetched OR locally cached) to the app. Returns true if it carried data.
+// A payload can land while Michigan is on screen (boot cache then fetch, the quiet retry, Refresh):
+// California's state is put back first so the payload refreshes California, never Michigan's view,
+// then Michigan is re-entered with whatever Michigan data the payload carried.
 function applyShared(d){
+  if(!MI_ON) return applySharedCore(d);
+  leaveMI();
+  try{ return applySharedCore(d); }
+  finally{ enterMI(); }
+}
+function applySharedCore(d){
     // Locally-loaded FILES are authoritative: if the user (or the automated publisher) has
     // dropped CSVs, a late-resolving background fetch must NOT clobber them — that race made
     // the Jul 13 2026 morning publishes capture empty projected-sales snapshots (files were
@@ -1866,6 +1932,10 @@ function applyShared(d){
     if(SHARED && SHARED.uploadedAt && d && d.uploadedAt && Date.parse(d.uploadedAt) < Date.parse(SHARED.uploadedAt)) return false;
     const data=normShared(d && d.data);
     let any=false;
+    // Michigan rides the same payload under its own 'mi' key. It is decoded into MI_DATA only: no
+    // California global, input box or cache key is touched here, and it never counts toward `any`.
+    // A malformed Michigan block must never stop California's load.
+    if(data.mi && typeof data.mi==='object'){ try{ MI_DATA=miFromWire(data.mi); }catch(e){ MI_DATA=null; } }
     if(data.ar && data.ar.records && data.ar.records.length){
       RAW=payloadToRecords(data.ar.records);
       CLEAN=data.ar.cleaning||{excludedOrders:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0}};
@@ -1978,12 +2048,24 @@ function scheduleReload(){
 }
 if(document.addEventListener) document.addEventListener('visibilitychange',()=>{ if(!document.hidden && loadShared._wake){ loadShared._wake=false; loadShared(); } });
 
+// Publishing always reads California's own state: never publish from inside the Michigan view.
 async function publishToTeam(){
+  if(!MI_ON) return publishToTeamCore();
+  leaveMI();
+  try{ return await publishToTeamCore(); }
+  finally{ if(APP_STATE==='MI' && !MI_ON) enterMI(); }
+}
+async function publishToTeamCore(){
   if(isPlaceholder()){ alert('Team sharing isn\'t set up yet. See apps-script-reports.gs for the one-time setup.'); return; }
   // Publish ONLY state rebuilt from FILES this session (FRESH). Cache/payload-derived state must
   // never be re-published: it can be older than the live payload and would clobber it (see FRESH).
   const hasAR=FRESH.has('ar')&&RAW&&RAW.length, hasConc=FRESH.has('conc')&&CONC_EVENTS&&CONC_EVENTS.length, hasSku=FRESH.has('sku')&&SKU_EVENTS&&SKU_EVENTS.length;
   if(!FRESH.size){ alert('Nothing locally loaded to publish — drop CSV files first (the live report already has the latest published data).'); return; }
+  // Michigan keys ('mi.*') and everything else are published independently: a Michigan-only drop
+  // (the pipeline's separate Michigan publish) writes ONLY cur.mi and carries every California and
+  // New York key, the scorecard included, through from the merge base untouched; a drop without
+  // Michigan files carries the base's cur.mi through untouched.
+  const miFresh=miFreshAny(), caFresh=[...FRESH].some(k=>!/^mi\./.test(k));
   const who=$('#sb-name').value.trim();
   const btn=$('#sb-publish'), old=btn.textContent; btn.disabled=true; btn.textContent='Publishing…';
   try{
@@ -1997,6 +2079,7 @@ async function publishToTeam(){
     // throw: the script answers with an empty object, so first publish still works.)
     try{ const d0=await jsonpRetry(); cur=normShared(d0 && d0.data); }
     catch(e){ throw new Error('mergebase'); }
+    if(caFresh){   // ── California / New York keys (unchanged; skipped entirely on a Michigan-only publish) ──
     // Slim payload for reliable transfer: drop heavy drill-down detail (line items,
     // per-format/credit breakdowns). Summary numbers, aging, discounts/credits, brand rollup all survive.
     if(hasAR)  cur.ar  ={records:recordsToPayload(RAW),cleaning:CLEAN};   // keep line items (slim) so the team sees the per-invoice breakdown + link
@@ -2044,6 +2127,12 @@ async function publishToTeam(){
     // detail (fresher than any cache-derived SC_DETAIL) so pN/pD drill lists never blank out.
     const baseDetail = cur.scorecard && cur.scorecard.detail;
     cur.scorecard = { snaps, detail: (FILES.distru_items||FILES.nabis_detail) ? buildScDetail(baseDetail) : (baseDetail || buildScDetail(baseDetail)) };
+    }
+    // ── Michigan: only when Michigan files were dropped in THIS session (FRESH 'mi.*'), built from
+    // them under withMiFiles and merged over the base's own 'mi' (its past scorecard weeks survive).
+    // A Michigan build error never costs California its publish: the base's 'mi' then rides through
+    // as is. On a Michigan-only publish there is nothing else to send, so it aborts instead.
+    if(miFresh){ try{ cur.mi=miPayload(cur.mi); }catch(e){ if(!caFresh) throw new Error('mibuild'); } }
     const body=new URLSearchParams({action:'publish',uploadedBy:who,payload:JSON.stringify(cur)});
     await fetch(REPORTS_SCRIPT_URL,{method:'POST',mode:'no-cors',body});   // throws only on real network failure
     // Confirm is best-effort: the POST above is opaque (no-cors), so a failed read-back
@@ -2057,6 +2146,8 @@ async function publishToTeam(){
   }catch(e){
     alert(e && e.message==='mergebase'
       ? 'Publish aborted: could not load the existing team report to merge into (server hiccup). Nothing was overwritten — try again in a minute.'
+      : e && e.message==='mibuild'
+      ? 'Publish aborted: the Michigan report could not be built from the dropped files. Nothing was overwritten.'
       : 'Publish failed — could not reach the server. Check your connection and try again.');
     btn.textContent=old; renderShareBar();
   }
@@ -2067,12 +2158,15 @@ function handleFiles(fileList){
   const arr=[...fileList];
   let pending=arr.length;
   if(!pending) return;
+  // Files always land in California's real FILES (Michigan blanks it while on screen): step out of
+  // Michigan for the drop and come back once everything is built.
+  const reMI=MI_ON; if(reMI) leaveMI();
   arr.forEach(f=>{
     const reader=new FileReader();
     reader.onload=e=>{
       try{
         const rows=parseCSV(e.target.result);
-        const {type,hr}=classify(rows);
+        const cl=classify(rows), hr=cl.hr, type=miRoute(f.name, cl.type);   // mi-*.csv → mi_* slots, never a CA slot
         if(type==='unknown'){
           alert(`Couldn't recognize "${f.name}" as one of the expected reports. Skipped.`);
         }else{
@@ -2080,14 +2174,20 @@ function handleFiles(fileList){
           FILES[type]={name:f.name,count:objs.length,data:objs};
         }
       }catch(err){ alert(`Error parsing ${f.name}: ${err.message}`); }
-      if(--pending===0){ renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); emInvalidate(); }
+      if(--pending===0){ renderChips();
+        // A Michigan-only drop (the pipeline's Michigan publish) leaves California's builders alone:
+        // with no California file loaded they would only blank the payload-loaded California view.
+        if(caFilesLoaded() || !miFilesLoaded()){ build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); }
+        buildMi(); emInvalidate(); renderShareBar();
+        if(reMI && APP_STATE==='MI') enterMI(); }
     };
     reader.readAsText(f);
   });
 }
 
 function renderChips(){
-  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_assets','distru_companies','visits','pistil','pistil_pos','leaflink','leaflink_items','ny_invoices','ny_recon_items','ny_qbo_inv','ny_qbo_pay','ny_qbo_items','hm_ops'];
+  const order=['distru_invoice','distru_items','nabis_aging','nabis_detail','distru_payments','nabis_brand','nabis_inventory','distru_inventory','distru_assets','distru_companies','visits','pistil','pistil_pos','leaflink','leaflink_items','ny_invoices','ny_recon_items','ny_qbo_inv','ny_qbo_pay','ny_qbo_items','hm_ops']
+    .concat(miFilesLoaded()?MI_SLOTS.map(s=>'mi_'+s):[]);   // Michigan chips only when a Michigan file is loaded
   $('#chips').innerHTML = order.map(t=>{
     const f=FILES[t];
     if(f) return `<div class="chip ok" title="${esc(f.name)}">
@@ -2095,7 +2195,11 @@ function renderChips(){
         <span class="x" data-clear="${t}">✕</span></div>`;
     return `<div class="chip miss"><span class="dot"></span><span>${LABELS[t]} <span class="meta">· not loaded</span></span></div>`;
   }).join('');
-  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ clearFileState(x.dataset.clear); renderChips(); build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); emInvalidate(); });
+  $('#chips').querySelectorAll('[data-clear]').forEach(x=>x.onclick=()=>{ const reMI=MI_ON; if(reMI) leaveMI();
+    const t=x.dataset.clear; clearFileState(t); renderChips();
+    if(!/^mi_/.test(t)){ build(); buildConcessions(); buildSku(); buildVisits(); buildPistil(); buildAccts(); buildNy(); buildCustDir(); buildSalesReps(); }   // a Michigan chip changes only Michigan
+    buildMi(); emInvalidate(); renderShareBar();
+    if(reMI && APP_STATE==='MI') enterMI(); });
 }
 // Clearing a file chip must also retract its derived state + FRESH mark — otherwise the next
 // publish still sends the removed file's data (the builds skip re-assignment when the file is
@@ -2126,6 +2230,11 @@ function clearFileState(t){
     ny_qbo_pay:()=>{ NY_QBO_PAY=[]; FRESH.delete('nyQboPay'); },
     ny_qbo_items:()=>{ NY_QBO_ITEMS=[]; FRESH.delete('nyQboItems'); },
     hm_ops:()=>{ HM_OPS=[]; FRESH.delete('hmops'); },
+    // Michigan: every mi_* chip retracts all of Michigan's marks (buildMi, run right after, re-marks
+    // whatever the remaining Michigan files still back) and drops the local Michigan bundle when the
+    // last Michigan file goes, so the Michigan view falls back to the published Michigan data.
+    mi_distru_invoice:()=>miRetract(), mi_distru_items:()=>miRetract(), mi_distru_payments:()=>miRetract(),
+    mi_distru_inventory:()=>miRetract(), mi_distru_assets:()=>miRetract(), mi_distru_companies:()=>miRetract(),
   };
   (U[t]||(()=>{}))();
 }
@@ -2286,17 +2395,12 @@ function build(){
 // Apply the current "as of" date to RAW, compute aging, and render. Source-agnostic.
 function rebuild(){
   emInvalidate();   // INVOICES/asOf feed the Outstanding + Next-remind columns
-  if(!RAW || !RAW.length){ $('#reports').classList.add('hidden'); renderNotes(); renderShareBar(); return; }
+  // Michigan can have sales before it has an open invoice: its tabs stay up with an empty AR.
+  if(MI_ON && !RAW) RAW=[];
+  if(!MI_ON && (!RAW || !RAW.length)){ $('#reports').classList.add('hidden'); renderNotes(); renderShareBar(); return; }
   asOf = parseDate($('#asof').value) || new Date();
   asOf.setHours(0,0,0,0);
-  INVOICES = RAW.map(x=>{
-    const dpd = x.dueDate ? Math.floor((asOf - x.dueDate)/DAY) : 0;
-    const bucket = bucketOf(dpd);
-    const status = x.source==='Nabis'
-      ? (x.outstanding>0.005 ? (dpd>0?'Overdue':'Open') : 'Paid')
-      : x.rawStatus;
-    return Object.assign({}, x, {dpd, bucket, status});
-  });
+  INVOICES = ageRecords(RAW, asOf);
   groupDispensaries();
   groupBrands();
   renderNotes();
@@ -2308,6 +2412,19 @@ function rebuild(){
   $('#reports').classList.remove('hidden');
 }
 
+// Days past due, aging bucket and status for every record as of `at` (pure: no render, no globals
+// written). rebuild() uses it for the screen; the Michigan publish uses it to age Michigan's
+// invoices for its scorecard AR without touching California's INVOICES.
+function ageRecords(raw, at){
+  return (raw||[]).map(x=>{
+    const dpd = x.dueDate ? Math.floor((at - x.dueDate)/DAY) : 0;
+    const bucket = bucketOf(dpd);
+    const status = x.source==='Nabis'
+      ? (x.outstanding>0.005 ? (dpd>0?'Overdue':'Open') : 'Paid')
+      : x.rawStatus;
+    return Object.assign({}, x, {dpd, bucket, status});
+  });
+}
 function groupDispensaries(){
   const m={};
   INVOICES.filter(x=>x.outstanding>0.005).forEach(x=>{
@@ -2345,6 +2462,10 @@ function groupBrands(){
 /* ============================ Notes / Summary ============================ */
 function renderNotes(){
   const n=$('#notes'); const parts=[];
+  if(MI_ON){ const b=miBundle();
+    n.innerHTML=`<span class="pill live">Michigan</span> Michigan's own Distru company${b&&b.asOf?` · data as of <b>${esc(fmtDateTime(b.asOf))}</b>`:' · nothing published yet'}${b&&b.local?' (files loaded in this browser)':''}.`
+      +(CLEAN&&CLEAN.distruNabis?` Excluded <b>${CLEAN.distruNabis}</b> invoice(s) billed to our own Michigan entity (internal transfers, not sales).`:'');
+    return; }
   if(!RAW || !RAW.length){
     n.innerHTML='<span class="pill warn">waiting</span> Drop the 4 CSV files above to generate reports'+(isPlaceholder()?'.':', or wait for a teammate to publish one.');
     return;
@@ -2377,17 +2498,20 @@ function renderSummary(){
     const w=total?(buckets[b]/total*100):0;
     return w>0?`<i style="width:${w}%;background:${BCOLOR[b]}" title="${b}: ${fmt$(buckets[b])}"></i>`:'';
   }).join('');
+  // Michigan is Distru only: no Nabis half in the split.
+  const nabisSplit=MI_ON?'':`<span><span class="sw nabis"></span>Nabis ${fmt$(bySrc('Nabis'))}</span>`;
+  const nabisCount=MI_ON?'':`<span>Nabis ${open.filter(x=>x.source==='Nabis').length}</span>`;
   $('#summary').innerHTML=`
     <div class="metric">
       <div class="label">Total Outstanding</div>
       <div class="val">${fmt$(total)}</div>
       <div class="split">
         <span><span class="sw distru"></span>Distru ${fmt$(bySrc('Distru'))}</span>
-        <span><span class="sw nabis"></span>Nabis ${fmt$(bySrc('Nabis'))}</span>
+        ${nabisSplit}
       </div>
     </div>
     <div class="metric"><div class="label">Open Invoices</div><div class="val">${open.length.toLocaleString()}</div>
-      <div class="split"><span>Distru ${open.filter(x=>x.source==='Distru').length}</span><span>Nabis ${open.filter(x=>x.source==='Nabis').length}</span></div></div>
+      <div class="split"><span>Distru ${open.filter(x=>x.source==='Distru').length}</span>${nabisCount}</div></div>
     <div class="metric"><div class="label">Dispensaries Owing</div><div class="val">${dispCount}</div></div>
     <div class="metric"><div class="label">Overdue (past due)</div><div class="val small" style="color:${overdue?'var(--orange)':'var(--green)'}">${fmt$(overdue)}</div>
       <div class="aging-bar">${bar}</div>
@@ -3075,7 +3199,7 @@ function aggregateSku(){
   const A=concAssum();                                   // editable list prices (Credits/Discounts tab)
   const Lkey={'3.5G Jar':'jar35','.7G 5PK':'fivepk','1.5G PR':'pr15','1G PR':'pr1','Vape / Live Resin':'vape'};
   // per source → per format label → {units, actualized, skus}; plus an "Other" catch-all
-  const SRCS=['Nabis','Distru','QuickBooks'];   // QuickBooks = baked-in historical (pre-2026-01-13)
+  const SRCS=MI_ON?['Distru']:['Nabis','Distru','QuickBooks'];   // QuickBooks = baked-in historical (pre-2026-01-13); Michigan = Distru only
   const acc={}, other={}; SRCS.forEach(s=>{ acc[s]={}; other[s]={units:0,actualized:0,skus:{}}; });
   SKU_EVENTS.forEach(e=>{
     if(!acc[e.src]) return;
@@ -3565,6 +3689,7 @@ function onHandComplete(){
   // rows — presence-only would then publish a Distru-ONLY on-hand, dropping all Nabis stock and
   // clobbering the good figure. Reuse onHandDetail's own filter so this can't drift from display.
   if(!FILES.distru_assets || distruAssetsRows().length===0) return false;
+  if(miCtx()) return true;   // Michigan has no Nabis: its usable Distru assets report IS the complete on-hand
   const d=onHandDetail()||[];
   return d.some(x=>x.source==='Nabis');
 }
@@ -3727,23 +3852,25 @@ function scorecardRows(){
   const SC_FLOOR='2026-01-19';        // ISO string — row[0] is 'YYYY-MM-DD', so a >= compare is correct
   const floorMon=new Date(2026,0,19); // local-midnight Monday (NOT new Date('…'), which parses as UTC)
   // No data yet → fall back to historical PDF seed so the page still shows something
-  if(!(CONC_EVENTS||[]).length && !(RAW||[]).length) return SCORECARD_HISTORY.filter(r=>r[0]>=SC_FLOOR);
+  // (California's workbook: never for Michigan, which has no history before its own first week)
+  if(!(CONC_EVENTS||[]).length && !(RAW||[]).length) return MI_ON ? [] : SCORECARD_HISTORY.filter(r=>r[0]>=SC_FLOOR);
   // Earliest Monday: derived from earliest CONC_EVENT date (or earliest invoice if no events)
   let minDate=null;
   (CONC_EVENTS||[]).forEach(e=>{ if(!e.d) return; const d=new Date(e.d); if(!minDate||d<minDate) minDate=d; });
   if(!minDate && FILES.distru_invoice) FILES.distru_invoice.data.forEach(r=>{
     const d=parseDate(r['Invoice Date']); if(d && (!minDate||d<minDate)) minDate=d;
   });
+  if(!minDate && MI_ON) (RAW||[]).forEach(x=>{ const d=x.invoiceDate; if(d && (!minDate||d<minDate)) minDate=new Date(d); });   // Michigan view: no FILES, the invoices are in RAW
   if(!minDate) minDate=new Date();
   const startMon=new Date(minDate); startMon.setHours(0,0,0,0);
   startMon.setDate(startMon.getDate() - ((startMon.getDay()+6)%7));
-  if(startMon<floorMon) startMon.setTime(floorMon.getTime());   // never start a row before the floor Monday
+  if(!MI_ON && startMon<floorMon) startMon.setTime(floorMon.getTime());   // never start a row before the floor Monday (Michigan starts at its own first week)
   const now=new Date(); now.setHours(0,0,0,0);
   const currentMon=scCurrentMonday();
   const isoD=dt=>`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
   // Indexed PDF seed for backfilling values we can't reconstruct from data (past
   // Projected Sales is the main one — it was a Monday-morning point-in-time snapshot).
-  const seedByDate={}; SCORECARD_HISTORY.forEach(r=>{ seedByDate[r[0]]=r; });
+  const seedByDate={}; if(!MI_ON) SCORECARD_HISTORY.forEach(r=>{ seedByDate[r[0]]=r; });   // California's workbook never backfills Michigan
   const rows=[];
   for(const mon=new Date(startMon); mon<=currentMon; mon.setDate(mon.getDate()+7)){
     const monClone=new Date(mon);
@@ -3798,7 +3925,7 @@ function scorecardRows(){
     row[14]=arPick(row[14],'arTotal',14);  // TOTAL A/R
     rows.push(row);
   }
-  return rows.filter(r=>r[0]>=SC_FLOOR).reverse();   // floor out anything before 2026-01-19, newest first
+  return (MI_ON ? rows : rows.filter(r=>r[0]>=SC_FLOOR)).reverse();   // floor out anything before 2026-01-19 (California), newest first
 }
 
 function renderScorecard(){
@@ -3830,9 +3957,11 @@ function renderScorecard(){
       return hasEv;
     }
     return false; };
+  // Michigan has no Nabis: its Nabis columns go, and LW Distru (= LW Total there) with them.
+  const SC_HIDE=scHiddenCols();
   const trs=rows.map((r,idx)=>{
     const isLive=idx===liveIdx;
-    const C=(i,cls,content)=>{ const dr=canDrill(i,r,isLive);
+    const C=(i,cls,content)=>{ if(SC_HIDE.has(i)) return ''; const dr=canDrill(i,r,isLive);
       return `<td class="${cls}${dr?' drill':''}"${dr?` data-d="${esc(r[0])}" data-c="${COLKEY[i]}" title="Click to see what makes up this number"`:''}>${content}</td>`; };
     return `<tr${isLive?' class="totals"':''}>
     <td>${esc(fmtD(r[0]))}${isLive?' <span class="pill live" style="font-size:9.5px;margin-left:4px">live</span>':''}</td>
@@ -3852,26 +3981,14 @@ function renderScorecard(){
     ${C(14,'num money','<b>'+m(r[14])+'</b>')}
   </tr>`;
   }).join('');
+  const SC_HEADS=['Date', MI_ON?'Projected Sales':'Projected Sales (Nabis)', MI_ON?'Projected Sales':'Projected Sales (Distru)','LW Nabis Delivered','LW Distru Sales',MI_ON?'LW Sales':'LW Total','LW Customer count','MTD Sales','Prior MTD Sales','Last 4 Week Avg','Total On Hand Inventory','Current (Not Due)','Past Due (1–60)','Past Due (60–90)','TOTAL A/R'];
   wrap.innerHTML=`<table id="sc-table">
     <thead><tr>
-      <th>Date</th>
-      <th class="num">Projected Sales (Nabis)</th>
-      <th class="num">Projected Sales (Distru)</th>
-      <th class="num">LW Nabis Delivered</th>
-      <th class="num">LW Distru Sales</th>
-      <th class="num">LW Total</th>
-      <th class="num">LW Customer count</th>
-      <th class="num">MTD Sales</th>
-      <th class="num">Prior MTD Sales</th>
-      <th class="num">Last 4 Week Avg</th>
-      <th class="num">Total On Hand Inventory</th>
-      <th class="num">Current (Not Due)</th>
-      <th class="num">Past Due (1–60)</th>
-      <th class="num">Past Due (60–90)</th>
-      <th class="num">TOTAL A/R</th>
+      ${SC_HEADS.map((h,i)=>SC_HIDE.has(i)?'':`<th${i?' class="num"':''}>${esc(h)}</th>`).join('\n      ')}
     </tr></thead>
     <tbody>${trs}</tbody>
   </table>`;
+  if(MI_ON){ note.innerHTML=`<b>Michigan</b> (its own Distru company, Distru only). <b>Click any highlighted number</b> for the invoices, orders or SKUs behind it. Rows start at Michigan's first week of sales; there is no workbook history before it. Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>Projected Sales</b> on the live row = all orders scheduled for delivery this week (delivered + pending); past rows show that week's actual net sales. <b>Total On Hand Inventory</b> = Distru Inventory Assets, Active units × unit price, excluding Testing/Quarantined (lines with no unit price in Distru count as $0). The AR columns for the live row match the Accounts Receivable tab; each week's AR is locked in as the week goes by.`; return; }
   note.innerHTML=`<b>Click any highlighted number</b> to open a breakdown of the invoices, orders, or SKUs that make it up. Every row is computed from the uploaded files (when no files are loaded, falls back to your workbook PDF). Each row is the Monday at the start of a week. <b>LW</b> = the prior Mon–Sun. <b>MTD Sales</b> = month-to-date as of the previous Sunday. <b>Prior MTD</b> = total for the prior calendar month. <b>Last 4 Week Avg</b> = average of LW Total for the current week + 3 prior weeks. The <b>AR breakdown</b> (Current / Past Due / TOTAL A/R) for the current week is computed live and matches the AR by Invoice / AR by Dispensary pages exactly; <b>TOTAL A/R includes invoices over 90 days</b>, so it's larger than the three Past Due columns by that amount. Past weeks show your workbook's recorded AR — historical AR can't be reconstructed reliably (off-platform Distru payment dates and Nabis per-order paid dates aren't in any export). Each new week's exact AR is captured automatically, so going forward the history fills in from real data. <b>Projected Sales</b> on the current (live) row = all orders scheduled for delivery this week (Mon–Sun), delivered + pending; click it to see each order, then click an order for its line items. For past weeks the column shows that week's <b>actual net sales</b> (billed − discounts/credits), which reconciles to the Sales by Type page — click it to see the orders that make it up. <b>Total On Hand Inventory</b> = sellable stock at unit price, from the Nabis inventory + Distru Inventory Assets reports — Nabis counts available units (excludes samples & archived); Distru counts Active units and excludes the Testing/Quarantined location; click it to see Nabis vs Distru, each expandable to its SKUs.`;
 }
 
@@ -3879,6 +3996,7 @@ $('#sc-export').onclick=()=>{
   const hd=['Date','Projected Sales (Nabis)','Projected Sales (Distru)','LW Nabis Delivered','LW Distru Sales','LW Total','LW Customer count','MTD Sales','Prior MTD Sales','Last 4 Week Avg','Total On Hand Inventory','Current (Not Due)','Past Due (1-60)','Past Due (60-90)','TOTAL A/R'];
   const rows=[hd];
   scorecardRows().forEach(r=>rows.push(r.map((c,i)=>c==null?'':(i===0?c:(i===6?Math.round(c):(+c).toFixed(2))))));
+  if(MI_ON){ const H=scHiddenCols(); downloadCSV('sales-scorecard-mi.csv',rows.map(r=>r.filter((_,i)=>!H.has(i)))); return; }   // Michigan: Distru columns only
   downloadCSV('sales-scorecard.csv',rows);
 };
 
@@ -5455,27 +5573,42 @@ function nyscBoardDrill(dateStr, col){
 // ── CA / NY state toggle ──
 function setAppState(st){ st=(st==='NY'||st==='MI')?st:'CA'; if(!stateAllowed(st)) st=AUTH_STATES[0]||st;   // never enter a state the signed-in user can't see
   const was=APP_STATE; APP_STATE=st;
+  // Michigan reuses California's Distru screens by swapping its data into California's globals
+  // (enterMI/leaveMI): California's own state goes back the moment we leave Michigan, and
+  // Michigan's goes in the moment we enter, before anything below renders.
+  if(was==='MI' && st!=='MI') leaveMI();
+  if(st==='MI' && !MI_ON) enterMI();
   document.querySelectorAll('#state-toggle button').forEach(b=>b.classList.toggle('on', b.dataset.state===APP_STATE));
-  $('#summary').classList.toggle('hidden', APP_STATE!=='CA');   // the summary cards are CA AR
-  { const a=document.querySelector('.asof'); if(a&&a.classList) a.classList.toggle('hidden', APP_STATE!=='CA'); }   // the As-of picker only re-ages CA invoices; a visible control must not be inert
+  $('#summary').classList.toggle('hidden', APP_STATE==='NY');   // the summary cards are Distru(+Nabis) AR: California, and Michigan (Distru only)
+  { const a=document.querySelector('.asof'); if(a&&a.classList) a.classList.toggle('hidden', APP_STATE==='NY'); }   // the As-of picker re-ages California's or Michigan's invoices; a visible control must not be inert
+  { const sub=$('#subtxt'); if(sub){ if(SUBTXT_CA==null) SUBTXT_CA=sub.textContent||'';
+      sub.textContent = APP_STATE==='MI' ? "Michigan · Distru receivables and sales · by invoice and by dispensary" : SUBTXT_CA; } }
+  // Michigan is Distru only: the per-source pickers would only offer empty Nabis / QuickBooks views.
+  ['inv-source','disp-source','cd-source'].forEach(id=>{ const el=$('#'+id); if(el&&el.classList) el.classList.toggle('hidden', APP_STATE==='MI'); });
   // Credits Track is NY-only; the rest are shared. In NY show only the NY set; in CA hide the
   // NY-only tabs. (Access is by STATE now — applyStateAccess gates which states you can reach.)
   const NY_TABS=['ar','nysc','tiers','reports','credits','hmops'], NY_ONLY=['nysc','credits','hmops'];   // 'emails' is CA-only: absent from NY_TABS (hidden in NY), absent from NY_ONLY (visible in CA)   // Sales by Type is a Reports mode in NY (2026-07-21), a standalone tab in CA
+  // Michigan: its landing tab first, then California's Distru screens over Michigan's data. No
+  // Automated Emails (California's reminder machinery), no NY tabs.
+  const MI_TABS=['mi','ar','cd','sku','scorecard','tiers','reports'];
   document.querySelectorAll('.tab').forEach(t=>{ const tb=t.dataset.tab;
-    t.classList.toggle('hidden', APP_STATE==='MI' ? tb!=='mi' : APP_STATE==='NY' ? !NY_TABS.includes(tb) : (NY_ONLY.includes(tb)||tb==='mi')); });   // Michigan: its own tab only, until its Distru data is wired in
+    t.classList.toggle('hidden', APP_STATE==='MI' ? !MI_TABS.includes(tb) : APP_STATE==='NY' ? !NY_TABS.includes(tb) : (NY_ONLY.includes(tb)||tb==='mi')); });
   // Reports tab: NY gets Customers / New Customers / Sales / By Dispensary / Sales by Type
   const NY_REPORTS=['customers','newcust','sales','bydisp','nysku','ba','remit','nymonth'], NY_ONLY_REPORTS=['nysku','remit','nymonth'];
+  const MI_REPS=APP_STATE==='MI'?miReports():[];   // Michigan: no PAD/EDU visits, no BA Report (California field data)
   document.querySelectorAll('#rep-toggle button').forEach(b=>{ const rb=b.dataset.rep;
-    b.classList.toggle('hidden', APP_STATE==='NY' ? !NY_REPORTS.includes(rb) : NY_ONLY_REPORTS.includes(rb)); });
+    b.classList.toggle('hidden', APP_STATE==='MI' ? !MI_REPS.includes(rb) : APP_STATE==='NY' ? !NY_REPORTS.includes(rb) : NY_ONLY_REPORTS.includes(rb)); });
   if(APP_STATE==='NY'&&!NY_REPORTS.includes(repMode)) setRepMode('customers');
+  if(APP_STATE==='MI'&&!MI_REPS.includes(repMode)) setRepMode('newcust');
   if(APP_STATE!=='NY'&&NY_ONLY_REPORTS.includes(repMode)) setRepMode('newcust');   // never leave CA parked on a NY-only mode
   if(APP_STATE!==was){
     BA_PIS_RES={}; BA_POS_RES={}; BA_PIS_UN=[]; try{ BA_EXP.clear(); }catch(e){}   // these rollups are per-STATE
     baSort={key:'tier',dir:1};   // the states' column KEYS differ (visitsAll/baVisits, source, up) — a carried-over key sorts by undefined
     // sku date range: NY defaults to ALL TIME (its orders predate CA's "last week" default);
-    // returning to CA restores the last-week preset.
+    // returning to CA restores the last-week preset. Michigan sets its own range in enterMI, and
+    // coming back from Michigan, leaveMI has already put California's own range and data back.
     if(APP_STATE==='NY'){ if($('#sku-preset')){ $('#sku-preset').value='30d'; applySkuPreset('30d'); } }
-    else { if($('#sku-preset')){ $('#sku-preset').value='lastweek'; applySkuPreset('lastweek'); } }
+    else if(APP_STATE==='CA' && was!=='MI'){ if($('#sku-preset')){ $('#sku-preset').value='lastweek'; applySkuPreset('lastweek'); } }
   }
   activateTab(APP_STATE==='NY'?'tiers':APP_STATE==='MI'?'mi':'ar');
   saveView();
@@ -6687,7 +6820,7 @@ function renderEmReminders(wrap,note){
 }
 let EM_RENDER_PENDING=false, EM_RENDER_TIMER=null;
 function renderEmails(){
-  if(APP_STATE==='NY') return;                       // CA-only page
+  if(APP_STATE==='NY' || APP_STATE==='MI' || MI_ON) return;   // CA-only page (California's reminder machinery: never New York or Michigan)
   const wrap=$('#em-wrap'), note=$('#em-note'); if(!wrap) return;
   // A re-render REPLACES the table's DOM — including the input someone is typing an email into.
   // Any render request that arrives mid-typing (a background payload refresh, another field's
@@ -6855,7 +6988,7 @@ function tierData(monthsOv){
     // but real gross/concessions). Dropping the latter made Tiers' totals disagree with the
     // Credits/Discounts page by the sample-only accounts — now they reconcile, as the footnote says.
     .filter(r=>Math.abs(r.rev)>0.005 || Math.abs(r.totalConc)>0.005 || (r.grossList||0)>0.005);
-  baAttach(rows,'CA',start,end);   // live BA field metrics → baVisits / baSpend on each row
+  if(!MI_ON) baAttach(rows,'CA',start,end);   // live BA field metrics → baVisits / baSpend on each row (California's BA program; Michigan has none)
   // Merged Visits = schedule visit days ∪ BA field-app visit days, deduped by DAY — one column,
   // no double-count when both systems recorded the same store visit (per Gianni 2026-08-12).
   rows.forEach(r=>{ const sd=new Set((r._visEvs||[]).map(v=>new Date(v.d).toISOString().slice(0,10)));
@@ -6886,7 +7019,8 @@ function renderTiers(){
   let view=tierFilter(rows);
   const k=tierSort.key,dir=tierSort.dir;
   view.sort((a,b)=>{ let av=a[k],bv=b[k]; if(typeof av==='string'){av=av.toLowerCase();bv=(bv||'').toLowerCase();} return av<bv?-dir:av>bv?dir:(b.rev-a.rev); });
-  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['last','Last order',1],['visitsAll','Visits',1],['baSpend','BA Spend',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]];
+  const cols=[['tier','Tier',0],['name','Account',0],['source','Source',0],['rev','Revenue ('+months+'mo)',1],['totalConc','Disc + Credits',1],['pctDC','% of Sales',1],['last','Last order',1],['visitsAll','Visits',1],['baSpend','BA Spend',1],['arOut','AR Outstanding',1],['arOver','Overdue',1]]
+    .filter(c=>!(MI_ON && (c[0]==='visitsAll'||c[0]==='baSpend')));   // Michigan: no field schedule, no BA program
   const thead=cols.map(([key,lbl,n])=>`<th class="${n?'num':''}" data-k="${key}">${lbl}</th>`).join('');
   const body=view.map(r=>`<tr class="parent" data-name="${esc(r.name)}">
     <td><span class="tier-badge t${r.tier}">Tier ${r.tier}</span></td>
@@ -6896,8 +7030,8 @@ function renderTiers(){
     <td class="num money">${(r.totalConc||0)>0.005?`<span style="color:var(--orange)">${fmt$(r.totalConc)}</span>`:'<span class="neg">—</span>'}</td>
     <td class="num">${r.pctDC==null?'<span class="neg">—</span>':`<span style="color:${r.pctDC>=0.25?'var(--red)':r.pctDC>=0.15?'var(--yellow)':'var(--muted)'}">${(r.pctDC*100).toFixed(1)}%</span>`}</td>
     <td class="num">${fmtD(r.last)}</td>
-    <td class="num${r.visitsAll?' visit-link':''}"${r.visitsAll?' title="Click to see this account’s visit days (schedule + BA field app)"':''}>${r.visitsAll?`<span style="color:var(--green)">${r.visitsAll}</span>`:'<span class="neg">—</span>'}</td>
-    <td class="num money${(r.baSpend||0)>0.005?' baspend-link':''}"${r._baG?` title="${esc(baTitle(r._baG))} — click for the per-entry detail"`:''}>${baCellS(r)}</td>
+    ${MI_ON?'':`<td class="num${r.visitsAll?' visit-link':''}"${r.visitsAll?' title="Click to see this account’s visit days (schedule + BA field app)"':''}>${r.visitsAll?`<span style="color:var(--green)">${r.visitsAll}</span>`:'<span class="neg">—</span>'}</td>
+    <td class="num money${(r.baSpend||0)>0.005?' baspend-link':''}"${r._baG?` title="${esc(baTitle(r._baG))} — click for the per-entry detail"`:''}>${baCellS(r)}</td>`}
     <td class="num money">${r.arOut?fmt$(r.arOut):'<span class="neg">—</span>'}</td>
     <td class="num money${r.arOver?' over-link':''}"${r.arOver?' title="Click to see the overdue invoices"':''}>${r.arOver?('<span style="color:var(--red)">'+fmt$(r.arOver)+'</span>'):'<span class="neg">—</span>'}</td>
   </tr>`).join('');
@@ -6906,13 +7040,14 @@ function renderTiers(){
     <tfoot><tr class="totals"><td colspan="3">${view.length} account${view.length!==1?'s':''}</td>
     <td class="num money">${fmt$(tot.rev)}</td>
     <td class="num money">${tot.conc>0.005?fmt$(tot.conc):'—'}</td>
-    <td class="num">${tot.gross>0.005?((tot.conc/tot.gross*100).toFixed(1)+'%'):'—'}</td><td></td><td class="num">${tot.visits||'—'}</td>
-    <td class="num money">${tot.baS>0.005?fmt$(tot.baS):'—'}</td>
+    <td class="num">${tot.gross>0.005?((tot.conc/tot.gross*100).toFixed(1)+'%'):'—'}</td><td></td>${MI_ON?'':`<td class="num">${tot.visits||'—'}</td>
+    <td class="num money">${tot.baS>0.005?fmt$(tot.baS):'—'}</td>`}
     <td class="num money">${fmt$(tot.out)}</td><td class="num money">${tot.over?fmt$(tot.over):'—'}</td></tr></tfoot></table>`;
   wrap.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{ const key=th.dataset.k;
     if(tierSort.key===key) tierSort.dir*=-1; else tierSort={key,dir:(key==='name'||key==='brand'||key==='source')?1:-1}; renderTiers(); });
   thSortMark(wrap,tierSort.key,tierSort.dir);
   const isoD=dt=>`${dt.getMonth()+1}/${dt.getDate()}/${String(dt.getFullYear()).slice(2)}`;
+  if(MI_ON){ note.innerHTML=`<b>Michigan</b> (Distru only). Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above (shared with California). <b>AR Outstanding / Overdue</b> are matched to the account by name. <b>Disc + Credits</b> includes free samples at list price, so a sample-only account shows its give-away here with $0 revenue. Michigan has no field schedule or BA program, so there are no Visits or BA Spend columns.`; return; }
   note.innerHTML=`Tiers by <b>net revenue</b> (billed − discounts/credits) per account over the <b>last ${months} month${months>1?'s':''}</b> (${isoD(start)} – ${isoD(end)}). <b>Tier 1</b> ≥ ${fmt$(t1)} · <b>Tier 2</b> ${fmt$(t2)}–${fmt$(t1)} · <b>Tier 3</b> < ${fmt$(t2)} — thresholds & window are editable above. <b>AR Outstanding / Overdue</b> are best-effort matched to the account by name (a payment-behavior signal). Click a row to see the account's orders, its <b>Overdue</b> amount for the past-due invoices, its <b>Visits</b> count for the visit-day detail, or its <b>BA Spend</b> for the per-entry breakdown (labor per store-day, mileage per trip, expenses per receipt). <b>Visits</b> merges the field-schedule (PAD/EDU) and the BA field app's recorded visits into unique visit DAYS — a visit recorded in both counts once. <b>Disc + Credits</b> = the account's total concessions over the window (per-unit discounts + free samples at list + budtender pouches + invoice discounts + credit memos), from live Nabis/Distru data; <b>% of Sales</b> = that ÷ gross-at-list — the same figure as the Credits/Discounts page's "% of Gross", so the two pages tie. An account selling through both Nabis and Distru under different names will appear as two rows.`
     + baNoteHtml('CA', new Set(rows.map(r=>baRowKey(r.name))));
 }
@@ -7001,6 +7136,7 @@ $('#tier-export').onclick=()=>{
   const {rows,months}=tierData();
   const out=[['Tier','Account','Source',`Revenue (${months}mo)`,'Disc + Credits','% of Sales','Last order','Visits (sched ∪ BA)','BA Spend','AR Outstanding','Overdue']];
   tierFilter(rows).sort((a,b)=>a.tier-b.tier||b.rev-a.rev).forEach(r=>out.push([r.tier,r.name,r.source,r.rev.toFixed(2),(r.totalConc||0).toFixed(2),r.pctDC==null?'':(r.pctDC*100).toFixed(1)+'%',r.last?new Date(r.last).toISOString().slice(0,10):'',r.visitsAll||0,r.baSpend==null?'':r.baSpend.toFixed(2),r.arOut.toFixed(2),r.arOver.toFixed(2)]));
+  if(MI_ON){ downloadCSV('customer-tiers-mi.csv',out.map(r=>r.filter((_,i)=>i!==7&&i!==8))); return; }   // Michigan: no visits / BA columns
   downloadCSV('customer-tiers.csv',out);
 };
 
@@ -8236,6 +8372,9 @@ function regFor(name){
   if(!REG_BYKEY) return null;
   const c=REG_BYKEY.get(tierNorm(name)); if(!c||!c.length) return null;
   const st=c.filter(g=>g.state===APP_STATE);
+  // Michigan: only Michigan rows. A Michigan store that shares a name with a California one (a chain)
+  // must never show the California store's address, legal name or license.
+  if(MI_ON || APP_STATE==='MI') return st.length ? {g:st[0], n:st.length} : null;
   return {g:(st[0]||c[0]), n:(st.length||c.length)};
 }
 function regMissing(g){
@@ -8394,8 +8533,8 @@ function orderLedger(prefix, dateField){
 }
 function renderLedger(prefix, dateField, dateLabel, state, isPay, selfRender){
   const wrap=$('#'+prefix+'-wrap'), note=$('#'+prefix+'-note'); if(!wrap) return;
-  if(APP_STATE==='NY') state.src='all';   // NY has one source (LeafLink)
-  const srcSeg=$('#'+prefix+'-src'); if(srcSeg&&srcSeg.parentElement) srcSeg.parentElement.classList.toggle('hidden', APP_STATE==='NY');
+  if(APP_STATE==='NY'||MI_ON) state.src='all';   // NY has one source (LeafLink); Michigan has one (Distru)
+  const srcSeg=$('#'+prefix+'-src'); if(srcSeg&&srcSeg.parentElement) srcSeg.parentElement.classList.toggle('hidden', APP_STATE==='NY'||MI_ON);
   const {rows,start,end}=orderLedger(prefix, dateField);
   const q=(($('#'+prefix+'-search')||{}).value||'').trim().toLowerCase();
   let view=rows.filter(r=>(state.src==='all'||r.src===state.src) && (!q||(r.cust||'').toLowerCase().includes(q)||(r.ref||'').toLowerCase().includes(q)));
@@ -9360,13 +9499,233 @@ $('#cr-add') && ($('#cr-add').onclick=async ()=>{
   btn.disabled=false; btn.textContent=old;
 });
 
-// Michigan landing page until its Distru data is wired in (stage 1 of 3, 2026-10-21).
+/* ============================ Michigan (its own Distru company, 2026-10-21) ============================
+   Michigan reuses California's Distru screens instead of having its own. The same builders that turn
+   California's Distru CSVs into RAW / CONC_EVENTS / SKU_EVENTS / scorecard snapshots run over
+   Michigan's mi-*.csv files (withMiFiles), the result rides the shared payload under its own 'mi' key
+   (miPayload, FRESH-gated like every other key), and choosing Michigan swaps that bundle into the
+   California globals (enterMI) and puts California's own objects back on the way out (leaveMI).
+   Michigan has no Nabis, no QuickBooks history, no field schedule / BA / Pistil data and no Automated
+   Emails. Visible only to MI_ACCESS; screen-only gating (the payload is readable by anyone holding the
+   backend link, as Gianni chose). The auto-publisher never enters Michigan (its AUTH_STATES are CA+NY). */
+
+// Every California global that a California Distru screen reads. enterMI stashes them and installs
+// Michigan's; leaveMI puts the very same objects back.
+const MI_SWAP_KEYS=['RAW','INVOICES','DISPENSARIES','BRANDS','CLEAN','asOf','CONC','CONC_BRAND','CONC_EVENTS','CONC_META','SKU','SKU_EVENTS',
+  'SCORECARD_SNAPS','SC_DETAIL','HIST_INVS_CACHE','CUST_DIR','CUST_BY_LEGAL','SALES_REP','VISIT_EVENTS','SCHED_EVENTS','PISTIL','PISTIL_POS','ACCTS','CATCX'];
+function caGlobalsGet(){ return {RAW, INVOICES, DISPENSARIES, BRANDS, CLEAN, asOf, CONC, CONC_BRAND, CONC_EVENTS, CONC_META, SKU, SKU_EVENTS,
+  SCORECARD_SNAPS, SC_DETAIL, HIST_INVS_CACHE, CUST_DIR, CUST_BY_LEGAL, SALES_REP, VISIT_EVENTS, SCHED_EVENTS, PISTIL, PISTIL_POS, ACCTS, CATCX}; }
+function caGlobalsSet(g){ RAW=g.RAW; INVOICES=g.INVOICES; DISPENSARIES=g.DISPENSARIES; BRANDS=g.BRANDS; CLEAN=g.CLEAN; asOf=g.asOf;
+  CONC=g.CONC; CONC_BRAND=g.CONC_BRAND; CONC_EVENTS=g.CONC_EVENTS; CONC_META=g.CONC_META; SKU=g.SKU; SKU_EVENTS=g.SKU_EVENTS;
+  SCORECARD_SNAPS=g.SCORECARD_SNAPS; SC_DETAIL=g.SC_DETAIL; HIST_INVS_CACHE=g.HIST_INVS_CACHE; CUST_DIR=g.CUST_DIR; CUST_BY_LEGAL=g.CUST_BY_LEGAL;
+  SALES_REP=g.SALES_REP; VISIT_EVENTS=g.VISIT_EVENTS; SCHED_EVENTS=g.SCHED_EVENTS; PISTIL=g.PISTIL; PISTIL_POS=g.PISTIL_POS; ACCTS=g.ACCTS; CATCX=g.CATCX; }
+// The page controls each state keeps for itself (date ranges, as-of, source pickers, and the list
+// prices: a price tried out in Michigan never carries into California's numbers).
+const MI_INPUT_IDS=['asof','conc-preset','conc-start','conc-end','sku-preset','sku-start','sku-end','inv-source','disp-source','cd-source',
+  'a-jar35','a-fivepk','a-pr15','a-pr1','a-vape','a-pouch'];
+function miInputsGet(){ const o={}; MI_INPUT_IDS.forEach(id=>{ const el=$('#'+id); if(el && el.value!==undefined) o[id]=el.value; }); return o; }
+function miInputsSet(o){ MI_INPUT_IDS.forEach(id=>{ const el=$('#'+id); if(el && o && o[id]!==undefined) el.value=o[id]; }); }
+const MI_EMPTY_CLEAN=()=>({excludedOrders:0,excludedLines:0,byReason:{PICKUP_FROM_BRAND:0,CANCELLED:0,REJECTED:0}});
+
+// FRESH marks for Michigan's parts. Each is set by buildMi only when ITS file came with usable rows in
+// this session, so a publish never re-sends cache/payload-derived Michigan data (the 2026-07-21 rule).
+const MI_MARKS=['mi.ar','mi.conc','mi.sku','mi.salesRep','mi.custDir','mi.inv'];
+function miFreshAny(){ for(const k of FRESH) if(/^mi\./.test(k)) return true; return false; }
+function miRetract(){ MI_MARKS.forEach(k=>FRESH.delete(k)); if(!miFilesLoaded()) MI_LOCAL=null; }
+
+// Run California's builders over Michigan's files: FILES' Distru slots point at the mi_* files and
+// every other slot is empty for the duration; MI_BUILD makes the Michigan-only rules apply (own-entity
+// transfers dropped, Distru-only on-hand). Everything California owns is put back in `finally`: every
+// FILES slot, every global in MI_SWAP_KEYS (CLEAN, CUST_DIR, SALES_REP, SC_DETAIL… which the builders
+// write as a side effect) and the FRESH set (buildSalesReps / buildCustDir mark California keys).
+function withMiFiles(fn){
+  const saved={files:{...FILES}, g:caGlobalsGet(), fresh:new Set(FRESH)};
+  MI_BUILD++;
+  try{
+    Object.keys(FILES).forEach(k=>{ FILES[k]=null; });
+    MI_SLOTS.forEach(s=>{ FILES[s]=saved.files['mi_'+s]||null; });
+    return fn();
+  }finally{
+    MI_BUILD--;
+    Object.keys(FILES).forEach(k=>{ FILES[k]=saved.files[k]===undefined?null:saved.files[k]; });
+    caGlobalsSet(saved.g);
+    FRESH.clear(); saved.fresh.forEach(k=>FRESH.add(k));
+  }
+}
+// This week's scorecard capture for Michigan merged over `baseSc` (Michigan's own published weeks),
+// with this week's canonical AR locked in from Michigan's invoices. Call INSIDE withMiFiles. Same
+// functions and the same rules as California's publish, minus anything Nabis.
+function miScorecardIn(b, baseSc){
+  RAW=b.RAW||[]; INVOICES=ageRecords(RAW, asOf); CONC_EVENTS=b.CONC_EVENTS||[];
+  const existing=(baseSc && baseSc.snaps) || {};
+  SCORECARD_SNAPS=existing; SC_DETAIL=(baseSc && baseSc.detail) || null;   // the carry-forwards in buildScDetail must only ever see Michigan's own detail
+  const live=captureScorecardSnap();
+  let snaps = live ? {...existing, [live.date]:{...(existing[live.date]||{}), ...live.values}} : {...existing};
+  snaps=enrichSnapsWithAllAR(snaps);
+  const baseDetail=baseSc && baseSc.detail;
+  const detail = FILES.distru_items ? buildScDetail(baseDetail) : (baseDetail || buildScDetail(baseDetail));
+  return {snaps, detail};
+}
+// Build Michigan's bundle from the mi_* files dropped in this session (for viewing and publishing).
+function buildMi(){
+  MI_MARKS.forEach(k=>FRESH.delete(k));
+  if(!miFilesLoaded()){ MI_LOCAL=null; return; }
+  const usable=s=>{ const f=FILES['mi_'+s]; return !!(f && f.data && f.data.length); };
+  const base=MI_DATA ? {snaps:MI_DATA.SCORECARD_SNAPS, detail:MI_DATA.SC_DETAIL} : null;
+  const L=withMiFiles(()=>{
+    const out={v:1, local:true, asOf:new Date().toISOString()};
+    out.RAW=ingestFromFiles(); out.CLEAN=CLEAN;
+    out.CONC_EVENTS=buildConcEvents();   // never qboConcEvents(): the QuickBooks history is California's
+    out.SKU_EVENTS=buildSkuEvents();     // never qboSkuEvents()
+    SALES_REP={}; buildSalesReps(); out.SALES_REP=SALES_REP;
+    CUST_DIR={}; CUST_BY_LEGAL=null; buildCustDir(); out.CUST_DIR=CUST_DIR;   // filled only from a Michigan company list
+    out.onHand = onHandComplete() ? computeOnHandValue() : null;
+    const sc=miScorecardIn(out, base);   // view copy; the publish recomputes it over its fresh merge base
+    out.SCORECARD_SNAPS=sc.snaps; out.SC_DETAIL=sc.detail;
+    return out;
+  });
+  MI_LOCAL=L;
+  if(usable('distru_invoice') && L.RAW.length) FRESH.add('mi.ar');
+  if(usable('distru_items') && L.CONC_EVENTS.length) FRESH.add('mi.conc');
+  if(usable('distru_items') && L.SKU_EVENTS.length) FRESH.add('mi.sku');
+  if((usable('distru_items')||usable('distru_invoice')) && Object.keys(L.SALES_REP).length) FRESH.add('mi.salesRep');
+  if(usable('distru_companies') && Object.keys(L.CUST_DIR).length) FRESH.add('mi.custDir');
+  if(L.onHand!=null) FRESH.add('mi.inv');
+}
+// The payload's 'mi' key: the merge base's own 'mi' with ONLY the parts rebuilt from this session's
+// Michigan files replaced, plus this week's scorecard capture over the base's Michigan weeks. Wire
+// formats are California's own (recordsToPayload, eventsToWire, skuToWire, …).
+function miPayload(baseMi){
+  const L=MI_LOCAL; if(!L) throw new Error('no Michigan files loaded');
+  const base=(baseMi && typeof baseMi==='object' && !Array.isArray(baseMi)) ? baseMi : {};
+  const m={...base, v:1};
+  if(FRESH.has('mi.ar')) m.ar={records:recordsToPayload(L.RAW), cleaning:L.CLEAN};
+  if(FRESH.has('mi.conc')) m.conc={events:eventsToWire(L.CONC_EVENTS)};
+  if(FRESH.has('mi.sku')) m.sku=skuToWire(L.SKU_EVENTS);
+  if(FRESH.has('mi.salesRep')) m.salesRep=salesRepToWire(L.SALES_REP);
+  if(FRESH.has('mi.custDir')) m.custDir=custDirToWire(L.CUST_DIR);
+  if(FRESH.has('mi.inv')) m.onHand=L.onHand;
+  // scorecard AR / sales come from what this payload will carry: fresh parts, else the base's
+  const b={RAW: FRESH.has('mi.ar') ? L.RAW : payloadToRecords((base.ar&&base.ar.records)||[]),
+           CONC_EVENTS: FRESH.has('mi.conc') ? L.CONC_EVENTS : eventsFromWire((base.conc&&base.conc.events)||[])};
+  m.scorecard=withMiFiles(()=>miScorecardIn(b, base.scorecard||null));
+  if(FRESH.has('mi.ar')||FRESH.has('mi.conc')||FRESH.has('mi.sku')) m.asOf=L.asOf;   // stamped only when real Michigan data was rebuilt
+  return m;
+}
+// Payload 'mi' → a Michigan bundle (the same shapes applyShared builds for California).
+function miFromWire(m){
+  const ar=m.ar||{};
+  return { v:m.v||0, local:false, asOf:m.asOf||null,
+    RAW:payloadToRecords(ar.records||[]), CLEAN:ar.cleaning||MI_EMPTY_CLEAN(),
+    CONC_EVENTS:eventsFromWire((m.conc&&m.conc.events)||[]), SKU_EVENTS:skuFromWire(m.sku),
+    CUST_DIR:m.custDir?custDirFromWire(m.custDir):{}, SALES_REP:m.salesRep?salesRepFromWire(m.salesRep):{},
+    SCORECARD_SNAPS:(m.scorecard&&m.scorecard.snaps)||{}, SC_DETAIL:(m.scorecard&&m.scorecard.detail)||null,
+    onHand:(m.onHand==null?null:+m.onHand) };
+}
+function miBundle(){ return MI_LOCAL || MI_DATA; }
+function scHiddenCols(){ return MI_ON ? new Set([1,3,4]) : new Set(); }   // Projected (Nabis), LW Nabis, LW Distru (= LW Total in Michigan)
+function miReports(){ const r=['customers','newcust','sales','bysku','bydisp','mom','time'];
+  if((CONC_EVENTS||[]).some(e=>e.pd!=null)) r.push('payments');   // only once Michigan has recorded payments
+  return r; }
+
+function enterMI(){
+  if(MI_ON) return;
+  const b=miBundle()||{};
+  const rep=$('#reports');
+  MI_STASH={g:caGlobalsGet(), files:{...FILES}, inputs:miInputsGet(), reportsHidden:!!(rep&&rep.classList&&rep.classList.contains&&rep.classList.contains('hidden'))};
+  // Michigan is viewed from its bundle, like a shared viewer: with FILES empty, no builder can rebuild
+  // (or FRESH-mark) anything from files while Michigan is up.
+  Object.keys(FILES).forEach(k=>{ FILES[k]=null; });
+  MI_ON=true;
+  caGlobalsSet({RAW:b.RAW||[], INVOICES:[], DISPENSARIES:[], BRANDS:[], CLEAN:b.CLEAN||MI_EMPTY_CLEAN(), asOf:MI_STASH.g.asOf,
+    CONC:[], CONC_BRAND:[], CONC_EVENTS:b.CONC_EVENTS||[], CONC_META:null, SKU:[], SKU_EVENTS:b.SKU_EVENTS||[],
+    SCORECARD_SNAPS:b.SCORECARD_SNAPS||{}, SC_DETAIL:b.SC_DETAIL||null, HIST_INVS_CACHE:null,
+    CUST_DIR:b.CUST_DIR||{}, CUST_BY_LEGAL:null, SALES_REP:b.SALES_REP||{},
+    VISIT_EVENTS:[], SCHED_EVENTS:[], PISTIL:[], PISTIL_POS:[], ACCTS:[], CATCX:[]});
+  ['inv-source','disp-source','cd-source'].forEach(id=>{ const el=$('#'+id); if(el) el.value=''; });
+  const run=f=>{ try{ f(); }catch(e){ try{ console.warn('Michigan view:', e); }catch(_){} } };
+  run(()=>{ if($('#sku-preset')) $('#sku-preset').value='all'; applySkuPreset('all'); });   // Michigan's whole (short) history; FILES is empty, so this only re-aggregates
+  run(rebuild);
+  run(()=>{ aggregateConcessions(); renderConcDisp(); renderConcBrand(); });
+  emInvalidate();
+  [renderScorecard, renderTiers, renderTimeSeries, renderMom, renderRepMode, renderMi, ()=>renderShareBar()].forEach(run);
+  if(rep&&rep.classList) rep.classList.remove('hidden');
+}
+function leaveMI(){
+  if(!MI_ON) return;
+  const s=MI_STASH; MI_STASH=null; MI_ON=false;
+  if(!s) return;
+  Object.keys(FILES).forEach(k=>{ FILES[k]=s.files[k]===undefined?null:s.files[k]; });
+  caGlobalsSet(s.g); miInputsSet(s.inputs);
+  const rep=$('#reports'); if(rep&&rep.classList) rep.classList.toggle('hidden', !!s.reportsHidden);
+  // Repaint California from its restored objects. No re-aggregation: the restored INVOICES / CONC /
+  // SKU were computed for exactly the restored inputs.
+  emInvalidate();
+  [renderNotes, renderSummary, renderInvoices, renderDispensaries, renderBrands, renderConcDisp, renderConcBrand, renderSku,
+   renderScorecard, renderTiers, renderTimeSeries, renderMom, renderRepMode, ()=>renderShareBar()].forEach(f=>{ try{ f(); }catch(e){ try{ console.warn('California view:', e); }catch(_){} } });
+}
+
+// Where Michigan's own data stands: {state:'none'|'local'|'unknown'|'ok'|'stale', asOf, reportAt, why}.
+// Michigan's stamp (mi.asOf) moves only with a Michigan publish; the report's (SHARED.uploadedAt)
+// with every publish, California's hourly one included. See MI_STALE_LAG_MS for the rule.
+function miFreshness(){
+  const b=miBundle();
+  if(!b) return {state:'none'};
+  if(b.local) return {state:'local', asOf:b.asOf};
+  const at=Date.parse(b.asOf||''); if(!isFinite(at)) return {state:'unknown'};
+  const now=Date.now(), rep=(SHARED&&SHARED.uploadedAt)?Date.parse(SHARED.uploadedAt):NaN;
+  const behind=isFinite(rep) && rep-at>MI_STALE_LAG_MS && now-rep>=MI_STALE_GRACE_MS;
+  const old=now-at>MI_STALE_AGE_MS;
+  return {state:(behind||old)?'stale':'ok', asOf:b.asOf, reportAt:isFinite(rep)?SHARED.uploadedAt:null,
+    why: behind ? 'the rest of the report has kept updating since' : old ? 'nothing has been published for over a day' : ''};
+}
+// The red "Last Update" line while Michigan is on screen: Michigan's own time.
+function renderMiLastUpdate(el){
+  const f=miFreshness();
+  if(f.state==='none'){ el.className='last-update none'; el.textContent='Michigan data: nothing published yet'; return; }
+  if(f.state==='local'){ el.className='last-update'; el.innerHTML=`Michigan data: files in this browser <span class="rel">built ${esc(fmtDateTime(f.asOf))} · not published</span>`; return; }
+  if(f.state==='unknown'){ el.className='last-update none'; el.textContent='Michigan data as of: unknown'; return; }
+  el.className='last-update'+(f.state==='stale'?' mi-stale':'');
+  el.innerHTML=`Michigan data as of: ${esc(fmtDateTime(f.asOf))} <span class="rel">${relTime(f.asOf)}</span>`
+    +(f.state==='stale'?` <span class="pill warn" title="Michigan's hourly download or publish has stopped; ${esc(f.why)}">not updating</span>`:'');
+}
+// The share-bar status while Michigan is on screen.
+function miShareStatus(){
+  const f=miFreshness();
+  if(f.state==='none') return '<span class="pill">Michigan</span> No Michigan data published yet. It appears after the first Michigan publish (the hourly run downloads Michigan after California).';
+  if(f.state==='local') return `<span class="pill">local</span> Michigan files from this device only, built ${esc(fmtDateTime(f.asOf))}. Click <b>Publish to team</b> to share them.`;
+  if(f.state==='unknown') return '<span class="pill">Michigan</span> Michigan data with no update time.';
+  // one <span> after the pill: #sb-status is a flex row, and loose text would wrap as its own item
+  if(f.state==='stale') return `<span class="pill warn">not updating</span> <span>Michigan data last updated <b>${relTime(f.asOf)}</b> <span class="muted2">(${esc(fmtDateTime(f.asOf))})</span>; ${esc(f.why)}${f.reportAt?` (report updated ${relTime(f.reportAt)})`:''}. The hourly Michigan download may be signed out of Distru Michigan.</span>`;
+  return `<span class="pill live">live</span> <span>Michigan data updated <b>${relTime(f.asOf)}</b> <span class="muted2">(${esc(fmtDateTime(f.asOf))}) · checked every hourly run, re-published when it changes</span></span>`;
+}
+
+// Michigan's landing tab: where the data stands, at a glance.
 function renderMi(){ const w=$('#mi-wrap'); if(!w) return;
-  w.innerHTML=`<div style="max-width:720px;font-size:14px;line-height:1.6">
-    <h2 style="margin:0 0 6px">Michigan</h2>
-    <p>Michigan's own Distru account. Its Accounts Receivable, Sales Scorecard, Customer Tiers and Reports will appear here, built the same way as California's Distru side.</p>
-    <p class="muted">Status: setting up the hourly download from Distru Michigan. Data appears here once the first download has been published.</p>
-    <p class="muted">Visible only to Gianni, Victoria and Scott.</p></div>`; }
+  const b=miBundle();
+  const head=`<h2 style="margin:0 0 6px">Michigan</h2>`;
+  const foot=`<p class="muted">Michigan's own Distru company, Distru only (no Nabis). The other tabs are California's screens over Michigan's data: Accounts Receivable, Credits/Discounts, Sales by Type, Sales Scorecard, Customer Tiers and Reports. Visible only to Gianni, Victoria and Scott.</p>`;
+  if(!b){ w.innerHTML=`<div style="max-width:760px;font-size:14px;line-height:1.6">${head}<p>No Michigan data has been published yet. The hourly Michigan download runs after California's; its data appears here once a Michigan publish has run.</p>${foot}</div>`; return; }
+  const recs=b.RAW||[], open=recs.filter(x=>x.outstanding>0.005), ar=open.reduce((s,x)=>s+x.outstanding,0);
+  const evs=b.CONC_EVENTS||[], refs=new Set(), custs=new Set(); let net=0;
+  evs.forEach(e=>{ if(e.ref) refs.add(e.ref); if(e.c) custs.add(e.c); net+=eventBilling(e); });
+  let paidU=0, sampU=0; (b.SKU_EVENTS||[]).forEach(e=>{ paidU+=e.u||0; sampU+=e.su||0; });
+  const thisWk=(()=>{ const d=scCurrentMonday(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+  const sched=(b.SC_DETAIL && b.SC_DETAIL.date===thisWk && Array.isArray(b.SC_DETAIL.pD)) ? b.SC_DETAIL.pD : null;
+  const firstD=evs.reduce((m,e)=>e.d&&(!m||e.d<m)?e.d:m,null);
+  const row=(k,v)=>`<tr><td>${k}</td><td class="num">${v}</td></tr>`;
+  w.innerHTML=`<div style="max-width:760px;font-size:14px;line-height:1.6">${head}
+    <p>Data as of <b>${b.asOf?esc(fmtDateTime(b.asOf)):'unknown'}</b>${b.local?' (files loaded in this browser, not yet published)':''}.</p>
+    ${(()=>{ const f=miFreshness(); return f.state==='stale'?`<p><span class="pill warn">not updating</span> Michigan last updated ${esc(relTime(f.asOf))}; ${esc(f.why)}. The hourly Michigan download may be signed out of Distru Michigan (signing in to Distru Michigan yourself signs the automation out).</p>`:''; })()}
+    <table class="ddtable" style="max-width:520px"><tbody>
+      ${row('Invoices', `${recs.length.toLocaleString()} (${open.length} open)`)}
+      ${row('Open AR', fmt$(ar))}
+      ${row('Delivered orders', `${refs.size.toLocaleString()} to ${custs.size.toLocaleString()} customer${custs.size===1?'':'s'}${firstD?` since ${esc(new Date(firstD).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}))}`:''}`)}
+      ${row('Units delivered', `${Math.round(paidU).toLocaleString()} paid · ${Math.round(sampU).toLocaleString()} free samples`)}
+      ${row('Net sales (delivered)', fmt$(net))}
+      ${row('Scheduled this week', sched?`${sched.length} order${sched.length===1?'':'s'} · ${fmt$(sched.reduce((s,o)=>s+(+o.amount||0),0))}`:'—')}
+      ${row('On hand (Distru, priced lines)', b.onHand==null?'—':fmt$(b.onHand))}
+    </tbody></table>${foot}</div>`; }
 function activateTab(tab, fromHash){
   // #nymonth / #nymonth~YYYY-MM is a NY report: switch to NY first (setAppState lands on a default tab
   // and rewrites the hash), then put the link back and open the report
