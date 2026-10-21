@@ -2118,6 +2118,276 @@ check('after Save the row\'s Edit button gets the focus back; a reason alone kee
   ok(/<th>By <span class="faint">\(Pacific time\)<\/span><\/th>/.test(appFn('editsAdminHtml')) && /C\.stampText\(e\.created_at, C\.TZ\)/.test(appFn('editAdminRow')), 'Admin > Edits: when each change was made, all in Pacific');
 });
 
+// ---------------------------------------------------------------------------------------------
+// 15. the editor's Breaks line, a filled-in "+ Add break" and "Add missing breaks" (Gianni 2026-10-21:
+//     "auto-generate a start end time that makes sense given the shift" and "show what kinds of breaks
+//     are missing"). Synthetic rows only.
+// ---------------------------------------------------------------------------------------------
+const BK_ME = { email: 'm@wizardtrees.com', is_admin: true }, BK_NOW = Date.parse('2026-10-21T18:00:00Z');
+const bkCtx = r => ({ date: r.work_date, tz: C.rowTz(r), company: r.company, region: r.region });
+const bkEntries = r => C.editorEntries(r, r, [], BK_ME, { today: '2026-10-21', now: BK_NOW });
+const bkStatus = (shifts, extra) => { const r = edRow(shifts, extra); return C.editorBreakStatus(bkEntries(r), bkCtx(r)); };
+const BK_NY = { id: 'wtny:e1:2026-10-06', company: 'wtny', region: 'NY' };
+const NE = (inT, outT, brks, key) => Object.assign(C.newEntry(key || 'n'), { inT, outT, breaks: (brks || []).map(([s, e, k]) => ({ startT: s, endT: e, kind: k, orig: null })) });
+const CTX_F = { date: '2026-10-06', tz: C.TZ, company: 'filifera', region: 'CA' };
+const CTX_NY = { date: '2026-10-06', tz: 'America/New_York', company: 'wtny', region: 'NY' };
+const sug = (ents, key, c) => { const b = C.suggestBreak(ents, key || ents[0].key, c || CTX_F); return [b.startT, b.endT, b.kind]; };
+const applyAdds = (ents, c) => { const adds = C.missingBreakAdds(ents, c || CTX_F); for (const a of adds) ents.find(e => e.key === a.key).breaks.push(a.brk); return adds; };
+let bkSeed = 20261021;
+const bkRnd = k => { bkSeed = (bkSeed * 1103515245 + 12345) % 2147483648; return Math.floor(bkSeed / 2147483648 * k); };
+const hm = m => String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0') + ':' + String(((m % 60) + 60) % 60).padStart(2, '0');
+// a made-up day as editor entries: 1 to 3 shifts (some past midnight), each with 0 to 3 breaks inside it
+function bkDay() {
+  const ents = [];
+  let t = bkRnd(1200);
+  for (let k = 1 + bkRnd(3); k > 0 && t < 1430; k--) {
+    const len = Math.min(20 + bkRnd(720), 1430 - t + (ents.length ? 0 : 600)), brks = [];
+    let b = t + 20 + bkRnd(150);
+    for (let j = bkRnd(4); j > 0; j--) {
+      const bl = [5, 10, 15, 20, 25, 30, 45][bkRnd(7)];
+      if (b + bl > t + len) break;
+      brks.push([hm(b), hm(b + bl), bkRnd(2) ? 'rest' : 'meal']);
+      b += bl + 20 + bkRnd(150);
+    }
+    ents.push(NE(hm(t), hm(t + len), brks, 'f' + ents.length));
+    t += len + [5, 20, 29, 30, 45][bkRnd(5)];
+  }
+  return ents;
+}
+
+check("the Breaks line uses the board's own rules: on every demo day and 600 made-up days it lists exactly the board's break flags", () => {
+  eq([...C.BREAK_NEED_CODES].sort(), ['few_rest', 'late_meal', 'no_meal', 'no_second_meal', 'short_meal', 'short_rest']);
+  const BC = new Set(C.BREAK_NEED_CODES);
+  let n = 0;
+  for (const r0 of demo.rows) {
+    const r = C.normRow(r0);
+    if (r.hours_only || r.shifts.some(s => !s.out)) continue;
+    const want = r.flags.map(f => f.code).filter(c => BC.has(c)).sort();
+    eq(C.missingBreaks(r.shifts, r.company, r.region, C.rowTz(r)).map(i => i.code).sort(), want, r.id);
+    const st = C.editorBreakStatus(bkEntries(r), bkCtx(r));
+    eq([st.state, st.items.map(i => i.code).sort()], [want.length ? 'missing' : 'ok', want], r.id + ' through the editor');
+    n++;
+  }
+  ok(n > 200 && demo.rows.some(r => r.region === 'NY'), 'demo days checked: ' + n);
+  // made-up days, rebuilt the way the board rebuilds an edited day, against dayFlags itself
+  for (let i = 0; i < 600; i++) {
+    const company = ['filifera', 'slane', 'wafgus', 'imperial', 'wtny'][bkRnd(5)], region = C.regionOfCompany(company), tz = C.rowTz({ company, region });
+    const c = { date: '2026-10-06', tz, company, region };
+    const d = C.entriesShifts(bkDay(), c.date, tz);
+    const day = { company, region, work_date: c.date, shifts: d.shifts, worked_min: d.shifts.reduce((a, s) => a + s.worked_min, 0), hours_only: false, gusto_total_min: null, span_min: 0 };
+    const want = C.dayFlags(day, '2026-10-21').map(f => f.code).filter(x => BC.has(x)).sort();
+    eq(C.missingBreaks(d.shifts, company, region, tz).map(x => x.code).sort(), want, 'made-up day ' + i + ' (' + company + ')');
+  }
+  eq(C.missingBreaks([], 'filifera', 'CA'), [], 'no shifts');
+  eq(C.missingBreaks([Object.assign(ES('h1', '00:00', '23:59'), { hours_only: true, worked_min: 600 })], 'filifera', 'CA'), [], 'hours entered: nothing to check');
+});
+check('the Breaks line in words: what is missing (the meal by its deadline), what to fix, complete, still clocked in', () => {
+  const t = (shifts, extra) => { const s = bkStatus(shifts, extra); return [s.tone, s.text]; };
+  eq(t([ES('s1', '07:00', '15:30')]), ['warn', 'Missing: an unpaid 30-min meal by 12:00 PM · 2 paid 15-min rests']);
+  eq(t([ED_S1]), ['warn', 'Missing: 1 more paid 15-min rest']);
+  eq(t([ES('s1', '07:00', '15:30', [EB('09:00', '09:15', 'rest'), EB('11:30', '12:00', 'meal'), EB('13:30', '13:45', 'rest')])]), ['ok', 'Breaks look complete']);
+  eq(t([ES('s1', '07:00', '15:30', [EB('09:00', '09:15', 'rest'), EB('12:30', '13:00', 'meal'), EB('14:00', '14:15', 'rest')])])[1], 'Meal starts too late: start it by 12:00 PM');
+  eq(t([ES('s1', '07:00', '15:30', [EB('09:00', '09:05', 'rest'), EB('11:00', '11:20', 'meal'), EB('13:00', '13:15', 'rest')])])[1], 'Meal under 30 min · Rest under 10 min');
+  eq(t([ES('s1', '06:00', '18:30')])[1], 'Missing: an unpaid 30-min meal by 11:00 AM · a second unpaid 30-min meal · 3 paid 15-min rests');
+  eq(t([ES('s1', '07:00', '15:30')], { id: 'imperial:e1:2026-10-06', company: 'imperial' })[1], 'Missing: an unpaid 30-min meal by 12:00 PM · 2 paid 10-min rests', 'Imperial rests are 10 min');
+  eq(t([ES('s1', '07:00', '11:00'), ES('s2', '11:30', '16:00')])[1], 'Missing: 2 paid 15-min rests', '30 min off the clock is the meal');
+  eq(t([ES('s1', '07:00', '11:00'), ES('s2', '11:15', '16:00')])[1], 'Missing: an unpaid 30-min meal by 12:15 PM · 2 paid 15-min rests', 'a 15-min gap is not, and the deadline counts time on the clock only');
+  eq(t([ES('s1', '07:00', '10:00')]), ['ok', 'Breaks look complete'], 'a short day needs none');
+  // New York: a 30-min meal over 6 hours, no rests (Pacific 05:00 is 8:00 AM Eastern)
+  eq(t([ES('s1', '05:00', '13:30')], BK_NY), ['warn', 'Missing: an unpaid 30-min meal (over 6 hours worked)']);
+  eq(t([ES('s1', '05:00', '11:00')], BK_NY), ['ok', 'Breaks look complete'], '6 hours exactly');
+  eq(t([ES('s1', '05:00', '13:30', [EB('09:00', '09:20', 'meal')])], BK_NY)[1], 'Meal under 30 min');
+  eq(t([ES('s1', '05:00', '13:30', [EB('09:00', '09:30', 'meal')])], BK_NY)[1], 'Breaks look complete');
+  ok(!/rest/i.test(t([ES('s1', '05:00', '15:30')], BK_NY)[1]), 'never a rest in New York');
+  // still clocked in, a shift without times, hours entered, no shifts
+  const tdy = '2026-10-21', at = x => tdy + 'T' + x + ':00-07:00';
+  const open = C.normRow(Object.assign({}, edRow([]), { id: 'filifera:e1:' + tdy, work_date: tdy, open: true,
+    shifts: [{ id: 'o1', in: at('06:30'), out: null, span_min: 0, worked_min: 0, hours_only: false, breaks: [] }] }));
+  const os = C.editorBreakStatus(bkEntries(open), bkCtx(open));
+  eq([os.state, os.tone, os.text], ['open', 'info', 'Breaks are checked after they clock out']);
+  const blank = bkEntries(edRow([ED_S1])); blank.push(C.newEntry('nb'));
+  eq(C.editorBreakStatus(blank, CTX_F).text, 'Breaks are checked once each shift has a start and an end');
+  const he = edRow([Object.assign(ES('h1', '00:00', '23:59'), { hours_only: true, worked_min: 480, span_min: 480 })], { hours_only: true });
+  eq([C.editorBreakStatus(bkEntries(he), bkCtx(he)).state, C.editorBreakStatus(bkEntries(he), bkCtx(he)).text], ['hours', '']);
+  eq(C.editorBreakStatus([], CTX_F).text, '');
+  // live: the day as edited, deleted shifts left out
+  const en = bkEntries(edRow([ED_S1]));
+  en[0].outT = '12:00';
+  eq(C.editorBreakStatus(en, CTX_F).text, 'Breaks look complete', '5 hours less the meal needs one rest');
+  en[0].outT = '15:30'; en[0].breaks.push({ startT: '13:30', endT: '13:45', kind: 'rest', orig: null });
+  eq(C.editorBreakStatus(en, CTX_F).text, 'Breaks look complete');
+  en[0].breaks[1].kind = 'rest';
+  eq(C.editorBreakStatus(en, CTX_F).text, 'Missing: an unpaid 30-min meal by 12:00 PM', 'a meal changed to a paid rest');
+  en[0].del = true;
+  eq(C.editorBreakStatus(en, CTX_F).text, '', 'every shift deleted: no line');
+  ok(!src.includes('—'), 'no em dashes');
+});
+check('+ Add break comes filled in: a missing meal about 4 hours in (1 to 5 hours, by the deadline), else a paid rest of the company length mid-stretch; inside the shift, never over a break', () => {
+  eq(sug([NE('07:00', '15:30')]), ['11:00', '11:30', 'meal'], 'a meal 4 hours in');
+  eq(sug([NE('07:00', '11:30')]), ['09:10', '09:25', 'rest'], 'no meal needed: a 15-min rest in the middle');
+  eq(sug([NE('07:00', '11:30')], null, Object.assign({}, CTX_F, { company: 'imperial' })), ['09:10', '09:20', 'rest'], 'Imperial: 10 min');
+  eq(sug(bkEntries(edRow([ED_S1]))), ['13:40', '13:55', 'rest'], 'the longest stretch, 12:00 to 3:30');
+  eq(sug([NE('07:00', '15:30', [['10:55', '11:10', 'rest']])]), ['11:10', '11:40', 'meal'], 'over a break: the next free slot');
+  eq(sug([NE('07:00', '15:30', [['10:50', '12:00', 'rest']])]), ['10:20', '10:50', 'meal'], 'never past the 5-hour mark: earlier instead');
+  eq(sug([NE('06:00', '18:30', [['10:00', '10:30', 'meal']])]), ['14:30', '15:00', 'meal'], 'a second meal 4 hours after the first');
+  eq(sug([NE('07:00', '09:00', null, 'a'), NE('09:15', '15:00', null, 'b')], 'b'), ['12:15', '12:45', 'meal'], 'by the day\'s deadline (5 hours on the clock), before 4 hours into this shift');
+  eq(sug([NE('07:00', '15:30', [['09:00', '09:15', 'rest'], ['11:30', '12:00', 'meal'], ['13:30', '13:45', 'rest']])]), ['10:15', '10:30', 'rest'], 'complete: another rest the same way (the middle of 9:15 to 11:30)');
+  // the clock-in's seconds: the break never starts before it
+  const sec = C.entryOf({ id: 's9', in: '2026-10-06T07:02:30-07:00', out: '2026-10-06T15:31:10-07:00', breaks: [] }, C.TZ);
+  sec.key = 'k9';
+  eq(sug([sec]), ['11:05', '11:35', 'meal'], 'on a 5-minute mark');
+  // tiny, zero-length and blank shifts never fail
+  eq(sug([NE('07:00', '07:20')]), ['07:00', '07:10', 'rest'], 'under 30 min: a 10-min rest at the start');
+  eq(sug([NE('07:00', '07:00')]), ['07:00', '07:10', 'rest'], 'zero length');
+  eq(sug([NE('', '')]), ['', '', 'rest'], 'no times yet: blank, as before');
+  eq(sug([NE('07:00', '')]), ['', '', 'rest'], 'no end yet');
+  // New York: the meal the same way, a 10-min rest otherwise; past midnight on the next day
+  eq(sug([NE('08:00', '16:30')], null, CTX_NY), ['12:00', '12:30', 'meal']);
+  eq(sug([NE('08:00', '12:00')], null, CTX_NY), ['09:55', '10:05', 'rest']);
+  eq(sug([NE('22:00', '06:30')]), ['02:00', '02:30', 'meal'], 'past midnight');
+  // pure: the entries are never changed
+  const ents = [NE('07:00', '15:30')]; sug(ents); C.missingBreakAdds(ents, CTX_F);
+  eq(ents[0].breaks.length, 0, 'nothing added by asking');
+  // made-up shifts: the break fits inside, never overlaps, and a meal keeps to its window when it can
+  for (let i = 0; i < 400; i++) {
+    const day = bkDay(), en = day[bkRnd(day.length)];
+    const b = C.suggestBreak(day, en.key, CTX_F);
+    const sm = C.entryAfter(en, '2026-10-06', C.TZ), span = (Date.parse(sm.out) - Date.parse(sm.in)) / 60000;
+    en.breaks.push(b);
+    const errs = C.validateAfter(C.entryAfter(en, '2026-10-06', C.TZ), { tz: C.TZ, date: '2026-10-06' }).filter(e => e.brk === en.breaks.length - 1 || e.code === 'brk_overlap');
+    if (span > 0 && b.startT) eq(errs.map(e => e.code), [], 'made-up day ' + i + ': ' + J([en.inT, en.outT, en.breaks]));
+    if (span > 0 && !b.startT) { const sm = C.entryAfter(Object.assign({}, en, { breaks: en.breaks.slice(0, -1) }), '2026-10-06', C.TZ);
+      ok(!C.freeStretches(Date.parse(sm.in) / 60000, Date.parse(sm.out) / 60000, sm.breaks.map(x => [Date.parse(x.start) / 60000, Date.parse(x.end) / 60000])).some(g => g[1] - g[0] >= 1), 'made-up day ' + i + ': blank only on a full shift'); }
+    if (b.kind === 'meal' && span >= 330) {
+      const st = C.parseHhmm(b.startT), inM = C.parseHhmm(en.inT), off = ((st - inM) % 1440 + 1440) % 1440;
+      ok(off >= 60 || en.breaks.length > 1, 'made-up day ' + i + ': a meal under 1 hour in ' + J([en.inT, b]));
+    }
+  }
+});
+check('Add missing breaks: every missing meal and rest in one tap, placed the same way, only on shifts that can change; the day then reads complete', () => {
+  const day = [NE('07:00', '15:30')];
+  eq(applyAdds(day).map(a => [a.brk.startT, a.brk.endT, a.brk.kind]), [['08:55', '09:10', 'rest'], ['11:00', '11:30', 'meal'], ['13:25', '13:40', 'rest']], 'in time order');
+  eq(C.editorBreakStatus(day, CTX_F).state, 'ok');
+  eq(C.missingBreakAdds(day, CTX_F), [], 'complete: nothing to add');
+  const long = [NE('06:00', '18:30')];
+  eq(applyAdds(long).map(a => a.brk.kind), ['rest', 'meal', 'rest', 'meal', 'rest']);
+  eq(C.editorBreakStatus(long, CTX_F).state, 'ok', '12.5 hours: two meals, three rests');
+  const night = [NE('22:00', '06:30')];
+  applyAdds(night);
+  eq([C.editorBreakStatus(night, CTX_F).state, codes(C.validateAfter(C.entryAfter(night[0], '2026-10-06', C.TZ), { tz: C.TZ, date: '2026-10-06' }))], ['ok', []], 'past midnight');
+  const two = [NE('07:00', '11:00', null, 'a'), NE('11:15', '16:00', null, 'b')];
+  const ta = applyAdds(two);
+  eq(ta.filter(a => a.brk.kind === 'meal').map(a => [a.key, a.brk.startT]), [['b', '12:15']], 'the meal on the shift its deadline falls in');
+  eq(C.editorBreakStatus(two, CTX_F).state, 'ok');
+  const ro = [NE('07:00', '15:30', null, 'a'), NE('16:00', '18:00', null, 'b')]; ro[0].readonly = 'sent';
+  ok(applyAdds(ro).every(a => a.key === 'b'), 'never on a shift that cannot change');
+  const ny = [NE('08:00', '16:30')];
+  eq(applyAdds(ny, CTX_NY).map(a => [a.brk.startT, a.brk.endT, a.brk.kind]), [['12:00', '12:30', 'meal']], 'New York: the meal only');
+  eq(C.editorBreakStatus(ny, CTX_NY).state, 'ok');
+  // made-up days: what is added is valid and never overlaps, and nothing addable is left unless a shift is full
+  for (let i = 0; i < 300; i++) {
+    const d = bkDay(), adds = applyAdds(d);
+    for (const en of d) eq(codes(C.validateAfter(C.entryAfter(en, '2026-10-06', C.TZ), { tz: C.TZ, date: '2026-10-06' })), [], 'made-up day ' + i + ' ' + J(d.map(e => [e.inT, e.outT, e.breaks.map(b => [b.startT, b.endT, b.kind])])));
+    const left = C.editorBreakStatus(d, CTX_F).items.filter(x => C.BREAK_ADD_CODES.includes(x.code));
+    ok(!left.length || d.some(en => en.breaks.length >= C.EDIT_RULES.maxBreaks), 'made-up day ' + i + ' still missing ' + J(left) + ' after ' + adds.length);
+  }
+});
+check('the Missing line lists what to add once the needed meals are in (a meal is 30 min less worked), the same as Add missing breaks adds', () => {
+  const tx = (ents, c) => C.editorBreakStatus(ents, c || CTX_F).text, cs = (ents, c) => C.editorBreakStatus(ents, c || CTX_F).items.map(i => i.code);
+  const d1 = [NE('07:00', '13:30')];
+  eq(tx(d1), 'Missing: an unpaid 30-min meal by 12:00 PM · a paid 15-min rest', '6.5 hours: 6 once the meal is in, one rest');
+  eq(cs(d1), ['no_meal', 'few_rest'], "the board's codes stay");
+  eq(applyAdds(d1).length, 2); eq(tx(d1), 'Breaks look complete');
+  eq(tx([NE('07:00', '13:15')]), 'Missing: an unpaid 30-min meal by 12:00 PM · a paid 15-min rest');
+  const d2 = [NE('07:00', '17:15')];
+  eq(tx(d2), 'Missing: an unpaid 30-min meal by 12:00 PM · 2 paid 15-min rests', '10.25 hours: under 10 once the meal is in, no second meal');
+  eq(cs(d2), ['no_meal', 'no_second_meal', 'few_rest']);
+  eq(applyAdds(d2).length, 3); eq(tx(d2), 'Breaks look complete');
+  const d3 = [NE('07:00', '19:30', [['09:00', '09:15', 'rest'], ['15:00', '15:15', 'rest']])];
+  eq(tx(d3), 'Missing: an unpaid 30-min meal by 12:00 PM · a second unpaid 30-min meal · 1 more paid 15-min rest');
+  // made-up days: the line's counts are exactly what the one tap adds, and the day then reads complete
+  for (let i = 0; i < 300; i++) {
+    const company = ['filifera', 'imperial', 'wtny'][bkRnd(3)], region = C.regionOfCompany(company), c = { date: '2026-10-06', tz: C.rowTz({ company, region }), company, region };
+    const d = bkDay(), want = C.editorBreakStatus(d, c).items.reduce((a, x) => a + x.add, 0), adds = applyAdds(d, c);
+    if (d.some(en => en.breaks.length >= C.EDIT_RULES.maxBreaks)) continue;
+    eq([adds.length, C.editorBreakStatus(d, c).items.filter(x => x.add > 0)], [want, []], 'made-up day ' + i + ' ' + J(d.map(e => [e.inT, e.outT, e.breaks.map(b => [b.startT, b.endT, b.kind])])));
+  }
+});
+check('a meal that starts too late gets an on-time one when that is the fix; meals leave work after them and go on the right shift', () => {
+  const tx = ents => C.editorBreakStatus(ents, CTX_F).text;
+  // a late meal on a day that also needs a second: one meal by the deadline covers both
+  const l1 = [NE('07:00', '18:00', [['13:00', '13:30', 'meal']])];
+  eq(tx(l1), 'Missing: an unpaid 30-min meal by 12:00 PM (the 1:00 PM meal starts too late) · 2 paid 15-min rests');
+  eq(sug(l1), ['11:00', '11:30', 'meal'], '+ Add break: the on-time meal');
+  eq(applyAdds(l1).map(a => [a.brk.startT, a.brk.kind]), [['08:55', 'rest'], ['11:00', 'meal'], ['15:40', 'rest']]);
+  eq(tx(l1), 'Breaks look complete');
+  // the late one is time off the clock between shifts: nothing to move, so a meal on the first shift
+  const l2 = [NE('06:00', '12:00', null, 'a'), NE('12:45', '14:45', null, 'b')];
+  eq(tx(l2), 'Missing: an unpaid 30-min meal by 11:00 AM (the 12:00 PM time off the clock starts too late) · 2 paid 15-min rests');
+  eq(sug(l2, 'a'), ['10:00', '10:30', 'meal']);
+  eq(sug(l2, 'b'), ['13:40', '13:55', 'rest'], 'Shift 2 starts after the deadline: a rest');
+  eq(applyAdds(l2).filter(a => a.brk.kind === 'meal').map(a => [a.key, a.brk.startT]), [['a', '10:00']]);
+  eq(tx(l2), 'Breaks look complete');
+  // a late meal that can just move: the line says so and the one tap adds no extra meal; + Add break offers an on-time one
+  const l3 = [NE('07:00', '15:30', [['09:00', '09:15', 'rest'], ['12:30', '13:00', 'meal'], ['14:00', '14:15', 'rest']])];
+  eq(tx(l3), 'Meal starts too late: start it by 12:00 PM');
+  eq(C.missingBreakAdds(l3, CTX_F), []);
+  eq(sug(l3), ['11:00', '11:30', 'meal']);
+  // a meal keeps 30 minutes of work after it; on a later shift past the deadline, 1 hour in
+  eq(sug([NE('08:00', '12:00', null, 'a'), NE('12:10', '16:10', null, 'b')], 'b', CTX_NY), ['15:10', '15:40', 'meal'], 'New York, Shift 2: not the last 30 minutes');
+  eq(sug([NE('06:00', '12:00', null, 'a'), NE('12:15', '18:15', null, 'b')], 'b'), ['13:15', '13:45', 'meal'], 'deadline 11:00 AM passed before Shift 2');
+  eq(sug([NE('07:00', '18:00', [['10:00', '10:30', 'meal'], ['14:00', '14:15', 'rest']])]), ['14:30', '15:00', 'meal'], 'a second meal 4 hours after the first');
+  // two equal shifts: the second meal on the shift 4 hours after the first one ends
+  const e2 = [NE('06:00', '12:00', null, 'a'), NE('12:15', '18:15', null, 'b')];
+  eq(applyAdds(e2).filter(a => a.brk.kind === 'meal').map(a => [a.key, a.brk.startT]), [['a', '10:00'], ['b', '14:30']]);
+  eq(tx(e2), 'Breaks look complete');
+  // made-up shifts with room: a suggested meal never ends in the last 30 minutes
+  for (let i = 0; i < 300; i++) {
+    const day = bkDay(), en = day[bkRnd(day.length)];
+    if (en.breaks.length) continue;
+    const b = C.suggestBreak(day, en.key, CTX_F);
+    const span = ((C.parseHhmm(en.outT) - C.parseHhmm(en.inT)) % 1440 + 1440) % 1440;
+    if (b.kind === 'meal' && span >= 90) ok(((C.parseHhmm(en.outT) - C.parseHhmm(b.endT)) % 1440 + 1440) % 1440 >= 30, 'made-up day ' + i + ': ' + J([en.inT, en.outT, b]));
+  }
+});
+check('tiny or full shifts: + Add break never overlaps a break or runs past the end (blank when there is no room); added breaks go in time order', () => {
+  eq(sug([NE('07:00', '07:25', [['07:00', '07:10', 'rest']])]), ['07:10', '07:20', 'rest'], 'the next free minute');
+  eq(sug([NE('07:00', '07:05')]), ['07:00', '07:05', 'rest'], 'cut to the shift');
+  eq(sug([NE('07:00', '08:00', [['07:00', '07:30', 'rest'], ['07:30', '08:00', 'rest']])]), ['', '', 'rest'], 'no free minute: blank');
+  const tiny = [NE('07:00', '07:25')];
+  for (let k = 0; k < 6; k++) { const b = C.suggestBreak(tiny, tiny[0].key, CTX_F); if (!b.startT) break; tiny[0].breaks.push(b); }
+  eq(tiny[0].breaks.map(b => [b.startT, b.endT]), [['07:00', '07:10'], ['07:10', '07:20'], ['07:20', '07:25']], 'pressed again and again: never stacked');
+  eq(codes(C.validateAfter(C.entryAfter(tiny[0], '2026-10-06', C.TZ), { tz: C.TZ, date: '2026-10-06' })), []);
+  const zero = [NE('07:00', '07:00', [['07:00', '07:10', 'rest']])];
+  eq(sug(zero), ['', '', 'rest'], 'zero length: the 10-min rest once');
+  // a break with only a start (still open) or only an end keeps 15 minutes beside that time clear
+  const open = [NE('08:00', '16:25', [['09:55', '10:05', 'rest'], ['12:10', '', 'rest'], ['14:10', '14:20', 'rest']])];
+  const om = applyAdds(open).map(a => a.brk).find(b => b.kind === 'meal');
+  ok(om && (C.parseHhmm(om.endT) <= 12 * 60 + 10 || C.parseHhmm(om.startT) >= 12 * 60 + 25), 'meal clear of the open 12:10 break: ' + J(om));
+  const half = [NE('08:00', '16:30', [['', '12:00', 'rest']])], hb = C.suggestBreak(half, half[0].key, CTX_F);
+  ok(C.parseHhmm(hb.endT) <= 11 * 60 + 45 || C.parseHhmm(hb.startT) >= 12 * 60, 'clear of a break with only its 12:00 end: ' + J(hb));
+  // time order (Save sorts them too)
+  const o = NE('07:00', '15:30', [['10:50', '11:05', 'rest'], ['14:30', '15:00', 'meal']]);
+  const nb = (s, e) => ({ startT: s, endT: e, kind: 'rest', orig: null });
+  eq([C.breakIndexFor(o, nb('12:40', '12:55'), '2026-10-06', C.TZ), C.breakIndexFor(o, nb('07:30', '07:45'), '2026-10-06', C.TZ),
+    C.breakIndexFor(o, nb('15:10', '15:20'), '2026-10-06', C.TZ), C.breakIndexFor(o, nb('', ''), '2026-10-06', C.TZ)], [1, 0, 2, 2]);
+  const night = NE('22:00', '06:00', [['23:00', '23:15', 'rest']]);
+  eq([C.breakIndexFor(night, nb('02:00', '02:15'), '2026-10-06', C.TZ), C.breakIndexFor(night, nb('22:30', '22:45'), '2026-10-06', C.TZ)], [1, 0], 'past midnight: 2:00 AM comes after 11:00 PM');
+});
+check('page: the Breaks line sits under the shifts and updates as times change; + Add break comes filled in; Add missing breaks adds them all', () => {
+  const app = block('ts-app'), eb = appFn('editorBody');
+  ok(/<div id="edBreaks" aria-live="polite">\$\{breakLineHtml\(raw, tz\)\}<\/div>/.test(eb), 'the line');
+  ok(eb.indexOf('entryHtml(en, i, tz)') < eb.indexOf('id="edBreaks"') && eb.indexOf('id="edBreaks"') < eb.indexOf('data-act="ed-add-shift"'), 'under the shifts, above + Add a shift');
+  const bl = appFn('breakLineHtml');
+  ok(/C\.editorBreakStatus\(E\.entries, ctx\)/.test(bl) && /class="ed-bline \$\{st\.tone\}"/.test(bl) && /data-act="ed-add-missing">Add missing breaks</.test(bl) && /C\.missingBreakAdds\(E\.entries, ctx\)\.length > 0/.test(bl), 'status, tone, and the one-tap link only when it would add something');
+  ok(/region: raw\.region \|\| C\.regionOfCompany\(raw\.company\)/.test(appFn('edCtx')) && /tz: tz \|\| C\.rowTz\(raw\)/.test(appFn('edCtx')), "the row's own region and clock");
+  ok(/setHTML\(\$\('edBreaks'\), breakLineHtml\(raw, tz\)\)/.test(appFn('onEditorInput')), 'live as times and types change');
+  ok(/edInsertBreak\(raw, en, C\.suggestBreak\(E\.entries, k, edCtx\(raw\)\)\)/.test(appFn('edAddBreak')) && /edFocus\(k, 'bs', i\)/.test(appFn('edAddBreak')), '+ Add break is filled in, and the new break gets the focus');
+  ok(/C\.breakIndexFor\(en, b, raw\.work_date, C\.rowTz\(raw\)\); en\.breaks\.splice\(i, 0, b\)/.test(appFn('edInsertBreak')) && /edInsertBreak\(raw, en, a\.brk\)/.test(appFn('edAddMissing')) && !/en\.breaks\.push/.test(appFn('edAddBreak') + appFn('edAddMissing')), 'added breaks go in among the others in time order');
+  ok(/case 'ed-add-missing': edAddMissing\(\); break;/.test(app) && /C\.missingBreakAdds\(E\.entries, edCtx\(raw\)\)/.test(appFn('edAddMissing')) && /Check the times, then save\./.test(appFn('edAddMissing')), 'Add missing breaks, then a note to check them');
+  ok(/\.ed-bline\.warn\{border-color:var\(--unpaid-line\)/.test(src) && /\.ed-bline\.ok\{border-color:var\(--paid-line\)/.test(src), 'amber while missing, green when complete');
+});
+
 // not a check: a reminder that the page links these files, so they must be committed with it, by name
 try {
   const files = ['timesheets.webmanifest', 'timesheets-icon-192.png', 'timesheets-icon-512.png', 'timesheets-apple-touch-icon.png'];

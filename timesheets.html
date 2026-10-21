@@ -538,6 +538,13 @@
     border-radius:12px;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
   .ed-sum b{color:var(--text);font-weight:650}
   .ed-sum .was{color:var(--faint);font-size:12px}
+  /* the Breaks line under the shifts: amber while something is missing, green when complete */
+  .ed-bline{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;margin:0 0 12px;padding:9px 14px;border:1px solid var(--line);
+    border-radius:12px;font-size:13px;line-height:1.45}
+  .ed-btxt{flex:1 1 240px;min-width:0;overflow-wrap:anywhere;color:var(--muted)}
+  .ed-bline.warn{border-color:var(--unpaid-line);background:var(--unpaid-bg)} .ed-bline.warn .ed-btxt{color:var(--unpaid-text)}
+  .ed-bline.ok{border-color:var(--paid-line);background:var(--paid-bg)} .ed-bline.ok .ed-btxt{color:var(--paid-text)}
+  .ed-bline .linkbtn{white-space:nowrap}
   .ed-histw{margin-top:16px}
   .ed-hist{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column}
   .ed-hist li{padding:9px 0;border-top:1px solid var(--row-line);font-size:13px;line-height:1.45;display:flex;flex-direction:column;gap:2px;overflow-wrap:anywhere}
@@ -696,7 +703,7 @@
     .ed-brk{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:end;padding-top:10px;border-top:1px solid var(--row-line)}
     .ed-brk + .ed-brk .ed-f > span{display:inline}
     .ed-f input[type=time],.ed-f select{width:100%}
-    .ed-copy,.ed-sum,.ed-hist li{font-size:14px}
+    .ed-copy,.ed-sum,.ed-bline,.ed-hist li{font-size:14px}
     .ed-f{font-size:13px}
     .linkbtn{font-size:14px;min-height:36px}
     /* admin lists stack into one block per sign-in or view instead of a wide table */
@@ -2001,6 +2008,82 @@
     return (day.region || regionOfCompany(day.company)) === 'NY' ? dayFlagsNY(day, today, rowTz(day)) : dayFlagsCA(day, today);
   }
 
+  /* ---------- what breaks a day still needs (the editor's Breaks line, Gianni 2026-10-21) ----------
+     The board's own break rules above (dayFlagsCA / dayFlagsNY), as a list of what to add or fix with the
+     details the editor needs: how many rests and how long, and by when the meal must start. Each item's
+     code is the board's flag code, so the editor says "complete" exactly when the board has no break flag. */
+  const BREAK_NEED_CODES = ['no_meal', 'late_meal', 'short_meal', 'no_second_meal', 'few_rest', 'short_rest'];
+  const BREAK_ADD_CODES = ['no_meal', 'no_second_meal', 'few_rest'];   // the ones a new break fixes
+  function restMinFor(company) { return BREAK_POLICY.rest[company] || BREAK_POLICY.restDefault; }
+  // the moment (ms) the day's worked time reaches min: clock time on the shifts, less unpaid breaks; NaN if never
+  function workedReachedAt(shifts, min) {
+    let acc = 0;
+    for (const s of shifts || []) {
+      if (!s || s.hours_only || !s.in || !s.out) continue;
+      const a = Date.parse(s.in), b = Date.parse(s.out);
+      if (isNaN(a) || isNaN(b) || b <= a) continue;
+      const cuts = (s.breaks || []).filter(x => !x.paid && x.start && x.end)
+        .map(x => [Math.max(a, Date.parse(x.start)), Math.min(b, Date.parse(x.end))]).filter(c => c[1] > c[0]).sort((p, q) => p[0] - q[0]);
+      let t = a;
+      for (const [x, y] of cuts.concat([[b, b]])) {
+        if (x > t) { const len = (x - t) / 60000; if (acc + len >= min) return t + (min - acc) * 60000; acc += len; }
+        t = Math.max(t, y);
+      }
+    }
+    return NaN;
+  }
+  // shifts: the day's shifts in the board's shape (as edited); company, region and tz: the row's.
+  // Returns [{code, kind, min, add, by?, n?, have?, after?, late?, gap?}]: min = the break length wanted, by =
+  // the latest start of the first meal (California), n = how many more rests the board wants now. add = how
+  // many breaks of the item to add once the meals the day needs are in: a meal is 30 min less worked, so it
+  // can lower the rests needed or make a second meal unnecessary (add 0: the other adds fix the item). A late
+  // first meal gets an on-time one added (add 1) when the day has no meal break to move (the late one is time
+  // off the clock between shifts, gap) or when that one meal also covers a needed second meal; otherwise the
+  // late meal itself should move (add 0). after = the end of the day's one meal (for a second); late = the
+  // late one's start. [] when nothing is missing or the day has no clock times.
+  function missingBreaks(shifts, company, region, tz) {
+    const ss = (shifts || []).filter(Boolean).slice().sort((a, b) => (Date.parse(a.in) - Date.parse(b.in)) || 0);
+    if (!ss.length || ss.every(s => s.hours_only)) return [];
+    const z = tz || rowTz({ company, region });
+    const worked = ss.reduce((a, s) => a + (+s.worked_min || 0), 0);
+    const all = ss.flatMap(s => s.breaks || []);
+    const meals = all.filter(b => b.kind === 'meal' && !b.open);
+    const rests = all.filter(b => b.kind === 'rest' && !b.open);
+    const gaps = shiftGaps(ss, z).filter(g => g.min >= MEAL_GAP_MIN);
+    const out = [];
+    if ((region || regionOfCompany(company)) === 'NY') {
+      const N = BREAK_POLICY_NY;
+      if (worked > N.mealOver * 60 && !gaps.length && !meals.some(m => m.min >= N.meal))
+        out.push(meals.length ? { code: 'short_meal', kind: 'meal', min: N.meal, add: 0 } : { code: 'no_meal', kind: 'meal', min: N.meal, by: null, add: 1 });
+      return out;
+    }
+    const P = BREAK_POLICY, rest = restMinFor(company);
+    const periods = meals.map(m => ({ start: m.start, end: m.end, gap: false })).concat(gaps.map(g => ({ start: g.start, end: g.end, gap: true })))
+      .sort((x, y) => Date.parse(x.start) - Date.parse(y.start));
+    const byMs = workedReachedAt(ss, P.mealBy * 60), by = isNaN(byMs) ? null : new Date(byMs).toISOString();
+    const late = periods.length > 0 && workedUntil({ shifts: ss }, periods[0].start) > 300;
+    // the day once the meals it needs are in: each added meal is 30 min less worked and one more meal period
+    let w = worked, p = periods.length;
+    const noMeal = worked > 300 && !p ? 1 : 0;
+    w -= noMeal * P.meal; p += noMeal;
+    const lateAdd = late && (!meals.length || (worked > 600 && periods.length < 2)) ? 1 : 0;
+    w -= lateAdd * P.meal; p += lateAdd;
+    const second = w > 600 && p < 2 ? 1 : 0;
+    w -= second * P.meal;
+    const needAfter = w < 210 ? 0 : Math.ceil((w - 120) / 240);
+    if (noMeal) out.push({ code: 'no_meal', kind: 'meal', min: P.meal, by, add: 1 });
+    if (late) out.push({ code: 'late_meal', kind: 'meal', min: P.meal, by, add: lateAdd, late: periods[0].start, gap: periods[0].gap });
+    if (meals.some(m => m.min < 30)) out.push({ code: 'short_meal', kind: 'meal', min: P.meal, add: 0 });
+    if (worked > 600 && periods.length < 2) {
+      const last = periods.length ? periods[periods.length - 1].end : null;
+      out.push({ code: 'no_second_meal', kind: 'meal', min: P.meal, add: second, after: last || null });
+    }
+    const need = worked < 210 ? 0 : Math.ceil((worked - 120) / 240);
+    if (rests.length < need) out.push({ code: 'few_rest', kind: 'rest', min: rest, n: need - rests.length, have: rests.length, add: Math.max(0, needAfter - rests.length) });
+    if (rests.some(b => b.min < 10)) out.push({ code: 'short_rest', kind: 'rest', min: rest, add: 0 });
+    return out;
+  }
+
   /* ---------- changes made on this page (ts_edits, supabase/ts-edits.sql) ----------
      One edit is the wanted final state of one shift, {in, out, breaks: [{start, end, kind}]} (kind rest =
      paid, meal = unpaid), next to the shift as it was (before). Start and end reach Gusto through its API
@@ -2576,6 +2659,217 @@
     }
     return t;
   }
+  // The day in the editor as the board would count it after Save, as board-shaped shifts (each with its
+  // entry's key), plus open (a shift still being worked) and incomplete (a shift without both times)
+  function entriesShifts(entries, date, tz) {
+    const d = { shifts: [], open: false, incomplete: false };
+    for (const en of entries || []) {
+      if (en.del) continue;
+      if (en.readonly === 'hours') { d.shifts.push({ id: en.id, key: en.key, in: (en.orig && en.orig.in) || null, out: (en.orig && en.orig.out) || null, hours_only: true, span_min: 0, worked_min: +en.worked || 0, breaks: [] }); continue; }
+      if (en.readonly === 'open') { d.open = true; continue; }
+      const a = entryAfter(en, date, tz);
+      const sIn = secOf(a.in), sOut = secOf(a.out);
+      if (isNaN(sIn) || isNaN(sOut) || sOut <= sIn) { d.incomplete = true; continue; }
+      const ok = a.breaks.filter(b => b.kind && !isNaN(secOf(b.start)) && !isNaN(secOf(b.end)) && secOf(b.end) > secOf(b.start));
+      d.shifts.push(Object.assign(editedShift(null, { in: a.in, out: a.out, breaks: ok }, tz), { key: en.key }));
+    }
+    return d;
+  }
+  // one missingBreaks item in words: "an unpaid 30-min meal by 12:00 PM", "1 more paid 15-min rest" (the
+  // rests to add once the needed meals are in, it.add, when the item has it)
+  function breakNeedText(it, tz, ny) {
+    const n = it.add != null ? it.add : it.n;
+    switch (it.code) {
+      case 'no_meal': return 'an unpaid ' + it.min + '-min meal' + (ny ? ' (over ' + BREAK_POLICY_NY.mealOver + ' hours worked)' : it.by ? ' by ' + fmtTime(it.by, tz) : '');
+      case 'no_second_meal': return 'a second unpaid ' + it.min + '-min meal';
+      case 'few_rest': return (it.have ? n + ' more' : n === 1 ? 'a' : String(n)) + ' paid ' + it.min + '-min rest' + (n === 1 ? '' : 's');
+      case 'late_meal': return it.add
+        ? 'an unpaid ' + it.min + '-min meal' + (it.by ? ' by ' + fmtTime(it.by, tz) : '') + (it.late ? ' (the ' + fmtTime(it.late, tz) + (it.gap ? ' time off the clock' : ' meal') + ' starts too late)' : '')
+        : 'Meal starts too late' + (it.by ? ': start it by ' + fmtTime(it.by, tz) : '');
+      case 'short_meal': return 'Meal under ' + it.min + ' min';
+      case 'short_rest': return 'Rest under 10 min';
+      default: return '';
+    }
+  }
+  // The editor's Breaks line for the day as edited: {state, items, tone, text}. state: 'none' (no shifts),
+  // 'hours' (hours entered only), 'open' (still clocked in), 'incomplete', 'missing' or 'ok'; tone: ok, warn
+  // or info; text '' = no line. ctx: {date, tz, company, region} of the row.
+  function editorBreakStatus(entries, ctx) {
+    const c = ctx || {}, tz = c.tz || rowTz(c), d = entriesShifts(entries, c.date, tz);
+    const ny = (c.region || regionOfCompany(c.company)) === 'NY';
+    let state, items = [];
+    if (d.open) state = 'open';
+    else if (d.incomplete) state = 'incomplete';
+    else if (!d.shifts.length) state = 'none';
+    else if (d.shifts.every(s => s.hours_only)) state = 'hours';
+    else { items = missingBreaks(d.shifts, c.company, c.region, tz); state = items.length ? 'missing' : 'ok'; }
+    if (state === 'ok') return { state, items, tone: 'ok', text: 'Breaks look complete' };
+    if (state === 'open') return { state, items, tone: 'info', text: 'Breaks are checked after they clock out' };
+    if (state === 'incomplete') return { state, items, tone: 'info', text: 'Breaks are checked once each shift has a start and an end' };
+    if (state !== 'missing') return { state, items, tone: 'info', text: '' };
+    // what to add (the meals first, then the rests the day needs once they are in), then what to fix; an
+    // item the added meals take care of (add 0) is not listed, though it stays in items with the board's code
+    const add = items.filter(it => it.add > 0), fix = items.filter(it => !(it.add > 0) && !BREAK_ADD_CODES.includes(it.code));
+    const parts = (add.length ? ['Missing: ' + breakNeedText(add[0], tz, ny)].concat(add.slice(1).map(it => breakNeedText(it, tz, ny))) : [])
+      .concat(fix.map(it => breakNeedText(it, tz, ny)));
+    return { state, items, tone: 'warn', text: parts.join(' · ') };
+  }
+
+  /* where a new break goes ("+ Add break" and "Add missing breaks"): epoch minutes, starts on a 5-minute
+     mark when it can, always inside the shift and never over another break */
+  const r5 = m => Math.round(m / 5) * 5, c5 = m => Math.ceil(m / 5) * 5, f5 = m => Math.floor(m / 5) * 5;
+  function roundIn(x, lo, hi) {             // x on a 5-minute mark inside [lo, hi], else x itself kept inside
+    let s = r5(x);
+    if (s < lo) s = c5(lo);
+    if (s > hi) s = f5(hi);
+    return s >= lo && s <= hi ? s : Math.round(Math.min(Math.max(x, lo), hi));
+  }
+  function freeStretches(lo, hi, busy) {    // the parts of [lo, hi] no busy [start, end] covers
+    const out = [];
+    let t = lo;
+    for (const [x, y] of busy.slice().sort((p, q) => p[0] - q[0])) {
+      if (x > t) out.push([t, Math.min(x, hi)]);
+      t = Math.max(t, y);
+      if (t >= hi) break;
+    }
+    if (t < hi) out.push([t, hi]);
+    return out.filter(g => g[1] > g[0]);
+  }
+  // the free start nearest to want with the whole break inside [lo, hi + len] (a tie goes later); null if none
+  function fitBreak(want, lo, hi, len, busy) {
+    if (hi < lo) return null;
+    let best = null;
+    for (const [a, b] of freeStretches(lo, hi + len, busy)) {
+      if (b - a < len) continue;
+      const s = roundIn(want, a, b - len), d = Math.abs(s - want), bd = best == null ? Infinity : Math.abs(best - want);
+      if (d < bd || (d === bd && s > best)) best = s;
+    }
+    return best;
+  }
+  // the middle of the longest free stretch: {s, len}; a stretch shorter than the break shortens it; null
+  // when breaks already cover the whole shift
+  function longestGapBreak(inM, outM, busy, len) {
+    const gs = freeStretches(inM, outM, busy);
+    if (!gs.length) return null;
+    const [a, b] = gs.reduce((x, g) => g[1] - g[0] > x[1] - x[0] ? g : x);
+    if (b - a < len) return { s: a, len: Math.max(1, b - a) };
+    return { s: roundIn((a + b - len) / 2, a, b - len), len };
+  }
+  // one entry's shift in minutes, or null without both times: {inM, outM, busy, meals, en}
+  function entryMinutes(en, date, tz) {
+    const a = entryAfter(en, date, tz), sIn = secOf(a.in), sOut = secOf(a.out);
+    if (isNaN(sIn) || isNaN(sOut)) return null;
+    const inM = Math.ceil(sIn / 60), outM = Math.max(inM, Math.floor(sOut / 60));
+    const ok = a.breaks.filter(b => !isNaN(secOf(b.start)) && !isNaN(secOf(b.end)) && secOf(b.end) > secOf(b.start));
+    // a break with only one time (still open, or half typed) keeps 15 minutes beside that time clear
+    const half = a.breaks.filter(b => isNaN(secOf(b.start)) !== isNaN(secOf(b.end)))
+      .map(b => isNaN(secOf(b.end)) ? [Math.floor(secOf(b.start) / 60), Math.floor(secOf(b.start) / 60) + 15] : [Math.ceil(secOf(b.end) / 60) - 15, Math.ceil(secOf(b.end) / 60)]);
+    return { inM, outM, en, busy: ok.map(b => [Math.floor(secOf(b.start) / 60), Math.ceil(secOf(b.end) / 60)]).concat(half),
+      meals: ok.filter(b => b.kind === 'meal').map(b => Math.ceil(secOf(b.end) / 60)).sort((x, y) => x - y) };
+  }
+  // A break for one shift, for the item it fixes ({kind, min, code, by, after}) as editor fields plus m (its
+  // start), or null when breaks already fill the shift. A first meal starts about 4 hours in, never earlier
+  // than 1 hour in and never later than the 5-hour mark or the day's meal deadline; on a later shift that
+  // starts past that deadline, 1 hour in. A second meal starts about 4 hours after the day's meal ends
+  // (it.after, on any shift), at least 1 hour after it and 1 hour into its own shift. A meal leaves 30 minutes
+  // of work after it when the shift has room; failing all that, anywhere in the shift, then the longest free
+  // stretch. A rest goes in the middle of the longest stretch between the start, the breaks and the end. A
+  // shift under 30 minutes gets a rest of up to 10 minutes at its first free minute (a zero-length one, whose
+  // end still needs typing, 10 minutes at its start, once).
+  function placeBreak(sm, it, tz) {
+    const field = m => hhmm(new Date(m * 60000).toISOString(), tz);
+    const mk = (s, len, kind) => ({ startT: field(s), endT: field(s + len), kind, orig: null, m: s });
+    const { inM, outM, busy } = sm;
+    if (outM <= inM) return busy.length ? null : mk(inM, 10, 'rest');
+    if (outM - inM < 30) { const g = freeStretches(inM, outM, busy)[0]; return g ? mk(g[0], Math.min(10, g[1] - g[0]), 'rest') : null; }
+    let len = it.min, s = null;
+    if (it.kind === 'meal') {
+      const end = outM - len - (outM - len - 30 >= inM ? 30 : 0);   // the latest start that leaves some work after it
+      const afterM = it.code === 'no_second_meal' && it.after ? Math.ceil(Date.parse(it.after) / 60000) : NaN;
+      const second = it.code === 'no_second_meal' && (!isNaN(afterM) || sm.meals.length > 0);
+      const at = second ? (isNaN(afterM) ? sm.meals[sm.meals.length - 1] : afterM) : inM;
+      const byM = it.by ? Math.floor(Date.parse(it.by) / 60000) : Infinity;
+      if (!second && byM < inM) {
+        s = fitBreak(inM + 60, inM + 60, end, len, busy);
+        if (s == null) s = fitBreak(inM + 60, inM, end, len, busy);
+      } else {
+        const cap = second ? end : Math.min(at + 300, byM, end);
+        s = fitBreak(at + 240, Math.max(inM, at) + 60, cap, len, busy);
+        if (s == null && !second) s = fitBreak(at + 240, inM, cap, len, busy);
+        if (s == null) s = fitBreak(at + 240, inM, end, len, busy);
+      }
+      if (s == null) s = fitBreak(at + 240, inM, outM - len, len, busy);
+    }
+    if (s == null) { const g = longestGapBreak(inM, outM, busy, len); if (!g) return null; s = g.s; len = g.len; }
+    return mk(s, len, it.kind);
+  }
+  const breakOut = b => ({ startT: b.startT, endT: b.endT, kind: b.kind, orig: null });
+  // "+ Add break" on one shift: a meal when the day is missing one (an on-time one when its meal starts too
+  // late and this shift starts before the deadline, else a second meal when one is due), else a paid rest of
+  // the company's length. ctx: {date, tz, company, region}. A shift without both times, or with no free
+  // minute left, gets blank fields, as before.
+  function suggestBreak(entries, key, ctx) {
+    const c = ctx || {}, tz = c.tz || rowTz(c);
+    const en = (entries || []).find(x => x && x.key === key);
+    const sm = en && entryMinutes(en, c.date, tz);
+    const blank = kind => ({ startT: '', endT: '', kind: kind || 'rest', orig: null });
+    if (!sm) return blank();
+    const items = missingBreaks(entriesShifts(entries, c.date, tz).shifts, c.company, c.region, tz);
+    const meal = items.find(it => it.code === 'no_meal')
+      || items.find(it => it.code === 'late_meal' && it.by && Math.floor(Date.parse(it.by) / 60000) >= sm.inM)
+      || items.find(it => it.code === 'no_second_meal');
+    const it = meal || { code: 'rest', kind: 'rest', min: restMinFor(c.company) };
+    const b = placeBreak(sm, it, tz);
+    return b ? breakOut(b) : blank(it.kind);
+  }
+  // where a new break goes in its shift's list so the editor shows the breaks in time order (Save sorts them
+  // anyway): the index of the first break that starts later, else the end
+  function breakIndexFor(en, brk, date, tz) {
+    const a = entryAfter(Object.assign({}, en, { breaks: (en.breaks || []).concat([brk]) }), date, tz).breaks;
+    const s = secOf(a[a.length - 1].start);
+    if (isNaN(s)) return a.length - 1;
+    for (let i = 0; i < a.length - 1; i++) { const t = secOf(a[i].start); if (!isNaN(t) && t > s) return i; }
+    return a.length - 1;
+  }
+  // "Add missing breaks": every missing meal and rest at once (each item's add), placed as above, on the shifts
+  // that can still change: [{key, brk}], in time order per shift. A first meal goes on the shift its deadline
+  // falls in, a second on the shift 4 hours after the day's meal ends (else the next one with room), else the
+  // longest; a rest on the shift with the longest free stretch. The entries themselves are not changed.
+  function missingBreakAdds(entries, ctx) {
+    const c = ctx || {}, tz = c.tz || rowTz(c);
+    const work = (entries || []).map(en => Object.assign({}, en, { breaks: (en.breaks || []).slice() }));
+    const needs = () => missingBreaks(entriesShifts(work, c.date, tz).shifts, c.company, c.region, tz).filter(x => x.add > 0);
+    const score = list => list.reduce((a, x) => a + x.add, 0);
+    const adds = [];
+    let left = needs();
+    for (let guard = 0; left.length && guard < 3 * EDIT_RULES.maxBreaks; guard++) {
+      const it = left[0];
+      // a shift that can change, with room for the break and some work around it
+      const cands = work.filter(en => !en.del && !en.readonly && en.breaks.length < EDIT_RULES.maxBreaks)
+        .map(en => entryMinutes(en, c.date, tz)).filter(sm => sm && sm.outM - sm.inM >= (it.kind === 'meal' ? it.min + 30 : 30));
+      if (!cands.length) break;
+      const span = sm => sm.outM - sm.inM, room = sm => Math.max(0, ...freeStretches(sm.inM, sm.outM, sm.busy).map(g => g[1] - g[0]));
+      const longest = f => cands.reduce((x, sm) => f(sm) > f(x) ? sm : x);
+      const holds = t => cands.find(x => t >= x.inM && t <= x.outM);
+      let sm;
+      if (it.kind === 'rest') sm = longest(room);
+      else if (it.code === 'no_second_meal') {
+        const afterM = it.after ? Math.ceil(Date.parse(it.after) / 60000) : NaN, t = afterM + 240;
+        sm = isNaN(afterM) ? null : holds(t) || cands.filter(x => x.inM > t).sort((x, y) => x.inM - y.inM)[0]
+          || cands.filter(x => x.outM - it.min > afterM).sort((x, y) => y.inM - x.inM)[0];
+        sm = sm || longest(span);
+      } else sm = (it.by && holds(Math.floor(Date.parse(it.by) / 60000))) || longest(span);
+      const b = placeBreak(sm, it, tz);
+      if (!b) break;
+      sm.en.breaks.push(breakOut(b));
+      const now = needs();
+      if (score(now) >= score(left)) { sm.en.breaks.pop(); break; }   // it fixed nothing: stop rather than pile up
+      adds.push({ key: sm.en.key, brk: breakOut(b), m: b.m });
+      left = now;
+    }
+    const order = new Map(work.map((en, i) => [en.key, i]));
+    return adds.sort((x, y) => (order.get(x.key) - order.get(y.key)) || (x.m - y.m)).map(a => ({ key: a.key, brk: a.brk }));
+  }
   // The day as the editor opened it, as one string: its shifts as Gusto has them (to the minute, break
   // types too) and every change made here to it with where it stands. Save reads the day again and sends
   // nothing when this differs: a field left alone must never send a time Gusto has changed since, and a
@@ -2609,7 +2903,8 @@
     fmtDayShort, shiftParts, shiftsText, breakUnsure, breakSummary, breakSummaryText, BREAK_POLICY, BREAK_POLICY_NY, breakPolicyText,
     csvCell, csvEditCell, buildCsv, csvFilename, freshness, freshSummary,
     esc, SafeHTML, h, flagsHtml,
-    workedUntil, dayFlagsCA, dayFlagsNY, dayFlags,
+    workedUntil, dayFlagsCA, dayFlagsNY, dayFlags, BREAK_NEED_CODES, BREAK_ADD_CODES, restMinFor, workedReachedAt, missingBreaks,
+    entriesShifts, breakNeedText, editorBreakStatus, freeStretches, placeBreak, suggestBreak, breakIndexFor, missingBreakAdds,
     EDIT_ANCHOR_END, EDIT_RULES, BREAK_RUNS_PT, editWindow, canEditDate, sameMinute, snapBreaks, shiftSnap, sameBreaks, editParts,
     validateAfter, shiftOverlap, hhmm, parseHhmm, fmtHhmm, entryOf, entryKey, entryAfter, newEntry, editedShift, dailySplit, estOvertime,
     rebuildDay, editStatus, EDIT_STATUS_WORDS, replacedEdits, editShownStatus, replacedBy, EDIT_LATE_SEC, firstBreakRun, partLate, editLate,
@@ -4492,6 +4787,7 @@
     return h`<p class="ed-copy">${C.editTimingText(tz)} Times are ${C.regionDef(raw.region).tzName}.</p>
       ${S.editsState === 'error' ? h`<p class="hint">Earlier changes to this day couldn't load, so these are the times Gusto had at the last sync.</p>` : ''}
       ${n ? E.entries.map((en, i) => entryHtml(en, i, tz)) : h`<p class="faint">No shifts on this day in Gusto.</p>`}
+      <div id="edBreaks" aria-live="polite">${breakLineHtml(raw, tz)}</div>
       <div class="ed-more"><button type="button" class="btn sm" data-act="ed-add-shift"${E.busy ? ' disabled' : ''}>+ Add a shift</button><span class="faint">for a clock-in that was missed</span></div>
       <label class="fld ed-note"><span>Reason <span class="faint">optional, saved with the change</span></span><input type="text" id="edNote" value="${E.note}" maxlength="${C.EDIT_RULES.noteMax}" placeholder="For example: forgot to clock out" autocomplete="off"></label>
       <div class="ed-sum" id="edPreview" aria-live="polite">${previewHtml(raw, tz)}</div>
@@ -4536,6 +4832,15 @@
     const was = (v, w) => v !== w ? h` <span class="was">now ${hrs(w)}</span>` : '';
     return h`<span class="ed-k">After saving</span><span>Worked <b>${hrs(p.worked)}</b>${was(p.worked, now.worked_min)}</span><span>Paid breaks <b>${hrs(p.paid)}</b>${was(p.paid, now.paid_break_min)}</span><span>Unpaid breaks <b>${hrs(p.unpaid)}</b>${was(p.unpaid, now.unpaid_break_min)}</span>${p.incomplete ? h`<span class="faint">A shift or break without both times is left out.</span>` : ''}`;
   }
+  // the row's rules for the day's breaks (C.editorBreakStatus, C.suggestBreak, C.missingBreakAdds)
+  function edCtx(raw, tz) { return { date: raw.work_date, tz: tz || C.rowTz(raw), company: raw.company, region: raw.region || C.regionOfCompany(raw.company) }; }
+  // under the shifts: what breaks the day as edited still needs, on the board's rules, live as times change
+  function breakLineHtml(raw, tz) {
+    const ctx = edCtx(raw, tz), st = C.editorBreakStatus(E.entries, ctx);
+    if (!st.text) return h``;
+    const fix = st.state === 'missing' && !E.busy && C.missingBreakAdds(E.entries, ctx).length > 0;
+    return h`<div class="ed-bline ${st.tone}"><span class="ed-k">Breaks</span><span class="ed-btxt">${st.text}</span>${fix ? h`<button type="button" class="linkbtn" data-act="ed-add-missing">Add missing breaks</button>` : ''}</div>`;
+  }
   function editorHistory(raw, tz) {
     const list = histItems(raw.id);
     if (!list.length) return '';
@@ -4567,7 +4872,9 @@
       if (f === 'bs') b.startT = t.value; else if (f === 'be') b.endT = t.value; else if (f === 'bt') b.kind = t.value === 'meal' ? 'meal' : 'rest';
     }
     if (E.confirm === 'close') { E.confirm = ''; renderEditor(); return; }
-    setHTML($('edPreview'), previewHtml(S.rows.get(E.rowId), C.rowTz(S.rows.get(E.rowId))));
+    const raw = S.rows.get(E.rowId), tz = C.rowTz(raw);
+    setHTML($('edPreview'), previewHtml(raw, tz));
+    setHTML($('edBreaks'), breakLineHtml(raw, tz));
   }
   function edFocus(k, f, bi) {
     const x = [...$('edForm').querySelectorAll('[data-ek][data-ef]')].find(el => el.dataset.ek === k && el.dataset.ef === f && (bi == null || el.dataset.bi === String(bi)));
@@ -4580,10 +4887,29 @@
     E.confirm = ''; renderEditor();
   }
   function edUndel(k) { const en = edEntry(k); if (!en) return; en.del = false; E.confirm = ''; renderEditor(); edFocus(k, 'in'); }
+  // a new break comes filled in where it makes sense for the shift (C.suggestBreak): a missing meal about 4
+  // hours in, else a paid rest in the middle of the longest stretch; every field can still be changed. It
+  // goes in among the shift's breaks in time order (C.breakIndexFor).
+  function edInsertBreak(raw, en, b) { const i = C.breakIndexFor(en, b, raw.work_date, C.rowTz(raw)); en.breaks.splice(i, 0, b); en.err = ''; return i; }
   function edAddBreak(k) {
-    const en = edEntry(k); if (!en || en.breaks.length >= C.EDIT_RULES.maxBreaks) return;
-    en.breaks.push({ startT: '', endT: '', kind: 'rest', orig: null }); en.err = ''; E.confirm = '';
-    renderEditor(); edFocus(k, 'bs', en.breaks.length - 1);
+    const raw = S.rows.get(E.rowId), en = edEntry(k); if (!raw || !en || en.breaks.length >= C.EDIT_RULES.maxBreaks) return;
+    const i = edInsertBreak(raw, en, C.suggestBreak(E.entries, k, edCtx(raw))); E.confirm = '';
+    renderEditor(); edFocus(k, 'bs', i);
+  }
+  // every missing meal and rest in one tap, placed the same way
+  function edAddMissing() {
+    const raw = S.rows.get(E.rowId); if (!raw || E.busy) return;
+    const adds = C.missingBreakAdds(E.entries, edCtx(raw));
+    let first = null, n = 0;
+    for (const a of adds) {
+      const en = edEntry(a.key); if (!en || en.breaks.length >= C.EDIT_RULES.maxBreaks) continue;
+      edInsertBreak(raw, en, a.brk); n++;
+      if (!first) first = { k: a.key, en, brk: a.brk };
+    }
+    E.confirm = ''; renderEditor();
+    if (!n) return;
+    edFocus(first.k, 'bs', first.en.breaks.indexOf(first.brk));
+    toast('Added ' + n + ' break' + (n === 1 ? '' : 's') + '. Check the times, then save.');
   }
   function edRmBreak(k, i) { const en = edEntry(k); if (!en || !en.breaks[i]) return; en.breaks.splice(i, 1); en.err = ''; E.confirm = ''; renderEditor(); }
   // one call to the server (or, in demo, the same rules in memory): {edit} or {error}
@@ -4799,6 +5125,7 @@
       case 'ed-del': edDelShift(d.ek); break;
       case 'ed-undel': edUndel(d.ek); break;
       case 'ed-add-brk': edAddBreak(d.ek); break;
+      case 'ed-add-missing': edAddMissing(); break;
       case 'ed-rm-brk': edRmBreak(d.ek, +d.bi); break;
       case 'ed-x': edCancelChange(d.id); break;
       case 'ed-x-yes': E.confirm = d.id; edCancelChange(d.id); break;
