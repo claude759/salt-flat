@@ -2538,7 +2538,7 @@ check('review: an update or delete sends p_expect (the waiting changes the edito
 });
 check('review: managers are offered only the kinds of change the worker has sent with a person watching (adding, deleting and New York wait for a supervised run)', () => {
   const app = block('ts-app');
-  ok(/const EDIT_PROVEN = \{ add: false, delete: false, ny: false \};/.test(app), 'none proven yet');
+  ok(/const EDIT_PROVEN = \{ add: false, delete: true, ny: false \};/.test(app), 'deleting a shift proven 2026-10-22; adding a shift and New York not yet');
   ok(/function mayEdit\(what\) \{ const a = actor\(\); return !!\(a && a\.is_admin\) \|\| C\.fullViewer\(a\) \|\| !!EDIT_PROVEN\[what\]; \}/.test(app), 'admins and full viewers keep them all');
   const fv = { is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, mgr = { is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
   ok(C.fullViewer(fv) && !C.fullViewer(mgr), 'a full viewer (every CA company) gets add and delete; a department manager does not');
