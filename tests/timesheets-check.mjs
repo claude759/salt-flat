@@ -2041,9 +2041,9 @@ check('Save never sends from a stale copy: the editor reads the day again when i
   ok(/if \(E\.loading\) return h`<p class="faint ed-load" role="status">/.test(appFn('editorBody')) && /if \(E\.busy \|\| E\.loading\) return;/.test(sv), 'while the day loads: no form, no Save');
   ok(/return done;/.test(appFn('fetchEdits')), 'fetchEdits says whether it read');
 });
-check('the launch switch stays off until the LaunchAgent is installed (review 2026-10-21); no ?beta switch any more', () => {
+check('the launch switch went on with the LaunchAgent (launched 2026-10-22); no ?beta switch any more', () => {
   const app = block('ts-app');
-  ok(/const EDITS_FOR_MANAGERS = false;/.test(app), 'the launch switch is off until the worker runs on its own');
+  ok(/const EDITS_FOR_MANAGERS = true;/.test(app), 'managers have Edit: the worker runs on its own at 1 PM and 9 PM');
   ok(/Turn it on in the SAME step that installs the LaunchAgent/.test(app), 'it says when it may go on');
   ok(!/\bBETA\b/.test(app) && !/QS\.has\('beta'\)/.test(app), 'no ?beta switch left over');
   ok(/edits: editsLoaded\(\)/.test(appFn('exportCsv')), 'the CSV marks changes whenever the board shows them, Edit or not');
