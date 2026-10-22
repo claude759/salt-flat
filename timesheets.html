@@ -422,6 +422,8 @@
   .a2hs .a2hs-t{flex:1 1 200px;min-width:0}
   .a2hs b{color:#fff}
   .a2hs .a2hs-act{display:flex;gap:8px;margin-left:auto}
+  /* a manager's first look at Edit: the same note, one quiet line */
+  .a2hs.edhint{padding:6px 8px 6px 12px;font-size:13px}
 
   /* empty states */
   .empty{background:var(--panel);border:1px dashed #343a47;border-radius:14px;padding:38px 22px;text-align:center;color:var(--muted)}
@@ -562,7 +564,7 @@
 
   #toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:120;display:none;
     background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 16px;
-    box-shadow:var(--shadow);font-size:13px;max-width:90vw}
+    box-shadow:var(--shadow);font-size:13px;width:max-content;max-width:90vw}   /* max-content: left:50% would halve the room */
   #toast.on{display:block}
 
   /* ---------- sign-in gate (same as the labor tracker) ---------- */
@@ -808,7 +810,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
 <header id="top">
-  <div class="banner demo" id="demoBar" hidden><span><b>Demo data, not real timesheets.</b> Every name and hour on this page is made up. Changes in Admin stay in this tab.</span><button type="button" class="btn sm" id="demoMgrBtn" data-act="demo-manager" title="See the page the way a manager with one saved view sees it">Preview as a manager</button></div>
+  <div class="banner demo" id="demoBar" hidden><span><b>Demo data, not real timesheets.</b> Every name and hour on this page is made up. Changes made here stay in this tab and never go to Gusto.</span><button type="button" class="btn sm" id="demoMgrBtn" data-act="demo-manager" title="See the page the way a manager with one saved view sees it">Preview as a manager</button></div>
   <div class="bar" id="topBar">
     <div class="brand">
       <div class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></div>
@@ -843,6 +845,10 @@
   <div class="a2hs" id="a2hs" role="note" hidden>
     <span class="a2hs-t"><b>Add to Home Screen</b> for one-tap access. <span id="a2hsHow"></span></span>
     <span class="a2hs-act"><button type="button" class="btn sm primary" id="a2hsAdd" data-act="a2hs-add" hidden>Add</button><button type="button" class="btn sm" data-act="a2hs-close">Got it</button></span>
+  </div>
+  <div class="a2hs edhint no-print" id="edHint" role="note" hidden>
+    <span class="a2hs-t"><b>New:</b> fix a missed clock-in, clock-out or break with <b id="edHintHow">Edit</b>. Changes go to Gusto at <span id="edHintRuns">1 PM and 9 PM</span>.</span>
+    <span class="a2hs-act"><button type="button" class="btn sm" data-act="edhint-close">Got it</button></span>
   </div>
 
   <div class="controls">
@@ -889,7 +895,7 @@
                 <span><span class="flag warn">Flag</span> worth a look, not a legal finding</span>
                 <span><span class="infomark" aria-hidden="true">i</span> a note, for example a break type guessed from its length</span>
                 <span><span class="notemark">note</span> a note on this day in Gusto, click to read it</span>
-                <span><span class="flag epend">Pending</span> changed here, on its way to Gusto; the row shows the change</span>
+                <span><span class="flag epend">Pending</span><span>changed here, goes to Gusto at <span id="keyRuns">1 PM and 9 PM</span>; the row shows the change (the pill reads Late if a run passed without it)</span></span>
                 <span><span class="flag eatt">Needs a look</span> a change made here that Gusto did not take, click for why</span>
               </div>
             </div>
@@ -2086,13 +2092,14 @@
 
   /* ---------- changes made on this page (ts_edits, supabase/ts-edits.sql) ----------
      One edit is the wanted final state of one shift, {in, out, breaks: [{start, end, kind}]} (kind rest =
-     paid, meal = unpaid), next to the shift as it was (before). Start and end reach Gusto through its API
-     within minutes (times_status); breaks, and deleting a shift, go with a browser task at 1 PM and 9 PM
-     Pacific (breaks_status). Each part is none, pending, applied, conflict, failed or cancelled. The rules
-     below mirror ts_edit_submit, so the editor refuses what the server would; the server decides. */
+     paid, meal = unpaid), next to the shift as it was (before). It has two parts, start and end
+     (times_status) and breaks, or deleting the shift (breaks_status), and both go to Gusto in the same save
+     by a browser task at 1 PM and 9 PM Pacific (4 PM and midnight Eastern). Each part is none, pending,
+     applied, conflict, failed or cancelled. The rules below mirror ts_edit_submit, so the editor refuses what
+     the server would; the server decides. */
   const EDIT_ANCHOR_END = '2026-10-09';     // the server's pay period anchor: the same 14-day grid as every region
   const EDIT_RULES = { maxBreaks: 6, breakMinSec: 60, breakMaxSec: 240 * 60, overnightMaxSec: 16 * 3600, noteMax: 500 };
-  const BREAK_RUNS_PT = [13 * 60, 21 * 60];   // the browser task's runs, Pacific wall clock
+  const EDIT_RUNS_PT = [13 * 60, 21 * 60];   // the browser task's runs, Pacific wall clock: every change goes then
   // the days a change can be made: the first day of the previous pay period through today (the row's own today)
   function editWindow(today) {
     const cur = payPeriodFor(today, EDIT_ANCHOR_END);
@@ -2276,14 +2283,18 @@
 
   /* where an edit stands */
   const partAttn = s => s === 'conflict' || s === 'failed';
+  // a part not in Gusto yet: waiting for a run ('pending'), or being sent by one right now ('applying': the
+  // worker claimed it just before writing it to Gusto; nobody can cancel or replace it then)
+  const partWaits = s => s === 'pending' || s === 'applying';
+  const editSending = e => !!e && (e.times_status === 'applying' || e.breaks_status === 'applying');
   const cmpEdit = (a, b) => ((secOf(a.created_at) - secOf(b.created_at)) || 0) || String(a.id).localeCompare(String(b.id));
-  // one word for an edit: anything that needs a look first, then waiting, then done
+  // one word for an edit: anything that needs a look first, then waiting (or being sent), then done
   function editStatus(e) {
     if (!e) return 'none';
     const p = [e.times_status, e.breaks_status];
-    if (e.cancelled_at && !p.includes('pending')) return 'cancelled';
+    if (e.cancelled_at && !p.some(partWaits)) return 'cancelled';
     if (p.some(partAttn)) return 'attention';
-    if (p.includes('pending')) return 'pending';
+    if (p.some(partWaits)) return 'pending';
     if (p.includes('applied')) return 'applied';
     if (p.includes('cancelled')) return 'cancelled';
     return 'none';
@@ -2314,29 +2325,33 @@
       String(x.shift_id) === String(e.shift_id) && cmpEdit(x, e) > 0).sort(cmpEdit);
     return later.find(x => !isNaN(at) && secOf(x.created_at) >= at - 1) || later[later.length - 1] || null;
   }
-  // A part that should be in Gusto by now and is not: start and end 30 minutes after the change was made;
-  // breaks (and deleting a shift) 30 minutes after the first breaks run that came after it. The page then
-  // says it is late instead of promising when it gets there.
+  // A part that should be in Gusto by now and is not: 30 minutes after the first 1 PM or 9 PM Pacific run
+  // that came after the change was made (start and end, breaks and deletes all go in that run). The page
+  // then says it is late instead of promising when it gets there.
   const EDIT_LATE_SEC = 30 * 60;
-  function firstBreakRun(t) {                // seconds of the first 1 PM or 9 PM Pacific run after t
+  function firstEditRun(t) {                // seconds of the first 1 PM or 9 PM Pacific run after t
     const s = secOf(t); if (isNaN(s)) return NaN;
     const d0 = zDate(t, TZ);
-    for (const d of [d0, addDays(d0, 1)]) for (const m of BREAK_RUNS_PT) { const r = secOf(zIso(d, m, TZ)); if (r > s) return r; }
+    for (const d of [d0, addDays(d0, 1)]) for (const m of EDIT_RUNS_PT) { const r = secOf(zIso(d, m, TZ)); if (r > s) return r; }
     return NaN;
   }
   function partLate(e, part, now) {
-    if (!e || e[part + '_status'] !== 'pending') return false;
+    const st = e && e[part + '_status'];
+    if (!partWaits(st)) return false;
     const n = Math.floor((now == null ? Date.now() : +new Date(now)) / 1000);
-    const due = part === 'times' ? secOf(e.created_at) : firstBreakRun(e.created_at);
+    // being sent: late once the run's claim is half an hour old (a run that stopped half way; the next run
+    // takes it again)
+    const claimed = st === 'applying' ? secOf(e[part + '_claimed_at']) : NaN;
+    const due = isNaN(claimed) ? firstEditRun(e.created_at) : claimed;
     return !isNaN(due) && n >= due + EDIT_LATE_SEC;
   }
   const editLate = (e, now) => partLate(e, 'times', now) || partLate(e, 'breaks', now);
-  // how the board shows one part of an edit: 'pending' (the edit's value, Pending pill), 'sent' (the
-  // edit's value while Gusto has it and the board waits for the next sync), 'attention' (Gusto's value,
-  // Needs a look pill), or null (Gusto's value, plain)
+  // how the board shows one part of an edit: 'pending' (the edit's value, Pending pill; also while a run
+  // sends it), 'sent' (the edit's value while Gusto has it and the board waits for the next sync),
+  // 'attention' (Gusto's value, Needs a look pill), or null (Gusto's value, plain)
   function partShow(e, part, syncedSec) {
     const st = e[part + '_status'];
-    if (st === 'pending') return 'pending';
+    if (partWaits(st)) return 'pending';
     if (partAttn(st)) return 'attention';
     if (st === 'applied') { const at = secOf(e[part + '_applied_at']); return !isNaN(at) && at > syncedSec ? 'sent' : null; }
     return null;
@@ -2440,35 +2455,64 @@
     if (!p.h && !p.m) return 'midnight';
     return ((p.h % 12) || 12) + (p.m ? ':' + pad2(p.m) : '') + ' ' + (p.h < 12 ? 'AM' : 'PM');
   }
-  // when the next breaks run is, on the row's clock: "at 9 PM today", "at 1 PM tomorrow", "at midnight tonight"
-  function nextBreakRun(now, tz) {
-    const ms = now == null ? Date.now() : +new Date(now), z = tz || TZ;
-    const la = todayIn(TZ, ms);
-    for (const d of [la, addDays(la, 1)]) for (const m of BREAK_RUNS_PT) {
-      const iso = zIso(d, m, TZ);
-      if (Date.parse(iso) <= ms) continue;
-      const day = zDate(iso, z), t = todayIn(z, ms), c = clockShort(iso, z);
-      if (c === 'midnight') return day === addDays(t, 1) ? 'at midnight tonight' : 'at midnight';
-      return 'at ' + c + (day === t ? ' today' : day === addDays(t, 1) ? ' tomorrow' : '');
-    }
-    return 'at the next run';
+  // a run (seconds) in words on the row's clock, next to now: "at 9 PM today", "at 1 PM tomorrow", "at midnight tonight"
+  function runWords(sec, now, tz) {
+    const ms = now == null ? Date.now() : +new Date(now), z = tz || TZ, at = sec * 1000;
+    const day = zDate(at, z), t = todayIn(z, ms), c = clockShort(at, z);
+    if (c === 'midnight') return day === addDays(t, 1) ? 'at midnight tonight' : 'at midnight';
+    return 'at ' + c + (day === t ? ' today' : day === addDays(t, 1) ? ' tomorrow' : '');
+  }
+  // when the next run is: a change made now goes to Gusto then
+  function nextEditRun(now, tz) {
+    const ms = now == null ? Date.now() : +new Date(now), r = firstEditRun(new Date(ms).toISOString());
+    return isNaN(r) ? 'at the next run' : runWords(r, ms, tz);
   }
   // "1 PM and 9 PM" on a Pacific row, "4 PM and midnight" on an Eastern one
-  function breakRunsText(tz, now) {
+  function editRunsText(tz, now) {
     const la = todayIn(TZ, now == null ? Date.now() : +new Date(now));
-    return BREAK_RUNS_PT.map(m => clockShort(zIso(la, m, TZ), tz || TZ)).join(' and ');
+    return EDIT_RUNS_PT.map(m => clockShort(zIso(la, m, TZ), tz || TZ)).join(' and ');
   }
-  function editTimingText(tz, now) { return 'Start and end times go to Gusto within minutes. Breaks go to Gusto at ' + breakRunsText(tz, now) + '.'; }
+  function editTimingText(tz, now) { return 'Changes go to Gusto at ' + editRunsText(tz, now) + '.'; }
+  // The worker checks the window when it RUNS, not when the change was made: a change made after the last run
+  // before a new pay period (Friday after 9 PM Pacific; after 4 PM Eastern on a New York row) to a day of the
+  // period that then drops out would only come back as Needs a look. So a day can be changed here while it is
+  // in the window now AND on the row's calendar at the next run.
+  function canEditForRun(date, tz, now) {
+    const ms = now == null ? Date.now() : +new Date(now), z = tz || TZ;
+    if (!canEditDate(date, todayIn(z, ms))) return false;
+    const r = firstEditRun(new Date(ms).toISOString());
+    return isNaN(r) || canEditDate(date, zDate(r * 1000, z));
+  }
+  // a day of the previous pay period (its payroll may already have run, and Gusto then refuses changes)
+  function inLastPeriod(date, today) { return isIsoDate(date) && isIsoDate(today) && date < payPeriodFor(today, EDIT_ANCHOR_END).from; }
+  // What Save says once every change went through: when it goes to Gusto, or, when the server stored nothing
+  // waiting (a shift put back to exactly what Gusto has only takes back the change that waited), that nothing
+  // goes. results: [{op, edit}] as the server answered each op; when: nextEditRun's words.
+  function saveMessage(results, when) {
+    const subs = (results || []).filter(r => r && r.op && r.op.type !== 'cancel');
+    if (subs.some(r => !r.edit || partWaits(r.edit.times_status) || partWaits(r.edit.breaks_status))) return 'Saved. It goes to Gusto ' + when + ' and shows as Pending until then.';
+    return subs.length ? 'Saved. The shift is back to what Gusto has, so nothing goes to Gusto.' : 'Saved.';
+  }
   function stampText(t, tz) { const d = zDate(t, tz); return d ? fmtMonthDay(d) + ', ' + fmtTime(t, tz) : ''; }
-  // each part in words: "Start and end: going to Gusto within minutes", "Breaks: going to Gusto at 9 PM today",
-  // "Breaks: late, not in Gusto yet" (partLate). by: the edit that replaced this one (replacedBy), if known.
+  // a waiting part: "going to Gusto at 1 PM today" (the first run after the change was made), "going to
+  // Gusto now" (that run is on), or "late, not in Gusto yet" (partLate)
+  function waitWords(e, part, now, tz) {
+    if (partLate(e, part, now)) return 'late, not in Gusto yet';
+    if (e[part + '_status'] === 'applying') return 'going to Gusto now';
+    const due = firstEditRun(e.created_at), n = Math.floor((now == null ? Date.now() : +new Date(now)) / 1000);
+    return isNaN(due) ? 'going to Gusto ' + nextEditRun(now, tz) : n >= due ? 'going to Gusto now' : 'going to Gusto ' + runWords(due, now, tz);
+  }
+  // each part in words: "Breaks: going to Gusto at 9 PM today", "Start and end: in Gusto", "Breaks: late, not
+  // in Gusto yet". Both parts go in the same run, so when both wait they share one line ("Start, end and
+  // breaks: going to Gusto at 1 PM today"). by: the edit that replaced this one (replacedBy), if known.
   function editPartLines(e, tz, now, by) {
     const out = [];
     const word = { times: e.action === 'add' ? 'The new shift' : 'Start and end', breaks: e.action === 'delete' ? 'Deleting it' : 'Breaks' };
+    const both = partWaits(e.times_status) && partWaits(e.breaks_status);
+    if (both) out.push((e.action === 'add' ? word.times : 'Start, end and breaks') + ': ' + waitWords(e, 'times', now, tz));
     for (const part of ['times', 'breaks']) {
       const st = e[part + '_status'], err = e[part + '_error'];
-      if (st === 'pending') out.push(word[part] + (partLate(e, part, now) ? ': late, not in Gusto yet'
-        : part === 'times' ? ': going to Gusto within minutes' : ': going to Gusto ' + nextBreakRun(now, tz)));
+      if (partWaits(st)) { if (!both) out.push(word[part] + ': ' + waitWords(e, part, now, tz)); }
       else if (st === 'applied') out.push(word[part] + ': in Gusto');
       else if (st === 'conflict') out.push(word[part] + ': ' + (err || 'Gusto changed after this edit was made.'));
       else if (st === 'failed') out.push(word[part] + ': ' + (err || "it couldn't be saved in Gusto."));
@@ -2499,7 +2543,8 @@
           breaks_status: e.breaks_status === 'pending' ? 'cancelled' : e.breaks_status, cancelled_by: 'superseded', cancelled_at: when })
       : e);
   }
-  // list: the edits so far; row: the ts_days row (as Gusto has it); input: {shift_id, action, after, note};
+  // list: the edits so far; row: the ts_days row (as Gusto has it); input: {shift_id, action, after, note,
+  // expect?} (expect: the waiting edits of the shift the editor showed, like p_expect);
   // ctx: {email, now, today?, id?}. Returns {ok, edit, edits} or {ok: false, error, edits}.
   function submitEdit(list, row, input, ctx) {
     const c = ctx || {}, inp = input || {};
@@ -2529,6 +2574,15 @@
     }
     const parts = editParts(action, before, after);
     const waiting = e => e && (e.times_status === 'pending' || e.breaks_status === 'pending');
+    const ofShift = sid ? (list || []).filter(e => e && e.day_id === row.id && e.shift_id != null && String(e.shift_id) === sid) : [];
+    if (ofShift.some(editSending)) return fail('A change of this shift is being sent to Gusto right now. Try again once it is done.');
+    // p_expect: the editor must have shown every change of this shift that waits now, and none of those may
+    // have been cancelled or replaced since (a page opened earlier never replaces a change it did not show)
+    if (sid && Array.isArray(inp.expect)) {
+      const exp = new Set(inp.expect.map(String));
+      if (ofShift.some(e => waiting(e) && !exp.has(String(e.id))) || ofShift.some(e => e.cancelled_at && exp.has(String(e.id))))
+        return fail('Someone changed this shift since you opened it. Reload and try again.');
+    }
     if (parts.times === 'none' && parts.breaks === 'none' && !(list || []).some(e => waiting(e) && sid && e.day_id === row.id && String(e.shift_id) === sid))
       return fail('Nothing changed: the shift already has these times and breaks.');
     if (action === 'add' && (list || []).some(e => waiting(e) && e.day_id === row.id && e.action === 'add' && e.after &&
@@ -2543,17 +2597,21 @@
     edits.push(edit);
     return { ok: true, edit, edits };
   }
-  // the creator or an admin, while a part still waits; pending parts become cancelled
+  // the creator or an admin, like ts_edit_cancel: while a part still waits (Cancel), or to clear a Needs a look
+  // once they checked Gusto and Gusto is right (Clear: conflict and failed parts, the error text kept). Those
+  // parts become cancelled; applied parts stay. Never while a run is sending it.
+  const CANCELLABLE = ['pending', 'conflict', 'failed'];
   function cancelEdit(list, id, ctx) {
     const c = ctx || {};
     const fail = msg => ({ ok: false, error: msg, edits: list || [] });
     const e = (list || []).find(x => x && x.id === id);
     if (!e) return fail('No such edit.');
     if (!c.is_admin && e.created_by !== c.email) return fail('Only the person who made this edit, or an admin, can cancel it.');
-    if (e.times_status !== 'pending' && e.breaks_status !== 'pending') return fail('This edit is no longer waiting to go to Gusto, so it cannot be cancelled.');
+    if (editSending(e)) return fail('This change is being sent to Gusto right now, so it cannot be cancelled. Try again once it is done.');
+    if (e.cancelled_at || !(CANCELLABLE.includes(e.times_status) || CANCELLABLE.includes(e.breaks_status))) return fail('This edit is no longer waiting to go to Gusto, so it cannot be cancelled.');
     const at = new Date(c.now == null ? Date.now() : +new Date(c.now)).toISOString();
-    const ne = Object.assign({}, e, { times_status: e.times_status === 'pending' ? 'cancelled' : e.times_status,
-      breaks_status: e.breaks_status === 'pending' ? 'cancelled' : e.breaks_status, cancelled_by: c.email || null, cancelled_at: at });
+    const ne = Object.assign({}, e, { times_status: CANCELLABLE.includes(e.times_status) ? 'cancelled' : e.times_status,
+      breaks_status: CANCELLABLE.includes(e.breaks_status) ? 'cancelled' : e.breaks_status, cancelled_by: c.email || null, cancelled_at: at });
     return { ok: true, edit: ne, edits: list.map(x => x === e ? ne : x) };
   }
 
@@ -2570,14 +2628,17 @@
   }
   // One entry per Gusto shift, as the board shows it (a shift waiting to be deleted shows as deleted),
   // then each shift waiting to be added. readonly: 'hours' (hours entered, change them in Gusto), 'open'
-  // (still working, stillWorking), 'sent' (just went to Gusto, changeable after the next sync) or 'theirs'
-  // (someone else's add, only they or an admin may change it). who: the person making the change
-  // ({email, is_admin}); ctx: {today, now} on the row's clock (default: now).
+  // (still working, stillWorking), 'applying' (a run is sending a change of it to Gusto right now: the server
+  // refuses any other change until that is done), 'sent' (just went to Gusto, changeable after the next sync)
+  // or 'theirs' (someone else's add, only they or an admin may change it). pendingIds: the changes of the
+  // shift waiting now (what Save sends as p_expect). who: the person making the change ({email, is_admin});
+  // ctx: {today, now} on the row's clock (default: now).
   function editorEntries(raw, board, edits, who, ctx) {
     const tz = rowTz(raw), c = ctx || {};
     const nowMs = c.now == null ? Date.now() : +new Date(c.now), today = c.today || todayIn(tz, nowMs);
     const live = (edits || []).filter(e => e && e.day_id === raw.id && !e.cancelled_at);
     const waitingOn = id => live.filter(e => e.shift_id != null && String(e.shift_id) === String(id) && (e.times_status === 'pending' || e.breaks_status === 'pending')).map(e => e.id);
+    const sendingOn = id => live.some(e => e.shift_id != null && String(e.shift_id) === String(id) && editSending(e));
     const shown = new Map(((board && board.shifts) || []).map(s => [String(s.id), s]));
     const out = [];
     let k = 0;
@@ -2589,6 +2650,7 @@
         const bs = b.breaks || [], sum = paid => bs.filter(x => !!x.paid === paid).reduce((a, x) => a + (+x.min || 0), 0);
         Object.assign(en, { readonly: 'open', worked: +b.worked_min || 0, paidMin: sum(true), unpaidMin: sum(false) });
       }
+      else if (sendingOn(s.id)) en.readonly = 'applying';
       else if (b && b.edited && (b.edited.times === 'sent' || b.edited.breaks === 'sent')) en.readonly = 'sent';
       else if (!b && live.some(e => e.action === 'delete' && String(e.shift_id) === String(s.id) && e.breaks_status === 'applied')) en.readonly = 'sent';
       en.start = entryKey(en);
@@ -2597,17 +2659,19 @@
     for (const s of (board && board.shifts) || []) if (s.add_edit) {
       const e = live.find(x => x.id === s.add_edit);
       const en = Object.assign(entryOf(s, tz), { key: 'e' + (++k), kind: 'add', id: null, addEditId: s.add_edit, del: false, pendingIds: [], by: (e && e.created_by) || '' });
-      if (s.edited && s.edited.times === 'sent') en.readonly = 'sent';
+      if (editSending(e)) en.readonly = 'applying';
+      else if (s.edited && s.edited.times === 'sent') en.readonly = 'sent';
       else if (e && who && !who.is_admin && e.created_by !== who.email) en.readonly = 'theirs';
       en.start = entryKey(en);
       out.push(en);
     }
     return out.sort((a, b) => ((secOf(a.orig.in) - secOf(b.orig.in)) || 0));
   }
-  // What Save sends: {ops: [{type: 'submit', key, shift_id, action, after} | {type: 'cancel', key, id}],
+  // What Save sends: {ops: [{type: 'submit', key, shift_id, action, after, expect?} | {type: 'cancel', key, id}],
   // errors: {entryKey: [{code, msg}]}}. Nothing is sent while any changed shift has a problem. A shift put
   // back to exactly what Gusto has sends an update only when a change of it still waits (the server keeps
   // that as a record and drops the waiting one); a waiting add that changes is cancelled and added again.
+  // An update or delete carries expect: the changes of that shift the editor showed waiting (p_expect).
   function editPlan(raw, entries, ctx) {
     const c = ctx || {}, tz = rowTz(raw), date = raw.work_date;
     const ops = [], errors = {}, finals = [];
@@ -2618,7 +2682,7 @@
       if (en.del) {
         if (en.kind === 'new') continue;
         if (en.kind === 'add') ops.push({ type: 'cancel', key: en.key, id: en.addEditId });
-        else ops.push({ type: 'submit', key: en.key, shift_id: en.id, action: 'delete', after: null });
+        else ops.push({ type: 'submit', key: en.key, shift_id: en.id, action: 'delete', after: null, expect: (en.pendingIds || []).slice() });
         continue;
       }
       const after = entryAfter(en, date, tz);
@@ -2631,7 +2695,7 @@
       else {
         const p = rs ? editParts('update', shiftSnap(rs), after) : null;
         if (p && p.times === 'none' && p.breaks === 'none' && !(en.pendingIds || []).length) continue;
-        ops.push({ type: 'submit', key: en.key, shift_id: en.id, action: 'update', after });
+        ops.push({ type: 'submit', key: en.key, shift_id: en.id, action: 'update', after, expect: (en.pendingIds || []).slice() });
       }
     }
     const ov = shiftOverlap(finals.map(f => f.after));
@@ -2905,10 +2969,11 @@
     esc, SafeHTML, h, flagsHtml,
     workedUntil, dayFlagsCA, dayFlagsNY, dayFlags, BREAK_NEED_CODES, BREAK_ADD_CODES, restMinFor, workedReachedAt, missingBreaks,
     entriesShifts, breakNeedText, editorBreakStatus, freeStretches, placeBreak, suggestBreak, breakIndexFor, missingBreakAdds,
-    EDIT_ANCHOR_END, EDIT_RULES, BREAK_RUNS_PT, editWindow, canEditDate, sameMinute, snapBreaks, shiftSnap, sameBreaks, editParts,
+    EDIT_ANCHOR_END, EDIT_RULES, EDIT_RUNS_PT, editWindow, canEditDate, sameMinute, snapBreaks, shiftSnap, sameBreaks, editParts,
     validateAfter, shiftOverlap, hhmm, parseHhmm, fmtHhmm, entryOf, entryKey, entryAfter, newEntry, editedShift, dailySplit, estOvertime,
-    rebuildDay, editStatus, EDIT_STATUS_WORDS, replacedEdits, editShownStatus, replacedBy, EDIT_LATE_SEC, firstBreakRun, partLate, editLate,
-    partShow, overlayDay, describeEdit, clockShort, nextBreakRun, breakRunsText, editTimingText,
+    rebuildDay, editStatus, EDIT_STATUS_WORDS, replacedEdits, editShownStatus, replacedBy, EDIT_LATE_SEC, firstEditRun, partLate, editLate,
+    partShow, overlayDay, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, saveMessage,
+    partWaits, editSending, CANCELLABLE,
     stampText, editPartLines, editTip, supersede, submitEdit, cancelEdit, stillWorking, editorEntries, editPlan, entriesPreview, dayStamp,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -3222,9 +3287,10 @@
   }
 
   // Made-up changes from the made-up managers (Edit on the board), shaped like ts_edits rows, so the whole
-  // flow shows without a database: a forgotten meal and a missed clock-out waiting, a New York shift
-  // waiting to be added, one Gusto would not take (conflict), one the breaks task could not do (failed),
-  // one already in Gusto and one cancelled. Only days inside the editable window are used.
+  // flow shows without a database: a forgotten meal waiting for the next run, a missed clock-out that
+  // missed its run (late), a New York shift waiting to be added, one Gusto would not take (conflict), one
+  // the task could not do (failed), one already in Gusto and one cancelled. Only days inside the editable
+  // window are used.
   function demoEdits(rows, todays, now, lastSync) {
     const out = [];
     const ago = min => new Date(now.getTime() - min * 60000).toISOString();
@@ -3245,14 +3311,17 @@
     if (basil) {
       const s = basil.shifts[0], tz = C.rowTz(basil), snap = C.shiftSnap(s);
       add(basil, s, { after: { in: snap.in, out: snap.out, breaks: C.snapBreaks(snap.breaks.concat([{ start: plus(s.in, 200, tz), end: plus(s.in, 230, tz), kind: 'meal' }])) },
-        breaks_status: 'pending', note: 'Took lunch at the warehouse, forgot to clock it', created_by: 'field.lead@wizardtrees.com', created_at: ago(95) });
+        breaks_status: 'pending', note: 'Took lunch at the warehouse, forgot to clock it', created_by: 'field.lead@wizardtrees.com', created_at: ago(20) });
     }
-    // the missed clock-out from a previous day, made 55 minutes ago: late (start and end are due within 30)
+    // the missed clock-out from a previous day: late, made before a 1 PM or 9 PM run that is over half an
+    // hour past (one made 20 minutes ago, like the meal above, can never be late)
     const rue = days('Rue Bramblewick').find(r => r.open && r.work_date < todays.CA);
     if (rue) {
       const s = rue.shifts[0], tz = C.rowTz(rue), snap = C.shiftSnap(s);
+      let made = 55;
+      while (made < 26 * 60 && !C.partLate({ times_status: 'pending', created_at: ago(made) }, 'times', now)) made += 30;
       add(rue, s, { after: { in: snap.in, out: plus(s.in, 630, tz), breaks: snap.breaks }, times_status: 'pending',
-        note: 'Forgot to clock out, left at the usual time', created_by: 'grow.manager@wizardtrees.com', created_at: ago(55) });
+        note: 'Forgot to clock out, left at the usual time', created_by: 'grow.manager@wizardtrees.com', created_at: ago(made) });
     }
     // a later start that Gusto would not take: its clock-in changed after the edit was made
     const sorrel = days('Sorrel Quickfoot').filter(closed)[0];
@@ -3262,7 +3331,7 @@
         times_error: "Gusto's clock-in for this shift changed after the edit was made, so it was left alone. Check the shift in Gusto, then edit it here again if it is still wrong.",
         note: 'Started late, bus was delayed', created_by: 'trim.lead@wizardtrees.com', created_at: ago(300) });
     }
-    // New York: a shift for the evening load-out, waiting to be added (just now), and a rest the breaks task could not add
+    // New York: a shift for the evening load-out, waiting to be added (just now), and a rest the Gusto task could not add
     const mul = days('Mulberry Fiddlesticks').filter(closed)[0];
     if (mul) {
       const tz = C.rowTz(mul);
@@ -3273,7 +3342,7 @@
     if (prim) {
       const s = prim.shifts[0], tz = C.rowTz(prim), snap = C.shiftSnap(s);
       add(prim, s, { after: { in: snap.in, out: snap.out, breaks: C.snapBreaks(snap.breaks.concat([{ start: plus(s.in, 470, tz), end: plus(s.in, 485, tz), kind: 'rest' }])) },
-        breaks_status: 'failed', breaks_error: "The breaks task couldn't open this timesheet in Gusto. Add the break in Gusto, or edit it here again to retry.",
+        breaks_status: 'failed', breaks_error: "Couldn't open this timesheet in Gusto. Add the break in Gusto, or edit it here again to retry.",
         created_by: 'ny.lead@wizardtrees.com', created_at: ago(26 * 60) });
     }
     // already in Gusto (the board shows it plainly): a later clock-out, applied before the last sync
@@ -3388,7 +3457,7 @@
   let toastT = null;
   function toast(msg) {
     const t = $('toast'); t.textContent = msg; t.classList.add('on');
-    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2600);
+    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), Math.max(2600, msg.length * 50));   // long enough to read
   }
 
   // The tabs: an admin gets Everyone + every saved view; a manager gets the views given to them (and
@@ -3444,24 +3513,39 @@
     return editIdx;
   }
   function editsFor(dayId) { return editIndex().get(dayId) || []; }
-  // Edit is for admins until the workers that send changes to Gusto run (start and end through Gusto's
-  // API, breaks and deletes with the 1 PM and 9 PM browser task). Until then nothing a change says reaches
-  // Gusto, so no manager is told it will. Setting this to true is the launch for every manager (the server
-  // already lets them); ?beta shows Edit to a manager before that, to try it out.
+  // THE LAUNCH SWITCH for managers (Gianni 2026-10-21: "roll out the edit feature to all the current managers").
+  // Off until the worker that takes changes to Gusto runs on its own: every promise on the page ("goes to Gusto
+  // at 9 PM today") depends on the LaunchAgent com.wizardtrees.ts-edit-worker (~/gusto-sync, --scheduled at 1 PM
+  // and 9 PM Pacific) being installed on Gianni's Mac. Turn it on in the SAME step that installs the LaunchAgent
+  // (~/gusto-sync/ts-edit-worker.README.md, "Launch"), never before. Admins have Edit either way; what anyone
+  // already changed still shows and still goes to Gusto. The server decides who may change what (ts_edit_submit:
+  // only days the sign-in can see, in the current or previous pay period).
   const EDITS_FOR_MANAGERS = false;
-  const BETA = QS.has('beta');
+  // The kinds of change the worker has sent to Gusto once with a person watching (~/gusto-sync/ts-edit-proven.json
+  // on Gianni's Mac). Its scheduled runs hold any other kind (never sent; named in Gianni's daily list), so a
+  // manager is not offered one until it is proven: adding a shift, deleting a shift, and any New York day. Set
+  // each to true once a supervised run proved it (node ~/gusto-sync/ts-edit-worker.mjs --live --edit <id>).
+  // Admins keep all of them.
+  const EDIT_PROVEN = { add: false, delete: false, ny: false };
+  function mayEdit(what) { const a = actor(); return !!(a && a.is_admin) || !!EDIT_PROVEN[what]; }
   // the server has ts_edits (supabase/ts-edits.sql), so the board reads and shows changes made here
   function editsLoaded() { return DEMO || S.editsState === 'ok' || S.editsState === 'error'; }
-  function editsOn() { return !!S.me && editsLoaded() && (DEMO || !!S.me.is_admin || EDITS_FOR_MANAGERS || BETA); }
+  function editsOn() { return !!S.me && editsLoaded() && (DEMO || !!S.me.is_admin || EDITS_FOR_MANAGERS); }
   function boardRow(r) { const es = editIndex().get(r.id); return es ? C.overlayDay(r, es, { today: rowToday(r), now: Date.now() }) : r; }
   function boardRows() { return [...S.rows.values()].map(boardRow); }
-  // the current or previous pay period, never a future day, on the row's own calendar (ts_edit_submit's window)
-  function canEditRow(r) { return editsOn() && !!r && C.canEditDate(r.work_date, rowToday(r)); }
+  const rowRegion = r => r.region || C.regionOfCompany(r.company);
+  // the current or previous pay period, never a future day, on the row's own calendar (ts_edit_submit's
+  // window), and still in it when the next run takes the change to Gusto (C.canEditForRun); New York days
+  // once New York is proven
+  function canEditRow(r) { return editsOn() && !!r && C.canEditForRun(r.work_date, C.rowTz(r), Date.now()) && (rowRegion(r) !== 'NY' || mayEdit('ny')); }
   // who makes a change: the signed-in person (in demo, the sign-in being previewed, which has no server)
   function actor() { return DEMO ? (S.viewer || S.me) : S.me; }
+  // Cancel (a change still waiting) or Clear (a Needs a look, once Gusto is checked and right): the creator or an
+  // admin, like ts_edit_cancel; never while a run is sending it
   function mayCancel(e) {
     const a = actor();
-    return !!a && !!e && (a.is_admin || e.created_by === a.email) && (e.times_status === 'pending' || e.breaks_status === 'pending');
+    return !!a && !!e && (a.is_admin || e.created_by === a.email) && !e.cancelled_at && !C.editSending(e) &&
+      (C.CANCELLABLE.includes(e.times_status) || C.CANCELLABLE.includes(e.breaks_status));
   }
   // every edit of a day, newest first; one a later edit replaced stays listed, muted, naming that edit
   function histItems(dayId) {
@@ -3548,6 +3632,25 @@
     renderLoadErr();
     renderContent(rows, base, vis);
     renderPrintHead();
+    edHintCan = rows.some(canEditRow); renderEdHint();
+  }
+
+  // A manager's first look at Edit: one line until they close it, remembered on this device (store, which
+  // never throws). Never for admins, never beside the home-screen note, only while a day on
+  // screen has an Edit button. The demo and an admin's preview show it as a manager sees it, and forget
+  // the close with the tab.
+  let edHintCan = false, edHintShut = false;
+  function renderEdHint() {
+    const v = S.viewer || S.me;
+    const shut = DEMO || S.viewer ? edHintShut : edHintShut || store.get('edHint', '') === 'closed';
+    const show = edHintCan && editsOn() && !!v && !v.is_admin && !shut && $('a2hs').hidden && !S.printing;
+    if (show) { $('edHintRuns').textContent = C.editRunsText(regionDef().tz); $('edHintHow').textContent = phoneLike() ? 'Edit times or breaks (open a day)' : 'Edit'; }   // a phone's button sits in a day's card
+    $('edHint').hidden = !show;
+  }
+  function closeEdHint() {
+    edHintShut = true;
+    if (!DEMO && !S.viewer) store.set('edHint', 'closed');
+    $('edHint').hidden = true;
   }
 
   // one quiet line: the break policy for the companies on screen; company names only where the page
@@ -3737,7 +3840,9 @@
     if (!ed || (!ed.pending.length && !ed.attention.length)) return '';
     const tz = C.rowTz(r), now = Date.now();
     const tip = list => list.map(e => C.editTip(e, tz, now)).join('\n\n');
-    return h`${ed.attention.length ? h`<span class="flag eatt" title="${tip(ed.attention)}" tabindex="0">Needs a look</span>` : ''}${ed.pending.length ? h`<span class="flag epend" title="${tip(ed.pending)}" tabindex="0">Pending</span>` : ''}`;
+    // a waiting change whose run has passed without it reads Late on the pill too, not only in its bubble
+    const word = ed.pending.length && ed.pending.every(e => C.editLate(e, now)) ? 'Late' : 'Pending';
+    return h`${ed.attention.length ? h`<span class="flag eatt" title="${tip(ed.attention)}" tabindex="0">Needs a look</span>` : ''}${ed.pending.length ? h`<span class="flag epend" title="${tip(ed.pending)}" tabindex="0">${word}</span>` : ''}`;
   }
   // the row's Edit button, in its own last column (only while the server has ts_edits)
   function editCell(r) {
@@ -4382,7 +4487,7 @@
   const ADMIN_HINTS = {
     users: 'Each sign-in sees only the views, companies and departments ticked for it. Admins see everything and can change this list. Use Preview to check what someone sees before telling them it is ready.',
     views: 'A view is a saved crew. Its tab at the top of the page shows only those people. Tick a view for a sign-in under Sign-ins and that manager sees exactly its people, on a simple list that opens straight onto it. Copy link gives a link that opens the view.',
-    edits: 'Every change made with Edit on this page, for the dates on screen. Start and end times go to Gusto within minutes; breaks and deleted shifts at 1 PM and 9 PM Pacific. A change Gusto did not take shows Needs a look with the reason. A change still waiting can be cancelled.',
+    edits: 'Every change made with Edit on this page, for the dates on screen. Changes go to Gusto at 1 PM and 9 PM Pacific (4 PM and midnight Eastern), start and end times and breaks together. A change Gusto did not take shows Needs a look with the reason; once Gusto is checked and right, Clear takes it off the board. A change still waiting can be cancelled.',
   };
   function renderAdminTabs() {
     const tabs = [['users', 'Sign-ins'], ['views', 'Views']].concat(editsOn() ? [['edits', 'Edits']] : []);
@@ -4712,7 +4817,16 @@
      one ts_edit_submit per changed shift (C.editPlan); the server checks who may change what. A modal on a
      desktop, a full-screen sheet on a phone. */
   function editorDirty() { return E.note.trim() !== '' || E.entries.some(en => !en.readonly && C.entryKey(en) !== en.start); }
-  const noEditMsg = raw => raw ? 'Only this pay period and the last one can be changed here' : 'That day is no longer on the board';
+  // why a day cannot be changed here: gone, a New York day before New York is proven, a day that leaves the
+  // window before the next run could take the change, or outside the window
+  function noEditMsg(raw) {
+    if (!raw) return 'That day is no longer on the board';
+    const tz = C.rowTz(raw);
+    if (rowRegion(raw) === 'NY' && !mayEdit('ny')) return 'New York days cannot be changed here yet: change this day in Gusto';
+    if (C.canEditDate(raw.work_date, rowToday(raw)) && !C.canEditForRun(raw.work_date, tz, Date.now()))
+      return 'This pay period closes for changes before the next run (' + C.nextEditRun(Date.now(), tz) + ') could take one to Gusto: change this day in Gusto';
+    return 'Only this pay period and the last one can be changed here';
+  }
   let edTok = 0;   // the editor's latest opening: a slow read of the day never lands in a later one
   // The form is built from the day as the server has it now (read again first), never from a page that may
   // have been open for hours: a time left alone keeps its value, so it must be Gusto's latest.
@@ -4785,10 +4899,11 @@
       ? h`<span class="confirm">Discard what you typed?</span><button type="button" class="btn danger" data-act="ed-close-yes">Discard</button><button type="button" class="btn" data-act="ed-close-no">Keep editing</button>`
       : h`<button type="button" class="btn" data-act="ed-close"${E.busy ? ' disabled' : ''}>Cancel</button>${E.stale && !E.busy ? h`<button type="button" class="btn" data-act="ed-reload">Reload this day</button>` : ''}<button type="submit" class="btn primary"${E.busy ? ' disabled' : ''}>${E.busy ? 'Saving...' : 'Save changes'}</button>`;
     return h`<p class="ed-copy">${C.editTimingText(tz)} Times are ${C.regionDef(raw.region).tzName}.</p>
+      ${C.inLastPeriod(raw.work_date, rowToday(raw)) ? h`<p class="hint">This day is in the last pay period. If its payroll has already run, Gusto will not take a change: fix it in Gusto instead.</p>` : ''}
       ${S.editsState === 'error' ? h`<p class="hint">Earlier changes to this day couldn't load, so these are the times Gusto had at the last sync.</p>` : ''}
       ${n ? E.entries.map((en, i) => entryHtml(en, i, tz)) : h`<p class="faint">No shifts on this day in Gusto.</p>`}
       <div id="edBreaks" aria-live="polite">${breakLineHtml(raw, tz)}</div>
-      <div class="ed-more"><button type="button" class="btn sm" data-act="ed-add-shift"${E.busy ? ' disabled' : ''}>+ Add a shift</button><span class="faint">for a clock-in that was missed</span></div>
+      ${mayEdit('add') ? h`<div class="ed-more"><button type="button" class="btn sm" data-act="ed-add-shift"${E.busy ? ' disabled' : ''}>+ Add a shift</button><span class="faint">for a clock-in that was missed</span></div>` : ''}
       <label class="fld ed-note"><span>Reason <span class="faint">optional, saved with the change</span></span><input type="text" id="edNote" value="${E.note}" maxlength="${C.EDIT_RULES.noteMax}" placeholder="For example: forgot to clock out" autocomplete="off"></label>
       <div class="ed-sum" id="edPreview" aria-live="polite">${previewHtml(raw, tz)}</div>
       ${editorHistory(raw, tz)}
@@ -4802,13 +4917,16 @@
     if (en.readonly === 'hours') return h`<div class="ed-shift ro"><div class="ed-sh-head"><b>${label}</b></div><p class="pd-fine">Hours entered in Gusto without clock times (${hrs(en.worked)} h). Change these in Gusto.</p></div>`;
     if (en.readonly) return h`<div class="ed-shift ro"><div class="ed-sh-head"><b>${label}</b>${pend}</div><p class="ed-ro">${en.del ? 'Deleted: ' : ''}${times}</p><p class="pd-fine">${en.readonly === 'sent'
       ? 'Just sent to Gusto. It can be changed here after the next sync.'
+      : en.readonly === 'applying' ? 'Being sent to Gusto right now. It can be changed here once that is done.'
       : en.readonly === 'open' ? 'Still working: this shift can be changed here after they clock out. A forgotten clock-out can be fixed tomorrow.'
       : 'Waiting to be added by ' + (en.by || 'someone else') + '. Only they or an admin can change it.'}</p></div>`;
     if (en.del) return h`<div class="ed-shift del" data-ek="${en.key}"><div class="ed-sh-head"><b>${label}</b>${pend}<span class="spacer"></span><button type="button" class="btn sm" data-act="ed-undel" data-ek="${en.key}">Keep this shift</button></div>
-      <p class="ed-ro"><s>${times}</s> will be deleted.</p><p class="pd-fine">Deleting a shift goes to Gusto with the breaks, at ${C.breakRunsText(tz)}.</p>${err}</div>`;
+      <p class="ed-ro"><s>${times}</s> will be deleted.</p>${err}</div>`;
     const tIn = (f, v, aria, bi) => h`<input type="time" step="60" data-ek="${en.key}" data-ef="${f}"${bi == null ? '' : h` data-bi="${bi}"`} value="${v}" aria-label="${aria}">`;
+    // deleting a Gusto shift once deletes are proven (an unsaved or waiting added shift can always be taken back)
+    const canDel = en.kind !== 'shift' || mayEdit('delete');
     return h`<div class="ed-shift${en.err ? ' bad' : ''}" data-ek="${en.key}">
-      <div class="ed-sh-head"><b>${label}</b>${pend}<span class="spacer"></span><button type="button" class="linkbtn danger" data-act="ed-del" data-ek="${en.key}">Delete this shift</button></div>
+      <div class="ed-sh-head"><b>${label}</b>${pend}<span class="spacer"></span>${canDel ? h`<button type="button" class="linkbtn danger" data-act="ed-del" data-ek="${en.key}">Delete this shift</button>` : ''}</div>
       <div class="ed-times">
         <label class="ed-f"><span>Start</span>${tIn('in', en.inT, label + ' start')}</label>
         <label class="ed-f"><span>End</span>${tIn('out', en.outT, label + ' end')}</label>
@@ -4846,10 +4964,10 @@
     if (!list.length) return '';
     const now = Date.now(), rep = C.replacedEdits(editsFor(raw.id));
     return h`<div class="ed-histw"><span class="ed-k">Changes to this day</span><ul class="ed-hist">${list.map(e => {
-      const st = C.editShownStatus(e, rep);
-      const x = !mayCancel(e) || E.busy ? '' : E.confirm === e.id
-        ? h`<span class="confirm">This also resets what you typed above.</span><button type="button" class="btn sm danger" data-act="ed-x-yes" data-id="${e.id}">Cancel the change</button><button type="button" class="btn sm" data-act="ed-x-no">Keep it</button>`
-        : h`<button type="button" class="linkbtn" data-act="ed-x" data-id="${e.id}">Cancel this change</button>`;
+      const st = C.editShownStatus(e, rep), clear = st === 'attention';
+      const x = !mayCancel(e) || !(st === 'pending' || clear) || E.busy ? '' : E.confirm === e.id
+        ? h`<span class="confirm">This also resets what you typed above.</span><button type="button" class="btn sm danger" data-act="ed-x-yes" data-id="${e.id}">${clear ? 'Clear it' : 'Cancel the change'}</button><button type="button" class="btn sm" data-act="ed-x-no">Keep it</button>`
+        : h`<button type="button" class="linkbtn" data-act="ed-x" data-id="${e.id}">${clear ? 'Gusto is right: clear this' : 'Cancel this change'}</button>`;
       return h`<li${oldEdit(st) ? h` class="old"` : ''}><div class="eh-top">${statusPill(st)}<span class="faint">${e.created_by}, ${C.stampText(e.created_at, tz)}</span>${x}</div>
         <div>${C.describeEdit(e, tz).join(' · ')}</div>
         ${edLines(e, tz, now, st).map(l => h`<div class="faint">${l}</div>`)}
@@ -4918,15 +5036,19 @@
     if (DEMO) {
       const list = [...S.edits.values()], now = Date.now();
       const res = op.type === 'cancel' ? C.cancelEdit(list, op.id, { email: who.email, is_admin: who.is_admin, now })
-        : C.submitEdit(list, raw, { shift_id: op.shift_id, action: op.action, after: op.after, note }, { email: who.email, now, id: 'demo-edit-' + (++demoSeq) });
+        : C.submitEdit(list, raw, { shift_id: op.shift_id, action: op.action, after: op.after, note, expect: op.expect }, { email: who.email, now, id: 'demo-edit-' + (++demoSeq) });
       if (!res.ok) return { error: res.error };
       S.edits = new Map(res.edits.map(x => [x.id, x])); editsChanged();
       return { edit: res.edit };
     }
     try {
+      // an update or delete says which waiting changes of the shift the editor showed (p_expect), so another
+      // manager's change made in the meantime is never replaced unseen
       const { data, error } = op.type === 'cancel' ? await sb.rpc('ts_edit_cancel', { p_id: op.id })
-        : await sb.rpc('ts_edit_submit', { p_day_id: raw.id, p_shift_id: op.shift_id, p_action: op.action, p_after: op.after, p_note: note || null });
-      if (error) return { error: isSetupError(error) ? "Editing isn't set up on the server yet. Ask Gianni to apply supabase/ts-edits.sql." : errText(error) };
+        : await sb.rpc('ts_edit_submit', Object.assign({ p_day_id: raw.id, p_shift_id: op.shift_id, p_action: op.action, p_after: op.after, p_note: note || null },
+          op.shift_id != null ? { p_expect: op.expect || [] } : {}));
+      if (error) return { error: isSetupError(error) ? "Editing isn't set up on the server yet. Ask Gianni to apply supabase/ts-edits.sql."
+        : /being sent to Gusto right now/i.test(errText(error)) ? 'A change of this shift is being sent to Gusto right now. Reload once the board shows it is done.' : errText(error) };
       if (data && data.id) {
         // the server replaced any older waiting edit of this shift: do the same here until the re-read
         if (op.type === 'submit' && op.shift_id != null) for (const x of C.supersede([...S.edits.values()], raw.id, op.shift_id, data.created_at)) S.edits.set(x.id, x);
@@ -4938,7 +5060,7 @@
   async function saveDayEdits() {
     if (E.busy || E.loading) return;
     const k = E.rowId, raw0 = S.rows.get(k);
-    if (!raw0 || !canEditRow(raw0)) { E.err = !raw0 ? 'This day is no longer on the board. Close this and reload.' : 'This day can no longer be changed here: only this pay period and the last one can.'; renderEditor(); return; }
+    if (!raw0 || !canEditRow(raw0)) { E.err = !raw0 ? 'This day is no longer on the board. Close this and reload.' : noEditMsg(raw0) + '.'; renderEditor(); return; }
     const plan = C.editPlan(raw0, E.entries, { now: Date.now() });
     for (const en of E.entries) en.err = plan.errors[en.key] ? plan.errors[en.key].map(x => x.msg).join(' ') : '';
     E.err = ''; E.confirm = '';
@@ -4967,13 +5089,13 @@
         : "Couldn't check this day for newer changes, so nothing was saved. Try again in a moment (" + fresh.error + ').';
       renderEditor(); return;
     }
-    const note = E.note.trim(), failed = new Set(), okKeys = new Set();
+    const note = E.note.trim(), failed = new Set(), okKeys = new Set(), done = [];
     for (const op of plan.ops) {
       if (failed.has(op.key)) continue;                 // a cancel that failed: its new add must not go
       const en = edEntry(op.key);
       const res = await runEditOp(raw, op, note);
       if (res.error) { failed.add(op.key); if (en) en.err = (op.type === 'cancel' ? "Couldn't cancel the change that was waiting: " : "Couldn't save this shift: ") + res.error; continue; }
-      okKeys.add(op.key);
+      okKeys.add(op.key); done.push({ op, edit: res.edit });
       if (!en) continue;
       if (op.type === 'cancel') { en.kind = 'new'; en.addEditId = null; }
       else if (op.action === 'add') { en.kind = 'add'; en.addEditId = res.edit && res.edit.id; }
@@ -4983,7 +5105,12 @@
     E.busy = false;
     E.stamp = C.dayStamp(S.rows.get(k), editsFor(k));   // what went through is this form's own: a retry may go
     render();
-    if (!failed.size) { closeEditor(); toast('Saved. It shows as Pending until Gusto has it.'); return; }
+    if (!failed.size) {
+      closeEditor();
+      // from what the server stored: a shift put back to what Gusto has stores nothing waiting, so nothing goes
+      toast(C.saveMessage(done, C.nextEditRun(Date.now(), C.rowTz(raw))));
+      return;
+    }
     // what went through is settled; what did not keeps the typed values and its message
     for (const k of okKeys) if (!failed.has(k)) { const en = edEntry(k); if (en) { en.start = C.entryKey(en); en.err = ''; } }
     E.entries = E.entries.filter(en => !(en.del && en.kind === 'new'));
@@ -4998,14 +5125,17 @@
     if (!res.error && !DEMO) await fetchEdits(e.work_date, e.work_date);
     return res;
   }
+  // what Cancel does in words: a change still waiting is cancelled; a Needs a look is cleared (Gusto is right)
+  const clearsAttention = e => !!e && C.editStatus(e) === 'attention';
   async function edCancelChange(id) {
     if (editorDirty() && E.confirm !== id) { E.confirm = id; renderEditor(); return; }
+    const clear = clearsAttention(S.edits.get(id));
     E.busy = true; E.confirm = ''; renderEditor();
     const res = await cancelOne(id);
     E.busy = false;
     render();
-    if (res.error) { E.err = "Couldn't cancel it: " + res.error; renderEditor(); return; }
-    toast('Change cancelled');
+    if (res.error) { E.err = "Couldn't " + (clear ? 'clear' : 'cancel') + ' it: ' + res.error; renderEditor(); return; }
+    toast(clear ? 'Cleared. Gusto keeps what it has.' : 'Change cancelled');
     const k = E.rowId; closeEditor(); openEditor(k);   // the form starts again from what the board shows now
   }
 
@@ -5013,7 +5143,7 @@
   function editsAdminHtml() {
     if (!editsOn()) return emptyState("Edits aren't set up on the server yet", ['The ts_edits table is missing. Apply supabase/ts-edits.sql in Supabase, then reload the page.']);
     const has = (e, st) => e.times_status === st || e.breaks_status === st;
-    const F = { all: () => true, pending: e => has(e, 'pending'), conflict: e => has(e, 'conflict'), failed: e => has(e, 'failed') };
+    const F = { all: () => true, pending: e => has(e, 'pending') || has(e, 'applying'), conflict: e => has(e, 'conflict'), failed: e => has(e, 'failed') };
     const inRange = [...S.edits.values()].filter(e => e.work_date >= S.from && e.work_date <= S.to)
       .sort((a, b) => a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0);
     const f = F[A.eFilter] ? A.eFilter : 'all';
@@ -5029,15 +5159,17 @@
   function editAdminRow(e, rep) {
     const tz = C.rowTz({ company: e.company, region: e.region }), st = C.editShownStatus(e, rep), now = Date.now();
     const raw = S.rows.get(e.day_id);
+    const clear = st === 'attention', canX = mayCancel(e) && (st === 'pending' || clear);
     const act = A.eConfirm === e.id
-      ? h`<span class="confirm">Cancel this change?</span><button type="button" class="btn sm danger" data-act="adm-e-x-yes" data-id="${e.id}">Yes, cancel it</button><button type="button" class="btn sm" data-act="adm-e-x-no">Keep it</button>`
-      : h`${mayCancel(e) ? h`<button type="button" class="btn sm danger" data-act="adm-e-x" data-id="${e.id}">Cancel</button>` : ''}${raw && canEditRow(raw) ? h`<button type="button" class="btn sm" data-act="adm-e-open" data-k="${e.day_id}">Open day</button>` : ''}`;
+      ? h`<span class="confirm">${clear ? 'Clear it? Gusto keeps what it has.' : 'Cancel this change?'}</span><button type="button" class="btn sm danger" data-act="adm-e-x-yes" data-id="${e.id}">${clear ? 'Yes, clear it' : 'Yes, cancel it'}</button><button type="button" class="btn sm" data-act="adm-e-x-no">Keep it</button>`
+      : h`${canX ? h`<button type="button" class="btn sm danger" data-act="adm-e-x" data-id="${e.id}">${clear ? 'Clear' : 'Cancel'}</button>` : ''}${raw && canEditRow(raw) ? h`<button type="button" class="btn sm" data-act="adm-e-open" data-k="${e.day_id}">Open day</button>` : ''}`;
     return h`<tr class="${st === 'cancelled' || st === 'none' || st === 'replaced' ? 'inactive' : ''}"><td class="ae-day"><b>${C.fmtDay(e.work_date)}</b><span>${editWho(e)}</span><span class="faint">${coName(e.company)}</span></td><td class="ae-chg">${C.describeEdit(e, tz).map(l => h`<span>${l}</span>`)}${e.note ? h`<span class="faint">Reason: ${e.note}</span>` : ''}</td><td class="ae-by"><span>${e.created_by}</span><span class="faint">${C.stampText(e.created_at, C.TZ)}</span></td><td class="ae-st">${statusPill(st)}${edLines(e, C.TZ, now, st).map(l => h`<span class="faint">${l}</span>`)}</td><td class="adm-act">${act}</td></tr>`;
   }
   async function adminCancelEdit(id) {
     A.eConfirm = ''; A.err = '';
+    const clear = clearsAttention(S.edits.get(id));
     const res = await cancelOne(id);
-    if (res.error) A.err = "Couldn't cancel it: " + res.error; else toast('Change cancelled');
+    if (res.error) A.err = "Couldn't " + (clear ? 'clear' : 'cancel') + ' it: ' + res.error; else toast(clear ? 'Cleared. Gusto keeps what it has.' : 'Change cancelled');
     renderAdmin(); render();
   }
 
@@ -5051,6 +5183,7 @@
     $('moreBtn').setAttribute('aria-expanded', String(more));
     $('moreMenu').hidden = S.pop !== 'more';
     $('moreKey').hidden = S.pop !== 'key';
+    if (S.pop === 'key') $('keyRuns').textContent = C.editRunsText(regionDef().tz);   // on the region's clock
     $('menuPop').hidden = S.pop !== 'menu';
     $('menuBtn').setAttribute('aria-expanded', String(S.pop === 'menu'));
     if (S.pop === 'fresh') placePop($('freshPop'));
@@ -5104,7 +5237,8 @@
       case 'more': togglePop('more'); break;
       case 'menu': togglePop('menu'); break;
       case 'a2hs-show': setPop(''); showA2hs(true); break;
-      case 'a2hs-close': $('a2hs').hidden = true; break;
+      case 'a2hs-close': $('a2hs').hidden = true; renderEdHint(); break;
+      case 'edhint-close': closeEdHint(); break;
       case 'a2hs-add': installApp(); break;
       case 'demo-manager': setPop(''); demoManager(); break;
       case 'v-link': copyLink(C.viewLink(d.id)); break;
