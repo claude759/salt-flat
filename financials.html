@@ -101,11 +101,11 @@ let viewKey='';
 })();
 
 /* ── state ── */
-let data=null, rev=-1, online=false, scope='', cacheKey='';
+let raw=null, data=null, rev=-1, online=false, scope='', cacheKey='';
 const ls=(k,d)=>{ try{ const v=localStorage.getItem('fin_'+k); return v==null?d:JSON.parse(v); }catch(e){ return d; } };
 const save=(k,v)=>{ try{ localStorage.setItem('fin_'+k,JSON.stringify(v)); }catch(e){} };
 const S={ basis:ls('basis','ttm'), adj:ls('adj','adj'), cashSrc:ls('cashSrc','bank'), mult:ls('mult',null), shareholder:ls('shareholder',true), cards:ls('cards',false),
-  period:ls('period','ttm'), plCo:ls('plCo','__cons'), plAccts:false, bsCo:ls('bsCo','__cons'), bsAccts:false, openPairs:new Set() };
+  period:ls('period','ttm'), plCo:ls('plCo','__cons'), plAccts:false, bsCo:ls('bsCo','__cons'), bsAccts:false, openPairs:new Set(), excluded:ls('excluded',[]) };
 
 /* ── helpers ── */
 const $=(s,el=document)=>el.querySelector(s);
@@ -133,8 +133,41 @@ async function rpc(name){
   if(!r.ok){ const t=await r.text(); if(/bad key/i.test(t)){ const e=new Error('bad key'); e.badKey=true; throw e; } throw new Error('http '+r.status); }
   return r.json();
 }
-function adopt(j){ data=j.data||null; rev=j.rev; scope=j.scope;
+function adopt(j){ raw=j.data||null; rev=j.rev; scope=j.scope; derive();
   if(!S.mult&&data&&data.valuation) S.mult={...data.valuation.multiples}; }
+
+/* ── leaving companies out ──
+   The snapshot is consolidated over all 7 companies. When a viewer leaves one out (the WizardT switch),
+   build() re-consolidates the rest the same way the producer does: add up the remaining companies, then
+   remove only the sales between companies that are both still in. Balances with a company that is left
+   out stop being intercompany: what the others owe it becomes an outside loan, what it owes them a loan
+   to an outside party. */
+const ASSET_TAGS=new Set(['cash','ic_receivable','loan_to_outside_party']);
+const signOf=a=>a.portion_of||!a.side?1:((a.side==='asset')===ASSET_TAGS.has(a.tag)?1:-1);
+function build(src,ex){
+  const n=src.meta.month_keys.length, Z=()=>Array(n).fill(0), add=(a,b)=>a.map((v,i)=>v+(b[i]||0)), sub=(a,b)=>a.map((v,i)=>v-(b[i]||0)), inc=x=>!ex.has(x);
+  const companies=src.companies.filter(c=>inc(c.name)).map(c=>{
+    const buckets={...c.bs.buckets};
+    for(const a of c.bs.accounts) if(/^ic_/.test(a.tag||'')&&a.counterparty&&ex.has(a.counterparty)){
+      const v=a.vals.map(x=>x*signOf(a)), to=a.tag==='ic_payable'?'debt_third_party':'loan_to_outside_party';
+      buckets[a.tag]=sub(buckets[a.tag],v); buckets[to]=add(buckets[to],v); }
+    return {...c,bs:{...c.bs,buckets}}; });
+  const keys=Object.keys(src.companies[0].lines);
+  const sum=Object.fromEntries(keys.map(k=>[k,companies.reduce((t,c)=>add(t,c.lines[k]),Z())]));
+  const pairs=src.eliminations.pairs.filter(p=>inc(p.seller)&&inc(p.buyer));
+  const icRev=pairs.reduce((t,p)=>add(t,p.revenue),Z()), icRevE=pairs.filter(p=>p.revenue_in_ebitda).reduce((t,p)=>add(t,p.revenue),Z()), icExpE=pairs.reduce((t,p)=>add(t,p.expense_in_ebitda),Z());
+  const icExp=sec=>companies.reduce((t,c)=>add(t,c.ic.filter(g=>g.side==='expense'&&g.tag===sec&&inc(g.counterparty)).reduce((u,g)=>add(u,g.monthly),Z())),Z());
+  const consolidated={...sum, revenue:sub(sum.revenue,icRev), cogs:sub(sum.cogs,icExp('cogs')), opex:sub(sum.opex,icExp('opex')), other_expense:sub(sum.other_expense,icExp('other_expense')),
+    ebitda:add(sub(sum.ebitda,icRevE),icExpE), net_income:add(sub(sum.net_income,icRev),add(add(icExp('cogs'),icExp('opex')),icExp('other_expense')))};
+  consolidated.gross_profit=sub(consolidated.revenue,consolidated.cogs);
+  const R=src.royalty||{}, ic={}, ext={...(R.external||{})};
+  for(const [k,v] of Object.entries(R.intercompany||{})) (inc(k)?ic:ext)[k]=v;
+  return {...src, companies, sum_of_companies:sum, consolidated, eliminations:{...src.eliminations,pairs}, royalty:{intercompany:ic,external:ext},
+    adjustments:(src.adjustments||[]).filter(a=>inc(a.company)), bank:src.bank?{...src.bank,accounts:src.bank.accounts.filter(a=>inc(a.company))}:null, excluded:[...ex]};
+}
+function derive(){ if(!raw){ data=null; return; } const ex=new Set(S.excluded.filter(x=>raw.companies.some(c=>c.name===x))); data=ex.size?build(raw,ex):raw; }
+const WT='WizardT LLC';
+const countLabel=()=>{ const n=data.companies.length, all=raw.companies.length; return n===all?`All ${all} companies`:`${n} of ${all} companies (${(data.excluded||[]).map(x=>esc((raw.companies.find(c=>c.name===x)||{}).short||x)).join(', ')} left out)`; };
 async function load(){
   if(!viewKey){ gate('Open this page with the link you were sent.'); return; }
   cacheKey='fin_cache_'+await sha8(viewKey);
@@ -177,7 +210,7 @@ function render(){
   const fresh=!online?'<span class="chip off">offline copy</span>':ageH>STALE_H?`<span class="chip warn">last pull ${fmtTs(gen)}</span>`:'<span class="chip live">live</span>';
   $('#app').innerHTML=`
   <div class="topbar"><div><h1>Wizard Trees Financials</h1>
-    <p class="sub">All 7 companies from QuickBooks, ${esc(m.basis.toLowerCase())} basis, ${esc(m.months[0])} to ${esc(m.as_of)}. Updated ${esc(fmtTs(gen))}.</p></div>
+    <p class="sub">${countLabel()} from QuickBooks, ${esc(m.basis.toLowerCase())} basis, ${esc(m.months[0])} to ${esc(m.as_of)}. Updated ${esc(fmtTs(gen))}.</p></div>
     <div class="actions noprint">${fresh}<button class="small" id="refresh">Refresh</button><button class="small" onclick="print()">Print</button></div></div>
   <div id="val"></div>
   <h2>Monthly revenue and EBITDA <span class="n">consolidated, after removing sales between the companies</span></h2>
@@ -208,6 +241,7 @@ function renderVal(){
     <span>Multiple: low <input class="mult" data-k="low" value="${M.low}"> mid <input class="mult" data-k="mid" value="${M.mid}"> high <input class="mult" data-k="high" value="${M.high}"></span>
     <label><input type="checkbox" id="shT" ${S.shareholder?'checked':''}> Count shareholder loans as debt</label>
     <label><input type="checkbox" id="ccT" ${S.cards?'checked':''}> Count credit cards as debt</label>
+    ${raw.companies.some(c=>c.name===WT)?`<label><input type="checkbox" id="wtT" ${S.excluded.includes(WT)?'':'checked'}> Include WizardT</label>`:''}
     <span>Cash from <span class="seg" id="cashS"><button data-k="bank" class="${S.cashSrc==='bank'?'on':''}">bank</button><button data-k="books" class="${S.cashSrc==='books'?'on':''}">QuickBooks</button></span></span>
   </div>
   <div class="heroes">
@@ -221,9 +255,10 @@ function renderVal(){
   <div class="tbl" style="margin-top:6px"><table><thead><tr><th>Company</th><th>Cash</th><th>Outside loans</th><th>Shareholder loans</th><th>Credit cards</th><th>Net debt</th></tr></thead><tbody>
   ${D.rows.map(r=>`<tr><td>${esc(r.c.short||r.c.name)} <span class="m small">${r.src==='bank'?'bank balance':'QuickBooks'}</span></td><td>${whole(r.cash)}</td><td>${whole(r.debt)}</td><td>${whole(r.sh)}${S.shareholder?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.cards)}${S.cards?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.nd)}</td></tr>`).join('')}
   <tr class="tot"><td>Total</td><td>${whole(D.cash)}</td><td>${whole(D.debt)}</td><td>${whole(D.sh)}</td><td>${whole(D.cards)}</td><td>${whole(D.nd)}</td></tr></tbody></table></div>
-  <p class="small m">Loans between the 7 companies cancel out and are not counted. Bank balances are from the Bank Board${data.bank&&data.bank.accounts[0]?`, ${esc(fmtTs(data.bank.accounts.map(a=>a.as_of).sort()[0]))} or later`:''}.</p></details>`;
+  <p class="small m">Loans between the ${data.companies.length} companies cancel out and are not counted${(data.excluded||[]).length?'; what they owe a company that is left out counts as an outside loan':''}. Bank balances are from the Bank Board${data.bank&&data.bank.accounts[0]?`, ${esc(fmtTs(data.bank.accounts.map(a=>a.as_of).sort()[0]))} or later`:''}.</p></details>`;
   $('#basis').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.basis=k; save('basis',k); renderVal(); };
   $('#adjS').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.adj=k; save('adj',k); render(); };
+  if($('#wtT')) $('#wtT').onchange=ev=>{ S.excluded=ev.target.checked?S.excluded.filter(x=>x!==WT):[...new Set([...S.excluded,WT])]; save('excluded',S.excluded); derive(); render(); };
   $('#cashS').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.cashSrc=k; save('cashSrc',k); renderVal(); };
   $('#shT').onchange=ev=>{ S.shareholder=ev.target.checked; save('shareholder',S.shareholder); renderVal(); };
   $('#ccT').onchange=ev=>{ S.cards=ev.target.checked; save('cards',S.cards); renderVal(); };
@@ -288,7 +323,7 @@ function renderPL(){
     for(const [g,lbl] of SEC){ const rows=c.accounts.filter(a=>a.top===g); if(!rows.length) continue;
       body+=`<tr class="sec"><td>${lbl}: accounts</td>${'<td></td>'.repeat(N()+1)}</tr>`+rows.map(a=>mRow(`${esc(a.path?a.path+' › ':'')}${esc(a.name)}${TAGNAME[a.tag]?`<span class="tag ab">${TAGNAME[a.tag]}</span>`:''}`,a.vals,'acct')).join(''); }
   }
-  if(cons) body+=`<tr class="sec"><td>Sum of the 7 companies, before removing sales between them</td>${'<td></td>'.repeat(N()+1)}</tr>`+[['revenue','Revenue'],['net_income','Net income'],['ebitda','EBITDA']].map(([k,l])=>mRow(l,data.sum_of_companies[k],'dim')).join('');
+  if(cons) body+=`<tr class="sec"><td>Sum of the ${data.companies.length} companies, before removing sales between them</td>${'<td></td>'.repeat(N()+1)}</tr>`+[['revenue','Revenue'],['net_income','Net income'],['ebitda','EBITDA']].map(([k,l])=>mRow(l,data.sum_of_companies[k],'dim')).join('');
   $('#pl').innerHTML=`<div class="ctrl noprint">${coSwitch('plSw',S.plCo)}${cons?'':`<label><input type="checkbox" id="plA" ${S.plAccts?'checked':''}> Show accounts</label>`}<button class="small" id="plCsv">Download CSV</button></div>
   <div class="tbl"><table>${monthHead(cons?'Consolidated':esc(c.name))}<tbody>${body}</tbody></table></div>`;
   $('#plSw').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.plCo=k; save('plCo',k); renderPL(); };
@@ -308,7 +343,7 @@ function renderBS(){
   body+=`<tr class="sec"><td>Debt and intercompany</td>${'<td></td>'.repeat(N()+1)}</tr>`+BUCKETS.map(([k,l])=>mRow(l,bk(k),'dim',false)).join('');
   if(!cons&&S.bsAccts){ body+=`<tr class="sec"><td>Accounts</td>${'<td></td>'.repeat(N()+1)}</tr>`+c.bs.accounts.map(a=>mRow(`${esc(a.name)}${a.tag&&a.tag!=='cash'&&a.tag!=='credit_card'?`<span class="tag">${esc(a.tag.replace(/_/g,' '))}${a.counterparty?': '+esc(a.counterparty):''}</span>`:''}`,a.vals,'acct',false)).join(''); }
   $('#bs').innerHTML=`<div class="ctrl noprint">${coSwitch('bsSw',S.bsCo)}${cons?'':`<label><input type="checkbox" id="bsA" ${S.bsAccts?'checked':''}> Show accounts</label>`}<button class="small" id="bsCsv">Download CSV</button></div>
-  <div class="tbl"><table>${monthHead(cons?'All 7 companies':esc(c.name)).replace('<th>12 months</th>','<th></th>')}<tbody>${body}</tbody></table></div>`;
+  <div class="tbl"><table>${monthHead(cons?countLabel():esc(c.name)).replace('<th>12 months</th>','<th></th>')}<tbody>${body}</tbody></table></div>`;
   $('#bsSw').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.bsCo=k; save('bsCo',k); renderBS(); };
   if($('#bsA')) $('#bsA').onchange=ev=>{ S.bsAccts=ev.target.checked; renderBS(); };
   $('#bsCsv').onclick=()=>csvFromTable($('#bs table'),`wizard-trees-balance-sheet-${cons?'all':c.short||c.name}-${data.meta.as_of}.csv`);
@@ -324,7 +359,7 @@ function renderIC(){
   rows+=`<tr class="tot"><td>Total</td><td>${whole(tr)}</td><td>${whole(te)}</td><td>${whole(tr-te)}</td><td></td></tr>`;
   // loan balances: each company's intercompany receivable / payable accounts at the latest date, paired by counterparty
   const map={};
-  for(const c of data.companies) for(const a of c.bs.accounts.filter(a=>/^ic_/.test(a.tag||'')&&a.counterparty)){
+  for(const c of data.companies) for(const a of c.bs.accounts.filter(a=>/^ic_/.test(a.tag||'')&&a.counterparty&&!(data.excluded||[]).includes(a.counterparty))){
     const [x,y]=a.tag==='ic_receivable'?[c.name,a.counterparty]:[a.counterparty,c.name]; const k=x+'|'+y; (map[k]||=( {lender:x,borrower:y,lend:0,borr:0,accts:[]} ));
     if(a.tag==='ic_receivable') map[k].lend+=a.vals[L]||0; else map[k].borr+=a.vals[L]||0; map[k].accts.push(`${short(c.name)}: ${esc(a.name)}`); }
   const loans=Object.values(map).filter(x=>Math.abs(x.lend)>0.5||Math.abs(x.borr)>0.5).sort((a,b)=>Math.abs(b.lend)-Math.abs(a.lend));
