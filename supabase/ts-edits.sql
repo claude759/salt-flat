@@ -16,7 +16,7 @@
 --   'delete' (shift_id = the shift to remove).
 --   Each edit has two parts that reach Gusto separately:
 --     times   start and end, applied through the Gusto API by a worker on Gianni's Mac (phase 2)
---     breaks  breaks (and deleting a shift), applied by a scheduled browser task at 1 PM and 9 PM PT
+--     breaks  breaks (and deleting a shift), applied by a scheduled browser task at 5 AM, noon and 7 PM PT
 --             (phase 2), because the API cannot add, remove or relabel breaks
 --   times_status / breaks_status: 'none' (that part does not change), 'pending', 'applying' (a worker
 --   claimed it and is writing it to Gusto now), 'applied', 'conflict', 'failed' or 'cancelled'.
