@@ -10,6 +10,11 @@ import { admin, caller, json, preflight } from "../_shared/util.ts";
 const KEY = Deno.env.get("GOOGLE_MAPS_KEY");
 const STATE_NAME: Record<string, string> = { NY: "New York", CA: "California", FL: "Florida" };
 const M_PER_MI = 1609.344;
+// Google's own refusal (REQUEST_DENIED, OVER_QUERY_LIMIT, ...) from the last call, so a failed
+// calculation can say WHY instead of looking like a bad address (2026-10-23: every geocode failed)
+let providerError: string | null = null;
+const noteGoogle = (r: any) => { const st = r?.status;
+  if (st && st !== "OK" && st !== "ZERO_RESULTS") providerError = `${st}${r?.error_message ? `: ${r.error_message}` : ""}`; };
 
 // address → {lat,lng}, hard-restricted to the BA's US state so bare street names
 // can't match the same street in another state. null on any failure.
@@ -23,6 +28,7 @@ async function geocode(address: string, region?: string | null) {
     if (region && STATE_NAME[region]) comps.push(`administrative_area:${STATE_NAME[region]}`);
     u.searchParams.set("components", comps.join("|"));
     const r = await fetch(u).then((x) => x.json());
+    noteGoogle(r);
     const loc = r?.results?.[0]?.geometry?.location;
     return (loc && typeof loc.lat === "number") ? { lat: loc.lat, lng: loc.lng } : null;
   } catch {
@@ -42,6 +48,7 @@ async function findPlace(name: string, region?: string | null) {
     u.searchParams.set("fields", "geometry,formatted_address");
     u.searchParams.set("key", KEY);
     const r = await fetch(u).then((x) => x.json());
+    noteGoogle(r);
     const c = r?.candidates?.[0];
     const loc = c?.geometry?.location;
     if (!loc || typeof loc.lat !== "number") return null;
@@ -70,6 +77,7 @@ async function routeOptions(o: { lat: number; lng: number }, d: { lat: number; l
     u.searchParams.set("region", "us");
     u.searchParams.set("key", KEY);
     const r = await fetch(u).then((x) => x.json());
+    noteGoogle(r);
     const raw: Route[] = (r?.routes ?? []).map((rt: any) => {
       const leg = rt?.legs?.[0];
       return leg ? { oneWay: leg.distance.value / M_PER_MI, mins: Math.round(leg.duration.value / 60), summary: String(rt.summary || "") } : null;
@@ -83,11 +91,19 @@ async function routeOptions(o: { lat: number; lng: number }, d: { lat: number; l
   }
 }
 
-const manual = (msg: string, error = "manual") => json({ ok: false, error, message: msg }, 200);
+// When Google itself refuses (billing off, key restricted, quota), the address wasn't the problem:
+// say so, so BAs don't keep retyping a good address.
+const manual = (msg: string, error = "manual") => {
+  const down = providerError && /REQUEST_DENIED|OVER_QUERY_LIMIT|OVER_DAILY_LIMIT|UNKNOWN_ERROR/.test(providerError);
+  return json({ ok: false, error: down ? "provider_down" : error,
+    message: down ? "Automatic mileage is down right now (map service). Enter the miles by hand, or use the Nav screenshot option." : msg,
+    ...(providerError ? { provider_error: providerError } : {}) }, 200);
+};
 
 Deno.serve(async (req) => {
   const pf = preflight(req); if (pf) return pf;
   try {
+    providerError = null;
     const who = await caller(req);
     if (!who) return json({ ok: false, error: "unauthorized" }, 401);
     if (!KEY) return manual("Auto-distance isn’t set up yet — enter miles manually.", "no_provider");
