@@ -104,7 +104,7 @@ let viewKey='';
 let raw=null, data=null, rev=-1, online=false, scope='', cacheKey='';
 const ls=(k,d)=>{ try{ const v=localStorage.getItem('fin_'+k); return v==null?d:JSON.parse(v); }catch(e){ return d; } };
 const save=(k,v)=>{ try{ localStorage.setItem('fin_'+k,JSON.stringify(v)); }catch(e){} };
-const S={ basis:ls('basis','ttm'), adj:ls('adj','adj'), cashSrc:ls('cashSrc','bank'), mult:ls('mult',null), shareholder:ls('shareholder',true), cards:ls('cards',false),
+const S={ basis:ls('basis','ttm'), adj:ls('adj','adj'), mult:ls('mult',null), shareholder:ls('shareholder',true), cards:ls('cards',false),
   period:ls('period','ttm'), plCo:ls('plCo','__cons'), plAccts:false, bsCo:ls('bsCo','__cons'), bsAccts:false, openPairs:new Set(), excluded:ls('excluded',[]) };
 
 /* ── helpers ── */
@@ -163,7 +163,7 @@ function build(src,ex){
   const R=src.royalty||{}, ic={}, ext={...(R.external||{})};
   for(const [k,v] of Object.entries(R.intercompany||{})) (inc(k)?ic:ext)[k]=v;
   return {...src, companies, sum_of_companies:sum, consolidated, eliminations:{...src.eliminations,pairs}, royalty:{intercompany:ic,external:ext},
-    adjustments:(src.adjustments||[]).filter(a=>inc(a.company)), bank:src.bank?{...src.bank,accounts:src.bank.accounts.filter(a=>inc(a.company))}:null, excluded:[...ex]};
+    adjustments:(src.adjustments||[]).filter(a=>inc(a.company)), excluded:[...ex]};
 }
 function derive(){ if(!raw){ data=null; return; } const ex=new Set(S.excluded.filter(x=>raw.companies.some(c=>c.name===x))); data=ex.size?build(raw,ex):raw; }
 const WT='WizardT LLC';
@@ -191,14 +191,12 @@ const applies=x=>S.adj==='all'||(S.adj==='adj'&&x.confidence!=='low');
 function adjMonthly(co,kind){ const a=z(); for(const x of (data.adjustments||[])){ if(co&&x.company!==co) continue; if(kind&&x.kind!==kind) continue; if(!applies(x)) continue; const i=data.meta.month_keys.indexOf(x.month); if(i>=0) a[i]+=Number(x.amount)||0; } return a; }
 function consEbitda(){ const e=data.consolidated.ebitda.slice(); return adjOn()?addA(e,adjMonthly()):e; }
 const ebLabel=()=>adjOn()?`EBITDA (${ADJ_MODES[S.adj].toLowerCase()})`:'EBITDA';
+// Net debt is read from each company's QuickBooks balance sheet at the latest date.
 function netDebtRows(){
-  const L=N()-1, bank=data.bank||{accounts:[],companies:[]};
-  return data.companies.map(c=>{ const b=c.bs.buckets, mine=bank.accounts.filter(a=>a.company===c.name);
-    const useBank=S.cashSrc==='bank'&&mine.some(a=>a.kind==='cash'), bankCards=mine.filter(a=>a.kind==='card');
-    const cash=useBank?mine.filter(a=>a.kind==='cash').reduce((t,a)=>t+a.balance,0):(b.cash[L]||0);
-    const cards=S.cashSrc==='bank'&&bankCards.length?bankCards.reduce((t,a)=>t-a.balance,0):(b.credit_card[L]||0);
-    const debt=b.debt_third_party[L]||0, sh=b.debt_shareholder[L]||0;
-    return {c,cash,cards,debt,sh,src:useBank?'bank':'books',nd:debt+(S.shareholder?sh:0)+(S.cards?cards:0)-cash}; });
+  const L=N()-1;
+  return data.companies.map(c=>{ const b=c.bs.buckets;
+    const cash=b.cash[L]||0, cards=b.credit_card[L]||0, debt=b.debt_third_party[L]||0, sh=b.debt_shareholder[L]||0;
+    return {c,cash,cards,debt,sh,nd:debt+(S.shareholder?sh:0)+(S.cards?cards:0)-cash}; });
 }
 function netDebt(){ const r=netDebtRows(), t=k=>r.reduce((s,x)=>s+x[k],0); return {cash:t('cash'),debt:t('debt'),sh:t('sh'),cards:t('cards'),nd:t('nd'),rows:r}; }
 function periodIdx(p){ if(p==='ttm') return ttmIdx(); if(p==='q') return lastIdx(3); if(p==='mtd') return [data.meta.mtd]; return [Number(p)]; }
@@ -242,7 +240,6 @@ function renderVal(){
     <label><input type="checkbox" id="shT" ${S.shareholder?'checked':''}> Count shareholder loans as debt</label>
     <label><input type="checkbox" id="ccT" ${S.cards?'checked':''}> Count credit cards as debt</label>
     ${raw.companies.some(c=>c.name===WT)?`<label><input type="checkbox" id="wtT" ${S.excluded.includes(WT)?'':'checked'}> Include WizardT</label>`:''}
-    <span>Cash from <span class="seg" id="cashS"><button data-k="bank" class="${S.cashSrc==='bank'?'on':''}">bank</button><button data-k="books" class="${S.cashSrc==='books'?'on':''}">QuickBooks</button></span></span>
   </div>
   <div class="heroes">
     <div class="hero"><div class="lbl">Revenue${adjOn()?' (adjusted)':''}</div><div class="val">${big(revenue)}</div><div class="note">${esc(B.label.toLowerCase())}, consolidated${revAdj?`; ${big(-revAdj)} of non-sales removed`:''}</div></div>
@@ -253,13 +250,12 @@ function renderVal(){
   </div>
   <details class="noprint"><summary class="small m" style="cursor:pointer">How net debt is built</summary>
   <div class="tbl" style="margin-top:6px"><table><thead><tr><th>Company</th><th>Cash</th><th>Outside loans</th><th>Shareholder loans</th><th>Credit cards</th><th>Net debt</th></tr></thead><tbody>
-  ${D.rows.map(r=>`<tr><td>${esc(r.c.short||r.c.name)} <span class="m small">${r.src==='bank'?'bank balance':'QuickBooks'}</span></td><td>${whole(r.cash)}</td><td>${whole(r.debt)}</td><td>${whole(r.sh)}${S.shareholder?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.cards)}${S.cards?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.nd)}</td></tr>`).join('')}
+  ${D.rows.map(r=>`<tr><td>${esc(r.c.short||r.c.name)}</td><td>${whole(r.cash)}</td><td>${whole(r.debt)}</td><td>${whole(r.sh)}${S.shareholder?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.cards)}${S.cards?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.nd)}</td></tr>`).join('')}
   <tr class="tot"><td>Total</td><td>${whole(D.cash)}</td><td>${whole(D.debt)}</td><td>${whole(D.sh)}</td><td>${whole(D.cards)}</td><td>${whole(D.nd)}</td></tr></tbody></table></div>
-  <p class="small m">Loans between the ${data.companies.length} companies cancel out and are not counted${(data.excluded||[]).length?'; what they owe a company that is left out counts as an outside loan':''}. Bank balances are from the Bank Board${data.bank&&data.bank.accounts[0]?`, ${esc(fmtTs(data.bank.accounts.map(a=>a.as_of).sort()[0]))} or later`:''}.</p></details>`;
+  <p class="small m">Loans between the ${data.companies.length} companies cancel out and are not counted${(data.excluded||[]).length?'; what they owe a company that is left out counts as an outside loan':''}. All figures are QuickBooks balances as of ${esc(data.meta.as_of)}.</p></details>`;
   $('#basis').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.basis=k; save('basis',k); renderVal(); };
   $('#adjS').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.adj=k; save('adj',k); render(); };
   if($('#wtT')) $('#wtT').onchange=ev=>{ S.excluded=ev.target.checked?S.excluded.filter(x=>x!==WT):[...new Set([...S.excluded,WT])]; save('excluded',S.excluded); derive(); render(); };
-  $('#cashS').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; S.cashSrc=k; save('cashSrc',k); renderVal(); };
   $('#shT').onchange=ev=>{ S.shareholder=ev.target.checked; save('shareholder',S.shareholder); renderVal(); };
   $('#ccT').onchange=ev=>{ S.cards=ev.target.checked; save('cards',S.cards); renderVal(); };
   for(const inp of document.querySelectorAll('input.mult')) inp.onchange=ev=>{ const v=parseFloat(ev.target.value); if(v>0){ S.mult[ev.target.dataset.k]=v; save('mult',S.mult); } renderVal(); };
