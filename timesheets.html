@@ -981,6 +981,11 @@
   // the zone a row's clock times are shown in: its company's, else its region's
   function rowTz(r) { return (r && COMPANY_TZ[r.company]) || regionDef(r && r.region).tz; }
   function companyTz(c) { return (c && COMPANY_TZ[c.key]) || regionDef(c && c.region).tz; }
+  // how a company's punch times are read for Gusto's midnight handling (the producer's COMPANY_SETTINGS.clock):
+  // 'tz' = converted to the company's zone (California), 'punch' = the punch's own clock, as its timestamp is
+  // written (Wizard Trees NY, where one person punches in Pacific time and Gusto splits that shift at Pacific midnight)
+  const COMPANY_CLOCK = { wtny: 'punch' };
+  function rowClock(r) { return (r && COMPANY_CLOCK[r.company]) || 'tz'; }
   const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -1090,6 +1095,15 @@
       (off < 0 ? '-' : '+') + pad2(Math.floor(a / 60)) + ':' + pad2(a % 60);
   }
   function laIso(date, minutes) { return zIso(date, minutes, TZ); }
+  // A punch's own clock (the producer's punchParts): Gusto stamps every punch with the offset of the zone it was
+  // made in ("2026-08-31T07:29:52-04:00"), and that is the time read; one without a numeric offset is read in tz.
+  const OFFSET_ISO = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?[+-]\d{2}:?\d{2}$/;
+  function punchParts(t, tz) {
+    const m = typeof t === 'string' && OFFSET_ISO.exec(t.trim());
+    return m ? { date: m[1], h: +m[2], m: +m[3], s: +m[4] } : zParts(t, tz);
+  }
+  // a punch time on a company's clock (rowClock): 'punch' = its own offset, else converted to tz
+  function clockParts(t, tz, clock) { return clock === 'punch' ? punchParts(t, tz) : zParts(t, tz); }
 
   /* ---------- calendar labels ---------- */
   function fmtDay(iso) {                    // "Mon, Oct 6"
@@ -1146,6 +1160,11 @@
     long_day:       { label: 'Over 14 h',      msg: 'Over 14 hours, check for a missed clock-out' },
     type_unsure:    { label: 'Type guessed',   msg: 'Break type guessed from its length', sev: 'info' },
     gusto_mismatch: { label: 'Differs from Gusto', msg: "Hours differ from Gusto's total" },
+    // data errors the producer flags (2026-10-24, Gianni: "timesheet needs to do a better job of flagging errors like this")
+    tiny_shift:     { label: 'Tiny shift',     msg: 'A shift under 5 minutes: likely a mis-tap or a missed clock-in' },
+    midnight_split: { label: 'Past midnight',  msg: 'Gusto ran this shift past midnight: likely a missed clock-out' },
+    long_rest:      { label: 'Long rest',      msg: 'A paid rest over 30 minutes: was it ever ended?' },
+    shift_overlap:  { label: 'Shifts overlap', msg: 'Two shifts overlap, or the same shift was entered twice' },
   };
   const FLAG_CODES = Object.keys(FLAGS);
   // New York uses the same codes with its own rule (a meal of 30 min on a shift over 6 hours, no rest
@@ -1980,7 +1999,7 @@
     if (clockedSpan > 840 && !day.hours_only) add('long_day', 'Over 14 hours, check for a missed clock-out');
     if (day.gusto_total_min != null && Math.abs(day.worked_min - day.gusto_total_min) > 1)
       add('gusto_mismatch', "Hours differ from Gusto's total (Gusto: " + (day.gusto_total_min / 60).toFixed(2) + ' h)');
-    return flags;
+    return flags.concat(dataFlags(day.shifts, { tz: tz || rowTz(day), clock: rowClock(day) }));
   }
   // California (spec section 4)
   function dayFlagsCA(day, today) {
@@ -2010,10 +2029,157 @@
     if (clockedSpan > 840 && !day.hours_only) add('long_day', 'Over 14 hours, check for a missed clock-out');
     if (day.gusto_total_min != null && Math.abs(day.worked_min - day.gusto_total_min) > 1)
       add('gusto_mismatch', "Hours differ from Gusto's total (Gusto: " + (day.gusto_total_min / 60).toFixed(2) + ' h)');
-    return flags;
+    return flags.concat(dataFlags(day.shifts, { tz: rowTz(day), clock: rowClock(day) }));
   }
+  // Every flag one day decides on its own, data errors included; midnight_split needs the days around it
+  // (midnightFlags), so it is not here.
   function dayFlags(day, today) {
     return (day.region || regionOfCompany(day.company)) === 'NY' ? dayFlagsNY(day, today, rowTz(day)) : dayFlagsCA(day, today);
+  }
+
+  /* ---------- data errors (the producer's dataFlags and midnight pass, ~/gusto-sync/ca-ts-core.mjs, 2026-10-24) ----------
+     Gianni 2026-10-24, on a shift clocked 4:44 PM - 4:44 PM that raised nothing: "timesheet needs to do a better
+     job of flagging errors like this". Each is a warning, something to fix in Gusto. Same thresholds, exemptions
+     and words as the producer, so a day the board rebuilds (a change made here, or the demo) reads like the
+     producer's own row; tests/timesheets-check.mjs runs both on the same made-up days. */
+  const TINY_SHIFT_MS = 5 * 60000;          // tiny_shift: clocked in and out within 5 minutes
+  const OVERLAP_MS = 60000;                 // shift_overlap: on the clock twice for at least a minute
+  const RECLOCK_MS = 5 * 60000;             // midnight_split: clocked out and straight back in within 5 minutes
+  const LONG_DAY_MIN = 840;                 // long_day's line: a midnight chain over 14 h looks forgotten
+  const hmsIs = (p, h, m, s) => !!p && p.h === h && p.m === m && p.s === s;
+  // tiny_shift, long_rest and shift_overlap for one day's shifts (the stored shape, or the board's edited ones).
+  // Only real punches count (an hours-entered shift's times are placeholders) and a shift still running has no
+  // length yet. opts: { tz, clock } the company's zone and clock (rowTz, rowClock).
+  //   tiny_shift     a closed punched shift under 5 minutes, zero included. A piece of Gusto's midnight split
+  //                  (in at 12:00:00 AM or out at 11:59:59 PM, on the company's clock or the punch's own) never is
+  //                  one: midnight_split judges those. Beside another shift it is a re-tap ("Delete it or fix the
+  //                  times"); as the day's only record, a clock-in at the wrong time ("Fix the times").
+  //   long_rest      a paid rest over 30 minutes (LONG_REST_MIN, the editor's warning too); a break that never
+  //                  ended is break_open's.
+  //   shift_overlap  two different shifts on the clock at once for a minute or more (a running shift covers
+  //                  everything after its clock-in), or the same shift twice (same clock-in and clock-out minute).
+  //                  Back-to-back shifts never overlap.
+  function dataFlags(shifts, opts) {
+    const o = opts || {}, tz = o.tz || TZ, clock = o.clock || 'tz';
+    const flags = [], add = (code, msg) => flags.push({ code, sev: 'warn', msg });
+    const all = (shifts || []).filter(Boolean);
+    const punched = all.filter(x => !x.hours_only && x.in);
+    const ms = t => Date.parse(t);
+    const rd = t => clockParts(t, tz, clock) || {};
+    const midIn = x => hmsIs(rd(x.in), 0, 0, 0) || hmsIs(punchParts(x.in, tz), 0, 0, 0);
+    const midOut = x => hmsIs(rd(x.out), 23, 59, 59) || hmsIs(punchParts(x.out, tz), 23, 59, 59);
+    // (in the producer's flag order: long_rest, tiny_shift, shift_overlap)
+    const longRests = punched.flatMap(x => x.breaks || []).filter(b => b && b.end && !b.open && b.paid && b.kind === 'rest' && +b.min > LONG_REST_MIN);
+    if (longRests.length) add('long_rest', 'Rest of ' + durWords(Math.max(...longRests.map(b => +b.min))) + ': was it ever ended?');
+    const tiny = punched.filter(x => x.out && !midIn(x) && !midOut(x) && ms(x.out) - ms(x.in) < TINY_SHIFT_MS);
+    if (tiny.length) {
+      const n = Math.max(...tiny.map(x => Math.max(1, Math.ceil(Math.max(0, ms(x.out) - ms(x.in)) / 60000))));
+      // nothing else on the day: the person worked but the clock-in went in at the wrong time, so deleting it
+      // would leave the day unpaid; the words ask for times instead
+      const alone = !all.some(x => !tiny.includes(x)), k = tiny.length;
+      add('tiny_shift', alone
+        ? "The day's only " + (k === 1 ? 'shift' : k + ' shifts each') + ' lasted ' + n + ' min or less: was a clock-in missed? Fix the times in Gusto.'
+        : k === 1 ? 'Clocked in and out within ' + n + ' min: likely a mis-tap. Delete it or fix the times.'
+        : k + ' shifts clocked in and out within ' + n + ' min: likely mis-taps. Delete them or fix the times.');
+    }
+    let dup = false, over = false;
+    const end = x => x.out ? ms(x.out) : Infinity;
+    for (let i = 0; i < punched.length; i++) for (let j = i + 1; j < punched.length; j++) {
+      const a = punched[i], b = punched[j];
+      if (a.id != null && String(a.id) === String(b.id)) continue;      // one record listed twice is not two shifts
+      if (!(Math.min(end(a), end(b)) - Math.max(ms(a.in), ms(b.in)) >= OVERLAP_MS)) continue;
+      const ai = rd(a.in), bi = rd(b.in), ao = rd(a.out), bo = rd(b.out);
+      if (a.out && b.out && ai.h === bi.h && ai.m === bi.m && ao.h === bo.h && ao.m === bo.m) dup = true; else over = true;
+    }
+    if (dup) add('shift_overlap', 'Same shift entered twice: delete one in Gusto.');
+    else if (over) add('shift_overlap', 'Two shifts overlap: fix the times in Gusto.');
+    return flags;
+  }
+
+  // midnight_split: Gusto splits a running shift at midnight (out 11:59:59 PM, in again 12:00:00 AM the next day,
+  // on the company's clock). A chain starts at a punched shift that ends 11:59:59 PM (not itself a 12:00 AM piece
+  // carried over) and follows each next day's 12:00 AM piece. Real overnight work splits the same way, so a chain
+  // is flagged only when it looks forgotten: its last piece is still open; it ends at 11:59:59 PM with nothing
+  // carried into the next day (once that day is known); the whole work period is over 14 hours; or the last
+  // clock-out is followed within 5 minutes by a new clock-in. Every day of a flagged chain gets the flag, worded
+  // for its side; a carried-over piece still running gets none (its day says No clock-out).
+  const MIDNIGHT_MSG = {
+    start: 'Ran past midnight: likely a missed clock-out. Fix the end time in Gusto.',
+    cutoff: 'Clocked out by Gusto at 11:59 PM: likely a missed clock-out. Fix the end time in Gusto.',
+    cont: 'Carried over from the day before at midnight: likely a missed clock-out. Fix the end time in Gusto.',
+    recut: 'Clocked out by Gusto at 11:59 PM, then back in just after midnight: check the times in Gusto.',
+  };
+  const MIDNIGHT_KEYS = ['cont', 'start', 'cutoff', 'recut'];   // a day with two kinds shows the first
+  // One person's days: [{work_date, shifts}], any dates. opts: { tz, clock, today (the company's), known(date):
+  // true when a date with no row here is a day the page loaded (no shifts that day) }. A date neither here nor
+  // known could change the answer, so a day whose chain reaches one says sure: false (the producer, which had
+  // that day, decides). Returns Map work_date -> { flag: {code, sev, msg} | null, sure }.
+  function midnightFlags(days, opts) {
+    const o = opts || {}, tz = o.tz || TZ, clock = o.clock || 'tz', today = o.today || todayIn(tz);
+    const rd = t => clockParts(t, tz, clock);
+    const atCutoff = x => !!x && !x.hours_only && !!x.out && hmsIs(rd(x.out), 23, 59, 59);
+    const byDate = new Map();
+    for (const d of days || []) if (d && d.work_date) byDate.set(d.work_date, { date: d.work_date, cont: null, maybe: false, marks: null, unsure: false,
+      shifts: (d.shifts || []).filter(Boolean).slice().sort((a, b) => (Date.parse(a.in) - Date.parse(b.in)) || 0) });
+    const known = date => byDate.has(date) || !!(o.known && o.known(date));
+    // a punched 12:00:00 AM shift right after a day with a punched shift that ended 11:59:59 PM; when the day
+    // before is not known it may be one (maybe), and the day stays unsure
+    for (const d of byDate.values()) {
+      const c = d.shifts.find(x => !x.hours_only && x.in && hmsIs(rd(x.in), 0, 0, 0));
+      if (!c) continue;
+      const pd = addDays(d.date, -1), prev = byDate.get(pd);
+      if (prev ? prev.shifts.some(atCutoff) : !known(pd)) { d.cont = c; d.maybe = !prev; d.unsure = d.maybe; }
+    }
+    for (const d of byDate.values()) for (const x of d.shifts) {
+      if (!atCutoff(x) || (x === d.cont && !d.maybe)) continue;      // a piece carried over is walked from its chain's start
+      const pieces = [{ day: d, x }];
+      let unsure = x === d.cont;                                     // maybe carried over from a day not known
+      for (;;) {
+        const cur = pieces[pieces.length - 1];
+        if (!atCutoff(cur.x)) break;
+        const nk = addDays(cur.day.date, 1), nd = byDate.get(nk);
+        if (!nd) { if (!known(nk)) unsure = true; break; }
+        if (!nd.cont) break;
+        pieces.push({ day: nd, x: nd.cont });
+      }
+      if (unsure) { for (const p of pieces) p.day.unsure = true; continue; }
+      const last = pieces[pieces.length - 1];
+      const cutoff = atCutoff(last.x) && last.day.date < today;    // and the next day is known (else unsure above)
+      const periodMin = pieces.reduce((a, p) => a + (p.x.out ? (+p.x.span_min || 0) : 0), 0);
+      const outMs = last.x.out ? Date.parse(last.x.out) : NaN;
+      const backSoon = y => !y.hours_only && Date.parse(y.in) >= outMs && Date.parse(y.in) - outMs <= RECLOCK_MS;
+      const reclocked = pieces.length > 1 && !!last.x.out && !atCutoff(last.x) && last.day.shifts.some(y => y !== last.x && backSoon(y));
+      if (!(!last.x.out || cutoff || periodMin > LONG_DAY_MIN || reclocked)) continue;
+      // a lone cut-off followed within 5 minutes by a clock-in the next day: back to work, not a forgotten clock-out
+      const nextDay = cutoff && pieces.length === 1 ? byDate.get(addDays(last.day.date, 1)) : null;
+      const backIn = !!nextDay && nextDay.shifts.some(backSoon);
+      pieces.forEach((p, i) => {
+        if (i > 0 && !p.x.out) return;
+        if (!p.day.marks) p.day.marks = new Set();
+        p.day.marks.add(i > 0 ? 'cont' : pieces.length > 1 ? 'start' : backIn ? 'recut' : 'cutoff');
+      });
+    }
+    const res = new Map();
+    for (const d of byDate.values()) {
+      const k = d.marks && MIDNIGHT_KEYS.find(x => d.marks.has(x));
+      res.set(d.date, { flag: k ? { code: 'midnight_split', sev: 'warn', msg: MIDNIGHT_MSG[k] } : null, sure: !d.unsure });
+    }
+    return res;
+  }
+  // midnightFlags for every person in rows (each on their company's zone and clock). opts: { todayOf(row),
+  // known(date, row) }. Returns Map row id -> { flag, sure }.
+  function midnightByRow(rows, opts) {
+    const o = opts || {}, res = new Map();
+    for (const list of groupBy((rows || []).filter(Boolean), pairKey).values()) {
+      const r0 = list[0], tz = rowTz(r0);
+      const m = midnightFlags(list, { tz, clock: rowClock(r0), today: o.todayOf ? o.todayOf(r0) : todayIn(tz), known: d => !!(o.known && o.known(d, r0)) });
+      for (const r of list) res.set(r.id, m.get(r.work_date));
+    }
+    return res;
+  }
+  // does a day still have a piece Gusto could have split at midnight (out 11:59:59 PM or in 12:00:00 AM)?
+  function touchesMidnight(shifts, tz, clock) {
+    return (shifts || []).some(x => x && !x.hours_only && ((x.out && hmsIs(clockParts(x.out, tz, clock), 23, 59, 59)) || (x.in && hmsIs(clockParts(x.in, tz, clock), 0, 0, 0))));
   }
 
   /* ---------- what breaks a day still needs (the editor's Breaks line, Gianni 2026-10-21) ----------
@@ -2330,7 +2496,10 @@
     Object.assign(d, estOvertime(r, d));
     // Gusto's own total no longer applies to the changed day, so it is left out of the flags
     const fl = dayFlags(Object.assign({}, d, { gusto_total_min: null }), today);
-    d.flags = d.hours_only ? fl.filter(f => f.code !== 'long_day') : fl;
+    // midnight_split needs the days around this one: the producer's stays while the day still has a piece Gusto
+    // could have split at midnight (overlayRows then settles it with the days the page has); without one, none
+    const mid = touchesMidnight(ss, rowTz(r), rowClock(r)) ? (r.flags || []).filter(f => f && f.code === 'midnight_split') : [];
+    d.flags = (d.hours_only ? fl.filter(f => f.code !== 'long_day') : fl).concat(mid);
     return d;
   }
 
@@ -2412,7 +2581,8 @@
   // A ts_days row as the board shows it with the changes made here. edits = the ts_edits rows of any
   // days; cancelled ones never show. Per shift the latest edit counts. Returns the row itself when no
   // edit says anything, else a copy with the edited shifts, recomputed totals, overtime (est.) and flags,
-  // and edit: {pending, attention, sent} for the pills.
+  // and edit: {pending, attention, sent} for the pills. On its own it keeps the producer's midnight_split
+  // (it needs the days around); overlayRows settles that with the person's other days.
   function overlayDay(r, edits, opts) {
     const o = opts || {};
     const live = (edits || []).filter(e => e && e.day_id === r.id && !e.cancelled_at).sort(cmpEdit);
@@ -2477,6 +2647,33 @@
     const d = rebuildDay(r, shifts, o.today || todayIn(tz, o.now));
     d.edit = info;
     return d;
+  }
+  // Every row as the board shows it: overlayDay on each, then midnight_split settled across days. A change can
+  // start, end or move a midnight chain, and a chain spans days (the day before or after may have no change
+  // itself). For each person with a changed day, the producer's chain rule runs over their rows twice, as Gusto
+  // has them and as changed here; a row takes the changed answer only where the change moved it and every day
+  // it depends on is known (loaded). Everywhere else the producer's own flag stays, so a day next to one the
+  // page has not loaded keeps it rather than losing it. edits: Map day_id -> ts_edits rows, or a list.
+  // opts: { now, todayOf(row) (default: the row's own today), known(date, row) (default: none) }.
+  function overlayRows(rows, edits, opts) {
+    const o = opts || {}, list = (rows || []).filter(Boolean);
+    const idx = edits && !Array.isArray(edits) && typeof edits.get === 'function' ? edits : groupBy((edits || []).filter(e => e && e.day_id != null), e => e.day_id);
+    const todayOf = o.todayOf || (r => todayIn(rowTz(r), o.now));
+    const out = list.map(r => { const es = idx.get(r.id); return es && es.length ? overlayDay(r, es, { today: todayOf(r), now: o.now }) : r; });
+    const moved = new Set();
+    list.forEach((r, i) => { if (out[i].shifts !== r.shifts) moved.add(pairKey(r)); });
+    if (!moved.size) return out;
+    const at = list.map((r, i) => i).filter(i => moved.has(pairKey(list[i])));
+    const mo = { todayOf, known: o.known };
+    const before = midnightByRow(at.map(i => list[i]), mo), after = midnightByRow(at.map(i => out[i]), mo);
+    const text = f => (f ? f.msg : '');
+    for (const i of at) {
+      const a = after.get(out[i].id), b = before.get(list[i].id);
+      if (!a || !a.sure || (b && b.sure && text(b.flag) === text(a.flag))) continue;
+      const keep = (out[i].flags || []).filter(f => !f || f.code !== 'midnight_split');
+      out[i] = Object.assign({}, out[i], { flags: a.flag ? keep.concat([a.flag]) : keep });
+    }
+    return out;
   }
 
   /* an edit in words: "Start 7:02 AM → 7:30 AM", "Add meal 12:00-12:30", "Delete the shift 7:00 AM - 3:30 PM" */
@@ -3067,7 +3264,7 @@
   root.TSCore = {
     TZ, PERIOD_ANCHOR_END, WEEK_START_DOW, NO_DEPT, REGIONS, COMPANY_ORDER, COMPANY_NAMES, COMPANY_TZ, PRESETS, FLAGS, FLAG_CODES,
     REGION_FLAG_MSGS, CSV_COLUMNS, CSV_EDIT_COLUMN, LABEL_SRC,
-    regionDef, regionOfCompany, rowTz, companyTz,
+    regionDef, regionOfCompany, rowTz, companyTz, COMPANY_CLOCK, rowClock, punchParts, clockParts,
     utcOf, isIsoDate, addDays, daysBetween, dow, eachDate,
     payPeriodFor, weekStart, weekFor, presetRange, clampRange,
     zParts, zDate, todayIn, zMinutes, zIso, laParts, laDate, todayLA, laMinutes, fmtTime, fmtClock, laIso,
@@ -3083,12 +3280,12 @@
     fmtDayShort, shiftParts, shiftsText, breakUnsure, breakSummary, breakSummaryText, BREAK_POLICY, BREAK_POLICY_NY, breakPolicyText,
     csvCell, csvEditCell, buildCsv, csvFilename, freshness, freshSummary,
     esc, SafeHTML, h, flagsHtml,
-    workedUntil, dayFlagsCA, dayFlagsNY, dayFlags, BREAK_NEED_CODES, BREAK_ADD_CODES, restMinFor, workedReachedAt, missingBreaks,
+    workedUntil, dayFlagsCA, dayFlagsNY, dayFlags, TINY_SHIFT_MS, OVERLAP_MS, RECLOCK_MS, LONG_DAY_MIN, dataFlags, MIDNIGHT_MSG, midnightFlags, midnightByRow, touchesMidnight, BREAK_NEED_CODES, BREAK_ADD_CODES, restMinFor, workedReachedAt, missingBreaks,
     entriesShifts, breakNeedText, editorBreakStatus, freeStretches, placeBreak, suggestBreak, breakIndexFor, missingBreakAdds,
     EDIT_ANCHOR_END, EDIT_RULES, EDIT_RUNS_PT, editWindow, canEditDate, sameMinute, snapBreaks, shiftSnap, sameBreaks, editParts,
     validateAfter, shiftOverlap, fmtTimeSec, LONG_REST_MIN, longRestText, entryBreakNotes, hhmm, parseHhmm, fmtHhmm, entryOf, entryKey, entryAfter, newEntry, editedShift, dailySplit, estOvertime,
     rebuildDay, editStatus, EDIT_STATUS_WORDS, replacedEdits, editShownStatus, replacedBy, EDIT_LATE_SEC, firstEditRun, partLate, editLate,
-    partShow, overlayDay, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, saveMessage,
+    partShow, overlayDay, overlayRows, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, saveMessage,
     partWaits, editSending, CANCELLABLE,
     stampText, editPartLines, editTip, supersede, submitEdit, cancelEdit, stillWorking, editorEntries, editPlan, entriesPreview, dayStamp,
   };
@@ -3162,8 +3359,9 @@
     harvest: { days: [1, 2, 3, 4, 5], span: 622 },
   };
 
-  // Hand-built days, each landing on the nth most recent workday of that person, so every flag shows up.
-  // Break tuples are [start, end|null, kind, opts] in minutes after midnight, the person's own time zone.
+  // Hand-built days, each landing on the nth most recent workday of that person, so every flag shows up
+  // (next, when given, builds the day after it too). Break tuples are [start, end|null, kind, opts] in minutes
+  // after midnight, the person's own time zone.
   const R = (s, a, len, kind, o) => [s + a, len == null ? null : s + a + len, kind, o || {}];
   const SCENARIOS = {
     'Basil Thornbury':     { n: 3, make: s => ({ note: 'Ran deliveries through lunch',
@@ -3206,6 +3404,25 @@
       shifts: [{ inM: 960, outM: 1410, breaks: [R(960, 180, 30, 'meal')] }] }) },
     'Tarragon Bellweather':{ n: 2, skipToday: true, make: s => ({
       shifts: [{ inM: s, outM: s + 480, open: true, breaks: [R(s, 200, 30, 'meal')] }] }) },
+    // Data errors (the producer's flags of 2026-10-24): a re-tap a minute after the day's clock-out; a second shift
+    // typed over the first; a forgotten clock-out Gusto carried past midnight (cut: out at 11:59:59 PM; next: the day
+    // after, Gusto's 12:00 AM piece under the same id (cont), clocked out from the phone at 2 AM, over 14 hours in
+    // all); in New York, a rest that ran over an hour, and a day whose only shift is one tap (the clock-in went in
+    // at the wrong time). n >= 2 keeps the day after a scenario before today, and a Gusto-labelled rest before the
+    // CSV's day. The demo judges meals and rests one calendar day at a time, where the producer judges a 12:00 AM
+    // piece with the day before, so the forgotten clock-out has a full set of breaks and nothing else on its next
+    // day: either way it gets the producer's pills and no others.
+    'Pepper Moonwhistle':  { n: 3, make: s => ({ note: 'Tapped the clock again on the way out',
+      shifts: [{ inM: s, outM: s + 505, breaks: [R(s, 110, 10, 'rest'), R(s, 240, 30, 'meal'), R(s, 360, 10, 'rest')] }, { inM: s + 506, outM: s + 507, breaks: [] }] }) },
+    'Oakley Whistledown':  { n: 2, make: s => ({ note: 'Afternoon typed in by hand',
+      shifts: [{ inM: s, outM: s + 240, breaks: [R(s, 110, 10, 'rest')] }, { inM: s + 225, outM: s + 505, breaks: [R(s + 225, 35, 30, 'meal'), R(s + 225, 155, 10, 'rest')] }] }) },
+    'Cedar Puddlejump':    { n: 2, make: () => ({ note: 'Night irrigation check, forgot to clock out until 2 AM',
+      shifts: [{ inM: 690, outM: 1440, cut: true, breaks: [R(690, 110, 10, 'rest'), R(690, 240, 30, 'meal'), R(690, 360, 10, 'rest'),
+                                                            R(690, 480, 30, 'meal'), R(690, 600, 10, 'rest')] }] }),
+      next: () => ({ shifts: [{ inM: 0, outM: 120, cont: true, breaks: [] }] }) },
+    'Dewberry Quillon':    { n: 2, make: s => ({
+      shifts: [{ inM: s, outM: s + 420, breaks: [R(s, 90, 68, 'rest'), R(s, 240, 30, 'meal')] }] }) },
+    'Bramble Featherstone':{ n: 4, make: () => ({ shifts: [{ inM: 1004, outM: 1005, breaks: [] }] }) },
   };
 
   function hash(s) { let x = 2166136261; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } return x >>> 0; }
@@ -3292,20 +3509,23 @@
       const plan = PLANS[planKey];
       const sc = SCENARIOS[name];
       const scDate = sc ? nthWorkday(plan, sc.n, today) : null;
+      const nextDate = sc && sc.next ? C.addDays(scDate, 1) : null;   // a scenario that runs into the next day
+      let cutId = null;   // Gusto keeps one id for both parts of a shift it split at midnight
       for (const date of C.eachDate(Z.from, today)) {
         const r = rng(hash(name + '|' + date));
-        const isScen = date === scDate;
+        const isScen = date === scDate, isNext = date === nextDate;
         const inHarvest = planKey === 'harvest' && date >= harvestFrom && date <= harvestTo;
-        const works = isScen || ((plan.days.includes(C.dow(date)) || inHarvest) && r() >= 0.05);
+        const works = isScen || isNext || ((plan.days.includes(C.dow(date)) || inHarvest) && r() >= 0.05);
         if (!works) continue;
         if (date === today && sc && sc.skipToday) continue;
-        const dp = isScen ? sc.make(start) : normalDay(r, plan, start);
+        const dp = isScen ? sc.make(start) : isNext ? sc.next(start) : normalDay(r, plan, start);
         const isToday = date === today;
         const gustoDay = labelled[company] && date < csvDate && !isToday;
         const shifts = [];
         for (const sp of dp.shifts) {
           if (isToday && sp.inM > nowMin) continue;                      // not started yet
-          const sh = { id: 'demo-shift-' + (++seq), in: iso(date, sp.inM), out: null, span_min: 0, worked_min: 0, hours_only: !!sp.hoursOnly, breaks: [] };
+          const sh = { id: sp.cont && cutId ? cutId : 'demo-shift-' + (++seq), in: iso(date, sp.inM), out: null, span_min: 0, worked_min: 0, hours_only: !!sp.hoursOnly, breaks: [] };
+          if (sp.cut) cutId = sh.id;
           if (sp.hoursOnly) {
             sh.out = iso(date, 1439 + 59 / 60);
             sh.span_min = sp.hours;          // like the producer: the placeholder clock-out is not a span
@@ -3313,7 +3533,8 @@
             shifts.push(sh); continue;
           }
           const open = !!sp.open || (isToday && sp.outM > nowMin);
-          if (!open) sh.out = iso(date, sp.outM);
+          // cut: Gusto's own clock-out at midnight, 11:59:59 PM, which counts as midnight (outM 1440)
+          if (!open) sh.out = sp.cut ? iso(date, 1439 + 59 / 60) : iso(date, sp.outM);
           for (const [s, e, kind, o] of sp.breaks) {
             if (isToday && (e == null ? s : e) > nowMin) continue;          // has not happened yet
             const min = e == null ? 0 : e - s;
@@ -3354,6 +3575,10 @@
     });
     applyOvertime(rows);
     for (const d of rows) d.flags = d.region === 'NY' ? flagsForNY(d, todays.NY, C.rowTz(d)) : flagsFor(d, today);
+    // midnight_split reads each person's days on either side (C.midnightFlags, the producer's chain rule); the
+    // demo has every day of its window and none before it, so every date counts as known
+    const mid = C.midnightByRow(rows, { todayOf: d => todays[d.region], known: () => true });
+    for (const d of rows) { const m = mid.get(d.id); if (m && m.flag) d.flags.push(m.flag); }
 
     const counts = {};
     for (const d of rows) counts[d.company] = (counts[d.company] || 0) + 1;
@@ -3652,7 +3877,9 @@
   function editsLoaded() { return DEMO || S.editsState === 'ok' || S.editsState === 'error'; }
   function editsOn() { return !!S.me && editsLoaded() && (DEMO || !!S.me.is_admin || EDITS_FOR_MANAGERS); }
   function boardRow(r) { const es = editIndex().get(r.id); return es ? C.overlayDay(r, es, { today: rowToday(r), now: Date.now() }) : r; }
-  function boardRows() { return [...S.rows.values()].map(boardRow); }
+  // every row as the board shows it: the changes made here on top, and a change around midnight settled with the
+  // person's other loaded days (C.overlayRows; a day next to one not loaded keeps Gusto's own midnight flag)
+  function boardRows() { return C.overlayRows([...S.rows.values()], editIndex(), { now: Date.now(), todayOf: rowToday, known: d => covered(d, d) }); }
   const rowRegion = r => r.region || C.regionOfCompany(r.company);
   // the current or previous pay period, never a future day, on the row's own calendar (ts_edit_submit's
   // window), and still in it when the next run takes the change to Gusto (C.canEditForRun); New York days

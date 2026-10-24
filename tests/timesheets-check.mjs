@@ -9,7 +9,7 @@
 process.env.TZ = 'Pacific/Auckland';
 import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FILE = process.argv[2] ? path.resolve(process.argv[2]) : path.join(ROOT, 'timesheets.html');   // optional path, for checking a copy
@@ -822,7 +822,9 @@ check('page: ts_me views, the set-views RPC after save_user, previews carry view
 // ---------------------------------------------------------------------------------------------
 // 7. flags and breaks
 // ---------------------------------------------------------------------------------------------
-const SPEC_FLAGS = ['no_meal', 'late_meal', 'short_meal', 'no_second_meal', 'few_rest', 'short_rest', 'break_open', 'missed_out', 'long_day', 'type_unsure', 'gusto_mismatch'];
+const SPEC_FLAGS = ['no_meal', 'late_meal', 'short_meal', 'no_second_meal', 'few_rest', 'short_rest', 'break_open', 'missed_out', 'long_day', 'type_unsure', 'gusto_mismatch',
+  // the producer's data-error flags (2026-10-24): warnings, labelled on the board
+  'tiny_shift', 'midnight_split', 'long_rest', 'shift_overlap'];
 check('flag codes match the spec exactly; labels and messages exist; type_unsure is info', () => {
   eq([...C.FLAG_CODES].sort(), [...SPEC_FLAGS].sort());
   for (const c of SPEC_FLAGS) ok(C.flagLabel({ code: c }) && C.flagMsg({ code: c }), c);
@@ -2008,7 +2010,7 @@ check('page: reads ts_edits with the days (paged), a missing table turns Edit of
   ok(/sb\.rpc\('ts_edit_cancel', \{ p_id: op\.id \}\)/.test(ro), 'ts_edit_cancel args');
   ok(/C\.supersede\(/.test(ro) && /await fetchEdits\(raw\.work_date, raw\.work_date\)/.test(appFn('saveDayEdits')), 'replaced edits marked at once, then the day re-read');
   if (SQL_EDITS) ok(/function public\.ts_edit_submit\(p_day_id text, p_shift_id text, p_action text,\s*p_after jsonb, p_note text\)/.test(SQL_EDITS) && /function public\.ts_edit_cancel\(p_id uuid\)/.test(SQL_EDITS), 'the RPCs in supabase/ts-edits.sql');
-  ok(/function boardRows\(\) \{ return \[\.\.\.S\.rows\.values\(\)\]\.map\(boardRow\); \}/.test(app) && /C\.filterRows\(boardRows\(\),/.test(appFn('baseRows')), 'the board (tables, cards, totals, CSV) shows waiting changes');
+  ok(/function boardRows\(\) \{ return C\.overlayRows\(\[\.\.\.S\.rows\.values\(\)\], editIndex\(\), \{ now: Date\.now\(\), todayOf: rowToday, known: d => covered\(d, d\) \}\); \}/.test(app) && /C\.filterRows\(boardRows\(\),/.test(appFn('baseRows')), 'the board (tables, cards, totals, CSV) shows waiting changes, midnight settled with the days it has loaded');
   ok(/C\.editPlan\(raw0, E\.entries, \{ now: Date\.now\(\), neighbors: neighborShifts\(raw0\) \}\)/.test(appFn('saveDayEdits')) && /if \(Object\.keys\(plan\.errors\)\.length\)/.test(appFn('saveDayEdits')), 'Save checks everything first');
   ok(/if \(failed\.has\(op\.key\)\) continue;/.test(appFn('saveDayEdits')), 'a failed cancel never lets its new add through');
 });
@@ -2820,6 +2822,443 @@ check('messages show the seconds that cause them, and an overlap is marked on th
   const en = C.editorEntries(r, r, [], me, at);
   en[0].breaks.unshift({ startT: '09:47', endT: '10:17', kind: 'meal', orig: null });
   eq(C.editPlan(r, en, {}).errors[en[0].key].map(e => [e.code, e.brk]), [['brk_overlap', 0]]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// 17. data errors (the producer's tiny_shift, long_rest, shift_overlap and midnight_split of 2026-10-24,
+//     ~/gusto-sync/ca-ts-core.mjs dataFlags and its midnight pass): the page computes the same flags in the
+//     same words, for the demo and for a day changed here. Made-up days only. Where the producer is on this
+//     machine both run on the same days and must agree; elsewhere the expected answers below (taken from the
+//     producer's own tests) stand in for it.
+// ---------------------------------------------------------------------------------------------
+const PRODUCER_FILE = path.join(os.homedir(), 'gusto-sync', 'ca-ts-core.mjs');
+let P = null;
+try { if (fs.existsSync(PRODUCER_FILE)) P = await import(pathToFileURL(PRODUCER_FILE).href); }
+catch (e) { console.log('          (the producer did not load: ' + String((e && e.message) || e).split('\n')[0] + ')'); }
+if (!P) console.log('          (no ~/gusto-sync/ca-ts-core.mjs here: data-error flags checked against the expected answers only)');
+const DATA_CODES = ['tiny_shift', 'midnight_split', 'long_rest', 'shift_overlap'];
+const ALL_COS = ['filifera', 'slane', 'wafgus', 'imperial', 'wtny'];
+const cOpts = co => ({ tz: C.rowTz({ company: co }), clock: C.rowClock({ company: co }) });
+const pOpts = co => ({ tz: P.settingsFor(co).tz, clock: P.settingsFor(co).clock });
+const zOff = co => co === 'wtny' ? '-04:00' : '-07:00';                       // October: EDT / PDT
+const XT = (date, t, off) => date + 'T' + (t.length === 5 ? t + ':00' : t) + off;
+const pad2 = n => String(n).padStart(2, '0');
+const hmsOf = sec => pad2(Math.floor(sec / 3600)) + ':' + pad2(Math.floor(sec / 60) % 60) + ':' + pad2(sec % 60);
+let dsSeq = 0;
+// a stored ts_days shift on 2026-10-06 (wall times on the company's offset, or o.off); breaks [start, end|null, kind, {open}]
+function DS(co, a, b, o) {
+  const opt = o || {}, off = opt.off || zOff(co), date = opt.date || '2026-10-06';
+  const t = v => v == null ? null : XT(date, v, off);
+  const gm = v => Math.floor(Date.parse(v) / 60000);
+  const breaks = (opt.breaks || []).map(([s, e, kind, x]) => ({ start: t(s), end: t(e), min: e ? Math.max(0, gm(t(e)) - gm(t(s))) : 0, kind, paid: kind === 'rest', src: 'gusto', open: !e || !!(x && x.open) }));
+  return { id: opt.id || 'ds' + (++dsSeq), in: t(a), out: t(b), span_min: 0, worked_min: opt.hoursOnly || 0, hours_only: !!opt.hoursOnly, breaks };
+}
+const DHO = (co, min) => DS(co, '00:00:00', '23:59:59', { hoursOnly: min || 480 });
+const ALONE1 = "The day's only shift lasted 1 min or less: was a clock-in missed? Fix the times in Gusto.";
+const RETAP1 = 'Clocked in and out within 1 min: likely a mis-tap. Delete it or fix the times.';
+const OVERLAP = 'Two shifts overlap: fix the times in Gusto.', TWICE = 'Same shift entered twice: delete one in Gusto.';
+const LONG8 = [['10:00', '10:10', 'rest'], ['12:00', '12:30', 'meal']];
+const sameId = DS('filifera', '08:00', '12:00');
+const DF_CASES = [
+  // tiny_shift
+  ['the 4:44 PM - 4:44 PM day', 'filifera', [DS('filifera', '16:44:39', '16:44:50')], [['tiny_shift', ALONE1]]],
+  ['zero length', 'filifera', [DS('filifera', '09:00:00', '09:00:00')], [['tiny_shift', ALONE1]]],
+  ['a second under 5 minutes', 'filifera', [DS('filifera', '09:00:00', '09:04:59')], [['tiny_shift', "The day's only shift lasted 5 min or less: was a clock-in missed? Fix the times in Gusto."]]],
+  ['exactly 5 minutes is a (short) shift', 'filifera', [DS('filifera', '09:00:00', '09:05:00')], []],
+  ['two taps and nothing else', 'filifera', [DS('filifera', '16:44:39', '16:44:50'), DS('filifera', '16:45:02', '16:45:09')],
+    [['tiny_shift', "The day's only 2 shifts each lasted 1 min or less: was a clock-in missed? Fix the times in Gusto."]]],
+  ['a tap beside a running shift', 'filifera', [DS('filifera', '07:00:00', '07:00:20'), DS('filifera', '07:00:30', null)], [['tiny_shift', RETAP1]]],
+  ['a tap beside an hours-entered shift', 'filifera', [DHO('filifera'), DS('filifera', '16:44:39', '16:44:50')], [['tiny_shift', RETAP1]]],
+  ['two re-taps after a real shift', 'filifera', [DS('filifera', '08:01:07', '17:08:04', { breaks: LONG8 }), DS('filifera', '17:08:07', '17:08:23'), DS('filifera', '17:08:32', '17:08:36')],
+    [['tiny_shift', '2 shifts clocked in and out within 1 min: likely mis-taps. Delete them or fix the times.']]],
+  ['a shift still running has no length yet', 'filifera', [DS('filifera', '12:00', null)], []],
+  ['a 12:00 AM piece is never a tap', 'filifera', [DS('filifera', '00:00:00', '00:02:18')], []],
+  ['nor one Gusto closed at 11:59:59 PM', 'filifera', [DS('filifera', '23:58:30', '23:59:59')], []],
+  ['nor an hours-entered shift, whatever its hours', 'filifera', [DHO('filifera', 3)], []],
+  ['New York too', 'wtny', [DS('wtny', '16:44:39', '16:44:50')], [['tiny_shift', ALONE1]]],
+  ['Waf & Gus punching in Eastern: the ET midnight piece is exempt on the Los Angeles clock', 'wafgus', [DS('wafgus', '00:00:00', '00:02:10', { off: '-04:00' })], []],
+  ['... and the 11:59:59 PM ET cut', 'wafgus', [DS('wafgus', '23:57:00', '23:59:59', { off: '-04:00' })], []],
+  ['... a Pacific tap at 9 PM is still one', 'wafgus', [DS('wafgus', '21:00:00', '21:02:10')], [['tiny_shift', "The day's only shift lasted 3 min or less: was a clock-in missed? Fix the times in Gusto."]]],
+  ['New York: a Pacific punch cut at Pacific midnight is a midnight piece', 'wtny', [DS('wtny', '23:57:00', '23:59:59', { off: '-07:00' })], []],
+  // long_rest
+  ['a Gusto Rest of 2 h 8 min (New York)', 'wtny', [DS('wtny', '08:01:19', '16:55:31', { breaks: [['10:06', '12:14', 'rest']] })], [['long_rest', 'Rest of 2 h 8 min: was it ever ended?']]],
+  ['a rest of 30 minutes is fine', 'filifera', [DS('filifera', '08:00', '16:30', { breaks: [['10:00', '10:30', 'rest'], ['12:00', '12:30', 'meal']] })], []],
+  ['31 minutes', 'filifera', [DS('filifera', '08:00', '16:30', { breaks: [['10:00', '10:31', 'rest'], ['12:00', '12:30', 'meal']] })], [['long_rest', 'Rest of 31 min: was it ever ended?']]],
+  ['an hour reads plainly', 'filifera', [DS('filifera', '08:00', '16:30', { breaks: [['10:00', '11:00', 'rest']] })], [['long_rest', 'Rest of 1 h: was it ever ended?']]],
+  ['the longest one is named', 'filifera', [DS('filifera', '08:00', '16:30', { breaks: [['09:00', '09:40', 'rest'], ['13:00', '14:15', 'rest']] })], [['long_rest', 'Rest of 1 h 15 min: was it ever ended?']]],
+  ['a long meal is no rest', 'filifera', [DS('filifera', '08:00', '16:30', { breaks: [['12:00', '12:40', 'meal']] })], []],
+  ['a rest that ran to the clock-out is the open break\'s', 'filifera', [DS('filifera', '08:00', '12:06:44', { breaks: [['10:05', '12:06', 'rest', { open: true }]] })], []],
+  ['a break with no end is 0 min', 'filifera', [DS('filifera', '08:00', '12:00', { breaks: [['10:00', null, 'rest']] })], []],
+  // shift_overlap
+  ['two shifts on the clock at once', 'filifera', [DS('filifera', '08:00', '12:00'), DS('filifera', '11:30', '16:00')], [['shift_overlap', OVERLAP]]],
+  ['the same shift twice, to the minute', 'filifera', [DS('filifera', '08:00:12', '16:30:40'), DS('filifera', '08:00:00', '16:30:00')], [['shift_overlap', TWICE]]],
+  ['back to back 3 seconds apart', 'filifera', [DS('filifera', '08:00', '12:06:29'), DS('filifera', '12:06:32', '13:00')], []],
+  ['45 seconds of overlap', 'filifera', [DS('filifera', '08:00', '12:01:00'), DS('filifera', '12:00:15', '13:00')], []],
+  ['a full minute', 'filifera', [DS('filifera', '08:00', '12:01:00'), DS('filifera', '12:00:00', '13:00')], [['shift_overlap', OVERLAP]]],
+  ['a running shift covers what comes after it', 'filifera', [DS('filifera', '08:00', null), DS('filifera', '12:00', '13:00')], [['shift_overlap', OVERLAP]]],
+  ['... and a shift that ends after it started', 'filifera', [DS('filifera', '08:00', null), DS('filifera', '06:00', '09:00')], [['shift_overlap', OVERLAP]]],
+  ['... not one that ended before', 'filifera', [DS('filifera', '06:00', '07:00'), DS('filifera', '08:00', null)], []],
+  ['one record listed twice is not two shifts', 'filifera', [sameId, Object.assign({}, sameId)], []],
+  ['an hours-entered shift never overlaps a punch', 'filifera', [DHO('filifera', 240), DS('filifera', '13:00', '16:00')], []],
+  ['New York too', 'wtny', [DS('wtny', '08:00', '10:00'), DS('wtny', '09:30', '11:00')], [['shift_overlap', OVERLAP]]],
+  // together, in the producer's order
+  ['a tap and an overlap', 'filifera', [DS('filifera', '08:00', '09:00'), DS('filifera', '08:30', '09:30'), DS('filifera', '13:00:05', '13:00:40')], [['tiny_shift', RETAP1], ['shift_overlap', OVERLAP]]],
+  ['a long rest, a tap and an overlap', 'filifera', [DS('filifera', '08:00', '12:00', { breaks: [['09:00', '09:45', 'rest']] }), DS('filifera', '11:00', '15:00'), DS('filifera', '15:10:00', '15:10:30')],
+    [['long_rest', 'Rest of 45 min: was it ever ended?'], ['tiny_shift', RETAP1], ['shift_overlap', OVERLAP]]],
+];
+check('data errors: each company reads punch times on the producer\'s clock (California converted to Los Angeles, New York on the punch\'s own)', () => {
+  for (const co of ALL_COS) eq(cOpts(co), co === 'wtny' ? { tz: 'America/New_York', clock: 'punch' } : { tz: 'America/Los_Angeles', clock: 'tz' }, co);
+  if (P) for (const co of ALL_COS) eq(cOpts(co), pOpts(co), co + ' (the producer)');
+  eq(C.punchParts('2026-10-06T23:59:59-07:00', 'America/New_York'), { date: '2026-10-06', h: 23, m: 59, s: 59 }, 'as written');
+  eq(C.clockParts('2026-10-06T23:59:59-07:00', 'America/New_York', 'tz'), C.zParts('2026-10-07T02:59:59-04:00', 'America/New_York'), 'converted');
+  eq(C.punchParts('2026-10-07T06:59:59Z', C.TZ), C.zParts('2026-10-07T06:59:59Z', C.TZ), 'no numeric offset: read in the zone');
+});
+check('data errors: the page\'s dataFlags gives the producer\'s tiny_shift, long_rest and shift_overlap, in its words, on made-up days', () => {
+  for (const [what, co, shifts, want] of DF_CASES) {
+    const got = C.dataFlags(shifts, cOpts(co));
+    eq(got.map(f => [f.code, f.msg]), want, what);
+    ok(got.every(f => f.sev === 'warn'), what + ': warnings');
+    if (P) eq(got, P.dataFlags(shifts, pOpts(co)), what + ' (the producer)');
+  }
+  eq(C.dataFlags([]), []); eq(C.dataFlags(null), []);
+  for (const f of DF_CASES.flatMap(c => c[3]).concat(Object.entries(C.MIDNIGHT_MSG))) ok(!/[\u2013\u2014]/.test(f[1]) && f[1].length < 110, 'plain short words: ' + f[1]);
+  // a day's own flags carry them (the demo and an edited day), next to the labor-rule flags
+  const day = { company: 'filifera', region: 'CA', work_date: '2026-10-06', hours_only: false, gusto_total_min: null, shifts: DF_CASES[0][2], worked_min: 0, span_min: 0 };
+  eq(C.dayFlags(day, '2026-10-08').map(f => f.code), ['tiny_shift']);
+  const ny = { company: 'wtny', region: 'NY', work_date: '2026-10-06', hours_only: false, gusto_total_min: null, shifts: DF_CASES.find(c => c[0].startsWith('a Gusto Rest of 2 h 8 min'))[2], worked_min: 534, span_min: 534 };
+  eq(C.dayFlags(ny, '2026-10-08').map(f => f.code), ['no_meal', 'long_rest'], 'New York: no meal on a shift over 6 hours, and the long rest');
+});
+check('data errors: on 4,000 random made-up days the page and the producer give the same tiny_shift, long_rest and shift_overlap', () => {
+  if (!P) { console.log('          (skipped: the producer is not on this machine)'); return true; }
+  let seed = 20261024;
+  const rnd = k => { seed = (seed * 1103515245 + 12345) % 2147483648; return Math.floor(seed / 2147483648 * k); };
+  const pick = a => a[rnd(a.length)];
+  const seen = {};
+  for (let i = 0; i < 4000; i++) {
+    const co = pick(['filifera', 'slane', 'wafgus', 'wtny']);
+    const off = co === 'wtny' ? pick(['-04:00', '-04:00', '-07:00']) : co === 'wafgus' ? pick(['-07:00', '-07:00', '-04:00']) : '-07:00';
+    const t = sec => XT('2026-10-06', hmsOf(sec), off);
+    const shifts = [];
+    for (let k = 1 + rnd(3); k > 0; k--) {
+      const a = pick([0, 0, rnd(86400), 86399 - rnd(400), 25200 + rnd(36000), 25200 + rnd(36000)]);
+      const len = pick([0, rnd(60), 299, 300, 301, rnd(900), 3600 + rnd(60), rnd(10 * 3600), rnd(10 * 3600)]);
+      const b = rnd(6) === 0 ? 86399 : Math.min(a + len, 86399), ho = rnd(15) === 0, open = !ho && rnd(10) === 0;
+      const breaks = [];
+      for (let j = ho ? 0 : rnd(3); j > 0; j--) {
+        const bs = a + rnd(Math.max(1, b - a)), be = rnd(8) === 0 ? null : Math.min(bs + pick([5, 10, 25, 30, 31, 45, 128]) * 60 + rnd(60), 86399);
+        const kind = pick(['rest', 'rest', 'meal']);
+        breaks.push({ start: t(bs), end: be == null ? null : t(be), min: be == null ? 0 : Math.floor(be / 60) - Math.floor(bs / 60), kind, paid: kind === 'rest', src: 'gusto', open: be == null || rnd(12) === 0 });
+      }
+      shifts.push({ id: shifts.length && rnd(15) === 0 ? shifts[0].id : 'r' + i + '-' + k, in: ho ? t(0) : t(a), out: ho ? t(86399) : open ? null : t(b),
+        span_min: 0, worked_min: ho ? 240 : 0, hours_only: ho, breaks });
+    }
+    const got = C.dataFlags(shifts, cOpts(co));
+    eq(got, P.dataFlags(shifts, pOpts(co)), 'random day ' + i + ' (' + co + ') ' + J(shifts.map(s => [s.in, s.out, s.hours_only])));
+    for (const f of got) seen[f.msg.replace(/\d+/g, 'n')] = (seen[f.msg.replace(/\d+/g, 'n')] || 0) + 1;
+  }
+  const kinds = Object.keys(seen);
+  ok(kinds.length >= 7 && kinds.every(k => seen[k] >= 5), 'the random days reach every wording often enough: ' + J(seen));
+});
+
+// one made-up person's days as Gusto's API lists the shifts ([date, in, out|null, {off, hoursOnly}]), for the
+// producer, and as stored ts_days rows (grouped by Gusto's date, spans in Gusto's minutes), for the page
+let fxSeq = 0;
+function fxApi(co, list) {
+  return list.map(([date, a, b, o]) => {
+    const opt = o || {}, off = opt.off || zOff(co), inT = XT(date, a, off), outT = b ? XT(date, b, off) : null;
+    return { id: 'fx' + (++fxSeq), date, clockInTimestamp: inT, clockOutTimestamp: outT,
+      clockInPlatform: opt.hoursOnly ? null : 'IOS', clockOutPlatform: opt.hoursOnly || !outT ? null : 'IOS',
+      durationInMinutes: opt.hoursOnly ? opt.hoursOnly : outT ? Math.floor((Date.parse(outT) - Date.parse(inT)) / 60000) : null,
+      breaks: [], firstName: 'Test', lastName: 'Fixture', preferredName: 'Test Fixture', workerType: 'employee', employeeUuid: 'fx-1' };
+  });
+}
+function fxRows(co, list) {
+  const { tz, clock } = cOpts(co);
+  const gm = t => { const p = C.clockParts(t, tz, clock); return Math.floor(Date.parse(t) / 60000) + (p && p.h === 23 && p.m === 59 && p.s === 59 ? 1 : 0); };
+  const byDate = new Map();
+  for (const s of fxApi(co, list)) {
+    const ho = !s.clockInPlatform, span = s.clockOutTimestamp ? gm(s.clockOutTimestamp) - gm(s.clockInTimestamp) : 0;
+    if (!byDate.has(s.date)) byDate.set(s.date, []);
+    byDate.get(s.date).push({ id: s.id, in: s.clockInTimestamp, out: s.clockOutTimestamp, span_min: ho ? s.durationInMinutes : span,
+      worked_min: ho ? s.durationInMinutes : span, hours_only: ho, breaks: [] });
+  }
+  return [...byDate].map(([date, shifts]) => ({ id: co + ':fx-1:' + date, company: co, region: C.regionOfCompany(co), employee_uuid: 'fx-1', work_date: date, shifts, flags: [] }));
+}
+const fxProducer = (co, list, today) => P.buildDays(fxApi(co, list), [{ company: co, employee_uuid: 'fx-1', name: 'Test Fixture', department: 'Test', job_title: null, active: true }],
+  null, null, { company: co, today, syncedAt: '2026-10-08T19:00:00.000Z' });
+const midOf = r => (r.flags.find(f => f.code === 'midnight_split') || {}).msg;
+// [what, company, today, shifts, {date: 'start' | 'cont' | 'cutoff' | 'recut'}] (the producer's own test days)
+const MID_CASES = [
+  ['a forgotten clock-out: in at 11:50 AM, out the next morning and straight back in', 'slane', '2026-10-08',
+    [['2026-10-05', '11:50:29', '23:59:59'], ['2026-10-06', '00:00:00', '08:06:29'], ['2026-10-06', '08:06:33', '16:38:12']], { '2026-10-05': 'start', '2026-10-06': 'cont' }],
+  ['over 14 hours in all (9 AM to 2 AM), nothing after', 'filifera', '2026-10-08', [['2026-10-05', '09:00', '23:59:59'], ['2026-10-06', '00:00:00', '02:00']], { '2026-10-05': 'start', '2026-10-06': 'cont' }],
+  ['out and back in within 5 minutes, under 14 hours', 'filifera', '2026-10-08',
+    [['2026-10-05', '20:00', '23:59:59'], ['2026-10-06', '00:00:00', '07:00:10'], ['2026-10-06', '07:04:00', '15:00']], { '2026-10-05': 'start', '2026-10-06': 'cont' }],
+  ['6 minutes later is a new shift', 'filifera', '2026-10-08', [['2026-10-05', '20:00', '23:59:59'], ['2026-10-06', '00:00:00', '07:00:10'], ['2026-10-06', '07:06:10', '15:00']], {}],
+  ['still on the clock: each finished day says so, the running piece keeps No clock-out', 'filifera', '2026-10-08',
+    [['2026-10-06', '07:00', '23:59:59'], ['2026-10-07', '00:00:00', '23:59:59'], ['2026-10-08', '00:00:00', null]], { '2026-10-06': 'start', '2026-10-07': 'cont' }],
+  ['an evening start still running today', 'filifera', '2026-10-08', [['2026-10-07', '17:00', '23:59:59'], ['2026-10-08', '00:00:00', null]], { '2026-10-07': 'start' }],
+  ['closed by Gusto at 11:59:59 PM, nothing carried into the next day', 'filifera', '2026-10-08', [['2026-10-05', '14:32:24', '23:59:59'], ['2026-10-06', '14:38:10', '19:17:45']], { '2026-10-05': 'cutoff' }],
+  ['... not while that day is still today', 'filifera', '2026-10-05', [['2026-10-05', '14:32:24', '23:59:59']], {}],
+  ['an hours-entered day after it is no continuation', 'filifera', '2026-10-08', [['2026-10-05', '16:00', '23:59:59'], ['2026-10-06', '00:00:00', '23:59:59', { hoursOnly: 480 }]], { '2026-10-05': 'cutoff' }],
+  ['hours-entered days back to back never chain', 'filifera', '2026-10-08', [['2026-10-06', '00:00:00', '23:59:59', { hoursOnly: 480 }], ['2026-10-07', '00:00:00', '23:59:59', { hoursOnly: 480 }]], {}],
+  ['a BA event to 12:21 AM', 'wafgus', '2026-10-08', [['2026-10-05', '18:34', '23:59:59'], ['2026-10-06', '00:00:00', '00:21']], {}],
+  ['the 8:54 PM - 12:26 AM night', 'filifera', '2026-10-08', [['2026-10-05', '20:54', '23:59:59'], ['2026-10-06', '00:00:00', '00:26:17']], {}],
+  ['an 8 h night shift', 'filifera', '2026-10-08', [['2026-10-05', '20:00', '23:59:59'], ['2026-10-06', '00:00:00', '04:00']], {}],
+  ['an overnight entry split by hand at 11:59 PM (no :59 seconds)', 'wtny', '2026-10-08', [['2026-10-05', '15:45', '23:59'], ['2026-10-06', '00:00', '00:45']], {}],
+  ['New York, an Eastern shift', 'wtny', '2026-10-08', [['2026-10-05', '11:00', '23:59:59'], ['2026-10-06', '00:00:00', '08:00']], { '2026-10-05': 'start', '2026-10-06': 'cont' }],
+  ['New York, a Pacific punch Gusto closed at Pacific midnight', 'wtny', '2026-10-08',
+    [['2026-10-05', '14:32:24', '23:59:59', { off: '-07:00' }], ['2026-10-06', '14:38:10', '19:17:45']], { '2026-10-05': 'cutoff' }],
+  ['Gusto cut a shift still being worked, back in at 12:01:30 AM (New York)', 'wtny', '2026-10-08', [['2026-10-05', '20:00', '23:59:59'], ['2026-10-06', '00:01:30', '04:00']], { '2026-10-05': 'recut' }],
+  ['back in at 12:04:59 AM (California)', 'filifera', '2026-10-08', [['2026-10-05', '20:00', '23:59:59'], ['2026-10-06', '00:04:59', '04:00']], { '2026-10-05': 'recut' }],
+  ['back in at 12:05:10 AM is a new shift', 'filifera', '2026-10-08', [['2026-10-05', '20:00', '23:59:59'], ['2026-10-06', '00:05:10', '04:00']], { '2026-10-05': 'cutoff' }],
+  ['a chain that ran on keeps its own words', 'filifera', '2026-10-08', [['2026-10-05', '09:00', '23:59:59'], ['2026-10-06', '00:00:00', '02:00'], ['2026-10-06', '02:01', '03:00']], { '2026-10-05': 'start', '2026-10-06': 'cont' }],
+];
+check('midnight_split: the page\'s chain rule gives the producer\'s flag and words on every made-up day (both days of a forgotten clock-out, never real overnight work)', () => {
+  for (const [what, co, today, list, want] of MID_CASES) {
+    const rows = fxRows(co, list);
+    const m = C.midnightByRow(rows, { todayOf: () => today, known: () => true });
+    for (const r of rows) {
+      const got = m.get(r.id);
+      ok(got && got.sure, what + ' ' + r.work_date + ': every day is known, so the page decides');
+      eq(got.flag ? [got.flag.code, got.flag.sev, got.flag.msg] : null, want[r.work_date] ? ['midnight_split', 'warn', C.MIDNIGHT_MSG[want[r.work_date]]] : null, what + ' ' + r.work_date);
+    }
+    if (P) {
+      const prows = fxProducer(co, list, today);
+      eq(prows.map(r => [r.work_date, midOf(r) || null]), rows.map(r => [r.work_date, want[r.work_date] ? C.MIDNIGHT_MSG[want[r.work_date]] : null]), what + ' (the producer)');
+      // and the page reading the producer's own rows (flags taken off) finds the same
+      const pm = C.midnightByRow(prows.map(r => Object.assign({}, r, { flags: [] })), { todayOf: () => today, known: () => true });
+      eq(prows.map(r => (pm.get(r.id).flag || {}).msg || null), prows.map(r => midOf(r) || null), what + ' (the page on the producer\'s rows)');
+    }
+  }
+});
+check('midnight_split: with days around it missing the page never guesses, it says unsure (and the producer\'s flag stays); a day it can decide alone it decides', () => {
+  let unsure = 0, sure = 0;
+  for (const [what, co, today, list, want] of MID_CASES) {
+    const rows = fxRows(co, list);
+    // every run of the days present, the rest of the dates not loaded
+    for (let i = 0; i < rows.length; i++) for (let j = i; j < rows.length; j++) {
+      const part = rows.slice(i, j + 1), have = new Set(part.map(r => r.work_date));
+      const m = C.midnightByRow(part, { todayOf: () => today, known: d => have.has(d) });
+      for (const r of part) {
+        const got = m.get(r.id);
+        if (!got.sure) { unsure++; continue; }
+        sure++;
+        eq((got.flag || {}).msg || null, want[r.work_date] ? C.MIDNIGHT_MSG[want[r.work_date]] : null, what + ' ' + r.work_date + ' with ' + J([...have]));
+      }
+    }
+  }
+  ok(unsure > 10 && sure > 30, 'both kinds happen: ' + J({ unsure, sure }));
+  // the day it started is not loaded: the carried-over day cannot say, so the producer's own flag stays
+  const rows = fxRows('filifera', [['2026-10-02', '09:00', '23:59:59'], ['2026-10-03', '00:00:00', '07:59:58'], ['2026-10-03', '08:00:01', '12:00']]);
+  eq(C.midnightByRow([rows[1]], { todayOf: () => '2026-10-08', known: () => false }).get(rows[1].id), { flag: null, sure: false });
+  eq(C.midnightByRow([rows[1]], { todayOf: () => '2026-10-08', known: () => true }).get(rows[1].id).sure, true, 'loaded and empty: no shift the day before');
+  // the day after a cut is not loaded: a lone 11:59:59 PM cut could still run on
+  const cut = fxRows('filifera', [['2026-10-05', '14:32:24', '23:59:59']]);
+  eq(C.midnightByRow(cut, { todayOf: () => '2026-10-08' }).get(cut[0].id).sure, false);
+  eq(C.midnightByRow(cut, { todayOf: () => '2026-10-08', known: () => true }).get(cut[0].id).flag.msg, C.MIDNIGHT_MSG.cutoff);
+  // a day with no piece at midnight is decided alone
+  const plain = fxRows('filifera', [['2026-10-05', '08:00', '16:30']]);
+  eq(C.midnightByRow(plain, {}).get(plain[0].id), { flag: null, sure: true });
+});
+check('midnight_split: on 2,500 random made-up runs of days the page, reading the producer\'s rows, finds exactly the producer\'s flags', () => {
+  if (!P) { console.log('          (skipped: the producer is not on this machine)'); return true; }
+  let seed = 7243;
+  const rnd = k => { seed = (seed * 1103515245 + 12345) % 2147483648; return Math.floor(seed / 2147483648 * k); };
+  const pick = a => a[rnd(a.length)];
+  const dates = ['2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07'];
+  const seen = {};
+  for (let i = 0; i < 2500; i++) {
+    const co = pick(['filifera', 'slane', 'wafgus', 'wtny']), today = pick(['2026-10-06', '2026-10-07', '2026-10-08']), list = [];
+    for (const d of dates) {
+      if (d > today) break;
+      const off = co === 'wtny' && rnd(5) === 0 ? '-07:00' : undefined;
+      const o = off ? { off } : undefined;
+      const hm = sec => hmsOf(sec);
+      for (let k = rnd(3); k > 0; k--) {
+        const kind = pick(['cut', 'cut', 'cont', 'cont', 'day', 'ho', 'after']);
+        if (kind === 'cut') list.push([d, hm(pick([28800, 39600, 54000, 64800, 72000, 79200]) + rnd(3600)), '23:59:59', o]);
+        else if (kind === 'cont') list.push([d, '00:00:00', pick(['00:21:00', '02:00:00', '04:00:00', '07:00:10', '08:06:29', '23:59:59', null, null]), o]);
+        else if (kind === 'day') list.push([d, hm(25200 + rnd(7200)), hm(46800 + rnd(18000)), o]);
+        else if (kind === 'ho') list.push([d, '00:00:00', '23:59:59', { hoursOnly: 240 + rnd(240) }]);
+        else list.push([d, hm(pick([0, 30, 89, 299, 301, 400]) + pick([0, 1260, 25200, 29170])), hm(57600 + rnd(3600)), o]);   // just after midnight or just after a morning clock-out
+      }
+    }
+    if (!list.length) continue;
+    const prows = fxProducer(co, list, today);
+    const pm = C.midnightByRow(prows.map(r => Object.assign({}, r, { flags: [] })), { todayOf: () => today, known: () => true });
+    for (const r of prows) {
+      const got = pm.get(r.id);
+      ok(got.sure, 'random run ' + i + ' ' + r.work_date + ': decided');
+      eq((got.flag || {}).msg || null, midOf(r) || null, 'random run ' + i + ' (' + co + ', today ' + today + ') ' + r.work_date + ' ' + J(list));
+      if (got.flag) seen[got.flag.msg] = (seen[got.flag.msg] || 0) + 1;
+    }
+  }
+  ok(Object.keys(seen).length === 4 && Object.values(seen).every(n => n >= 5), 'every wording comes up: ' + J(seen));
+});
+// the demo's days as Gusto's API lists them, for the producer's buildDays (one entry per shift, on its row's date)
+const demoApi = rows => rows.flatMap(r => r.shifts.map(s => ({ id: s.id, date: r.work_date, clockInTimestamp: s.in, clockOutTimestamp: s.out,
+  clockInPlatform: s.hours_only ? null : 'IOS', clockOutPlatform: s.hours_only || !s.out ? null : 'IOS',
+  durationInMinutes: s.hours_only ? s.worked_min : s.out ? Math.floor((Date.parse(s.out) - Date.parse(s.in)) / 60000) : null,
+  breaks: s.breaks.map((b, i) => ({ uuid: s.id + '-' + i, startTime: b.start, endTime: b.end })),
+  firstName: r.employee_name.split(' ')[0], lastName: r.employee_name.split(' ')[1], workerType: 'employee', employeeUuid: r.employee_uuid })));
+check('demo: the data-error flags come from the made-up scenarios, in the producer\'s words, and the producer reading the demo days agrees', () => {
+  const by = (name, code) => demo.rows.filter(r => r.employee_name === name && r.flags.some(f => f.code === code));
+  const msgs = (name, code) => by(name, code).map(r => r.flags.find(f => f.code === code).msg);
+  eq(msgs('Pepper Moonwhistle', 'tiny_shift'), [RETAP1], 'a re-tap after the day\'s shift');
+  eq(msgs('Bramble Featherstone', 'tiny_shift'), [ALONE1], 'a New York day whose only shift is a tap');
+  eq(msgs('Oakley Whistledown', 'shift_overlap'), [OVERLAP], 'a second shift typed over the first');
+  eq(msgs('Dewberry Quillon', 'long_rest'), ['Rest of 1 h 8 min: was it ever ended?'], 'a New York rest Gusto labelled, over an hour');
+  eq(msgs('Cedar Puddlejump', 'midnight_split'), [C.MIDNIGHT_MSG.start, C.MIDNIGHT_MSG.cont], 'a forgotten clock-out, both days');
+  const cedar = by('Cedar Puddlejump', 'midnight_split');
+  eq(C.addDays(cedar[0].work_date, 1), cedar[1].work_date, 'the next day');
+  ok(cedar[0].shifts[0].out.includes('T23:59:59-0') && cedar[1].shifts[0].in.includes('T00:00:00-0'), 'Gusto\'s own 11:59:59 PM and 12:00:00 AM');
+  eq(cedar[0].span_min, 1440 - 690, 'the 11:59:59 PM clock-out counts as midnight');
+  ok(cedar[1].work_date < demo.todays.CA, 'both days are over');
+  const strays = demo.rows.filter(r => r.flags.some(f => DATA_CODES.includes(f.code)) && !['Pepper Moonwhistle', 'Bramble Featherstone', 'Oakley Whistledown', 'Dewberry Quillon', 'Cedar Puddlejump'].includes(r.employee_name));
+  eq(strays.map(r => r.id), [], 'no data-error flag on an ordinary made-up day');
+  if (!P) return;
+  // the producer on the demo's own days: its dataFlags on each row, and its midnight pass on the shifts given back as Gusto lists them
+  for (const r of demo.rows) eq(C.dataFlags(r.shifts, cOpts(r.company)), P.dataFlags(r.shifts, pOpts(r.company)), r.id);
+  for (const co of ALL_COS) {
+    const rows = demo.rows.filter(r => r.company === co);
+    const today = demo.todays[C.regionOfCompany(co)];
+    const prows = P.buildDays(demoApi(rows), demo.people.filter(p => p.company === co), null, null, { company: co, today, syncedAt: '2026-10-08T19:00:00.000Z' });
+    const pmid = new Map(prows.map(r => [r.id, midOf(r) || null]));
+    for (const r of rows) eq((r.flags.find(f => f.code === 'midnight_split') || {}).msg || null, pmid.get(r.id), r.id + ' midnight_split (the producer)');
+    eq(prows.map(r => r.id).sort(), rows.map(r => r.id).sort(), co + ': the producer builds the same days');
+  }
+});
+// Review 2026-10-24: the demo's forgotten clock-out used to be clocked out on arrival the next morning and straight back
+// in. The demo judges meals and rests one calendar day at a time, the producer judges the 12:00 AM piece with the day
+// before, so the next day showed Late meal, No 2nd meal and Missing rest pills the producer never writes there. Its two
+// parts also had two ids, so the demo editor took a change Gusto (and the live board) refuses.
+check('demo: the forgotten clock-out shows on both days exactly the pills the producer writes, meals and rests included, whenever it is opened; its two parts carry one Gusto id, so the editor refuses a change to either, as the live board does', () => {
+  const me = { email: 'demo.owner@wizardtrees.com', is_admin: true };
+  let builds = 0, compared = 0;
+  for (let i = 0; i < 14 * 24; i += 13) {          // every hour of the day once, on every weekday, over two weeks
+    const t = Date.parse(NOW) + i * 3600000, d = D.build(t), today = d.todays.CA;
+    const cedar = d.rows.filter(r => r.employee_name === 'Cedar Puddlejump' && r.flags.some(f => f.code === 'midnight_split'));
+    const at = ' (opened ' + new Date(t).toISOString() + ')';
+    if (P) {
+      const co = 'slane', mine = d.rows.filter(r => r.company === co);
+      const prows = P.buildDays(demoApi(mine), d.people.filter(p => p.company === co), null, null, { company: co, today, syncedAt: '2026-10-08T19:00:00.000Z' });
+      for (const r of cedar) { eq(r.flags, (prows.find(x => x.id === r.id) || {}).flags, r.id + ' (the producer)' + at); compared++; }
+    }
+    eq(cedar.map(r => r.flags), ['start', 'cont'].map(k => [{ code: 'midnight_split', sev: 'warn', msg: C.MIDNIGHT_MSG[k] }]), 'the forgotten clock-out\'s two days carry only the midnight pill' + at);
+    eq(C.addDays(cedar[0].work_date, 1), cedar[1].work_date, 'the next day' + at);
+    ok(cedar[1].work_date < today, 'both days are over' + at);
+    ok(cedar[0].span_min + cedar[1].span_min > 840 && cedar.every(r => r.span_min <= 840), 'over 14 hours in all, neither day over 14 on its own' + at);
+    const [a, b] = cedar.map(r => r.shifts);
+    ok(a.length === 1 && b.length === 1 && a[0].id === b[0].id, 'one Gusto id for both parts' + at);
+    ok(d.rows.every(r => r === cedar[0] || r === cedar[1] || !r.shifts.some(s => s.id === a[0].id)), 'and on no other day' + at);
+    builds++;
+  }
+  ok(builds === 26, 'builds: ' + builds);
+  if (P) ok(compared === 52, 'compared with the producer: ' + compared);
+  // the editor: a new end on the 11:59:59 PM part, or on the next day's 12:00 AM part, is refused before Save, and so is a delete
+  const rows = demo.rows.filter(r => r.employee_name === 'Cedar Puddlejump');
+  const [mon, tue] = rows.filter(r => r.flags.some(f => f.code === 'midnight_split'));
+  const nbOf = raw => rows.filter(r => r.work_date === C.addDays(raw.work_date, -1) || r.work_date === C.addDays(raw.work_date, 1))
+    .flatMap(r => r.shifts.filter(s => !s.hours_only && s.in && s.out).map(s => ({ id: String(s.id), in: s.in, out: s.out, date: r.work_date })));
+  const ctx = { today: demo.todays.CA, now: Date.parse(NOW) };
+  for (const [raw, outT] of [[mon, '20:30'], [tue, '01:00']]) {
+    ok(C.canEditDate(raw.work_date, demo.todays.CA), raw.work_date + ' is inside the editable window');
+    const en = C.editorEntries(raw, raw, [], me, ctx);
+    eq(en.map(e => e.readonly || null), [null], raw.work_date + ': open for editing');
+    en[0].outT = outT;
+    eq(Object.values(C.editPlan(raw, en, { neighbors: nbOf(raw) }).errors).flat().map(e => e.code), ['split_shift'], raw.work_date + ': a new end is refused');
+    const gone = C.editorEntries(raw, raw, [], me, ctx); gone[0].del = true;
+    eq(Object.values(C.editPlan(raw, gone, { neighbors: nbOf(raw) }).errors).flat().map(e => e.code), ['split_shift'], raw.work_date + ': so is deleting it');
+  }
+});
+
+// a made-up person over midnight: Mon 10/5 in at 11:50 AM, never out; Gusto split it at midnight; out Tue morning and straight back in
+const MT = (date, t) => XT(date, t, '-07:00');
+function MSH(id, date, a, b, breaks) {
+  const gm = t => C.gustoMinute(t, C.TZ), inT = MT(date, a), outT = b ? MT(date, b) : null;
+  const bs = (breaks || []).map(([s, e, kind]) => ({ start: MT(date, s), end: MT(date, e), min: gm(MT(date, e)) - gm(MT(date, s)), kind, paid: kind === 'rest', src: 'gusto', open: false }));
+  const span = outT ? gm(outT) - gm(inT) : 0;
+  return { id, in: inT, out: outT, span_min: span, worked_min: outT ? span - bs.filter(x => !x.paid).reduce((a, x) => a + x.min, 0) : 0, hours_only: false, breaks: bs };
+}
+function MROW(date, shifts, flags) {
+  const all = shifts.flatMap(s => s.breaks), sum = (xs, f) => xs.reduce((a, x) => a + f(x), 0);
+  return C.normRow({ id: 'filifera:m1:' + date, company: 'filifera', region: 'CA', employee_uuid: 'm1', employee_name: 'Test Midnight', department: 'Trim', job_title: 'Tester',
+    work_date: date, first_in: shifts[0].in, last_out: shifts[shifts.length - 1].out, shifts, span_min: sum(shifts, s => s.span_min), worked_min: sum(shifts, s => s.worked_min),
+    paid_break_min: sum(all.filter(b => b.paid), b => b.min), unpaid_break_min: sum(all.filter(b => !b.paid), b => b.min), reg_min: 480, ot_min: 0, dt_min: 0, ot_src: 'gusto',
+    label_src: 'gusto', gusto_total_min: null, approval: null, note: null, flags: flags || [], open: shifts.some(s => !s.out), hours_only: false, synced_at: '2026-10-07T12:00:00Z' });
+}
+const MFLAG = k => ({ code: 'midnight_split', sev: 'warn', msg: C.MIDNIGHT_MSG[k] });
+const M5 = MSH('m5', '2026-10-05', '11:50:29', '23:59:59', [['14:00', '14:10', 'rest'], ['17:00', '17:30', 'meal'], ['20:00', '20:10', 'rest']]);
+const M6A = MSH('m6a', '2026-10-06', '00:00:00', '08:06:29'), M6B = MSH('m6b', '2026-10-06', '08:06:33', '16:38:12', [['10:00', '10:10', 'rest'], ['12:00', '12:30', 'meal'], ['14:00', '14:10', 'rest']]);
+const MDAY5 = MROW('2026-10-05', [M5], [MFLAG('start'), { code: 'few_rest', sev: 'info', msg: 'm' }]);
+const MDAY6 = MROW('2026-10-06', [M6A, M6B], [MFLAG('cont'), { code: 'long_day', sev: 'warn', msg: 'Over 14 hours, check for a missed clock-out' }]);
+const MED = (row, s, o) => ED(Object.assign({ day_id: row.id, employee_uuid: 'm1', work_date: row.work_date, shift_id: s ? s.id : null, before: s ? C.shiftSnap(s) : null }, o));
+const MFIX = MED(MDAY5, M5, { id: 'mx1', times_status: 'pending', after: { in: M5.in, out: MT('2026-10-05', '20:30'), breaks: C.snapBreaks(M5.breaks) } });          // out at 8:30 PM
+const MBRK = MED(MDAY5, M5, { id: 'mx2', breaks_status: 'pending', after: { in: M5.in, out: M5.out, breaks: C.snapBreaks(M5.breaks.concat([{ start: MT('2026-10-05', '22:00'), end: MT('2026-10-05', '22:10'), kind: 'rest' }])) } });
+const MDEL = MED(MDAY6, M6A, { id: 'mx3', action: 'delete', after: null, breaks_status: 'pending' });
+const MLATE = MED(MDAY6, M6B, { id: 'mx4', breaks_status: 'pending', after: { in: M6B.in, out: M6B.out, breaks: C.snapBreaks(M6B.breaks.concat([{ start: MT('2026-10-06', '15:00'), end: MT('2026-10-06', '15:10'), kind: 'rest' }])) } });
+const OVR = (rows, edits, known) => C.overlayRows(rows, edits, { todayOf: () => '2026-10-08', known: known || (() => true) });
+const midMsg = r => (r.flags.find(f => f.code === 'midnight_split') || {}).msg || null;
+check('overlay: a changed day keeps the producer\'s midnight_split while it still runs into midnight, and loses it once it no longer does', () => {
+  const kept = OV(MDAY5, [MBRK]);
+  ok(kept !== MDAY5 && kept.edit.pending.length === 1, 'the change shows');
+  eq(midMsg(kept), C.MIDNIGHT_MSG.start, 'a rest added: the day still ends at 11:59:59 PM, so the flag stays (it used to drop until the next sync)');
+  ok(kept.flags.filter(f => f.code === 'midnight_split').length === 1, 'once');
+  eq(midMsg(OV(MDAY5, [MFIX])), null, 'the end fixed to 8:30 PM: nothing at midnight any more');
+  eq(midMsg(OV(MDAY6, [MLATE])), C.MIDNIGHT_MSG.cont, 'the carried-over day, a rest added to its later shift');
+  eq(midMsg(OV(MDAY6, [MDEL])), null, 'the 12:00 AM piece deleted');
+});
+check('overlay across days: fixing a forgotten clock-out clears both days; deleting the 12:00 AM piece leaves an 11:59 PM cut-off; a day next to one not loaded keeps the producer\'s flag', () => {
+  // the end fixed on Monday: Tuesday (no change of its own) is no longer carried over
+  let out = OVR([MDAY5, MDAY6], new Map([[MDAY5.id, [MFIX]]]));
+  eq(out.map(midMsg), [null, null]);
+  ok(out[1] !== MDAY6 && out[1].shifts === MDAY6.shifts && !out[1].edit, 'Tuesday: Gusto\'s shifts, a new flag list, no edit pill');
+  eq(out[1].flags.map(f => f.code), ['long_day'], 'Tuesday keeps its other flags');
+  // a rest added on Monday changes nothing at midnight: both keep the producer's own words
+  out = OVR([MDAY5, MDAY6], new Map([[MDAY5.id, [MBRK]]]));
+  eq(out.map(midMsg), [C.MIDNIGHT_MSG.start, C.MIDNIGHT_MSG.cont]);
+  ok(out[1] === MDAY6, 'Tuesday is the very same row');
+  // Tuesday's 12:00 AM piece deleted: Monday is a lone cut-off at 11:59:59 PM
+  out = OVR([MDAY5, MDAY6], [MDEL]);
+  eq(out.map(midMsg), [C.MIDNIGHT_MSG.cutoff, null]);
+  // Tuesday not loaded: Monday cannot tell, so it keeps the producer's flag (and so does a change that leaves midnight alone)
+  eq(OVR([MDAY5], [MBRK], d => d === '2026-10-05').map(midMsg), [C.MIDNIGHT_MSG.start]);
+  // Monday not loaded: Tuesday cannot tell whether its 12:00 AM piece was carried over
+  eq(OVR([MDAY6], [MLATE], d => d === '2026-10-06').map(midMsg), [C.MIDNIGHT_MSG.cont]);
+  eq(OVR([MDAY6], [MDEL], d => d === '2026-10-06').map(midMsg), [null], 'the piece itself deleted: nothing left at midnight');
+  // a day the change did not move keeps the producer's own words, even where the page would word it otherwise
+  const odd = MROW('2026-10-05', [M5], [MFLAG('cutoff')]);
+  eq(OVR([odd, MDAY6], [MLATE]).map(midMsg), [C.MIDNIGHT_MSG.cutoff, C.MIDNIGHT_MSG.cont]);
+  // nobody's days move: every row is the same object, in order
+  const plain = [MDAY5, MDAY6, edRow([ED_S1])];
+  const same = OVR(plain, new Map());
+  ok(same.length === 3 && same.every((r, i) => r === plain[i]), 'untouched');
+  // a change on one person never moves another person's flags
+  const other = Object.assign({}, MDAY6, { id: 'filifera:m2:2026-10-06', employee_uuid: 'm2' });
+  ok(OVR([MDAY5, other], new Map([[MDAY5.id, [MFIX]]]))[1] === other, 'another person');
+  // the demo's own changes: rows of people without one are the very same objects
+  const idx = new Map(); for (const e of demo.edits) { if (!idx.has(e.day_id)) idx.set(e.day_id, []); idx.get(e.day_id).push(e); }
+  const rows = demo.rows.map(r => C.normRow(r)), shown = C.overlayRows(rows, idx, { todayOf: r => demo.todays[r.region], known: () => true });
+  const edited = new Set(demo.edits.map(e => e.company + ':' + e.employee_uuid));
+  ok(rows.every((r, i) => edited.has(r.company + ':' + r.employee_uuid) || shown[i] === r), 'untouched demo rows');
+  ok(rows.every((r, i) => !idx.has(r.id) || J(shown[i]) === J(C.overlayDay(r, idx.get(r.id), { today: demo.todays[r.region] }))), 'a changed demo day is overlayDay\'s');
+});
+check('overlay: tiny_shift, long_rest and shift_overlap follow the edited day (they used to drop until the next sync)', () => {
+  const tap = ES('t1', '15:31', '15:32');
+  const r = edRow([ED_S1, tap], { flags: [{ code: 'tiny_shift', sev: 'warn', msg: RETAP1 }] });
+  const withRest = OV(r, [ED({ breaks_status: 'pending', after: AFTER('07:00', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal'], ['13:30', '13:40', 'rest']]) })]);
+  eq(withRest.flags.filter(f => DATA_CODES.includes(f.code)), [{ code: 'tiny_shift', sev: 'warn', msg: RETAP1 }], 'a rest added elsewhere: the tap is still there');
+  const gone = OV(r, [ED({ id: 'x2', shift_id: 't1', action: 'delete', before: C.shiftSnap(tap), after: null, breaks_status: 'pending' })]);
+  eq(gone.flags.filter(f => DATA_CODES.includes(f.code)), [], 'the tap deleted');
+  const long = OV(edRow([ED_S1]), [ED({ breaks_status: 'pending', after: AFTER('07:00', '15:30', [['09:00', '09:45', 'rest'], ['11:30', '12:00', 'meal']]) })]);
+  eq(long.flags.filter(f => DATA_CODES.includes(f.code)).map(f => [f.code, f.msg]), [['long_rest', 'Rest of 45 min: was it ever ended?']], 'a rest typed at 45 min');
+  const over = OV(edRow([ED_S1]), [ED({ id: 'a9', shift_id: null, action: 'add', before: null, after: AFTER('15:00', '18:00'), times_status: 'pending' })]);
+  eq(over.flags.filter(f => DATA_CODES.includes(f.code)).map(f => [f.code, f.msg]), [['shift_overlap', OVERLAP]], 'a shift added over the day\'s');
+  const nyRow = edRow([ES('n1', '05:00', '13:00', [EB('07:00', '07:10', 'rest'), EB('09:00', '09:30', 'meal')])], { id: 'wtny:e1:2026-10-06', company: 'wtny', region: 'NY' });
+  const nyEd = OV(nyRow, [ED({ day_id: 'wtny:e1:2026-10-06', company: 'wtny', region: 'NY', shift_id: 'n1', before: C.shiftSnap(nyRow.shifts[0]), breaks_status: 'pending',
+    after: AFTER('05:00', '13:00', [['07:00', '08:20', 'rest'], ['09:00', '09:30', 'meal']]) })]);
+  eq(nyEd.flags.map(f => [f.code, f.msg]), [['long_rest', 'Rest of 1 h 20 min: was it ever ended?']], 'New York too');
 });
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name
