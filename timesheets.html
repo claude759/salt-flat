@@ -531,6 +531,8 @@
   .ed-k{font-size:11px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
   .ed-brk{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 10px}
   .ed-brk + .ed-brk .ed-f > span{display:none}
+  .ed-bmsg{flex-basis:100%;grid-column:1/-1;margin:0;font-size:12.5px;line-height:1.4}
+  .ed-bmsg.err{color:#ffc2bd} .ed-bmsg.warn{color:var(--unpaid-text)}
   .ed-none{margin:0;font-size:12.5px}
   .ed-ro{margin:0 0 4px;font-variant-numeric:tabular-nums}
   .ed-more{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin:2px 0 16px}
@@ -2168,12 +2170,34 @@
       if (e <= s) add('brk_order', 'A break must end after it starts.', i);
       else if (e - s < EDIT_RULES.breakMinSec) add('brk_len', 'A break must be at least 1 minute.', i);
       else if (e - s > EDIT_RULES.breakMaxSec) add('brk_len', 'A break can be at most 4 hours.', i);
-      else if (order && (s < sIn || e > sOut)) add('brk_outside', 'Breaks must be inside the shift (' + fmtTime(a.in, tz) + ' to ' + fmtTime(a.out, tz) + ').', i);
+      else if (order && (s < sIn || e > sOut)) {
+        // Gusto keeps clock times to the second: when only seconds are at fault, the message shows them (8:03:05 AM), the
+        // shift's and the break's own (a rest Gusto ended at 3:20:30 PM, with the end typed as 3:20 PM)
+        const sec = Math.floor(s / 60) === Math.floor(sIn / 60) || Math.floor(e / 60) === Math.floor(sOut / 60);
+        const own = s < sIn && s % 60 && Math.floor(s / 60) === Math.floor(sIn / 60) ? ' This break starts at ' + fmtTimeSec(b.start, tz) + '.'
+          : e > sOut && e % 60 && Math.floor(e / 60) === Math.floor(sOut / 60) ? ' This break ends at ' + fmtTimeSec(b.end, tz) + '.' : '';
+        add('brk_outside', 'Breaks must be inside the shift (' + (sec ? fmtTimeSec(a.in, tz) : fmtTime(a.in, tz)) + ' to ' + (sec ? fmtTimeSec(a.out, tz) : fmtTime(a.out, tz)) + ').' + own, i);
+      }
       good.push({ s, e, i });
     });
     good.sort((x, y) => x.s - y.s || x.e - y.e);
-    for (let k = 1; k < good.length; k++) if (good[k].s < good[k - 1].e) { add('brk_overlap', "Breaks can't overlap.", good[k].i); break; }
+    // Gusto refuses a break over another one: the later one says which break it runs into (and its seconds, when a
+    // break Gusto keeps ends on one the editor does not show: 10:17:20 shows as 10:17). When the later one is a break left
+    // as Gusto has it (ctx.kept[i]) and the earlier one was typed here, the typed one is marked instead.
+    for (let k = 1; k < good.length; k++) if (good[k].s < good[k - 1].e) {
+      const kept = o.kept || [], swap = !!kept[good[k].i] && !kept[good[k - 1].i];
+      const at = swap ? good[k - 1] : good[k], by = swap ? good[k] : good[k - 1], p = bs[by.i];
+      const secs = swap ? (by.s % 60 && at.e <= by.s + 60 ? ' (it starts at ' + fmtTimeSec(p.start, tz) + ')' : '')
+        : (by.e % 60 && at.s >= by.e - 60 ? ' (it ends at ' + fmtTimeSec(p.end, tz) + ')' : '');
+      add('brk_overlap', 'Overlaps the ' + fmtTime(p.start, tz) + ' ' + (p.kind === 'meal' ? 'meal' : 'rest') + secs + ". Breaks can't overlap.", at.i);
+      break;
+    }
     return errs;
+  }
+  // '10:17:20 AM' when the time has seconds, else as fmtTime
+  function fmtTimeSec(t, tz) {
+    const p = zParts(t, tz); if (!p) return '';
+    return ((p.h % 12) || 12) + ':' + pad2(p.m) + (p.s ? ':' + pad2(p.s) : '') + ' ' + (p.h < 12 ? 'AM' : 'PM');
   }
   // two shifts of one day that overlap: [i, j] (indexes into list), or null. The page checks this; Gusto
   // has no overlapping shifts either.
@@ -2181,6 +2205,21 @@
     const xs = (list || []).map((s, i) => ({ a: secOf(s && s.in), b: secOf(s && s.out), i })).filter(x => !isNaN(x.a) && !isNaN(x.b)).sort((x, y) => x.a - y.a);
     for (let k = 1; k < xs.length; k++) if (xs[k].a < xs[k - 1].b) return [xs[k - 1].i, xs[k].i];
     return null;
+  }
+  // A rest longer than 30 minutes is most often one that was never ended (Gusto then refuses a meal placed inside
+  // it, as on 2026-10-23): a warning on that break, never a block. '' when the break looks fine.
+  const LONG_REST_MIN = 30;
+  function durWords(min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + ' h' : '') + (h && m ? ' ' : '') + (m || !h ? m + ' min' : ''); }
+  function longRestText(b) {
+    if (!b || b.kind === 'meal') return '';
+    const s = secOf(b.start), e = secOf(b.end);
+    if (isNaN(s) || isNaN(e) || e - s <= LONG_REST_MIN * 60) return '';
+    return 'This rest runs ' + durWords(Math.round((e - s) / 60)) + ': was it ever ended, or is it a meal?';
+  }
+  // the warnings of one editor entry, one per break ('' = none), on its breaks as typed
+  function entryBreakNotes(en, date, tz) {
+    const a = entryAfter(en, date, tz);
+    return a.breaks.map(b => longRestText(b));
   }
 
   /* the editor's fields: 'HH:MM' strings (an <input type="time">) on the row's clock */
@@ -2196,11 +2235,23 @@
     const hh = Math.floor(m / 60);
     return ((hh % 12) || 12) + ':' + pad2(m % 60) + ' ' + (hh < 12 ? 'AM' : 'PM');
   }
-  // one shift as editor fields; orig keeps the timestamps, so a field left alone keeps its seconds
-  function entryOf(s, tz) {
+  // one shift as editor fields; orig keeps the timestamps, so a field left alone keeps its seconds. held: where Gusto has
+  // a break now (heldOf), from the shift as Gusto has it (gusto: s itself unless given; the board's row may show a change
+  // still waiting, and null = a shift Gusto does not have yet)
+  function entryOf(s, tz, gusto) {
+    const bs = snapBreaks(s && s.breaks);
     return { id: s && s.id != null ? String(s.id) : null, inT: s && s.in ? hhmm(s.in, tz) : '', outT: s && s.out ? hhmm(s.out, tz) : '',
       orig: { in: (s && s.in) || null, out: (s && s.out) || null },
-      breaks: snapBreaks(s && s.breaks).map(b => ({ startT: b.start ? hhmm(b.start, tz) : '', endT: b.end ? hhmm(b.end, tz) : '', kind: b.kind, orig: { start: b.start, end: b.end } })) };
+      breaks: bs.map(b => ({ startT: b.start ? hhmm(b.start, tz) : '', endT: b.end ? hhmm(b.end, tz) : '', kind: b.kind, orig: { start: b.start, end: b.end } })),
+      held: heldOf(gusto === undefined ? s : gusto) };
+  }
+  // Every break Gusto has on a shift now, as [start, end] epoch minutes (one never ended runs on). Gusto checks a break
+  // against the breaks it has BEFORE the save (edit e4fd26b8, 2026-10-23), and holds a moved, shortened or removed break's
+  // old time until the change goes in, so "+ Add break" and "Add missing breaks" keep clear of all of them when they can
+  // (placeBreak): a break placed there would make the change go in several saves (review 2026-10-24).
+  function heldOf(g) {
+    return snapBreaks(g && g.breaks).filter(b => !isNaN(secOf(b.start)))
+      .map(b => [Math.floor(secOf(b.start) / 60), isNaN(secOf(b.end)) ? Infinity : Math.ceil(secOf(b.end) / 60)]);
   }
   // what the editor shows for one shift, as one string: "changed" is this differing from its start
   function entryKey(en) { return J([!!en.del, en.inT || '', en.outT || '', (en.breaks || []).map(b => [b.startT || '', b.endT || '', b.kind])]); }
@@ -2649,7 +2700,7 @@
     let k = 0;
     for (const s of raw.shifts || []) {
       const b = shown.get(String(s.id));
-      const en = Object.assign(entryOf(b || s, tz), { key: 'e' + (++k), kind: 'shift', id: String(s.id), del: !b, pendingIds: waitingOn(s.id), wasOpen: !s.out });
+      const en = Object.assign(entryOf(b || s, tz, s), { key: 'e' + (++k), kind: 'shift', id: String(s.id), del: !b, pendingIds: waitingOn(s.id), wasOpen: !s.out });
       if (s.hours_only) { en.readonly = 'hours'; en.worked = +s.worked_min || 0; }
       else if (b && stillWorking(b, raw.work_date, today, nowMs)) {
         const bs = b.breaks || [], sum = paid => bs.filter(x => !!x.paid === paid).reduce((a, x) => a + (+x.min || 0), 0);
@@ -2663,7 +2714,7 @@
     }
     for (const s of (board && board.shifts) || []) if (s.add_edit) {
       const e = live.find(x => x.id === s.add_edit);
-      const en = Object.assign(entryOf(s, tz), { key: 'e' + (++k), kind: 'add', id: null, addEditId: s.add_edit, del: false, pendingIds: [], by: (e && e.created_by) || '' });
+      const en = Object.assign(entryOf(s, tz, null), { key: 'e' + (++k), kind: 'add', id: null, addEditId: s.add_edit, del: false, pendingIds: [], by: (e && e.created_by) || '' });
       if (editSending(e)) en.readonly = 'applying';
       else if (s.edited && s.edited.times === 'sent') en.readonly = 'sent';
       else if (e && who && !who.is_admin && e.created_by !== who.email) en.readonly = 'theirs';
@@ -2693,7 +2744,9 @@
       const after = entryAfter(en, date, tz);
       const rs = en.kind === 'shift' ? (raw.shifts || []).find(s => String(s.id) === String(en.id)) : null;
       finals.push({ key: en.key, after, changed: true });
-      const errs = validateAfter(after, { tz, date, beforeIn: rs ? rs.in : null, now: c.now });
+      // the breaks left exactly as the editor opened them (an overlap is marked on the one typed here)
+      const kept = (en.breaks || []).map(b => !!(b.orig && b.orig.start && b.orig.end && b.startT === hhmm(b.orig.start, tz) && b.endT === hhmm(b.orig.end, tz)));
+      const errs = validateAfter(after, { tz, date, beforeIn: rs ? rs.in : null, now: c.now, kept });
       if (errs.length) { errors[en.key] = errs; continue; }
       if (en.kind === 'new') ops.push({ type: 'submit', key: en.key, shift_id: null, action: 'add', after });
       else if (en.kind === 'add') { ops.push({ type: 'cancel', key: en.key, id: en.addEditId }); ops.push({ type: 'submit', key: en.key, shift_id: null, action: 'add', after }); }
@@ -2703,12 +2756,51 @@
         ops.push({ type: 'submit', key: en.key, shift_id: en.id, action: 'update', after, expect: (en.pendingIds || []).slice() });
       }
     }
-    const ov = shiftOverlap(finals.map(f => f.after));
-    if (ov) {
-      const f = finals[ov[1]].changed ? finals[ov[1]] : finals[ov[0]];
-      if (f.changed && !errors[f.key]) errors[f.key] = [{ code: 'shift_overlap', msg: 'This shift overlaps another shift on this day.' }];
+    // Gusto refuses a shift over another one: each changed shift against the day's other shifts (one still clocked in
+    // runs on) and, when the page has them (ctx.neighbors: [{id, in, out, date}]), the person's shifts on the day before
+    // and the day after, which can meet this day's around midnight
+    const span = (a, open) => { const x = secOf(a && a.in), y = open && a && !a.out ? Infinity : secOf(a && a.out); return isNaN(x) || isNaN(y) ? null : [x, y]; };
+    const meets = (me, sp) => !!sp && sp[0] < me[1] && me[0] < sp[1];
+    // the other shift in words; a time's seconds show when they are what makes the overlap (it ends at 6:00:30 AM, the start
+    // typed is 6:00 AM)
+    const words = (a, me) => {
+      const x = secOf(a.in), y = secOf(a.out);
+      const tIn = x % 60 && me && me[1] <= x + 60 ? fmtTimeSec(a.in, tz) : fmtTime(a.in, tz);
+      if (!a.out) return 'shift from ' + tIn + ', still clocked in';
+      return tIn + ' to ' + (y % 60 && me && me[0] >= y - 60 ? fmtTimeSec(a.out, tz) : fmtTime(a.out, tz)) + ' shift';
+    };
+    // Gusto splits a shift still running at midnight and keeps ONE id for both days; a change of either part cannot reach
+    // Gusto (the browser task refuses it), so it is stopped here, before anyone deletes the other part to make room
+    const split = new Set((c.neighbors || []).filter(n => n.id != null).map(n => String(n.id)));
+    for (const en of entries || []) {
+      if (en.kind !== 'shift' || en.readonly || entryKey(en) === en.start || !split.has(String(en.id))) continue;
+      errors[en.key] = [{ code: 'split_shift', msg: 'Gusto keeps this shift on two days under one id (it ran past midnight and Gusto split it there), so it cannot be changed here. Fix it in Gusto (often a missed clock-out).' }];
     }
-    return Object.keys(errors).length ? { ops: [], errors } : { ops, errors };
+    const invalid = new Set(Object.keys(errors));   // a shift whose own times are wrong is fixed first, and says so
+    for (const f of finals) {
+      const me = f.changed && !invalid.has(f.key) ? span(f.after) : null;
+      if (!me) continue;
+      const other = finals.find(g => g !== f && !invalid.has(g.key) && meets(me, span(g.after, !g.changed)));
+      if (other) { errors[f.key] = [{ code: 'shift_overlap', msg: 'This shift overlaps the ' + words(other.after, me) + '.' }]; continue; }
+      const nb = (c.neighbors || []).find(n => meets(me, span(n)));
+      if (nb) errors[f.key] = [{ code: 'shift_overlap_day', msg: 'This shift overlaps the ' + words(nb, me) + ' on ' + fmtDay(nb.date) + '.' }];
+    }
+    if (Object.keys(errors).length) return { ops: [], errors };
+    // The browser task sends these one at a time, in the order Save makes them, and Gusto refuses a shift over another as it
+    // has it at that moment: a shift moving into time another changed shift has in Gusto now goes after that one moves away
+    // (wait: the keys it waits on; a failed one stops it). Two that each move into the other's time cannot go either way.
+    const gustoOf = id => { const s = (raw.shifts || []).find(x => String(x.id) === String(id)); return s ? span(s, true) : null; };
+    const subs = ops.filter(o => o.type === 'submit').map(o => ({ o, from: o.action === 'add' ? null : gustoOf(o.shift_id), to: o.after ? span(o.after) : null }));
+    const blocks = (x, y) => y !== x && !!x.to && !!y.from && meets(x.to, y.from);
+    const sorted = [], left = subs.slice();
+    for (let k; left.length && (k = left.findIndex(x => !left.some(y => blocks(x, y)))) >= 0;) sorted.push(left.splice(k, 1)[0]);
+    for (const x of left) {
+      const y = left.find(z => blocks(x, z)), yr = (raw.shifts || []).find(s => String(s.id) === String(y.o.shift_id));
+      errors[x.o.key] = [{ code: 'shift_swap', msg: 'This shift moves into the time the ' + words(yr, x.to) + ' has in Gusto now, and that shift moves into this one\'s. Gusto takes one change at a time, so save one of them now and the other after the next run.' }];
+    }
+    if (left.length) return { ops: [], errors };
+    for (const x of sorted) { const w = subs.filter(y => blocks(x, y)).map(y => y.o.key); if (w.length) x.o.wait = w; }
+    return { ops: ops.filter(o => o.type !== 'submit').concat(sorted.map(x => x.o)), errors };
   }
   // the day after Save, for the editor's preview: worked = span - unpaid, as on the board
   function entriesPreview(entries, date, tz) {
@@ -2834,6 +2926,7 @@
     const half = a.breaks.filter(b => isNaN(secOf(b.start)) !== isNaN(secOf(b.end)))
       .map(b => isNaN(secOf(b.end)) ? [Math.floor(secOf(b.start) / 60), Math.floor(secOf(b.start) / 60) + 15] : [Math.ceil(secOf(b.end) / 60) - 15, Math.ceil(secOf(b.end) / 60)]);
     return { inM, outM, en, busy: ok.map(b => [Math.floor(secOf(b.start) / 60), Math.ceil(secOf(b.end) / 60)]).concat(half),
+      held: (en.held || []).slice(),
       meals: ok.filter(b => b.kind === 'meal').map(b => Math.ceil(secOf(b.end) / 60)).sort((x, y) => x - y) };
   }
   // A break for one shift, for the item it fixes ({kind, min, code, by, after}) as editor fields plus m (its
@@ -2845,9 +2938,25 @@
   // stretch. A rest goes in the middle of the longest stretch between the start, the breaks and the end. A
   // shift under 30 minutes gets a rest of up to 10 minutes at its first free minute (a zero-length one, whose
   // end still needs typing, 10 minutes at its start, once).
+  // First, an on-time spot clear of every break here and of every break Gusto has now (sm.held, heldOf), even one moved,
+  // shortened or removed in the editor: a break placed where Gusto still has one would wait on that one changing first. A
+  // spot that starts the moment a break ends (or ends as one starts) moves a minute clear when there is room: Gusto has not
+  // been seen to take two breaks edge to edge (review 2026-10-24). Without an on-time spot the break is placed as usual
+  // (the browser task saves the change in a safe order, or says why it cannot).
   function placeBreak(sm, it, tz) {
+    // a gap of a minute or less between two breaks is no place for another (it would sit edge to edge with both)
+    const gapless = list => list.slice().sort((p, q) => p[0] - q[0])
+      .reduce((out, [x, y]) => { const l = out[out.length - 1]; if (l && x <= l[1] + 1) l[1] = Math.max(l[1], y); else out.push([x, y]); return out; }, []);
+    const near = gapless(sm.busy.concat(sm.held || []));
+    const touches = b => near.some(([x, y]) => b.m <= y && x <= b.m + b.len);
+    const first = placeIn(Object.assign({}, sm, { busy: near }), it, tz, true);
+    if (first && !touches(first)) return first;
+    return placeIn(Object.assign({}, sm, { busy: near.map(([x, y]) => [x - 1, y + 1]) }), it, tz, true) || first
+      || placeIn(Object.assign({}, sm, { busy: gapless(sm.busy) }), it, tz, false);
+  }
+  function placeIn(sm, it, tz, strict) {
     const field = m => hhmm(new Date(m * 60000).toISOString(), tz);
-    const mk = (s, len, kind) => ({ startT: field(s), endT: field(s + len), kind, orig: null, m: s });
+    const mk = (s, len, kind) => ({ startT: field(s), endT: field(s + len), kind, orig: null, m: s, len });
     const { inM, outM, busy } = sm;
     if (outM <= inM) return busy.length ? null : mk(inM, 10, 'rest');
     if (outM - inM < 30) { const g = freeStretches(inM, outM, busy)[0]; return g ? mk(g[0], Math.min(10, g[1] - g[0]), 'rest') : null; }
@@ -2860,16 +2969,18 @@
       const byM = it.by ? Math.floor(Date.parse(it.by) / 60000) : Infinity;
       if (!second && byM < inM) {
         s = fitBreak(inM + 60, inM + 60, end, len, busy);
+        if (s == null && strict) return null;
         if (s == null) s = fitBreak(inM + 60, inM, end, len, busy);
       } else {
         const cap = second ? end : Math.min(at + 300, byM, end);
         s = fitBreak(at + 240, Math.max(inM, at) + 60, cap, len, busy);
+        if (s == null && strict) return null;               // no spot in the usual window clear of a long rest Gusto has
         if (s == null && !second) s = fitBreak(at + 240, inM, cap, len, busy);
         if (s == null) s = fitBreak(at + 240, inM, end, len, busy);
       }
       if (s == null) s = fitBreak(at + 240, inM, outM - len, len, busy);
     }
-    if (s == null) { const g = longestGapBreak(inM, outM, busy, len); if (!g) return null; s = g.s; len = g.len; }
+    if (s == null) { const g = longestGapBreak(inM, outM, busy, len); if (!g || (strict && g.len < len)) return null; s = g.s; len = g.len; }
     return mk(s, len, it.kind);
   }
   const breakOut = b => ({ startT: b.startT, endT: b.endT, kind: b.kind, orig: null });
@@ -2975,7 +3086,7 @@
     workedUntil, dayFlagsCA, dayFlagsNY, dayFlags, BREAK_NEED_CODES, BREAK_ADD_CODES, restMinFor, workedReachedAt, missingBreaks,
     entriesShifts, breakNeedText, editorBreakStatus, freeStretches, placeBreak, suggestBreak, breakIndexFor, missingBreakAdds,
     EDIT_ANCHOR_END, EDIT_RULES, EDIT_RUNS_PT, editWindow, canEditDate, sameMinute, snapBreaks, shiftSnap, sameBreaks, editParts,
-    validateAfter, shiftOverlap, hhmm, parseHhmm, fmtHhmm, entryOf, entryKey, entryAfter, newEntry, editedShift, dailySplit, estOvertime,
+    validateAfter, shiftOverlap, fmtTimeSec, LONG_REST_MIN, longRestText, entryBreakNotes, hhmm, parseHhmm, fmtHhmm, entryOf, entryKey, entryAfter, newEntry, editedShift, dailySplit, estOvertime,
     rebuildDay, editStatus, EDIT_STATUS_WORDS, replacedEdits, editShownStatus, replacedBy, EDIT_LATE_SEC, firstEditRun, partLate, editLate,
     partShow, overlayDay, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, saveMessage,
     partWaits, editSending, CANCELLABLE,
@@ -3417,7 +3528,7 @@
   // confirm: '' | 'close' (discard what was typed?) | an edit id (cancel that change, which resets the form?).
   // loading: the day is being read again before the form shows; stamp: the day as it opened (C.dayStamp);
   // stale: Save found the day changed since (the foot offers to reload it)
-  const E = { rowId: '', entries: [], note: '', err: '', busy: false, seq: 0, confirm: '', back: null, loading: false, stamp: '', stale: false };
+  const E = { rowId: '', entries: [], note: '', err: '', busy: false, seq: 0, confirm: '', back: null, loading: false, stamp: '', stale: false, nbRows: [] };
   let demoSeq = 100;                           // ids for edits made in demo mode
 
   const EST_BREAK_TIP = "This break is 21 to 24 min, so it could be either type. It was counted from its length; check it in Gusto.";
@@ -4843,15 +4954,17 @@
     if (!S.rows.get(dayId) || !canEditRow(S.rows.get(dayId))) { toast(noEditMsg(S.rows.get(dayId))); return; }
     hideTip(); setPop('');
     const tok = ++edTok;
-    E.rowId = dayId; E.note = ''; E.err = ''; E.busy = false; E.confirm = ''; E.entries = []; E.stamp = ''; E.stale = false;
+    E.rowId = dayId; E.note = ''; E.err = ''; E.busy = false; E.confirm = ''; E.entries = []; E.stamp = ''; E.stale = false; E.nbRows = [];
     E.back = back || document.activeElement;
     E.loading = !DEMO;
     $('editPanel').hidden = false; document.body.classList.add('modal');
     $('editPanel').scrollTop = 0;
     if (E.loading) {
       renderEditor(); $('edClose').focus({ preventScroll: true });
-      await refreshDay(dayId);          // a failed read keeps what the board had: Save reads again and checks
+      // a failed read keeps what the board had: Save reads again and checks. The days around it, when not loaded, too.
+      const [, nb] = await Promise.all([refreshDay(dayId), neighborDays(S.rows.get(dayId))]);
       if (tok !== edTok) return;        // closed (or opened on another day) meanwhile
+      E.nbRows = nb;
       E.loading = false;
       render();
     }
@@ -4869,7 +4982,7 @@
     const k = E.rowId;
     $('editPanel').hidden = true;
     if ($('adminPanel').hidden) document.body.classList.remove('modal');
-    E.rowId = ''; E.entries = []; E.note = ''; E.err = ''; E.confirm = ''; E.busy = false; E.loading = false; E.stamp = ''; E.stale = false;
+    E.rowId = ''; E.entries = []; E.note = ''; E.err = ''; E.confirm = ''; E.busy = false; E.loading = false; E.stamp = ''; E.stale = false; E.nbRows = [];
     const b = E.back; E.back = null;
     const to = b && b.isConnected ? b : rowEditTarget(k);   // a re-render (after Save) replaced the button
     if (to && to.focus) to.focus({ preventScroll: true });
@@ -4923,6 +5036,7 @@
     const pend = (en.pendingIds && en.pendingIds.length) || en.kind === 'add' ? h`<span class="flag epend">Pending</span>` : '';
     const times = (en.inT ? C.fmtHhmm(en.inT) : 'no start') + ' - ' + (en.outT ? C.fmtHhmm(en.outT) : 'still clocked in');
     const err = en.err ? h`<div class="inline-err" role="alert">${en.err}</div>` : '';
+    const bad = !!en.err || !!(en.brkErr && Object.keys(en.brkErr).length);
     if (en.readonly === 'hours') return h`<div class="ed-shift ro"><div class="ed-sh-head"><b>${label}</b></div><p class="pd-fine">Hours entered in Gusto without clock times (${hrs(en.worked)} h). Change these in Gusto.</p></div>`;
     if (en.readonly) return h`<div class="ed-shift ro"><div class="ed-sh-head"><b>${label}</b>${pend}</div><p class="ed-ro">${en.del ? 'Deleted: ' : ''}${times}</p><p class="pd-fine">${en.readonly === 'sent'
       ? 'Just sent to Gusto. It can be changed here after the next sync.'
@@ -4934,7 +5048,8 @@
     const tIn = (f, v, aria, bi) => h`<input type="time" step="60" data-ek="${en.key}" data-ef="${f}"${bi == null ? '' : h` data-bi="${bi}"`} value="${v}" aria-label="${aria}">`;
     // deleting a Gusto shift once deletes are proven (an unsaved or waiting added shift can always be taken back)
     const canDel = en.kind !== 'shift' || mayEdit('delete');
-    return h`<div class="ed-shift${en.err ? ' bad' : ''}" data-ek="${en.key}">
+    const raw = S.rows.get(E.rowId), notes = raw ? C.entryBreakNotes(en, raw.work_date, tz) : [];
+    return h`<div class="ed-shift${bad ? ' bad' : ''}" data-ek="${en.key}">
       <div class="ed-sh-head"><b>${label}</b>${pend}<span class="spacer"></span>${canDel ? h`<button type="button" class="linkbtn danger" data-act="ed-del" data-ek="${en.key}">Delete this shift</button>` : ''}</div>
       <div class="ed-times">
         <label class="ed-f"><span>Start</span>${tIn('in', en.inT, label + ' start')}</label>
@@ -4947,11 +5062,17 @@
           <label class="ed-f"><span>End</span>${tIn('be', b.endT, label + ', break ' + (j + 1) + ' end', j)}</label>
           <label class="ed-f"><span>Type</span><select data-ek="${en.key}" data-ef="bt" data-bi="${j}" aria-label="${label + ', break ' + (j + 1) + ' type'}"><option value="rest"${b.kind === 'rest' ? ' selected' : ''}>Paid rest</option><option value="meal"${b.kind === 'meal' ? ' selected' : ''}>Unpaid meal</option></select></label>
           <button type="button" class="btn sm ed-rm" data-act="ed-rm-brk" data-ek="${en.key}" data-bi="${j}" aria-label="${'Remove break ' + (j + 1) + ' of ' + label.toLowerCase()}">Remove</button>
+          ${brkMsgHtml(en, j, notes[j])}
         </div>`) : h`<p class="faint ed-none">No breaks on this shift.</p>`}
         ${en.breaks.length < C.EDIT_RULES.maxBreaks ? h`<button type="button" class="linkbtn" data-act="ed-add-brk" data-ek="${en.key}">+ Add break</button>` : h`<span class="faint ed-none">${C.EDIT_RULES.maxBreaks} breaks is the most one shift can have.</span>`}
       </div>
       ${err}
     </div>`;
+  }
+  // under one break: what stops Save on it (from the last Save), and the long-rest warning, which typing keeps current
+  function brkMsgHtml(en, j, note) {
+    const e = en.brkErr && en.brkErr[j];
+    return h`${e ? h`<p class="ed-bmsg err" role="alert">${e}</p>` : ''}<p class="ed-bmsg warn" data-bw="${en.key + ':' + j}"${note ? '' : ' hidden'}>${note || ''}</p>`;
   }
   // the day after Save, on the board's rules (worked = clock time - unpaid breaks), next to what it shows now
   function previewHtml(raw, tz) {
@@ -5002,6 +5123,10 @@
     const raw = S.rows.get(E.rowId), tz = C.rowTz(raw);
     setHTML($('edPreview'), previewHtml(raw, tz));
     setHTML($('edBreaks'), breakLineHtml(raw, tz));
+    C.entryBreakNotes(en, raw.work_date, tz).forEach((note, j) => {
+      const el = $('edForm').querySelector('[data-bw="' + en.key + ':' + j + '"]');
+      if (el) { el.textContent = note; el.hidden = !note; }
+    });
   }
   function edFocus(k, f, bi) {
     const x = [...$('edForm').querySelectorAll('[data-ek][data-ef]')].find(el => el.dataset.ek === k && el.dataset.ef === f && (bi == null || el.dataset.bi === String(bi)));
@@ -5017,7 +5142,7 @@
   // a new break comes filled in where it makes sense for the shift (C.suggestBreak): a missing meal about 4
   // hours in, else a paid rest in the middle of the longest stretch; every field can still be changed. It
   // goes in among the shift's breaks in time order (C.breakIndexFor).
-  function edInsertBreak(raw, en, b) { const i = C.breakIndexFor(en, b, raw.work_date, C.rowTz(raw)); en.breaks.splice(i, 0, b); en.err = ''; return i; }
+  function edInsertBreak(raw, en, b) { const i = C.breakIndexFor(en, b, raw.work_date, C.rowTz(raw)); en.breaks.splice(i, 0, b); en.err = ''; en.brkErr = null; return i; }
   function edAddBreak(k) {
     const raw = S.rows.get(E.rowId), en = edEntry(k); if (!raw || !en || en.breaks.length >= C.EDIT_RULES.maxBreaks) return;
     const i = edInsertBreak(raw, en, C.suggestBreak(E.entries, k, edCtx(raw))); E.confirm = '';
@@ -5038,7 +5163,7 @@
     edFocus(first.k, 'bs', first.en.breaks.indexOf(first.brk));
     toast('Added ' + n + ' break' + (n === 1 ? '' : 's') + '. Check the times, then save.');
   }
-  function edRmBreak(k, i) { const en = edEntry(k); if (!en || !en.breaks[i]) return; en.breaks.splice(i, 1); en.err = ''; E.confirm = ''; renderEditor(); }
+  function edRmBreak(k, i) { const en = edEntry(k); if (!en || !en.breaks[i]) return; en.breaks.splice(i, 1); en.err = ''; en.brkErr = null; E.confirm = ''; renderEditor(); }
   // one call to the server (or, in demo, the same rules in memory): {edit} or {error}
   async function runEditOp(raw, op, note) {
     const who = actor();
@@ -5066,18 +5191,47 @@
       return { edit: data || null };
     } catch (e) { return { error: errText(e) }; }
   }
+  // the person's shifts the day before and the day after, as the board shows them (or as read when the editor opened, for
+  // a day the board has not loaded: E.nbRows): a shift changed here must not run into them around midnight (Gusto refuses
+  // overlapping shifts), and one that carries the same Gusto id is the other part of a shift Gusto split at midnight
+  function neighborShifts(raw) {
+    const out = [], rows = [...S.rows.values()].concat(E.rowId === raw.id ? E.nbRows || [] : []);
+    for (const d of [C.addDays(raw.work_date, -1), C.addDays(raw.work_date, 1)]) for (const r of rows) {
+      if (r.work_date !== d || r.company !== raw.company || r.employee_uuid !== raw.employee_uuid) continue;
+      for (const s of boardRow(r).shifts || []) if (!s.hours_only && s.in && s.out) out.push({ id: s.id != null ? String(s.id) : null, in: s.in, out: s.out, date: d });
+    }
+    return out;
+  }
+  // The person's day before and day after when the board has not loaded them (the first or last day it shows), read once
+  // as the editor opens, for the midnight check above. [] in demo or when the read fails (Save still works; Gusto refuses
+  // an overlapping shift itself).
+  async function neighborDays(raw) {
+    if (DEMO || !raw) return [];
+    const want = [C.addDays(raw.work_date, -1), C.addDays(raw.work_date, 1)].filter(d => !(S.fetched || []).some(f => f.from <= d && d <= f.to));
+    if (!want.length) return [];
+    try {
+      const { data, error } = await sb.from('ts_days').select('*').eq('company', raw.company).eq('employee_uuid', raw.employee_uuid).in('work_date', want);
+      if (error) throw error;
+      return (data || []).map(r => C.normRow(r));
+    } catch (e) { console.warn('days around this one not read', e); return []; }
+  }
   async function saveDayEdits() {
     if (E.busy || E.loading) return;
     const k = E.rowId, raw0 = S.rows.get(k);
     if (!raw0 || !canEditRow(raw0)) { E.err = !raw0 ? 'This day is no longer on the board. Close this and reload.' : noEditMsg(raw0) + '.'; renderEditor(); return; }
-    const plan = C.editPlan(raw0, E.entries, { now: Date.now() });
-    for (const en of E.entries) en.err = plan.errors[en.key] ? plan.errors[en.key].map(x => x.msg).join(' ') : '';
+    const plan = C.editPlan(raw0, E.entries, { now: Date.now(), neighbors: neighborShifts(raw0) });
+    for (const en of E.entries) {
+      const es = plan.errors[en.key] || [];
+      en.err = es.filter(x => x.brk == null).map(x => x.msg).join(' ');
+      en.brkErr = {};
+      for (const x of es) if (x.brk != null) en.brkErr[x.brk] = (en.brkErr[x.brk] ? en.brkErr[x.brk] + ' ' : '') + x.msg;
+    }
     E.err = ''; E.confirm = '';
     if (Object.keys(plan.errors).length) {
       E.err = 'Fix the marked shift, then save again.'; renderEditor();
       // the cursor goes to the field at fault: a break's start, else the shift's start or end
       const en = E.entries.find(x => plan.errors[x.key]), er = en && plan.errors[en.key][0];
-      if (er) edFocus(en.key, er.brk != null ? 'bs' : /^(no_in|in_date|shift_overlap)$/.test(er.code) ? 'in' : 'out', er.brk);
+      if (er) edFocus(en.key, er.brk != null ? 'bs' : /^(no_in|in_date|shift_overlap|shift_overlap_day|shift_swap|split_shift)$/.test(er.code) ? 'in' : 'out', er.brk);
       return;
     }
     if (!plan.ops.length) {
@@ -5102,6 +5256,8 @@
     for (const op of plan.ops) {
       if (failed.has(op.key)) continue;                 // a cancel that failed: its new add must not go
       const en = edEntry(op.key);
+      // it moves into time a shift whose change did not save has in Gusto: it would be refused there, so it waits too
+      if ((op.wait || []).some(w => failed.has(w))) { failed.add(op.key); if (en) en.err = "Not saved: it moves into another shift's time, and that shift's change did not save."; continue; }
       const res = await runEditOp(raw, op, note);
       if (res.error) { failed.add(op.key); if (en) en.err = (op.type === 'cancel' ? "Couldn't cancel the change that was waiting: " : "Couldn't save this shift: ") + res.error; continue; }
       okKeys.add(op.key); done.push({ op, edit: res.edit });
