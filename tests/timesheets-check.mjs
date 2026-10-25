@@ -824,7 +824,9 @@ check('page: ts_me views, the set-views RPC after save_user, previews carry view
 // ---------------------------------------------------------------------------------------------
 const SPEC_FLAGS = ['no_meal', 'late_meal', 'short_meal', 'no_second_meal', 'few_rest', 'short_rest', 'break_open', 'missed_out', 'long_day', 'type_unsure', 'gusto_mismatch',
   // the producer's data-error flags (2026-10-24): warnings, labelled on the board
-  'tiny_shift', 'midnight_split', 'long_rest', 'shift_overlap'];
+  'tiny_shift', 'midnight_split', 'long_rest', 'shift_overlap',
+  // a person who clocks in outside Pacific time (the producer's personAway, review 2026-10-25): an info note
+  'other_zone'];
 check('flag codes match the spec exactly; labels and messages exist; type_unsure is info', () => {
   eq([...C.FLAG_CODES].sort(), [...SPEC_FLAGS].sort());
   for (const c of SPEC_FLAGS) ok(C.flagLabel({ code: c }) && C.flagMsg({ code: c }), c);
@@ -1051,7 +1053,8 @@ check('demo covers all four CA companies and Wizard Trees NY, several department
   ok(new Set(demo.rows.map(r => r.company + '/' + r.department)).size >= 8, 'want 8+ departments');
   ok(demo.rows.some(r => r.department === 'No department'), 'a No department row');
   const codes = new Set(demo.rows.flatMap(r => r.flags.map(f => f.code)));
-  const missing = SPEC_FLAGS.filter(c => !codes.has(c));
+  // other_zone is the producer's verdict on a person over all their days (personAway): the demo has no one out of state
+  const missing = SPEC_FLAGS.filter(c => !codes.has(c) && c !== 'other_zone');
   ok(!missing.length, 'flags never shown: ' + J(missing));
   const ls = new Set(demo.rows.map(r => r.label_src));
   ok(ls.has('gusto') && ls.has('rule') && ls.has('mixed'), 'label sources ' + J([...ls]));
@@ -1066,7 +1069,7 @@ check('demo flags show up on any weekday it is opened (scenarios follow "now")',
   for (let i = 0; i < 7; i++) {
     const d = D.build(Date.parse(NOW) + i * 86400000);
     const codes = new Set(d.rows.flatMap(r => r.flags.map(f => f.code)));
-    const missing = SPEC_FLAGS.filter(c => !codes.has(c));
+    const missing = SPEC_FLAGS.filter(c => !codes.has(c) && c !== 'other_zone');   // the producer's, per person (see above)
     ok(!missing.length, d.today + ' missing ' + J(missing));
   }
   ok(D.build('2026-10-08T09:00:00Z').rows.length > 0, '2 AM build works');
@@ -2147,7 +2150,7 @@ check("today's open shift is read-only in the editor (Still working); a missed c
   ok(past[0].readonly === undefined && past[0].wasOpen, "a past day's open shift: fill in the clock-out");
   const eh = appFn('entryHtml');
   ok(eh.includes('Still working: this shift can be changed here after they clock out.'), 'the editor says why');
-  ok(/C\.editorEntries\(raw, boardRow\(raw\), editsFor\(dayId\), actor\(\), \{ today: rowToday\(raw\), now: Date\.now\(\) \}\)/.test(appFn('openEditor')), "on the row's own clock");
+  ok(/C\.editorEntries\(raw, boardRow\(raw\), editsFor\(dayId\), actor\(\), \{ today: rowToday\(raw\), now: Date\.now\(\), neighbors: rawNeighbors\(raw\),/.test(appFn('openEditor')), "on the row's own clock");
 });
 check('history keeps replaced changes (muted, naming the change that replaced them) and shows the reason on a phone too', () => {
   const raw = edRow([ED_S1]);
@@ -2478,7 +2481,7 @@ check('page: the Breaks line sits under the shifts and updates as times change; 
   ok(eb.indexOf('entryHtml(en, i, tz)') < eb.indexOf('id="edBreaks"') && eb.indexOf('id="edBreaks"') < eb.indexOf('data-act="ed-add-shift"'), 'under the shifts, above + Add a shift');
   const bl = appFn('breakLineHtml');
   ok(/C\.editorBreakStatus\(E\.entries, ctx\)/.test(bl) && /class="ed-bline \$\{st\.tone\}"/.test(bl) && /data-act="ed-add-missing">Add missing breaks</.test(bl) && /C\.missingBreakAdds\(E\.entries, ctx\)\.length > 0/.test(bl), 'status, tone, and the one-tap link only when it would add something');
-  ok(/region: raw\.region \|\| C\.regionOfCompany\(raw\.company\)/.test(appFn('edCtx')) && /tz: tz \|\| C\.rowTz\(raw\)/.test(appFn('edCtx')), "the row's own region and clock");
+  ok(/const region = raw\.region \|\| C\.regionOfCompany\(raw\.company\), z = tz \|\| C\.rowTz\(raw\)/.test(appFn('edCtx')) && /tz: z, company: raw\.company, region,/.test(appFn('edCtx')), "the row's own region and clock");
   ok(/setHTML\(\$\('edBreaks'\), breakLineHtml\(raw, tz\)\)/.test(appFn('onEditorInput')), 'live as times and types change');
   ok(/edInsertBreak\(raw, en, C\.suggestBreak\(E\.entries, k, edCtx\(raw\)\)\)/.test(appFn('edAddBreak')) && /edFocus\(k, 'bs', i\)/.test(appFn('edAddBreak')), '+ Add break is filled in, and the new break gets the focus');
   ok(/C\.breakIndexFor\(en, b, raw\.work_date, C\.rowTz\(raw\)\); en\.breaks\.splice\(i, 0, b\)/.test(appFn('edInsertBreak')) && /edInsertBreak\(raw, en, a\.brk\)/.test(appFn('edAddMissing')) && !/en\.breaks\.push/.test(appFn('edAddBreak') + appFn('edAddMissing')), 'added breaks go in among the others in time order');
@@ -2589,7 +2592,7 @@ check('review: an update or delete sends p_expect (the waiting changes the edito
 });
 check('review: managers are offered only the kinds of change the worker has sent with a person watching (adding, deleting and New York wait for a supervised run)', () => {
   const app = block('ts-app');
-  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23');
+  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25)');
   ok(/function mayEdit\(what\) \{ const a = actor\(\); return !!\(a && a\.is_admin\) \|\| C\.fullViewer\(a\) \|\| !!EDIT_PROVEN\[what\]; \}/.test(app), 'admins and full viewers keep them all');
   const fv = { is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, mgr = { is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
   ok(C.fullViewer(fv) && !C.fullViewer(mgr), 'a full viewer (every CA company) gets add and delete; a department manager does not');
@@ -2778,22 +2781,120 @@ check('Save orders changes across shifts the way Gusto can take them: one moving
   const sv = appFn('saveDayEdits');
   ok(/if \(\(op\.wait \|\| \[\]\)\.some\(w => failed\.has\(w\)\)\) \{ failed\.add\(op\.key\);/.test(sv), 'skipped when what it waits on failed');
 });
-check('a shift Gusto split at midnight (one id on two days) cannot be changed here; the days around one the board has not loaded are read', () => {
-  const me = { email: 'm@wizardtrees.com', is_admin: true }, at = { today: '2026-10-21', now: Date.parse('2026-10-21T18:00:00Z') };
-  const day = edRow([ES('s9', '23:00', '23:59')]);
-  const de = C.editorEntries(day, day, [], me, at);
-  const nb = [{ id: 's9', in: '2026-10-07T00:00:00-07:00', out: '2026-10-07T02:00:00-07:00', date: '2026-10-07' }];
-  de[0].inT = '22:00';
-  eq(C.editPlan(day, de, { neighbors: nb }).errors[de[0].key].map(e => e.code), ['split_shift']);
-  const d2 = C.editorEntries(day, day, [], me, at); d2[0].del = true;
-  eq(C.editPlan(day, d2, { neighbors: nb }).errors[d2[0].key].map(e => e.msg), ['Gusto keeps this shift on two days under one id (it ran past midnight and Gusto split it there), so it cannot be changed here. Fix it in Gusto (often a missed clock-out).']);
-  eq(C.editPlan(day, C.editorEntries(day, day, [], me, at), { neighbors: nb }).errors, {}, 'left alone: nothing to say');
-  eq(C.editPlan(day, de, { neighbors: [Object.assign({}, nb[0], { id: 's10', in: '2026-10-07T01:00:00-07:00' })] }).errors, {}, 'another shift id after midnight: fine');
-  const nf = appFn('neighborShifts'), nd = appFn('neighborDays'), oe = appFn('openEditor');
+check('a shift Gusto split at midnight (2026-10-25): its first day\'s part takes a real end (both days at once), the 12:00 AM part is carried over, and "End it at 11:59 PM" asks for exactly that', () => {
+  const me = { email: 'm@wizardtrees.com', is_admin: true }, at = { today: '2026-10-21', now: Date.parse('2026-10-21T18:00:00Z'), midnight: { fix: true, end: true } };
+  const first = { id: 's9', in: '2026-10-06T17:50:00-07:00', out: '2026-10-06T23:59:59-07:00', span_min: 370, worked_min: 370, hours_only: false, breaks: [] };
+  // the producer flagged it as a forgotten clock-out (midnight_split): the only kind the editor offers to fix
+  const MF = k => ({ code: 'midnight_split', sev: 'warn', msg: C.MIDNIGHT_MSG[k] });
+  const day = edRow([first], { flags: [MF('start')] });
+  const nb = [{ id: 's9', in: '2026-10-07T00:00:00-07:00', out: '2026-10-07T08:06:00-07:00', date: '2026-10-07', breaks: [] }];
+  const fresh = (n) => C.editorEntries(day, day, [], me, Object.assign({ neighbors: n || nb }, at));
+  const de = fresh();
+  eq([de[0].readonly || null, de[0].split.role, de[0].split.date, de[0].split.breaks, de[0].split.fix], [null, 'first', '2026-10-07', 0, true], 'the first day\'s part is editable and knows its other part');
+  // a real end before midnight: one update of the shift, nothing refused
+  de[0].outT = '22:30';
+  const p = C.editPlan(day, de, {});
+  eq(p.errors, {});
+  eq(p.ops.map(o => [o.action, o.shift_id, o.after.in, o.after.out]), [['update', 's9', '2026-10-06T17:50:00-07:00', '2026-10-06T22:30:00-07:00']]);
+  // the end left at 11:59 PM with another change: it asks for the real end
+  const d2 = fresh(); d2[0].inT = '17:30';
+  eq(C.editPlan(day, d2, {}).errors[d2[0].key].map(e => [e.code, e.msg]), [['split_end', 'Gusto ran this shift past midnight (it goes on as 12:00 AM to 8:06 AM on Wed, Oct 7, likely a missed clock-out). Give its real end time here: both days are fixed at once, and your other changes go with it.']]);
+  // an end after midnight
+  const d3 = fresh(); d3[0].outT = '01:00';
+  eq(C.editPlan(day, d3, {}).errors[d3[0].key].map(e => [e.code, e.msg]), [['split_end', 'This shift ran past midnight in Gusto: end it before midnight on Tue, Oct 6 here (that fixes both days at once). To end it after midnight, change it in Gusto.']]);
+  // breaks after midnight would be left outside it
+  const d4 = fresh([Object.assign({}, nb[0], { breaks: [{ start: '2026-10-07T02:00:00-07:00', end: '2026-10-07T02:15:00-07:00' }] })]); d4[0].outT = '22:30';
+  eq(C.editPlan(day, d4, {}).errors[d4[0].key].map(e => e.code), ['split_breaks']);
+  // deleting it would take both days
+  const d5 = fresh(); d5[0].del = true;
+  eq(C.editPlan(day, d5, {}).errors[d5[0].key].map(e => e.msg), ['Gusto ran this shift past midnight under one id, so deleting it would also take 12:00 AM to 8:06 AM on Wed, Oct 7. To fix a missed clock-out, give it its real end time instead (both days are fixed at once); to remove the whole shift, delete it in Gusto.']);
+  eq(C.editPlan(day, fresh(), {}).errors, {}, 'left alone: nothing to say');
+  // another shift id after midnight, or a part that does not end at 11:59:59 PM: an ordinary shift
+  eq(fresh([Object.assign({}, nb[0], { id: 's10' })])[0].split, undefined);
+  eq(C.splitRole(Object.assign({}, first, { out: '2026-10-06T23:59:00-07:00' }), '2026-10-06', nb, C.TZ, 'tz'), null);
+  // a person punching in Eastern time is split at ET midnight: read on the punch's own clock
+  eq(C.splitRole({ id: 'f1', in: '2026-10-06T15:00:00-04:00', out: '2026-10-06T23:59:59-04:00' }, '2026-10-06',
+    [{ id: 'f1', in: '2026-10-07T00:00:00-04:00', out: '2026-10-07T02:00:00-04:00', date: '2026-10-07' }], C.TZ, 'tz').role, 'first');
+  // the 12:00 AM part: carried over, read-only here; "End it at 11:59 PM" is a delete of it with the worker's reason
+  const carried = { id: 's9', in: '2026-10-07T00:00:00-07:00', out: '2026-10-07T08:06:00-07:00', span_min: 486, worked_min: 486, hours_only: false, breaks: [] };
+  const cday = edRow([carried], { id: 'filifera:e1:2026-10-07', work_date: '2026-10-07', flags: [MF('cont')] });
+  const prev = [{ id: 's9', in: first.in, out: first.out, date: '2026-10-06', breaks: [] }];
+  const ce = C.editorEntries(cday, cday, [], me, Object.assign({ neighbors: prev }, at));
+  eq([ce[0].readonly, ce[0].split.role, ce[0].split.date], ['carried', 'carried', '2026-10-06']);
+  ce[0].outT = '01:00';
+  eq(C.editPlan(cday, ce, {}), { ops: [], errors: {} }, 'nothing typed on it is sent');
+  const ce2 = C.editorEntries(cday, cday, [], me, Object.assign({ neighbors: prev }, at)); ce2[0].endAtMidnight = true; ce2[0].del = true;
+  eq(C.editPlan(cday, ce2, {}).ops.map(o => [o.type, o.action, o.shift_id, o.after, o.note]), [['submit', 'delete', 's9', null, 'End the shift at 11:59 PM']]);
+  eq(C.entriesPreview(ce2, cday.work_date, C.TZ).worked, 0, 'the preview drops the part that goes');
+  // the worker reads the same words (ts-edit-plan.mjs END_AT_MIDNIGHT_NOTE), checked on the Mac that has it
+  const planFile = path.join(os.homedir(), 'gusto-sync', 'ts-edit-plan.mjs');
+  if (fs.existsSync(planFile)) ok(fs.readFileSync(planFile, 'utf8').includes("export const END_AT_MIDNIGHT_NOTE = '" + C.END_AT_MIDNIGHT_NOTE + "';"), 'the worker\'s reason is the page\'s');
+  // the page: Gusto's own shifts around the day (still clocked in ones and breaks included), the days read when the editor
+  // opened; Save sends the op's own reason first; the carried part's buttons
+  const nf = appFn('neighborShifts'), nd = appFn('neighborDays'), oe = appFn('openEditor'), rn = appFn('rawNeighbors');
   ok(/id: s\.id != null \? String\(s\.id\) : null/.test(nf) && /E\.nbRows/.test(nf), 'neighbors carry the shift id, and the days read when the editor opened');
+  ok(/for \(const s of r\.shifts \|\| \[\]\) if \(s && !s\.hours_only && s\.in\) out\.push\(\{ id: s\.id != null \? String\(s\.id\) : null, in: s\.in, out: s\.out \|\| null, date: d, breaks: s\.breaks \|\| \[\] \}\)/.test(rn) && /E\.nbRows/.test(rn),
+    'the split check reads Gusto\'s own shifts around the day');
   ok(/!\(S\.fetched \|\| \[\]\)\.some\(f => f\.from <= d && d <= f\.to\)/.test(nd) && /\.eq\('company', raw\.company\)\.eq\('employee_uuid', raw\.employee_uuid\)\.in\('work_date', want\)/.test(nd)
     && /catch \(e\) \{ console\.warn\('days around this one not read', e\); return \[\]; \}/.test(nd), 'only days not loaded; a failed read is no neighbors');
   ok(/E\.nbRows = nb;/.test(oe), 'kept for Save');
+  ok(/runEditOp\(raw, op, op\.note \? \(op\.note \+ \(note \? ': ' \+ note : ''\)\)\.slice\(0, C\.EDIT_RULES\.noteMax\) : note\)/.test(appFn('saveDayEdits')), 'the op\'s own reason goes first');
+  ok(/case 'ed-end-midnight': edEndMidnight\(d\.ek, true\); break;/.test(src) && /case 'ed-end-midnight-undo': edEndMidnight\(d\.ek, false\); break;/.test(src)
+    && /case 'ed-open-day': edOpenDay\(d\.k\); break;/.test(src), 'the carried part\'s buttons are wired');
+  ok(/if \(en\.readonly === 'carried'\) return carriedHtml\(en, label, pend, times\);/.test(appFn('entryHtml')) && /const canEnd = !!en\.split\.end && /.test(appFn('carriedHtml')), 'carried over parts say where to fix them; ending at 11:59 PM only where the core allowed it');
+  ok(/en\.endAtMidnight/.test(appFn('editorDirty')), 'choosing 11:59 PM counts as a change on Cancel');
+});
+check('review 2026-10-25: a split shift is offered for a fix only when it is a forgotten clock-out in one pay period, to a sign-in the worker will serve', () => {
+  const me = { email: 'm@wizardtrees.com', is_admin: false }, base = { today: '2026-10-21', now: Date.parse('2026-10-21T18:00:00Z') };
+  const MF = k => ({ code: 'midnight_split', sev: 'warn', msg: C.MIDNIGHT_MSG[k] });
+  const first = { id: 's9', in: '2026-10-06T17:50:00-07:00', out: '2026-10-06T23:59:59-07:00', span_min: 370, worked_min: 370, hours_only: false, breaks: [] };
+  const nb = [{ id: 's9', in: '2026-10-07T00:00:00-07:00', out: '2026-10-07T08:06:00-07:00', date: '2026-10-07', breaks: [] }];
+  const ent = (row, n, mid) => C.editorEntries(row, row, [], me, Object.assign({ neighbors: n || nb, midnight: mid }, base));
+  // (F10) a forgotten clock-out, but the worker still holds 'midnight-split': a manager is told to fix it in Gusto, as before
+  const flagged = edRow([first], { flags: [MF('start')] });
+  const held = ent(flagged, null, { fix: false, end: false });
+  eq([held[0].readonly, held[0].split.fix], ['split', false]);
+  eq(C.splitWhy(held[0], C.TZ), 'Gusto ran this shift past midnight: it goes on as 12:00 AM to 8:06 AM on Wed, Oct 7 (likely a missed clock-out). Fix its end time in Gusto.');
+  held[0].outT = '22:30';
+  eq(C.editPlan(flagged, held, {}).ops, [], 'nothing typed on a read-only part is sent');
+  delete held[0].readonly;   // ... and Save refuses it even if it got past the read-only view
+  eq(C.editPlan(flagged, held, {}).errors[held[0].key].map(e => e.code), ['split_shift']);
+  // (F12) real overnight work (no midnight_split flag): never offered as a missed clock-out, whoever is signed in
+  const night = edRow([Object.assign({}, first, { in: '2026-10-06T20:54:00-07:00' })]);
+  const nn = ent(night, [Object.assign({}, nb[0], { out: '2026-10-07T00:26:17-07:00' })], { fix: true, end: true });
+  eq([nn[0].readonly, nn[0].split.forgotten, nn[0].split.fix], ['split', false, false]);
+  eq(C.splitWhy(nn[0], C.TZ), 'This shift ran past midnight: Gusto keeps it on two days under one id (it goes on as 12:00 AM to 12:26 AM on Wed, Oct 7). Change it in Gusto.');
+  ok(!/missed clock-out/.test(C.splitWhy(nn[0], C.TZ)), 'no "missed clock-out" for real overnight work');
+  const nc = C.editorEntries(edRow([Object.assign({}, nb[0], { span_min: 26, worked_min: 26 })], { id: 'filifera:e1:2026-10-07', work_date: '2026-10-07' }), null, [], me,
+    Object.assign({ neighbors: [{ id: 's9', in: first.in, out: first.out, date: '2026-10-06', breaks: [] }], midnight: { fix: true, end: true } }, base));
+  eq([nc[0].readonly, nc[0].split.end], ['carried', false], 'its 12:00 AM part gets no "End it at 11:59 PM"');
+  nc[0].endAtMidnight = true; nc[0].del = true;
+  eq(C.editPlan(edRow([nb[0]], { id: 'filifera:e1:2026-10-07', work_date: '2026-10-07' }), nc, {}).ops, [], 'and Save sends nothing for it');
+  // the two parts in different pay periods (Fri Oct 9 into Sat Oct 10): the browser task cannot see both
+  const fri = edRow([Object.assign({}, first, { in: '2026-10-09T17:50:00-07:00', out: '2026-10-09T23:59:59-07:00' })], { id: 'filifera:e1:2026-10-09', work_date: '2026-10-09', flags: [MF('start')] });
+  const fe = ent(fri, [{ id: 's9', in: '2026-10-10T00:00:00-07:00', out: '2026-10-10T08:06:00-07:00', date: '2026-10-10', breaks: [] }], { fix: true, end: true });
+  eq([fe[0].readonly, fe[0].split.samePeriod, fe[0].split.fix], ['split', false, false]);
+  ok(/is in another pay period\. Fix its end time in Gusto\.$/.test(C.splitWhy(fe[0], C.TZ)), C.splitWhy(fe[0], C.TZ));
+  // (F12) a chain over three days: the middle part, and a first part whose next part runs past another midnight
+  const mid = { id: 's9', in: '2026-10-07T00:00:00-07:00', out: '2026-10-07T23:59:59-07:00', date: '2026-10-07', breaks: [] };
+  eq(C.splitRole(Object.assign({}, mid), '2026-10-07', [{ id: 's9', in: first.in, out: first.out, date: '2026-10-06' }, { id: 's9', in: '2026-10-08T00:00:00-07:00', out: '2026-10-08T03:00:00-07:00', date: '2026-10-08' }], C.TZ, 'tz').role, 'long');
+  eq(C.splitRole(first, '2026-10-06', [mid], C.TZ, 'tz').role, 'long');
+  eq(C.splitRole({ id: 's9', in: '2026-10-08T00:00:00-07:00', out: '2026-10-08T03:00:00-07:00' }, '2026-10-08', [Object.assign({}, mid, { date: '2026-10-07' })], C.TZ, 'tz').role, 'long');
+  const le = ent(flagged, [mid], { fix: true, end: true });
+  eq([le[0].readonly, le[0].split.fix], ['split', false]);
+  eq(C.splitWhy(le[0], C.TZ), 'Gusto keeps this shift on more than two days under one id (it ran past midnight more than once). Change it in Gusto.');
+  // the page: the switches, what each sign-in may send, and the carried part's words (no "fix it on the day before" when that
+  // day is not offered for a fix)
+  const app = block('ts-app');
+  ok(/midnight: \{ fix: mayEdit\('midnight'\), end: mayEdit\('midnightEnd'\) \}/.test(appFn('openEditor')), 'the editor knows what this sign-in may send');
+  const ch = appFn('carriedHtml');
+  ok(/const canOpen = en\.split\.forgotten && en\.split\.samePeriod && mayEdit\('midnight'\) && S\.rows\.has\(prevKey\) && canEditRow\(S\.rows\.get\(prevKey\)\);/.test(ch), 'Open <day before> only where that day can take the fix');
+  const ct = appFn('carriedText');
+  ok(/Fix its end on ' \+ prevDay \+ ': a new end there fixes both days at once\./.test(ct) && /Fix its end time in Gusto/.test(ct) && /Change it in Gusto\./.test(ct), 'each case says where to fix it');
+  ok(/if \(en\.readonly === 'split'\) return h`[^\n]*C\.splitWhy\(en, tz\)/.test(appFn('entryHtml')), 'read-only parts say why');
+  ok(/en\.split && en\.split\.fix \? h`<p class="pd-fine ed-split">/.test(appFn('entryHtml')), 'the "set its real end here" note only where it can be done');
+  ok(/if \(!en \|\| en\.readonly !== 'carried' \|\| !en\.split \|\| !en\.split\.end\) return;/.test(appFn('edEndMidnight')), 'the button cannot be forced');
+  ok(app.includes("midnight: false, midnightEnd: false };"), 'both off until a supervised run proves each');
 });
 check('messages show the seconds that cause them, and an overlap is marked on the break typed here, not the one Gusto has', () => {
   const me = { email: 'm@wizardtrees.com', is_admin: true }, at = { today: '2026-10-21', now: Date.parse('2026-10-21T18:00:00Z') };
@@ -3156,21 +3257,26 @@ check('demo: the forgotten clock-out shows on both days exactly the pills the pr
   }
   ok(builds === 26, 'builds: ' + builds);
   if (P) ok(compared === 52, 'compared with the producer: ' + compared);
-  // the editor: a new end on the 11:59:59 PM part, or on the next day's 12:00 AM part, is refused before Save, and so is a delete
+  // the editor (2026-10-25): a real end on the 11:59:59 PM part fixes both days; the next day's 12:00 AM part is carried over
+  // (read-only, fixed on the day before); deleting the first part would take both days
   const rows = demo.rows.filter(r => r.employee_name === 'Cedar Puddlejump');
   const [mon, tue] = rows.filter(r => r.flags.some(f => f.code === 'midnight_split'));
   const nbOf = raw => rows.filter(r => r.work_date === C.addDays(raw.work_date, -1) || r.work_date === C.addDays(raw.work_date, 1))
-    .flatMap(r => r.shifts.filter(s => !s.hours_only && s.in && s.out).map(s => ({ id: String(s.id), in: s.in, out: s.out, date: r.work_date })));
-  const ctx = { today: demo.todays.CA, now: Date.parse(NOW) };
-  for (const [raw, outT] of [[mon, '20:30'], [tue, '01:00']]) {
-    ok(C.canEditDate(raw.work_date, demo.todays.CA), raw.work_date + ' is inside the editable window');
-    const en = C.editorEntries(raw, raw, [], me, ctx);
-    eq(en.map(e => e.readonly || null), [null], raw.work_date + ': open for editing');
-    en[0].outT = outT;
-    eq(Object.values(C.editPlan(raw, en, { neighbors: nbOf(raw) }).errors).flat().map(e => e.code), ['split_shift'], raw.work_date + ': a new end is refused');
-    const gone = C.editorEntries(raw, raw, [], me, ctx); gone[0].del = true;
-    eq(Object.values(C.editPlan(raw, gone, { neighbors: nbOf(raw) }).errors).flat().map(e => e.code), ['split_shift'], raw.work_date + ': so is deleting it');
-  }
+    .flatMap(r => r.shifts.filter(s => !s.hours_only && s.in).map(s => ({ id: String(s.id), in: s.in, out: s.out || null, date: r.work_date, breaks: s.breaks || [] })));
+  const ctx = { today: demo.todays.CA, now: Date.parse(NOW), midnight: { fix: true, end: true } };   // an admin's editor
+  for (const raw of [mon, tue]) ok(C.canEditDate(raw.work_date, demo.todays.CA), raw.work_date + ' is inside the editable window');
+  const en = C.editorEntries(mon, mon, [], me, Object.assign({ neighbors: nbOf(mon) }, ctx));
+  eq([en[0].readonly || null, en[0].split.role], [null, 'first'], 'the first day: open for its real end');
+  const lastBrk = Math.max(...en[0].breaks.map(b => +b.endT.slice(0, 2) * 60 + +b.endT.slice(3)));
+  const endT = String(Math.floor((lastBrk + 30) / 60)).padStart(2, '0') + ':' + String((lastBrk + 30) % 60).padStart(2, '0');
+  en[0].outT = endT;
+  const pm = C.editPlan(mon, en, {});
+  eq(pm.errors, {}, 'a real end after its breaks (' + endT + ') goes');
+  eq(pm.ops.map(o => [o.action, o.shift_id]), [['update', String(mon.shifts[0].id)]]);
+  const gone = C.editorEntries(mon, mon, [], me, Object.assign({ neighbors: nbOf(mon) }, ctx)); gone[0].del = true;
+  eq(Object.values(C.editPlan(mon, gone, {}).errors).flat().map(e => e.code), ['split_delete'], 'deleting it is refused');
+  const te = C.editorEntries(tue, tue, [], me, Object.assign({ neighbors: nbOf(tue) }, ctx));
+  eq(te.map(e => e.readonly || null), ['carried'], tue.work_date + ': carried over, read-only');
 });
 
 // a made-up person over midnight: Mon 10/5 in at 11:50 AM, never out; Gusto split it at midnight; out Tue morning and straight back in
@@ -3259,6 +3365,78 @@ check('overlay: tiny_shift, long_rest and shift_overlap follow the edited day (t
   const nyEd = OV(nyRow, [ED({ day_id: 'wtny:e1:2026-10-06', company: 'wtny', region: 'NY', shift_id: 'n1', before: C.shiftSnap(nyRow.shifts[0]), breaks_status: 'pending',
     after: AFTER('05:00', '13:00', [['07:00', '08:20', 'rest'], ['09:00', '09:30', 'meal']]) })]);
   eq(nyEd.flags.map(f => [f.code, f.msg]), [['long_rest', 'Rest of 1 h 20 min: was it ever ended?']], 'New York too');
+});
+
+// ---------------------------------------------------------------------------------------------
+// 2026-10-25 (Gianni: "I feel like we shouldn't have this many needs a look notices")
+// ---------------------------------------------------------------------------------------------
+check('out of state: a person clocking in in another zone keeps California break flags as notes on every day, and the editor pushes no California breaks', () => {
+  const ET = t => '2026-10-17T' + t + ':00-04:00';
+  const sh = { id: 'f1', in: ET('12:00'), out: ET('22:30'), span_min: 630, worked_min: 630, hours_only: false, breaks: [] };
+  // the producer decided it over the person's days (personAway) and marked each of them with other_zone
+  const ZF = { code: 'other_zone', sev: 'info', msg: 'Clocks in on Eastern time, not Pacific: California break rules are shown as notes only' };
+  const raw = edRow([sh], { id: 'wafgus:e2:2026-10-17', company: 'wafgus', work_date: '2026-10-17', flags: [ZF] });
+  ok(C.rowAway(raw) && !C.rowAway(edRow([sh], { company: 'wafgus' })), 'the board reads the producer\'s flag, never one day\'s punches');
+  eq([C.flagLabel(ZF), C.flagSev({ code: 'other_zone' })], ['Other time zone', 'info']);
+  const flags = C.dayFlags(raw, '2026-10-25');
+  eq(flags.filter(f => C.AWAY_CODES.includes(f.code)).map(f => [f.code, f.sev]), [['no_meal', 'info'], ['no_second_meal', 'info'], ['few_rest', 'info']]);
+  ok(flags.filter(f => C.AWAY_CODES.includes(f.code)).every(f => f.msg.endsWith(C.AWAY_NOTE)), 'each says why');
+  ok(!C.hasWarn(Object.assign({}, raw, { flags: flags.concat([ZF]) })), 'no red on the board');
+  // (review F13) a changed time is written on the row's Pacific offset: the day stays the person's, notes not warnings
+  const me = { email: 'm@wizardtrees.com', is_admin: true }, at = { today: '2026-10-21', now: Date.parse('2026-10-21T18:00:00Z') };
+  const moved = C.overlayDay(raw, [{ id: 'z1', day_id: raw.id, company: 'wafgus', region: 'CA', work_date: raw.work_date, shift_id: 'f1', action: 'update',
+    before: C.shiftSnap(sh), after: { in: '2026-10-17T08:30:00-07:00', out: sh.out, breaks: [] }, times_status: 'pending', breaks_status: 'none',
+    created_by: 'm@wizardtrees.com', created_at: '2026-10-17T20:00:00Z' }], { today: '2026-10-21' });
+  ok(moved.shifts[0].in.endsWith('-07:00'), 'the overlay writes the new start on Pacific time');
+  eq(moved.flags.filter(f => C.AWAY_CODES.includes(f.code)).map(f => f.sev).filter(v => v === 'warn'), [], 'still notes after the edit');
+  ok(moved.flags.some(f => f.code === 'other_zone'), 'the person\'s note stays');
+  // without the producer's flag (a California person with one oddly stamped day): California's rules, in red
+  const plain = edRow([sh], { id: 'wafgus:e3:2026-10-17', company: 'wafgus', work_date: '2026-10-17' });
+  const pf = C.dayFlags(plain, '2026-10-25').filter(f => C.AWAY_CODES.includes(f.code));
+  ok(pf.some(f => f.code === 'no_meal' && f.sev === 'warn') && pf.every(f => !f.msg.endsWith(C.AWAY_NOTE)), J(pf));
+  // the producer writes the same flags for the same person (~/gusto-sync/ca-ts-core.mjs, on the Mac that has it)
+  if (P && P.personAway) {
+    const mk = (id, date, i, o) => ({ id, date, clockInTimestamp: date + 'T' + i + ':00-04:00', clockOutTimestamp: date + 'T' + o + ':00-04:00', clockInPlatform: 'IOS',
+      durationInMinutes: Math.round((Date.parse(date + 'T' + o + ':00-04:00') - Date.parse(date + 'T' + i + ':00-04:00')) / 60000), breaks: [],
+      firstName: 'Fl', lastName: 'Test', workerType: 'employee', employeeUuid: 'e2' });
+    const prows = P.buildDays([mk('f1', '2026-10-17', '12:00', '22:30'), mk('f2', '2026-10-19', '09:00', '13:00')], [{ company: 'wafgus', employee_uuid: 'e2', name: 'Fl Test', department: 'D' }], null, null,
+      { company: 'wafgus', today: '2026-10-25' });
+    const prow = prows.find(r => r.work_date === '2026-10-17');
+    eq(prow.flags.filter(f => C.AWAY_CODES.includes(f.code)).map(f => [f.code, f.sev, f.msg.endsWith(C.AWAY_NOTE)]), [['no_meal', 'info', true], ['no_second_meal', 'info', true], ['few_rest', 'info', true]], 'the producer agrees');
+    for (const r of prows) eq(r.flags.filter(f => f.code === 'other_zone'), [ZF], 'every day of the person carries the note: ' + r.work_date);
+    eq(P.AWAY_NOTE, C.AWAY_NOTE, 'the same words');
+    ok(P.FLAG_ORDER.includes('other_zone') && C.FLAG_CODES.includes('other_zone'), 'both know the code');
+  }
+  // the editor: no Missing line, no Add missing breaks, + Add break comes blank (and the page shows none), even on a day
+  // with no Gusto punch of its own (review F13: a missed clock-in day) and after a time was changed here
+  const en = C.editorEntries(raw, raw, [], me, at), ctx = { date: raw.work_date, tz: C.TZ, company: 'wafgus', region: 'CA', away: true };
+  eq(C.editorBreakStatus(en, ctx), { state: 'away', items: [], tone: 'info', text: C.AWAY_EDITOR_TEXT });
+  ok(/Add or retype breaks for this person in Gusto/.test(C.AWAY_EDITOR_TEXT) && !/[–—]/.test(C.AWAY_EDITOR_TEXT), 'it says where breaks go (review F14)');
+  eq(C.missingBreakAdds(en, ctx), []);
+  eq(C.suggestBreak(en, en[0].key, ctx), { startT: '', endT: '', kind: 'rest', orig: null });
+  const empty = edRow([], { id: 'wafgus:e2:2026-10-18', company: 'wafgus', work_date: '2026-10-18', flags: [ZF] });
+  const added = C.editorEntries(empty, empty, [], me, at).concat([Object.assign(C.newEntry('n1'), { inT: '09:00', outT: '19:30' })]);
+  const ectx = { date: empty.work_date, tz: C.TZ, company: 'wafgus', region: 'CA', away: C.rowAway(empty) };
+  eq([C.editorBreakStatus(added, ectx).state, C.missingBreakAdds(added, ectx)], ['away', []], 'a missed clock-in day for the person');
+  eq(C.editorBreakStatus(added, Object.assign({}, ectx, { away: false })).state, 'missing', 'the same day for anyone else: California rules');
+  // the page tells the editor from the producer's flag, and the shift has no + Add break for such a person
+  ok(/away: region !== 'NY' && C\.rowAway\(raw\)/.test(appFn('edCtx')), 'edCtx reads the person\'s flag');
+  ok(/const away = !!raw && edCtx\(raw, tz\)\.away;/.test(appFn('entryHtml')) && /\$\{away \? h`<span class="faint ed-none">Add breaks for this person in Gusto\.<\/span>`/.test(appFn('entryHtml')), 'no + Add break for them');
+  ok(!/punchAway/.test(src), 'no day-by-day guess left on the page');
+});
+check('Needs a look that the timesheet sync cleared (supabase/ts-edits-clear.sql) reads Cleared, with the reason, and is history', () => {
+  const e = { id: 'c1', day_id: 'filifera:e1:2026-10-06', company: 'filifera', region: 'CA', work_date: '2026-10-06', shift_id: 's1', action: 'update',
+    before: C.shiftSnap(ED_S1), after: AFTER('07:00', '15:00'), times_status: 'cancelled', breaks_status: 'none', times_error: 'Gusto already sent the hours for Sat Oct 10 to Fri Oct 23 to payroll',
+    created_by: 'm@wizardtrees.com', created_at: '2026-10-07T15:00:00Z', cancelled_by: 'gusto-sync', cancelled_at: '2026-10-08T02:00:00Z', cancel_reason: 'Gusto now matches: Gusto reads as this change asked (7:00 AM to 3:00 PM)' };
+  eq([C.editStatus(e), C.editShownStatus(e, new Set()), C.EDIT_STATUS_WORDS.cleared, C.CLEARED_BY], ['cancelled', 'cleared', 'Cleared', 'gusto-sync']);
+  eq(C.editPartLines(e, C.TZ, Date.parse('2026-10-08T03:00:00Z')), ['Cleared automatically: Gusto now matches: Gusto reads as this change asked (7:00 AM to 3:00 PM)']);
+  eq(C.editPartLines(Object.assign({}, e, { cancel_reason: null }), C.TZ, Date.parse('2026-10-08T03:00:00Z')), ['Cleared automatically: Gusto settled it'], 'before the column exists');
+  eq(C.editShownStatus(Object.assign({}, e, { cancelled_by: 'm@wizardtrees.com' }), new Set()), 'cancelled', 'a manager\'s Clear stays Cancelled');
+  const ov = C.overlayDay(edRow([ED_S1]), [e], { today: '2026-10-21' });
+  ok(!(ov.edit && ov.edit.attention.length), 'no Needs a look pill on the board');
+  const still = C.overlayDay(edRow([ED_S1]), [Object.assign({}, e, { times_status: 'conflict', cancelled_by: null, cancelled_at: null, cancel_reason: null })], { today: '2026-10-21' });
+  eq(still.edit.attention.length, 1, 'while it needed a look, it had one');
+  ok(/st === 'cleared'/.test(src.match(/const oldEdit = [^\n]+/)[0]) && /cleared: 'flag ecanc'/.test(src), 'muted in the history, a grey pill');
 });
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name

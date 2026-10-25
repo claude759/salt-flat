@@ -213,7 +213,7 @@ begin
   perform pg_temp.ts_v('A6 authenticated can execute exactly these ts_ functions', null, null,
     $q$select string_agg(p.proname, ',' order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('authenticated', p.oid, 'EXECUTE')
-          and p.proname not in ('ts_edit_submit', 'ts_edit_cancel', 'ts_edits_pending', 'ts_edit_mark')$q$,
+          and p.proname not in ('ts_edit_submit', 'ts_edit_cancel', 'ts_edits_pending', 'ts_edit_mark', 'ts_edit_clear', 'ts_edits_to_recheck')$q$,
     pg_temp.ts_v_lit('ts_admin_delete_user,ts_admin_delete_view,ts_admin_list,ts_admin_save_user,ts_admin_save_view,ts_admin_set_user_views,ts_is_admin,ts_me,ts_my_email,ts_my_grant_keys,ts_my_view_ids,ts_sync'));
   perform pg_temp.ts_v('A7 PUBLIC and anon can execute none of the new functions, nor either ts_can_view', null, null,
     $q$select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace

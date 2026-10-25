@@ -358,11 +358,15 @@ begin
     $q$select count(*) filter (where p = 'SELECT') || '/' || count(*)
          from unnest(array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p
         where has_table_privilege('authenticated', 'public.ts_edits', p)$q$, '1/1');
-  perform pg_temp.ts_v('A6 authenticated can execute exactly these ts_ functions (all five files)', null, null,
+  -- (supabase/ts-edits-clear.sql, when applied, adds the workers' ts_edit_clear and ts_edits_to_recheck)
+  perform pg_temp.ts_v('A6 authenticated can execute exactly these ts_ functions (all five files, and ts-edits-clear.sql when applied)', null, null,
     $q$select string_agg(p.proname, ',' order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('authenticated', p.oid, 'EXECUTE')$q$,
     pg_temp.ts_v_lit('ts_admin_delete_user,ts_admin_delete_view,ts_admin_list,ts_admin_save_user,ts_admin_save_view,ts_admin_set_user_views,'
-                  || 'ts_edit_cancel,ts_edit_mark,ts_edit_submit,ts_edits_pending,ts_is_admin,ts_me,ts_my_email,ts_my_grant_keys,ts_my_view_ids,ts_sync'));
+                  || 'ts_edit_cancel,' || case when to_regprocedure('public.ts_edit_clear(uuid,text)') is not null then 'ts_edit_clear,' else '' end
+                  || 'ts_edit_mark,ts_edit_submit,ts_edits_pending,'
+                  || case when to_regprocedure('public.ts_edits_to_recheck()') is not null then 'ts_edits_to_recheck,' else '' end
+                  || 'ts_is_admin,ts_me,ts_my_email,ts_my_grant_keys,ts_my_view_ids,ts_sync'));
   perform pg_temp.ts_v('A7 PUBLIC and anon can execute none of the edit functions', null, null,
     $q$select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and (p.proname like 'ts!_edit!_%' escape '!' or p.proname like 'ts!_edits!_%' escape '!')

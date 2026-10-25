@@ -185,7 +185,7 @@ begin
     $q$select string_agg(p.proname, ',' order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('authenticated', p.oid, 'EXECUTE')
           and p.proname not in ('ts_admin_save_view', 'ts_admin_delete_view', 'ts_admin_set_user_views', 'ts_my_view_ids',
-                                'ts_edit_submit', 'ts_edit_cancel', 'ts_edits_pending', 'ts_edit_mark')$q$,
+                                'ts_edit_submit', 'ts_edit_cancel', 'ts_edits_pending', 'ts_edit_mark', 'ts_edit_clear', 'ts_edits_to_recheck')$q$,
     'ts!_admin!_delete!_user,ts!_admin!_list,ts!_admin!_save!_user,ts!_is!_admin,ts!_me,ts!_my!_email,ts!_my!_grant!_keys,ts!_sync');
   perform pg_temp.ts_v('A7 every ts_ function is security definer with search_path=public', null, null,
     $q$select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
