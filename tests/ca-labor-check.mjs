@@ -173,6 +173,63 @@ say(/<select id="reportSel">[\s\S]*?<option value="billing">[\s\S]*?<\/select>/.
   && /<section data-report="billing" id="rep-billing"[^>]*>[\s\S]*?<div id="billOut"><\/div>/.test(markup),
   'Reports > Labor billing: option and section (#rep-billing, #billOut) present');
 
+// 5c-2. every company the core bills is offered under "Bill to" (Rio Verde is Olympic on the board), and the
+// REAL billing view (sliced out of the page, run in vm with the DOM stubbed) shows Rio Verde days before its
+// start date as not billable, bills the ones after it, and copies the rioverde command.
+{
+  const coreSrc = fs.readFileSync(path.join(ROOT, 'labor-billing-core.js'), 'utf8');
+  const coreCtx = {}; vm.runInNewContext(coreSrc, coreCtx);
+  const sites = Object.keys(coreCtx.LaborBilling.SITES).sort();
+  const coSel = (markup.match(/<select id="billCompany">([\s\S]*?)<\/select>/) || [])[1] || '';
+  const offered = [...coSel.matchAll(/<option value="([^"]+)"/g)].map(m => m[1]).sort();
+  say(sites.join() === offered.join() && sites.includes('Olympic'),
+    `Labor billing "Bill to" offers every company the core bills (${offered.join(', ')}; core ${sites.join(', ')})`);
+
+  const a = src.indexOf('/* ================= Labor billing (Reports) ================='), b = src.indexOf("window.addEventListener('beforeprint'", a);
+  const hv = grab(/^function isGustoHarvestShift\(s\)\{/m), dl = grab(/^function applyDeepLink\(\)\{/m);
+  if (a < 0 || b < 0 || !hv || !dl) say(false, 'Labor billing view code not found in the page');
+  else {
+    const els = {}; let copied = '';
+    const el = (id) => (els[id] ||= { id, innerHTML: '', value: '', hidden: false, onclick: null, onchange: null, addEventListener() {} });
+    const rid = 'r-test';
+    const roster = [{ id: rid, last: 'Test', first: 'Ana', gusto_distro: false, aliases: [] }];
+    const hvRow = (id, date, total) => ({ id, category: 'harvest', company: 'Olympic', work_date: date, last: 'Test', first: 'Ana', roster_id: rid,
+      clock_in: '08:00', clock_out: '12:00', break_minutes: 0, hours: total / 20, rate: 20, total, people: 1, team: 'Gusto Team',
+      source: 'import', source_id: `gusto-filifera-hv:${rid}:${date}:olympic`, note: 'Approved in Gusto' });
+    const ctx = {
+      shifts: [hvRow('1', '2026-10-20', 80), hvRow('2', '2026-10-26', 100)], roster,
+      MONTHS: ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'], PERIOD_ANCHOR: '2026-07-04', PERIOD_LEN: 14,
+      todayISO: () => '2026-11-20', fDate: (iso) => iso, fClock: (t) => t || '', esc: (s) => String(s ?? ''),
+      fCents: (n) => '$' + (+n).toFixed(2), fH2: (n) => (+n).toFixed(2), tsFullName: (s) => `${s.first} ${s.last}`,
+      toast: () => {}, location: { hash: '' }, isSecureContext: false, navigator: {},
+      reportSel: { value: 'billing', options: [{ value: 'billing' }], onchange() {} },
+      document: { getElementById: el, querySelector: () => null, body: { classList: { add() {}, remove() {}, toggle() {} }, appendChild(t) { copied = t.value; } },
+        createElement: () => ({ style: {}, value: '', focus() {}, select() {}, remove() {} }), execCommand: () => true },
+    };
+    ctx.window = ctx;
+    el('view-reports').hidden = false;
+    let err = '', older = '', newer = '';
+    try {
+      vm.createContext(ctx);
+      vm.runInContext(coreSrc, ctx);
+      vm.runInContext([hv, src.slice(a, b), dl].join('\n'), ctx);
+      ctx.location.hash = '#reports~billing~2026-10-12~rioverde';
+      vm.runInContext('applyDeepLink(); renderBilling();', ctx);
+      older = el('billOut').innerHTML;
+      vm.runInContext("billState.period = '2026-10-24'; renderBilling(); billCopyCommand();", ctx);
+      newer = el('billOut').innerHTML;
+    } catch (e) { err = String(e && e.message || e); }
+    const company = !err && vm.runInContext('billState.company', ctx);
+    const ok = !err && company === 'Olympic'
+      && /Nothing to bill: every Gusto deleaf \/ harvest day at Rio Verde \(Olympic\)/.test(older) && /Not billable/.test(older) && /\$80\.00/.test(older)
+      && !/bill-person/.test(older)
+      && /bill-person/.test(newer) && /\$100\.00/.test(newer) && !/class="bill-nb"/.test(newer) && /Filifera invoice only/.test(newer)
+      && copied === 'node --env-file=.env qbo/labor-billing.mjs --company rioverde --period 2026-10-24';
+    say(ok, 'Labor billing > Rio Verde: days before 2026-10-24 show as not billable, later days are billed, the command says --company rioverde'
+      + (ok ? '' : ': ' + (err || JSON.stringify({ company, copied, older: older.slice(0, 300), newer: newer.slice(0, 300) }))));
+  }
+}
+
 // 5d. paged loads order by a unique key, so a page boundary cannot skip or repeat a row
 const fa = grab(/^async function fetchAll\(table, orderCol\)\{/m) || '';
 say(/q = q\.order\(key\)/.test(fa) && /const FETCH_KEY = \{ packaging_notes: 'work_date', packaging_units_days: 'work_date' \};/.test(src),

@@ -162,6 +162,11 @@
   .bill-printhead{display:none}
   .bill-basis{color:var(--muted);font-size:12px;line-height:1.5;margin:6px 2px 0;white-space:normal}
   .bill-basis b{color:var(--text);font-weight:600}
+  .bill-nb-head{color:var(--muted);font-size:12.5px;margin:14px 2px 6px}
+  .bill-nb-head b{color:var(--text)}
+  .bill-nb-tag{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.03em;padding:1px 7px;border-radius:9px;
+    color:var(--muted);border:1px solid var(--line);background:rgba(255,255,255,.04);white-space:nowrap}
+  #billOut tr.bill-nb td{color:var(--muted)}
   .mini-wrap{max-height:420px;overflow:auto;border:1px solid var(--line);border-radius:10px}
   table.mini{font-size:12.5px}
   table.mini thead th{position:sticky;top:0}
@@ -806,12 +811,13 @@
         <select id="billCompany">
           <option value="Slane">23rd Street / Slane</option>
           <option value="Imperial">Imperial</option>
+          <option value="Olympic">Rio Verde (Olympic)</option>
         </select>
         <label class="key" for="billPeriod">Pay period</label>
         <select id="billPeriod"></select>
         <span class="spacer"></span>
         <button class="btn sm" id="billCsv" title="Download every billed day as a CSV, with each day's share of the employer tax">⬇ Export CSV</button>
-        <button class="btn sm" id="billCmd" title="Copy the command for qbo/labor-billing.mjs, which turns this period into the QuickBooks invoice and mirror bill. It runs on Gianni's Mac.">Copy invoice command</button>
+        <button class="btn sm" id="billCmd" title="Copy the command for qbo/labor-billing.mjs, which turns this period into Filifera's QuickBooks invoice and the mirror bill in the site's company (Rio Verde has no QuickBooks, so it gets the invoice only). It runs on Gianni's Mac.">Copy invoice command</button>
         <button class="btn sm" id="billPrint" title="Print or save as PDF: white paper, every day listed">🖨 Print</button>
       </div>
       <div class="bill-printhead" id="billPrinthead"></div>
@@ -4465,7 +4471,8 @@ function renderEmpHours(){
 }
 
 /* ================= Labor billing (Reports) =================
-   What Filifera LLC bills Slane Inc. (23rd Street) and Imperial Project LLC for
+   What Filifera LLC bills Slane Inc. (23rd Street), Imperial Project LLC and,
+   for work from 2026-10-24 on, Rio Verde (the Olympic grow) for
    deleaf/harvest its GUSTO employees worked at their sites: wages plus Filifera's
    employer payroll taxes by each person's $7,000 unemployment wage base. The math
    is LaborBilling.compute in labor-billing-core.js, shared with
@@ -4473,7 +4480,8 @@ function renderEmpHours(){
    crew is paid outside Filifera's payroll and is never billed; their hours at the
    site show under the table for context only. One pay period at a time, picked
    here and independent of the shared report dates.
-   Deep link: #reports~billing[~<any date in the period>][~slane|imperial]. */
+   Rio Verde's Gusto days before its start date are listed as not billable.
+   Deep link: #reports~billing[~<any date in the period>][~slane|imperial|rioverde]. */
 const billState = { company: 'Slane', period: null, open: new Set() };
 let billWired = false, billLast = null, billPeriodSig = '';
 const billR2 = n => Math.round(((+n || 0) + Number.EPSILON) * 100) / 100;
@@ -4507,7 +4515,8 @@ function billSite(company){
   const core = billCore();
   return (core && core.SITES && core.SITES[company])
     || (company === 'Imperial' ? { label: 'Imperial', legal: 'Imperial Project LLC', key: 'imperial' }
-                               : { label: '23rd Street', legal: 'Slane Inc.', key: 'slane' });
+      : company === 'Olympic' ? { label: 'Rio Verde (Olympic)', legal: 'Rio Verde', key: 'rioverde', billedFrom: '2026-10-24', noMirrorBill: true }
+      : { label: '23rd Street', legal: 'Slane Inc.', key: 'slane' });
 }
 function renderBillingIfVisible(){
   const view = document.getElementById('view-reports');
@@ -4588,14 +4597,21 @@ function renderBilling(){
         + ' · wages <b>' + fCents(+t.wages || 0) + '</b> + employer tax <b>' + fCents(+t.tax || 0) + '</b> = <b>' + fCents(+t.total || 0) + '</b>'
       : '')
     + (payDate ? ' · payday <b>' + esc(fDate(payDate)) + '</b>' : '')
+    + (site.billedFrom ? ' · billed for work from <b>' + esc(fDate(site.billedFrom)) + '</b> on' : '')
+    + (site.noMirrorBill ? ' · Filifera invoice only (' + esc(site.legal) + ' has no QuickBooks, so no mirror bill)' : '')
     + (running ? ' · <span class="bill-running">this pay period is still running (it ends ' + esc(fDate(end))
       + '), so these numbers will change until it closes</span>'
       : (payDate && payDate >= today && people.length) ? ' · <span class="bill-running">Gusto pays this period on ' + esc(fDate(payDate))
       + '; days can still change in Gusto until they are approved, so bill it after payday</span>' : '')
     + '</div>';
+  const nb = res.notBillable || { people: [], days: 0, hours: 0, wages: 0 };
+  const nbPeople = Array.isArray(nb.people) ? nb.people : [];
   if (!people.length){
-    html += '<div class="card"><div class="empty">No Gusto deleaf / harvest days at ' + esc(site.label) + ' in '
-      + esc(billPeriodLabel(start)) + ', so there is nothing to bill.</div></div>';
+    html += '<div class="card"><div class="empty">' + (nbPeople.length
+      ? 'Nothing to bill: every Gusto deleaf / harvest day at ' + esc(site.label) + ' in ' + esc(billPeriodLabel(start))
+        + ' is before ' + esc(fDate(nb.from || site.billedFrom || start)) + ', when billing ' + esc(site.legal) + ' starts. They are listed below as not billable.'
+      : 'No Gusto deleaf / harvest days at ' + esc(site.label) + ' in ' + esc(billPeriodLabel(start)) + ', so there is nothing to bill.')
+      + '</div></div>';
   } else {
     let totDays = 0;
     html += '<div class="card scroll"><table><thead><tr><th>Person</th><th>Days</th><th>Hours</th><th>Wages</th>'
@@ -4632,6 +4648,19 @@ function renderBilling(){
     html += '<tr class="total"><td>Total · ' + people.length + ' ' + (people.length === 1 ? 'person' : 'people') + '</td>'
       + '<td>' + totDays + '</td><td>' + fH2(+t.hours || 0) + '</td><td>' + fCents(+t.wages || 0) + '</td><td></td><td></td>'
       + '<td>' + fCents(+t.tax || 0) + '</td><td>' + fCents(+t.total || 0) + '</td></tr>'
+      + '</tbody></table></div>';
+  }
+  // Gusto days at the site before the company's billing start (Rio Verde: 2026-10-24): shown, never billed
+  if (nbPeople.length){
+    html += '<div class="bill-nb-head"><span class="bill-nb-tag">Not billable</span> Worked before <b>' + esc(fDate(nb.from || site.billedFrom || start))
+      + '</b>, when billing ' + esc(site.legal) + ' starts: <b>' + (+nb.days || 0) + '</b> Gusto day' + ((+nb.days || 0) === 1 ? '' : 's')
+      + ', <b>' + fH2(+nb.hours || 0) + '</b> h, ' + fCents(+nb.wages || 0) + ' of wages. Gusto paid them; they are not on the invoice.</div>'
+      + '<div class="card scroll"><table class="bill-days bill-nb-table"><thead><tr><th>Person</th><th>Date</th><th>In</th><th>Out</th>'
+      + '<th>Break</th><th>Hours</th><th>Rate</th><th>Wages</th><th></th></tr></thead><tbody>'
+      + nbPeople.map(p => (p.rows || []).slice().sort(byTime).map(r => '<tr class="bill-nb"><td>' + esc(p.name || '(no name)') + '</td>'
+        + '<td>' + esc(r.work_date ? fDate(r.work_date) : '') + '</td><td>' + esc(fClock(r.clock_in)) + '</td><td>' + esc(fClock(r.clock_out)) + '</td>'
+        + '<td>' + (Math.round(+r.break_minutes || 0)) + 'm</td><td>' + fH2(rowHours(r)) + '</td><td>' + fCents(+r.rate || 0) + '</td>'
+        + '<td>' + fCents(+r.total || 0) + '</td><td><span class="bill-nb-tag">Not billable</span></td></tr>').join('')).join('')
       + '</tbody></table></div>';
   }
   const warns = res.warnings || [];
@@ -5217,7 +5246,7 @@ function boot(){
     .forEach(k => { try{ localStorage.removeItem(k); }catch(_){} });
 }
 /* ================= deep links =================
-   #reports~billing[~<period start>][~slane|imperial] opens Labor billing on that pay period.
+   #reports~billing[~<period start>][~slane|imperial|rioverde] opens Labor billing on that pay period.
    #reports~<report>[~<preset> | ~<start>~<end>] — the monthly cost-per-pound email links
    #reports~costlb~all. Applied only AFTER data loads: the preset chips are built there and
    every report needs rows to draw. Nothing is stashed for the sign-in round trip because
@@ -5231,12 +5260,12 @@ function applyDeepLink(){
   if (tab) tab.click();
   const want = parts[1];
   const rest = parts.slice(2), iso = /^\d{4}-\d\d-\d\d$/;
-  // #reports~billing[~<any date in the period>][~slane|imperial]: Labor billing has its own
+  // #reports~billing[~<any date in the period>][~slane|imperial|rioverde]: Labor billing has its own
   // period picker, so its third part is a pay period (snapped to its start), never a date range
   if (want === 'billing'){
     for (const p of rest){
       if (iso.test(p) && !isNaN(Date.parse(p + 'T00:00:00Z'))) billState.period = billPeriodStart(p);
-      else if (/^(slane|23rd|imperial)$/i.test(p)) billState.company = /imperial/i.test(p) ? 'Imperial' : 'Slane';
+      else if (/^(slane|23rd|imperial|rioverde|rio-verde|olympic)$/i.test(p)) billState.company = /imperial/i.test(p) ? 'Imperial' : /^(rio|olympic)/i.test(p) ? 'Olympic' : 'Slane';
     }
     billState.open.clear();
   }

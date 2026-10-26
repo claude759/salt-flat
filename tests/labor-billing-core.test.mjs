@@ -24,6 +24,8 @@ test('exposes the contract', () => {
   assert.deepEqual(plain(LB.SITES), {
     Slane: { customer: 'Slane Inc (Customer)', label: '23rd Street', legal: 'Slane Inc.', key: 'slane' },
     Imperial: { customer: 'Imperial Project LLC (Customer)', label: 'Imperial', legal: 'Imperial Project LLC', key: 'imperial' },
+    Olympic: { customer: 'Rio Verde (Olympic) (Customer)', label: 'Rio Verde (Olympic)', legal: 'Rio Verde', key: 'rioverde',
+      billedFrom: '2026-10-24', noMirrorBill: true },
   });
   near(LB.TAX.allWagesRate, LB.TAX.socialSecurity + LB.TAX.medicare, 'FICA');
   near(LB.TAX.underBaseRate, LB.TAX.futa + LB.TAX.caSui + LB.TAX.caEtt, 'unemployment');
@@ -550,11 +552,86 @@ test('compute: a mid-period start snaps to its pay period; repeated rows count o
   assert.doesNotMatch(w, /overtime/, 'the repeated row is not counted twice toward the day');
 });
 
-test('compute: only Slane and Imperial are billed; any other company or a bad start throws', () => {
-  for (const co of ['Olympic', 'Filifera', 'Portal', 'slane', '', undefined, null, 'toString', '__proto__']) {
+test('compute: only Slane, Imperial and Olympic (Rio Verde) are billed; any other company or a bad start throws', () => {
+  for (const co of ['Filifera', 'Portal', 'slane', 'olympic', 'Rio Verde', 'rioverde', '', undefined, null, 'toString', '__proto__']) {
     assert.throws(() => LB.compute({ rows: ROWS, roster: ROSTER, company: co, periodStart: '2026-10-10' }),
-      /company must be Slane or Imperial/, String(co));
+      /company must be Slane, Imperial or Olympic/, String(co));
   }
+  assert.doesNotThrow(() => LB.compute({ rows: ROWS, roster: ROSTER, company: 'Olympic', periodStart: '2026-10-10' }));
   assert.throws(() => LB.compute({ rows: [], roster: [], company: 'Slane', periodStart: 'soon' }), /periodStart/);
   assert.throws(() => LB.compute(), /periodStart/);
+});
+
+// ---- Rio Verde (board company Olympic): billed from the 2026-10-24 pay period on ----------------
+// made-up people only (this repo is public)
+const RV_ROSTER = [
+  { id: 'rv-a', last: 'Sample', first: 'Ana', team: 'Gusto Team', gusto_distro: true, gusto_distro_from: '2026-09-01', aliases: [], active: true },
+  { id: 'rv-b', last: 'Example', first: 'Bea', team: 'Gusto Team', gusto_distro: false, gusto_distro_from: null, aliases: [], active: true },
+  { id: 'rv-c', last: 'Placeholder', first: 'Cy', team: "Norma's Team", gusto_distro: false, gusto_distro_from: null, aliases: [], active: true },
+];
+const RV = [
+  gustoDistro('rv-a', '2026-10-05', 6800),                                  // year to date: 6,800 + the 10/20 day
+  gustoHv('rv-a', '2026-10-20', 'Olympic', { hours: 6, total: 120 }),       // before 10/24: not billable, still Gusto pay
+  gustoHv('rv-a', '2026-10-26', 'Olympic', { hours: 8, total: 160 }),       // billed
+  gustoHv('rv-a', '2026-10-27', 'Slane', { hours: 8, total: 160 }),         // other site: counts toward period pay
+  gustoHv('rv-b', '2026-10-17', 'Olympic', { clock_in: '08:00', clock_out: '12:00', hours: 4, total: 80 }),   // before 10/24
+  gustoHv('rv-b', '2026-10-28', 'Olympic', { hours: 4.367, total: 87.34 }), // billed, no year to date
+  gustoHv('rv-b', '2026-11-07', 'Olympic'),                                 // next period
+  sheetHv('rv-c', '2026-10-26', 'Olympic'),                                 // Norma's crew: never billed
+];
+
+test('Rio Verde: Olympic days before 2026-10-24 are not billable and are listed as such', () => {
+  const out = LB.compute({ rows: RV, roster: RV_ROSTER, company: 'Olympic', periodStart: '2026-10-10' });
+  assert.equal(out.company, 'Olympic');
+  assert.equal(out.billedFrom, '2026-10-24');
+  assert.deepEqual(plain(out.site), plain(LB.SITES.Olympic));
+  assert.equal(out.people.length, 0, 'nothing billed before 10/24');
+  assert.deepEqual(plain(out.totals), { hours: 0, wages: 0, tax: 0, total: 0 });
+  const nb = out.notBillable;
+  assert.equal(nb.from, '2026-10-24');
+  assert.equal(nb.days, 2);
+  assert.equal(nb.hours, 10);
+  assert.equal(nb.wages, 200);
+  assert.deepEqual(plain(nb.people.map(p => [p.name, p.rosterId, p.rows.map(r => r.work_date), p.hours, p.wages])),
+    [['Ana Sample', 'rv-a', ['2026-10-20'], 6, 120], ['Bea Example', 'rv-b', ['2026-10-17'], 4, 80]]);
+  assert.ok(nb.people.every(p => p.rows.every(r => RV.includes(r))), 'not-billable rows are the board rows themselves');
+  assert.deepEqual(plain(out.warnings), [
+    'Rio Verde is billed only for work from 2026-10-24 on. 2 Gusto deleaf/harvest days at Rio Verde (Olympic) in this pay period are before that (10 h, $200.00 of wages), so they are not billable.',
+  ]);
+  // one day reads in the singular
+  const one = LB.compute({ rows: RV.filter(r => r.roster_id !== 'rv-b'), roster: RV_ROSTER, company: 'Olympic', periodStart: '2026-10-10' });
+  assert.deepEqual(plain(one.warnings), [
+    'Rio Verde is billed only for work from 2026-10-24 on. 1 Gusto deleaf/harvest day at Rio Verde (Olympic) in this pay period is before that (6 h, $120.00 of wages), so it is not billable.',
+  ]);
+});
+
+test('Rio Verde: from the 2026-10-24 period on, Olympic days are billed with the same wage and tax math', () => {
+  const out = LB.compute({ rows: RV, roster: RV_ROSTER, company: 'Olympic', periodStart: '2026-10-24' });
+  assert.equal(out.periodStart, '2026-10-24');
+  assert.equal(out.periodEnd, '2026-11-06');
+  assert.equal(out.payDate, '2026-11-11');
+  assert.equal(out.notBillable.days, 0);
+  assert.deepEqual(plain(out.notBillable.people), []);
+  assert.deepEqual(plain(out.people.map(p => p.name)), ['Ana Sample', 'Bea Example']);
+  const [ana, bea] = out.people;
+  assert.deepEqual(plain(ana.rows.map(r => r.work_date)), ['2026-10-26']);
+  assert.equal(ana.wages, 160);
+  // year to date counts her 10/20 Olympic day too: it was Gusto pay even though it is not billable
+  assert.equal(ana.ytdBefore, 6920);
+  assert.equal(ana.periodGustoWages, 320);
+  assert.equal(LB.employerTax(320, 6920), 29.2);                           // 320 x 7.65% + the last 80 under the base x 5.9%
+  near(ana.taxRate, 29.2 / 320);
+  assert.equal(ana.tax, 14.6);                                             // 160 x 9.125% (18.14 if the 10/20 day were left out)
+  assert.equal(bea.ytdBefore, 80, 'her 10/17 Olympic day is year-to-date pay');
+  assert.equal(bea.wages, 87.34);
+  assert.equal(bea.hours, 4.367);
+  assert.equal(bea.tax, 11.83);                                            // 87.34 x 13.55% = 11.83457
+  assert.deepEqual(plain(out.totals), { hours: 12.367, wages: 247.34, tax: 26.43, total: 273.77 });
+  assert.doesNotMatch(out.warnings.join('\n'), /not billable|Placeholder/);
+  assert.equal(out.warnings.join('\n').includes(String.fromCharCode(0x2014)), false, 'no em dashes');
+  // the Olympic days are not on the Slane bill, and Slane has no start date
+  const slane = LB.compute({ rows: RV, roster: RV_ROSTER, company: 'Slane', periodStart: '2026-10-24' });
+  assert.equal(slane.billedFrom, null);
+  assert.deepEqual(plain(slane.people.map(p => [p.name, p.wages])), [['Ana Sample', 160]]);
+  assert.equal(slane.notBillable.days, 0);
 });

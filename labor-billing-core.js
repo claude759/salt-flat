@@ -1,6 +1,13 @@
-/* Labor billing core: what Filifera LLC bills a sibling company (Slane Inc. for
-   23rd Street, Imperial Project LLC for Imperial) for deleaf and harvest labor
-   done at that company's site by Filifera's Gusto employees.
+/* Labor billing core: what Filifera LLC bills a site's company (Slane Inc. for
+   23rd Street, Imperial Project LLC for Imperial, and Rio Verde for the Olympic
+   grow) for deleaf and harvest labor done at that site by Filifera's Gusto
+   employees.
+
+   Rio Verde (board company Olympic) is billed only for work from 2026-10-24,
+   the first day of the pay period Gianni chose on 2026-10-26 ("filifera will
+   bill rio verde going forward"). Its Gusto harvest days before that are not
+   billed: compute lists them under notBillable and says so in a warning. Rio
+   Verde has no QuickBooks company, so its bill is a Filifera invoice only.
 
    Only Gusto-paid harvest days are billed: rows the Gusto importer wrote, with
    source 'import' and a source_id starting 'gusto-filifera-hv:'. Norma's crew
@@ -54,10 +61,15 @@
     wageBase: 7000,
   });
 
+  // Keyed by the board's company name. billedFrom: the first work date billed (no billedFrom = every date).
+  // noMirrorBill: the company has no QuickBooks, so Filifera's invoice is the only document.
   const SITES = Object.freeze({
     Slane: Object.freeze({ customer: 'Slane Inc (Customer)', label: '23rd Street', legal: 'Slane Inc.', key: 'slane' }),
     Imperial: Object.freeze({ customer: 'Imperial Project LLC (Customer)', label: 'Imperial', legal: 'Imperial Project LLC', key: 'imperial' }),
+    Olympic: Object.freeze({ customer: 'Rio Verde (Olympic) (Customer)', label: 'Rio Verde (Olympic)', legal: 'Rio Verde', key: 'rioverde',
+      billedFrom: '2026-10-24', noMirrorBill: true }),
   });
+  const BILLED = Object.keys(SITES);
 
   const GUSTO_HV_PREFIX = 'gusto-filifera-hv:';
   const PERIOD_ANCHOR = '2026-07-04';   // a Saturday: pay periods and Gusto weeks start on Saturdays
@@ -144,6 +156,7 @@
   const nameKey = row => lc(row && row.last) + '|' + lc(row && row.first);
   const personKey = row => row.roster_id ? 'id:' + row.roster_id : 'name:' + nameKey(row);
   const fmt = n => round2(n).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const usd = n => '$' + round2(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   // Roster person for a row with no roster_id, by name, the way rosterMatch in labor-calculator.html does it.
   function rosterByName(roster, last, first) {
@@ -169,7 +182,7 @@
     if (!periodStart) throw new Error('compute: periodStart must be a YYYY-MM-DD date');
     const site = hasOwn(SITES, company) ? SITES[company] : null;
     if (!site) {
-      throw new Error(`compute: company must be Slane or Imperial, the companies Filifera bills for labor (got "${company == null ? '' : String(company)}")`);
+      throw new Error(`compute: company must be ${BILLED.slice(0, -1).join(', ')} or ${BILLED[BILLED.length - 1]}, the board companies Filifera bills for labor (got "${company == null ? '' : String(company)}")`);
     }
     if (periodStart !== asked) warnings.push(`${asked} is not the first day of a pay period; using the period that starts ${periodStart}.`);
     const end = periodEnd(periodStart);
@@ -190,11 +203,15 @@
     }
     if (dupes) warnings.push(`Skipped ${dupes} repeated row${dupes === 1 ? '' : 's'}.`);
 
-    // Billable: Gusto harvest rows at this company, worked inside the period (work_date, not pay_period).
+    // Billable: Gusto harvest rows at this company, worked inside the period (work_date, not pay_period),
+    // on or after the company's billedFrom date. Earlier ones are listed as not billable.
+    const billedFrom = site.billedFrom || null;
     const groups = new Map();
+    const early = [];
     for (const r of unique) {
       const d = dateOf(r);
       if (!isGustoHarvest(r) || r.company !== company || d < periodStart || d > end) continue;
+      if (billedFrom && d < billedFrom) { early.push(r); continue; }
       const k = personKey(r);
       if (!groups.has(k)) groups.set(k, { key: k, rosterId: r.roster_id || null, rows: [], ytdC: 0, periodC: 0, basis: [], day: new Map(), week: new Map() });
       groups.get(k).rows.push(r);
@@ -264,6 +281,32 @@
       warnings.push(`Not linked to a roster person, so grouped by name: ${unlinked.join(', ')}. Their year-to-date pay may be incomplete.`);
     }
 
+    // Gusto harvest days at this site before billedFrom: worked and paid by Gusto, but not billed.
+    // Grouped per person like people[], so the page can list them; rows are the board rows themselves.
+    const byTime = (a, b) => dateOf(a).localeCompare(dateOf(b)) || String(a.clock_in || '').localeCompare(String(b.clock_in || ''));
+    const earlyGroups = new Map();
+    for (const r of early) {
+      const k = personKey(r);
+      if (!earlyGroups.has(k)) earlyGroups.set(k, { rosterId: r.roster_id || null, rows: [] });
+      earlyGroups.get(k).rows.push(r);
+    }
+    const earlyPeople = [...earlyGroups.values()].map(g => {
+      g.rows.sort(byTime);
+      return { rosterId: g.rosterId, name: nameOf(g.rosterId ? personFor(g.rosterId) : null) || nameOf(g.rows[0]) || '(no name)', rows: g.rows,
+        hours: g.rows.reduce((s, r) => s + milli(rowHours(r)), 0) / 1000, wages: g.rows.reduce((s, r) => s + cents(r.total), 0) / 100 };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    const notBillable = {
+      from: billedFrom,
+      people: earlyPeople,
+      days: early.length,
+      hours: early.reduce((s, r) => s + milli(rowHours(r)), 0) / 1000,
+      wages: early.reduce((s, r) => s + cents(r.total), 0) / 100,
+    };
+    if (early.length) {
+      const n = early.length, one = n === 1;
+      warnings.push(`${site.legal} is billed only for work from ${billedFrom} on. ${n} Gusto deleaf/harvest day${one ? '' : 's'} at ${site.label} in this pay period ${one ? 'is' : 'are'} before that (${fmt(notBillable.hours)} h, ${usd(notBillable.wages)} of wages), so ${one ? 'it is' : 'they are'} not billable.`);
+    }
+
     // Gusto wins over sheets: a Gusto employee's sign-in sheet harvest row at this site in the period
     // is paid with Norma's crew and not billed. A Gusto employee is a roster person on Gusto for distro
     // on that date, or anyone with a Gusto Deleaf/Harvest row from the year-to-date start to the period
@@ -309,7 +352,7 @@
     const wagesC = sumC('wages'), taxC = sumC('tax');
     const totals = { hours: people.reduce((s, p) => s + milli(p.hours), 0) / 1000, wages: wagesC / 100, tax: taxC / 100, total: (wagesC + taxC) / 100 };
 
-    return { company, site, periodStart, periodEnd: end, payDate, taxYear, ytdStart, people, totals, warnings };
+    return { company, site, periodStart, periodEnd: end, payDate, taxYear, ytdStart, billedFrom, people, totals, notBillable, warnings };
   }
 
   globalThis.LaborBilling = Object.freeze({
