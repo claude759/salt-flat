@@ -156,7 +156,20 @@ async function rpc(name){
   if(!r.ok){ const t=await r.text(); if(/bad key/i.test(t)){ const e=new Error('bad key'); e.badKey=true; throw e; } throw new Error('http '+r.status); }
   return r.json();
 }
-function adopt(j){ raw=j.data||null; rev=j.rev; scope=j.scope; derive();
+/* ── closed months only ──
+   Months after the last closed one (meta.ttm[1], set by valuation.closed_through) are dropped from everything the page
+   shows: the chart, the P&L and balance sheets, the royalty and one-time item tables. A month appears once its books are
+   closed and closed_through moves past it. Every monthly array in the snapshot has one value per month_keys entry. */
+function closedOnly(d){
+  if(!d||!d.meta||!d.meta.ttm) return d;
+  const n=d.meta.month_keys.length, L=d.meta.ttm[1]; if(L>=n-1) return d;
+  const cut=x=>Array.isArray(x)?(x.length===n&&x.every(v=>typeof v==='number')?x.slice(0,L+1):x.map(cut)):x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,v])=>[k,cut(v)])):x;
+  const keep=new Set(d.meta.month_keys.slice(0,L+1)), {meta,adjustments,...rest}=d, [y,mo]=meta.month_keys[L].split('-').map(Number);
+  return {...cut(rest), adjustments:(adjustments||[]).filter(a=>keep.has(ym(a.month))),
+    meta:{...meta, months:meta.months.slice(0,L+1), month_keys:meta.month_keys.slice(0,L+1), mtd:null, as_of:new Date(Date.UTC(y,mo,0)).toISOString().slice(0,10),
+      open_from:String(meta.months[L+1]||'').replace(/ (to date|\(not closed\))$/,'')}};
+}
+function adopt(j){ raw=closedOnly(j.data||null); rev=j.rev; scope=j.scope; derive();
   if(!S.mult&&data) S.mult={...((data.valuation||{}).multiples||{low:3,mid:5,high:7})}; }
 
 /* ── leaving companies out ──
@@ -267,11 +280,11 @@ function render(){
   const fresh=!online?'<span class="chip off">offline copy</span>':ageH>STALE_H?`<span class="chip warn">last pull ${fmtTs(gen)}</span>`:'<span class="chip live">live</span>';
   $('#app').innerHTML=`
   <div class="topbar"><div><h1>Wizard Trees Financials</h1>
-    <p class="sub">${countLabel()} from QuickBooks, ${esc(m.basis.toLowerCase())} basis, ${esc(m.months[0])} to ${esc(m.as_of)}. Updated ${esc(fmtTs(gen))}.</p></div>
+    <p class="sub">${countLabel()} from QuickBooks, ${esc(m.basis.toLowerCase())} basis, ${esc(m.months[0])} to ${esc(m.months[m.months.length-1])}, closed months only${m.open_from?`; ${esc(m.open_from)} is added once its books are closed`:''}. Updated ${esc(fmtTs(gen))}.</p></div>
     <div class="actions noprint">${fresh}<button class="small" id="refresh">Refresh</button><button class="small" onclick="print()">Print</button></div></div>
   <div id="val"></div>
   <h2>Monthly revenue and EBITDA <span class="n">consolidated, after removing sales between the companies</span></h2>
-  <div class="panel"><div class="legend"><span><i style="background:var(--s1)"></i>Revenue after corrections</span><span><i style="background:var(--s2)"></i>${ebLabel()}</span><span class="m">* books not closed yet</span></div><div class="chart" id="chart"></div></div>
+  <div class="panel"><div class="legend"><span><i style="background:var(--s1)"></i>Revenue after corrections</span><span><i style="background:var(--s2)"></i>${ebLabel()}</span>${N()-1>lastClosed()?'<span class="m">* books not closed yet</span>':''}</div><div class="chart" id="chart"></div></div>
   <h2>EBITDA by company <span class="n" id="perLbl"></span></h2><div id="cos"></div>
   <h2>Monthly profit and loss</h2><div id="pl"></div>
   <h2>Balance sheets <span class="n">month-end balances</span></h2><div id="bs"></div>
@@ -316,7 +329,7 @@ function renderVal(){
   <div class="ctrl noprint">
     <span class="seg" id="basis">${Object.entries(PERIODS).map(([k,l])=>`<button data-k="${k}" class="${S.basis===k?'on':''}">${l}</button>`).join('')}</span>
     ${S.basis==='custom'?`<span>From <select id="fromS">${opt(K[idx[0]])}</select> to <select id="toS">${opt(K[idx[idx.length-1]])}</select></span>`:''}
-    <span class="m">for the revenue and EBITDA cards and the company table; the value always uses closed months</span>
+    <span class="m">for the revenue and EBITDA cards and the company table</span>
   </div>
   <div class="ctrl noprint">
     <label><input type="checkbox" id="shT" ${S.shareholder?'checked':''}> Count shareholder loans as debt</label>
@@ -469,11 +482,11 @@ function renderIC(){
 
 function renderRoy(){
   const idx=ttmIdx(), q=lastIdx(3), m=data.meta.mtd, R=data.royalty||{}, O=openIdx(), oc=O.length?'<td></td>':'';
-  const ocv=v=>O.length?`<td>${whole(sumI(v,O))}</td>`:'';
+  const ocv=v=>O.length?`<td>${whole(sumI(v,O))}</td>`:'', hm=m!=null, mc=v=>hm?`<td>${whole(v[m])}</td>`:'', mb=hm?'<td></td>':'';
   const block=(title,obj)=>{ const e=Object.entries(obj||{}).sort((a,b)=>sumI(b[1],idx)-sumI(a[1],idx)); if(!e.length) return '';
     const t=e.reduce((s,[,v])=>addA(s,v),z());
-    return `<tr class="sec"><td>${title}</td><td></td><td></td>${oc}<td></td></tr>`+e.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${whole(sumI(v,idx))}</td><td>${whole(sumI(v,q))}</td>${ocv(v)}<td>${whole(v[m])}</td></tr>`).join('')+`<tr class="tot"><td>Total</td><td>${whole(sumI(t,idx))}</td><td>${whole(sumI(t,q))}</td>${ocv(t)}<td>${whole(t[m])}</td></tr>`; };
-  $('#roy').innerHTML=`<div class="tbl"><table><thead><tr><th>Royalty income by payer (as invoiced)</th><th>Last 12 closed months</th><th>Last 3 closed months</th>${O.length?`<th>${esc(span(O))} (not closed)</th>`:''}<th>${esc(data.meta.months[m])}</th></tr></thead><tbody>
+    return `<tr class="sec"><td>${title}</td><td></td><td></td>${oc}${mb}</tr>`+e.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${whole(sumI(v,idx))}</td><td>${whole(sumI(v,q))}</td>${ocv(v)}${mc(v)}</tr>`).join('')+`<tr class="tot"><td>Total</td><td>${whole(sumI(t,idx))}</td><td>${whole(sumI(t,q))}</td>${ocv(t)}${mc(t)}</tr>`; };
+  $('#roy').innerHTML=`<div class="tbl"><table><thead><tr><th>Royalty income by payer (as invoiced)</th><th>Last 12 closed months</th><th>Last 3 closed months</th>${O.length?`<th>${esc(span(O))} (not closed)</th>`:''}${hm?`<th>${esc(data.meta.months[m])}</th>`:''}</tr></thead><tbody>
   ${block('Outside licensees',R.external)}${block('Wizard Trees companies (removed in consolidation)',R.intercompany)}</tbody></table></div>
   <p class="sub" style="margin-top:6px">Payments received against these invoices are on the royalty board.</p>`;
 }
@@ -492,12 +505,12 @@ function adjRows(){
   return {rows,all:tot('ttm'),allOpen:tot('open'),allMtd:tot('mtd'),applied:tot('ttm',r=>r.on),O:[...O]};
 }
 function renderAdj(){
-  const m=data.meta.mtd, {rows,all,allOpen,allMtd,applied,O}=adjRows(), oh=O.length?`<th>${esc(span(O))} (not closed)</th>`:'', oc=v=>O.length?`<td>${v}</td>`:'';
+  const m=data.meta.mtd, {rows,all,allOpen,allMtd,applied,O}=adjRows(), oh=O.length?`<th>${esc(span(O))} (not closed)</th>`:'', oc=v=>O.length?`<td>${v}</td>`:'', mc=v=>m!=null?`<td>${v}</td>`:'';
   const cl=s=>['high','medium','low'].filter(c=>s.has(c)).join(' / ');
-  $('#adj').innerHTML=rows.length?`<div class="tbl"><table><thead><tr><th>Item</th><th class="l">Company</th><th class="l">Effect on EBITDA</th><th>Closed months</th><th>Last 12 months</th>${oh}<th>${esc(data.meta.months[m])}</th><th class="l">Confidence</th></tr></thead><tbody>
-  ${rows.map(r=>`<tr class="${r.on?'':'dim'}"><td class="l" style="white-space:normal;min-width:260px">${esc(r.label)}${r.on?'':' <span class="tag">low confidence, not applied</span>'}</td><td class="l">${esc((coByName(r.company)||{}).short||r.company)}</td><td class="l">${esc(KIND[r.kind]||r.kind)}</td><td>${r.months.size}</td><td>${whole(r.ttm)}</td>${oc(r.open?whole(r.open):'')}<td>${r.mtd?whole(r.mtd):''}</td><td class="l">${cl(r.conf)}</td></tr>`).join('')}
-  <tr class="tot"><td>All items</td><td></td><td></td><td></td><td>${whole(all)}</td>${oc(whole(allOpen))}<td>${whole(allMtd)}</td><td></td></tr>
-  <tr class="key"><td>Applied to adjusted EBITDA</td><td></td><td></td><td></td><td>${whole(adjOn()?applied:0)}</td>${oc('')}<td></td><td></td></tr></tbody></table></div>
+  $('#adj').innerHTML=rows.length?`<div class="tbl"><table><thead><tr><th>Item</th><th class="l">Company</th><th class="l">Effect on EBITDA</th><th>Closed months</th><th>Last 12 months</th>${oh}${m!=null?`<th>${esc(data.meta.months[m])}</th>`:''}<th class="l">Confidence</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr class="${r.on?'':'dim'}"><td class="l" style="white-space:normal;min-width:260px">${esc(r.label)}${r.on?'':' <span class="tag">low confidence, not applied</span>'}</td><td class="l">${esc((coByName(r.company)||{}).short||r.company)}</td><td class="l">${esc(KIND[r.kind]||r.kind)}</td><td>${r.months.size}</td><td>${whole(r.ttm)}</td>${oc(r.open?whole(r.open):'')}${mc(r.mtd?whole(r.mtd):'')}<td class="l">${cl(r.conf)}</td></tr>`).join('')}
+  <tr class="tot"><td>All items</td><td></td><td></td><td></td><td>${whole(all)}</td>${oc(whole(allOpen))}${mc(whole(allMtd))}<td></td></tr>
+  <tr class="key"><td>Applied to adjusted EBITDA</td><td></td><td></td><td></td><td>${whole(adjOn()?applied:0)}</td>${oc('')}${mc('')}<td></td></tr></tbody></table></div>
   <p class="sub" style="margin-top:6px">Positive numbers add to EBITDA, negative numbers reduce it. Low-confidence items are listed but not applied. Items that change sales (non-sales, and sales corrected for duplicates, timing or discounts) also come off revenue.</p>`:'<p class="sub">None identified.</p>';
 }
 function renderOwn(){
