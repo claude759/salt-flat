@@ -105,6 +105,7 @@ let raw=null, data=null, rev=-1, online=false, scope='', cacheKey='';
 const ls=(k,d)=>{ try{ const v=localStorage.getItem('fin_'+k); return v==null?d:JSON.parse(v); }catch(e){ return d; } };
 const save=(k,v)=>{ try{ localStorage.setItem('fin_'+k,JSON.stringify(v)); }catch(e){} };
 const S={ basis:['ttm','h','custom'].includes(ls('basis','ttm'))?ls('basis','ttm'):'ttm', from:ls('from',null), to:ls('to',null), mult:ls('mult',null), shareholder:ls('shareholder',true), cards:ls('cards',false),
+  partMult:(o=>o&&typeof o==='object'&&!Array.isArray(o)?o:{})(ls('partMult',{})),
   plCo:ls('plCo','__cons'), plAccts:false, bsCo:ls('bsCo','__cons'), bsAccts:false, openPairs:new Set(), excluded:ls('excluded',[]) };
 
 /* ── helpers ── */
@@ -120,12 +121,21 @@ const plain=n=>Math.round(Number(n)||0);
 const big=n=>{ const v=Number(n)||0, a=Math.abs(v), s=v<0?'−':''; return a>=1e6?`${s}$${(a/1e6).toFixed(2)}M`:a>=1e3?`${s}$${Math.round(a/1e3).toLocaleString('en-US')}K`:`${s}$${Math.round(a)}`; };
 const pct=(a,b)=>b?`${(a/b*100).toFixed(1)}%`:'';
 const fmtTs=iso=>iso?new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
-const shortM=i=>{ const k=data.meta.month_keys[i]; const [y,m]=k.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]+" '"+y.slice(2)+(i===data.meta.mtd?'*':''); };
+const shortM=i=>{ const k=data.meta.month_keys[i]; const [y,m]=k.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]+" '"+y.slice(2)+(i>lastClosed()?'*':''); };   // * = books not closed yet (incl. the month to date)
+const openIdx=()=>range(lastClosed()+1,N()-2);   // months that have ended but are not closed yet (none most of the month)
 const sha8=async s=>{ try{ const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)); return [...new Uint8Array(b)].slice(0,4).map(x=>x.toString(16).padStart(2,'0')).join(''); }catch(e){ return 'x'; } };
-const ttmIdx=()=>{ const n=N(); return Array.from({length:n-1},(_,i)=>i); };
-const lastIdx=k=>{ const n=N(); return Array.from({length:k},(_,i)=>n-1-k+i); };   // last k complete months
-// Period for the headline figures and the company table: the last 12 or 6 complete months, or months the viewer picks.
-// The valuation always uses a yearly rate: the period's EBITDA x 12 / the number of months in it (the current month counts pro rata).
+const range=(f,t)=>Array.from({length:Math.max(0,t-f+1)},(_,i)=>f+i);
+const lastClosed=()=>data.meta.ttm?data.meta.ttm[1]:N()-2;   // the last closed month; the month to date is still open
+const ttmIdx=()=>data.meta.ttm?range(data.meta.ttm[0],data.meta.ttm[1]):range(0,N()-2);   // the 12 closed months
+const lastIdx=k=>{ const L=lastClosed(); return range(Math.max(0,L-k+1),L); };   // last k closed months
+const ym=s=>{ const m=String(s||'').match(/^(\d{4})-(\d{1,2})/); return m?`${m[1]}-${m[2].padStart(2,'0')}`:''; };   // 'YYYY-MM' (pads '2026-6')
+const monthEnd=i=>{ const [y,m]=data.meta.month_keys[i].split('-').map(Number); return new Date(Date.UTC(y,m,0)).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}); };
+const monthName=(k,noYear)=>{ const [y,m]=ym(k).split('-').map(Number); return new Date(Date.UTC(y,m-1,1)).toLocaleString('en-US',noYear?{month:'long',timeZone:'UTC'}:{month:'long',year:'numeric',timeZone:'UTC'}); };
+// 'Oct 2025 to Sep 2026', or 'Jun to Sep 2026' inside one year
+const span=idx=>{ if(!idx.length) return 'no closed months yet'; const nm=i=>data.meta.months[i].replace(' to date',''), a=nm(idx[0]), b=nm(idx[idx.length-1]); if(idx.length===1) return b;
+  const [ma,ya]=a.split(' '), yb=b.split(' ')[1]; return ya===yb?`${ma} to ${b}`:`${a} to ${b}`; };
+// Period for the Revenue and Adjusted EBITDA cards and the company table: the last 12 or 6 closed months, or closed months the
+// viewer picks. The valuation never uses this period: it is always on closed months (see valParts).
 const PERIODS={ttm:'Last 12 months',h:'Last 6 months',custom:'Pick months'};
 const coByName=n=>data.companies.find(c=>c.name===n);
 
@@ -136,7 +146,7 @@ async function rpc(name){
   return r.json();
 }
 function adopt(j){ raw=j.data||null; rev=j.rev; scope=j.scope; derive();
-  if(!S.mult&&data&&data.valuation) S.mult={...data.valuation.multiples}; }
+  if(!S.mult&&data) S.mult={...((data.valuation||{}).multiples||{low:3,mid:5,high:7})}; }
 
 /* ── leaving companies out ──
    The snapshot is consolidated over all 7 companies. When a viewer leaves one out (the WizardT switch),
@@ -165,7 +175,7 @@ function build(src,ex){
   const R=src.royalty||{}, ic={}, ext={...(R.external||{})};
   for(const [k,v] of Object.entries(R.intercompany||{})) (inc(k)?ic:ext)[k]=v;
   return {...src, companies, sum_of_companies:sum, consolidated, eliminations:{...src.eliminations,pairs}, royalty:{intercompany:ic,external:ext},
-    adjustments:(src.adjustments||[]).filter(a=>inc(a.company)), excluded:[...ex]};
+    adjustments:(src.adjustments||[]).filter(a=>inc(a.company)), debt_adjustments:(src.debt_adjustments||[]).filter(a=>inc(a.company)), excluded:[...ex]};
 }
 function derive(){ if(!raw){ data=null; return; } const ex=new Set(S.excluded.filter(x=>raw.companies.some(c=>c.name===x))); data=ex.size?build(raw,ex):raw; }
 const WT='WizardT LLC';
@@ -189,25 +199,56 @@ function gate(msg){ $('#app').innerHTML=`<div class="gate"><h1>Wizard Trees Fina
 // Adjusted EBITDA applies the high and medium confidence one-time items; low-confidence items are listed only.
 const adjOn=()=>true;
 const applies=x=>x.confidence!=='low';
-function adjMonthly(co,kind){ const a=z(); for(const x of (data.adjustments||[])){ if(co&&x.company!==co) continue; if(kind&&x.kind!==kind) continue; if(!applies(x)) continue; const i=data.meta.month_keys.indexOf(x.month); if(i>=0) a[i]+=Number(x.amount)||0; } return a; }
+// One-time items that change sales (funding booked as sales; duplicate, mistimed or undiscounted invoices) come off revenue as well as EBITDA.
+const REVK=new Set(['revenue','revenue_correction']);
+function adjMonthly(co,kinds,src=data){ const K=src.meta.month_keys, a=Array(K.length).fill(0); for(const x of (src.adjustments||[])){ if(co&&x.company!==co) continue; if(kinds&&!kinds.has(x.kind)) continue; if(!applies(x)) continue; const i=K.indexOf(x.month); if(i>=0) a[i]+=Number(x.amount)||0; } return a; }
+const adjRev=co=>adjMonthly(co,REVK);
 function consEbitda(){ const e=data.consolidated.ebitda.slice(); return adjOn()?addA(e,adjMonthly()):e; }
 const ebLabel=()=>'Adjusted EBITDA';
-// Net debt is read from each company's QuickBooks balance sheet at the latest date.
+// Net debt is read from each company's QuickBooks balance sheet at the last closed month-end (where the 12-month EBITDA ends),
+// plus the corrections in data.debt_adjustments that cover that month: each adds its amount to one company's bucket.
+const BKT={cash:['cash','Cash'],debt_third_party:['debt','Outside loans'],debt_shareholder:['sh','Shareholder loans'],credit_card:['cards','Credit cards']};
+function debtFixes(){ const k=data.meta.month_keys[lastClosed()], has=new Set(data.companies.map(c=>c.name));
+  return (data.debt_adjustments||[]).filter(a=>has.has(a.company)&&BKT[a.bucket]&&a.confidence!=='low'&&(!a.from||ym(a.from)<=k)&&(a.until==null||a.until===''||ym(a.until)>=k)); }
 function netDebtRows(){
-  const L=N()-1;
-  return data.companies.map(c=>{ const b=c.bs.buckets;
-    const cash=b.cash[L]||0, cards=b.credit_card[L]||0, debt=b.debt_third_party[L]||0, sh=b.debt_shareholder[L]||0;
-    return {c,cash,cards,debt,sh,nd:debt+(S.shareholder?sh:0)+(S.cards?cards:0)-cash}; });
+  const L=lastClosed(), fx=debtFixes();
+  return data.companies.map(c=>{ const b=c.bs.buckets, at=k=>(b[k]||[])[L]||0, v={cash:at('cash'),cards:at('credit_card'),debt:at('debt_third_party'),sh:at('debt_shareholder')};
+    for(const a of fx) if(a.company===c.name) v[BKT[a.bucket][0]]+=Number(a.amount)||0;
+    return {c,...v,nd:v.debt+(S.shareholder?v.sh:0)+(S.cards?v.cards:0)-v.cash}; });
 }
-function netDebt(){ const r=netDebtRows(), t=k=>r.reduce((s,x)=>s+x[k],0); return {cash:t('cash'),debt:t('debt'),sh:t('sh'),cards:t('cards'),nd:t('nd'),rows:r}; }
+function netDebt(){ const r=netDebtRows(), t=k=>r.reduce((s,x)=>s+x[k],0); return {cash:t('cash'),debt:t('debt'),sh:t('sh'),cards:t('cards'),nd:t('nd'),rows:r,fixes:debtFixes(),at:monthEnd(lastClosed())}; }
 function selIdx(){
+  const L=lastClosed();
   if(S.basis==='h') return lastIdx(6);
-  if(S.basis==='custom'){ const K=data.meta.month_keys; let f=K.indexOf(S.from), t=K.indexOf(S.to); if(f<0) f=0; if(t<0) t=K.length-2; if(f>t) [f,t]=[t,f]; return Array.from({length:t-f+1},(_,i)=>f+i); }
+  if(S.basis==='custom'){ const K=data.meta.month_keys, cl=(i,d)=>i<0?d:Math.min(i,L); let f=cl(K.indexOf(S.from),0), t=cl(K.indexOf(S.to),L); if(f>t) [f,t]=[t,f]; return range(f,t); }
   return ttmIdx();
 }
-const mtdFrac=()=>{ const [y,m,d]=data.meta.as_of.split('-').map(Number); return d/new Date(Date.UTC(y,m,0)).getUTCDate(); };
-const monthsIn=idx=>idx.reduce((t,i)=>t+(i===data.meta.mtd?mtdFrac():1),0);
-const selLabel=()=>{ const idx=selIdx(), a=data.meta.months[idx[0]].replace(' to date',''), b=data.meta.months[idx[idx.length-1]]; return idx.length===1?b:`${a} to ${b}`; };
+const selLabel=()=>span(selIdx());
+
+/* ── valuation in parts, always on closed months ──
+   The main part (every company not in a part) is valued on its adjusted EBITDA for the 12 closed months. Each part in
+   data.valuation.parts (a business too new for 12 months, e.g. WT NY) is valued on its closed months from part.from,
+   turned into a yearly rate (sum x 12 / months), at its own multiple. Each piece is consolidated on its own with build(),
+   so sales between companies inside a piece are removed. The month to date and the period switch never enter it. */
+const partKey=p=>String(p.key||p.label);
+function pieceLine(src,idx){ const e=sumI(addA(src.consolidated.ebitda,adjMonthly(undefined,null,src)),idx); return {e,yearly:idx.length?e*12/idx.length:0}; }
+function valParts(){
+  const V=data.valuation||{}, T=ttmIdx(), K=data.meta.month_keys, has=new Set(data.companies.map(c=>c.name)), all=raw.companies.map(c=>c.name);
+  const claimed=new Set();   // a company belongs to one part only, so it is never valued twice
+  const defs=(V.parts||[]).map(p=>({...p,cos:(p.companies||[]).filter(n=>has.has(n)&&!claimed.has(n)&&claimed.add(n))})).filter(p=>p.cos.length), inP=new Set(defs.flatMap(p=>p.cos));
+  const mainSrc=defs.length?build(raw,new Set([...(data.excluded||[]),...inP])):data;
+  const main={key:'__main',label:defs.length?(V.main_label||'The other companies'):'All companies',cos:mainSrc.companies.map(c=>c.name),idx:T,main:true,...pieceLine(mainSrc,T)};
+  const parts=defs.map(p=>{ const f=ym(p.from); let idx=T.filter(i=>!f||K[i]>=f); if(idx.length>12) idx=idx.slice(-12);
+    const m=S.partMult[partKey(p)], mult=typeof m==='number'&&m>=0?m:p.multiple!=null?Number(p.multiple):((V.multiples||{}).low||3);
+    return {key:partKey(p),label:p.label||p.cos.join(', '),note:p.note||'',from:f,cos:p.cos,idx,mult,...pieceLine(build(raw,new Set(all.filter(n=>!p.cos.includes(n)))),idx)}; });
+  const M=S.mult, D=netDebt(), ev=k=>Math.max(0,main.yearly)*M[k]+parts.reduce((s,p)=>s+Math.max(0,p.yearly)*p.mult,0);
+  return {main,parts,D,ev,eq:k=>ev(k)-D.nd};
+}
+// Everything the cards at the top show: revenue and adjusted EBITDA for the chosen period, value and net debt on closed months.
+function valModel(){
+  const idx=selIdx(), revBooked=sumI(data.consolidated.revenue,idx), revAdj=sumI(adjRev(),idx);
+  return {idx,revBooked,revAdj,revenue:revBooked+revAdj,ebitda:sumI(consEbitda(),idx),booked:sumI(data.consolidated.ebitda,idx),...valParts()};
+}
 
 /* ── render ── */
 function render(){
@@ -219,7 +260,7 @@ function render(){
     <div class="actions noprint">${fresh}<button class="small" id="refresh">Refresh</button><button class="small" onclick="print()">Print</button></div></div>
   <div id="val"></div>
   <h2>Monthly revenue and EBITDA <span class="n">consolidated, after removing sales between the companies</span></h2>
-  <div class="panel"><div class="legend"><span><i style="background:var(--s1)"></i>Revenue</span><span><i style="background:var(--s2)"></i>${ebLabel()}</span><span class="m">* month to date</span></div><div class="chart" id="chart"></div></div>
+  <div class="panel"><div class="legend"><span><i style="background:var(--s1)"></i>Revenue after corrections</span><span><i style="background:var(--s2)"></i>${ebLabel()}</span><span class="m">* books not closed yet</span></div><div class="chart" id="chart"></div></div>
   <h2>EBITDA by company <span class="n" id="perLbl"></span></h2><div id="cos"></div>
   <h2>Monthly profit and loss</h2><div id="pl"></div>
   <h2>Balance sheets <span class="n">month-end balances</span></h2><div id="bs"></div>
@@ -228,25 +269,34 @@ function render(){
   <h2>One-time items <span class="n">what an acquirer would normalize: owner costs, one-offs, and costs missing from the books</span></h2><div id="adj"></div>
   <h2>Ownership</h2><div id="own"></div>
   <h2>Notes</h2><div id="notes"></div>
-  <div class="foot">Source: QuickBooks Online, the 7 company files, pulled by the Wizard Trees reporting job. EBITDA = net income + interest + income taxes + depreciation + amortization; payroll, sales and cannabis taxes stay in. Value = one year of adjusted EBITDA × the multiple entered at the top; it is a quick rule-of-thumb estimate, not an appraisal.</div>`;
+  <div class="foot">Source: QuickBooks Online, the 7 company files, pulled by the Wizard Trees reporting job. EBITDA = net income + interest + income taxes + depreciation + amortization; payroll, sales and cannabis taxes stay in. Value = one year of adjusted EBITDA from closed months × the multiples entered at the top; a company too new for 12 months is valued on a yearly rate from its closed months of sales, at its own multiple. It is a quick rule-of-thumb estimate, not an appraisal.</div>`;
   $('#refresh').onclick=()=>load();
   renderVal(); renderChart(); renderCos(); renderPL(); renderBS(); renderIC(); renderRoy(); renderAdj(); renderOwn(); renderNotes();
 }
 
 function renderVal(){
-  const idx=selIdx(), months=monthsIn(idx), f=12/months, e=consEbitda(), rev=data.consolidated.revenue, M=S.mult, D=netDebt();
-  const revAdj=sumI(adjMonthly(undefined,'revenue'),idx);
-  const ebitda=sumI(e,idx), booked=sumI(data.consolidated.ebitda,idx), revenue=sumI(rev,idx)+revAdj, yearly=ebitda*f, full=Math.abs(f-1)<1e-9;
-  const ev=k=>yearly>0?yearly*M[k]:null, eq=k=>yearly>0?yearly*M[k]-D.nd:null;
-  const range=fn=>fn('low')==null?'n/m':`${big(fn('low'))} to ${big(fn('high'))}`;
-  const K=data.meta.month_keys, opt=(sel,last)=>K.map((k,i)=>`<option value="${k}" ${k===sel?'selected':''}>${esc(data.meta.months[i])}</option>`).join('');
+  const V=valModel(), {idx,main,parts,D}=V, M=S.mult, K=data.meta.month_keys, Lc=lastClosed();
+  const ev=k=>V.ev(k)>0?V.ev(k):null, eq=k=>V.ev(k)>0?V.eq(k):null;
+  const rng=fn=>{ const a=fn('low'), b=fn('high'); return a==null&&b==null?'n/m':`${a==null?'n/m':big(a)} to ${b==null?'n/m':big(b)}`; };
+  const own=parts.map(p=>`${esc(p.label)} at its own ${p.mult}×`).join(', ');
+  const base=Math.max(0,main.yearly)+parts.reduce((s,p)=>s+Math.max(0,p.yearly),0), lossy=[main,...parts].some(p=>p.yearly<0);
+  const built=parts.length?`. Built on ${big(base)} of yearly adjusted EBITDA: ${[main,...parts].map(p=>`${esc(p.label)} ${big(p.yearly)} at ${p.main?M.mid:p.mult}×`).join(', ')}${lossy?'; a part losing money counts as 0':''}`:(lossy?'':'');
+  const opt=sel=>K.slice(0,Lc+1).map((k,i)=>`<option value="${k}" ${k===sel?'selected':''}>${esc(data.meta.months[i])}</option>`).join('');
+  const shorts=cos=>cos.map(n=>esc((coByName(n)||{}).short||n)).join(', ');
+  const used=p=>`${esc(span(p.idx))}${p.main&&p.idx.length===12||!p.idx.length?'':`, ${p.idx.length} month${p.idx.length===1?'':'s'}`}`;
+  const vrow=(p,mult)=>`<tr><td style="white-space:normal;min-width:190px">${esc(p.label)}${parts.length&&shorts(p.cos)!==esc(p.label)?`<div class="m" style="font-size:11px">${shorts(p.cos)}</div>`:''}</td><td class="l">${used(p)}</td><td>${whole(p.e)}</td><td>${whole(p.yearly)}</td><td>${mult}×</td><td>${whole(Math.max(0,p.yearly)*mult)}${p.yearly<0?' <span class="m">(a loss counts as 0)</span>':''}</td></tr>`;
+  const sumRow=(l,v,cls)=>`<tr class="${cls}"><td>${l}</td><td></td><td></td><td></td><td></td><td>${v}</td></tr>`;
+  const cmp=p=>p.mult<M.mid?'its own lower multiple because its track record is short: part of the cost of what it sold was paid before '+esc(monthName(p.from,true))+', and one month moves the rate a lot':`its own multiple (${p.mult}×)`;
+  const partTxt=p=>p.from&&p.idx.length<main.idx.length?`${esc(p.label)} only started selling in ${esc(monthName(p.from))}, so 12 months would mostly show its start-up costs. It is valued on its closed months since sales began (${esc(span(p.idx))}), turned into a yearly rate, at ${cmp(p)}. `
+    :`${esc(p.label)} is valued on its own, at its own multiple. `;
   $('#val').innerHTML=`
   <div class="ctrl noprint">
     <span class="seg" id="basis">${Object.entries(PERIODS).map(([k,l])=>`<button data-k="${k}" class="${S.basis===k?'on':''}">${l}</button>`).join('')}</span>
     ${S.basis==='custom'?`<span>From <select id="fromS">${opt(K[idx[0]])}</select> to <select id="toS">${opt(K[idx[idx.length-1]])}</select></span>`:''}
+    <span class="m">for the revenue and EBITDA cards and the company table; the value always uses closed months</span>
   </div>
   <div class="ctrl noprint">
-    <span>Valuation multiple (times one year of EBITDA): low <input class="mult" data-k="low" value="${M.low}">× mid <input class="mult" data-k="mid" value="${M.mid}">× high <input class="mult" data-k="high" value="${M.high}">×</span>
+    <span>Valuation multiple (times one year of EBITDA): ${parts.length?esc(main.label)+' ':''}low <input class="mult" data-k="low" value="${M.low}">× mid <input class="mult" data-k="mid" value="${M.mid}">× high <input class="mult" data-k="high" value="${M.high}">×${parts.map(p=>`; ${esc(p.label)} <input class="mult" data-p="${esc(p.key)}" value="${p.mult}">×`).join('')}</span>
   </div>
   <div class="ctrl noprint">
     <label><input type="checkbox" id="shT" ${S.shareholder?'checked':''}> Count shareholder loans as debt</label>
@@ -254,18 +304,25 @@ function renderVal(){
     ${raw.companies.some(c=>c.name===WT)?`<label><input type="checkbox" id="wtT" ${S.excluded.includes(WT)?'':'checked'}> Include WizardT</label>`:''}
   </div>
   <div class="heroes">
-    <div class="hero"><div class="lbl">Revenue</div><div class="val">${big(revenue)}</div><div class="note">${esc(selLabel())}, consolidated${revAdj?`; ${big(-revAdj)} of non-sales removed`:''}</div></div>
-    <div class="hero"><div class="lbl">Adjusted EBITDA</div><div class="val ${ebitda<0?'neg':''}">${big(ebitda)}</div><div class="note">${pct(ebitda,revenue)} margin; ${big(booked)} as booked${full?'':`; yearly rate ${big(yearly)}`}</div></div>
-    <div class="hero big"><div class="lbl">Enterprise value at ${M.mid}×</div><div class="val">${ev('mid')==null?'n/m':big(ev('mid'))}</div><div class="note">${M.low}× to ${M.high}×: ${range(ev)}</div></div>
-    <div class="hero"><div class="lbl">Net debt</div><div class="val">${big(D.nd)}</div><div class="note">debt ${big(D.debt)}${S.shareholder?` + shareholder ${big(D.sh)}`:''}${S.cards?` + cards ${big(D.cards)}`:''} − cash ${big(D.cash)}</div></div>
-    <div class="hero big"><div class="lbl">Equity value at ${M.mid}×</div><div class="val">${eq('mid')==null?'n/m':big(eq('mid'))}</div><div class="note">${range(eq)}</div></div>
+    <div class="hero"><div class="lbl">Revenue</div><div class="val">${big(V.revenue)}</div><div class="note">${esc(selLabel())}, consolidated${V.revAdj?`, after sales corrections and non-sales; ${big(V.revBooked)} as booked`:''}</div></div>
+    <div class="hero"><div class="lbl">Adjusted EBITDA</div><div class="val ${V.ebitda<0?'neg':''}">${big(V.ebitda)}</div><div class="note">${esc(selLabel())}; ${pct(V.ebitda,V.revenue)} margin; ${big(V.booked)} as booked${parts.length?`. The value uses ${big(base)} a year (see Value in parts)`:''}</div></div>
+    <div class="hero big"><div class="lbl">Enterprise value${parts.length?'':` at ${M.mid}×`}</div><div class="val">${ev('mid')==null?'n/m':big(ev('mid'))}</div><div class="note">${parts.length?`${rng(ev)} with ${esc(main.label)} at ${M.low}× to ${M.high}× and ${own}${built}`:`${M.low}× to ${M.high}×: ${rng(ev)}`}</div></div>
+    <div class="hero"><div class="lbl">Net debt</div><div class="val">${big(D.nd)}</div><div class="note">at ${esc(D.at)}: debt ${big(D.debt)}${S.shareholder?` + shareholder ${big(D.sh)}`:''}${S.cards?` + cards ${big(D.cards)}`:''} − cash ${big(D.cash)}${D.fixes.length?', with corrections':''}</div></div>
+    <div class="hero big"><div class="lbl">Equity value${parts.length?'':` at ${M.mid}×`}</div><div class="val">${eq('mid')==null?'n/m':big(eq('mid'))}</div><div class="note">${parts.length?`${rng(eq)} with ${esc(main.label)} at ${M.low}× to ${M.high}× and ${own}, less net debt`:`${M.low}× to ${M.high}×: ${rng(eq)}`}</div></div>
   </div>
-  <p class="sub" style="margin:6px 0 8px">How the value is estimated: businesses like this are usually priced at a multiple of one year of EBITDA (yearly profit before interest, taxes, depreciation and amortization). Enterprise value = ${full?'':'the yearly rate of '}adjusted EBITDA × the multiple, so at ${M.mid}× a buyer pays ${M.mid} years of EBITDA. Equity value is what is left for the owners after paying off net debt. 3×, 5× and 7× are starting points; change them to the multiples you expect buyers to pay.</p>
+  <div class="tbl" style="margin:8px 0"><table><thead><tr><th>${parts.length?'Value in parts':'Value'}</th><th class="l">Months used</th><th>Adjusted EBITDA</th><th>Yearly rate</th><th>Multiple</th><th>Value</th></tr></thead><tbody>
+  ${vrow(main,M.mid)}${parts.map(p=>vrow(p,p.mult)).join('')}
+  ${sumRow('Enterprise value',ev('mid')==null?'n/m':whole(V.ev('mid')),'tot')}${sumRow(`Less net debt at ${esc(D.at)}`,whole(-D.nd),'dim')}${sumRow('Equity value',eq('mid')==null?'n/m':whole(V.eq('mid')),'key')}
+  </tbody></table></div>
+  ${parts.filter(p=>p.note).map(p=>`<p class="small m" style="margin:2px 0">${esc(p.label)}: ${esc(p.note)}</p>`).join('')}
+  <p class="sub" style="margin:6px 0 8px">How the value is estimated: businesses like this are usually priced at a multiple of one year of EBITDA (yearly profit before interest, taxes, depreciation and amortization), so at ${M.mid}× a buyer pays ${M.mid} years of EBITDA. ${parts.length?esc(main.label):'The companies'} are valued on their last ${main.idx.length} closed months (${esc(span(main.idx))}). ${parts.map(partTxt).join('')}Equity value is what is left for the owners after paying off the net debt of all the companies. Months after ${esc(monthName(K[Lc]))} are not used until their books are closed. ${M.low}×, ${M.mid}× and ${M.high}× are starting points; change them to the multiples you expect buyers to pay.</p>
   <details class="noprint"><summary class="small m" style="cursor:pointer">How net debt is built</summary>
   <div class="tbl" style="margin-top:6px"><table><thead><tr><th>Company</th><th>Cash</th><th>Outside loans</th><th>Shareholder loans</th><th>Credit cards</th><th>Net debt</th></tr></thead><tbody>
   ${D.rows.map(r=>`<tr><td>${esc(r.c.short||r.c.name)}</td><td>${whole(r.cash)}</td><td>${whole(r.debt)}</td><td>${whole(r.sh)}${S.shareholder?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.cards)}${S.cards?'':' <span class="m">(not counted)</span>'}</td><td>${whole(r.nd)}</td></tr>`).join('')}
   <tr class="tot"><td>Total</td><td>${whole(D.cash)}</td><td>${whole(D.debt)}</td><td>${whole(D.sh)}</td><td>${whole(D.cards)}</td><td>${whole(D.nd)}</td></tr></tbody></table></div>
-  <p class="small m">Loans between the ${data.companies.length} companies cancel out and are not counted${(data.excluded||[]).length?'; what they owe a company that is left out counts as an outside loan':''}. All figures are QuickBooks balances as of ${esc(data.meta.as_of)}.</p></details>`;
+  ${D.fixes.length?`<div class="tbl" style="margin-top:6px"><table><thead><tr><th>Corrections included above</th><th class="l">Company</th><th class="l">Added to</th><th>Amount</th></tr></thead><tbody>
+  ${D.fixes.map(a=>`<tr><td style="white-space:normal;min-width:240px">${esc(a.label)}</td><td class="l">${esc((coByName(a.company)||{}).short||a.company)}</td><td class="l">${BKT[a.bucket][1]}</td><td>${whole(a.amount)}</td></tr>`).join('')}</tbody></table></div>`:''}
+  <p class="small m">Loans between the ${data.companies.length} companies cancel out and are not counted${(data.excluded||[]).length?'; what they owe a company that is left out counts as an outside loan':''}. All figures are QuickBooks balances at ${esc(D.at)}, the last closed month${D.fixes.length?', with the corrections listed above (each is added to the balance it names; a negative amount lowers it)':''}.</p></details>`;
   const period=()=>{ save('basis',S.basis); save('from',S.from); save('to',S.to); renderVal(); renderCos(); };
   $('#basis').onclick=ev=>{ const k=ev.target.dataset.k; if(!k) return; if(k==='custom'&&!S.from){ const t=ttmIdx(); S.from=K[t[0]]; S.to=K[t[t.length-1]]; } S.basis=k; period(); };
   if($('#fromS')) $('#fromS').onchange=ev=>{ S.from=ev.target.value; S.to=$('#toS').value; period(); };
@@ -273,11 +330,14 @@ function renderVal(){
   if($('#wtT')) $('#wtT').onchange=ev=>{ S.excluded=ev.target.checked?S.excluded.filter(x=>x!==WT):[...new Set([...S.excluded,WT])]; save('excluded',S.excluded); derive(); render(); };
   $('#shT').onchange=ev=>{ S.shareholder=ev.target.checked; save('shareholder',S.shareholder); renderVal(); };
   $('#ccT').onchange=ev=>{ S.cards=ev.target.checked; save('cards',S.cards); renderVal(); };
-  for(const inp of document.querySelectorAll('input.mult')) inp.onchange=ev=>{ const v=parseFloat(ev.target.value); if(v>0){ S.mult[ev.target.dataset.k]=v; save('mult',S.mult); } renderVal(); };
+  for(const inp of document.querySelectorAll('input.mult')) inp.onchange=ev=>{ const t=ev.target, v=parseFloat(t.value);
+    if(t.dataset.p!=null){ if(v>=0){ S.partMult[t.dataset.p]=v; save('partMult',S.partMult); } }
+    else if(v>0){ S.mult[t.dataset.k]=v; save('mult',S.mult); }
+    renderVal(); };
 }
 
 function renderChart(){
-  const el=$('#chart'), n=N(), rev=data.consolidated.revenue, eb=consEbitda();
+  const el=$('#chart'), n=N(), rev=addA(data.consolidated.revenue,adjRev()), eb=consEbitda();
   const W=Math.max(320,el.clientWidth||900), H=260, padL=56, padR=8, padT=10, padB=26;
   const hi=Math.max(...rev,...eb,1), lo=Math.min(0,...eb,...rev);
   const step=niceStep((hi-lo)/4), top=Math.ceil(hi/step)*step, bot=Math.floor(lo/step)*step;
@@ -293,7 +353,7 @@ function renderChart(){
   el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Monthly consolidated revenue and EBITDA">${g}</svg><div class="tip" id="tip"></div>`;
   const tip=$('#tip');
   for(const r of el.querySelectorAll('rect.hit')){
-    r.onmousemove=ev=>{ const i=+r.dataset.i; tip.innerHTML=`<div>${esc(data.meta.months[i])}</div><div><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s1);margin-right:5px"></i>Revenue <b>$${plain(rev[i]).toLocaleString()}</b></div><div><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s2);margin-right:5px"></i>Adjusted EBITDA <b>${eb[i]<0?'−':''}$${Math.abs(plain(eb[i])).toLocaleString()}</b> <span class="m">${pct(eb[i],rev[i])}</span></div>`;
+    r.onmousemove=ev=>{ const i=+r.dataset.i; tip.innerHTML=`<div>${esc(data.meta.months[i])}</div><div><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s1);margin-right:5px"></i>Revenue after corrections <b>${rev[i]<0?'−':''}$${Math.abs(plain(rev[i])).toLocaleString()}</b></div><div><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--s2);margin-right:5px"></i>Adjusted EBITDA <b>${eb[i]<0?'−':''}$${Math.abs(plain(eb[i])).toLocaleString()}</b> <span class="m">${pct(eb[i],rev[i])}</span></div>`;
       tip.style.display='block'; const bx=el.getBoundingClientRect(); let x=ev.clientX-bx.left+12; if(x+tip.offsetWidth>bx.width) x=ev.clientX-bx.left-tip.offsetWidth-12; tip.style.left=x+'px'; tip.style.top=(ev.clientY-bx.top-10)+'px'; };
     r.onmouseleave=()=>{ tip.style.display='none'; };
   }
@@ -306,27 +366,29 @@ function renderCos(){
   const idx=selIdx();
   const A=adjOn();
   const row=(name,v,cls='')=>`<tr class="${cls}"><td>${name}</td><td>${whole(v.rev)}</td><td>${whole(v.gp)}</td><td>${whole(v.ni)}</td><td>${whole(v.int)}</td><td>${whole(v.tax)}</td><td>${whole(v.da)}</td><td>${A?whole(v.e):`<b>${whole(v.e)}</b>`}</td>${A?`<td>${whole(v.adj)}</td><td><b>${whole(v.e+v.adj)}</b></td>`:''}<td>${v.rev?pct(v.e+(A?v.adj:0),v.rev):''}</td></tr>`;
-  const withAdj=(v,co)=>({...v,adj:co===undefined?0:sumI(adjMonthly(co||undefined),idx)});
-  const sum=withAdj(lineSet(data.sum_of_companies,idx),null), con=withAdj(lineSet(data.consolidated,idx),null);
+  // revenue after the applied sales corrections and non-sales of that company ('' = all), so the margin uses the headline's base
+  const withAdj=(v,co)=>{ const c=co||undefined; return {...v,rev:v.rev+sumI(adjRev(c),idx),adj:sumI(adjMonthly(c),idx)}; };
+  const sum=lineSet(data.sum_of_companies,idx), con=lineSet(data.consolidated,idx);
   const el={rev:con.rev-sum.rev,gp:con.gp-sum.gp,ni:con.ni-sum.ni,int:0,tax:0,da:0,e:con.e-sum.e,adj:0};
   $('#perLbl').textContent=selLabel()+' (change the period at the top)';
   $('#cos').innerHTML=`<div class="tbl"><table><thead><tr><th>Company</th><th>Revenue</th><th>Gross profit</th><th>Net income</th><th>+ Interest</th><th>+ Income tax</th><th>+ Depr. &amp; amort.</th><th>EBITDA</th>${A?`<th>One-time items</th><th>${esc(ebLabel())}</th>`:''}<th>Margin</th></tr></thead><tbody>
   ${data.companies.map(c=>row(`${esc(c.short||c.name)} <span class="m small">${esc(c.role||'')}</span>`,withAdj(lineSet(c.lines,idx),c.name))).join('')}
   ${row('Sum of companies',withAdj(sum,''),'tot dim')}${row('Less sales between the companies',el,'dim')}${row('Consolidated',withAdj(con,''),'key')}
-  </tbody></table></div>`;
+  </tbody></table></div>
+  <p class="sub" style="margin-top:6px">Revenue is after the sales corrections and non-sales listed under one-time items; gross profit and net income are as booked.</p>`;
 }
 
 const PL_ROWS=[['revenue','Revenue'],['cogs','Cost of goods sold'],['gross_profit','Gross profit','tot'],['opex','Operating expenses'],['other_income','Other income'],['other_expense','Other expenses'],['net_income','Net income','tot'],['interest_expense','+ Interest expense'],['interest_income','− Interest income'],['income_tax','+ Income taxes'],['depreciation','+ Depreciation'],['amortization','+ Amortization'],['ebitda','EBITDA','key']];
 const TAGNAME={interest_expense:'interest',interest_income:'interest income',income_tax:'income tax',depreciation:'depreciation',amortization:'amortization'};
 const SEC=[['Income','Revenue'],['COGS','Cost of goods sold'],['Expenses','Operating expenses'],['OtherIncome','Other income'],['OtherExpenses','Other expenses']];
 function coSwitch(id,cur){ return `<span class="seg" id="${id}"><button data-k="__cons" class="${cur==='__cons'?'on':''}">Consolidated</button>${data.companies.map(c=>`<button data-k="${esc(c.name)}" class="${cur===c.name?'on':''}">${esc(c.short||c.name)}</button>`).join('')}</span>`; }
-function monthHead(first){ return `<thead><tr><th>${first}</th>${data.meta.month_keys.map((k,i)=>`<th>${shortM(i)}</th>`).join('')}<th>12 months</th></tr></thead>`; }
+function monthHead(first){ return `<thead><tr><th>${first}</th>${data.meta.month_keys.map((k,i)=>`<th>${shortM(i)}</th>`).join('')}<th>12 closed months</th></tr></thead>`; }
 function mRow(label,arr,cls='',ttm=true){ return `<tr class="${cls}"><td>${label}</td>${arr.map(v=>`<td>${whole(v)}</td>`).join('')}<td>${ttm?whole(sumI(arr,ttmIdx())):''}</td></tr>`; }
 function renderPL(){
   const cons=S.plCo==='__cons', c=cons?null:coByName(S.plCo); if(!cons&&!c){ S.plCo='__cons'; return renderPL(); }
   const L=cons?data.consolidated:c.lines;
   let body=PL_ROWS.map(([k,l,cls])=>mRow(l,L[k],cls||'')).join('');
-  if(adjOn()){ const a=adjMonthly(cons?undefined:c.name); body+=mRow('One-time items',a,'dim')+mRow(esc(ebLabel()),addA(L.ebitda,a),'key'); }
+  if(adjOn()){ const co=cons?undefined:c.name, a=adjMonthly(co); body+=mRow('Revenue after corrections',addA(L.revenue,adjRev(co)),'dim')+mRow('One-time items',a,'dim')+mRow(esc(ebLabel()),addA(L.ebitda,a),'key'); }
   if(!cons&&S.plAccts){
     for(const [g,lbl] of SEC){ const rows=c.accounts.filter(a=>a.top===g); if(!rows.length) continue;
       body+=`<tr class="sec"><td>${lbl}: accounts</td>${'<td></td>'.repeat(N()+1)}</tr>`+rows.map(a=>mRow(`${esc(a.path?a.path+' › ':'')}${esc(a.name)}${TAGNAME[a.tag]?`<span class="tag ab">${TAGNAME[a.tag]}</span>`:''}`,a.vals,'acct')).join(''); }
@@ -340,7 +402,7 @@ function renderPL(){
 }
 
 const BS_ROWS=[['BankAccounts','Cash (bank accounts)'],['AR','Accounts receivable'],['OtherCurrentAssets','Other current assets'],['FixedAssets','Fixed assets'],['OtherAssets','Other assets'],['TotalAssets','Total assets','tot'],['AP','Accounts payable'],['CreditCards','Credit cards'],['OtherCurrentLiabilities','Other current liabilities'],['LongTermLiabilities','Long-term liabilities'],['Liabilities','Total liabilities','tot'],['Equity','Equity','tot']];
-const BUCKETS=[['ic_receivable','Owed by the other companies'],['ic_payable','Owed to the other companies'],['debt_third_party','Loans from outside lenders'],['debt_shareholder','Shareholder loans'],['loan_to_outside_party','Loans to outside parties'],['tax_payable','Income tax payable']];
+const BUCKETS=[['ic_receivable','Owed by the other companies'],['ic_payable','Owed to the other companies'],['debt_third_party','Loans from outside lenders'],['debt_shareholder','Shareholder loans'],['loan_to_outside_party','Loans to outside parties'],['tax_payable','Sales tax payable']];
 function renderBS(){
   const cons=S.bsCo==='__cons', c=cons?null:coByName(S.bsCo); if(!cons&&!c){ S.bsCo='__cons'; return renderBS(); }
   const tot=k=>cons?data.companies.reduce((t,x)=>addA(t,x.bs.totals[k]||z()),z()):(c.bs.totals[k]||z());
@@ -380,35 +442,44 @@ function renderIC(){
 }
 
 function renderRoy(){
-  const idx=ttmIdx(), q=lastIdx(3), m=data.meta.mtd, R=data.royalty||{};
+  const idx=ttmIdx(), q=lastIdx(3), m=data.meta.mtd, R=data.royalty||{}, O=openIdx(), oc=O.length?'<td></td>':'';
+  const ocv=v=>O.length?`<td>${whole(sumI(v,O))}</td>`:'';
   const block=(title,obj)=>{ const e=Object.entries(obj||{}).sort((a,b)=>sumI(b[1],idx)-sumI(a[1],idx)); if(!e.length) return '';
     const t=e.reduce((s,[,v])=>addA(s,v),z());
-    return `<tr class="sec"><td>${title}</td><td></td><td></td><td></td></tr>`+e.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${whole(sumI(v,idx))}</td><td>${whole(sumI(v,q))}</td><td>${whole(v[m])}</td></tr>`).join('')+`<tr class="tot"><td>Total</td><td>${whole(sumI(t,idx))}</td><td>${whole(sumI(t,q))}</td><td>${whole(t[m])}</td></tr>`; };
-  $('#roy').innerHTML=`<div class="tbl"><table><thead><tr><th>Royalty income by payer (as invoiced)</th><th>Last 12 months</th><th>Last 3 months</th><th>${esc(data.meta.months[m])}</th></tr></thead><tbody>
+    return `<tr class="sec"><td>${title}</td><td></td><td></td>${oc}<td></td></tr>`+e.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${whole(sumI(v,idx))}</td><td>${whole(sumI(v,q))}</td>${ocv(v)}<td>${whole(v[m])}</td></tr>`).join('')+`<tr class="tot"><td>Total</td><td>${whole(sumI(t,idx))}</td><td>${whole(sumI(t,q))}</td>${ocv(t)}<td>${whole(t[m])}</td></tr>`; };
+  $('#roy').innerHTML=`<div class="tbl"><table><thead><tr><th>Royalty income by payer (as invoiced)</th><th>Last 12 closed months</th><th>Last 3 closed months</th>${O.length?`<th>${esc(span(O))} (not closed)</th>`:''}<th>${esc(data.meta.months[m])}</th></tr></thead><tbody>
   ${block('Outside licensees',R.external)}${block('Wizard Trees companies (removed in consolidation)',R.intercompany)}</tbody></table></div>
   <p class="sub" style="margin-top:6px">Payments received against these invoices are on the royalty board.</p>`;
 }
 
-const KIND={owner:'Owner cost, added back',onetime:'One-time cost, added back',revenue:'Not ongoing sales, removed',missing:'Cost missing from the books, deducted',correction:'Booking correction'};
+const KIND={owner:'Owner cost, added back',onetime:'One-time cost, added back',revenue:'Not ongoing sales, removed',revenue_correction:'Sales corrected (duplicates, timing, discounts)',missing:'Cost missing from the books, deducted',correction:'Booking correction'};
+// One row per item, company and applied or not, so an item's low-confidence months are their own dimmed row and every
+// row that looks applied is applied. Rows of the same item stay together, the applied one first.
+function adjRows(){
+  const T=new Set(ttmIdx()), O=new Set(openIdx()), m=data.meta.mtd, K=data.meta.month_keys, g={};
+  for(const x of (data.adjustments||[])){ const i=K.indexOf(x.month); if(i<0) continue; const on=applies(x), grp=x.company+'|'+x.label;
+    const r=(g[grp+'|'+on]||={grp,company:x.company,label:x.label,kind:x.kind,conf:new Set(),ttm:0,open:0,mtd:0,months:new Set(),on});
+    r.conf.add(x.confidence); if(T.has(i)) r.months.add(i); if(i===m) r.mtd+=+x.amount; else if(T.has(i)) r.ttm+=+x.amount; else if(O.has(i)) r.open+=+x.amount; }
+  const gm={}; for(const r of Object.values(g)) gm[r.grp]=(gm[r.grp]||0)+Math.abs(r.ttm+r.open+r.mtd);
+  const rows=Object.values(g).sort((a,b)=>gm[b.grp]-gm[a.grp]||(a.grp<b.grp?-1:a.grp>b.grp?1:0)||(b.on-a.on));
+  const tot=(k,f=()=>true)=>rows.filter(f).reduce((s,r)=>s+r[k],0);
+  return {rows,all:tot('ttm'),allOpen:tot('open'),allMtd:tot('mtd'),applied:tot('ttm',r=>r.on),O:[...O]};
+}
 function renderAdj(){
-  const idx=ttmIdx(), m=data.meta.mtd, g={};
-  for(const x of (data.adjustments||[])){ const k=x.company+'|'+x.label; const r=(g[k]||={company:x.company,label:x.label,kind:x.kind,conf:new Set(),ttm:0,mtd:0,months:new Set(),on:false,low:false});
-    const i=data.meta.month_keys.indexOf(x.month); if(i<0) continue; r.conf.add(x.confidence); r.months.add(i); if(i===m) r.mtd+=+x.amount; else r.ttm+=+x.amount; if(applies(x)) r.on=true; }
-  const rows=Object.values(g).sort((a,b)=>Math.abs(b.ttm+b.mtd)-Math.abs(a.ttm+a.mtd));
-  const tot=k=>rows.reduce((s,r)=>s+r[k],0), on=(data.adjustments||[]).filter(x=>applies(x)&&data.meta.month_keys.indexOf(x.month)>=0&&data.meta.month_keys.indexOf(x.month)<m).reduce((s,x)=>s+(+x.amount),0);
+  const m=data.meta.mtd, {rows,all,allOpen,allMtd,applied,O}=adjRows(), oh=O.length?`<th>${esc(span(O))} (not closed)</th>`:'', oc=v=>O.length?`<td>${v}</td>`:'';
   const cl=s=>['high','medium','low'].filter(c=>s.has(c)).join(' / ');
-  $('#adj').innerHTML=rows.length?`<div class="tbl"><table><thead><tr><th>Item</th><th class="l">Company</th><th class="l">Effect on EBITDA</th><th>Months</th><th>Last 12 months</th><th>${esc(data.meta.months[m])}</th><th class="l">Confidence</th></tr></thead><tbody>
-  ${rows.map(r=>`<tr class="${r.on?'':'dim'}"><td class="l" style="white-space:normal;min-width:260px">${esc(r.label)}${r.on?'':' <span class="tag">low confidence, not applied</span>'}</td><td class="l">${esc((coByName(r.company)||{}).short||r.company)}</td><td class="l">${esc(KIND[r.kind]||r.kind)}</td><td>${r.months.size}</td><td>${whole(r.ttm)}</td><td>${r.mtd?whole(r.mtd):''}</td><td class="l">${cl(r.conf)}</td></tr>`).join('')}
-  <tr class="tot"><td>All items</td><td></td><td></td><td></td><td>${whole(tot('ttm'))}</td><td>${whole(tot('mtd'))}</td><td></td></tr>
-  <tr class="key"><td>Applied to adjusted EBITDA</td><td></td><td></td><td></td><td>${whole(adjOn()?on:0)}</td><td></td><td></td></tr></tbody></table></div>
-  <p class="sub" style="margin-top:6px">Positive numbers add to EBITDA, negative numbers reduce it. Low-confidence items are listed but not applied.</p>`:'<p class="sub">None identified.</p>';
+  $('#adj').innerHTML=rows.length?`<div class="tbl"><table><thead><tr><th>Item</th><th class="l">Company</th><th class="l">Effect on EBITDA</th><th>Closed months</th><th>Last 12 months</th>${oh}<th>${esc(data.meta.months[m])}</th><th class="l">Confidence</th></tr></thead><tbody>
+  ${rows.map(r=>`<tr class="${r.on?'':'dim'}"><td class="l" style="white-space:normal;min-width:260px">${esc(r.label)}${r.on?'':' <span class="tag">low confidence, not applied</span>'}</td><td class="l">${esc((coByName(r.company)||{}).short||r.company)}</td><td class="l">${esc(KIND[r.kind]||r.kind)}</td><td>${r.months.size}</td><td>${whole(r.ttm)}</td>${oc(r.open?whole(r.open):'')}<td>${r.mtd?whole(r.mtd):''}</td><td class="l">${cl(r.conf)}</td></tr>`).join('')}
+  <tr class="tot"><td>All items</td><td></td><td></td><td></td><td>${whole(all)}</td>${oc(whole(allOpen))}<td>${whole(allMtd)}</td><td></td></tr>
+  <tr class="key"><td>Applied to adjusted EBITDA</td><td></td><td></td><td></td><td>${whole(adjOn()?applied:0)}</td>${oc('')}<td></td><td></td></tr></tbody></table></div>
+  <p class="sub" style="margin-top:6px">Positive numbers add to EBITDA, negative numbers reduce it. Low-confidence items are listed but not applied. Items that change sales (non-sales, and sales corrected for duplicates, timing or discounts) also come off revenue.</p>`:'<p class="sub">None identified.</p>';
 }
 function renderOwn(){
   const o=data.ownership||[];
   $('#own').innerHTML=o.length?`<div class="tbl"><table><thead><tr><th>Company</th><th class="l">Owners</th><th class="l">Tax form</th><th class="l">Notes</th></tr></thead><tbody>${o.map(x=>`<tr><td>${esc(x.company)}</td><td class="l">${esc(x.owners)}</td><td class="l">${esc(x.form||'')}</td><td class="l" style="white-space:normal">${esc(x.note||'')}</td></tr>`).join('')}</tbody></table></div>`:'<p class="sub">Not entered yet.</p>';
 }
 function renderNotes(){
-  const an=(data.anomalies||[]);
+  const an=(data.anomalies||[]).filter(a=>a.level!=='review'||scope==='admin');   // book-drift checks are for the admin key
   $('#notes').innerHTML=`<div class="panel notes"><ul>${(data.notes||[]).map(n=>`<li>${esc(n)}</li>`).join('')}</ul>
   ${data.companies.filter(c=>c.caveats&&c.caveats.length).map(c=>`<div style="margin-top:8px"><b>${esc(c.name)}</b><ul>${c.caveats.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></div>`).join('')}
   ${an.length?`<div style="margin-top:8px"><b>Data checks</b><ul>${an.map(a=>`<li>${a.level==='error'?'<span class="tag warn">check</span> ':''}${esc(a.company)}: ${esc(a.text)}</li>`).join('')}</ul></div>`:''}</div>`;
