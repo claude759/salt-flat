@@ -449,6 +449,7 @@
     padding:7px 10px;border-bottom:1px solid var(--line);font-weight:650;white-space:nowrap}
   .adm td{padding:9px 10px;border-bottom:1px solid var(--row-line);vertical-align:top}
   .adm tr.inactive td{color:var(--faint)}
+  .adm tr.picked td{background:rgba(240,173,78,.10)}
   .adm .adm-email{font-weight:600;white-space:nowrap}
   .adm .you{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--accent2);margin-left:7px}
   .adm .adm-sees{min-width:220px;line-height:1.5}
@@ -2543,7 +2544,7 @@
     if (p.includes('cancelled')) return 'cancelled';
     return 'none';
   }
-  const EDIT_STATUS_WORDS = { pending: 'Pending', attention: 'Needs a look', applied: 'In Gusto', cancelled: 'Cancelled', none: 'Undone', replaced: 'Replaced', cleared: 'Cleared' };
+  const EDIT_STATUS_WORDS = { pending: 'Pending', attention: 'Needs a look', applied: 'In Gusto', cancelled: 'Cancelled', none: 'Undone', replaced: 'Replaced', cleared: 'Cleared', missed: 'Missed payroll' };
   // the timesheet sync's own clear of a Needs a look Gusto has settled (supabase/ts-edits-clear.sql: cancelled_by
   // 'gusto-sync', cancel_reason says why: "Gusto now matches" or "Fixed in Gusto by hand"). It is history, not a look.
   const CLEARED_BY = 'gusto-sync';
@@ -2764,6 +2765,34 @@
   }
   // a day of the previous pay period (its payroll may already have run, and Gusto then refuses changes)
   function inLastPeriod(date, today) { return isIsoDate(date) && isIsoDate(today) && date < payPeriodFor(today, EDIT_ANCHOR_END).from; }
+  // The pay periods as Gusto has them (ts_companies.pay_periods: the edit worker reads them in Gusto at its runs after
+  // each period ends, supabase/ts-pay-periods.sql). For one company's day: {closed, why, start, end, sentAt}, or null
+  // when nothing is known (not read yet, or no period listed). Closed only when every listed period holding the day is
+  // closed, as the server's ts_edit_period_closed, which refuses a change of such a day; sentAt: when Gusto sent the
+  // period's hours to payroll (a change still goes to Gusto then, and the daily list asks for the payroll to be checked).
+  function periodState(companies, company, date) {
+    const c = (companies || []).find(x => x && x.key === company);
+    const list = isIsoDate(date) && c && Array.isArray(c.pay_periods)
+      ? c.pay_periods.filter(p => p && isIsoDate(p.start) && isIsoDate(p.end) && p.start <= date && date <= p.end) : [];
+    if (!list.length) return null;
+    const closed = list.every(p => p.closed === true), open = list.filter(p => p.closed !== true), p = closed ? list[0] : open[0];
+    const sent = closed ? null : open.map(x => x.sent_at).filter(Boolean).sort()[0] || null;
+    return { closed, why: closed ? String(p.why || 'processed') : null, start: p.start, end: p.end, sentAt: sent };
+  }
+  // why a day of a closed pay period cannot be changed here (the server's words, ts_edits_payroll_guard)
+  function periodClosedText(ps) {
+    const range = fmtDay(ps.start) + ' to ' + fmtDay(ps.end);
+    return (ps.why === 'processed' ? 'Payroll for ' + range + ' has already been processed in Gusto'
+      : 'Gusto has locked the ' + range + ' pay period') + ', so this day can no longer be changed here. Fix it in Gusto, or have the hours added to the next payroll';
+  }
+  // A Needs a look that missed its payroll for good: Gusto refused it because that payroll was already processed, the
+  // period locked or the day already paid (the worker's MISSED_PAYROLL, ~/gusto-sync/ts-edit-plan.mjs). The daily list
+  // shows it once as Missed payroll, with a Done button that opens Admin > Edits > Missed payroll (?missed=<id>).
+  const MISSED_PAYROLL = /already been processed|has locked the|as already paid/i;
+  function isMissedEdit(e) {
+    if (!e || editStatus(e) !== 'attention') return false;
+    return ['times', 'breaks'].some(p => partAttn(e[p + '_status']) && MISSED_PAYROLL.test(String(e[p + '_error'] || '')));
+  }
   // What Save says once every change went through: when it goes to Gusto, or, when the server stored nothing
   // waiting (a shift put back to exactly what Gusto has only takes back the change that waited), that nothing
   // goes. results: [{op, edit}] as the server answered each op; when: nextEditRun's words.
@@ -2805,7 +2834,7 @@
   // the bubble behind a Pending or Needs a look pill
   function editTip(e, tz, now) {
     const st = editStatus(e);
-    const head = st === 'attention' ? 'Needs a look: Gusto did not take all of this change.'
+    const head = st === 'attention' ? (isMissedEdit(e) ? 'Missed payroll: Gusto had already processed this payroll, so this change never went in. Add the hours to the next payroll, or fix them in Gusto.' : 'Needs a look: Gusto did not take all of this change.')
       : st === 'pending' ? (editLate(e, now) ? 'Late: not in Gusto yet.' : 'Pending: changed here, not in Gusto yet.') : EDIT_STATUS_WORDS[st] + '.';
     return [head].concat(describeEdit(e, tz), editPartLines(e, tz, now), ['By ' + (e.created_by || 'someone') + ', ' + stampText(e.created_at, tz) + '.'],
       e.note ? ['Reason: ' + e.note] : []).join('\n');
@@ -3382,7 +3411,7 @@
     validateAfter, shiftOverlap, fmtTimeSec, LONG_REST_MIN, longRestText, entryBreakNotes, hhmm, parseHhmm, fmtHhmm, entryOf, entryKey, entryAfter, newEntry, editedShift, dailySplit, estOvertime,
     rebuildDay, editStatus, EDIT_STATUS_WORDS, CLEARED_BY, replacedEdits, editShownStatus, replacedBy, EDIT_LATE_SEC, firstEditRun, partLate, editLate,
     rowAway, AWAY_CODES, AWAY_NOTE, AWAY_EDITOR_TEXT, entriesAway, splitRole, splitWhy, END_AT_MIDNIGHT_NOTE,
-    partShow, overlayDay, overlayRows, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, saveMessage,
+    partShow, overlayDay, overlayRows, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, periodState, periodClosedText, MISSED_PAYROLL, isMissedEdit, saveMessage,
     partWaits, editSending, CANCELLABLE,
     stampText, editPartLines, editTip, supersede, submitEdit, cancelEdit, stillWorking, editorEntries, editPlan, entriesPreview, dayStamp,
   };
@@ -3834,6 +3863,7 @@
     fmt: store.get('fmt', 'dec') === 'hm' ? 'hm' : 'dec',
     coSel: [], dept: '', q: '', flaggedOnly: false,
     loading: false, loadErr: '', lastLoad: 0, access: [], accessState: '',   // accessState: '' | 'ok' | 'error' (ts_admin_list)
+    missedState: '',   // Admin > Edits > Missed payroll: '' | 'loading' | 'ok' | 'error' (fetchMissed)
     // saved views (ts_views): every view for an admin, the views given to a manager. crew = the id of the
     // tab that is on ('' = Everyone, admins only; C.ALL_MINE = a manager's "All my people")
     views: [], viewsState: 'off', crew: store.get('savedView', ''), crewBeforePreview: null,
@@ -3845,7 +3875,7 @@
     edits: new Map(), editsState: 'off',
   };
   // admin panel: section 'users' (who sees what), 'views' (saved views) or 'edits' (changes made here)
-  const A = { section: 'users', editing: null, confirm: '', err: '', busy: false, vEditing: null, vConfirm: '', eFilter: 'all', eConfirm: '' };
+  const A = { section: 'users', editing: null, confirm: '', err: '', busy: false, vEditing: null, vConfirm: '', eFilter: 'all', eConfirm: '', ePick: '' };
   // the day editor: the ts_days id it is open on, one entry per shift (C.editorEntries), the reason, and
   // confirm: '' | 'close' (discard what was typed?) | an edit id (cancel that change, which resets the form?).
   // loading: the day is being read again before the form shows; stamp: the day as it opened (C.dayStamp);
@@ -3986,7 +4016,11 @@
   // the current or previous pay period, never a future day, on the row's own calendar (ts_edit_submit's
   // window), and still in it when the next run takes the change to Gusto (C.canEditForRun); New York days
   // once New York is proven
-  function canEditRow(r) { return editsOn() && !!r && C.canEditForRun(r.work_date, C.rowTz(r), Date.now()) && (rowRegion(r) !== 'NY' || mayEdit('ny')); }
+  function canEditRow(r) { return editsOn() && !!r && C.canEditForRun(r.work_date, C.rowTz(r), Date.now()) && (rowRegion(r) !== 'NY' || mayEdit('ny')) && !periodClosed(r); }
+  // the day's pay period as Gusto has it (C.periodState): once Gusto processed its payroll, a change can no longer go in
+  // (Gianni 2026-10-27), so the day is not offered for editing; the server refuses one too (ts_edits_payroll_guard)
+  function rowPeriod(r) { return r ? C.periodState(S.companies, r.company, r.work_date) : null; }
+  function periodClosed(r) { const p = rowPeriod(r); return !!(p && p.closed); }
   // who makes a change: the signed-in person (in demo, the sign-in being previewed, which has no server)
   function actor() { return DEMO ? (S.viewer || S.me) : S.me; }
   // Cancel (a change still waiting) or Clear (a Needs a look, once Gusto is checked and right): the creator or an
@@ -4027,6 +4061,35 @@
     }
     editsChanged();
     return done;
+  }
+  // Admin > Edits > Missed payroll: every change that needs a look and is not cleared yet, whatever its date (RLS: an admin
+  // reads them all), so the ones that missed a payroll show even when their days are not on screen. Never throws.
+  async function fetchMissed() {
+    if (DEMO || S.editsState === 'missing' || S.missedState === 'loading') return;
+    S.missedState = 'loading';
+    try {
+      const data = await fetchAll(() => sb.from('ts_edits').select('*').is('cancelled_at', null)
+        .or('times_status.eq.conflict,breaks_status.eq.conflict,times_status.eq.failed,breaks_status.eq.failed').order('created_at').order('id'));
+      for (const e of data) S.edits.set(e.id, e);
+      S.missedState = 'ok';
+    } catch (e) { console.warn('missed payroll not loaded', e); S.missedState = 'error'; }
+    if (!$('adminPanel').hidden) renderAdmin();
+    if (A.ePick) { const tr = $('ae-' + A.ePick); if (tr) tr.scrollIntoView({ block: 'center' }); }
+  }
+  // ?missed[=<edit id>] (the daily list's Done button): an admin lands on Admin > Edits > Missed payroll with that change
+  // picked out. Anyone else is told it is for admins. Then it leaves the address, so a reload keeps the board.
+  async function openMissedLink() {
+    if (!QS.has('missed') || DEMO) return;
+    const id = String(QS.get('missed') || '').trim();
+    try {
+      const q = new URLSearchParams(location.search); q.delete('missed');
+      const rest = q.toString().replace(/=(?=&|$)/g, '');
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+    } catch (e) { /* the address keeps it; harmless */ }
+    if (!(S.me && S.me.is_admin)) { toast('The Missed payroll list is for admins'); return; }
+    A.eFilter = 'missed'; A.ePick = /^[0-9a-f-]{36}$/i.test(id) ? id : '';
+    await openAdmin('edits');
+    await fetchMissed();
   }
   // One day again from the server, its ts_days row and its changes: when the editor opens and again just
   // before Save sends anything. {ok} or {ok: false, error}. Demo has nothing newer to read.
@@ -4846,7 +4909,7 @@
   function closeAdmin() {
     $('adminPanel').hidden = true;
     if ($('editPanel').hidden) document.body.classList.remove('modal');
-    A.editing = null; A.confirm = ''; A.err = ''; A.vEditing = null; A.vConfirm = ''; A.eConfirm = '';
+    A.editing = null; A.confirm = ''; A.err = ''; A.vEditing = null; A.vConfirm = ''; A.eConfirm = ''; A.ePick = '';
   }
   // every company of every region that exists, California first ("All CA companies" covers only those)
   function adminCompanyKeys() {
@@ -4936,7 +4999,7 @@
   const ADMIN_HINTS = {
     users: 'Each sign-in sees only the views, companies and departments ticked for it. Admins see everything and can change this list. Use Preview to check what someone sees before telling them it is ready.',
     views: 'A view is a saved crew. Its tab at the top of the page shows only those people. Tick a view for a sign-in under Sign-ins and that manager sees exactly its people, on a simple list that opens straight onto it. Copy link gives a link that opens the view.',
-    edits: 'Every change made with Edit on this page, for the dates on screen. Changes go to Gusto at 5 AM, noon and 7 PM Pacific (8 AM, 3 PM and 10 PM Eastern), start and end times and breaks together. A change Gusto did not take shows Needs a look with the reason; once Gusto is checked and right, Clear takes it off the board. The next run clears one by itself when Gusto now matches it or the shift was fixed in Gusto by hand (it then reads Cleared, with why), except a change Gusto may have taken only in part and one refused because the hours already went to payroll: those wait for a person. A change still waiting can be cancelled.',
+    edits: 'Every change made with Edit on this page, for the dates on screen. Changes go to Gusto at 5 AM, noon and 7 PM Pacific (8 AM, 3 PM and 10 PM Eastern), start and end times and breaks together. A change Gusto did not take shows Needs a look with the reason; once Gusto is checked and right, Clear takes it off the board. The next run clears one by itself when Gusto now matches it or the shift was fixed in Gusto by hand (it then reads Cleared, with why), except a change Gusto may have taken only in part and one refused because the hours already went to payroll: those wait for a person. A change still waiting can be cancelled. Missed payroll lists, for all dates, the changes that reached Gusto after it had processed that payroll: add the hours to the next payroll, then press Done.',
   };
   function renderAdminTabs() {
     const tabs = [['users', 'Sign-ins'], ['views', 'Views']].concat(editsOn() ? [['edits', 'Edits']] : []);
@@ -5272,6 +5335,7 @@
     if (!raw) return 'That day is no longer on the board';
     const tz = C.rowTz(raw);
     if (rowRegion(raw) === 'NY' && !mayEdit('ny')) return 'New York days cannot be changed here yet: change this day in Gusto';
+    if (periodClosed(raw)) return C.periodClosedText(rowPeriod(raw));
     if (C.canEditDate(raw.work_date, rowToday(raw)) && !C.canEditForRun(raw.work_date, tz, Date.now()))
       return 'This pay period closes for changes before the next run (' + C.nextEditRun(Date.now(), tz) + ') could take one to Gusto: change this day in Gusto';
     return 'Only this pay period and the last one can be changed here';
@@ -5344,6 +5408,14 @@
     setHTML($('edForm'), editorBody(raw, C.rowTz(raw)));
     panel.scrollTop = top;
   }
+  // the editor's word on the day's pay period: its hours already went to payroll (the change still goes, and the payroll
+  // needs checking), else, while nothing is known about the period, the old caution for a day of the last period
+  function periodHint(raw, tz) {
+    const ps = rowPeriod(raw);
+    if (ps && ps.sentAt) return h`<p class="hint">Gusto sent this pay period's hours to payroll on ${C.fmtMonthDay(C.zDate(ps.sentAt, tz))}. A change still goes to Gusto at the next run, and the daily list asks for the payroll to be checked for it. Once the payroll is processed, this day can no longer be changed here.</p>`;
+    if (!ps && C.inLastPeriod(raw.work_date, rowToday(raw))) return h`<p class="hint">This day is in the last pay period. If its payroll has already run, Gusto will not take a change: fix it in Gusto instead.</p>`;
+    return '';
+  }
   function editorBody(raw, tz) {
     if (E.loading) return h`<p class="faint ed-load" role="status">Getting the latest for this day...</p><div class="form-foot"><button type="button" class="btn" data-act="ed-close">Cancel</button></div>`;
     const n = E.entries.length;
@@ -5351,7 +5423,7 @@
       ? h`<span class="confirm">Discard what you typed?</span><button type="button" class="btn danger" data-act="ed-close-yes">Discard</button><button type="button" class="btn" data-act="ed-close-no">Keep editing</button>`
       : h`<button type="button" class="btn" data-act="ed-close"${E.busy ? ' disabled' : ''}>Cancel</button>${E.stale && !E.busy ? h`<button type="button" class="btn" data-act="ed-reload">Reload this day</button>` : ''}<button type="submit" class="btn primary"${E.busy ? ' disabled' : ''}>${E.busy ? 'Saving...' : 'Save changes'}</button>`;
     return h`<p class="ed-copy">${C.editTimingText(tz)} Times are ${C.regionDef(raw.region).tzName}.</p>
-      ${C.inLastPeriod(raw.work_date, rowToday(raw)) ? h`<p class="hint">This day is in the last pay period. If its payroll has already run, Gusto will not take a change: fix it in Gusto instead.</p>` : ''}
+      ${periodHint(raw, tz)}
       ${S.editsState === 'error' ? h`<p class="hint">Earlier changes to this day couldn't load, so these are the times Gusto had at the last sync.</p>` : ''}
       ${n ? E.entries.map((en, i) => entryHtml(en, i, tz)) : h`<p class="faint">No shifts on this day in Gusto.</p>`}
       <div id="edBreaks" aria-live="polite">${breakLineHtml(raw, tz)}</div>
@@ -5467,15 +5539,17 @@
       const x = !mayCancel(e) || !(st === 'pending' || clear) || E.busy ? '' : E.confirm === e.id
         ? h`<span class="confirm">This also resets what you typed above.</span><button type="button" class="btn sm danger" data-act="ed-x-yes" data-id="${e.id}">${clear ? 'Clear it' : 'Cancel the change'}</button><button type="button" class="btn sm" data-act="ed-x-no">Keep it</button>`
         : h`<button type="button" class="linkbtn" data-act="ed-x" data-id="${e.id}">${clear ? 'Gusto is right: clear this' : 'Cancel this change'}</button>`;
-      return h`<li${oldEdit(st) ? h` class="old"` : ''}><div class="eh-top">${statusPill(st)}<span class="faint">${e.created_by}, ${C.stampText(e.created_at, tz)}</span>${x}</div>
+      return h`<li${oldEdit(st) ? h` class="old"` : ''}><div class="eh-top">${statusPill(pillOf(e, st))}<span class="faint">${e.created_by}, ${C.stampText(e.created_at, tz)}</span>${x}</div>
         <div>${C.describeEdit(e, tz).join(' · ')}</div>
         ${edLines(e, tz, now, st).map(l => h`<div class="faint">${l}</div>`)}
         ${e.note ? h`<div class="faint">Reason: ${e.note}</div>` : ''}</li>`;
     })}</ul></div>`;
   }
   // an edit's status as a pill (the words come from C.EDIT_STATUS_WORDS)
-  const STATUS_PILL = { attention: 'flag eatt', pending: 'flag epend', applied: 'flag edone', cancelled: 'flag ecanc', none: 'flag ecanc', replaced: 'flag ecanc', cleared: 'flag ecanc' };
+  const STATUS_PILL = { attention: 'flag eatt', missed: 'flag eatt', pending: 'flag epend', applied: 'flag edone', cancelled: 'flag ecanc', none: 'flag ecanc', replaced: 'flag ecanc', cleared: 'flag ecanc' };
   function statusPill(st) { return h`<span class="${STATUS_PILL[st] || STATUS_PILL.none}">${C.EDIT_STATUS_WORDS[st] || ''}</span>`; }
+  // the pill's word: a Needs a look that missed its payroll reads Missed payroll
+  const pillOf = (e, st) => st === 'attention' && C.isMissedEdit(e) ? 'missed' : st;
   // typing only updates the state and the preview, so the field keeps its cursor
   function onEditorInput(e) {
     const t = e.target;
@@ -5687,33 +5761,38 @@
   function editsAdminHtml() {
     if (!editsOn()) return emptyState("Edits aren't set up on the server yet", ['The ts_edits table is missing. Apply supabase/ts-edits.sql in Supabase, then reload the page.']);
     const has = (e, st) => e.times_status === st || e.breaks_status === st;
-    const F = { all: () => true, pending: e => has(e, 'pending') || has(e, 'applying'), conflict: e => has(e, 'conflict'), failed: e => has(e, 'failed') };
-    const inRange = [...S.edits.values()].filter(e => e.work_date >= S.from && e.work_date <= S.to)
-      .sort((a, b) => a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0);
+    const rep = C.replacedEdits([...S.edits.values()]);
+    const F = { all: () => true, pending: e => has(e, 'pending') || has(e, 'applying'), conflict: e => has(e, 'conflict'), failed: e => has(e, 'failed'),
+      missed: e => C.isMissedEdit(e) && C.editShownStatus(e, rep) === 'attention' };
+    const newest = (a, b) => a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0;
+    const inRange = [...S.edits.values()].filter(e => e.work_date >= S.from && e.work_date <= S.to).sort(newest);
+    // Missed payroll: every one not marked done yet, whatever the dates on screen (fetchMissed loads them)
+    const missed = [...S.edits.values()].filter(F.missed).sort(newest);
     const f = F[A.eFilter] ? A.eFilter : 'all';
-    const list = inRange.filter(F[f]), rep = C.replacedEdits([...S.edits.values()]);
-    const seg = h`<div class="seg" role="group" aria-label="Show">${[['all', 'All'], ['pending', 'Pending'], ['conflict', 'Conflict'], ['failed', 'Failed']].map(([k, l]) =>
-      h`<button type="button" data-act="adm-e-filter" data-f="${k}" aria-pressed="${String(f === k)}">${l} <span class="cnt">${inRange.filter(F[k]).length}</span></button>`)}</div>`;
-    return h`<div class="adm-bar adm-ebar">${seg}<span class="faint">${C.fmtRange(S.from, S.to)}</span></div>
+    const list = f === 'missed' ? missed : inRange.filter(F[f]);
+    const seg = h`<div class="seg" role="group" aria-label="Show">${[['all', 'All'], ['pending', 'Pending'], ['conflict', 'Conflict'], ['failed', 'Failed'], ['missed', 'Missed payroll']].map(([k, l]) =>
+      h`<button type="button" data-act="adm-e-filter" data-f="${k}" aria-pressed="${String(f === k)}">${l} <span class="cnt">${k === 'missed' ? missed.length : inRange.filter(F[k]).length}</span></button>`)}</div>`;
+    return h`<div class="adm-bar adm-ebar">${seg}<span class="faint">${f === 'missed' ? 'All dates' : C.fmtRange(S.from, S.to)}</span></div>
+      ${f === 'missed' ? h`<p class="hint">Changes that reached Gusto after it had processed that payroll, so they never went in. Add the hours to the next payroll if they matter (or fix them in Gusto), then press Done.</p>` : ''}
       ${list.length ? h`<div class="tablewrap"><table class="adm"><thead><tr><th>Day</th><th>Change</th><th>By <span class="faint">(Pacific time)</span></th><th>Status</th><th><span class="sr">Actions</span></th></tr></thead><tbody>${list.map(e => editAdminRow(e, rep))}</tbody></table></div>`
-        : h`<p class="faint">${f === 'all' ? 'No changes made here for these dates.' : 'None for these dates.'}</p>`}`;
+        : h`<p class="faint">${f === 'missed' ? (S.missedState === 'loading' ? 'Loading...' : S.missedState === 'error' ? "Couldn't load them. Close this and open it again." : 'Nothing has missed a payroll.') : f === 'all' ? 'No changes made here for these dates.' : 'None for these dates.'}</p>`}`;
   }
   // the shift times in a change read on its own company clock; when each change was made, and when it
   // reaches Gusto, read in Pacific for every row, so the newest-first list reads in order
   function editAdminRow(e, rep) {
     const tz = C.rowTz({ company: e.company, region: e.region }), st = C.editShownStatus(e, rep), now = Date.now();
     const raw = S.rows.get(e.day_id);
-    const clear = st === 'attention', canX = mayCancel(e) && (st === 'pending' || clear);
+    const clear = st === 'attention', canX = mayCancel(e) && (st === 'pending' || clear), done = clear && C.isMissedEdit(e);
     const act = A.eConfirm === e.id
-      ? h`<span class="confirm">${clear ? 'Clear it? Gusto keeps what it has.' : 'Cancel this change?'}</span><button type="button" class="btn sm danger" data-act="adm-e-x-yes" data-id="${e.id}">${clear ? 'Yes, clear it' : 'Yes, cancel it'}</button><button type="button" class="btn sm" data-act="adm-e-x-no">Keep it</button>`
-      : h`${canX ? h`<button type="button" class="btn sm danger" data-act="adm-e-x" data-id="${e.id}">${clear ? 'Clear' : 'Cancel'}</button>` : ''}${raw && canEditRow(raw) ? h`<button type="button" class="btn sm" data-act="adm-e-open" data-k="${e.day_id}">Open day</button>` : ''}`;
-    return h`<tr class="${st === 'cancelled' || st === 'none' || st === 'replaced' || st === 'cleared' ? 'inactive' : ''}"><td class="ae-day"><b>${C.fmtDay(e.work_date)}</b><span>${editWho(e)}</span><span class="faint">${coName(e.company)}</span></td><td class="ae-chg">${C.describeEdit(e, tz).map(l => h`<span>${l}</span>`)}${e.note ? h`<span class="faint">Reason: ${e.note}</span>` : ''}</td><td class="ae-by"><span>${e.created_by}</span><span class="faint">${C.stampText(e.created_at, C.TZ)}</span></td><td class="ae-st">${statusPill(st)}${edLines(e, C.TZ, now, st).map(l => h`<span class="faint">${l}</span>`)}</td><td class="adm-act">${act}</td></tr>`;
+      ? h`<span class="confirm">${done ? 'Done? Do this once the hours are on a payroll, or if they are not needed.' : clear ? 'Clear it? Gusto keeps what it has.' : 'Cancel this change?'}</span><button type="button" class="btn sm ${done ? 'primary' : 'danger'}" data-act="adm-e-x-yes" data-id="${e.id}">${done ? 'Yes, done' : clear ? 'Yes, clear it' : 'Yes, cancel it'}</button><button type="button" class="btn sm" data-act="adm-e-x-no">Keep it</button>`
+      : h`${canX ? h`<button type="button" class="btn sm ${done ? 'primary' : 'danger'}" data-act="adm-e-x" data-id="${e.id}">${done ? 'Done' : clear ? 'Clear' : 'Cancel'}</button>` : ''}${raw && canEditRow(raw) ? h`<button type="button" class="btn sm" data-act="adm-e-open" data-k="${e.day_id}">Open day</button>` : ''}`;
+    return h`<tr id="${'ae-' + e.id}" class="${st === 'cancelled' || st === 'none' || st === 'replaced' || st === 'cleared' ? 'inactive' : ''}${A.ePick === e.id ? ' picked' : ''}"><td class="ae-day"><b>${C.fmtDay(e.work_date)}</b><span>${editWho(e)}</span><span class="faint">${coName(e.company)}</span></td><td class="ae-chg">${C.describeEdit(e, tz).map(l => h`<span>${l}</span>`)}${e.note ? h`<span class="faint">Reason: ${e.note}</span>` : ''}</td><td class="ae-by"><span>${e.created_by}</span><span class="faint">${C.stampText(e.created_at, C.TZ)}</span></td><td class="ae-st">${statusPill(pillOf(e, st))}${edLines(e, C.TZ, now, st).map(l => h`<span class="faint">${l}</span>`)}</td><td class="adm-act">${act}</td></tr>`;
   }
   async function adminCancelEdit(id) {
     A.eConfirm = ''; A.err = '';
-    const clear = clearsAttention(S.edits.get(id));
+    const clear = clearsAttention(S.edits.get(id)), done = C.isMissedEdit(S.edits.get(id));
     const res = await cancelOne(id);
-    if (res.error) A.err = "Couldn't " + (clear ? 'clear' : 'cancel') + ' it: ' + res.error; else toast(clear ? 'Cleared. Gusto keeps what it has.' : 'Change cancelled');
+    if (res.error) A.err = "Couldn't " + (done ? 'mark it done' : clear ? 'clear' : 'cancel') + ' it: ' + res.error; else toast(done ? 'Marked done.' : clear ? 'Cleared. Gusto keeps what it has.' : 'Change cancelled');
     renderAdmin(); render();
   }
 
@@ -5789,7 +5868,7 @@
       case 'key': setPop('key'); break;
       case 'key-back': setPop('more'); break;
       case 'adm-section': A.section = d.section === 'views' || d.section === 'edits' ? d.section : 'users'; A.err = ''; A.eConfirm = ''; renderAdmin(); break;
-      case 'adm-e-filter': A.eFilter = d.f || 'all'; A.eConfirm = ''; renderAdmin(); break;
+      case 'adm-e-filter': A.eFilter = d.f || 'all'; A.eConfirm = ''; renderAdmin(); if (A.eFilter === 'missed') fetchMissed(); break;
       case 'adm-e-x': A.eConfirm = d.id; A.err = ''; renderAdmin(); break;
       case 'adm-e-x-no': A.eConfirm = ''; renderAdmin(); break;
       case 'adm-e-x-yes': adminCancelEdit(d.id); break;
@@ -6006,6 +6085,7 @@
     applyLinkView();
     wire(); render(); measureHeader();
     showA2hs(false);
+    openMissedLink();
   }
   function normMe(me) {
     return { email: String(me.email || '').toLowerCase(), active: me.active === true, is_admin: me.is_admin === true,

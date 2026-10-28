@@ -1623,7 +1623,7 @@ check('edit window: the current and previous pay period through today, exactly l
   // the same 14-day grid as both regions' pay periods
   for (const g of C.REGIONS) eq(C.daysBetween(g.anchorEnd, C.EDIT_ANCHOR_END) % 14, 0, g.key + ' grid');
   if (SQL_EDITS) ok(/date '2026-10-09'/.test(SQL_EDITS) && /period_end - 27/.test(SQL_EDITS), 'supabase/ts-edits.sql has another window');
-  ok(/function canEditRow\(r\) \{ return editsOn\(\) && !!r && C\.canEditForRun\(r\.work_date, C\.rowTz\(r\), Date\.now\(\)\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('ny'\)\); \}/.test(block('ts-app')), 'Edit shows only inside the window (now and at the next run), on the row\'s own calendar');
+  ok(/function canEditRow\(r\) \{ return editsOn\(\) && !!r && C\.canEditForRun\(r\.work_date, C\.rowTz\(r\), Date\.now\(\)\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('ny'\)\) && !periodClosed\(r\); \}/.test(block('ts-app')), 'Edit shows only inside the window (now and at the next run), on the row\'s own calendar, and never in a pay period Gusto has closed');
 });
 check('editor rules mirror ts_edit_submit: start and end, the same day or overnight within 16 h, the start on the work date', () => {
   const v = (a, extra) => codes(C.validateAfter(a, Object.assign({ tz: C.TZ, date: '2026-10-06' }, extra || {})));
@@ -2040,7 +2040,7 @@ check('page: an Edit button at the row end (desktop) and in a card\'s detail (ph
   ok(/table\.ts\.day-t\.ed\{min-width:1460px\}/.test(src), 'the narrower-window tables make room for the Edit column');
   const ea = appFn('editsAdminHtml');
   ok(/\['all', 'All'\], \['pending', 'Pending'\], \['conflict', 'Conflict'\], \['failed', 'Failed'\]/.test(ea) && /e\.work_date >= S\.from && e\.work_date <= S\.to/.test(ea), 'Admin > Edits: the dates on screen, filtered to pending / conflict / failed');
-  ok(/canX = mayCancel\(e\) && \(st === 'pending' \|\| clear\)/.test(appFn('editAdminRow')) && /canX \? h`<button type="button" class="btn sm danger" data-act="adm-e-x"/.test(appFn('editAdminRow')) && /case 'adm-e-x-yes': adminCancelEdit\(d\.id\); break;/.test(app), 'Cancel for waiting ones and Clear for Needs a look, after a confirm');
+  ok(/canX = mayCancel\(e\) && \(st === 'pending' \|\| clear\)/.test(appFn('editAdminRow')) && /canX \? h`<button type="button" class="btn sm \$\{done \? 'primary' : 'danger'\}" data-act="adm-e-x"/.test(appFn('editAdminRow')) && /case 'adm-e-x-yes': adminCancelEdit\(d\.id\); break;/.test(app), 'Cancel for waiting ones and Clear for Needs a look, after a confirm');
   ok(/editsOn\(\) \? \[\['edits', 'Edits'\]\] : \[\]/.test(appFn('renderAdminTabs')), 'the Edits tab only once the server has ts_edits');
   ok(/\(a\.is_admin \|\| e\.created_by === a\.email\)/.test(appFn('mayCancel')), 'cancel: the creator or an admin, like ts_edit_cancel');
   ok(!/em dash/.test('') && !src.includes('—'), 'no em dashes');
@@ -2553,7 +2553,7 @@ check('review: a day can be edited only while the next run can still take the ch
   eq([C.inLastPeriod('2026-10-05', '2026-10-21'), C.inLastPeriod('2026-10-12', '2026-10-21'), C.inLastPeriod('2026-10-09', '2026-10-09')], [true, false, false]);
   const app = block('ts-app');
   ok(/This pay period closes for changes before the next run \(/.test(appFn('noEditMsg')), 'the button is gone and the reason is said');
-  ok(/C\.inLastPeriod\(raw\.work_date, rowToday\(raw\)\) \? h`<p class="hint">This day is in the last pay period\. If its payroll has already run, Gusto will not take a change: fix it in Gusto instead\.<\/p>`/.test(appFn('editorBody')), 'the editor says it for a last-period day');
+  ok(/\$\{periodHint\(raw, tz\)\}/.test(appFn('editorBody')) && /if \(!ps && C\.inLastPeriod\(raw\.work_date, rowToday\(raw\)\)\) return h`<p class="hint">This day is in the last pay period\. If its payroll has already run, Gusto will not take a change: fix it in Gusto instead\.<\/p>`/.test(appFn('periodHint')), 'the editor says it for a last-period day while nothing is known about its pay period');
   ok(/noEditMsg\(raw0\) \+ '\.'/.test(appFn('saveDayEdits')), 'Save refuses with the same words');
 });
 check('review: Save says nothing goes to Gusto when the server stored nothing waiting (a pending change put back to what Gusto has)', () => {
@@ -3437,6 +3437,47 @@ check('Needs a look that the timesheet sync cleared (supabase/ts-edits-clear.sql
   const still = C.overlayDay(edRow([ED_S1]), [Object.assign({}, e, { times_status: 'conflict', cancelled_by: null, cancelled_at: null, cancel_reason: null })], { today: '2026-10-21' });
   eq(still.edit.attention.length, 1, 'while it needed a look, it had one');
   ok(/st === 'cleared'/.test(src.match(/const oldEdit = [^\n]+/)[0]) && /cleared: 'flag ecanc'/.test(src), 'muted in the history, a grey pill');
+});
+
+check('pay periods Gusto closed take no change; one sent to payroll warns; Missed payroll has its own list with Done (Gianni 2026-10-27)', () => {
+  const cos = [
+    { key: 'filifera', pay_periods: [
+      { start: '2026-10-10', end: '2026-10-23', schedule: '77', closed: true, why: 'processed', sent_at: '2026-10-24T15:20:14+00:00', processed_at: null },
+      { start: '2026-10-24', end: '2026-11-06', schedule: '77', closed: false, why: null, sent_at: null, processed_at: null }] },
+    { key: 'slane', pay_periods: [
+      { start: '2026-10-10', end: '2026-10-23', schedule: '1', closed: false, why: null, sent_at: '2026-10-24T15:20:14+00:00', processed_at: null }] },
+    { key: 'wafgus', pay_periods: [
+      { start: '2026-10-10', end: '2026-10-23', schedule: '1', closed: true, why: 'PAYROLL_PROCESSED' },
+      { start: '2026-10-10', end: '2026-10-23', schedule: '2', closed: false }] },
+    { key: 'imperial', pay_periods: null },
+  ];
+  eq(C.periodState(cos, 'filifera', '2026-10-19'), { closed: true, why: 'processed', start: '2026-10-10', end: '2026-10-23', sentAt: null });
+  eq(C.periodState(cos, 'filifera', '2026-10-26'), { closed: false, why: null, start: '2026-10-24', end: '2026-11-06', sentAt: null });
+  eq(C.periodState(cos, 'slane', '2026-10-23'), { closed: false, why: null, start: '2026-10-10', end: '2026-10-23', sentAt: '2026-10-24T15:20:14+00:00' });
+  eq(C.periodState(cos, 'wafgus', '2026-10-19').closed, false, 'one schedule still open keeps the day open, as the server');
+  eq([C.periodState(cos, 'imperial', '2026-10-19'), C.periodState(cos, 'nope', '2026-10-19'), C.periodState(cos, 'filifera', '2026-10-09'), C.periodState(cos, 'filifera', 'x')], [null, null, null, null]);
+  eq(C.periodClosedText(C.periodState(cos, 'filifera', '2026-10-19')), 'Payroll for Sat, Oct 10 to Fri, Oct 23 has already been processed in Gusto, so this day can no longer be changed here. Fix it in Gusto, or have the hours added to the next payroll');
+  ok(/^Gusto has locked the Sat, Oct 10 to Fri, Oct 23 pay period, so this day/.test(C.periodClosedText({ closed: true, why: 'PAYROLL_PROCESSED', start: '2026-10-10', end: '2026-10-23' })), 'locked words');
+  const app = block('ts-app');
+  ok(/if \(periodClosed\(raw\)\) return C\.periodClosedText\(rowPeriod\(raw\)\);/.test(appFn('noEditMsg')), 'a closed day says why Edit is not offered');
+  ok(/ps && ps\.sentAt/.test(appFn('periodHint')) && /Gusto sent this pay period's hours to payroll on/.test(appFn('periodHint')), 'the editor warns when the hours went to payroll');
+  ok(/fetchAll\(\(\) => sb\.from\('ts_companies'\)\.select\('\*'\)/.test(app), 'pay_periods come with ts_companies');
+  if (fs.existsSync(path.join(ROOT, 'supabase', 'ts-pay-periods.sql'))) {
+    const sql = fs.readFileSync(path.join(ROOT, 'supabase', 'ts-pay-periods.sql'), 'utf8');
+    ok(/before insert on public\.ts_edits/.test(sql) && /has already been processed in Gusto, so this day can no longer be changed here\. Fix it in Gusto, or have the hours added to the next payroll/.test(sql), 'the server refuses the same days with the same words');
+  }
+  // Missed payroll
+  const base = { id: 'm1', day_id: 'x', times_status: 'conflict', breaks_status: 'none', times_error: 'Payroll for Sat Oct 10 to Fri Oct 23 has already been processed in Gusto', breaks_error: null, cancelled_at: null };
+  eq([C.isMissedEdit(base), C.isMissedEdit(Object.assign({}, base, { times_error: 'Gusto already sent the hours for Sat Oct 10 to Fri Oct 23 to payroll (2026-10-24); change them in Gusto' })),
+    C.isMissedEdit(Object.assign({}, base, { cancelled_at: '2026-10-27T00:00:00Z', cancelled_by: 'gianni@wizardtrees.com', times_status: 'cancelled' })),
+    C.isMissedEdit(Object.assign({}, base, { times_status: 'none', breaks_status: 'failed', times_error: null, breaks_error: 'Gusto marks Mon Oct 19 as already paid (partly locked)' }))], [true, false, false, true]);
+  eq(C.EDIT_STATUS_WORDS.missed, 'Missed payroll');
+  ok(/^Missed payroll: Gusto had already processed this payroll/.test(C.editTip(base, C.TZ, Date.now())), 'the pill bubble says Missed payroll');
+  const ea = appFn('editsAdminHtml');
+  ok(/\['missed', 'Missed payroll'\]/.test(ea) && /const list = f === 'missed' \? missed : inRange\.filter\(F\[f\]\);/.test(ea), 'Admin > Edits has a Missed payroll filter over every date');
+  ok(/done \? 'Done' : clear \? 'Clear' : 'Cancel'/.test(appFn('editAdminRow')) && /A\.ePick === e\.id \? ' picked' : ''/.test(appFn('editAdminRow')), 'Done on a Missed payroll row; the linked one is picked out');
+  ok(/if \(!QS\.has\('missed'\) \|\| DEMO\) return;/.test(appFn('openMissedLink')) && /if \(!\(S\.me && S\.me\.is_admin\)\)/.test(appFn('openMissedLink')) && /openMissedLink\(\);/.test(appFn('startApp')), '?missed opens it for admins, from the daily list');
+  ok(/\.is\('cancelled_at', null\)/.test(appFn('fetchMissed')), 'the list loads every open one, whatever the dates on screen');
 });
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name
