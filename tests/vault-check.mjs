@@ -1,96 +1,26 @@
-// Checks the Logins & Contacts page (vault.html): the browser-side encryption and the search model.
+// Checks the Logins & Contacts page (vault.html): the password generator, search and spreadsheet import.
 // Run: node tests/vault-check.mjs
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 const html = readFileSync(new URL('../vault.html', import.meta.url), 'utf8');
 const block = (a, b) => html.split(a)[1].split(b)[0];
-const MIN_PASS = 12;
-const VC = new Function('MIN_PASS', `${block('/* ===== VAULT CRYPTO START ===== */', '/* ===== VAULT CRYPTO END ===== */')}; return VC;`)(MIN_PASS);
+const PW = new Function(`${block('/* ===== PASSWORD GENERATOR START ===== */', '/* ===== PASSWORD GENERATOR END ===== */')}; return PW;`)();
 const SEARCH = new Function(`${block('/* ===== SEARCH MODEL START ===== */', '/* ===== SEARCH MODEL END ===== */')}; return SEARCH;`)();
 let n = 0;
 const ok = async (name, fn) => { await fn(); n++; console.log('ok -', name); };
 
-const PASS = 'orbit lantern cactus velvet 42';
-const { meta, key } = await VC.create(PASS);
-
-await ok('vault key is wrapped with a fresh salt and 600k PBKDF2 rounds', () => {
-  assert.equal(meta.kdf_iter, 600000);
-  assert.equal(Buffer.from(meta.kdf_salt, 'base64').length, 16);
-  assert.equal(Buffer.from(meta.wrap_iv, 'base64').length, 12);
-  assert.equal(Buffer.from(meta.wrapped_key, 'base64').length, 48);            // 32-byte key + 16-byte tag
-  assert.equal(JSON.stringify(meta).includes(PASS), false);
-});
-
-const secret = { u: 'ap@wizardtrees.com', p: 'S3cret!pa$$ wörd', x: 'PIN 4471\nmother maiden name: n/a' };
-const id = '6f1f0b55-0000-4000-8000-000000000001';
-const sealed = await VC.seal(key, id, secret);
-
-await ok('a sealed login holds no plain text', () => {
-  const raw = Buffer.from(sealed.secret_ct, 'base64').toString('latin1');
-  for (const v of [secret.u, secret.p, 'PIN 4471']) assert.equal(raw.includes(v), false);
-  assert.equal(Buffer.from(sealed.secret_iv, 'base64').length, 12);
-});
-
-await ok('the right passphrase opens the vault and the login', async () => {
-  const k2 = await VC.unlock(PASS, meta);
-  assert.deepEqual(await VC.open(k2, id, sealed.secret_iv, sealed.secret_ct), secret);
-});
-
-await ok('a wrong passphrase is refused', async () => {
-  await assert.rejects(VC.unlock('orbit lantern cactus velvet 43', meta), /wrong-passphrase/);
-  await assert.rejects(VC.unlock('', meta), /wrong-passphrase/);
-});
-
-await ok('a login copied onto another entry will not open', async () => {
-  await assert.rejects(VC.open(key, '6f1f0b55-0000-4000-8000-000000000002', sealed.secret_iv, sealed.secret_ct));
-});
-
-await ok('a tampered login will not open', async () => {
-  const ct = Buffer.from(sealed.secret_ct, 'base64'); ct[3] ^= 1;
-  await assert.rejects(VC.open(key, id, sealed.secret_iv, ct.toString('base64')));
-});
-
-await ok('the same login sealed twice looks different', async () => {
-  const again = await VC.seal(key, id, secret);
-  assert.notEqual(again.secret_iv, sealed.secret_iv);
-  assert.notEqual(again.secret_ct, sealed.secret_ct);
-});
-
-await ok('changing the passphrase keeps saved logins and retires the old passphrase', async () => {
-  const NEW = 'harbor juniper anvil saffron 7';
-  const meta2 = await VC.rewrap(PASS, NEW, meta);
-  assert.notEqual(meta2.kdf_salt, meta.kdf_salt);
-  const k3 = await VC.unlock(NEW, meta2);
-  assert.deepEqual(await VC.open(k3, id, sealed.secret_iv, sealed.secret_ct), secret);
-  await assert.rejects(VC.unlock(PASS, meta2), /wrong-passphrase/);
-  await assert.rejects(VC.rewrap('not it at all, sorry', NEW, meta), /wrong-passphrase/);
-});
-
-await ok('passphrases in other Unicode forms still match', async () => {
-  const { meta: m } = await VC.create('café plein air 12345');
-  await VC.unlock('café plein air 12345', m);
-});
-
 await ok('generated passwords are long and varied', () => {
   const seen = new Set();
   for (let i = 0; i < 200; i++) {
-    const p = VC.password(20);
+    const p = PW.password(20);
     assert.equal(p.length, 20);
     seen.add(p);
   }
   assert.equal(seen.size, 200);
-  const all = Array.from({ length: 400 }, () => VC.password(20)).join('');
+  const all = Array.from({ length: 400 }, () => PW.password(20)).join('');
   assert.ok(/[A-Z]/.test(all) && /[a-z]/.test(all) && /\d/.test(all) && /[^A-Za-z0-9]/.test(all));
   assert.ok(!/[0O1lI]/.test(all), 'look-alike characters are left out');
-});
-
-await ok('strength meter turns away short or plain passphrases', () => {
-  assert.ok(VC.strength('password') < 2);
-  assert.ok(VC.strength('wizardtrees1') < 2);
-  assert.ok(VC.strength('Slane2026!!xx') < 2);
-  assert.ok(VC.strength('aaaaaaaaaaaa') < 2);
-  assert.ok(VC.strength(PASS) >= 3);
 });
 
 const CO = { slane: { name: 'Slane Inc', short: 'Slane' }, wtny: { name: 'Wizard Trees NY LLC', short: 'WT NY' } };
@@ -123,7 +53,7 @@ await ok('website hosts drop the www', () => {
 });
 
 // spreadsheet import
-const K = new Function(`const COMPANIES = ${block('const COMPANIES = ', 'const IDLE_LOCK_MS')}; return { COMPANIES, CATEGORIES };`)();
+const K = new Function(`const COMPANIES = ${block('const COMPANIES = ', 'const REVEAL_MS')}; return { COMPANIES, CATEGORIES };`)();
 const IMPORT = new Function('COMPANIES', 'CATEGORIES', `${block('/* ===== IMPORT MODEL START ===== */', '/* ===== IMPORT MODEL END ===== */')}; return IMPORT;`)(K.COMPANIES, K.CATEGORIES);
 const sheet = (text, opts = {}) => {
   const { rows } = IMPORT.parseTable(text), head = IMPORT.looksLikeHeader(rows[0]), map = IMPORT.guessMap(rows, head);
@@ -144,7 +74,8 @@ await ok('company names are read the way people write them', () => {
   assert.deepEqual(co('Wizard Trees NY LLC').codes, ['wtny']);
   assert.deepEqual(co('Slane and WT NY').codes, ['slane', 'wtny']);
   assert.deepEqual(co('Imperial Project LLC / WTMERCH').codes, ['imperial', 'wtmerch']);
-  assert.equal(co('All').codes.length, 7);
+  assert.equal(co('All').codes.length, 8);
+  assert.deepEqual(co('Olympic, Filifera').codes, ['filifera', 'olympic']);
   assert.deepEqual(co('Wizard Trees'), { codes: [], unknown: ['wizard trees'] });
 });
 await ok('kinds in the sheet map onto ours, and anything else becomes a new kind', () => {
@@ -204,7 +135,7 @@ await ok('importing again adds only what is new and never overwrites', () => {
   const text = 'Vendor,Company,Account #,Contact,Phone,Notes,Password\nRepublic,Slane,3-0412,Dana,818-555-0142,Tue pickup,pw1\nRepublic,Slane,,Joe,818-555-0100,,';
   const groups = sheet(text).groups;
   const existing = [{ id: 'e1', name: 'republic', companies: ['slane'], account_no: '3-0412', url: 'https://keep.me/', notes: 'Tue pickup',
-    contacts: [{ name: 'Dana', phone: '(818) 555-0142', email: 'd@x.com' }], secret_ct: 'sealed', secret_iv: 'iv' }];
+    contacts: [{ name: 'Dana', phone: '(818) 555-0142', email: 'd@x.com' }], has_login: true }];
   const [p] = IMPORT.plan(groups, existing);
   assert.equal(p.status, 'update');
   assert.equal(p.added, 1);
@@ -214,7 +145,7 @@ await ok('importing again adds only what is new and never overwrites', () => {
   assert.equal(existing[0].contacts.length, 1, 'the loaded entry is not touched until saved');
   const again = IMPORT.plan(groups, [{ ...existing[0], contacts: p.ch.contacts }]);
   assert.equal(again[0].status, 'same');
-  const noLogin = IMPORT.plan(groups, [{ ...existing[0], contacts: p.ch.contacts, secret_ct: null, secret_iv: null }])[0];
+  const noLogin = IMPORT.plan(groups, [{ ...existing[0], contacts: p.ch.contacts, has_login: false }])[0];
   assert.equal(noLogin.status, 'update'); assert.deepEqual(noLogin.login, { u: '', p: 'pw1', x: '' });
   const other = IMPORT.plan(groups, [{ ...existing[0], companies: ['wtny'] }])[0];
   assert.equal(other.status, 'new'); assert.equal(other.other, true);
@@ -228,6 +159,11 @@ await ok('the page only talks to its own database and Google sign-in', () => {
   const csp = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
   assert.match(csp, /default-src 'none'/);
   assert.match(csp, /connect-src https:\/\/dhiqhgtmelxwelyoowle\.supabase\.co wss:\/\/dhiqhgtmelxwelyoowle\.supabase\.co https:\/\/accounts\.google\.com\/gsi\/;/);
+});
+await ok('logins load one at a time, never with the list of entries', () => {
+  assert.doesNotMatch(html.match(/const ENTRY_COLS = '([^']+)'/)[1], /pass|user|secret/);
+  assert.match(html, /async login\(id\) \{ return must\(await sb\.from\('vault_logins'\)\.select\(LOGIN_COLS\)\.eq\('entry_id', id\)/);
+  assert.match(html, /async loginIds\(\) \{ return must\(await sb\.from\('vault_logins'\)\.select\('entry_id'\)/);
 });
 await ok('nothing secret is kept in browser storage', () => {
   assert.equal(/localStorage|sessionStorage|indexedDB/.test(block("<script>\n'use strict';", '</script>')), false);
