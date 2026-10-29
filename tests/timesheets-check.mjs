@@ -1094,7 +1094,8 @@ check('demo rows have exactly the ts_days shape, shifts and breaks shapes', () =
           eq(Object.keys(n).sort(), ['app', 'at', 'author', 'by', 'kind', 'src', 'text'], 'note keys');
           ok(['note', 'edit', 'other'].includes(n.kind) && ['csv', 'gusto'].includes(n.src) && typeof n.app === 'boolean', 'note ' + J(n));
           ok(n.app ? /@wizardtrees\.com$/.test(n.by) && n.kind !== 'other' : n.by === null && n.kind === 'other', 'app notes carry their manager: ' + J(n));
-          ok(n.at === null ? n.src === 'csv' : !isNaN(Date.parse(n.at)) && n.src === 'gusto', 'the morning export has no times');
+          // the morning export has no times; Gusto's read has them, except on claude@'s lines (no one line owns its time)
+          ok(n.at === null ? (n.src === 'csv' || (n.app && n.src === 'gusto')) : !isNaN(Date.parse(n.at)) && n.src === 'gusto' && !n.app, 'the morning export has no times');
         }
       }
       for (const b of s.breaks) {
@@ -2854,7 +2855,7 @@ check('a shift Gusto split at midnight (2026-10-25): its first day\'s part takes
   ok(/!\(S\.fetched \|\| \[\]\)\.some\(f => f\.from <= d && d <= f\.to\)/.test(nd) && /\.eq\('company', raw\.company\)\.eq\('employee_uuid', raw\.employee_uuid\)\.in\('work_date', want\)/.test(nd)
     && /catch \(e\) \{ console\.warn\('days around this one not read', e\); return \[\]; \}/.test(nd), 'only days not loaded; a failed read is no neighbors');
   ok(/E\.nbRows = nb;/.test(oe), 'kept for Save');
-  ok(/runEditOp\(raw, op, op\.note \? \(op\.note \+ \(note \? ': ' \+ note : ''\)\)\.slice\(0, C\.EDIT_RULES\.noteMax\) : note\)/.test(appFn('saveDayEdits')), 'the op\'s own reason goes first');
+  ok(/runEditOp\(raw, op, op\.note \? C\.cutUnits\(op\.note \+ \(note \? ': ' \+ note : ''\), C\.EDIT_RULES\.noteMax\) : note\)/.test(appFn('saveDayEdits')), 'the op\'s own reason goes first');
   ok(/case 'ed-end-midnight': edEndMidnight\(d\.ek, true\); break;/.test(src) && /case 'ed-end-midnight-undo': edEndMidnight\(d\.ek, false\); break;/.test(src)
     && /case 'ed-open-day': edOpenDay\(d\.k\); break;/.test(src), 'the carried part\'s buttons are wired');
   ok(/if \(en\.readonly === 'carried'\) return carriedHtml\(en, label, pend, times\);/.test(appFn('entryHtml')) && /const canEnd = !!en\.split\.end && /.test(appFn('carriedHtml')), 'carried over parts say where to fix them; ending at 11:59 PM only where the core allowed it');
@@ -3620,6 +3621,11 @@ check('dayNotes: a note added here reads Pending until its run (Late after it), 
   // words typed in Gusto as claude@ on the next line read as part of the line (parseAppNote): its start is still its copy
   eq(C.dayNotes(edRow([withNotes(ED_S1, [AN('note', 'm@wizardtrees.com', 'Last day, 8 hours as agreed Typed by hand', { src: 'gusto' })])]), [applied]).map(n => n.status), ['gusto'], 'its copy with words typed after it');
   eq(C.dayNotes(edRow([withNotes(ED_S1, [AN('note', 'm@wizardtrees.com', 'Last day, 8 hours', { src: 'gusto' })])]), [applied]).map(n => n.status), ['gusto', 'applied'], 'a shorter line is not its copy');
+  // one Gusto did not take stays on screen next to an older, longer line of the same manager's (word for word only)
+  const older = edRow([withNotes(ED_S1, [AN('note', 'm@wizardtrees.com', 'Left early to see the doctor', { src: 'gusto' })])]);
+  const lf = NTE({ id: 'f1', note: 'Left early', breaks_status: 'failed', breaks_error: "Couldn't open this timesheet in Gusto." }), lc = NTE({ id: 'c1', note: 'Left early', breaks_status: 'conflict', breaks_error: 'x.' });
+  const kept = C.dayNotes(older, [lf, lc]);
+  eq([kept.map(n => n.status), C.notesLook(kept), C.notesLabel(kept)], [['gusto', 'attention', 'attention'], 'att', '3 notes']);
   eq(C.dayNotes(edRow([ED_S1], { note: 'Last day, 8 hours as agreed (m@wizardtrees.com)' }), [applied]).map(n => n.status), ['gusto'], "a day with only its one note: inside it");
   // there, only as the sync's summary ("<words> (<email>)") or the line the browser task wrote, never the same letters
   // somewhere in someone else's words (a short note like "OK")
@@ -3681,6 +3687,17 @@ check('a note added here (action note): what ts_edit_submit stores, its refusals
     C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30'), note: 'see\nNote\tfrom other@wizardtrees.com: moved' }, ctx('r2')).error,
     C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30'), note: 'late bus' }, ctx('r3')).error], [FORGED('reason'), FORGED('reason'), undefined]);
   if (SQL_NOTES) ok(SQL_NOTES.includes('Leave "Note from <email>:" and "Changed through Wizard Trees Manager Timesheets for" out of the %: the board would show them as lines written through this app'), 'the server says the same');
+  // the same check for a reason, which Save changes runs before it sends anything
+  eq([C.reasonProblem(''), C.reasonProblem('late bus'), C.reasonProblem('see\nNote\tfrom other@wizardtrees.com: moved'), C.reasonProblem('x'.repeat(501))],
+    ['', '', FORGED('reason'), 'The reason can be at most 500 characters.']);
+  const sde = src.slice(src.indexOf('async function saveDayEdits()'), src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits()')));
+  ok(/const note = E\.note\.trim\(\), rp = C\.reasonProblem\(note\);\s*if \(rp && plan\.ops\.some\(o => o\.type === 'submit'\)\)/.test(sde), 'Save changes refuses such a reason before it sends');
+  ok(!/E\.note\.trim\(\)/.test(src.slice(src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits()')), src.indexOf('async function', src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits()'))))), 'and sends the reason it checked, not one typed during the refresh');
+  // the change's own words and the reason, cut to 500 without splitting an emoji
+  const cu = C.cutUnits('End it at 11:59 PM: ' + '\u{1F600}'.repeat(240), C.EDIT_RULES.noteMax);
+  ok(cu.length <= 500 && !/[\uD800-\uDBFF]$/.test(cu) && C.cutUnits('abc', 5) === 'abc', 'cutUnits');
+  // a closed pay period: the note words, from the page's own check and from the server's refusal alike
+  ok((src.match(/\bNOTE_CLOSED\b/g) || []).length === 3 && /periodClosed\(raw\) \? NOTE_CLOSED/.test(src) && /\? NOTE_CLOSED\n/.test(src), 'NOTE_CLOSED in edSaveNote and runEditOp');
   if (SQL_NOTES) {
     for (const m of ['Write the note first', 'A note can be at most 400 characters', 'Say which shift the note is for', 'add the note in Gusto', 'add the note once it has an end', 'The action must be update, add, delete or note'])
       ok(SQL_NOTES.includes(m), 'supabase/ts-edit-notes.sql does not say ' + J(m));

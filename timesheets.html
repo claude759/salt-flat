@@ -2932,8 +2932,8 @@
       edits.push(edit);
       return { ok: true, edit, edits };
     }
-    if (note && note.length > EDIT_RULES.noteMax) return fail('The reason can be at most ' + EDIT_RULES.noteMax + ' characters.');
-    if (note && APP_LINE_ONE.test(noteKey(note))) return fail(appLineWords('reason'));
+    const rp = reasonProblem(note);
+    if (rp) return fail(rp);
     if (!['update', 'add', 'delete'].includes(action)) return fail('The action must be update, add, delete or note.');
     let shift = null;
     if (action === 'add') { if (sid) return fail('A new shift has no Gusto shift id yet.'); }
@@ -3519,6 +3519,21 @@
     if (APP_LINE_ONE.test(t)) return appLineWords('note');
     return '';
   }
+  // why a change's reason cannot go as typed ('' when it can), the words ts_edit_submit uses: Save changes checks it before
+  // it sends anything (review 2026-10-29), so a refused reason never leaves half a plan sent
+  // s cut to at most n UTF-16 units, never between the two halves of an emoji (the browser task's cutAt does the same)
+  function cutUnits(s, n) {
+    const t = String(s == null ? '' : s);
+    if (t.length <= n) return t;
+    const c = t.charCodeAt(n - 1);
+    return t.slice(0, c >= 0xD800 && c <= 0xDBFF ? n - 1 : n);
+  }
+  function reasonProblem(s) {
+    const t = String(s == null ? '' : s).trim();
+    if (!t) return '';
+    if (t.length > EDIT_RULES.noteMax) return 'The reason can be at most ' + EDIT_RULES.noteMax + ' characters.';
+    return APP_LINE_ONE.test(noteKey(t)) ? appLineWords('reason') : '';
+  }
   // one stored note as entries: as the sync wrote it, or read with parseAppNote when it came without its kind
   function noteParts(n) {
     if (!n || typeof n !== 'object') return [];
@@ -3554,13 +3569,15 @@
       return dayNote.split(' · ').some(p => { const m = noteKey(p).match(/^(.*) \(([^()\s]+)\)$/); return !!m && m[1] === want && sameEmail(m[2], e.created_by); })
         || parseAppNote(dayNote).some(p => p.kind === 'note' && sameEmail(p.by, e.created_by) && (p.text === want || p.text.startsWith(want + ' - ')));
     };
-    const inGusto = e => dayNote ? inDayNote(e)
-      : (perShift.get(String(e.shift_id)) || []).some(n => n.app && sameEmail(n.by, e.created_by) && sameLine(n.text, e.note));
+    // one Gusto did not take (Needs a look) counts as there only word for word, as the browser task's recheck does: a longer
+    // line of the same manager's that starts with the same words is another note (review 2026-10-29)
+    const inGusto = (e, st) => dayNote ? inDayNote(e)
+      : (perShift.get(String(e.shift_id)) || []).some(n => n.app && sameEmail(n.by, e.created_by) && (st === 'applied' ? sameLine(n.text, e.note) : noteKey(n.text) === noteKey(e.note)));
     const mine = new Map();
     for (const e of (edits || []).filter(x => isNoteEdit(x) && x.day_id === r.id && !x.cancelled_at && noteKey(x.note)).sort(cmpEdit)) {
       const st = editStatus(e);
       if (st !== 'pending' && st !== 'attention' && st !== 'applied') continue;
-      if (st !== 'pending' && inGusto(e)) continue;
+      if (st !== 'pending' && inGusto(e, st)) continue;
       const i = shifts.findIndex(s => String(s.id) === String(e.shift_id)), k = e.shift_id == null ? '' : String(e.shift_id);
       if (!mine.has(k)) mine.set(k, []);
       mine.get(k).push({ key: 'e:' + e.id, shiftId: e.shift_id == null ? null : String(e.shift_id), shiftNo: i < 0 ? null : i + 1, shift: i < 0 ? e.before || null : shifts[i],
@@ -3646,7 +3663,7 @@
     partWaits, editSending, CANCELLABLE,
     stampText, editPartLines, editTip, supersede, submitEdit, cancelEdit, stillWorking, editorEntries, editPlan, entriesPreview, dayStamp,
     isNoteEdit, editReason, APP_EDIT_PREFIX, APP_NOTE_PREFIX, parseAppNote, cleanNoteText, noteProblem, dayNotes, notesLabel, notesLook, noteWho, noteMeta,
-    noteStatusText, setNoteHeld, noteIsHeld, notesTip, noteShifts, spanLabel,
+    noteStatusText, setNoteHeld, noteIsHeld, reasonProblem, cutUnits, notesTip, noteShifts, spanLabel,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
@@ -4000,16 +4017,17 @@
   // other scenario keeps its one note for the day, as before notes came per shift.
   function demoNotes(rows, lastSync) {
     const note = (text, author, at, o) => Object.assign({ text, author, at: at || null, app: false, by: null, kind: 'other', src: at ? 'gusto' : 'csv' }, o || {});
-    const app = (kind, by, text, at) => note(text, APP_AUTHOR, at, { app: true, by, kind });
+    // a line written through this page carries no time: Gusto's one time on claude@'s note belongs to no one line
+    const app = (kind, by, text, src) => note(text, APP_AUTHOR, null, { app: true, by, kind, src: src || 'csv' });
     const after = (iso, min) => new Date(Date.parse(iso) + min * 60000).toISOString();
     const set = (r, lists) => { r.shifts.forEach((s, i) => { if (lists[i] && lists[i].length) s.notes = lists[i]; }); r.note = noteSummary(r.shifts); };
     // two pop-ups in a day: the ambassador's note on the first, a note from the office and the field lead's on the second
     const mar = rows.find(r => r.employee_name === 'Marlowe Glimmerbee' && r.shifts.length === 2 && r.shifts.every(s => s.out));
     if (mar) {
-      const [a, b] = mar.shifts, okAt = new Date(Math.min(Date.parse(after(b.out, 50)), Date.parse(lastSync) - 3600000)).toISOString();
+      const [a, b] = mar.shifts;
       set(mar, [[note('Pop-up at the north store', 'Marlowe Glimmerbee', after(a.in, 2))],
-        [note('Picked up samples at the office on the way', 'Ember Quillfeather', after(b.in, 4)), app('edit', 'field.lead@wizardtrees.com', '', okAt),
-          app('note', 'field.lead@wizardtrees.com', 'Second stop ran long, OK from me', okAt)]]);
+        [note('Picked up samples at the office on the way', 'Ember Quillfeather', after(b.in, 4)), app('edit', 'field.lead@wizardtrees.com', '', 'gusto'),
+          app('note', 'field.lead@wizardtrees.com', 'Second stop ran long, OK from me', 'gusto')]]);
     }
     // the harvest push, from the morning export: the lead's note and the reason a manager gave with a change
     const wren = rows.find(r => r.employee_name === 'Wren Copperkettle' && r.note === 'Harvest push, two rooms');
@@ -4105,7 +4123,8 @@
     const mar = days('Marlowe Glimmerbee').find(r => r.shifts.length === 2 && (r.shifts[1].notes || []).some(n => n.app && n.kind === 'note'));
     if (mar) {
       const g = mar.shifts[1].notes.find(n => n.app && n.kind === 'note');
-      noteOn(mar, mar.shifts[1], { note: g.text, breaks_status: 'applied', breaks_applied_at: g.at, created_by: g.by, created_at: new Date(Date.parse(g.at) - 6 * 3600000).toISOString() });
+      const done = Date.parse(lastSync) - 3600000;   // applied an hour before the last sync, which then read Gusto's copy
+      noteOn(mar, mar.shifts[1], { note: g.text, breaks_status: 'applied', breaks_applied_at: new Date(done).toISOString(), created_by: g.by, created_at: new Date(done - 6 * 3600000).toISOString() });
     }
     return out;
   }
@@ -5648,6 +5667,8 @@
   // what an open note box says once no shift of the day can take it (a read since brought another manager's delete of the
   // shift, say): the typed note stays there to copy, with Cancel
   const NOTE_NO_SHIFT = "None of this day's shifts can take a note now. Copy it into Gusto, or cancel it.";
+  // a note on a day whose pay period Gusto closed (the page's own check and the server's payroll guard say the same)
+  const NOTE_CLOSED = 'Gusto closed this pay period, so a note can no longer go in from here: add it in Gusto.';
   // the note box's text field, when it is on screen (it is not once the box closed or the day went)
   function noteFocus() { const t = $('edNoteText'); if (t) t.focus(); }
   // why a day cannot be changed here: gone, a New York day before New York is proven, a day that leaves the
@@ -5909,7 +5930,7 @@
   async function edSaveNote() {
     if (E.noteBusy || E.busy || E.loading) return;
     const raw = S.rows.get(E.rowId);
-    const why = !raw ? 'This day is no longer on the board. Close this and reload.' : !canEditRow(raw) ? noEditMsg(raw) + '.' : !mayNote(raw) ? 'A note cannot be added here yet: add it in Gusto.' : '';
+    const why = !raw ? 'This day is no longer on the board. Close this and reload.' : !canEditRow(raw) ? (periodClosed(raw) ? NOTE_CLOSED : noEditMsg(raw) + '.') : !mayNote(raw) ? 'A note cannot be added here yet: add it in Gusto.' : '';
     if (why) { E.noteErr = why; renderEditor(); return; }
     // the shift picked in the box; with no box choice yet (one shift, nothing picked), the day's one shift
     const targets = noteTargets(raw), s = targets.find(x => String(x.id) === E.noteShift) || (targets.length === 1 && !E.noteShift ? targets[0] : null);
@@ -6029,7 +6050,7 @@
         // a server without supabase/ts-edit-notes.sql knows only update, add and delete
         : op.action === 'note' && /action must be update, add or delete/i.test(errText(error)) ? 'Adding notes is not switched on yet.'
         // the payroll guard words its refusal for hours
-        : op.action === 'note' && /can no longer be changed here/i.test(errText(error)) ? 'Gusto closed this pay period, so a note can no longer go in from here: add it in Gusto.'
+        : op.action === 'note' && /can no longer be changed here/i.test(errText(error)) ? NOTE_CLOSED
         : /being sent to Gusto right now/i.test(errText(error)) ? 'A change of this shift is being sent to Gusto right now. Reload once the board shows it is done.' : errText(error) };
       if (data && data.id) {
         // the server replaced any older waiting edit of this shift: do the same here until the re-read (a note replaces nothing)
@@ -6095,9 +6116,13 @@
       if (er) edFocus(en.key, er.brk != null ? 'bs' : /^(no_in|in_date|shift_overlap|shift_overlap_day|shift_swap|split_shift)$/.test(er.code) ? 'in' : 'out', er.brk);
       return;
     }
+    // a reason the server would refuse: said here, before anything is sent
+    // the reason as it is now: checked here and sent as checked (typing during the refresh below changes nothing sent)
+    const note = E.note.trim(), rp = C.reasonProblem(note);
+    if (rp && plan.ops.some(o => o.type === 'submit')) { E.err = rp; renderEditor(); const nt = $('edNote'); if (nt) nt.focus(); return; }
     if (!plan.ops.length) {
       // a reason alone saves nothing: say so, and keep what was typed
-      if (E.note.trim()) { E.err = 'A reason needs a change to go with it: change a time or a break, or clear the reason.'; renderEditor(); const nt = $('edNote'); if (nt) nt.focus(); return; }
+      if (note) { E.err = 'A reason needs a change to go with it: change a time or a break, or clear the reason.'; renderEditor(); const nt = $('edNote'); if (nt) nt.focus(); return; }
       closeEditor(); toast('Nothing changed'); return;
     }
     E.busy = true; E.stale = false; renderEditor();
@@ -6113,13 +6138,13 @@
         : "Couldn't check this day for newer changes, so nothing was saved. Try again in a moment (" + fresh.error + ').';
       renderEditor(); return;
     }
-    const note = E.note.trim(), failed = new Set(), okKeys = new Set(), done = [];
+    const failed = new Set(), okKeys = new Set(), done = [];
     for (const op of plan.ops) {
       if (failed.has(op.key)) continue;                 // a cancel that failed: its new add must not go
       const en = edEntry(op.key);
       // it moves into time a shift whose change did not save has in Gusto: it would be refused there, so it waits too
       if ((op.wait || []).some(w => failed.has(w))) { failed.add(op.key); if (en) en.err = "Not saved: it moves into another shift's time, and that shift's change did not save."; continue; }
-      const res = await runEditOp(raw, op, op.note ? (op.note + (note ? ': ' + note : '')).slice(0, C.EDIT_RULES.noteMax) : note);
+      const res = await runEditOp(raw, op, op.note ? C.cutUnits(op.note + (note ? ': ' + note : ''), C.EDIT_RULES.noteMax) : note);
       if (res.error) { failed.add(op.key); if (en) en.err = (op.type === 'cancel' ? "Couldn't cancel the change that was waiting: " : "Couldn't save this shift: ") + res.error; continue; }
       okKeys.add(op.key); done.push({ op, edit: res.edit });
       if (!en) continue;
