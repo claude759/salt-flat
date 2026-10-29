@@ -126,6 +126,11 @@ create table if not exists public.expenses (
   receipt_path  text,                  -- storage path in 'receipts' bucket
   ocr_raw       jsonb,                 -- raw model extraction for audit
   alloc         jsonb,                 -- custom per-store split: [{d:<dispensary_id>, w:<dollars>}]; null = even split
+  -- event costs synced from the books (supabase/ba-expense-events.sql, 2026-10-23)
+  event_name    text,                  -- events-app folder name, e.g. 'PUFFCON 2026 (10/3/26)'
+  event_id      text,                  -- events-app Event ID
+  books_key     text constraint expenses_books_key_key unique,   -- the QuickBooks line: '<company>:<txnType>:<txnId>:<lineId>'
+  source        text constraint expenses_source_check check (source is null or source = 'books'),   -- 'books' = written by the event sync
   period_id     uuid references public.pay_periods(id),
   status        text not null default 'draft' check (status in ('draft','submitted','approved','rejected')),
   note          text,

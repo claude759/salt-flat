@@ -40,6 +40,7 @@
   .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;
     border:1px solid var(--line);background:var(--panel2);color:var(--muted)}
   .pill.admin{color:#fff;background:var(--accent);border-color:var(--accent)}
+  .pill.ev{color:var(--accent2);border-color:color-mix(in srgb, var(--accent2) 45%, transparent);font-size:10px;padding:1px 7px;white-space:normal}
   main{flex:1;padding:14px 14px calc(96px + var(--safe-b));display:flex;flex-direction:column;gap:14px}
 
   /* cards & controls */
@@ -357,7 +358,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-10-15.124';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-10-23.125';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -396,11 +397,34 @@ const isSalesHours = h => /^sales$/i.test((h&&h.job)||'') || /^sales$/i.test((h&
 const payLabel = p => p==='company' ? '💳 Company card' : p==='company_bank' ? '🏦 Company bank' : '💵 Reimburse';
 const payFlag  = p => p==='company' ? '💳' : p==='company_bank' ? '🏦' : '';
 function expSplit(E){ let reimb=0, card=0; (E||[]).forEach(x=>{ if(isCoPaid(x.payment)) card+=Number(x.amount||0); else reimb+=Number(x.amount||0); }); return {reimb, card}; }
+// Rows the event sync writes from QuickBooks (source 'books', supabase/ba-expense-events.sql): company-paid event
+// costs owned by the Automation profile. Reports show them with their event, never as anyone's field work (no visit,
+// no to-do, no approval), and every editor opens them read-only: the books are where they get fixed.
+const BOOKS_NOTE = 'Synced from QuickBooks. Fix it in the books.';
+const BOOKS_OWNER = 'From the books';
+const isBooks = x => !!x && x.source==='books';
+const eventPill = name => name ? `<span class="pill ev" title="Event">🎪 ${esc(name)}</span>` : '';
+// The event columns (event_name, event_id, books_key, source) arrive with supabase/ba-expense-events.sql. Until it is
+// applied, a select that names them fails (Postgres 42703, undefined column), so the explicit expenses selects ask
+// once with them and fall back to the plain list; select('*') reads pick them up on their own.
+const EXP_EVENT_COLS = 'event_name,event_id,books_key,source';
+let expEventCols = null;   // null = not asked yet; true / false = the columns exist / don't
+const missingColumn = e => !!e && (e.code==='42703' || /column .* does not exist/i.test(e.message||''));
+// where(builder) adds the filters, e.g. q=>q.gte('expense_date',start); resolves to the usual {data, error}
+async function selectExpenses(cols, where){
+  if(expEventCols!==false){
+    const r = await where(supabase.from('expenses').select(cols+','+EXP_EVENT_COLS));
+    if(!missingColumn(r.error)){ if(!r.error) expEventCols=true; return r; }
+    expEventCols=false;
+  }
+  return where(supabase.from('expenses').select(cols));
+}
 
 /* ─────────────────────────── helpers ─────────────────────────── */
 const $ = (s, r=document) => r.querySelector(s);
 const app = $('#app');
-const money = n => '$' + (Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+// a credit (a negative amount: a refund or vendor credit synced from the books) reads -$12.34, never $-12.34
+const money = n => { const v=Number(n)||0, s=Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); return (v<0&&s!=='0.00'?'-':'')+'$'+s; };
 const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const todayISO = () => { const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
 const fmtDate = s => s ? new Date(s+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
@@ -1451,9 +1475,9 @@ async function baReport(m){
   const {start,end}=ensureRepRange();
   const uid=state.session.user.id;
   const [trips,exps,hrs]=await Promise.all([
-    supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
-    supabase.from('expenses').select('id,dispensary_id,dispensary_ids,alloc,amount,payment,expense_date,vendor,category,receipt_path,note,status').eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end),
-    supabase.from('hours').select('id,dispensary_id,dispensary_ids,alloc,amount,work_date,hours,rate,job,kind,note,status').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
+    supabase.from('trips').select('id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status,state').eq('ba_id',uid).gte('trip_date',start).lte('trip_date',end),
+    selectExpenses('id,dispensary_id,dispensary_ids,alloc,amount,payment,expense_date,vendor,category,receipt_path,note,status,state', q=>q.eq('ba_id',uid).gte('expense_date',start).lte('expense_date',end)),
+    supabase.from('hours').select('id,dispensary_id,dispensary_ids,alloc,amount,work_date,hours,rate,job,kind,note,status,state').eq('ba_id',uid).gte('work_date',start).lte('work_date',end),
   ]);
   const dn=id=>{ const n=dispName(id); return n==='—'?'':n; };
   const agg={}, items={};
@@ -1462,14 +1486,14 @@ async function baReport(m){
     items[k].push({kind:'trip',id:t.id,ba_id:t.ba_id,date:t.trip_date,ba:'',disp:dn(t.dispensary_id),start_label:t.start_label,dest_label:t.dest_label,label:t.dest_label||'',miles:t.miles,method:t.method,start_odo:t.start_odo,end_odo:t.end_odo,note:t.note,status:t.status,amount:Number(t.amount||0)}); });
   (exps.data||[]).forEach(x=>{ const A=Number(x.amount||0), names=dispIds(x).map(dn).filter(Boolean);
     dispSplit(x,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k][isCoPaid(x.payment)?'card':'exp']+=share;
-      items[k].push({kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:'',disp:dn(id),dispNames:names,splitN:n,alSplit:!!(x.alloc&&x.alloc.length),vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
+      items[k].push({kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:'',disp:dn(id),dispNames:names,splitN:n,alSplit:!!(x.alloc&&x.alloc.length),vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A,event:x.event_name||'',books:isBooks(x)}); }); });
   (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dn).filter(Boolean);
     dispSplit(h,A).forEach(({id,share,n})=>{ const k=id||'none'; ensure(k); agg[k].labor+=share; if(isSalesHours(h)) agg[k].laborSales+=share;
       items[k].push({kind:'hours',id:h.id,ba_id:h.ba_id,date:h.work_date,ba:'',disp:dn(id),dispNames:names,splitN:n,hours:Math.round(H/n*1000)/1000,fullHours:H,rate:h.rate,job:h.job,cat:h.kind,note:h.note,status:h.status,amount:share,fullAmount:A}); }); });
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':dispName(k), total:v.mile+v.exp+v.card+v.labor, ...v }))
-    .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
+    .filter(r=>Math.abs(r.total)>=0.005).sort((a,b)=>b.total-a.total);   // a store left negative by a credit stays listed
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
   const detailRows=k=>(items[k]||[]).map(it=>repDetailRow(it)).join('');
   const spendBody=`
@@ -1481,8 +1505,8 @@ async function baReport(m){
             <div class="t" style="font-weight:600${r.id==='none'?';color:var(--yellow)':''}"><span class="caret" style="display:inline-block;width:12px;color:var(--muted)">▸</span>${esc(r.name)}</div>
             <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
           </div>
-          <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
-          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor${r.laborSales>0?` <span class="muted">(BA ${money(r.labor-r.laborSales)} · Sales ${money(r.laborSales)})</span>`:''}`:''}</div>
+          <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${r.total>0?Math.max(3,Math.round(r.total/max*100)):0}%;background:var(--accent)"></div></div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${Math.abs(r.card)>=0.005?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor${r.laborSales>0?` <span class="muted">(BA ${money(r.labor-r.laborSales)} · Sales ${money(r.laborSales)})</span>`:''}`:''}</div>
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">Nothing logged for this range yet.</p>`}
     </div>`;
@@ -1515,7 +1539,7 @@ async function baReport(m){
   if(view==='spend'){
     m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return;
       const it=allItems[el.dataset.item];
-      if(it&&it.ba_id&&it.date) dayAuditSheet(it.ba_id, it.date, el.dataset.item); else reportItemSheet(it); });
+      if(it&&it.ba_id&&it.date&&!it.books) dayAuditSheet(it.ba_id, it.date, el.dataset.item); else reportItemSheet(it); });
     m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
   } else {
     m.querySelectorAll('.visitrow').forEach(el=>el.onclick=()=>visitSheet(state._visitLookup[el.dataset.visit]));
@@ -1574,6 +1598,7 @@ function baItemRow(x){
 }
 // what's missing on a trip/expense — drives the BA + admin to-do list
 function itemIssues(x){
+  if(isBooks(x)) return [];   // synced from QuickBooks: never anyone's to-do
   const hasDisp = x.dispensary_id || (x.dispensary_ids && x.dispensary_ids.length);   // single or multi
   if(x._k==='hours') return hasDisp ? [] : ['a dispensary'];   // hours only ever need a dispensary link
   const trip = x._k==='trip';
@@ -1895,6 +1920,7 @@ function periodDays(start,end){ const out=[]; if(!start||!end) return out;
 function dgWeekday(iso){ return new Date(iso+'T12:00:00Z').toLocaleDateString('en-US',{weekday:'short',timeZone:'UTC'}); }
 function dgDateLbl(iso){ return new Date(iso+'T12:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'}); }
 function dgCanEdit(ctx, kind, it){ if(kind==='hours') return !!ctx.isAdmin;
+  if(isBooks(it)) return false;   // synced from QuickBooks: read-only (itemDetailSheet says so)
   return !!ctx.isAdmin || (it && (it.status==='draft'||it.status==='rejected')); }
 function dgCanAdd(ctx, kind){ if(kind==='hours') return false;   // hours only ever come from the Gusto import, never added by hand
   return !!(ctx.isAdmin || ctx.canAdd); }   // admins add on a BA's behalf (RLS insert now allows is_admin); BAs add on an editable period
@@ -2095,7 +2121,7 @@ function itemDetailSheet(kind, x){
   const rows=[]; const add=(k,v)=>{ if(v!=null&&v!=='') rows.push(`<div class="row" style="justify-content:space-between;gap:14px"><span class="muted small">${k}</span><span style="text-align:right">${esc(String(v))}</span></div>`); };
   const disp=id=>id?dispName(id):null; let title;
   if(kind==='trip'){ title='Trip'; add('Date',fmtDate(x.trip_date)); add('Start',x.start_label); add('Destination',x.dest_label); add('Dispensary',disp(x.dispensary_id||(x.dispensary_ids&&x.dispensary_ids[0]))); add('Category',x.kind); add('Miles',x.miles); add('Reimbursement',money(Number(x.amount||0))); }
-  else if(kind==='exp'){ title='Expense'; add('Date',fmtDate(x.expense_date)); add('Vendor',x.vendor); add('Category',x.category); add('Amount',money(Number(x.amount||0))); add('Paid with',payLabel(x.payment));
+  else if(kind==='exp'){ title='Expense'; add('Date',fmtDate(x.expense_date)); add('Vendor',x.vendor); add('Category',x.category); add('Event',x.event_name); add('Amount',money(Number(x.amount||0))); add('Paid with',payLabel(x.payment));
     // where the money went — honors a custom per-store split (alloc), else the even split
     const ids=dispIds(x);
     if(ids.length===1) add('Dispensary',disp(ids[0]));
@@ -2115,10 +2141,11 @@ function itemDetailSheet(kind, x){
   const why = kind==='hours' ? 'labor hours sync from Gusto'
     : (x.status==='approved'||x.status==='submitted') ? `this item is ${x.status} (ask an admin to change it)`
     : 'this period is locked';
-  const isAdm = state.profile?.role==='admin';
+  const books = kind==='exp' && isBooks(x);   // synced from QuickBooks: read-only for everyone
+  const isAdm = state.profile?.role==='admin' && !books;
   const recBtn = (kind!=='hours' && x.receipt_path) ? `<button class="btn block" id="dvRec" style="margin-top:12px">📄 View receipt</button>` : '';
   openSheet(`<h3>${title} <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>
-    <div class="small muted" style="margin:2px 0 12px">View only — ${why}.</div>
+    <div class="small muted" style="margin:2px 0 12px">${books?BOOKS_NOTE:`View only — ${why}.`}</div>
     <div style="display:flex;flex-direction:column;gap:8px">${rows.join('')}</div>
     ${recBtn}
     ${isAdm?`<button class="btn primary block" id="dvEdit" style="margin-top:${recBtn?'8':'12'}px">✎ Edit as admin</button>`:''}
@@ -3329,9 +3356,11 @@ async function adminReport(m){
   const [{data:profs},{data:disps},trips,exps,hrs]=await Promise.all([
     supabase.from('profiles').select('id,full_name,region,home_region,non_ba,base_address'),
     supabase.from('dispensaries').select('id,name,state'),
-    supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status').gte('trip_date',start).lte('trip_date',end),
-    supabase.from('expenses').select('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,payment,expense_date,vendor,category,receipt_path,note,status').gte('expense_date',start).lte('expense_date',end),
-    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,work_date,hours,rate,job,kind,note,status,source').gte('work_date',start).lte('work_date',end),
+    // `state` on all three: rowRegion below reads the row's own state (it was never selected, so it fell through to
+    // the logger's region; event costs from the books carry their event's state)
+    supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status,state').gte('trip_date',start).lte('trip_date',end),
+    selectExpenses('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,payment,expense_date,vendor,category,receipt_path,note,status,state', q=>q.gte('expense_date',start).lte('expense_date',end)),
+    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,work_date,hours,rate,job,kind,note,status,source,state').gte('work_date',start).lte('work_date',end),
   ]);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
@@ -3350,7 +3379,7 @@ async function adminReport(m){
   // person-level fallback, still needed where there is no row in hand
   const inRegion=ba_id=>region==='all' || (pById[ba_id]&&personRegion(pById[ba_id])===region);
   const baName=ba_id=>(pById[ba_id]&&pById[ba_id].full_name)||'BA';
-  const agg={}, items={};   // dispensary_id|'none' -> totals / item list
+  const agg={}, items={}, evItems=[];   // dispensary_id|'none' -> totals / item list; evItems = expense shares with an event
   const ensure=k=>{ agg[k]=agg[k]||{mile:0,exp:0,card:0,labor:0,laborSales:0}; items[k]=items[k]||[]; };
   (trips.data||[]).forEach(t=>{ if(!keep(t,t.dispensary_id)) return; const k=t.dispensary_id||'none'; ensure(k); agg[k].mile+=Number(t.amount||0);
     items[k].push({kind:'trip',id:t.id,ba_id:t.ba_id,date:t.trip_date,ba:baName(t.ba_id),disp:(dById[k]&&dById[k].name)||'',
@@ -3359,8 +3388,10 @@ async function adminReport(m){
   const dnm=id=>(id&&dById[id])?dById[id].name:'';
   (exps.data||[]).forEach(x=>{ const A=Number(x.amount||0), names=dispIds(x).map(dnm).filter(Boolean);
     dispSplit(x,A).forEach(({id,share,n})=>{ if(!keep(x,id)) return; const k=id||'none'; ensure(k); agg[k][isCoPaid(x.payment)?'card':'exp']+=share;
-      items[k].push({kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:baName(x.ba_id),disp:dnm(id),dispNames:names,splitN:n,alSplit:!!(x.alloc&&x.alloc.length),
-        vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A}); }); });
+      const it={kind:'exp',id:x.id,ba_id:x.ba_id,date:x.expense_date,ba:isBooks(x)?BOOKS_OWNER:baName(x.ba_id),disp:dnm(id),dispNames:names,splitN:n,alSplit:!!(x.alloc&&x.alloc.length),
+        vendor:x.vendor||'',category:x.category,payment:x.payment,receipt:x.receipt_path||'',note:x.note,status:x.status,amount:share,fullAmount:A,
+        event:x.event_name||'',books:isBooks(x)};
+      items[k].push(it); if(it.event) evItems.push(it); }); });
   (hrs.data||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0), names=dispIds(h).map(dnm).filter(Boolean);
     dispSplit(h,A).forEach(({id,share,n})=>{ if(!keep(h,id)) return; const k=id||'none'; ensure(k); agg[k].labor+=share; if(isSalesHours(h)) agg[k].laborSales+=share;
       items[k].push({kind:'hours',id:h.id,ba_id:h.ba_id,date:h.work_date,ba:baName(h.ba_id),disp:dnm(id),dispNames:names,splitN:n,
@@ -3368,7 +3399,7 @@ async function adminReport(m){
   Object.values(items).forEach(a=>a.sort((p,q)=>(p.date||'').localeCompare(q.date||'')));
   const allItems={}; Object.values(items).forEach(a=>a.forEach(it=>allItems[it.kind+':'+it.id]=it));   // flat lookup for the detail popup
   let rows=Object.entries(agg).map(([k,v])=>({ id:k, name:k==='none'?'⚠ Not linked to a dispensary':(dById[k]?dById[k].name:'(deleted location)'), total:v.mile+v.exp+v.card+v.labor, ...v }))
-    .filter(r=>r.total>0).sort((a,b)=>b.total-a.total);
+    .filter(r=>Math.abs(r.total)>=0.005).sort((a,b)=>b.total-a.total);   // a store left negative by a credit stays listed
   const grand=rows.reduce((a,r)=>a+r.total,0), max=rows.reduce((a,r)=>Math.max(a,r.total),0)||1;
   const detailRows=k=>(items[k]||[]).map(it=>repDetailRow(it)).join('');
   const spendBody=`
@@ -3380,8 +3411,8 @@ async function adminReport(m){
             <div class="t" style="font-weight:600${r.id==='none'?';color:var(--yellow)':''}"><span class="caret" style="display:inline-block;width:12px;color:var(--muted)">▸</span>${esc(r.name)}</div>
             <div style="font-weight:750;white-space:nowrap">${money(r.total)}</div>
           </div>
-          <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${Math.max(3,Math.round(r.total/max*100))}%;background:var(--accent)"></div></div>
-          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${r.card>0?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor${r.laborSales>0?` <span class="muted">(BA ${money(r.labor-r.laborSales)} · Sales ${money(r.laborSales)})</span>`:''}`:''}</div>
+          <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${r.total>0?Math.max(3,Math.round(r.total/max*100)):0}%;background:var(--accent)"></div></div>
+          <div class="small muted">${money(r.mile)} mileage · ${money(r.exp)} expenses${Math.abs(r.card)>=0.005?` · 💳 ${money(r.card)} card`:''}${r.labor>0?` · ⏱ ${money(r.labor)} labor${r.laborSales>0?` <span class="muted">(BA ${money(r.labor-r.laborSales)} · Sales ${money(r.laborSales)})</span>`:''}`:''}</div>
         </div>
         <div class="repdetail hide" data-for="${r.id}" style="padding-left:6px">${detailRows(r.id)}</div>`).join(''):`<p class="muted small" style="margin-top:8px">No spend logged for this range${region!=='all'?' in '+region:''} yet.</p>`}
     </div>`;
@@ -3398,8 +3429,12 @@ async function adminReport(m){
     expCard:nvExps.filter(x=>isCoPaid(x.payment)).reduce((a,x)=>a+Number(x.amount||0),0) };
   state._visitLookup={}; visits.forEach(v=>{ state._visitLookup[v.key]=v; });
   const visitsBody=visitsCardsHtml(visits, nonVisit);
+  // Events: the same expense lines grouped by the event each one is tagged with (a cost synced from the books, or a
+  // BA's own row the event sync matched to it). Budget vs actual lives in the events app; this is the field side.
+  const evGroups=eventGroups(evItems);
+  const eventsBody=eventsCardHtml(evGroups, region);
 
-  const view=state.repView==='visits'?'visits':'spend';
+  const view=['visits','events'].includes(state.repView)?state.repView:'spend';
   const spendCount=rows.filter(r=>r.id!=='none').length;
   m.innerHTML=`
     <div class="card">
@@ -3409,22 +3444,23 @@ async function adminReport(m){
       <div class="seg" id="repViewSeg" style="margin-top:12px">
         <button data-v="spend" class="${view==='spend'?'on':''}">Spend by dispensary</button>
         <button data-v="visits" class="${view==='visits'?'on':''}">Visits</button>
+        <button data-v="events" class="${view==='events'?'on':''}">Events</button>
       </div>
       <div class="totbar" style="margin-top:12px">${view==='spend'
         ? `<div class="tot"><div class="k">Dispensaries</div><div class="v">${spendCount}</div></div><div class="tot sum"><div class="k">Total spend</div><div class="v">${money(grand)}</div></div>`
-        : visitsTotbar(visits)}</div>
+        : view==='events' ? eventsTotbar(evGroups) : visitsTotbar(visits)}</div>
     </div>
-    ${view==='spend'?spendBody:visitsBody}`;
+    ${view==='spend'?spendBody:view==='events'?eventsBody:visitsBody}`;
   wireRangeControls(()=>adminReport(m));
   wireRegionButtons('regSelRp', ()=>adminReport(m));
   const seg=$('#repViewSeg'); if(seg) seg.querySelectorAll('button').forEach(b=>b.onclick=()=>{ state.repView=b.dataset.v; adminReport(m); });
   // dispensary-group expand/collapse is shared by both views (data-disp ↔ data-for)
   m.querySelectorAll('.repdrow').forEach(r=>r.onclick=()=>{ const d=m.querySelector(`.repdetail[data-for="${r.dataset.disp}"]`); if(!d) return;
     d.classList.toggle('hide'); const c=r.querySelector('.caret'); if(c) c.textContent=d.classList.contains('hide')?'▸':'▾'; });
-  if(view==='spend'){
+  if(view==='spend'||view==='events'){   // both list the same report lines (repDetailRow)
     m.querySelectorAll('.repitem').forEach(el=>el.onclick=ev=>{ if(ev.target.closest('.reclink')) return;
       const it=allItems[el.dataset.item];
-      if(it&&it.ba_id&&it.date) dayAuditSheet(it.ba_id, it.date, el.dataset.item); else reportItemSheet(it); });
+      if(it&&it.ba_id&&it.date&&!it.books) dayAuditSheet(it.ba_id, it.date, el.dataset.item); else reportItemSheet(it); });
     m.querySelectorAll('.reclink').forEach(a=>a.onclick=async ev=>{ ev.stopPropagation(); const u=await signedUrl('receipts',a.dataset.path); u?window.open(u,'_blank'):toast('Receipt unavailable','err'); });
   } else {
     m.querySelectorAll('.visitrow').forEach(el=>el.onclick=()=>visitSheet(state._visitLookup[el.dataset.visit]));
@@ -3449,7 +3485,8 @@ function buildVisits(trips, exps, hrs, ctx){
   (hrs||[]).forEach(h=>{ const A=Number(h.amount||0), H=Number(h.hours||0);
     dispSplit(h,A).forEach(({id,share,n,hrs:hshare})=>{ if(!id||!keep(h,id)) return; const v=ens(h.ba_id,id,h.work_date);
       v.labor+=share; if(isSalesHours(h)) v.laborSales+=share; v.laborHrs+=(hshare!=null?hshare:H/n); v.hours.push({row:h,share,n}); }); });
-  (exps||[]).forEach(x=>{ const A=Number(x.amount||0);
+  (exps||[]).forEach(x=>{ if(isBooks(x)) return;   // synced from QuickBooks: dollars in Spend/Events, never a visit
+    const A=Number(x.amount||0);
     dispSplit(x,A).forEach(({id,share,n})=>{ if(!id||!keep(x,id)) return; const v=ens(x.ba_id,id,x.expense_date);
       if(isCoPaid(x.payment)) v.card+=share; else v.exp+=share; v.expenses.push({row:x,share,n}); }); });
   return Object.values(V).map(v=>({...v,total:v.mile+v.labor+v.exp+v.card})).filter(v=>v.total>0);
@@ -3460,6 +3497,45 @@ function visitsTotbar(visits){
   return `<div class="tot"><div class="k">Stores visited</div><div class="v">${stores}</div></div>
     <div class="tot"><div class="k">Visits</div><div class="v">${real.length}</div></div>
     <div class="tot sum"><div class="k">Visit cost</div><div class="v">${money(tot)}</div></div>`;
+}
+// '(10/3/26)' at the end of an event name -> '2026-10-03' (legacy folders may carry a 4-digit year); '' when absent
+function eventDateOf(name){
+  const m=/\((\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\)\s*$/.exec(String(name||'')); if(!m) return '';
+  return `${m[3].length===2?'20'+m[3]:m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+}
+// report lines (one per store share, see adminReport) -> one group per event, newest event first. n counts
+// expenses, not shares; card / exp split company-paid from reimbursed; books = the part synced from QuickBooks.
+function eventGroups(items){
+  const g={};
+  (items||[]).forEach(it=>{ if(!it||!it.event) return;
+    const x=g[it.event]||(g[it.event]={name:it.event,date:eventDateOf(it.event),total:0,card:0,exp:0,books:0,ids:new Set(),items:[]});
+    const a=Number(it.amount||0); x.total+=a; if(isCoPaid(it.payment)) x.card+=a; else x.exp+=a; if(it.books) x.books+=a;
+    x.ids.add(it.id); x.items.push(it); });
+  return Object.values(g).map(({ids,...x})=>({...x, n:ids.size, items:x.items.slice().sort((p,q)=>(p.date||'').localeCompare(q.date||''))}))
+    .sort((a,b)=>(b.date||'').localeCompare(a.date||'') || b.total-a.total || a.name.localeCompare(b.name));
+}
+function eventsTotbar(groups){
+  const tot=(groups||[]).reduce((a,g)=>a+g.total,0);
+  return `<div class="tot"><div class="k">Events</div><div class="v">${(groups||[]).length}</div></div><div class="tot sum"><div class="k">Event spend</div><div class="v">${money(tot)}</div></div>`;
+}
+function eventsCardHtml(groups, region){
+  // a credit from the books (a refund) can leave an event at or below zero: it gets no bar, and a part that nets to
+  // under a cent (a charge and its refund) is not listed
+  const max=(groups||[]).reduce((a,g)=>Math.max(a,g.total),0)||1, nz=v=>Math.abs(v)>=0.005;
+  return `<div class="card">
+    <h3>Events <span class="muted small">· ${rangeLabel()} · tap to expand</span></h3>
+    ${(groups||[]).length?groups.map((g,i)=>`
+      <div class="repdrow" data-disp="ev${i}" style="padding:9px 0;border-top:1px solid var(--line);cursor:pointer">
+        <div class="row" style="justify-content:space-between;align-items:baseline">
+          <div class="t" style="font-weight:600;min-width:0;overflow-wrap:anywhere"><span class="caret" style="display:inline-block;width:12px;color:var(--muted)">▸</span>${esc(g.name)}</div>
+          <div style="font-weight:750;white-space:nowrap">${money(g.total)}</div>
+        </div>
+        <div style="height:7px;border-radius:4px;background:var(--panel2);margin:6px 0 5px;overflow:hidden"><div style="height:100%;width:${g.total>0?Math.max(3,Math.round(g.total/max*100)):0}%;background:var(--accent)"></div></div>
+        <div class="small muted">${g.n} expense${g.n!==1?'s':''}${nz(g.card)?` · 💳 ${money(g.card)} company-paid`:''}${nz(g.exp)?` · 💵 ${money(g.exp)} BA reimbursement`:''}${nz(g.books)?` · ${money(g.books)} from the books`:''}</div>
+      </div>
+      <div class="repdetail hide" data-for="ev${i}" style="padding-left:6px">${g.items.map(it=>repDetailRow(it)).join('')}</div>`).join('')
+    :`<p class="muted small" style="margin-top:8px">No expenses tagged with an event${region&&region!=='all'?' in '+esc(region):''} for this range yet. An event cost gets its tag in QuickBooks, and the event sync brings it here.</p>`}
+  </div>`;
 }
 function visitsGroupBy(list){
   const g={}; list.forEach(v=>{ const k=v.disp_id; (g[k]=g[k]||{id:k,name:v.disp,visits:[],total:0,mile:0,labor:0,exp:0,card:0});
@@ -3591,11 +3667,12 @@ async function dayAuditSheet(baId, date, focusKey){
       return out;
     }
     const x=exps.find(o=>String(o.id)===String(id)); if(!x) return '';
-    let out=kv('Vendor', esc(x.vendor||''))+kv('Category', esc(x.category||''))
+    let out=kv('Vendor', esc(x.vendor||''))+kv('Category', esc(x.category||''))+kv('Event', esc(x.event_name||''))
       + kv('Amount', money(Number(x.amount||0)))+kv('Paid with', payLabel(x.payment))
       + kv('Dispensaries', esc(dispIds(x).map(dispName).join(', ')||'—'))+kv('Status', badge(x.status))+kv('Note', esc(x.note||''));
-    out+=kv('Receipt', x.receipt_path?`<a class="reclink" data-path="${esc(x.receipt_path)}" style="cursor:pointer">📄 View receipt</a>`:'<span class="muted">none</span>');
-    if(ctx.isAdmin||x.status==='draft'||x.status==='rejected') out+=`<button class="btn sm ghost block adEdit" data-ed="exp" data-id="${esc(id)}" style="margin-top:8px">✎ Edit</button>`;
+    out+=kv('Receipt', x.receipt_path?`<a class="reclink" data-path="${esc(x.receipt_path)}" style="cursor:pointer">📄 View receipt</a>`:isBooks(x)?'<span class="muted">in QuickBooks</span>':'<span class="muted">none</span>');
+    if(isBooks(x)) out+=`<div class="small muted" style="margin-top:8px">${BOOKS_NOTE}</div>`;
+    else if(ctx.isAdmin||x.status==='draft'||x.status==='rejected') out+=`<button class="btn sm ghost block adEdit" data-ed="exp" data-id="${esc(id)}" style="margin-top:8px">✎ Edit</button>`;
     return out;
   };
   host.querySelectorAll('.bub').forEach(bub=>{
@@ -3658,8 +3735,9 @@ function repDetailRow(it){
     return `<div class="item repitem" data-item="hours:${it.id}" style="cursor:pointer"><div class="ic">⏱</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · $${Number(it.rate).toFixed(2)}/hr${note}${split}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
   }
   const title=baP?`${baP} · ${esc(it.vendor||'Expense')}`:esc(it.vendor||'Expense');
-  const rec=it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:'<span class="muted">no receipt</span>';
-  return `<div class="item repitem" data-item="exp:${it.id}" style="cursor:pointer"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · ${isCoPaid(it.payment)?payFlag(it.payment)+' company-paid':'💵 reimb'} · ${rec}${note}${split}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
+  const rec=it.receipt?`<a class="reclink" data-path="${esc(it.receipt)}" style="cursor:pointer">📄 receipt</a>`:it.books?'<span class="muted">receipt in QuickBooks</span>':'<span class="muted">no receipt</span>';
+  const ev=it.event?' · '+eventPill(it.event):'';
+  return `<div class="item repitem" data-item="exp:${it.id}" style="cursor:pointer"><div class="ic">🧾</div><div class="grow" style="min-width:0"><div class="t">${title}</div><div class="s">${fmtDate(it.date)} · ${isCoPaid(it.payment)?payFlag(it.payment)+' company-paid':'💵 reimb'} · ${rec}${note}${split}${ev}</div></div><div class="amt">${money(it.amount)}</div>${chev}</div>`;
 }
 // admin: tap a line item in the Spend-by-dispensary report → full detail (note, category, route, odometer, receipt)
 function reportItemSheet(it){
@@ -3688,6 +3766,7 @@ function reportItemSheet(it){
     body+=kv('Labor cost', isSplit?`${money(it.fullAmount)} total · ${money(it.amount)} here`:money(it.amount));
   } else {
     body+=kv('Category', it.category?esc(it.category):'');
+    body+=kv('Event', it.event?esc(it.event):'');
     body+=kv('Paid with', isCoPaid(it.payment)?payLabel(it.payment)+' (not reimbursed)':'💵 Reimburse the BA');
     body+=kv('Amount', isSplit?`${money(it.fullAmount)} total · ${money(it.amount)} here`:money(it.amount));
   }
@@ -3702,7 +3781,8 @@ function reportItemSheet(it){
     <div style="margin-top:10px">${body}</div>
     ${noteBlock}
     ${recBtn}
-    ${!actingAsBA()?`<button class="btn primary block" id="riEdit" style="margin-top:12px">✎ Edit</button>`:''}
+    ${it.books?`<div class="small muted" style="margin-top:12px">${BOOKS_NOTE}</div>`
+      :!actingAsBA()?`<button class="btn primary block" id="riEdit" style="margin-top:12px">✎ Edit</button>`:''}
     <button class="btn ghost block" id="riClose" style="margin-top:8px">Close</button>
   `);
   $('#riClose').onclick=closeSheet;
@@ -3714,6 +3794,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
   const table = kind==='trip' ? 'trips' : kind==='hours' ? 'hours' : 'expenses';
   const x = preloaded || (await supabase.from(table).select('*').eq('id',id).single()).data;
   if(!x){ toast('Could not load item — try again','err'); return; }
+  if(kind==='exp' && isBooks(x)) return itemDetailSheet('exp', x);   // synced from QuickBooks: fix it in the books
   const isNew = !!x._new;   // add-bubble create mode: insert on save instead of update
   const write = patch => isNew
     ? supabase.from(table).insert({ ...patch, ba_id:x.ba_id, period_id:x.period_id, status:x.status||'draft', state:x.state }).select('*').single()
@@ -3975,14 +4056,14 @@ async function adminDash(m){
   const [{data:profs}, trips, exps, subs] = await Promise.all([
     supabase.from('profiles').select('*').order('full_name'),
     per?perQ(supabase.from('trips').select('ba_id,amount,status')):{data:[]},
-    per?perQ(supabase.from('expenses').select('ba_id,amount,status,payment,receipt_path')):{data:[]},
+    per?selectExpenses('ba_id,amount,status,payment,receipt_path', perQ):{data:[]},
     per?perQ(supabase.from('submissions').select('*')):{data:[]},
   ]);
   const T=trips.data||[],E=exps.data||[],S=subs.data||[];
   const byBa={};
   (profs||[]).forEach(b=>byBa[b.id]={p:b,mile:0,exp:0,card:0,items:0,receipts:0,status:'open',subN:0});
   T.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ b.mile+=Number(x.amount||0); b.items++; } });
-  E.forEach(x=>{ const b=byBa[x.ba_id]; if(b){ if(isCoPaid(x.payment)) b.card+=Number(x.amount||0); else b.exp+=Number(x.amount||0); b.items++; if(x.receipt_path) b.receipts++; } });
+  E.forEach(x=>{ if(isBooks(x)) return; const b=byBa[x.ba_id]; if(b){ if(isCoPaid(x.payment)) b.card+=Number(x.amount||0); else b.exp+=Number(x.amount||0); b.items++; if(x.receipt_path) b.receipts++; } });
   S.forEach(s=>{ const b=byBa[s.ba_id]; if(b){ if(!all) b.status=s.status; if(['submitted','approved'].includes(s.status)) b.subN++; } });
   // every field worker (BAs + regional admins like Maddy), plus anyone else who logged something
   let rows=Object.values(byBa).filter(r=> isFieldWorker(r.p) || r.items>0 );
@@ -4358,7 +4439,7 @@ function exportCSV(prof,per,T,E,H){
   T.forEach(x=>rows.push(['Mileage',x.trip_date,
     x.dispensary_id?dispName(x.dispensary_id):(x.dest_label||''),        // unlinked legs still show WHERE they went
     `${x.method}${x.kind?' · '+x.kind:''}`,'',x.miles??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
-  E.forEach(x=>rows.push(['Expense',x.expense_date,dispName(x.dispensary_id),`${x.vendor||''} (${x.category||''})`,payLabel(x.payment).replace(/^[^ ]+ /,''),' ','',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
+  E.forEach(x=>rows.push(['Expense',x.expense_date,dispName(x.dispensary_id),`${x.vendor||''} (${x.category||''})${x.event_name?' · Event: '+x.event_name:''}`,payLabel(x.payment).replace(/^[^ ]+ /,''),' ','',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
   H.forEach(x=>rows.push(['Labor',x.work_date,dispLabel(x)||dispName(x.dispensary_id),x.kind||x.job||'',`Payroll`,x.hours??'',x.rate??'',Number(x.amount||0).toFixed(2),x.status,x.note||'']));
   const mile=T.reduce((a,x)=>a+ +x.amount,0); const {reimb,card}=expSplit(E);
   const labor=H.reduce((a,x)=>a+Number(x.amount||0),0), laborHrs=H.reduce((a,x)=>a+Number(x.hours||0),0);
