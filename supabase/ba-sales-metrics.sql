@@ -23,6 +23,8 @@
 -- (2026-08-11: the BA app's two report queries were missing hours.alloc, so they even-split
 -- multi-store labor that this RPC weight-splits — fixed in ba/index.html v.79; both sides now
 -- apply the identical alloc rule.)
+-- (2026-10-23: rows synced from QuickBooks, expenses.source = 'books', keep their dollars here as card but never make
+-- a visit. Needs supabase/ba-expense-events.sql applied first: it adds that column.)
 --
 -- Run in the Supabase SQL editor (project dhiqhgtmelxwelyoowle). Safe to re-run.
 
@@ -103,11 +105,12 @@ h_split as (
 ),
 e0 as (  -- expense rows in window (co = paid by the company: card or company bank)
   select ba_id, expense_date as d, coalesce(amount,0) as amount, alloc, dispensary_ids, dispensary_id, state,
-         (payment in ('company','company_bank')) as co
+         (payment in ('company','company_bank')) as co,
+         (source is not distinct from 'books') as books   -- books: synced from QuickBooks, dollars only (no visit)
   from expenses where expense_date between p_from and p_to and status <> 'rejected'
 ),
 e_split as (
-  select e.ba_id, e.d, e.state, e.co, nullif(a.j->>'d','')::uuid as disp,
+  select e.ba_id, e.d, e.state, e.co, e.books, nullif(a.j->>'d','')::uuid as disp,
          e.amount * case when s.tw > 0 then greatest(coalesce((a.j->>'w')::numeric,0),0) / s.tw
                          else 1.0 / s.n end as amt
   from e0 e
@@ -116,12 +119,12 @@ e_split as (
                       from jsonb_array_elements(e.alloc) x) s
   where jsonb_typeof(e.alloc) = 'array' and jsonb_array_length(e.alloc) > 0
   union all
-  select e.ba_id, e.d, e.state, e.co, u.disp, e.amount / cardinality(e.dispensary_ids)
+  select e.ba_id, e.d, e.state, e.co, e.books, u.disp, e.amount / cardinality(e.dispensary_ids)
   from e0 e cross join lateral unnest(e.dispensary_ids) u(disp)
   where (e.alloc is null or jsonb_typeof(e.alloc) <> 'array' or jsonb_array_length(e.alloc) = 0)
     and e.dispensary_ids is not null and cardinality(e.dispensary_ids) > 0
   union all
-  select e.ba_id, e.d, e.state, e.co, e.dispensary_id, e.amount
+  select e.ba_id, e.d, e.state, e.co, e.books, e.dispensary_id, e.amount
   from e0 e
   where (e.alloc is null or jsonb_typeof(e.alloc) <> 'array' or jsonb_array_length(e.alloc) = 0)
     and (e.dispensary_ids is null or cardinality(e.dispensary_ids) = 0)
@@ -150,7 +153,7 @@ vis as (  -- a visit = one BA at one store on one day, from any positive attribu
   union
   select ba_id, d, disp from h_split where disp is not null and amt > 0
   union
-  select ba_id, d, disp from e_split where disp is not null and amt > 0
+  select ba_id, d, disp from e_split where disp is not null and amt > 0 and not books
 ),
 vc as ( select disp, count(distinct (ba_id, d)) as v from vis group by disp )
 -- Private (Home) pins are REDACTED, not dropped: this function is security definer + anon-

@@ -15,6 +15,10 @@
 --                                          cell: mileage per trip, expenses per receipt-share,
 --                                          labor per store-day.
 --
+-- 2026-10-23: ba_visit_days and ba_visit_detail leave out rows synced from QuickBooks (expenses.source = 'books'):
+-- an event cost from the books is never a visit. ba_sales_detail still lists their dollars. Needs
+-- supabase/ba-expense-events.sql applied first: it adds that column.
+--
 -- Run in the Supabase SQL editor (project dhiqhgtmelxwelyoowle). Safe to re-run.
 
 create or replace function public.ba_visit_days(p_from date, p_to date)
@@ -47,6 +51,7 @@ h_split as (
 e0 as (
   select ba_id, expense_date as d, coalesce(amount,0) as amount, alloc, dispensary_ids, dispensary_id
   from expenses where expense_date between p_from and p_to and status <> 'rejected'
+    and source is distinct from 'books'   -- books: synced from QuickBooks, never a visit
 ),
 e_split as (
   select e.ba_id, e.d, nullif(a.j->>'d','')::uuid as disp,
@@ -228,6 +233,7 @@ h_split as (
 e0 as (
   select ba_id, expense_date as d, coalesce(amount,0) as amount, alloc, dispensary_ids, dispensary_id
   from expenses where expense_date between p_from and p_to and status <> 'rejected'
+    and source is distinct from 'books'   -- books: synced from QuickBooks, never a visit
 ),
 e_split as (
   select e.ba_id, e.d, nullif(a.j->>'d','')::uuid as disp,

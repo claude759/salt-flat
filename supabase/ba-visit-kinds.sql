@@ -5,6 +5,8 @@
 -- it needs to tell a picked "Store visit" from the filler. Here activity is NULL when nothing was
 -- picked. Same rows, same filters, same access as ba_visit_detail (read-only, SECURITY DEFINER).
 -- Added 2026-09-25 for the Drop-in category (ar-reports.html repDropIns).
+-- 2026-10-23: rows synced from QuickBooks (expenses.source = 'books') are left out, like ba_visit_detail. Needs
+-- supabase/ba-expense-events.sql applied first: it adds that column.
 CREATE OR REPLACE FUNCTION public.ba_visit_kinds(p_from date, p_to date)
  RETURNS TABLE(sales_key text, disp_state text, d date, ba text, activity text)
  LANGUAGE sql
@@ -37,6 +39,7 @@ h_split as (
 e0 as (
   select ba_id, expense_date as d, coalesce(amount,0) as amount, alloc, dispensary_ids, dispensary_id
   from expenses where expense_date between p_from and p_to and status <> 'rejected'
+    and source is distinct from 'books'   -- books: synced from QuickBooks, never a visit
 ),
 e_split as (
   select e.ba_id, e.d, nullif(a.j->>'d','')::uuid as disp,
