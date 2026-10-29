@@ -12,11 +12,12 @@
 --   both shaped {in, out, breaks: [{start, end, kind}]}, kind 'rest' (paid) or 'meal' (unpaid), every
 --   time an ISO 8601 string with seconds and the offset of the row's time zone (Pacific for CA, Eastern
 --   for NY), breaks in time order.
---   action 'update' (shift_id = the Gusto shift id), 'add' (shift_id null: a forgotten clock-in) or
---   'delete' (shift_id = the shift to remove).
+--   action 'update' (shift_id = the Gusto shift id), 'add' (shift_id null: a forgotten clock-in),
+--   'delete' (shift_id = the shift to remove) or 'note' (shift_id = the shift a manager writes a note
+--   on for Gusto: before as for a delete, after null, note = the note itself; see Notes below).
 --   Each edit has two parts that reach Gusto separately:
 --     times   start and end, applied through the Gusto API by a worker on Gianni's Mac (phase 2)
---     breaks  breaks (and deleting a shift), applied by a scheduled browser task at 5 AM, noon and 7 PM PT
+--     breaks  breaks (and deleting a shift, and notes), applied by a scheduled browser task at 5 AM, noon and 7 PM PT
 --             (phase 2), because the API cannot add, remove or relabel breaks
 --   times_status / breaks_status: 'none' (that part does not change), 'pending', 'applying' (a worker
 --   claimed it and is writing it to Gusto now), 'applied', 'conflict', 'failed' or 'cancelled'.
@@ -24,6 +25,7 @@
 --             (compared to the minute: seconds never count)
 --     add     times pending; breaks pending when it has breaks, else none
 --     delete  times none; breaks pending (the browser task deletes the shift)
+--     note    times none; breaks pending (the browser task writes the note, with the shift's own times)
 --   Edits go straight through (no approver) and every one is kept: nothing deletes ts_edits rows.
 --
 -- Who can edit
@@ -54,7 +56,12 @@
 --     update and delete need the shift id to be on the row now, and refuse an hours-only entry (hours
 --     entered in Gusto without clock times: they are changed in Gusto); add must not carry one. A
 --     delete ignores p_after (its after is always null).
---     note (the optional reason) is trimmed, blank = none, at most 500 characters.
+--     note (the optional reason) is trimmed, blank = none, at most 500 characters. For a note edit it
+--     is the note: one line with its whitespace evened out (as the page's cleanNoteText sends it),
+--     required, at most 400 characters counted as the page counts them (a character past U+FFFF, such
+--     as most emoji, counts two). Neither may hold the start of a line this app writes in Gusto's note
+--     ("Note from <email>:", "Changed through Wizard Trees Manager Timesheets for <email>"): the board
+--     would show what was typed as a line someone else wrote through this app.
 --     Refused: an update that changes nothing and replaces no pending edit, and an add identical (to
 --     the minute) to an add of the same day that is still waiting.
 --     A shift with a part being written to Gusto right now ('applying'), and a shift whose delete
@@ -69,6 +76,16 @@
 --     that still has a pending part: those parts become 'cancelled' with cancelled_by 'superseded'
 --     (parts already applied, in conflict or failed keep their status). The new edit carries the whole
 --     desired state, so nothing is lost. Adds (no shift id yet) never supersede each other.
+--   Notes (action 'note', added by supabase/ts-edit-notes.sql): a note for Gusto on one shift that
+--     changes nothing else. The same who, window and shift rules as an update (and the closed pay
+--     periods of ts-pay-periods.sql), and also refused for a shift still clocked in (the note goes to
+--     Gusto with the shift's own start and end) and for a shift waiting to be deleted (the delete is
+--     older, so the browser task sends it first and the note would have nowhere to go; the page
+--     offers no note there, a page opened before the delete gets the refusal). A delete made after a
+--     note leaves the note waiting. A note never supersedes and is never superseded:
+--     several notes on one shift all wait. A note never counts as a waiting change of its shift for
+--     p_expect or "Nothing changed", and its own p_expect is not checked: a time or break change made
+--     since the page opened is no reason to refuse a note.
 --   ts_edit_cancel(p_id) -> the edit row: the edit's creator or a ts_access admin (active Google
 --     sign-in); a creator who is not an admin must still be able to see the day (its current ts_days
 --     row, or the edit's own company / department / person once the row is gone). Pending parts are
@@ -146,10 +163,10 @@ create table if not exists public.ts_edits (
   department text not null,             -- copied from the day row (for RLS on the edit itself)
   work_date date not null,
   shift_id text,                        -- Gusto shift id; null = a NEW shift to add
-  action text not null check (action in ('update', 'add', 'delete')),
+  action text not null check (action in ('update', 'add', 'delete', 'note')),
   before jsonb,                         -- the shift as Gusto had it (null for add): {in, out, breaks: [{start, end, kind}]}
-  after jsonb,                          -- desired state (null for delete): {in, out, breaks: [{start, end, kind}]}, kind rest|meal
-  note text check (note is null or length(note) between 1 and 500),   -- optional reason
+  after jsonb,                          -- desired state (null for delete and note): {in, out, breaks: [{start, end, kind}]}, kind rest|meal
+  note text check (note is null or length(note) between 1 and 500),   -- optional reason (the note itself for a note, at most 400)
   times_status text not null default 'pending'
     check (times_status in ('none', 'pending', 'applying', 'applied', 'conflict', 'failed', 'cancelled')),
   breaks_status text not null default 'pending'
@@ -171,7 +188,10 @@ create table if not exists public.ts_edits (
     or (action = 'update' and shift_id is not null and jsonb_typeof(before) = 'object'
                           and jsonb_typeof(after) = 'object')
     or (action = 'delete' and shift_id is not null and jsonb_typeof(before) = 'object'
-                          and after is null and times_status = 'none'), false))
+                          and after is null and times_status = 'none')
+    or (action = 'note'   and shift_id is not null and jsonb_typeof(before) = 'object'
+                          and after is null and note is not null and length(note) <= 400
+                          and times_status = 'none'), false))
 );
 -- a table made by the first draft of this file (never applied live) gets the claim columns and the
 -- 'applying' status
@@ -188,6 +208,29 @@ begin
                      'ts_edits_' || p || '_status_check', p || '_status');
     end if;
   end loop;
+end $$;
+-- a table made before notes (the live one until supabase/ts-edit-notes.sql, which runs this same block)
+-- takes the 'note' action and its shape. Both checks only get wider, so every stored row still passes.
+do $$ begin
+  if exists (select 1 from pg_constraint c where c.conrelid = 'public.ts_edits'::regclass
+                and c.conname = 'ts_edits_action_check' and pg_get_constraintdef(c.oid) not like '%''note''%') then
+    alter table public.ts_edits drop constraint ts_edits_action_check;
+    alter table public.ts_edits add constraint ts_edits_action_check check (action in ('update', 'add', 'delete', 'note'));
+  end if;
+  if exists (select 1 from pg_constraint c where c.conrelid = 'public.ts_edits'::regclass
+                and c.conname = 'ts_edits_shape' and pg_get_constraintdef(c.oid) not like '%''note''%') then
+    alter table public.ts_edits drop constraint ts_edits_shape;
+    alter table public.ts_edits add constraint ts_edits_shape check (coalesce(
+         (action = 'add'    and shift_id is null     and before is null
+                            and jsonb_typeof(after) = 'object')
+      or (action = 'update' and shift_id is not null and jsonb_typeof(before) = 'object'
+                            and jsonb_typeof(after) = 'object')
+      or (action = 'delete' and shift_id is not null and jsonb_typeof(before) = 'object'
+                            and after is null and times_status = 'none')
+      or (action = 'note'   and shift_id is not null and jsonb_typeof(before) = 'object'
+                            and after is null and note is not null and length(note) <= 400
+                            and times_status = 'none'), false));
+  end if;
 end $$;
 create index if not exists ts_edits_day_shift_idx on public.ts_edits (day_id, shift_id);
 create index if not exists ts_edits_work_date_idx on public.ts_edits (work_date);
@@ -362,7 +405,10 @@ declare
   v_times    text;
   v_brks     text;
   v_pending  int;
+  v_wide     int;
   v_row      public.ts_edits%rowtype;
+  -- a run of whitespace as JavaScript's \s finds it (the page's cleanNoteText, the browser task's noteFor)
+  v_ws       constant text := '[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+';
 begin
   -- who: an active allowlisted Google sign-in (automation@ has no ts_access row)
   if v_me is null or not exists (select 1 from public.ts_access a where a.email = v_me and a.active) then
@@ -384,8 +430,29 @@ begin
     raise exception 'Only the current and previous pay periods can be edited (from %)', to_char(v_from, 'Dy Mon FMDD');
   end if;
 
-  if length(v_note) > 500 then
+  -- a change's reason is optional; a note edit's text is the note, one line with its whitespace evened out
+  -- (as the page sends it), at most the page's 400 counted as the page and Gusto count them (a character
+  -- past U+FFFF, such as most emoji, counts two), which still fits Gusto's 560 with the app's
+  -- "Note from <email>: " in front
+  if v_action = 'note' then
+    v_note := nullif(btrim(regexp_replace(coalesce(p_note, ''), v_ws, ' ', 'g')), '');
+    if v_note is null then
+      raise exception 'Write the note first';
+    end if;
+    v_wide := (select count(*)::int from regexp_split_to_table(v_note, '') c where ascii(c) > 65535);
+    if length(v_note) > 400 - v_wide then
+      raise exception 'A note can be at most 400 characters';
+    end if;
+  elsif length(v_note) > 500 then
     raise exception 'The reason can be at most 500 characters';
+  end if;
+  -- the start of a line this app writes in Gusto's note (where ts-edit-plan.mjs, ca-ts-core.mjs and the page
+  -- find one, in the text as the browser task sends it) would show what was typed as a line someone else
+  -- wrote through this app
+  if regexp_replace(coalesce(v_note, ''), v_ws, ' ', 'g')
+       ~ 'Changed through Wizard Trees Manager Timesheets for ([^ :@]+@[^ :]+|a manager)|Note from ([^ :@]+@[^ :]+):' then
+    raise exception 'Leave "Note from <email>:" and "Changed through Wizard Trees Manager Timesheets for" out of the %: the board would show them as lines written through this app',
+      case when v_action = 'note' then 'note' else 'reason' end;
   end if;
   if p_expect is not null and jsonb_typeof(p_expect) <> 'null' then
     if jsonb_typeof(p_expect) <> 'array' then
@@ -395,14 +462,17 @@ begin
   end if;
 
   -- what: the shift
-  if v_action not in ('update', 'add', 'delete') then
-    raise exception 'The action must be update, add or delete';
+  if v_action not in ('update', 'add', 'delete', 'note') then
+    raise exception 'The action must be update, add, delete or note';
   end if;
   if v_action = 'add' then
     if v_shift_id is not null then
       raise exception 'A new shift has no Gusto shift id yet: leave the shift id empty to add one';
     end if;
   else
+    if v_shift_id is null and v_action = 'note' then
+      raise exception 'Say which shift the note is for';
+    end if;
     if v_shift_id is null then
       raise exception 'Say which shift to %', v_action;
     end if;
@@ -412,6 +482,9 @@ begin
      limit 1;
     if v_shift is null then
       raise exception 'That shift is not on this day any more (it may have changed in Gusto). Reload and try again';
+    end if;
+    if v_shift->'hours_only' = 'true'::jsonb and v_action = 'note' then
+      raise exception 'These are hours entered in Gusto without clock times: add the note in Gusto';
     end if;
     if v_shift->'hours_only' = 'true'::jsonb then
       raise exception 'These are hours entered in Gusto without clock times: change them in Gusto';
@@ -435,13 +508,21 @@ begin
                   and e.breaks_status = 'applied' and e.breaks_applied_at > d.synced_at) then
       raise exception 'That shift was just deleted in Gusto. Reload after the next sync';
     end if;
-    -- the caller's page must have shown every change of this shift that is waiting now
-    if v_expect is not null and (
+    -- a note for a shift that is waiting to be deleted would have nowhere to go (the delete is older, so the
+    -- browser task sends it first): the page offers no note there, a page opened before the delete gets this
+    if v_action = 'note' and exists (select 1 from public.ts_edits e
+                where e.day_id = d.id and e.shift_id = v_shift_id and e.action = 'delete' and e.breaks_status = 'pending') then
+      raise exception 'That shift is waiting to be deleted, so a note has nowhere to go. Cancel the delete first';
+    end if;
+    -- the caller's page must have shown every change of this shift that is waiting now (notes are not
+    -- changes of the shift: they never count here, and a note is never refused for a change since)
+    if v_expect is not null and v_action <> 'note' and (
          exists (select 1 from public.ts_edits e
-                  where e.day_id = d.id and e.shift_id = v_shift_id and 'pending' in (e.times_status, e.breaks_status)
+                  where e.day_id = d.id and e.shift_id = v_shift_id and e.action <> 'note'
+                    and 'pending' in (e.times_status, e.breaks_status)
                     and not (e.id::text = any (v_expect)))
          or exists (select 1 from public.ts_edits e
-                     where e.day_id = d.id and e.shift_id = v_shift_id and e.cancelled_at is not null
+                     where e.day_id = d.id and e.shift_id = v_shift_id and e.action <> 'note' and e.cancelled_at is not null
                        and e.id::text = any (v_expect))) then
       raise exception 'Someone changed this shift since you opened it. Reload and try again';
     end if;
@@ -460,10 +541,14 @@ begin
     if v_sent is not null then
       v_before := v_before || jsonb_build_object('breaks', v_sent->'breaks');
     end if;
+    -- a note goes to Gusto with the shift's own start and end: a shift still clocked in has no end yet
+    if v_action = 'note' and (v_before->>'in' is null or v_before->>'out' is null) then
+      raise exception 'This shift is still clocked in: add the note once it has an end';
+    end if;
   end if;
 
-  -- the desired state
-  if v_action <> 'delete' then
+  -- the desired state (a delete and a note have none)
+  if v_action not in ('delete', 'note') then
     if p_after is null or jsonb_typeof(p_after) <> 'object' then
       raise exception 'Give the shift''s start, end and breaks';
     end if;
@@ -538,8 +623,8 @@ begin
                                   'breaks', v_breaks);
   end if;
 
-  -- which parts change (against what Gusto has now)
-  if v_action = 'delete' then
+  -- which parts change (against what Gusto has now); a delete and a note ride the breaks part
+  if v_action in ('delete', 'note') then
     v_times := 'none'; v_brks := 'pending';
   elsif v_action = 'add' then
     v_times := 'pending';
@@ -549,8 +634,9 @@ begin
     v_brks  := case when public.ts_edit_key(v_before, 'breaks') = public.ts_edit_key(v_after, 'breaks') then 'none' else 'pending' end;
   end if;
 
+  -- (a waiting note is no change to go back from)
   select count(*) into v_pending from public.ts_edits e
-   where e.day_id = d.id and e.shift_id = v_shift_id and 'pending' in (e.times_status, e.breaks_status);
+   where e.day_id = d.id and e.shift_id = v_shift_id and e.action <> 'note' and 'pending' in (e.times_status, e.breaks_status);
   if v_times = 'none' and v_brks = 'none' and v_pending = 0 then
     raise exception 'Nothing changed: the shift already has these times and breaks';
   end if;
@@ -566,7 +652,7 @@ begin
   -- no overlap with the day's other shifts as they will be once the waiting edits land: the row's
   -- shifts (not this one, not hours-only, not one waiting to be or just deleted) with the times of
   -- their latest waiting or just-applied update, plus the shifts waiting to be (or just) added
-  if v_action <> 'delete' then
+  if v_action not in ('delete', 'note') then
     select o.s_in, o.s_out into v_o_in, v_o_out
       from (select coalesce(u.after->>'in', s->>'in')::timestamptz as s_in,
                    coalesce(u.after->>'out', s->>'out')::timestamptz as s_out
@@ -600,11 +686,13 @@ begin
     end if;
   end if;
 
+  -- supersede (a note never replaces a waiting change, and is never replaced by one)
   update public.ts_edits e
      set times_status  = case when e.times_status  = 'pending' then 'cancelled' else e.times_status end,
          breaks_status = case when e.breaks_status = 'pending' then 'cancelled' else e.breaks_status end,
          cancelled_by = 'superseded', cancelled_at = now()
-   where e.day_id = d.id and e.shift_id = v_shift_id and 'pending' in (e.times_status, e.breaks_status);
+   where e.day_id = d.id and e.shift_id = v_shift_id and 'pending' in (e.times_status, e.breaks_status)
+     and v_action <> 'note' and e.action <> 'note';
 
   insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id,
                                action, before, after, note, times_status, breaks_status, created_by)

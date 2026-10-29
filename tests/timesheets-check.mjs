@@ -89,7 +89,10 @@ check('the app is called "Manager Gusto Timesheets" (title, sign-in gate, header
   ok(/<div class="login-logo">Manager Gusto Timesheets<\/div>/.test(markup), 'sign-in gate');
   ok(/<b class="brand-name"><span class="bn-long">Manager Gusto Timesheets<\/span><span class="bn-short">Timesheets<\/span><\/b>/.test(markup), 'header brand (and "Timesheets" on phones)');
   ok(/<h1>Manager Gusto Timesheets<\/h1>/.test(block('ts-app')), 'print heading');
-  ok(!/Manager Timesheets/.test(src), 'the old name "Manager Timesheets" is still in the file');
+  // the browser task still signs its Gusto notes "Changed through Wizard Trees Manager Timesheets for <email>" (its
+  // noteFor), and the page reads those notes back (C.APP_EDIT_PREFIX): that line is Gusto's text, not the page's name
+  ok(!/Manager Timesheets/.test(src.split(C.APP_EDIT_PREFIX).join('')), 'the old name "Manager Timesheets" is still in the file');
+  eq(C.APP_EDIT_PREFIX, 'Changed through Wizard Trees Manager Timesheets for', "the browser task's own words");
   ok(markup.includes("Your account doesn't have a timesheet view yet. Ask Gianni to add you."), 'no-view message');
   ok(markup.includes('Demo data, not real timesheets'), 'demo banner');
 });
@@ -1039,7 +1042,8 @@ check('demo names do not match anyone in the local Gusto exports (if present; na
 });
 check('no names in the page except the synthetic demo list (string literals shaped like a name are roster entries)', () => {
   const demoSrc = block('ts-demo');
-  const allowed = new Set(D.ROSTER.flatMap(r => r.filter(x => typeof x === 'string')).concat(DEMO_VIEW_LABELS));
+  // 'Claude Claude' is Gusto's name for the sign-in the browser task writes notes as (the demo's app notes), not a person
+  const allowed = new Set(D.ROSTER.flatMap(r => r.filter(x => typeof x === 'string')).concat(DEMO_VIEW_LABELS, ['Claude Claude']));
   const lits = [...demoSrc.matchAll(/'([A-Z][a-z]+(?: [A-Z][a-z]+)+)'/g)].map(m => m[1]);
   const strays = [...new Set(lits.filter(s => !allowed.has(s)))];
   ok(lits.length > 30 && !strays.length, 'name-like literals in ts-demo that are not on the roster: ' + J(strays));
@@ -1082,7 +1086,17 @@ check('demo rows have exactly the ts_days shape, shifts and breaks shapes', () =
     ok(r.ot_src == null || r.ot_src === 'gusto' || r.ot_src === 'est', 'ot_src');
     for (const f of r.flags) ok(SPEC_FLAGS.includes(f.code) && (f.sev === 'warn' || f.sev === 'info') && f.msg, 'flag ' + J(f));
     for (const s of r.shifts) {
-      eq(Object.keys(s).sort(), ['breaks', 'hours_only', 'id', 'in', 'out', 'span_min', 'worked_min'], 'shift keys');
+      // notes: only on a shift that has some (the sync leaves the key out otherwise), shaped like the sync writes them
+      eq(Object.keys(s).filter(k => k !== 'notes').sort(), ['breaks', 'hours_only', 'id', 'in', 'out', 'span_min', 'worked_min'], 'shift keys');
+      if ('notes' in s) {
+        ok(Array.isArray(s.notes) && s.notes.length, 'notes on ' + s.id + ' are a list with something in it');
+        for (const n of s.notes) {
+          eq(Object.keys(n).sort(), ['app', 'at', 'author', 'by', 'kind', 'src', 'text'], 'note keys');
+          ok(['note', 'edit', 'other'].includes(n.kind) && ['csv', 'gusto'].includes(n.src) && typeof n.app === 'boolean', 'note ' + J(n));
+          ok(n.app ? /@wizardtrees\.com$/.test(n.by) && n.kind !== 'other' : n.by === null && n.kind === 'other', 'app notes carry their manager: ' + J(n));
+          ok(n.at === null ? n.src === 'csv' : !isNaN(Date.parse(n.at)) && n.src === 'gusto', 'the morning export has no times');
+        }
+      }
       for (const b of s.breaks) {
         eq(Object.keys(b).sort(), ['end', 'kind', 'min', 'open', 'paid', 'src', 'start'], 'break keys');
         ok((b.kind === 'rest' || b.kind === 'meal') && b.paid === (b.kind === 'rest') && (b.src === 'gusto' || b.src === 'rule'), 'break ' + J(b));
@@ -1240,7 +1254,7 @@ check('phones render cards (By Day, By Employee, flat and grouped); desktop and 
   ok(/\.dhead\{position:sticky;top:env\(safe-area-inset-top,0px\)/.test(src), 'the day header sticks (below the status bar)');
   ok(/document\.addEventListener\('toggle', e => \{[\s\S]{0,260}S\.openCards\.(add|delete)/.test(block('ts-app')), 'opened cards survive a re-render');
   const db = appFn('detailBody');
-  ok(/C\.flagMsg\(f, r\.region\)/.test(db) && /r\.note/.test(db) && /breaksCell\(r\)/.test(db), 'the detail body writes out flags, the note and the break chips (phones have no tooltips)');
+  ok(/C\.flagMsg\(f, r\.region\)/.test(db) && /notesList\(r, rowNotes\(r\)\)/.test(db) && /breaksCell\(r\)/.test(db), 'the detail body writes out flags, the notes and the break chips (phones have no tooltips)');
 });
 check('phone layout rules: compact header with a menu, two control rows, 40px taps, 15px text, 16px inputs, safe areas, no sideways page scroll', () => {
   const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'));
@@ -1886,7 +1900,7 @@ check('supersede and submit: a later edit of the same shift replaces a waiting o
   ok(/not happened yet/.test(no({ shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30') }, ctx('n', { today: '2026-10-05' }))), 'a future day');
   ok(/not on this day any more/.test(no({ shift_id: 'gone', action: 'update', after: AFTER('07:30', '15:30') })), 'a shift no longer on the row');
   ok(/no Gusto shift id/.test(no({ shift_id: 's1', action: 'add', after: AFTER('19:00', '20:00') })), 'an add with a shift id');
-  ok(/update, add or delete/.test(no({ shift_id: 's1', action: 'merge' })), 'unknown action');
+  ok(/update, add, delete or note/.test(no({ shift_id: 's1', action: 'merge' })), 'unknown action');
   ok(/End must be after|end must be after/i.test(no({ shift_id: 's1', action: 'update', after: AFTER('15:30', '07:30') })), 'the shift rules');
   ok(/500 characters/.test(no({ shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30'), note: 'x'.repeat(501) })), 'the reason limit');
   // cancel: the creator or an admin, only while something waits
@@ -1973,12 +1987,14 @@ check('demo: made-up edits shaped like ts_edits (waiting, a conflict, a failure,
   ok(es.some(e => e.times_status === 'conflict') && es.some(e => e.breaks_status === 'failed'), 'a conflict and a failure');
   ok(es.some(e => e.action === 'add' && e.region === 'NY' && e.times_status === 'pending'), 'a New York shift waiting to be added');
   ok(es.every(e => !/gianni|kelsey|scott/i.test(e.created_by)), 'no real sign-ins');
-  // the board: waiting changes show, the cancelled one does not, the one in Gusto is plain
+  // the board: waiting changes show, the cancelled one does not, the one in Gusto is plain; a note added here never
+  // touches the hours or their pills (section 18 checks how notes show)
   const idx = new Map(); for (const e of es) { if (!idx.has(e.day_id)) idx.set(e.day_id, []); idx.get(e.day_id).push(e); }
   for (const [id, list] of idx) {
     const r = C.normRow(demo.rows.find(x => x.id === id));
     const o = C.overlayDay(r, list, { today: demo.todays[r.region] });
-    const s = list.map(C.editStatus);
+    const s = list.filter(e => !C.isNoteEdit(e)).map(C.editStatus);
+    if (!s.length) { ok(o === r, id + ' only notes: the row as Gusto has it'); continue; }
     if (s.includes('pending')) ok(o.edit && o.edit.pending.length, id + ' Pending');
     if (s.includes('attention')) ok(o.edit && o.edit.attention.length && o.worked_min === r.worked_min, id + ' Needs a look, Gusto\'s hours');
     if (s.every(x => x === 'cancelled' || x === 'applied')) ok(o === r, id + ' plain');
@@ -2169,7 +2185,7 @@ check('history keeps replaced changes (muted, naming the change that replaced th
   ok(/C\.replacedBy\(e, editsFor\(e\.day_id\)\)/.test(appFn('edLines')) && /st === 'replaced' && !e\.cancelled_at/.test(appFn('edLines')), 'one way to word it, in the editor, the phone card and Admin');
   for (const fn of ['histList', 'editorHistory', 'editAdminRow']) ok(/edLines\(e, /.test(appFn(fn)), fn + ' uses edLines');
   ok(/oldEdit\(st\) \? ' old' : ''/.test(appFn('histList')) && /oldEdit\(st\) \? h` class="old"` : ''/.test(appFn('editorHistory')) && /\.ed-hist li\.old\{color:var\(--muted\)\}/.test(src), 'muted');
-  ok(/e\.note \? \['Reason: ' \+ e\.note\] : \[\]/.test(appFn('histList')), 'the phone card shows the reason');
+  ok(/C\.editReason\(e\) \? \['Reason: ' \+ e\.note\] : \[\]/.test(appFn('histList')), 'the phone card shows the reason (a note\'s text is the change itself)');
 });
 check('the CSV marks a day showing a change Gusto does not have yet, in a last column', () => {
   const r = edRow([ED_S1]);
@@ -2592,7 +2608,7 @@ check('review: an update or delete sends p_expect (the waiting changes the edito
 });
 check('review: managers are offered only the kinds of change the worker has sent with a person watching (adding, deleting and New York wait for a supervised run)', () => {
   const app = block('ts-app');
-  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25)');
+  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false,[^}]*note: false, nyNote: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25), nor notes in either region (2026-10-29)');
   ok(/function mayEdit\(what\) \{ const a = actor\(\); return !!\(a && a\.is_admin\) \|\| C\.fullViewer\(a\) \|\| !!EDIT_PROVEN\[what\]; \}/.test(app), 'admins and full viewers keep them all');
   const fv = { is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, mgr = { is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
   ok(C.fullViewer(fv) && !C.fullViewer(mgr), 'a full viewer (every CA company) gets add and delete; a department manager does not');
@@ -2894,7 +2910,7 @@ check('review 2026-10-25: a split shift is offered for a fix only when it is a f
   ok(/if \(en\.readonly === 'split'\) return h`[^\n]*C\.splitWhy\(en, tz\)/.test(appFn('entryHtml')), 'read-only parts say why');
   ok(/en\.split && en\.split\.fix \? h`<p class="pd-fine ed-split">/.test(appFn('entryHtml')), 'the "set its real end here" note only where it can be done');
   ok(/if \(!en \|\| en\.readonly !== 'carried' \|\| !en\.split \|\| !en\.split\.end\) return;/.test(appFn('edEndMidnight')), 'the button cannot be forced');
-  ok(app.includes("midnight: false, midnightEnd: false };"), 'both off until a supervised run proves each');
+  ok(/midnight: false, midnightEnd: false,[^}]*\};/.test(app), 'both off until a supervised run proves each');
 });
 check('messages show the seconds that cause them, and an overlap is marked on the break typed here, not the one Gusto has', () => {
   const me = { email: 'm@wizardtrees.com', is_admin: true }, at = { today: '2026-10-21', now: Date.parse('2026-10-21T18:00:00Z') };
@@ -3478,6 +3494,397 @@ check('pay periods Gusto closed take no change; one sent to payroll warns; Misse
   ok(/done \? 'Done' : clear \? 'Clear' : 'Cancel'/.test(appFn('editAdminRow')) && /A\.ePick === e\.id \? ' picked' : ''/.test(appFn('editAdminRow')), 'Done on a Missed payroll row; the linked one is picked out');
   ok(/if \(!QS\.has\('missed'\) \|\| DEMO\) return;/.test(appFn('openMissedLink')) && /if \(!\(S\.me && S\.me\.is_admin\)\)/.test(appFn('openMissedLink')) && /openMissedLink\(\);/.test(appFn('startApp')), '?missed opens it for admins, from the daily list');
   ok(/\.is\('cancelled_at', null\)/.test(appFn('fetchMissed')), 'the list loads every open one, whatever the dates on screen');
+});
+
+// ---------------------------------------------------------------------------------------------
+// 18. notes in Gusto (Gianni 2026-10-29: "can we add the feature to add gusto notes and see gusto notes?"): Gusto's notes
+//     per shift (ts_days.shifts[i].notes from the timesheet sync; the day's one ts_days.note before that), notes added
+//     here (ts_edits action 'note', supabase/ts-edit-notes.sql), and how a note stays out of everything about hours.
+//     Made-up days and people only.
+// ---------------------------------------------------------------------------------------------
+const NOW_N = '2026-10-07T16:00:00Z';     // 9 AM Pacific, the day after the made-up day
+const GN = (text, author, o) => Object.assign({ text, author, at: null, app: false, by: null, kind: 'other', src: 'csv' }, o || {});
+const AN = (kind, by, text, o) => GN(text, 'Claude Claude', Object.assign({ app: true, by, kind }, o || {}));
+const NTE = o => ED(Object.assign({ id: 'n1', action: 'note', after: null, note: 'Last day, 8 hours as agreed', breaks_status: 'pending' }, o));
+const withNotes = (s, notes) => Object.assign({}, s, { notes });
+const SQL_NOTES = (() => { try { return fs.readFileSync(path.join(ROOT, 'supabase', 'ts-edit-notes.sql'), 'utf8'); } catch { return ''; } })();
+const PA = C.APP_EDIT_PREFIX;
+// the lines the browser task writes (design part A), kept apart, run together, and around other people's words
+const PARSE_SAMPLES = [PA + ' v@wizardtrees.com', PA + ' v@wizardtrees.com: forgot to clock out', 'Note from o@wizardtrees.com: Last day, 8 hours as agreed',
+  [PA + ' v@wizardtrees.com: forgot', 'Note from o@wizardtrees.com: last day', PA + ' o@wizardtrees.com'].join('\n'),
+  [PA + ' v@wizardtrees.com: forgot', 'Note from o@wizardtrees.com: last day', PA + ' o@wizardtrees.com'].join(' '),
+  [PA + ' v@wizardtrees.com: forgot', 'Note from o@wizardtrees.com: last day'].join('\r\n\r\n'),
+  'Imperial deleaf', 'Note from the doctor: rest at home', '', '   ', 'Picked up keys ' + PA + ' v@wizardtrees.com', PA + ' v@wizardtrees.com\nleft thru normal door',
+  'Note from o@wizardtrees.com: line one\nline two', PA + ' a manager', PA + ' a manager: late bus', 'pop up at the store \nbreak for food at 4:30',
+  PA + ' v@wizardtrees.com : a space before the colon'];
+check('parseAppNote reads the lines the browser task writes, kept apart or run together, and anything else as one note', () => {
+  const E1 = { kind: 'edit', by: 'v@wizardtrees.com', text: 'forgot' }, N1 = { kind: 'note', by: 'o@wizardtrees.com', text: 'last day' }, E2 = { kind: 'edit', by: 'o@wizardtrees.com', text: '' };
+  const P = C.parseAppNote;
+  eq(P(PARSE_SAMPLES[0]), [{ kind: 'edit', by: 'v@wizardtrees.com', text: '' }], 'a change with no reason');
+  eq(P(PARSE_SAMPLES[1]), [{ kind: 'edit', by: 'v@wizardtrees.com', text: 'forgot to clock out' }], 'a change with its reason');
+  eq(P(PARSE_SAMPLES[2]), [{ kind: 'note', by: 'o@wizardtrees.com', text: 'Last day, 8 hours as agreed' }], 'a note added here');
+  for (const i of [3, 4]) eq(P(PARSE_SAMPLES[i]), [E1, N1, E2], i === 3 ? 'one line each' : 'lines run together with spaces');
+  eq(P(PARSE_SAMPLES[5]), [E1, N1], "Gusto's blank line between them");
+  eq(P('Imperial deleaf'), [{ kind: 'other', by: null, text: 'Imperial deleaf' }], "someone's own note");
+  eq(P('Note from the doctor: rest at home'), [{ kind: 'other', by: null, text: 'Note from the doctor: rest at home' }], 'no email: not a line of ours');
+  eq([P(''), P('   '), P(null)], [[], [], []], 'nothing');
+  eq(P(PARSE_SAMPLES[10]), [{ kind: 'other', by: null, text: 'Picked up keys' }, { kind: 'edit', by: 'v@wizardtrees.com', text: '' }], 'words before a line of ours');
+  eq(P(PARSE_SAMPLES[11]), [{ kind: 'edit', by: 'v@wizardtrees.com', text: '' }, { kind: 'other', by: null, text: 'left thru normal door' }], 'no ": " after the email: no reason');
+  eq(P(PARSE_SAMPLES[12]), [{ kind: 'note', by: 'o@wizardtrees.com', text: 'line one line two' }], 'a note on two lines is one note');
+  eq([P(PARSE_SAMPLES[13]), P(PARSE_SAMPLES[14])], [[{ kind: 'edit', by: null, text: '' }], [{ kind: 'edit', by: null, text: 'late bus' }]], '"a manager": a change made without an email');
+  eq(P(PARSE_SAMPLES[16]), [{ kind: 'edit', by: 'v@wizardtrees.com', text: 'a space before the colon' }]);
+  eq(C.APP_NOTE_PREFIX, 'Note from');
+});
+// its twins (~/gusto-sync/ca-ts-core.mjs, the timesheet sync, and ~/gusto-sync/ts-edit-plan.mjs, the browser task) must read
+// every sample the same, on the Mac that has them (TS_GUSTO_SYNC_DIR checks another copy, a staging folder say: there both
+// must be found, so a wrong folder fails instead of passing unchecked). Where the browser task has notes, its daily list's
+// isMissed (ts-edit-mail.mjs) must also agree with isMissedEdit: a note never misses a payroll.
+{
+  const named = !!process.env.TS_GUSTO_SYNC_DIR, dir = process.env.TS_GUSTO_SYNC_DIR || path.join(os.homedir(), 'gusto-sync'), twins = [];
+  const where = dir.replace(os.homedir(), '~'), load = async f => {
+    const file = path.join(dir, f);
+    try { return fs.existsSync(file) ? await import(pathToFileURL(file).href) : null; }
+    catch (e) { console.log('          (' + f + ' did not load: ' + String((e && e.message) || e).split('\n')[0] + ')'); return null; }
+  };
+  for (const [who, f] of [['the timesheet sync', 'ca-ts-core.mjs'], ['the browser task', 'ts-edit-plan.mjs']]) {
+    const m = await load(f); if (m && typeof m.parseAppNote === 'function') twins.push([who, m.parseAppNote]);
+  }
+  check('parseAppNote reads the same on the page as in the timesheet sync and the browser task (where ' + where + ' has them)', () => {
+    if (named && twins.length < 2) throw new Error('TS_GUSTO_SYNC_DIR is ' + where + ', but ' + (twins.length ? 'only ' + twins[0][0] + ' has' : 'neither ca-ts-core.mjs nor ts-edit-plan.mjs has') + ' parseAppNote there');
+    if (!twins.length) { console.log('          (skipped: no parseAppNote in ' + where + ' yet)'); return true; }
+    for (const [who, f] of twins) for (const s of PARSE_SAMPLES) eq(f(s), C.parseAppNote(s), who + ' on ' + J(s));
+  });
+  const plan = twins.some(t => t[0] === 'the browser task') ? await load('ts-edit-plan.mjs') : null, mail = plan ? await load('ts-edit-mail.mjs') : null;
+  check('Missed payroll reads the same on the page as in the daily list (where ' + where + ' has notes): never a note', () => {
+    if (named && !(mail && typeof mail.isMissed === 'function')) throw new Error('TS_GUSTO_SYNC_DIR is ' + where + ', but ' + (plan ? 'its ts-edit-mail.mjs has no isMissed' : 'its browser task has no notes (no parseAppNote in ts-edit-plan.mjs)'));
+    if (!mail || typeof mail.isMissed !== 'function') { console.log('          (skipped: no notes in ' + where + ' yet)'); return true; }
+    eq(String(plan.MISSED_PAYROLL), String(C.MISSED_PAYROLL), 'MISSED_PAYROLL');
+    const MISS = 'Payroll for Sat Oct 10 to Fri Oct 23 has already been processed in Gusto, so this change never reached Gusto', PAID = 'Gusto marks Mon Oct 19 as already paid (partly locked)';
+    const samples = [ED({ times_status: 'conflict', times_error: MISS }), ED({ breaks_status: 'failed', breaks_error: PAID }), ED({ times_status: 'conflict', times_error: 'Gusto changed after this edit was made.' }),
+      ED({ times_status: 'cancelled', times_error: MISS, cancelled_at: NOW_N, cancelled_by: 'm@wizardtrees.com' }), ED({ times_status: 'applied' }),
+      NTE({ breaks_status: 'conflict', breaks_error: MISS }), NTE({ breaks_status: 'failed', breaks_error: PAID }), NTE({ breaks_status: 'failed', breaks_error: "Couldn't open this timesheet in Gusto." }), NTE()];
+    for (const e of samples) eq(mail.isMissed(e), C.isMissedEdit(e), e.action + ' ' + e.times_status + '/' + e.breaks_status + ' ' + J(e.times_error || e.breaks_error));
+    eq(samples.map(C.isMissedEdit), [true, true, false, false, false, false, false, false, false]);
+  });
+}
+check("dayNotes: each shift's notes in shift order (a manager's line under their email), a change with no reason left out, the day's one note only when no shift has any", () => {
+  const s2 = ES('s2', '16:00', '18:00');
+  const r = edRow([withNotes(ED_S1, [GN('Just walked in', 'Test Person'), AN('edit', 'v@wizardtrees.com', ''), AN('edit', 'v@wizardtrees.com', 'forgot to clock out', { at: '2026-10-06T23:00:00Z', src: 'gusto' })]),
+    withNotes(s2, [GN('Pop-up at the store', 'Test Lead', { at: '2026-10-06T23:10:00Z', src: 'gusto' }), AN('note', 'o@wizardtrees.com', 'Second stop ran long')])], { note: 'the summary' });
+  const ns = C.dayNotes(r, []);
+  eq(ns.map(n => [n.shiftId, n.shiftNo, n.text, C.noteWho(n), n.status]), [['s1', 1, 'Just walked in', 'Test Person', 'gusto'], ['s1', 1, 'forgot to clock out', 'v@wizardtrees.com via this app', 'gusto'],
+    ['s2', 2, 'Pop-up at the store', 'Test Lead', 'gusto'], ['s2', 2, 'Second stop ran long', 'o@wizardtrees.com via this app', 'gusto']], 'the summary is not shown again');
+  eq(C.noteMeta(ns[1], C.TZ, true), 'v@wizardtrees.com via this app, Oct 6, 4:00 PM · Shift 7:00 AM - 3:30 PM');
+  eq(C.noteMeta(ns[0], C.TZ, false), 'Test Person', 'the morning export has no times');
+  eq([C.notesLabel(ns), C.notesLabel(ns.slice(0, 1)), C.notesLook(ns)], ['4 notes', '1 note', '']);
+  eq(C.notesTip(ns.slice(0, 2), r, NOW_N), 'Just walked in\nTest Person · Shift 7:00 AM - 3:30 PM\n\nforgot to clock out\nv@wizardtrees.com via this app, Oct 6, 4:00 PM · Shift 7:00 AM - 3:30 PM', 'the bubble');
+  eq(C.notesTip(C.dayNotes(edRow([withNotes(ED_S1, [GN('Just walked in', 'Test Person')])]), []), r, NOW_N).split('\n')[0], 'Just walked in');
+  // before notes came per shift (and Slane and Imperial, which have no export): the day's one note
+  eq(C.dayNotes(edRow([ED_S1], { note: 'Ran deliveries through lunch' }), []).map(n => [n.shiftId, n.text, C.noteWho(n), n.kind]), [[null, 'Ran deliveries through lunch', '', 'other']]);
+  eq([C.dayNotes(edRow([ED_S1]), []), C.dayNotes(edRow([withNotes(ED_S1, [AN('edit', 'v@wizardtrees.com', '')])]), [])], [[], []], 'none, or only a change with no reason');
+  // a stored note that came without its kind is read again (parseAppNote)
+  const raw = edRow([withNotes(ED_S1, [{ text: PA + ' v@wizardtrees.com: late bus\nNote from o@wizardtrees.com: OK by me', author: 'Claude Claude', at: null, src: 'csv' }])]);
+  eq(C.dayNotes(raw, []).map(n => [n.kind, n.by, n.text, n.app]), [['edit', 'v@wizardtrees.com', 'late bus', true], ['note', 'o@wizardtrees.com', 'OK by me', true]]);
+  eq(C.dayNotes(null, []), [], 'no day');
+});
+check('dayNotes: a note added here reads Pending until its run (Late after it), Needs a look when Gusto did not take it, In Gusto until the sync brings Gusto\'s copy, then only that copy', () => {
+  const r = edRow([ED_S1]);
+  const pend = NTE();          // made Oct 7 8 AM Pacific: the noon run takes it
+  let ns = C.dayNotes(r, [pend]);
+  eq(ns.map(n => [n.shiftId, n.text, n.status, C.noteWho(n), n.edit.id]), [['s1', 'Last day, 8 hours as agreed', 'pending', 'm@wizardtrees.com via this app', 'n1']]);
+  eq(C.notesLook(ns), 'pend');
+  eq([C.noteStatusText(ns[0], NOW_N, C.TZ), C.noteStatusText(ns[0], '2026-10-07T19:10:00Z', C.TZ), C.noteStatusText(ns[0], '2026-10-07T19:30:00Z', C.TZ)],
+    ['Goes to Gusto at noon today.', 'Going to Gusto now.', 'Late, not in Gusto yet.']);
+  eq(C.noteStatusText(ns[0], NOW_N, 'America/New_York'), 'Goes to Gusto at 3 PM today.', "on the row's own clock");
+  // while the worker holds notes in the region (the page's EDIT_PROVEN), a waiting note says so instead of a run time or Late
+  C.setNoteHeld(e => e.id === 'n1');
+  eq([C.noteStatusText(ns[0], NOW_N, C.TZ), C.noteStatusText(ns[0], '2026-10-07T19:30:00Z', C.TZ)], ['Waits for the first note run Gianni watches, then goes to Gusto.', 'Waits for the first note run Gianni watches, then goes to Gusto.']);
+  eq(C.noteStatusText(C.dayNotes(r, [NTE({ breaks_status: 'failed', breaks_error: 'x.' })])[0], NOW_N, C.TZ), 'Not in Gusto: x.', 'a refused one still says why');
+  eq(C.editPartLines(pend, C.TZ, '2026-10-07T19:30:00Z'), ['The note: waits for the first note run Gianni watches'], 'Changes to this day says the same');
+  ok(C.noteIsHeld(pend) && !C.noteIsHeld(NTE({ breaks_status: 'applied' })) && !C.noteIsHeld(ED({ id: 'n1', times_status: 'pending' })), 'only a waiting note');
+  C.setNoteHeld(null);
+  eq(C.noteStatusText(ns[0], NOW_N, C.TZ), 'Goes to Gusto at noon today.');
+  eq(C.noteStatusText(C.dayNotes(r, [NTE({ breaks_status: 'applying', breaks_claimed_at: '2026-10-07T19:00:00Z' })])[0], '2026-10-07T19:05:00Z', C.TZ), 'Going to Gusto now.');
+  eq(C.notesTip(ns, r, NOW_N), 'Last day, 8 hours as agreed\nm@wizardtrees.com via this app, Oct 7, 8:00 AM\nGoes to Gusto at noon today.', 'the bubble says when it goes');
+  const failed = NTE({ breaks_status: 'failed', breaks_error: "Couldn't open this timesheet in Gusto." });
+  ns = C.dayNotes(r, [failed]);
+  eq([ns[0].status, C.notesLook(ns), C.noteStatusText(ns[0], NOW_N, C.TZ)], ['attention', 'att', "Not in Gusto: Couldn't open this timesheet in Gusto."]);
+  eq(C.notesLook(C.dayNotes(r, [failed, NTE({ id: 'n2' })])), 'att', 'Needs a look shows over Pending');
+  const applied = NTE({ breaks_status: 'applied', breaks_applied_at: '2026-10-07T19:02:00Z' });
+  eq(C.dayNotes(r, [applied]).map(n => [n.status, C.noteStatusText(n, NOW_N, C.TZ)]), [['applied', 'In Gusto. It shows here as Gusto has it after the next sync.']]);
+  const copy = by => edRow([withNotes(ED_S1, [AN('note', by, ' Last day,  8 hours as agreed ', { at: '2026-10-07T19:02:00Z', src: 'gusto' })])]);
+  eq(C.dayNotes(copy('M@wizardtrees.com'), [applied]).map(n => [n.status, n.text]), [['gusto', 'Last day,  8 hours as agreed']], "Gusto's copy only (case and spaces do not count)");
+  eq(C.dayNotes(copy('M@wizardtrees.com'), [failed]).map(n => n.status), ['gusto'], 'a Needs a look Gusto has since: its copy only');
+  eq(C.dayNotes(copy('M@wizardtrees.com'), [pend]).map(n => n.status), ['gusto', 'pending'], 'a waiting one stays (the browser task finds it there and adds nothing)');
+  eq(C.dayNotes(copy('other@wizardtrees.com'), [applied]).map(n => n.status), ['gusto', 'applied'], "another manager's same words are not its copy");
+  // words typed in Gusto as claude@ on the next line read as part of the line (parseAppNote): its start is still its copy
+  eq(C.dayNotes(edRow([withNotes(ED_S1, [AN('note', 'm@wizardtrees.com', 'Last day, 8 hours as agreed Typed by hand', { src: 'gusto' })])]), [applied]).map(n => n.status), ['gusto'], 'its copy with words typed after it');
+  eq(C.dayNotes(edRow([withNotes(ED_S1, [AN('note', 'm@wizardtrees.com', 'Last day, 8 hours', { src: 'gusto' })])]), [applied]).map(n => n.status), ['gusto', 'applied'], 'a shorter line is not its copy');
+  eq(C.dayNotes(edRow([ED_S1], { note: 'Last day, 8 hours as agreed (m@wizardtrees.com)' }), [applied]).map(n => n.status), ['gusto'], "a day with only its one note: inside it");
+  // there, only as the sync's summary ("<words> (<email>)") or the line the browser task wrote, never the same letters
+  // somewhere in someone else's words (a short note like "OK")
+  const ok1 = NTE({ note: 'OK', breaks_status: 'applied', breaks_applied_at: '2026-10-07T19:02:00Z' }), only = note => C.dayNotes(edRow([ED_S1], { note }), [ok1]).map(n => n.status);
+  eq([only('OK from me'), only('Not OK (Test Lead)'), only('OK (other@wizardtrees.com)'), only('Note from other@wizardtrees.com: OK'), only('Note from m@wizardtrees.com: OK then')],
+    [['gusto', 'applied'], ['gusto', 'applied'], ['gusto', 'applied'], ['gusto', 'applied'], ['gusto', 'applied']], 'not its copy');
+  eq([only('OK (M@wizardtrees.com)'), only('Ran late (Test Lead) · OK (m@wizardtrees.com)'), only('Note from m@wizardtrees.com: OK'), only('Note from m@wizardtrees.com: OK - Claude Claude'),
+    only("Took the van - Test Person Note from m@wizardtrees.com: OK - Claude Claude Note from v@wizardtrees.com: fine")], [['gusto'], ['gusto'], ['gusto'], ['gusto'], ['gusto']], 'its copy');
+  // never shown: cancelled, cleared by the sync, another day's, an empty one
+  eq(C.dayNotes(r, [NTE({ breaks_status: 'cancelled', cancelled_by: 'm@wizardtrees.com', cancelled_at: NOW_N }), NTE({ id: 'n3', breaks_status: 'cancelled', cancelled_by: 'gusto-sync', cancelled_at: NOW_N }),
+    NTE({ id: 'n4', day_id: 'filifera:e9:2026-10-06' }), NTE({ id: 'n5', note: '  ' }), ED({ id: 'u1', times_status: 'pending', after: AFTER('07:30', '15:30'), note: 'a reason' })]), []);
+  // a shift no longer on the day: last, with the shift it was for
+  const s2 = ES('s2', '16:00', '18:00'), two = edRow([withNotes(ED_S1, [GN('Just walked in', 'Test Person')]), s2]);
+  eq(C.dayNotes(two, [NTE({ id: 'g1', shift_id: 'gone', before: C.shiftSnap(ES('gone', '19:00', '20:00')) }), NTE({ id: 'n6', shift_id: 's2', before: C.shiftSnap(s2) })]).map(n => [n.key, n.shiftNo, C.spanLabel(n.shift, C.TZ)]),
+    [['g:s1:0:0', 1, '7:00 AM - 3:30 PM'], ['e:n6', 2, '4:00 PM - 6:00 PM'], ['e:g1', null, '7:00 PM - 8:00 PM']]);
+});
+check('a note added here (action note): what ts_edit_submit stores, its refusals (the server\'s words), several on one shift, cancel and clear', () => {
+  const s2 = ES('s2', '16:00', '18:00'), h1 = Object.assign(ES('h1', '00:00', '23:59'), { hours_only: true, worked_min: 60, span_min: 60 });
+  const raw = edRow([ED_S1, s2, h1, ES('o1', '19:00', null)]);
+  const ctx = (id, extra) => Object.assign({ email: 'm@wizardtrees.com', now: NOW_N, today: '2026-10-07', id }, extra || {});
+  const res = C.submitEdit([], raw, { shift_id: 's1', action: 'note', after: { in: 'ignored' }, note: '  Last day, 8 hours as agreed  ' }, ctx('n1'));
+  ok(res.ok, res.error);
+  eq(Object.keys(res.edit).sort(), [...EDIT_COLS].sort(), 'a ts_edits row');
+  eq([res.edit.action, res.edit.shift_id, res.edit.after, res.edit.note, res.edit.times_status, res.edit.breaks_status, res.edit.created_by, C.editStatus(res.edit)],
+    ['note', 's1', null, 'Last day, 8 hours as agreed', 'none', 'pending', 'm@wizardtrees.com', 'pending']);
+  eq(res.edit.before, C.shiftSnap(ED_S1), 'before = the shift as Gusto has it (the browser task sends its times back as they are)');
+  const two = C.submitEdit(res.edits, raw, { shift_id: 's1', action: 'NOTE', note: 'And one more thing' }, ctx('n2'));
+  ok(two.ok && two.edits.length === 2 && two.edits.every(e => e.breaks_status === 'pending' && !e.cancelled_at), 'several notes on one shift all wait');
+  const no = (input, list, c) => C.submitEdit(list || [], raw, Object.assign({ action: 'note' }, input), c || ctx('x')).error || '';
+  eq([no({ shift_id: 's1', note: '   ' }), no({ shift_id: 's1', note: 'x'.repeat(401) }), no({ note: 'hi' })],
+    ['Write the note first.', 'A note can be at most 400 characters.', 'Say which shift the note is for.']);
+  ok(C.submitEdit([], raw, { shift_id: 's1', action: 'note', note: 'x'.repeat(400) }, ctx('x')).ok, '400 characters is fine (a reason can still be 500)');
+  ok(/not on this day any more/.test(no({ shift_id: 'gone', note: 'hi' })), 'a shift no longer on the day');
+  ok(/hours entered in Gusto without clock times: add the note in Gusto/.test(no({ shift_id: 'h1', note: 'hi' })), 'hours entered');
+  ok(/still clocked in: add the note once it has an end/.test(no({ shift_id: 'o1', note: 'hi' })), 'still clocked in (the note goes with its start and end)');
+  ok(/pay periods/.test(no({ shift_id: 's1', note: 'hi' }, [], ctx('x', { today: '2026-11-20' }))) && /not happened yet/.test(no({ shift_id: 's1', note: 'hi' }, [], ctx('x', { today: '2026-10-05' }))), 'the window, like any change');
+  const sending = ED({ id: 'a1', times_status: 'applying', times_claimed_at: NOW_N, after: AFTER('07:30', '15:30') });
+  ok(/being sent to Gusto right now/.test(no({ shift_id: 's1', note: 'hi' }, [sending])), 'not while a run writes a change of the shift');
+  ok(/being sent to Gusto right now/.test(C.submitEdit([Object.assign({}, res.edit, { breaks_status: 'applying' })], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30') }, ctx('x')).error || ''), 'nor a change while a run writes a note');
+  ok(C.submitEdit([sending], raw, { shift_id: 's2', action: 'note', note: 'hi' }, ctx('x')).ok, 'another shift is free');
+  ok(C.submitEdit([ED({ id: 'w1', times_status: 'pending', after: AFTER('07:30', '15:30') })], raw, { shift_id: 's1', action: 'note', note: 'hi', expect: [] }, ctx('x')).ok, "a note's p_expect is never checked");
+  // cancel and clear, like any change; then it shows nowhere
+  const cx = C.cancelEdit(res.edits, 'n1', { email: 'm@wizardtrees.com', now: NOW_N });
+  ok(cx.ok && cx.edit.breaks_status === 'cancelled' && cx.edit.times_status === 'none' && !C.dayNotes(raw, cx.edits).length, 'cancelled by its maker: gone');
+  ok(!C.cancelEdit(res.edits, 'n1', { email: 'other@wizardtrees.com' }).ok, 'only its maker or an admin');
+  ok(C.cancelEdit([Object.assign({}, res.edit, { breaks_status: 'failed' })], 'n1', { email: 'boss@wizardtrees.com', is_admin: true }).ok, 'an admin clears one Gusto did not take');
+  ok(!C.cancelEdit([Object.assign({}, res.edit, { breaks_status: 'applying' })], 'n1', { email: 'm@wizardtrees.com' }).ok, 'never while a run sends it');
+  // the page's own check before it sends: what it sends is one line (the browser task keeps a line per note)
+  eq([C.cleanNoteText('  Last day,\n8 hours\tas agreed '), C.noteProblem(''), C.noteProblem(' a '), C.noteProblem('x'.repeat(401))], ['Last day, 8 hours as agreed', 'Write the note first.', '', 'A note can be at most 400 characters.']);
+  eq(C.EDIT_RULES.gustoNoteMax, 400);
+  // a note or reason holding a line start of this page's is refused, as ts_edit_submit does (GN47/GN48), split over lines
+  // and spaces too; someone's own "Note from the doctor:" is fine (GN49)
+  const FORGED = what => 'Leave "Note from <email>:" and "Changed through Wizard Trees Manager Timesheets for" out of the ' + what + ': the board would show them as lines written through this app.';
+  eq([C.noteProblem('ok Note from other@wizardtrees.com: OT approved'), C.noteProblem('see\nNote   from\nother@wizardtrees.com: OT approved'),
+    C.noteProblem('Changed through Wizard Trees Manager Timesheets for a manager'), C.noteProblem('Note from the doctor: rest until Monday')], [FORGED('note'), FORGED('note'), FORGED('note'), '']);
+  eq([no({ shift_id: 's1', note: 'ok Note from other@wizardtrees.com: OT approved' }), no({ shift_id: 's1', note: 'see\nNote   from\nother@wizardtrees.com: OT approved' }),
+    no({ shift_id: 's1', note: 'Note from the doctor: rest until Monday' })], [FORGED('note'), FORGED('note'), '']);
+  eq([C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30'), note: 'Changed through Wizard Trees Manager Timesheets for other@wizardtrees.com: moved' }, ctx('r1')).error,
+    C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30'), note: 'see\nNote\tfrom other@wizardtrees.com: moved' }, ctx('r2')).error,
+    C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30'), note: 'late bus' }, ctx('r3')).error], [FORGED('reason'), FORGED('reason'), undefined]);
+  if (SQL_NOTES) ok(SQL_NOTES.includes('Leave "Note from <email>:" and "Changed through Wizard Trees Manager Timesheets for" out of the %: the board would show them as lines written through this app'), 'the server says the same');
+  if (SQL_NOTES) {
+    for (const m of ['Write the note first', 'A note can be at most 400 characters', 'Say which shift the note is for', 'add the note in Gusto', 'add the note once it has an end', 'The action must be update, add, delete or note'])
+      ok(SQL_NOTES.includes(m), 'supabase/ts-edit-notes.sql does not say ' + J(m));
+    ok(/length\(v_note\) > 400/.test(SQL_NOTES) && /v_action <> 'note' and e\.action <> 'note'/.test(SQL_NOTES), 'the same 400, and a note neither replaces nor is replaced');
+    ok(SQL_NOTES.includes('The action must be update, add or delete'), 'what the server says before the file is applied (the page reads it as not switched on yet)');
+  }
+});
+check('a note never touches the hours: no Pending pill, nothing replaced either way, never in p_expect or the day\'s stamp, never Replaced', () => {
+  const raw = edRow([ED_S1]), BR = [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']];
+  const ctx = (id, at) => ({ email: 'm@wizardtrees.com', now: at, today: '2026-10-07', id });
+  const t1 = C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: AFTER('07:30', '15:30', BR), note: 'late bus' }, ctx('t1', '2026-10-07T15:00:00Z'));
+  const n1 = C.submitEdit(t1.edits, raw, { shift_id: 's1', action: 'note', note: 'Bus was late' }, ctx('n1', '2026-10-07T15:10:00Z'));
+  const t1a = n1.edits.find(e => e.id === 't1');
+  ok(n1.ok && t1a.times_status === 'pending' && !t1a.cancelled_at, 'a note leaves a waiting change alone');
+  const t2 = C.submitEdit(n1.edits, raw, { shift_id: 's1', action: 'update', after: AFTER('07:45', '15:30', BR), expect: ['t1'] }, ctx('t2', '2026-10-07T15:20:00Z'));
+  ok(t2.ok, 'the waiting note is not "someone changed this shift": ' + t2.error);
+  eq([t2.edits.find(e => e.id === 't1').cancelled_by, t2.edits.find(e => e.id === 'n1').breaks_status, t2.edits.find(e => e.id === 'n1').cancelled_at], ['superseded', 'pending', null], 'a later change replaces the change, never the note');
+  ok(/Nothing changed/.test(C.submitEdit([n1.edit], raw, { shift_id: 's1', action: 'update', after: C.shiftSnap(ED_S1) }, ctx('x', NOW_N)).error || ''), 'a waiting note is no change to go back from');
+  eq(C.supersede([n1.edit], raw.id, 's1', NOW_N), [n1.edit]);
+  // the board, its pills and the CSV
+  ok(C.overlayDay(raw, [n1.edit]) === raw, 'only a note: the row as Gusto has it, no pill');
+  eq(OV(raw, [t1.edit, n1.edit]).edit.pending.map(e => e.id), ['t1'], 'beside a change: only the change is Pending');
+  eq(C.buildCsv([C.overlayDay(raw, [n1.edit])], { edits: true }), C.buildCsv([raw], { edits: true }), 'the CSV is as before');
+  // Replaced: a note never makes an older change Replaced, and is never Replaced itself
+  eq([...C.replacedEdits([ED({ id: 'c1', times_status: 'conflict', created_at: '2026-10-07T10:00:00Z' }), NTE({ id: 'n9', created_at: '2026-10-07T11:00:00Z' })])], [], 'a later note replaces nothing');
+  eq([...C.replacedEdits(t2.edits)], [], 'and the note stays its own');
+  eq(C.replacedBy(t2.edits.find(e => e.id === 't1'), t2.edits).id, 't2', 'replaced by the change, not the note');
+  // the editor: the note is no waiting change of the shift; while a run writes it, the shift waits (the server refuses then)
+  const en = C.editorEntries(raw, OV(raw, [n1.edit]), [n1.edit], { email: 'm@wizardtrees.com' });
+  eq([en[0].pendingIds, en[0].readonly], [[], undefined]);
+  eq(C.editorEntries(raw, raw, [Object.assign({}, n1.edit, { breaks_status: 'applying' })], { email: 'm@wizardtrees.com' })[0].readonly, 'applying');
+  // Save's stamp: a note added meanwhile (here or in Gusto) changes no time, so it never stops Save
+  eq(C.dayStamp(raw, [n1.edit]), C.dayStamp(raw, []));
+  eq(C.dayStamp(edRow([withNotes(ED_S1, [GN('Just walked in', 'Test Person')])]), []), C.dayStamp(raw, []));
+  // Gusto's notes stay on a shift while a change of its times waits
+  const moved = OV(edRow([withNotes(ED_S1, [GN('Just walked in', 'Test Person')])]), [ED({ times_status: 'pending', after: AFTER('07:30', '15:30', BR) })]);
+  eq([moved.shifts[0].in, C.dayNotes(moved, []).map(n => n.text)], [EP('07:30'), ['Just walked in']]);
+  ok(!('notes' in C.editedShift(ED_S1, AFTER('07:30', '15:30'), C.TZ)), 'no notes key on a shift without notes');
+  // in words: Changes made here, the editor's history and Admin > Edits
+  eq(C.describeEdit(n1.edit, C.TZ), ['Note: "Bus was late"', 'Shift 7:00 AM - 3:30 PM']);
+  eq(C.editPartLines(n1.edit, C.TZ, NOW_N), ['The note: going to Gusto at noon today']);
+  eq(C.editPartLines(Object.assign({}, n1.edit, { breaks_status: 'failed', breaks_error: 'Gusto said no.' }), C.TZ, NOW_N), ['The note: Gusto said no.']);
+  eq([C.editReason(n1.edit), C.editReason(t1.edit), C.editReason(null)], ['', 'late bus', '']);
+  const tip = C.editTip(n1.edit, C.TZ, NOW_N);
+  ok(/Note: "Bus was late"/.test(tip) && !/Reason:/.test(tip), 'no Reason line repeating the note');
+  ok(C.isNoteEdit(n1.edit) && !C.isNoteEdit(t1.edit) && !C.isNoteEdit(null));
+});
+check("a note Gusto refused because its payroll was processed (or its day locked) reads Needs a look, never Missed payroll, as in the daily list, and is cleared, not marked done", () => {
+  const MISS = 'Payroll for Sat Oct 10 to Fri Oct 23 has already been processed in Gusto, so this change never reached Gusto: add the hours to the next payroll or fix them in Gusto, then mark it done';
+  const nt = NTE({ breaks_status: 'conflict', breaks_error: MISS }), hrs = ED({ id: 'u1', breaks_status: 'conflict', breaks_error: MISS, after: AFTER('07:30', '15:30') });
+  eq([C.isMissedEdit(nt), C.isMissedEdit(NTE({ breaks_status: 'failed', breaks_error: 'Gusto marks Mon Oct 19 as already paid (partly locked)' })), C.isMissedEdit(hrs)], [false, false, true]);
+  eq([C.editStatus(nt), C.editTip(nt, C.TZ, NOW_N).split('\n')[0]], ['attention', 'Needs a look: Gusto did not take all of this change.']);
+  // the page's own pill and Admin > Edits > Missed payroll filter, run as written
+  const app = block('ts-app'), rep = C.replacedEdits([nt, hrs]);
+  const pillOf = new Function('C', 'return ' + app.match(/const pillOf = ([^\n]+);\n/)[1])(C);
+  const missed = new Function('C', 'rep', 'return ' + appFn('editsAdminHtml').match(/missed: (e => [^\n]+) \};/)[1])(C, rep);
+  eq([pillOf(nt, C.editShownStatus(nt, rep)), pillOf(hrs, C.editShownStatus(hrs, rep))], ['attention', 'missed']);
+  eq([nt, hrs].filter(missed).map(e => e.id), ['u1'], 'only the change of hours is on Missed payroll');
+  ok(/done = clear && C\.isMissedEdit\(e\)/.test(appFn('editAdminRow')) && /done = C\.isMissedEdit\(S\.edits\.get\(id\)\)/.test(appFn('adminCancelEdit')), 'so Admin > Edits offers Clear on the note, not Done');
+  eq(C.dayNotes(edRow([ED_S1]), [nt]).map(n => [n.status, C.notesLook([n]), C.noteStatusText(n, NOW_N, C.TZ).slice(0, 14)]), [['attention', 'att', 'Not in Gusto: ']], 'the note itself reads Not in Gusto');
+  ok(/A note never goes on this list: one Gusto did not take reads Needs a look\./.test(appFn('editsAdminHtml')), 'the Missed payroll help says so');
+});
+check('noteShifts: a note can go on a Gusto shift with a clock-in and a clock-out, never hours entered, still open, split at midnight or waiting to be deleted', () => {
+  const s2 = ES('s2', '16:00', '18:00'), h1 = Object.assign(ES('h1', '00:00', '23:59'), { hours_only: true });
+  const raw = edRow([ED_S1, s2, h1, ES('o1', '19:00', null)]);
+  eq(C.noteShifts(raw, {}).map(s => s.id), ['s1', 's2']);
+  const del = st => ED({ id: 'd1', shift_id: 's2', action: 'delete', after: null, breaks_status: st, cancelled_at: st === 'cancelled' ? NOW_N : null });
+  eq([C.noteShifts(raw, { edits: [del('pending')] }), C.noteShifts(raw, { edits: [del('applied')] }), C.noteShifts(raw, { edits: [del('cancelled')] })].map(l => l.map(s => s.id)),
+    [['s1'], ['s1'], ['s1', 's2']], 'a delete waiting or just done; a cancelled one');
+  // Gusto split it at midnight: 11:59:59 PM, and the same id goes on at 12:00 AM the next day
+  const cut = { id: 'c9', in: EP('17:00'), out: '2026-10-06T23:59:59-07:00', span_min: 420, worked_min: 420, hours_only: false, breaks: [] };
+  eq(C.noteShifts(edRow([cut]), { neighbors: [{ id: 'c9', in: '2026-10-07T00:00:00-07:00', out: '2026-10-07T02:00:00-07:00', date: '2026-10-07' }] }), [], 'split at midnight');
+  eq(C.noteShifts(edRow([cut]), {}).map(s => s.id), ['c9'], 'without the next day: an ordinary shift');
+  eq(C.noteShifts(null, {}), []);
+});
+check('demo: shifts carry notes as the sync writes them, with a note waiting, one Gusto did not take, one in Gusto, and one Gusto already shows', () => {
+  const noted = demo.rows.filter(r => r.shifts.some(s => (s.notes || []).length));
+  ok(noted.some(r => r.shifts.filter(s => (s.notes || []).length).length >= 2), 'notes on two shifts of one day');
+  const all = noted.flatMap(r => r.shifts.flatMap(s => s.notes || []));
+  ok(all.some(n => n.app && n.kind === 'note') && all.some(n => n.app && n.kind === 'edit' && n.text) && all.some(n => n.app && n.kind === 'edit' && !n.text) && all.some(n => !n.app), 'a manager\'s note, a reason, a change with no reason, someone\'s own');
+  ok(all.some(n => n.src === 'csv') && all.some(n => n.src === 'gusto'), 'from the morning export and from Gusto');
+  for (const r of noted) {
+    eq(r.note, r.shifts.flatMap(s => s.notes || []).filter(n => n.text).map(n => n.text + ' (' + (n.app ? n.by : n.author) + ')').join(' · ') || null, r.id + ': the sync\'s summary');
+    const ns = C.dayNotes(C.normRow(r), []);
+    ok(ns.length && ns.every(n => n.text && n.shiftId), r.id + ': every note on its shift, none empty');
+  }
+  ok(demo.rows.some(r => r.note && !r.shifts.some(s => (s.notes || []).length)), 'and days with only their one note, as before');
+  const notes = demo.edits.filter(C.isNoteEdit), st = notes.map(C.editStatus);
+  ok(st.includes('pending') && st.includes('attention') && st.includes('applied'), 'waiting, not taken, in Gusto: ' + J(st));
+  ok(notes.some(e => e.region === 'NY' && e.breaks_status === 'failed'), 'a New York one Gusto did not take');
+  ok(notes.every(e => e.before && e.after === null && e.times_status === 'none' && e.note && e.note.length <= C.EDIT_RULES.gustoNoteMax), 'shaped like ts_edit_submit stores them');
+  ok(notes.every(e => !C.editLate(e, NOW)), 'none late (the demo keeps one late change)');
+  let copies = 0;
+  for (const e of notes) {
+    const ns = C.dayNotes(C.normRow(demo.rows.find(x => x.id === e.day_id)), demo.edits);
+    const mine = ns.find(n => n.edit && n.edit.id === e.id), copy = ns.some(n => n.status === 'gusto' && n.app && n.by === e.created_by && n.text === e.note);
+    if (copy) copies++;
+    ok(copy ? !mine : !!mine && mine.status === C.editStatus(e), e.id + (copy ? ": only Gusto's copy" : ': shows as ' + C.editStatus(e)));
+  }
+  ok(copies === 1, 'one shows only as Gusto has it');
+  for (let i = 0; i < 7; i++) {
+    const d = D.build(Date.parse(NOW) + i * 86400000 + 5 * 3600000);
+    ok(d.edits.filter(C.isNoteEdit).length >= 4 && d.rows.filter(r => r.shifts.some(s => (s.notes || []).length)).length >= 2, d.today + ': notes in the demo');
+  }
+});
+check('page: the note mark ("1 note", "2 notes") and its bubble on desktop rows, a tag on phone cards and day lines, the notes written out when a card opens', () => {
+  const app = block('ts-app'), nm = appFn('noteMark');
+  ok(/function rowNotes\(r\) \{ return r \? C\.dayNotes\(r, editsFor\(r\.id\)\) : \[\]; \}/.test(app), "every note of the day: Gusto's and the ones added here");
+  ok(/const tip = C\.notesTip\(ns, r, Date\.now\(\)\);/.test(nm) && /<span class="notemark\$\{noteCls\(ns\)\}" title="\$\{tip\}"/.test(nm) && /tabindex="0">\$\{C\.notesLabel\(ns\)\}<\/span>/.test(nm), 'the mark, its bubble and its words');
+  ok(/\$\{noteMark\(r\)\}/.test(appFn('dayRowOf')) && /\$\{noteMark\(r\)\}/.test(appFn('empRow')), 'By Day after the name, By Employee after the date');
+  ok(/nt = noteTag\(r\)/.test(appFn('breaksLine')) && /flagPills\(r, 'dl-flags', noteTag\(r\)\)/.test(appFn('dayLine')) && /\$\{extra \|\| ''\}/.test(appFn('flagPills')), 'a tag on a By Day card and on a By Employee day line');
+  const nl = appFn('notesList');
+  ok(/<span class="pd-k">Notes in Gusto<\/span><ul class="pd-list">/.test(nl) && /C\.noteMeta\(n, tz, multi\)/.test(nl) && /statusPill\(n\.status\)/.test(nl) && /C\.noteStatusText\(n, now, tz\)/.test(nl), 'the card: each note, who and when, and where one added here stands');
+  ok(/canNoteRow\(r\) \? h`<button type="button" class="btn" data-act="note-day" data-k="\$\{r\.id\}">Add a note<\/button>`/.test(appFn('detailBody')) && /case 'note-day': openEditor\(d\.k, el, \{ note: true \}\); break;/.test(app), 'phones: Add a note next to Edit times or breaks');
+  ok(/function canNoteRow\(r\) \{[^\n]*canEditRow\(raw\) && mayNote\(raw\) && noteTargets\(raw\)\.length > 0; \}/.test(app) && /C\.noteShifts\(raw, \{ neighbors: rawNeighbors\(raw\), edits: editsFor\(raw\.id\) \}\)/.test(app), 'whoever may change the day, once notes are proven there, on a shift that can take one');
+  ok(/\.notemark\.pend,\.tagm\.pend\{border-color:rgba\(56,189,248,\.55\);color:var\(--ot-text\)/.test(src) && /\.notemark\.att,\.tagm\.att\{border-color:rgba\(240,173,78,\.62\);color:var\(--unpaid-text\)/.test(src), 'waiting looks like Pending, not taken like Needs a look');
+  const leg = markup.match(/<div class="legend">[\s\S]*?\n {14}<\/div>/)[0];
+  ok(/<span class="notemark">1 note<\/span>/.test(leg) && /<span class="notemark pend">1 note<\/span>/.test(leg), 'the Key shows both looks');
+  ok(/const TIP_SEL = '\.infomark, abbr\.est, \.notemark, \.flag';/.test(app), 'the mark opens the bubble on a click or tap');
+});
+check('page: the editor lists the day\'s notes by shift and adds one with its own Save note, never touching typed times', () => {
+  const app = block('ts-app'), eb = appFn('editorBody'), en = appFn('editorNotes'), nb = appFn('noteBox'), sn = appFn('edSaveNote');
+  ok(/\$\{editorNotes\(raw, tz\)\}/.test(eb) && eb.indexOf('editorNotes(raw, tz)') < eb.indexOf('editorHistory(raw, tz)'), 'Notes in Gusto above the changes to the day');
+  ok(/<span class="ed-k">Notes in Gusto<\/span>/.test(en) && /C\.dayNotes\(raw, editsFor\(raw\.id\)\)/.test(en) && /'Shift ' \+ C\.spanLabel\(g\.shift, tz\)/.test(en) && /statusPill\(n\.status\)/.test(en), 'grouped by shift on a day with more than one');
+  ok(/data-act="ed-note-open"/.test(nb) && />\+ Add a note</.test(nb) && /class="linkbtn ed-nadd"/.test(nb), '+ Add a note');
+  ok(/targets\.length > 1 \|\| \(targets\.length && !picked\) \? h`<label class="ed-f"><span>Shift<\/span><select id="edNoteShift">/.test(nb), 'a shift picker only when more than one shift can take a note (or the one picked left the list)');
+  ok(/<textarea id="edNoteText" rows="3" maxlength="\$\{max\}"/.test(nb) && /max = C\.EDIT_RULES\.gustoNoteMax/.test(nb) && /id="edNoteCount">\$\{E\.noteText\.length \+ ' \/ ' \+ max\}</.test(nb), 'a box of 400 characters with a counter (Enter makes a new line there)');
+  ok(/<button type="button" class="btn sm primary" data-act="ed-note-save"/.test(nb) && /<button type="button" class="btn sm" data-act="ed-note-cancel"/.test(nb), 'its own Save note and Cancel, type="button"');
+  ok(nb.includes('Notes are visible to the employee in Gusto.'), 'the hint');
+  ok(/runEditOp\(raw, \{ type: 'submit', key: 'note', shift_id: String\(s\.id\), action: 'note', after: null,/.test(sn) && /C\.noteProblem\(text\)/.test(sn) && /C\.cleanNoteText\(E\.noteText\)/.test(sn), 'Save note: the same RPC path as a change');
+  ok(!/closeEditor\(|openEditor\(/.test(sn) && /resetNoteBox\(\); if \(E\.err === NOTE_FIRST\) E\.err = '';\n\s+render\(\); renderEditor\(\);/.test(sn) && /if \(!res\.error && !DEMO\) await fetchEdits\(raw\.work_date, raw\.work_date\);/.test(sn), 'then the same form again (typed times stay), with the day\'s changes read again');
+  ok(/if \(E\.noteOpen && E\.noteText\.trim\(\)\) \{ E\.err = NOTE_FIRST;/.test(appFn('saveDayEdits')) && block('ts-app').includes("const NOTE_FIRST = 'Save the note first (Save note, under Notes in Gusto), or cancel it.';"), 'Save changes neither sends nor drops a typed note');
+  ok(/if \(E\.err === NOTE_FIRST\) E\.err = '';/.test(appFn('edNoteClose')), 'and says so only until the note is saved or cancelled');
+  ok(/\(E\.noteOpen && E\.noteText\.trim\(\) !== ''\)/.test(appFn('editorDirty')) && /if \(E\.busy \|\| E\.noteBusy\) return;/.test(appFn('requestCloseEditor')), 'a typed note counts when closing; never closes mid-save');
+  ok(/if \(t\.id === 'edNoteText'\) \{ E\.noteText = t\.value;/.test(appFn('onEditorInput')) && /if \(t\.id === 'edNoteShift'\) \{ E\.noteShift = t\.value; return; \}/.test(appFn('onEditorInput')), 'typing keeps the box in step without a re-render');
+  for (const a of ['ed-note-open', 'ed-note-cancel', 'ed-note-save']) ok(new RegExp("case '" + a + "': ").test(app), a + ' is wired');
+  ok(/resetNoteBox\(\)/.test(appFn('openEditor')) && /resetNoteBox\(\)/.test(appFn('closeEditor')), 'a fresh box for every day');
+  ok(/if \(opts && opts\.note && canNoteRow\(raw\)\) \{ E\.noteOpen = true;/.test(appFn('openEditor')) && /if \(E\.noteOpen\) \{ noteFocus\(\); return; \}/.test(appFn('openEditor')), "a phone's Add a note opens the box ready to type (only where the day's Add a note is offered)");
+  const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1];
+  ok(/#editPanel textarea\{font-size:16px\}/.test(phone), '16px on a phone (an iPhone zooms into smaller)');
+});
+// The page's own note functions, run as written with stand-ins: who is signed in, the editor's state, and the shifts that can
+// take a note (C.noteShifts on the day as given). proven: EDIT_PROVEN as it will be after a supervised run.
+function notePage(me, E, proven) {
+  const app = block('ts-app'), pick = re => { const m = app.match(re); if (!m) throw new Error('not in ts-app: ' + re); return m[0]; };
+  const code = [proven ? 'const EDIT_PROVEN = ' + J(proven) + ';' : pick(/const EDIT_PROVEN = \{[\s\S]*?\};/), pick(/const rowRegion = [^\n]*\n/),
+    appFn('mayEdit'), appFn('mayNote'), pick(/const NOTE_NO_SHIFT = [^\n]*\n/), appFn('noteBox'), 'return { EDIT_PROVEN, mayEdit, mayNote, noteBox };'].join('\n');
+  return new Function('C', 'h', 'actor', 'noteTargets', 'E', code)(C, C.h, () => me, raw => C.noteShifts(raw, {}), E);
+}
+const NOTE_BOX = o => Object.assign({ noteOpen: false, noteText: '', noteShift: '', noteErr: '', noteBusy: false, busy: false }, o || {});
+check('notes are a held kind: a manager gets Add a note only once a supervised run proved notes in the day\'s region (CA and NY apart); admins and full viewers now', () => {
+  const mgr = { email: 'm@wizardtrees.com', is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
+  const fv = { email: 'v@wizardtrees.com', is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, admin = { email: 'boss@wizardtrees.com', is_admin: true, active: true, grants: [] };
+  const ca = edRow([ED_S1]), ny = edRow([ED_S1], { id: 'wtny:e1:2026-10-06', company: 'wtny', region: 'NY' });
+  const P = notePage(mgr, NOTE_BOX());
+  eq([P.EDIT_PROVEN.note, P.EDIT_PROVEN.nyNote], [false, false], 'neither proven yet');
+  eq([P.mayNote(ca), P.mayNote(ny)], [false, false], 'a manager: no notes yet');
+  eq([notePage(admin, NOTE_BOX()).mayNote(ca), notePage(admin, NOTE_BOX()).mayNote(ny), notePage(fv, NOTE_BOX()).mayNote(ca)], [true, true, true], 'admins and full viewers: now');
+  eq(String(P.noteBox(ca, C.TZ)), '', 'the editor offers a manager no + Add a note');
+  ok(/data-act="ed-note-open"[^>]*>\+ Add a note</.test(String(notePage(admin, NOTE_BOX()).noteBox(ca, C.TZ))), 'an admin gets + Add a note');
+  const caOnly = Object.assign({}, P.EDIT_PROVEN, { note: true });
+  eq([notePage(mgr, NOTE_BOX(), caOnly).mayNote(ca), notePage(mgr, NOTE_BOX(), caOnly).mayNote(ny), notePage(mgr, NOTE_BOX(), Object.assign({}, caOnly, { nyNote: true })).mayNote(ny)], [true, false, true],
+    'once CA:note is proven, California days; New York days wait for NY:note');
+  // every way in asks the same: the phone's Add a note (canNoteRow), the editor opening with the box ready, + Add a note, Save note
+  const app = block('ts-app');
+  ok(/function mayNote\(r\) \{ return mayEdit\('note'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyNote'\)\); \}/.test(app), 'mayNote');
+  ok(/canEditRow\(raw\) && mayNote\(raw\) && noteTargets\(raw\)\.length > 0/.test(appFn('canNoteRow')) && /opts\.note && canNoteRow\(raw\)/.test(appFn('openEditor')), 'the phone button and the box it opens');
+  ok(/if \(!raw \|\| !mayNote\(raw\) \|\| !t\.length \|\| E\.busy\) return;/.test(appFn('edNoteOpen')) && /!mayNote\(raw\) \? 'A note cannot be added here yet: add it in Gusto\.'/.test(appFn('edSaveNote')), '+ Add a note and Save note');
+});
+check('the note box once open: stays (to copy the note, or cancel it) when no shift can take it any more, never moves a note to a shift nobody picked, and never focuses a box that is gone', () => {
+  const admin = { email: 'boss@wizardtrees.com', is_admin: true, active: true, grants: [] };
+  const s2 = ES('s2', '16:00', '18:00'), two = edRow([ED_S1, s2]), none = edRow([Object.assign(ES('h1', '00:00', '23:59'), { hours_only: true })]);
+  // closed: + Add a note, or why there is none
+  ok(/A note can go here only on a finished shift with clock times, not one split at midnight or waiting to be deleted\./.test(String(notePage(admin, NOTE_BOX()).noteBox(none, C.TZ))), 'why a day has no shift for a note');
+  // open, and the shift that could take it is gone: the typed note stays, with Cancel; Save note is off
+  const gone = String(notePage(admin, NOTE_BOX({ noteOpen: true, noteText: 'Last day', noteShift: 's1' })).noteBox(none, C.TZ));
+  ok(/<textarea id="edNoteText"[^>]*>Last day<\/textarea>/.test(gone) && gone.includes("None of this day&#39;s shifts can take a note now. Copy it into Gusto, or cancel it.") && /data-act="ed-note-cancel">Cancel/.test(gone), 'the note and Cancel stay: ' + gone);
+  ok(/data-act="ed-note-save" disabled>/.test(gone) && !/<select/.test(gone), 'Save note is off, and there is no shift to pick');
+  // open on a picked shift that left the list: "Pick the shift", never the first shift in its place (one shift left, too)
+  const lost = n => String(notePage(admin, NOTE_BOX({ noteOpen: true, noteText: 'x', noteShift: 'gone' })).noteBox(n, C.TZ));
+  for (const [r, opts] of [[two, 2], [edRow([s2]), 1]]) {
+    const html = lost(r);
+    ok(/<select id="edNoteShift"><option value="" selected disabled>Pick the shift<\/option>/.test(html) && (html.match(/<option value="s/g) || []).length === opts && !/<option value="s[^"]*" selected/.test(html), opts + ' shift(s) left: ' + html);
+  }
+  ok(!/<select/.test(String(notePage(admin, NOTE_BOX({ noteOpen: true, noteShift: 's2' })).noteBox(edRow([s2]), C.TZ))), 'one shift, the one picked: no picker');
+  ok(/<option value="s2" selected>/.test(String(notePage(admin, NOTE_BOX({ noteOpen: true, noteShift: 's2' })).noteBox(two, C.TZ))), 'two shifts: the one picked shows picked');
+  // Save note sends only to the shift picked; with nothing picked, the day's one shift
+  ok(/s = targets\.find\(x => String\(x\.id\) === E\.noteShift\) \|\| \(targets\.length === 1 && !E\.noteShift \? targets\[0\] : null\);/.test(appFn('edSaveNote')) &&
+     /\(s \? '' : targets\.length \? 'Pick the shift the note is for\.' : NOTE_NO_SHIFT\)/.test(appFn('edSaveNote')), 'Save note');
+  // the box's text field only when it is there (the editor may have closed or lost the box meanwhile)
+  const app = block('ts-app');
+  ok(/function noteFocus\(\) \{ const t = \$\('edNoteText'\); if \(t\) t\.focus\(\); \}/.test(app) && !/\$\('edNoteText'\)\.focus\(\)/.test(app), 'every focus of it goes through noteFocus');
+  ok(/if \(E\.noteOpen && E\.noteText\.trim\(\)\) \{ E\.err = NOTE_FIRST; renderEditor\(\); noteFocus\(\); return; \}/.test(appFn('saveDayEdits')), 'Save changes points at the box it refuses for, which is on screen');
+});
+check('page: a note goes through ts_edit_submit (action note), says when the server cannot take one yet, replaces nothing, and reads Note: "..." with Cancel and Clear', () => {
+  const ro = appFn('runEditOp');
+  ok(/: op\.action === 'note' && \/action must be update, add or delete\/i\.test\(errText\(error\)\) \? 'Adding notes is not switched on yet\.'/.test(ro), 'before supabase/ts-edit-notes.sql is applied: not switched on yet');
+  ok(/if \(op\.type === 'submit' && op\.shift_id != null && op\.action !== 'note'\) for \(const x of C\.supersede\(/.test(ro), 'a note replaces nothing here either');
+  ok(/C\.submitEdit\(list, raw, \{ shift_id: op\.shift_id, action: op\.action, after: op\.after, note, expect: op\.expect \}/.test(ro), 'demo: the same rules, in memory');
+  ok(/C\.editReason\(e\) \? h`<div class="faint">Reason: \$\{e\.note\}<\/div>`/.test(appFn('editorHistory')) && /C\.editReason\(e\) \? h`<span class="faint">Reason: \$\{e\.note\}<\/span>`/.test(appFn('editAdminRow')), 'no Reason line repeating a note');
+  ok(/nt \? \(clear \? 'Clear this note' : 'Cancel this note'\)/.test(appFn('editorHistory')), 'Cancel or clear a note in the editor, like any change');
+  const cc = appFn('edCancelChange');
+  ok(/if \(!note && editorDirty\(\) && E\.confirm !== id\)/.test(cc) && /if \(note\) \{ toast\([^\n]*renderEditor\(\); return; \}/.test(cc), 'cancelling a note keeps what is typed');
+  ok(/C\.describeEdit\(e, tz\)/.test(appFn('editAdminRow')) && /C\.describeEdit\(e, tz\)\.join\(' · '\)/.test(appFn('histList')), 'Admin > Edits and Changes made here read Note: "..."');
 });
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name

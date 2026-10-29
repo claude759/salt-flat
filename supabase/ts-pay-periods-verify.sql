@@ -106,12 +106,13 @@ declare
   -- the first day of the previous pay period (periods start on the Saturdays 2026-09-26 + 14k)
   w    constant date := date '2026-09-26' + 14 * floor((((now() at time zone 'America/Los_Angeles')::date) - date '2026-09-26') / 14.0)::int - 14;
   key_on constant text := '{"x-ts-sync-key": "zz-pp-sync-key"}';
-  da text; db text; dc text; da2 text;
+  da text; db text; dc text; da2 text; dn text;
 begin
   da := pg_temp.ts_v_day('zz_pp_a', 'zz-pp-1', w);
   da2 := pg_temp.ts_v_day('zz_pp_a', 'zz-pp-2', w + 14);
   db := pg_temp.ts_v_day('zz_pp_b', 'zz-pp-3', w);
   dc := pg_temp.ts_v_day('zz_pp_c', 'zz-pp-4', w);
+  dn := pg_temp.ts_v_day('zz_pp_b', 'zz-pp-5', w);   -- the notes (E10): B's open period, no change waiting
 
   -- ---------------------------------------------------------------- A. structure and grants
   perform pg_temp.ts_v('A1 ts_companies has pay_periods (jsonb) and pay_periods_at (timestamptz), readable through its SELECT grant', null, null,
@@ -196,6 +197,20 @@ begin
     pg_temp.ts_v_del(dc, 'zz-pp-4-s'), 'ERROR P0001: Gusto has locked the ' || to_char(w, 'Dy Mon FMDD') || ' to ' || to_char(w + 13, 'Dy Mon FMDD') || ' pay period%');
   perform pg_temp.ts_v('E8 cancelling a waiting change of a closed day still works (an update, not a new change)', 'authenticated', adm,
     format($q$select (r->>'breaks_status') from (select public.ts_edit_cancel((select id from public.ts_edits where day_id = %L)) r) s$q$, dc), 'cancelled');
+  -- a note for Gusto (action 'note', supabase/ts-edit-notes.sql) is a new change like any other
+  perform pg_temp.ts_v('E9 a note on a day in a processed period is refused the same way', 'authenticated', adm,
+    format($q$select (r->>'action') from (select public.ts_edit_submit(%L, 'zz-pp-1-s', 'note', null, 'zz-pp note') r) s$q$, da),
+    'ERROR P0001: Payroll for ' || to_char(w, 'Dy Mon FMDD') || ' to ' || to_char(w + 13, 'Dy Mon FMDD') || ' has already been processed in Gusto%');
+  perform pg_temp.ts_v('E10 a note where the period is open goes through', 'authenticated', adm,
+    format($q$select (r->>'action') || '/' || (r->>'times_status') || '/' || (r->>'breaks_status')
+                from (select public.ts_edit_submit(%L, 'zz-pp-5-s', 'note', null, 'zz-pp note') r) s$q$, dn), 'note/none/pending');
+  perform pg_temp.ts_v('E10b a note on the shift E4 is waiting to delete is refused (the delete goes first: the note would have nowhere to go)', 'authenticated', adm,
+    format($q$select (r->>'action') from (select public.ts_edit_submit(%L, 'zz-pp-3-s', 'note', null, 'zz-pp note') r) s$q$, db),
+    'ERROR P0001: That shift is waiting to be deleted, so a note has nowhere to go. Cancel the delete first');
+  perform pg_temp.ts_v('E11 the refused notes were not stored: nothing on A''s closed day, only E4''s delete on B''s', null, null,
+    format($q$select (select count(*) from public.ts_edits where day_id = %L) || '/'
+                  || (select string_agg(e.action || ':' || e.breaks_status, ',' order by e.action) from public.ts_edits e where e.day_id = %L)$q$, da, db),
+    '0/delete:pending');
 end $v$;
 
 -- ------------------------------------------------------------------ result (then everything rolls back)

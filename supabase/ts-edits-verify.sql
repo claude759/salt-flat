@@ -7,8 +7,9 @@
 -- zz-ed-other@wizardtrees.com, a throwaway sync key), plays each identity, records what each one can
 -- see or do, returns one pass/fail table, and undoes everything. Run it with write access as the
 -- project owner (SQL editor or the management API without read_only) after the four earlier ts
--- files and ts-edits.sql; the API shows the last result set, which is the pass/fail table. Every
--- row must say pass = true.
+-- files and ts-edits.sql (and ts-edit-notes.sql on a table made before notes: the GN checks need
+-- the 'note' action); the API shows the last result set, which is the pass/fail table. Every row
+-- must say pass = true.
 --
 -- Identities (real auth.users rows are needed only for gianni@ and automation@, looked up by email;
 -- each session carries a JWT amr 'oauth' unless a check says otherwise, and automation@ always signs
@@ -42,14 +43,16 @@
 --                                             apply-then-revert and just-deleted checks
 --   a6 zz_ed_a  zz-ed-4 Packing         T     s8: reached only as a view's person member
 --   a7 zz_ed_a  zz-ed-5 "@uuid:zz-ed-1" T     s10: a department spelled like a person key
---   a8 zz_ed_a  zz-ed-6 Distro/Trim     T     s11 still clocked in, with an open meal break
+--   a8 zz_ed_a  zz-ed-6 Distro/Trim     T     s11 still clocked in, with an open meal break (takes no note until
+--                                             an end has reached Gusto)
 --   aF zz_ed_a  zz-ed-7 Distro/Trim     TF    no shifts: an add around now (the end-later-than-now rule)
---   aH zz_ed_a  zz-ed-10 Distro/Trim    T     h1: hours entered in Gusto without clock times
+--   aH zz_ed_a  zz-ed-10 Distro/Trim    T     h1: hours entered in Gusto without clock times (no note either)
 --   aS zz_ed_a  zz-ed-12 Distro/Trim    T     s15 1:48:42 PM to 5:09:49 PM with a meal Gusto put at 1:48:00
---                                             (42 s before the clock-in, as in live data); later p_expect
+--                                             (42 s before the clock-in, as in live data); later p_expect, then
+--                                             notes (action 'note', supabase/ts-edit-notes.sql) next to changes
 --   aX zz_ed_a  zz-ed-11 Distro/Trim    T     s14 8-4: moved to Cultivation and back (who sees its edits)
 --   b1 zz_ed_b  zz-ed-3 Distro/Trim     T     s7: the same department name at another company
---   n1 zz_ed_ny zz-ed-9 Distro Hourly   NT    s9 8-4 Eastern (meal 12:00-12:30)
+--   n1 zz_ed_ny zz-ed-9 Distro Hourly   NT    s9 8-4 Eastern (meal 12:00-12:30), also takes a note
 --   n2 zz_ed_ny zz-ed-8 Distro Hourly   NT-1  s12 11:30 PM to 3 AM PACIFIC (a New York BA punching in California):
 --                                             in Eastern its start falls on the next date
 
@@ -312,6 +315,16 @@ declare
   ecount constant text := 'select count(*) from public.ts_edits';
   pend_times constant text := $q$select coalesce(string_agg(e->>'id', ',' order by o), '(none)') from jsonb_array_elements(public.ts_edits_pending('times')) with ordinality x(e, o) where e->>'day_id' like 'zz!_ed!_%' escape '!'$q$;
   pend_brks  constant text := $q$select coalesce(string_agg(e->>'id', ',' order by o), '(none)') from jsonb_array_elements(public.ts_edits_pending('breaks')) with ordinality x(e, o) where e->>'day_id' like 'zz!_ed!_%' escape '!'$q$;
+  -- two notes of exactly 400 characters (GN16 as sent; GN16b is sent with spaces around it and stored trimmed)
+  gn16  constant text := 'zz-ed GN16 ' || repeat('x', 389);
+  gn16b constant text := 'zz-ed GN16b ' || repeat('y', 388);
+  -- a character past U+FFFF counts two toward the 400, as the page counts it: GN46 is 400 that way (206 characters
+  -- to the database), GN46b 402 (207)
+  gn46  constant text := 'zz-ed GN46 ' || repeat(U&'\+01F600', 194) || 'x';
+  gn46b constant text := 'zz-ed GN46b ' || repeat(U&'\+01F600', 195);
+  gone_note constant text := 'ERROR P0001: That shift is waiting to be deleted, so a note has nowhere to go. Cancel the delete first';
+  forged    constant text := 'ERROR P0001: Leave "Note from <email>:" and "Changed through Wizard Trees Manager Timesheets for" out of the ';
+  forged_end constant text := ': the board would show them as lines written through this app';
 begin
   -- ---------------------------------------------------------------- fixtures (as owner)
   a1 := pg_temp.ts_v_day('zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', t, jsonb_build_array(
@@ -407,6 +420,26 @@ begin
   perform pg_temp.ts_v('A13d the owner can store a well-formed edit (the seed path); removed again right away', null, null,
     $q$with x as (insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, action, after, created_by)
                   values ('zz_ed_a:zz-ed-1:2001-01-01', 'zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', '2001-01-01', 'add', '{}', 'verify') returning id)
+       select count(*)::text from x$q$, '1');
+  delete from public.ts_edits where day_id = 'zz_ed_a:zz-ed-1:2001-01-01' and created_by = 'verify';
+  perform pg_temp.ts_v('A13e ... nor a note with no text', null, null,
+    $q$insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id, action, before, times_status, created_by)
+       values ('zz_ed_a:zz-ed-1:2001-01-01', 'zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', '2001-01-01', 'x', 'note', '{}', 'none', 'verify') returning id::text$q$, 'ERROR 23514%');
+  perform pg_temp.ts_v('A13f ... nor a note with an after', null, null,
+    $q$insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id, action, before, after, note, times_status, created_by)
+       values ('zz_ed_a:zz-ed-1:2001-01-01', 'zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', '2001-01-01', 'x', 'note', '{}', '{}', 'n', 'none', 'verify') returning id::text$q$, 'ERROR 23514%');
+  perform pg_temp.ts_v('A13g ... nor a note over 400 characters', null, null,
+    $q$insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id, action, before, note, times_status, created_by)
+       values ('zz_ed_a:zz-ed-1:2001-01-01', 'zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', '2001-01-01', 'x', 'note', '{}', repeat('n', 401), 'none', 'verify') returning id::text$q$, 'ERROR 23514%');
+  perform pg_temp.ts_v('A13h ... nor a note whose times are pending (the default)', null, null,
+    $q$insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id, action, before, note, created_by)
+       values ('zz_ed_a:zz-ed-1:2001-01-01', 'zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', '2001-01-01', 'x', 'note', '{}', 'n', 'verify') returning id::text$q$, 'ERROR 23514%');
+  perform pg_temp.ts_v('A13i ... nor a note with no shift', null, null,
+    $q$insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, action, before, note, times_status, created_by)
+       values ('zz_ed_a:zz-ed-1:2001-01-01', 'zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', '2001-01-01', 'note', '{}', 'n', 'none', 'verify') returning id::text$q$, 'ERROR 23514%');
+  perform pg_temp.ts_v('A13j the owner can store a well-formed note of 400 characters; removed again right away', null, null,
+    $q$with x as (insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id, action, before, note, times_status, created_by)
+                  values ('zz_ed_a:zz-ed-1:2001-01-01', 'zz_ed_a', 'CA', 'zz-ed-1', 'Distro/Trim', '2001-01-01', 'x', 'note', '{}', repeat('n', 400), 'none', 'verify') returning id)
        select count(*)::text from x$q$, '1');
   delete from public.ts_edits where day_id = 'zz_ed_a:zz-ed-1:2001-01-01' and created_by = 'verify';
   perform pg_temp.ts_v('A14 ... nor an unknown status', null, null,
@@ -532,7 +565,7 @@ begin
 
   -- ---------------------------------------------------------------- V. validation (admin, day a2 shift s3 = 8 AM to 4 PM)
   perform pg_temp.ts_v('V1 refuses an unknown action', 'authenticated', adm,
-    pg_temp.ts_v_sub(a2, 'zz-ed-s3', 'move', base_a2, 'zz-ed V1'), 'ERROR P0001: The action must be update, add or delete');
+    pg_temp.ts_v_sub(a2, 'zz-ed-s3', 'move', base_a2, 'zz-ed V1'), 'ERROR P0001: The action must be update, add, delete or note');
   perform pg_temp.ts_v('V2 refuses an update with no shift id', 'authenticated', adm,
     pg_temp.ts_v_sub(a2, null, 'update', base_a2, 'zz-ed V2'), 'ERROR P0001: Say which shift to update');
   perform pg_temp.ts_v('V3 refuses an update of a shift that is not on the row', 'authenticated', adm,
@@ -697,6 +730,186 @@ begin
     $q$select (select count(*) from public.ts_edits where note in ('zz-ed E1', 'zz-ed E3', 'zz-ed E4', 'zz-ed E6')) || '/' || pg_temp.ts_v_st('zz-ed E2') || '/' || pg_temp.ts_v_st('zz-ed E5')$q$,
     '0/cancelled/none/superseded/pending/none/(none)');
 
+  -- ---------------------------------------------------------------- GN. notes for Gusto (action 'note'): a note rides the
+  -- breaks part, never replaces or is replaced, and never counts as a change of its shift (day aS, where E5 is waiting)
+  perform pg_temp.ts_v('GN1 a note on a shift: times none, breaks pending (the browser task writes it)', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, '  zz-ed GN1  '), 'note/none/pending');
+  perform pg_temp.ts_v('GN2 ... stored with the shift id, the shift as the day row has it as before, no after, the note trimmed, the caller', null, null,
+    format($q$select action || '|' || shift_id || '|' || (before = %L::jsonb) || '|' || (after is null) || '|' || note || '|' || created_by || '|' || coalesce(cancelled_by, '(none)')
+                from public.ts_edits where note = 'zz-ed GN1'$q$,
+           pg_temp.ts_v_stored(t, la, '13:48:42', '17:09:49', '[["13:48:00","14:18:00","meal"]]')),
+    pg_temp.ts_v_lit('note|zz-ed-s15|true|true|zz-ed GN1|' || adm || '|(none)'));
+  perform pg_temp.ts_v('GN3 ... and E5, waiting on the same shift, still waits (a note replaces nothing)', null, null,
+    $q$select pg_temp.ts_v_st('zz-ed E5')$q$, 'pending/none/(none)');
+  perform pg_temp.ts_v('GN4 a change whose page saw E5 but not the note goes through (a waiting note is not "someone changed this shift")', 'authenticated', adm,
+    pg_temp.ts_v_subx(as_, 'zz-ed-s15', 'update', pg_temp.ts_v_after(t, la, '13:48:42', '17:55', '[["13:48:00","14:18:00","meal"]]'), 'zz-ed GN4',
+                      jsonb_build_array(pg_temp.ts_v_id('zz-ed E5'))), 'update/pending/none');
+  perform pg_temp.ts_v('GN5 ... it replaced E5 and left the note waiting', null, null,
+    $q$select pg_temp.ts_v_st('zz-ed E5') || ',' || pg_temp.ts_v_st('zz-ed GN1')$q$, 'cancelled/none/superseded,none/pending/(none)');
+  perform pg_temp.ts_v('GN6 a second note from a page that saw nothing waiting goes through (a note is never refused for a change since)', 'authenticated', adm,
+    pg_temp.ts_v_subx(as_, 'zz-ed-s15', 'note', '{"in":"nonsense"}', 'zz-ed GN6', '[]'), 'note/none/pending');
+  perform pg_temp.ts_v('GN7 ... stored with no after (the after it was sent is ignored); both notes and GN4 wait', null, null,
+    $q$select (select (after is null)::text from public.ts_edits where note = 'zz-ed GN6') || '/' || pg_temp.ts_v_st('zz-ed GN1') || ','
+              || pg_temp.ts_v_st('zz-ed GN6') || ',' || pg_temp.ts_v_st('zz-ed GN4')$q$,
+    'true/none/pending/(none),none/pending/(none),pending/none/(none)');
+  perform pg_temp.ts_v('GN8 the creator cancels a waiting note: its breaks part becomes cancelled', 'authenticated', adm,
+    pg_temp.ts_v_cancel(pg_temp.ts_v_id('zz-ed GN6')), pg_temp.ts_v_lit('none/cancelled/' || adm));
+  perform pg_temp.ts_v('GN9 a change whose page still lists that cancelled note goes through (a cancelled note is not "someone changed this shift")', 'authenticated', adm,
+    pg_temp.ts_v_subx(as_, 'zz-ed-s15', 'update', pg_temp.ts_v_after(t, la, '13:48:42', '18:00', '[["13:48:00","14:18:00","meal"]]'), 'zz-ed GN9',
+                      jsonb_build_array(pg_temp.ts_v_id('zz-ed GN4'), pg_temp.ts_v_id('zz-ed GN6'))), 'update/pending/none');
+  perform pg_temp.ts_v('GN10 (the creator cancels GN9: only the note GN1 waits on the shift now)', 'authenticated', adm,
+    pg_temp.ts_v_cancel(pg_temp.ts_v_id('zz-ed GN9')), pg_temp.ts_v_lit('cancelled/none/' || adm));
+  perform pg_temp.ts_v('GN11 with only a note waiting, going back to what Gusto has is "Nothing changed" (a note is no change to undo)', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'update', pg_temp.ts_v_after(t, la, '13:48:42', '17:09:49', '[["13:48:00","14:18:00","meal"]]'), 'zz-ed GN11'),
+    'ERROR P0001: Nothing changed%');
+  perform pg_temp.ts_v('GN12 ... and the note still waits', null, null, $q$select pg_temp.ts_v_st('zz-ed GN1')$q$, 'none/pending/(none)');
+  perform pg_temp.ts_v('GN13 a note needs its text: blank is refused', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, '   '), 'ERROR P0001: Write the note first');
+  perform pg_temp.ts_v('GN14 ... and so is none at all', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, null), 'ERROR P0001: Write the note first');
+  perform pg_temp.ts_v('GN15 a note over 400 characters is refused', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN15 ' || repeat('x', 390)), 'ERROR P0001: A note can be at most 400 characters');
+  perform pg_temp.ts_v('GN16 a note of exactly 400 characters is kept', 'authenticated', adm,
+    format($q$select length(r->>'note') || '/' || (r->>'action') || '/' || (r->>'breaks_status') from (select public.ts_edit_submit(%L, 'zz-ed-s15', 'note', null, %L) r) s$q$,
+           as_, gn16), '400/note/pending');
+  perform pg_temp.ts_v('GN16b ... the spaces around one do not count toward the 400', 'authenticated', adm,
+    format($q$select length(r->>'note') || '/' || (r->>'action') from (select public.ts_edit_submit(%L, 'zz-ed-s15', 'note', null, %L) r) s$q$,
+           as_, '   ' || gn16b || '   '), '400/note');
+  perform pg_temp.ts_v('GN17 a note needs its shift', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, null, 'note', null, 'zz-ed GN17'), 'ERROR P0001: Say which shift the note is for');
+  perform pg_temp.ts_v('GN18 a note on a shift that is not on the row is refused', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-nope', 'note', null, 'zz-ed GN18'), 'ERROR P0001: That shift is not on this day any more%');
+  perform pg_temp.ts_v('GN19 hours entered in Gusto without clock times take no note here', 'authenticated', adm,
+    pg_temp.ts_v_sub(ah, 'zz-ed-h1', 'note', null, 'zz-ed GN19'), 'ERROR P0001: These are hours entered in Gusto without clock times: add the note in Gusto');
+  perform pg_temp.ts_v('GN20 a shift still clocked in takes no note, even with a change waiting that gives it an end (S20)', 'authenticated', adm,
+    pg_temp.ts_v_sub(a8, 'zz-ed-s11', 'note', null, 'zz-ed GN20'), 'ERROR P0001: This shift is still clocked in: add the note once it has an end');
+  perform pg_temp.ts_v('GN21 a day before the previous pay period takes no note', 'authenticated', adm,
+    pg_temp.ts_v_sub(a3, 'zz-ed-s4', 'note', null, 'zz-ed GN21'),
+    'ERROR P0001: Only the current and previous pay periods can be edited (from ' || to_char(w, 'Dy Mon FMDD') || ')');
+  perform pg_temp.ts_v('GN22 ... nor a day in the future', 'authenticated', adm,
+    pg_temp.ts_v_sub(a4, 'zz-ed-s5', 'note', null, 'zz-ed GN22'), 'ERROR P0001: You cannot edit a day that has not happened yet');
+  perform pg_temp.ts_v('GN23 the refused ones wrote nothing: the synthetic notes are GN1, GN6, GN16 and GN16b', null, null,
+    $q$select (select count(*) from public.ts_edits where note ~ '^zz-ed GN(11|15|17|18|19|20|21|22)( |$)') || '/'
+              || (select string_agg(split_part(note, ' ', 2), ',' order by split_part(note, ' ', 2)) from public.ts_edits
+                   where action = 'note' and day_id like 'zz!_ed!_%' escape '!')$q$,
+    '0/GN1,GN16,GN16b,GN6');
+  -- the worker's side of a note (automation@ + the sync key)
+  perform set_config('request.headers', '{"x-ts-sync-key":"zz-ed-sync-key"}', true);
+  perform pg_temp.ts_v('GN24 the worker gets a note with the breaks, never with the times', 'authenticated', aut,
+    format($q$select (select count(*) from jsonb_array_elements(public.ts_edits_pending('breaks')) e where e->>'id' = %L) || '/'
+                  || (select count(*) from jsonb_array_elements(public.ts_edits_pending('times')) e where e->>'id' = %L)$q$,
+           pg_temp.ts_v_id('zz-ed GN1'), pg_temp.ts_v_id('zz-ed GN1')), '1/0');
+  perform pg_temp.ts_v('GN25 its times part cannot be claimed (it does not change)', 'authenticated', aut,
+    pg_temp.ts_v_mark(pg_temp.ts_v_id('zz-ed GN1'), 'times', 'applying', null), 'ERROR 55000: % is none, not pending');
+  perform pg_temp.ts_v('GN26 (worker) claims its breaks part', 'authenticated', aut,
+    pg_temp.ts_v_mark(pg_temp.ts_v_id('zz-ed GN1'), 'breaks', 'applying', null), 'applying/(none)/false');
+  perform pg_temp.ts_v('GN27 ... meanwhile the shift takes no change', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'update', pg_temp.ts_v_after(t, la, '13:48:42', '17:30', '[["13:48:00","14:18:00","meal"]]'), 'zz-ed GN27'), being_sent);
+  perform pg_temp.ts_v('GN28 ... and no other note', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN28'), being_sent);
+  perform pg_temp.ts_v('GN29 (worker) marks it applied', 'authenticated', aut,
+    pg_temp.ts_v_mark(pg_temp.ts_v_id('zz-ed GN1'), 'breaks', 'applied', null), 'applied/(none)/true');
+  perform pg_temp.ts_v('GN30 an applied note cannot be cancelled', 'authenticated', adm,
+    pg_temp.ts_v_cancel(pg_temp.ts_v_id('zz-ed GN1')), 'ERROR P0001: This edit is no longer waiting to go to Gusto, so it cannot be cancelled');
+  perform pg_temp.ts_v('GN31 (worker) claims GN16 ...', 'authenticated', aut,
+    pg_temp.ts_v_mark(pg_temp.ts_v_id(gn16), 'breaks', 'applying', null), 'applying/(none)/false');
+  perform pg_temp.ts_v('GN31b ... and Gusto refuses it: it needs a look', 'authenticated', aut,
+    pg_temp.ts_v_mark(pg_temp.ts_v_id(gn16), 'breaks', 'conflict', 'Gusto shows this shift on two days'),
+    'conflict/Gusto shows this shift on two days/false');
+  perform pg_temp.ts_v('GN32 the creator clears a note that needs a look, like any edit', 'authenticated', adm,
+    pg_temp.ts_v_cancel(pg_temp.ts_v_id(gn16)), pg_temp.ts_v_lit('none/cancelled/' || adm));
+  perform set_config('request.headers', '', true);
+  perform pg_temp.ts_v('GN33 a note applied since the last sync is not the shift''s times in Gusto: a change still starts from the day row', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'update', pg_temp.ts_v_after(t, la, '13:48:42', '17:20', '[["13:48:00","14:18:00","meal"]]'), 'zz-ed GN33'), 'update/pending/none');
+  perform pg_temp.ts_v('GN33b ... its before is the day row''s shift, and the note GN16b still waits', null, null,
+    format($q$select (before = %L::jsonb)::text || '/' || pg_temp.ts_v_st(%L) from public.ts_edits where note = 'zz-ed GN33'$q$,
+           pg_temp.ts_v_stored(t, la, '13:48:42', '17:09:49', '[["13:48:00","14:18:00","meal"]]'), gn16b),
+    'true/none/pending/(none)');
+  perform pg_temp.ts_v('GN34 the refused ones during the claim wrote nothing', null, null,
+    $q$select count(*) from public.ts_edits where note in ('zz-ed GN27', 'zz-ed GN28')$q$, '0');
+  -- a delete and a note on one shift: a delete made after a waiting note leaves the note waiting (the note is older,
+  -- so it goes to Gusto first), and a note is refused while a delete waits (it would have nowhere to go)
+  perform pg_temp.ts_v('GN35 a delete of the shift made after a waiting note goes through', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'delete', null, 'zz-ed GN35'), 'delete/none/pending');
+  perform pg_temp.ts_v('GN36 ... it replaced GN33 and left the note GN16b waiting (a delete replaces no note)', null, null,
+    format($q$select pg_temp.ts_v_st('zz-ed GN33') || ',' || pg_temp.ts_v_st(%L)$q$, gn16b), 'cancelled/none/superseded,none/pending/(none)');
+  perform set_config('request.headers', '{"x-ts-sync-key":"zz-ed-sync-key"}', true);
+  perform pg_temp.ts_v('GN37 ... the worker gets both with the breaks', 'authenticated', aut,
+    format($q$select count(*) from jsonb_array_elements(public.ts_edits_pending('breaks')) e where e->>'id' in (%L, %L)$q$,
+           pg_temp.ts_v_id(gn16b), pg_temp.ts_v_id('zz-ed GN35')), '2');
+  perform set_config('request.headers', '', true);
+  perform pg_temp.ts_v('GN38 a note on a shift waiting to be deleted is refused (the delete goes first: the note would have nowhere to go)', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN38'), gone_note);
+  perform pg_temp.ts_v('GN39 ... also from a page that showed the delete (a note''s p_expect is no way past it)', 'authenticated', adm,
+    pg_temp.ts_v_subx(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN39', jsonb_build_array(pg_temp.ts_v_id('zz-ed GN35'))), gone_note);
+  perform pg_temp.ts_v('GN40 (the creator cancels the delete)', 'authenticated', adm,
+    pg_temp.ts_v_cancel(pg_temp.ts_v_id('zz-ed GN35')), pg_temp.ts_v_lit('none/cancelled/' || adm));
+  perform pg_temp.ts_v('GN41 ... then the shift takes a note again', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN41'), 'note/none/pending');
+  perform pg_temp.ts_v('GN42 a second delete; (worker) claims it ...', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'delete', null, 'zz-ed GN42'), 'delete/none/pending');
+  perform set_config('request.headers', '{"x-ts-sync-key":"zz-ed-sync-key"}', true);
+  perform pg_temp.ts_v('GN42b ...', 'authenticated', aut,
+    pg_temp.ts_v_mark(pg_temp.ts_v_id('zz-ed GN42'), 'breaks', 'applying', null), 'applying/(none)/false');
+  perform pg_temp.ts_v('GN42c ... and Gusto does not take the delete', 'authenticated', aut,
+    pg_temp.ts_v_mark(pg_temp.ts_v_id('zz-ed GN42'), 'breaks', 'conflict', 'Gusto would not delete the shift'), 'conflict/Gusto would not delete the shift/false');
+  perform set_config('request.headers', '', true);
+  perform pg_temp.ts_v('GN43 the shift is still in Gusto then, so it takes a note', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN43'), 'note/none/pending');
+  -- the note's text: one line, counted as the page counts it, and never the start of a line this app writes
+  perform pg_temp.ts_v('GN44 newlines, tabs and no-break spaces are no note: blank is refused', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, E'\n\t\r\n' || U&'\00A0'), 'ERROR P0001: Write the note first');
+  perform pg_temp.ts_v('GN45 a note is stored as one line with its whitespace evened out, as the page sends it', 'authenticated', adm,
+    format($q$select r->>'note' from (select public.ts_edit_submit(%L, 'zz-ed-s15', 'note', null, %L) r) s$q$,
+           as_, E'\n  zz-ed GN45\n\nlast day,\t8 hours' || U&'\00A0' || E'as agreed\n'), 'zz-ed GN45 last day, 8 hours as agreed');
+  perform pg_temp.ts_v('GN46 a character past U+FFFF (most emoji) counts two, as on the page: 400 that way is kept', 'authenticated', adm,
+    format($q$select length(r->>'note') || '/' || (r->>'action') from (select public.ts_edit_submit(%L, 'zz-ed-s15', 'note', null, %L) r) s$q$, as_, gn46),
+    '206/note');
+  perform pg_temp.ts_v('GN46b ... and 402 that way is refused, though it is 207 characters to the database', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, gn46b), 'ERROR P0001: A note can be at most 400 characters');
+  perform pg_temp.ts_v('GN47 a note holding the start of a note line of this app is refused (the board would show it as written by that email)', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN47 ok Note from ' || oth || ': OT approved'), forged || 'note' || forged_end);
+  perform pg_temp.ts_v('GN47b ... also split over lines and spaces', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, E'zz-ed GN47b see\nNote   from\n' || oth || ': OT approved'), forged || 'note' || forged_end);
+  perform pg_temp.ts_v('GN47c ... and so is the start of a change line', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN47c Changed through Wizard Trees Manager Timesheets for a manager'), forged || 'note' || forged_end);
+  perform pg_temp.ts_v('GN48 a change''s reason holding one is refused too', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'update', pg_temp.ts_v_after(t, la, '13:48:42', '17:20', '[["13:48:00","14:18:00","meal"]]'),
+                     'zz-ed GN48 Changed through Wizard Trees Manager Timesheets for ' || oth || ': moved'), forged || 'reason' || forged_end);
+  perform pg_temp.ts_v('GN48b ... also split over lines (the browser task sends a reason as one line)', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'update', pg_temp.ts_v_after(t, la, '13:48:42', '17:20', '[["13:48:00","14:18:00","meal"]]'),
+                     E'zz-ed GN48b see\nNote\tfrom ' || oth || ': moved'), forged || 'reason' || forged_end);
+  perform pg_temp.ts_v('GN49 someone''s own words are fine ("Note from" with no email and colon)', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN49 Note from the doctor: rest until Monday'), 'note/none/pending');
+  perform pg_temp.ts_v('GN50 the refused ones wrote nothing', null, null,
+    $q$select count(*) from public.ts_edits where note ~ '^zz-ed GN(38|39|46b|47|47b|47c|48|48b)( |$)'$q$, '0');
+  -- other shifts and other ways of sending one
+  perform pg_temp.ts_v('GN51 a note on a New York shift', 'authenticated', adm,
+    pg_temp.ts_v_sub(n1, 'zz-ed-s9', 'note', null, 'zz-ed GN51'), 'note/none/pending');
+  perform pg_temp.ts_v('GN51b ... stored for NY with the shift in Eastern as before', null, null,
+    format($q$select region || '/' || (before = %L::jsonb)::text from public.ts_edits where note = 'zz-ed GN51'$q$,
+           pg_temp.ts_v_stored(nt, nyz, '08:00', '16:00', '[["12:00","12:30","meal"]]')), 'NY/true');
+  -- a8's shift is still open on the day row, but a change that reached Gusto since the last sync gave it an end (stored
+  -- here as the worker leaves one; removed again right after)
+  insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id, action, before, after,
+                               times_status, breaks_status, times_applied_at, created_by)
+  select d.id, d.company, d.region, d.employee_uuid, d.department, d.work_date, 'zz-ed-s11', 'update', public.ts_edit_shape(d.shifts->0, la),
+         pg_temp.ts_v_stored(t, la, '08:00', '15:00', '[["12:00","12:30","meal"]]'), 'applied', 'none', now(), 'verify'
+    from public.ts_days d where d.id = a8;
+  perform pg_temp.ts_v('GN52 a shift open on the day row whose end reached Gusto since the last sync takes a note', 'authenticated', adm,
+    pg_temp.ts_v_sub(a8, 'zz-ed-s11', 'note', null, 'zz-ed GN52'), 'note/none/pending');
+  perform pg_temp.ts_v('GN52b ... with that end in its before', null, null,
+    format($q$select (before->>'out' = %L)::text from public.ts_edits where note = 'zz-ed GN52'$q$,
+           pg_temp.ts_v_stored(t, la, '08:00', '15:00', '[]')->>'out'), 'true');
+  delete from public.ts_edits where day_id = a8 and created_by = 'verify';
+  perform pg_temp.ts_v('GN53 a note sent with a p_expect that is not a list is refused like any edit', 'authenticated', adm,
+    pg_temp.ts_v_subx(as_, 'zz-ed-s15', 'note', null, 'zz-ed GN53', '{"a":1}'), 'ERROR P0001: p_expect must be a list of edit ids%');
+  perform pg_temp.ts_v('GN54 the action in capitals with spaces around it is a note', 'authenticated', adm,
+    pg_temp.ts_v_sub(as_, 'zz-ed-s15', ' NOTE ', null, 'zz-ed GN54'), 'note/none/pending');
+  perform pg_temp.ts_v('GN55 GN53 wrote nothing; the helper row is gone', null, null,
+    format($q$select (select count(*) from public.ts_edits where note = 'zz-ed GN53') || '/'
+                  || (select count(*) from public.ts_edits where day_id = %L and created_by = 'verify')$q$, a8), '0/0');
+
   -- ---------------------------------------------------------------- seed: one more edit on every synthetic day, made by
   -- someone else (an add at 5:00 to 5:30 AM in the row zone, so it never collides with the edits above)
   insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, action, after,
@@ -770,6 +983,15 @@ begin
   perform pg_temp.ts_v('M20 cannot cancel someone else''s pending edit, even on a day in the grant', 'authenticated', adm,
     pg_temp.ts_v_cancel(pg_temp.ts_v_id('zz-ed seed ' || a1)), 'ERROR 42501: Only the person who made this edit, or an admin, can cancel it');
   perform pg_temp.ts_v('M21 ... which left it pending', null, null, format($q$select pg_temp.ts_v_st(%L)$q$, 'zz-ed seed ' || a1), 'pending/none/(none)');
+  perform pg_temp.ts_v('M22 can write a note on a day in the grant', 'authenticated', adm,
+    pg_temp.ts_v_sub(a1, 'zz-ed-s1', 'note', null, 'zz-ed M22'), 'note/none/pending');
+  perform pg_temp.ts_v('M23 cannot write a note on another department', 'authenticated', adm,
+    pg_temp.ts_v_sub(a5, 'zz-ed-s6', 'note', null, 'zz-ed M23'), no_day);
+  perform pg_temp.ts_v('M24 sees every synthetic note on Distro/Trim days of zz_ed_a, twelve (aS, a8 and a1), and not the New York one', 'authenticated', adm,
+    $q$select count(*) from public.ts_edits where action = 'note' and day_id like 'zz!_ed!_%' escape '!'$q$, '12');
+  perform pg_temp.ts_v('M25 cancels own waiting note', 'authenticated', adm,
+    pg_temp.ts_v_cancel(pg_temp.ts_v_id('zz-ed M22')), pg_temp.ts_v_lit('none/cancelled/' || adm));
+  perform pg_temp.ts_v('M26 the refused note wrote nothing', null, null, $q$select count(*) from public.ts_edits where note = 'zz-ed M23'$q$, '0');
 
   -- ---------------------------------------------------------------- U. manager with one view of one person (zz-ed-4)
   perform pg_temp.ts_v_gianni(false, true, '[]');
@@ -1048,10 +1270,12 @@ begin
     'ERROR P0001: That shift was just deleted in Gusto. Reload after the next sync');
   perform pg_temp.ts_v('J21 ... nor deleted again', 'authenticated', adm,
     pg_temp.ts_v_sub(a5, 'zz-ed-s6', 'delete', null, 'zz-ed J21'), 'ERROR P0001: That shift was just deleted in Gusto%');
+  perform pg_temp.ts_v('J21b ... nor take a note', 'authenticated', adm,
+    pg_temp.ts_v_sub(a5, 'zz-ed-s6', 'note', null, 'zz-ed J21b'), 'ERROR P0001: That shift was just deleted in Gusto%');
   perform pg_temp.ts_v('J22 ... and its slot is free for an add', 'authenticated', adm,
     pg_temp.ts_v_sub(a5, null, 'add', pg_temp.ts_v_after(t, la, '07:00', '15:00', '[]'), 'zz-ed J22'), 'add/pending/none');
   perform pg_temp.ts_v('J23 the refused J submits wrote nothing', null, null,
-    $q$select count(*) from public.ts_edits where note in ('zz-ed J4', 'zz-ed J14', 'zz-ed J20', 'zz-ed J21')$q$, '0');
+    $q$select count(*) from public.ts_edits where note in ('zz-ed J4', 'zz-ed J14', 'zz-ed J20', 'zz-ed J21', 'zz-ed J21b')$q$, '0');
 
   perform pg_temp.ts_v('Q25 a finished edit is never superseded: a new edit of its shift leaves it alone', 'authenticated', adm,
     pg_temp.ts_v_sub(a2, 'zz-ed-s3', 'update', pg_temp.ts_v_after(w, la, '08:15', '16:00', '[]'), 'zz-ed Q25'), 'update/pending/none');

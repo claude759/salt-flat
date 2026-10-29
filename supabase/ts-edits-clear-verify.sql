@@ -6,7 +6,8 @@
 -- leaves them in (conflict, failed, applied, pending, applying, cancelled), and a throwaway sync key. It plays each
 -- identity, records what each can do, returns one pass/fail table and undoes everything. Run it with write access as
 -- the project owner (SQL editor, or the management API without read_only) after ts-edits.sql and
--- ts-edits-clear.sql; the last result set is the pass/fail table. Every row must say pass = true.
+-- ts-edits-clear.sql (and ts-edit-notes.sql on a table made before notes: the T checks store notes); the last result
+-- set is the pass/fail table. Every row must say pass = true.
 --
 -- Identities: anon; admin = gianni@ (Google, an active admin row); automation@ (password) with and without the sync
 -- key in the x-ts-sync-key header.
@@ -257,6 +258,30 @@ begin
   perform pg_temp.ts_v('K6 the board (an admin) reads the reason through RLS', 'authenticated', adm,
     $q$select cancel_reason from public.ts_edits where note = 'zz-cl E2'$q$, 'Gusto now matches');
   perform pg_temp.ts_v('K7 anon reads nothing', 'anon', null, $q$select count(*) from public.ts_edits$q$, 'ERROR 42501%');
+
+  -- ---------------------------------------------------------------- T. notes (action 'note', supabase/ts-edit-notes.sql): a note rides
+  -- the breaks part, so it needs a look, is rechecked and is cleared like any edit (still automation@ + key)
+  insert into public.ts_edits (day_id, company, region, employee_uuid, department, work_date, shift_id, action, before, note,
+                               times_status, breaks_status, breaks_error, breaks_claimed_at, created_by, created_at)
+  select d.id, d.company, d.region, d.employee_uuid, d.department, d.work_date, d.shifts->0->>'id', 'note',
+         jsonb_build_object('in', d.shifts->0->'in', 'out', d.shifts->0->'out', 'breaks', '[]'::jsonb), x.tag,
+         'none', x.brk, x.err, now() - interval '1 hour', 'zz-cl-lead@wizardtrees.com', clock_timestamp()
+    from public.ts_days d
+   cross join (values ('zz-cl T1 note', 'conflict', 'Gusto did not keep the note'), ('zz-cl T2 note', 'pending', null)) x(tag, brk, err)
+   where d.id = d6;
+  perform pg_temp.ts_v('T1 a note that needs a look is listed; a waiting note is not', 'authenticated', aut, pg_temp.ts_v_recheck_q(), 'zz-cl T1 note');
+  perform pg_temp.ts_v('T2 ... the waiting one is in the workers'' breaks list (and not the times list)', 'authenticated', aut,
+    $q$select coalesce(string_agg(x.k || ':' || (e->>'note'), ',' order by x.k), '(none)')
+         from (select 'b' k, public.ts_edits_pending('breaks') l union all select 't', public.ts_edits_pending('times')) x
+        cross join lateral jsonb_array_elements(x.l) e where e->>'note' like 'zz-cl T%'$q$, 'b:zz-cl T2 note');
+  perform pg_temp.ts_v('T3 the sync clears the note that needs a look', 'authenticated', aut,
+    pg_temp.ts_v_clear(pg_temp.ts_v_id('zz-cl T1 note'), 'Gusto now has the note'), 'none/cancelled/gusto-sync/Gusto now has the note');
+  perform pg_temp.ts_v('T4 ... its error text stays', null, null, $q$select pg_temp.ts_v_st('zz-cl T1 note')$q$,
+    'none/cancelled/gusto-sync/Gusto now has the note/(none)/Gusto did not keep the note/true');
+  perform pg_temp.ts_v('T5 the waiting note is not cleared (it is still going to Gusto)', 'authenticated', aut,
+    pg_temp.ts_v_clear(pg_temp.ts_v_id('zz-cl T2 note'), 'Gusto now has the note'),
+    'ERROR 55000: Edit % is still going to Gusto (times none, breaks pending), so it is not cleared');
+  perform pg_temp.ts_v('T6 nothing is left to recheck', 'authenticated', aut, pg_temp.ts_v_recheck_q(), '(none)');
 end $v$;
 
 -- ------------------------------------------------------------------ result (then everything rolls back)
