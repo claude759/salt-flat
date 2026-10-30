@@ -232,8 +232,10 @@
   .ts td.c-emp{font-weight:600;overflow-wrap:anywhere}
   .ts .ej{display:none;font-weight:400;color:var(--faint);font-size:11.5px}
   .ts td.c-job{color:var(--muted);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ts td.c-job > div{overflow:hidden;text-overflow:ellipsis;line-height:calc(13px * 1.45)} .ts td.c-job > div + div{margin-top:3px}   /* a job per shift, level with its times */
   .ts td.c-date{white-space:nowrap;font-weight:600;font-variant-numeric:tabular-nums}
   .ts td.c-date .dj{display:block;font-weight:400;color:var(--faint);font-size:11.5px}
+  .ts td.c-date .dj.edv{color:var(--ot-text)}
   .ts td.io{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--io-text)}
   .ts td.io > div + div{margin-top:3px}
   .ts td.io.he{text-align:left}
@@ -416,6 +418,7 @@
   .dl-date{font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums}
   .dl-times{color:var(--io-text);font-variant-numeric:tabular-nums;min-width:0}
   .dl-times .tm,.dl-times .pill{white-space:normal}   /* "7:57 AM -" / "4:20 PM": each clock time stays whole */
+  .tj{color:var(--muted);font-size:13px}   /* a shift's job after its times on a phone card */
   .dl-hrs{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
   .dl-hrs b{font-weight:700}
   .dl-flags{grid-column:2 / -1;display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
@@ -528,11 +531,14 @@
   .ed-shift .inline-err{margin:10px 0 0}
   .ed-sh-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-bottom:10px}
   .ed-sh-head b{font-size:14px}
+  .ed-jt{font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
   .ed-times{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 14px}
   .ed-f{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted);min-width:0}
   .ed-f input,.ed-f select{min-width:0;max-width:100%}
   .ed-f input[type=time]{width:128px}
   .ed-f select{width:150px}
+  .ed-job{margin-top:10px}
+  .ed-job .ed-f select{width:auto;min-width:200px}
   .ed-hint{font-size:12.5px;color:var(--warn-text);padding-bottom:8px}
   .ed-brks{margin-top:12px;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
   .ed-k{font-size:11px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
@@ -726,6 +732,7 @@
     #editPanel textarea{font-size:16px}
     .ed-nform{padding:12px}
     .ed-nform .ed-f select{min-width:0}
+    .ed-job .ed-f select{min-width:0}
     .ed-nadd{min-height:40px}
     .ed-shift{padding:12px}
     .ed-times .ed-f{flex:1 1 0}
@@ -1808,6 +1815,34 @@
   function labelSrcText(src) { return LABEL_SRC[src] == null ? '' : LABEL_SRC[src]; }
   function onlyHoursEntered(r) { return !!r.hours_only && (r.shifts || []).every(s => s.hours_only); }
 
+  /* ---------- Gusto jobs (2026-10-30, Gianni: "We also need a job selector in the timesheet app") ----------
+     A person can have several jobs in Gusto (since 10/26 the per-site "Deleaf/Harvest - <site>" jobs bill the harvest
+     crew's hours to the right company). The timesheet sync keeps each person's jobs on ts_people.jobs (id, title,
+     primary, start; supabase/ts-edit-jobs.sql) and each shift's job on ts_days.shifts[i].job ({id, title, src}: src
+     'csv' from the morning export, 'gusto' from the browser task's read, 'only' when the person has one job; the key is
+     left out while it is not known). Never a pay figure: Gusto keeps a rate per job, and the page never sees one. */
+  const NO_JOB_TITLE = 'No job title';
+  const jobLabel = t => String(t == null ? '' : t).trim() || NO_JOB_TITLE;
+  // a ts_people row's jobs as [{id, title, primary, start}], primary first, then by title; null when not known (the
+  // column is not on the server yet, or the sync has not filled it). Anything else a job carries is left out.
+  function personJobs(p) {
+    if (!p || !Array.isArray(p.jobs)) return null;
+    return p.jobs.filter(j => j && typeof j.id === 'string' && j.id)
+      .map(j => ({ id: j.id, title: typeof j.title === 'string' ? j.title : '', primary: j.primary === true, start: isIsoDate(j.start) ? j.start : null }))
+      .sort((a, b) => (b.primary - a.primary) || a.title.localeCompare(b.title, 'en', { sensitivity: 'base' }));
+  }
+  // Whether a day shows each shift's job: the person has more than one job (jobs: personJobs), or a shift's job is not the
+  // day's job_title. A shift on a job with no title is no difference: Gusto's export names that job on the day itself.
+  function shiftJobsShown(r, jobs) {
+    if (Array.isArray(jobs) && jobs.length > 1) return true;
+    const day = String((r && r.job_title) || '').trim();
+    return ((r && r.shifts) || []).some(s => s && s.job && String(s.job.title || '').trim() !== '' && String(s.job.title).trim() !== day);
+  }
+  // the server's words when a job cannot be picked (ts_edit_submit, supabase/ts-edit-jobs.sql); submitEdit says the same
+  const JOB_NOT_LOADED = "This person's Gusto jobs are not loaded yet, so the job can't be changed here.";
+  const JOB_NOT_THEIRS = "That job is not one of this person's jobs in Gusto.";
+  const jobStartsText = d => 'That job starts on ' + fmtMonthDay(d) + ' in Gusto, after this day.';
+
   /* ---------- the compact lines on a phone card ---------- */
   function fmtDayShort(iso) {               // "Mon 9/28"
     const ms = utcOf(iso); if (isNaN(ms)) return '';
@@ -1815,13 +1850,16 @@
     return DOW[d.getUTCDay()] + ' ' + (d.getUTCMonth() + 1) + '/' + d.getUTCDate();
   }
   // one entry per shift: {in, out} clock times, open (still clocked in), or hoursOnly (hours entered);
-  // edited = the times shown are a change made on this page; deleted = every shift is waiting to be deleted
-  function shiftParts(r) {
+  // edited = the times shown are a change made on this page; deleted = every shift is waiting to be deleted.
+  // job: the shift's job title when the day shows each shift's job (shiftJobsShown, with jobs: the person's, personJobs),
+  // else null (and null for a shift whose job is not known yet); edJob: that job is a change made here
+  function shiftParts(r, jobs) {
     if (r && r.deleted_all) return [{ deleted: true }];
     const ss = r && Array.isArray(r.shifts) && r.shifts.length ? r.shifts : [{ in: r && r.first_in, out: r && r.last_out, hours_only: !!(r && r.hours_only) }];
-    const tz = rowTz(r);
-    return ss.map(s => s.hours_only ? { hoursOnly: true } : { in: fmtTime(s.in, tz), out: s.out ? fmtTime(s.out, tz) : '', open: !s.out, edited: !!(s.edited && s.edited.times),
-      edIn: !!(s.edited && s.edited.in), edOut: !!(s.edited && s.edited.out) });
+    const tz = rowTz(r), shown = shiftJobsShown(r, jobs);
+    const job = s => shown && s.job ? jobLabel(s.job.title) : null, edJob = s => !!(shown && s.job && s.edited && s.edited.job);
+    return ss.map(s => s.hours_only ? { hoursOnly: true, job: job(s), edJob: edJob(s) } : { in: fmtTime(s.in, tz), out: s.out ? fmtTime(s.out, tz) : '', open: !s.out, edited: !!(s.edited && s.edited.times),
+      edIn: !!(s.edited && s.edited.in), edOut: !!(s.edited && s.edited.out), job: job(s), edJob: edJob(s) });
   }
   // "7:57 AM - 4:20 PM", "10:00 AM - 1:30 PM, 2:15 PM - 6:00 PM", "6:31 AM - clocked in", "hours entered"
   function shiftsText(r) {
@@ -2343,18 +2381,26 @@
       .map(b => ({ start: b.start || null, end: b.end || null, kind: bKind(b.kind) }))
       .sort((a, b) => ((secOf(a.start) - secOf(b.start)) || 0) || ((secOf(a.end) - secOf(b.end)) || 0));
   }
-  // a ts_days shift in the stored shape {in, out, breaks: [{start, end, kind}]}, breaks in time order
-  function shiftSnap(s) { return s ? { in: s.in || null, out: s.out || null, breaks: snapBreaks(s.breaks) } : null; }
+  // a ts_days shift in the stored shape {in, out, breaks: [{start, end, kind}]}, breaks in time order, and its Gusto job
+  // {id, title} when it is known (ts_edit_shape: the key is left out otherwise)
+  function shiftSnap(s) {
+    if (!s) return null;
+    const out = { in: s.in || null, out: s.out || null, breaks: snapBreaks(s.breaks) };
+    if (s.job && typeof s.job.id === 'string' && s.job.id) out.job = { id: s.job.id, title: String(s.job.title || '') };
+    return out;
+  }
+  const jobIdOf = s => s && s.job && typeof s.job.id === 'string' ? s.job.id : '';
   function sameBreaks(a, b) {
     const x = snapBreaks(a), y = snapBreaks(b);
     return x.length === y.length && x.every((p, i) => sameMinute(p.start, y[i].start) && sameMinute(p.end, y[i].end) && p.kind === y[i].kind);
   }
-  // which parts an edit changes (ts_edit_submit): to the minute, seconds never count
+  // which parts an edit changes (ts_edit_submit): to the minute, seconds never count. The job rides start and end
+  // (ts_edit_key 'times'); an after with no job keeps the shift's (the server copies it), so that is no change.
   function editParts(action, before, after) {
     if (action === 'delete') return { times: 'none', breaks: 'pending' };
     if (action === 'add') return { times: 'pending', breaks: after && (after.breaks || []).length ? 'pending' : 'none' };
-    const b = before || {}, a = after || {};
-    return { times: sameMinute(b.in, a.in) && sameMinute(b.out, a.out) ? 'none' : 'pending',
+    const b = before || {}, a = after || {}, ja = jobIdOf(a);
+    return { times: sameMinute(b.in, a.in) && sameMinute(b.out, a.out) && (!ja || ja === jobIdOf(b)) ? 'none' : 'pending',
       breaks: sameBreaks(b.breaks, a.breaks) ? 'none' : 'pending' };
   }
   // A wanted shift, checked like ts_edit_submit: [] when it is fine, else [{code, msg, brk?}].
@@ -2452,13 +2498,14 @@
   }
   // one shift as editor fields; orig keeps the timestamps, so a field left alone keeps its seconds. held: where Gusto has
   // a break now (heldOf), from the shift as Gusto has it (gusto: s itself unless given; the board's row may show a change
-  // still waiting, and null = a shift Gusto does not have yet)
+  // still waiting, and null = a shift Gusto does not have yet). job: the shift's job id as shown ('' while not known),
+  // jobTitle its title, gustoJob the job Gusto has it on ('' for none known).
   function entryOf(s, tz, gusto) {
-    const bs = snapBreaks(s && s.breaks);
+    const bs = snapBreaks(s && s.breaks), g = gusto === undefined ? s : gusto;
     return { id: s && s.id != null ? String(s.id) : null, inT: s && s.in ? hhmm(s.in, tz) : '', outT: s && s.out ? hhmm(s.out, tz) : '',
       orig: { in: (s && s.in) || null, out: (s && s.out) || null },
       breaks: bs.map(b => ({ startT: b.start ? hhmm(b.start, tz) : '', endT: b.end ? hhmm(b.end, tz) : '', kind: b.kind, orig: { start: b.start, end: b.end } })),
-      held: heldOf(gusto === undefined ? s : gusto) };
+      held: heldOf(g), job: jobIdOf(s), jobTitle: s && s.job ? String(s.job.title || '') : '', gustoJob: jobIdOf(g) };
   }
   // Every break Gusto has on a shift now, as [start, end] epoch minutes (one never ended runs on). Gusto checks a break
   // against the breaks it has BEFORE the save (edit e4fd26b8, 2026-10-23), and holds a moved, shortened or removed break's
@@ -2468,8 +2515,8 @@
     return snapBreaks(g && g.breaks).filter(b => !isNaN(secOf(b.start)))
       .map(b => [Math.floor(secOf(b.start) / 60), isNaN(secOf(b.end)) ? Infinity : Math.ceil(secOf(b.end) / 60)]);
   }
-  // what the editor shows for one shift, as one string: "changed" is this differing from its start
-  function entryKey(en) { return J([!!en.del, en.inT || '', en.outT || '', (en.breaks || []).map(b => [b.startT || '', b.endT || '', b.kind])]); }
+  // what the editor shows for one shift, as one string: "changed" is this differing from its start (its job too, once set)
+  function entryKey(en) { return J([!!en.del, en.inT || '', en.outT || '', (en.breaks || []).map(b => [b.startT || '', b.endT || '', b.kind])].concat(en.job ? [en.job] : [])); }
   // Editor fields -> an edit's after. A field still showing its original time keeps the original timestamp;
   // a changed one is that wall time on the start's day. The end goes to the next day when it is earlier
   // than the start (a shift past midnight). A break time goes to the next day only when it fits in the
@@ -2490,8 +2537,12 @@
     const out = at(en.outT, o.out, m => !isNaN(startM) && m < startM);
     const q = out ? zParts(out, tz) : null;
     const brkNext = q && q.date > day ? m => !isNaN(startM) && m < startM && m <= q.h * 60 + q.m : () => false;
-    return { in: inIso, out,
+    const a = { in: inIso, out,
       breaks: (en.breaks || []).map(b => ({ start: at(b.startT, b.orig && b.orig.start, brkNext), end: at(b.endT, b.orig && b.orig.end, brkNext), kind: b.kind === 'meal' || b.kind === 'rest' ? b.kind : null })) };
+    // the job, only one Gusto does not have the shift on: a shift left on its job sends none (the server keeps the shift's),
+    // one shown on a job a waiting change picked keeps sending it, and a new shift sends one only once a job is picked
+    if (en.job && en.job !== (en.gustoJob || '')) a.job = { id: en.job, title: en.jobTitle || '' };
+    return a;
   }
   function newEntry(key) { return { key, kind: 'new', id: null, del: false, inT: '', outT: '', orig: { in: null, out: null }, breaks: [], pendingIds: [], start: '' }; }
 
@@ -2513,6 +2564,10 @@
         in: !!u.times && !sameMinute(b0.in, sIn), out: !!u.times && !sameMinute(b0.out, sOut) } };
     // Gusto's notes on the shift stay with it while a change of its times waits (dayNotes reads them)
     if (Array.isArray(b0.notes) && b0.notes.length) out.notes = b0.notes;
+    // its job: the edit's with its start and end (a job rides that part), else the shift's own; edited.job when it moved
+    const aj = u.times && jobIdOf(a) ? { id: a.job.id, title: String(a.job.title || '') } : null;
+    if (aj || b0.job) out.job = aj || b0.job;
+    if (aj && aj.id !== jobIdOf(b0)) out.edited.job = true;
     return out;
   }
   // California's daily split: 8 regular, then OT to 12, then double time
@@ -2568,7 +2623,23 @@
   // shift's times or breaks and is never replaced by one, and never counts as "someone changed this shift" (p_expect, the
   // day's stamp). It shows with the day's notes instead (dayNotes).
   function isNoteEdit(e) { return !!e && e.action === 'note'; }
-  const cmpEdit = (a, b) => ((secOf(a.created_at) - secOf(b.created_at)) || 0) || String(a.id).localeCompare(String(b.id));
+  // A change of a shift's job (ts_edits after.job, supabase/ts-edit-jobs.sql): it rides the times part ("the shift
+  // record" = start, end and job). An update's after.job is the shift's own when the job stays (the server copies
+  // before.job), so only one that differs is a change; an add's is the job the manager picked (none: the browser task
+  // picks, as before). {from: before.job or null, to: after.job}, or null.
+  function jobChange(e) {
+    if (!e || !e.after || !jobIdOf(e.after)) return null;
+    if (e.action === 'add') return { from: null, to: e.after.job };
+    if (e.action !== 'update') return null;
+    const b = e.before && e.before.job;
+    return jobIdOf(e.before) === e.after.job.id ? null : { from: b && b.id ? b : null, to: e.after.job };
+  }
+  // the worker holds job changes until a supervised run proves them (the page's EDIT_PROVEN.job / .nyJob, set by the page)
+  let jobHeld = null;
+  function setJobHeld(fn) { jobHeld = typeof fn === 'function' ? fn : null; }
+  // a job change waiting while the worker holds them: the whole change waits for that run (its times and breaks too)
+  function jobIsHeld(e) { return !!e && !isNoteEdit(e) && e.times_status === 'pending' && !!jobChange(e) && !!jobHeld && !!jobHeld(e); }
+  const cmpEdit =(a, b) => ((secOf(a.created_at) - secOf(b.created_at)) || 0) || String(a.id).localeCompare(String(b.id));
   // one word for an edit: anything that needs a look first, then waiting (or being sent), then done
   function editStatus(e) {
     if (!e) return 'none';
@@ -2623,6 +2694,7 @@
   function partLate(e, part, now) {
     const st = e && e[part + '_status'];
     if (!partWaits(st)) return false;
+    if (jobIsHeld(e)) return false;         // it waits for a supervised run on purpose (jobIsHeld), not for a run that passed
     const n = Math.floor((now == null ? Date.now() : +new Date(now)) / 1000);
     // being sent: late once the run's claim is half an hour old (a run that stopped half way; the next run
     // takes it again)
@@ -2667,8 +2739,9 @@
       const e = latest.get(String(s.id));
       if (!e) { shifts.push(s); continue; }
       let t = partShow(e, 'times', syncedSec), b = partShow(e, 'breaks', syncedSec);
-      // a part Gusto already shows as wanted needs no look (fixed in Gusto since)
-      if (e.after && t === 'attention' && sameMinute(s.in, e.after.in) && sameMinute(s.out, e.after.out)) t = null;
+      // a part Gusto already shows as wanted needs no look (fixed in Gusto since); a job change only once Gusto has that job
+      const jc = jobChange(e);
+      if (e.after && t === 'attention' && sameMinute(s.in, e.after.in) && sameMinute(s.out, e.after.out) && (!jc || jobIdOf(s) === jc.to.id)) t = null;
       if (e.after && b === 'attention' && sameBreaks(s.breaks, e.after.breaks)) b = null;
       mark(e, t, b);
       if (e.action === 'delete') {
@@ -2678,7 +2751,9 @@
       const ut = t === 'pending' || t === 'sent' ? t : null, ub = b === 'pending' || b === 'sent' ? b : null;
       if (!e.after || s.hours_only || (!ut && !ub)) { shifts.push(s); continue; }
       changed = true;
-      shifts.push(editedShift(s, e.after, tz, { times: ut, breaks: ub }));
+      // the edit's job only when it moves the shift (jobChange): one the server copied from before.job is the job the shift
+      // had then, and Gusto's since stays shown (review 2026-10-30: shown as the edit's, the next save sent it back)
+      shifts.push(editedShift(s, jc ? e.after : Object.assign({}, e.after, { job: null }), tz, { times: ut, breaks: ub }));
     }
     // an update whose shift is no longer on the row still says what it waits for (a delete is simply done)
     for (const [id, e] of latest) if (!onRow.has(id) && e.action !== 'delete') mark(e, partShow(e, 'times', syncedSec), partShow(e, 'breaks', syncedSec));
@@ -2745,14 +2820,19 @@
   const ARROW = ' → ';
   function brkLabel(b, tz) { return (b.kind === 'meal' ? 'Meal' : 'Rest') + ' ' + fmtClock(b.start, tz) + '-' + (b.end ? fmtClock(b.end, tz) : '?'); }
   function spanLabel(s, tz) { return fmtTime(s && s.in, tz) + ' - ' + (s && s.out ? fmtTime(s.out, tz) : 'clocked in'); }
+  // A job change reads "Job Trimmer → Deleaf/Harvest - Slane" on an update ("Job not known yet → ..." when the shift's job
+  // was not known) and "Job <title>" on an add the manager picked a job for (~/gusto-sync/ts-edit-mail.mjs describeChange
+  // says the same: keep them in step).
   function describeEdit(e, tz) {
-    const b = e.before || {}, a = e.after || {};
+    const b = e.before || {}, a = e.after || {}, jc = jobChange(e);
+    const jobLine = !jc ? [] : e.action === 'add' ? ['Job ' + jobLabel(jc.to.title)] : ['Job ' + (jc.from ? jobLabel(jc.from.title) : 'not known yet') + ARROW + jobLabel(jc.to.title)];
     if (e.action === 'note') return ['Note: "' + (e.note || '') + '"'].concat(b.in ? ['Shift ' + spanLabel(b, tz)] : []);
     if (e.action === 'delete') return ['Delete the shift ' + spanLabel(b, tz)];
-    if (e.action === 'add') return ['Add a shift ' + spanLabel(a, tz)].concat(snapBreaks(a.breaks).map(x => 'with ' + lowFirst(brkLabel(x, tz))));
+    if (e.action === 'add') return ['Add a shift ' + spanLabel(a, tz)].concat(snapBreaks(a.breaks).map(x => 'with ' + lowFirst(brkLabel(x, tz))), jobLine);
     const lines = [];
     if (!sameMinute(b.in, a.in)) lines.push('Start ' + (b.in ? fmtTime(b.in, tz) : 'none') + ARROW + fmtTime(a.in, tz));
     if (!sameMinute(b.out, a.out)) lines.push('End ' + (b.out ? fmtTime(b.out, tz) : 'not clocked out') + ARROW + fmtTime(a.out, tz));
+    lines.push(...jobLine);
     // the breaks that went and the ones that came; a break that only moved or changed type reads as one line
     const key = x => minuteOf(x.start) + '|' + minuteOf(x.end) + '|' + x.kind;
     const bb = snapBreaks(b.breaks), ab = snapBreaks(a.breaks);
@@ -2845,16 +2925,21 @@
   // What Save says once every change went through: when it goes to Gusto, or, when the server stored nothing
   // waiting (a shift put back to exactly what Gusto has only takes back the change that waited), that nothing
   // goes. results: [{op, edit}] as the server answered each op; when: nextEditRun's words.
+  // A job change the worker still holds (jobIsHeld) waits for a supervised run instead, and says so.
   function saveMessage(results, when) {
-    const subs = (results || []).filter(r => r && r.op && r.op.type !== 'cancel');
-    if (subs.some(r => !r.edit || partWaits(r.edit.times_status) || partWaits(r.edit.breaks_status))) return 'Saved. It goes to Gusto ' + when + ' and shows as Pending until then.';
-    return subs.length ? 'Saved. The shift is back to what Gusto has, so nothing goes to Gusto.' : 'Saved.';
+    const all = (results || []).filter(r => r && r.op && r.op.type !== 'cancel');
+    const held = all.filter(r => jobIsHeld(r.edit)), subs = all.filter(r => !held.includes(r));
+    if (held.length && !subs.length) return 'Saved. It waits for the first job run Gianni watches, then goes to Gusto.';
+    const also = held.length ? ' A job change waits for the first job run Gianni watches.' : '';
+    if (subs.some(r => !r.edit || partWaits(r.edit.times_status) || partWaits(r.edit.breaks_status))) return 'Saved. It goes to Gusto ' + when + ' and shows as Pending until then.' + also;
+    return subs.length ? 'Saved. The shift is back to what Gusto has, so nothing goes to Gusto.' + also : 'Saved.';
   }
   function stampText(t, tz) { const d = zDate(t, tz); return d ? fmtMonthDay(d) + ', ' + fmtTime(t, tz) : ''; }
   // a waiting part: "going to Gusto at noon today" (the first run after the change was made), "going to
   // Gusto now" (that run is on), or "late, not in Gusto yet" (partLate)
   function waitWords(e, part, now, tz) {
     if (part === 'breaks' && noteIsHeld(e)) return 'waits for the first note run Gianni watches';
+    if (jobIsHeld(e)) return 'waits for the first job run Gianni watches';
     if (partLate(e, part, now)) return 'late, not in Gusto yet';
     if (e[part + '_status'] === 'applying') return 'going to Gusto now';
     const due = firstEditRun(e.created_at), n = Math.floor((now == null ? Date.now() : +new Date(now)) / 1000);
@@ -2862,12 +2947,15 @@
   }
   // each part in words: "Breaks: going to Gusto at 7 PM today", "Start and end: in Gusto", "Breaks: late, not
   // in Gusto yet". Both parts go in the same run, so when both wait they share one line ("Start, end and
-  // breaks: going to Gusto at noon today"). by: the edit that replaced this one (replacedBy), if known.
+  // breaks: going to Gusto at noon today"). by: the edit that replaced this one (replacedBy), if known. A job change rides
+  // start and end: "Job: ..." when only the job changes, "Start, end and job: ..." when the times change with it.
   function editPartLines(e, tz, now, by) {
     const out = [];
-    const word = { times: e.action === 'add' ? 'The new shift' : 'Start and end', breaks: e.action === 'delete' ? 'Deleting it' : isNoteEdit(e) ? 'The note' : 'Breaks' };
+    const b = e.before || {}, a = e.after || {}, jc = e.action === 'update' && jobChange(e), moved = !sameMinute(b.in, a.in) || !sameMinute(b.out, a.out);
+    const times = e.action === 'add' ? 'The new shift' : !jc ? 'Start and end' : moved ? 'Start, end and job' : 'Job';
+    const word = { times, breaks: e.action === 'delete' ? 'Deleting it' : isNoteEdit(e) ? 'The note' : 'Breaks' };
     const both = partWaits(e.times_status) && partWaits(e.breaks_status);
-    if (both) out.push((e.action === 'add' ? word.times : 'Start, end and breaks') + ': ' + waitWords(e, 'times', now, tz));
+    if (both) out.push((e.action === 'add' ? word.times : !jc ? 'Start, end and breaks' : moved ? 'Start, end, job and breaks' : 'Job and breaks') + ': ' + waitWords(e, 'times', now, tz));
     for (const part of ['times', 'breaks']) {
       const st = e[part + '_status'], err = e[part + '_error'];
       if (partWaits(st)) { if (!both) out.push(word[part] + ': ' + waitWords(e, part, now, tz)); }
@@ -2907,7 +2995,12 @@
   }
   // list: the edits so far; row: the ts_days row (as Gusto has it); input: {shift_id, action, after, note,
   // expect?} (expect: the waiting edits of the shift the editor showed, like p_expect; a note never counts there);
-  // ctx: {email, now, today?, id?}. Returns {ok, edit, edits} or {ok: false, error, edits}.
+  // ctx: {email, now, today?, id?, jobs?} (jobs: the person's Gusto jobs, personJobs; null while not loaded).
+  // Returns {ok, edit, edits} or {ok: false, error, edits}.
+  // after.job (supabase/ts-edit-jobs.sql): left out (or the shift's own job again), an update keeps the shift's job
+  // (before.job) and an add leaves it to the browser task; else it must be one of the person's jobs that has started by the
+  // day, and its title is theirs (the server takes it from ts_people.jobs, never from the page). The job rides start and
+  // end (editParts).
   // action 'note' (supabase/ts-edit-notes.sql): a note on its own for a Gusto shift with a clock-in and a clock-out. note
   // is its text (1 to 400 characters); before is the shift as Gusto has it, after is null; it rides the breaks part. It
   // never replaces a waiting change, and several notes on one shift are fine.
@@ -2957,6 +3050,14 @@
       const errs = validateAfter(inp.after, { tz, date: row.work_date, beforeIn: before && before.in });
       if (errs.length) return fail(errs[0].msg);
       after = { in: inp.after.in, out: inp.after.out, breaks: snapBreaks(inp.after.breaks) };
+      const want = inp.after.job;
+      if (want != null && !(before && before.job && typeof want === 'object' && want.id === before.job.id)) {
+        if (!Array.isArray(c.jobs)) return fail(JOB_NOT_LOADED);
+        const j = typeof want === 'object' && typeof want.id === 'string' ? c.jobs.find(x => x && x.id === want.id) : null;
+        if (!j) return fail(JOB_NOT_THEIRS);
+        if (isIsoDate(j.start) && j.start > row.work_date) return fail(jobStartsText(j.start));
+        after.job = { id: j.id, title: String(j.title || '') };
+      } else if (before && before.job) after.job = before.job;
     }
     const parts = editParts(action, before, after);
     const waiting = e => e && !isNoteEdit(e) && (e.times_status === 'pending' || e.breaks_status === 'pending');
@@ -2972,7 +3073,7 @@
     if (parts.times === 'none' && parts.breaks === 'none' && !(list || []).some(e => waiting(e) && sid && e.day_id === row.id && String(e.shift_id) === sid))
       return fail('Nothing changed: the shift already has these times and breaks.');
     if (action === 'add' && (list || []).some(e => waiting(e) && e.day_id === row.id && e.action === 'add' && e.after &&
-        sameMinute(e.after.in, after.in) && sameMinute(e.after.out, after.out) && sameBreaks(e.after.breaks, after.breaks)))
+        sameMinute(e.after.in, after.in) && sameMinute(e.after.out, after.out) && sameBreaks(e.after.breaks, after.breaks) && jobIdOf(e.after) === jobIdOf(after)))
       return fail('This shift is already waiting to be added.');
     const at = new Date(nowMs).toISOString();
     const edits = supersede(list, row.id, sid, at);
@@ -3137,6 +3238,7 @@
       if (en.kind === 'new') ops.push({ type: 'submit', key: en.key, shift_id: null, action: 'add', after });
       else if (en.kind === 'add') { ops.push({ type: 'cancel', key: en.key, id: en.addEditId }); ops.push({ type: 'submit', key: en.key, shift_id: null, action: 'add', after }); }
       else {
+        // a change of only the job is a change (the job rides start and end, editParts)
         const p = rs ? editParts('update', shiftSnap(rs), after) : null;
         if (p && p.times === 'none' && p.breaks === 'none' && !(en.pendingIds || []).length) continue;
         ops.push({ type: 'submit', key: en.key, shift_id: en.id, action: 'update', after, expect: (en.pendingIds || []).slice() });
@@ -3459,8 +3561,9 @@
   function dayStamp(r, edits) {
     if (!r) return '';
     const byId = (a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0, ss = secOf(r.synced_at) || 0;
+    // a shift's job too, once known (a job changed in Gusto since makes the form stale like a moved time)
     const shifts = (r.shifts || []).map(s => [String(s.id), minuteOf(s.in), minuteOf(s.out), !!s.hours_only, s.hours_only ? +s.worked_min || 0 : null,
-      snapBreaks(s.breaks).map(b => [minuteOf(b.start), minuteOf(b.end), b.kind])]).sort(byId);
+      snapBreaks(s.breaks).map(b => [minuteOf(b.start), minuteOf(b.end), b.kind])].concat(jobIdOf(s) ? [jobIdOf(s)] : [])).sort(byId);
     const es = (edits || []).filter(e => e && e.day_id === r.id && !isNoteEdit(e)).map(e => [String(e.id), e.times_status, e.breaks_status, e.cancelled_at ? 1 : 0,
       partShow(e, 'times', ss) === 'sent', partShow(e, 'breaks', ss) === 'sent']).sort(byId);
     return J([r.id, shifts, es]);
@@ -3673,6 +3776,7 @@
     stampText, editPartLines, editTip, supersede, submitEdit, cancelEdit, stillWorking, editorEntries, editPlan, entriesPreview, dayStamp,
     isNoteEdit, editReason, APP_EDIT_PREFIX, APP_NOTE_PREFIX, parseAppNote, cleanNoteText, noteProblem, dayNotes, notesLabel, notesLook, noteWho, noteMeta,
     noteStatusText, setNoteHeld, noteIsHeld, reasonProblem, cutUnits, notesTip, noteShifts, spanLabel,
+    NO_JOB_TITLE, jobLabel, personJobs, shiftJobsShown, JOB_NOT_LOADED, JOB_NOT_THEIRS, jobStartsText, jobChange, setJobHeld, jobIsHeld,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
@@ -3743,6 +3847,24 @@
     ba:      { days: [0, 3, 4, 5, 6], span: 420 },
     harvest: { days: [1, 2, 3, 4, 5], span: 622 },
   };
+
+  // Gusto jobs beyond the roster one (each person's primary): name -> [[title, days before today it started, when it was
+  // added lately]]. '' is a job with no title in Gusto. Ids are made up (demo-job-N), and a job has no pay figure here.
+  const EXTRA_JOBS = {
+    'Wren Copperkettle':  [['Deleaf/Harvest - Slane'], ['Deleaf/Harvest - Imperial']],
+    'Poppy Kettleburn':   [['Deleaf/Harvest - Slane', 9]],
+    'Tansy Wobblestone':  [['']],
+    'Marlowe Glimmerbee': [['Driver']],
+  };
+  // the job a made-up shift is on: the harvest week on the Slane deleaf job (once it started), Fridays on the job with no
+  // title, the second stop of a two-stop day driving; anything else the primary job (jobs[0])
+  function jobOf(name, jobs, date, i, inHarvest) {
+    const by = t => jobs.find(j => j.title === t && (!j.start || j.start <= date));
+    if (inHarvest && EXTRA_JOBS[name] && EXTRA_JOBS[name].some(x => x[0] === 'Deleaf/Harvest - Slane')) return by('Deleaf/Harvest - Slane') || jobs[0];
+    if (C.dow(date) === 5 && by('')) return by('');
+    if (i === 1 && by('Driver') && jobs[0].title !== 'Driver') return by('Driver');
+    return jobs[0];
+  }
 
   // Hand-built days, each landing on the nth most recent workday of that person, so every flag shows up
   // (next, when given, builds the day after it too). Break tuples are [start, end|null, kind, opts] in minutes
@@ -3884,11 +4006,14 @@
     const todays = { CA: today };
 
     const people = [], rows = [];
-    let seq = 0;
+    let seq = 0, jobSeq = 0;
     ROSTER.forEach(([name, company, department, job, planKey, start], idx) => {
       const uuid = 'demo-' + company + '-' + String(idx + 1).padStart(2, '0');
-      people.push({ company, employee_uuid: uuid, name, department, job_title: job, active: true, updated_at: lastSync });
       const Z = zone(company), iso = (d, m) => C.zIso(d, m, Z.tz);
+      // ts_people.jobs: primary first, then by title (C.personJobs puts them so)
+      const jobs = C.personJobs({ jobs: [[job]].concat(EXTRA_JOBS[name] || []).map(([title, ago], i) =>
+        ({ id: 'demo-job-' + (++jobSeq), title, primary: i === 0, start: ago ? C.addDays(Z.today, -ago) : null })) });
+      people.push({ company, employee_uuid: uuid, name, department, job_title: job, active: true, updated_at: lastSync, jobs });
       const today = Z.today, nowMin = Z.nowMin, csvDate = Z.csvDate;   // this person's own clock
       todays[Z.region] = Z.today;
       const plan = PLANS[planKey];
@@ -3911,6 +4036,11 @@
           if (isToday && sp.inM > nowMin) continue;                      // not started yet
           const sh = { id: sp.cont && cutId ? cutId : 'demo-shift-' + (++seq), in: iso(date, sp.inM), out: null, span_min: 0, worked_min: 0, hours_only: !!sp.hoursOnly, breaks: [] };
           if (sp.cut) cutId = sh.id;
+          // its job: the only one, else from the morning export (days before its date), else the browser task's read (the
+          // harvest lead's), else not known yet (the key left out, as the sync does)
+          const jb = jobOf(name, jobs, date, dp.shifts.indexOf(sp), inHarvest);
+          const jsrc = jobs.length === 1 ? 'only' : date < csvDate && !isToday ? 'csv' : name === 'Wren Copperkettle' ? 'gusto' : null;
+          if (jsrc) sh.job = { id: jb.id, title: jb.title, src: jsrc };
           if (sp.hoursOnly) {
             sh.out = iso(date, 1439 + 59 / 60);
             sh.span_min = sp.hours;          // like the producer: the placeholder clock-out is not a span
@@ -4009,7 +4139,7 @@
         members: [{ company: 'wtny', department: 'Distro Hourly' }, P('Dewberry Quillon')] },
     ].map(v => Object.assign(v, { updated_at: lastSync, updated_by: me.email }));
     demoNotes(rows, lastSync);
-    const edits = demoEdits(rows, todays, now, lastSync);
+    const edits = demoEdits(rows, todays, now, lastSync, people);
     return { me, companies, people, rows, access, views, today, todays, edits };
   }
 
@@ -4046,9 +4176,9 @@
   // Made-up changes from the made-up managers (Edit on the board), shaped like ts_edits rows, so the whole
   // flow shows without a database: a forgotten meal waiting for the next run, a missed clock-out that
   // missed its run (late), a New York shift waiting to be added, one Gusto would not take (conflict), one
-  // the task could not do (failed), one already in Gusto and one cancelled. Only days inside the editable
-  // window are used.
-  function demoEdits(rows, todays, now, lastSync) {
+  // the task could not do (failed), one already in Gusto, one cancelled and a shift moved to another job. Only days
+  // inside the editable window are used.
+  function demoEdits(rows, todays, now, lastSync, people) {
     const out = [];
     const ago = min => new Date(now.getTime() - min * 60000).toISOString();
     const plus = (iso, min, tz) => { const ms = Date.parse(iso) + min * 60000; return C.zIso(C.zDate(ms, tz), C.zMinutes(ms, tz), tz); };
@@ -4107,7 +4237,7 @@
     if (jun) {
       const s = jun.shifts[0], tz = C.rowTz(jun), snap = C.shiftSnap(s);
       const applied = new Date(Date.parse(lastSync) - 3 * 3600000).toISOString();
-      add(jun, s, { before: { in: snap.in, out: plus(s.out, -20, tz), breaks: snap.breaks }, after: snap, times_status: 'applied', times_applied_at: applied,
+      add(jun, s, { before: Object.assign({}, snap, { out: plus(s.out, -20, tz) }), after: snap, times_status: 'applied', times_applied_at: applied,
         note: 'Stayed to finish the count', created_by: 'trim.lead@wizardtrees.com', created_at: new Date(Date.parse(applied) - 25 * 60000).toISOString() });
     }
     // made, then cancelled by the person who made it (the board never shows it)
@@ -4116,6 +4246,14 @@
       const s = fen.shifts[0], tz = C.rowTz(fen), snap = C.shiftSnap(s);
       add(fen, s, { after: { in: plus(s.in, -10, tz), out: snap.out, breaks: snap.breaks }, times_status: 'cancelled',
         created_by: 'trim.lead@wizardtrees.com', created_at: ago(130), cancelled_by: 'trim.lead@wizardtrees.com', cancelled_at: ago(100) });
+    }
+    // a harvest day moved from the Slane deleaf job to the Imperial one (a job change rides start and end), waiting
+    const wp = (people || []).find(p => p.name === 'Wren Copperkettle'), imp = wp && wp.jobs.find(j => j.title === 'Deleaf/Harvest - Imperial');
+    const wren = imp && days('Wren Copperkettle').filter(closed).find(r => !r.note && !out.some(e => e.day_id === r.id) && r.shifts[0].job && r.shifts[0].job.title === 'Deleaf/Harvest - Slane');
+    if (wren) {
+      const snap = C.shiftSnap(wren.shifts[0]);
+      add(wren, wren.shifts[0], { after: { in: snap.in, out: snap.out, breaks: snap.breaks, job: { id: imp.id, title: imp.title } }, times_status: 'pending',
+        note: 'Worked the Imperial rooms all day', created_by: 'ops.manager@wizardtrees.com', created_at: ago(35) });
     }
     // notes added here (action 'note', no change of hours): one waiting for the next run, one Gusto did not take (New
     // York), one in Gusto that the board shows as Gusto has it after the next sync, and one whose copy is on the shift
@@ -4314,9 +4452,20 @@
     // 2026-10-29: a note added here (ts_edits action 'note') is a kind of write of its own, held by the worker until a
     // supervised run proves it, in California (CA:note) and New York (NY:note) apart. Until then only admins and full
     // viewers get Add a note (theirs wait for that run). note once CA:note is proven, nyNote once NY:note is.
-    note: false, nyNote: false };
+    note: false, nyNote: false,
+    // 2026-10-30: a shift moved to another of the person's Gusto jobs (ts_edits after.job, supabase/ts-edit-jobs.sql) is a
+    // kind of write of its own too, held by the worker until a supervised run proves it, in California (CA:job) and New
+    // York (NY:job) apart. Until then only admins and full viewers get the Job pick (theirs wait for that run). job once
+    // CA:job is proven, nyJob once NY:job is.
+    job: false, nyJob: false,
+    // review 2026-10-30: a new shift on a job picked here is the worker's 'add-job' (an added shift proves nothing about
+    // moving one), held and proven apart. addJob once CA:add-job is proven, nyAddJob once NY:add-job is.
+    addJob: false, nyAddJob: false };
   // a note waiting while the worker holds notes in its region says so, not a run time it will not keep
   C.setNoteHeld(e => { const r = S.rows.get(e.day_id), reg = e.region || (r ? rowRegion(r) : 'CA'); return !EDIT_PROVEN.note || (reg === 'NY' && !EDIT_PROVEN.nyNote); });
+  // and so does a job change while the worker holds those (an add on a picked job: while it holds 'add-job')
+  C.setJobHeld(e => { const r = S.rows.get(e.day_id), reg = e.region || (r ? rowRegion(r) : 'CA'), add = e.action === 'add';
+    return !EDIT_PROVEN[add ? 'addJob' : 'job'] || (reg === 'NY' && !EDIT_PROVEN[add ? 'nyAddJob' : 'nyJob']); });
   // A full viewer (every CA company and department, e.g. Victoria) edits like an admin (Gianni 2026-10-22: "give
   // victoria full edit access like I have"): adding and deleting shifts too. The worker still holds a kind it has
   // not sent once with a person watching, so the first one waits for Gianni's supervised run.
@@ -4337,6 +4486,18 @@
   // proven in the day's region (mayNote: EDIT_PROVEN.note, .nyNote; admins and full viewers before that), on a shift
   // Gusto can take one on (C.noteShifts, from the day as Gusto has it at the last sync)
   function mayNote(r) { return mayEdit('note') && (rowRegion(r) !== 'NY' || mayEdit('nyNote')); }
+  // A shift's job can be picked on a day whoever may change it (canEditRow), once job changes are proven in the day's
+  // region (mayJob: EDIT_PROVEN.job, .nyJob; on a new shift add: .addJob, .nyAddJob; admins and full viewers before that),
+  // for a person with more than one Gusto job whose jobs are loaded (jobPick: their jobs, else null)
+  function mayJob(r, add) { return add ? mayEdit('addJob') && (rowRegion(r) !== 'NY' || mayEdit('nyAddJob')) : mayEdit('job') && (rowRegion(r) !== 'NY' || mayEdit('nyJob')); }
+  // each person's Gusto jobs (C.personJobs on ts_people.jobs): null when not known
+  let jobIdx = null, jobIdxOf = null;
+  function jobsFor(r) {
+    if (!r) return null;
+    if (jobIdxOf !== S.people) { jobIdx = new Map(S.people.map(p => [p.company + ':' + p.employee_uuid, p])); jobIdxOf = S.people; }
+    return C.personJobs(jobIdx.get(r.company + ':' + r.employee_uuid));
+  }
+  function jobPick(r, add) { const jobs = jobsFor(r); return jobs && jobs.length > 1 && mayJob(r, add) ? jobs : null; }
   function noteTargets(raw) { return raw ? C.noteShifts(raw, { neighbors: rawNeighbors(raw), edits: editsFor(raw.id) }) : []; }
   function canNoteRow(r) { const raw = r && S.rows.get(r.id); return !!raw && canEditRow(raw) && mayNote(raw) && noteTargets(raw).length > 0; }
   // the day's pay period as Gusto has it (C.periodState): once Gusto processed its payroll, a change can no longer go in
@@ -4708,6 +4869,11 @@
     const ed = (s, k) => s.edited && s.edited[k] ? h` class="edv" title="Changed here; not in Gusto yet"` : '';
     return h`<td class="io">${shifts.map(s => s.hours_only ? h`<div><span class="pill he">hours entered</span></div>` : h`<div${ed(s, 'in')}>${C.fmtTime(s.in, tz)}</div>`)}</td><td class="io">${shifts.map(s => s.hours_only ? h`<div>&nbsp;</div>` : s.out ? h`<div${ed(s, 'out')}>${C.fmtTime(s.out, tz)}</div>` : h`<div>${pillIn}</div>`)}</td>`;
   }
+  // each shift's job, one per shift in the row's order (C.shiftParts: job, edJob), when the day shows them
+  // (C.shiftJobsShown: the person has more than one job, or a shift is not on the day's job); null when it does not, or
+  // when every shift is waiting to be deleted
+  function jobParts(r) { const jobs = jobsFor(r); return r && !r.deleted_all && C.shiftJobsShown(r, jobs) ? C.shiftParts(r, jobs) : null; }
+  const JOB_ED = h` class="edv" title="Changed here; not in Gusto yet"`;
   function breakChip(b, tz) {
     const kind = b.kind === 'meal' ? 'Meal' : 'Rest';
     const est = C.breakUnsure(b), mine = b.src === 'edit', guessed = b.src !== 'gusto';
@@ -4753,8 +4919,14 @@
     return h`<tr class="g g-${kind}"><th colspan="5" scope="rowgroup"><span class="g-label"><span class="g-name">${label}</span><span class="g-meta">${plural(t.people, 'person', 'people')}</span></span></th><td class="num">${minCell(t.paid_break_min)}</td><td class="num">${minCell(t.unpaid_break_min)}</td><td class="num c-hours">${minCell(t.worked_min)}</td><td class="num c-ot">${otSum(t)}</td><td>${t.warn ? h`<span class="g-flags">${plural(t.warn, 'flag', 'flags')}</span>` : ''}</td>${edTd()}</tr>`;
   }
   function dayRow(r) { return dayRowOf(r, true); }   // one argument: it is used as a .map() callback
+  // the Job cell (and, in a narrow window, the line under the name): the day's job, or each shift's on its own line,
+  // level with its times (jobParts; a shift whose job is not known yet keeps its line empty)
   function dayRowOf(r, job) {
-    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-emp">${r.employee_name}${noteMark(r)}${r.job_title ? h`<span class="ej">${r.job_title}</span>` : ''}</td>${job ? h`<td class="c-job" title="${r.job_title || ''}">${r.job_title || ''}</td>` : ''}${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
+    const jp = jobParts(r);
+    const ej = jp ? jp.filter(p => p.job).map(p => h`<span class="ej">${p.job}</span>`) : r.job_title ? h`<span class="ej">${r.job_title}</span>` : '';
+    const jc = !job ? '' : jp ? h`<td class="c-job" title="${jp.map(p => p.job).filter(Boolean).join(', ')}">${jp.map(p => h`<div${p.edJob ? JOB_ED : ''}>${p.job || h`&nbsp;`}</div>`)}</td>`
+      : h`<td class="c-job" title="${r.job_title || ''}">${r.job_title || ''}</td>`;
+    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-emp">${r.employee_name}${noteMark(r)}${ej}</td>${jc}${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
   }
   function dayView(rows) {
     const t0 = today();
@@ -4779,8 +4951,11 @@
   /* By Employee */
   const empCols = () => h`<colgroup><col class="w-date"><col class="w-in"><col class="w-out"><col><col class="w-paid"><col class="w-unpaid"><col class="w-hours"><col class="w-ot"><col class="w-flags">${edCol()}</colgroup>`;
   const empHead = () => h`<thead><tr><th scope="col" class="c-date">Date</th><th scope="col" class="num">In</th><th scope="col" class="num">Out</th><th scope="col">Breaks</th><th scope="col" class="num" title="Paid break time (rest). Already inside Hours.">Paid</th><th scope="col" class="num" title="Unpaid break time (meal). Taken out of Hours.">Unpaid</th><th scope="col" class="num c-hours" title="Hours worked: clock time minus unpaid breaks">Hours</th><th scope="col" class="num c-ot">OT</th><th scope="col">Flags</th>${edTh()}</tr></thead>`;
+  // under the date: the day's job when it is not the person's usual one, or each shift's job on its own line (jobParts)
   function empRow(r, e) {
-    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-date">${C.fmtDay(r.work_date)}${noteMark(r)}${r.job_title && r.job_title !== e.job ? h`<span class="dj">${r.job_title}</span>` : ''}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
+    const jp = jobParts(r);
+    const dj = jp ? jp.filter(p => p.job).map(p => h`<span class="dj${p.edJob ? ' edv' : ''}">${p.job}</span>`) : r.job_title && r.job_title !== e.job ? h`<span class="dj">${r.job_title}</span>` : '';
+    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-date">${C.fmtDay(r.work_date)}${noteMark(r)}${dj}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
   }
   // coKey null: a saved view's flat card, which never names a company or department
   function empCard(e, coKey) {
@@ -4817,11 +4992,13 @@
   const sepd = (parts, sep) => parts.map((p, i) => h`${i ? h`<span class="bs-sep">${sep}</span>` : ''}${p}`);
   const nbsp = s => String(s).replace(/ /g, '\u00a0');   // "7:57 AM" never splits from its AM
   // "7:57 AM - 4:20 PM": a narrow By Employee line may break only after the dash (.dl-times .tm)
+  // each shift's job after its times when the day shows them (C.shiftParts with the person's jobs), tinted when changed here
   function timesLine(r) {
     const stale = r.work_date < rowToday(r);
     const tint = (on, t) => on ? h`<span class="edv">${t}</span>` : t;   // only the time that moved (a change made here)
-    return sepd(C.shiftParts(r).map(p => p.hoursOnly ? h`<span class="pill he">hours entered</span>` : p.deleted ? h`<span class="pill he">shift deleted</span>`
-      : h`<span class="tm">${tint(p.edIn, nbsp(p.in))}&nbsp;- ${p.open ? h`<span class="pill in${stale ? ' stale' : ''}">clocked in</span>` : tint(p.edOut, nbsp(p.out))}</span>`), ', ');
+    const job = p => p.job ? h` <span class="tj${p.edJob ? ' edv' : ''}">${p.job}</span>` : '';
+    return sepd(C.shiftParts(r, jobsFor(r)).map(p => p.hoursOnly ? h`<span class="pill he">hours entered</span>${job(p)}` : p.deleted ? h`<span class="pill he">shift deleted</span>`
+      : h`<span class="tm">${tint(p.edIn, nbsp(p.in))}&nbsp;- ${p.open ? h`<span class="pill in${stale ? ' stale' : ''}">clocked in</span>` : tint(p.edOut, nbsp(p.out))}</span>${job(p)}`), ', ');
   }
   function breaksLine(r) {
     const s = C.breakSummary(r);
@@ -5049,10 +5226,14 @@
     S.lastLoad = Date.now();
     await fetchEdits(from, to);   // the changes made here to those days (never throws)
   }
+  // A server without ts_people.jobs yet (supabase/ts-edit-jobs.sql not applied): Postgres says the column does not exist
+  const noJobsColumn = e => /42703|PGRST204/.test(String((e && e.code) || '')) && /\bjobs\b/.test(errText(e));
   async function loadMeta() {
+    const people = cols => fetchAll(() => sb.from('ts_people').select(cols).order('company').order('employee_uuid'));
     const [co, ppl] = await Promise.all([
       fetchAll(() => sb.from('ts_companies').select('*').order('key')),
-      fetchAll(() => sb.from('ts_people').select('company,employee_uuid,name,department,job_title,active').order('company').order('employee_uuid')),
+      // each person's Gusto jobs too; without the column the page reads as before (no Job pick, jobs only as shifts carry them)
+      people('company,employee_uuid,name,department,job_title,active,jobs').catch(e => { if (!noJobsColumn(e)) throw e; return people('company,employee_uuid,name,department,job_title,active'); }),
     ]);
     S.companies = co; S.people = ppl;
   }
@@ -5792,7 +5973,9 @@
   }
   function entryHtml(en, i, tz) {
     const label = en.kind === 'shift' ? 'Shift ' + (i + 1) : en.kind === 'add' ? 'Added shift' : 'New shift';
-    const pend = (en.pendingIds && en.pendingIds.length) || en.kind === 'add' ? h`<span class="flag epend">Pending</span>` : '';
+    const raw = S.rows.get(E.rowId), jf = jobField(en, raw, label);
+    // the marks after the label: the shift's job when no Job pick below says it (jobTag), then Pending
+    const pend = h`${jf ? '' : jobTag(en, raw)}${(en.pendingIds && en.pendingIds.length) || en.kind === 'add' ? h`<span class="flag epend">Pending</span>` : ''}`;
     const times = (en.inT ? C.fmtHhmm(en.inT) : 'no start') + ' - ' + (en.outT ? C.fmtHhmm(en.outT) : 'still clocked in');
     const err = en.err ? h`<div class="inline-err" role="alert">${en.err}</div>` : '';
     const bad = !!en.err || !!(en.brkErr && Object.keys(en.brkErr).length);
@@ -5809,7 +5992,7 @@
     const tIn = (f, v, aria, bi) => h`<input type="time" step="60" data-ek="${en.key}" data-ef="${f}"${bi == null ? '' : h` data-bi="${bi}"`} value="${v}" aria-label="${aria}">`;
     // deleting a Gusto shift once deletes are proven (an unsaved or waiting added shift can always be taken back)
     const canDel = en.kind !== 'shift' || mayEdit('delete');
-    const raw = S.rows.get(E.rowId), notes = raw ? C.entryBreakNotes(en, raw.work_date, tz) : [];
+    const notes = raw ? C.entryBreakNotes(en, raw.work_date, tz) : [];
     // a person who clocks in outside Pacific time: their breaks go in Gusto (C.AWAY_EDITOR_TEXT on the Breaks line)
     const away = !!raw && edCtx(raw, tz).away;
     return h`<div class="ed-shift${bad ? ' bad' : ''}" data-ek="${en.key}">
@@ -5819,6 +6002,7 @@
         <label class="ed-f"><span>End</span>${tIn('out', en.outT, label + ' end')}</label>
         ${en.wasOpen && !en.outT ? h`<span class="ed-hint">Still clocked in: add the clock-out time.</span>` : ''}
       </div>
+      ${jf}
       ${en.split && en.split.fix ? h`<p class="pd-fine ed-split">Gusto ran this shift past midnight: it goes on as ${en.split.in ? C.fmtTime(en.split.in, tz) : '12:00 AM'} to ${en.split.out ? C.fmtTime(en.split.out, tz) : 'now (still clocked in)'} on ${C.fmtDay(en.split.date)} under the same Gusto shift (likely a missed clock-out). Set its real end time here: both days are fixed at once.</p>` : ''}
       <div class="ed-brks"><span class="ed-k">Breaks</span>
         ${en.breaks.length ? en.breaks.map((b, j) => h`<div class="ed-brk">
@@ -5832,6 +6016,28 @@
       </div>
       ${err}
     </div>`;
+  }
+  // The Job pick on a shift that can be changed, and on a new one (jobPick): the person's Gusto jobs, primary first; a job
+  // that starts after the day is listed but cannot be picked. A shift whose job is not known yet starts on "Job not known
+  // yet"; a new shift on "Not picked", which leaves the job to the browser task (the day's job, else their primary one), as
+  // before (a new one's pick is proven apart: mayJob's add). None on a shift Gusto split at midnight (its fix is the end time only).
+  function jobField(en, raw, label) {
+    const jobs = !en.readonly && !en.del && !en.split ? jobPick(raw, en.kind !== 'shift') : null;
+    if (!jobs) return '';
+    const has = jobs.some(j => j.id === en.job);
+    const first = en.kind !== 'shift' ? h`<option value=""${has ? '' : ' selected'}>Not picked (the day's job, else their primary one)</option>`
+      : has ? '' : h`<option value="" selected disabled>${en.job ? C.jobLabel(en.jobTitle) : en.jobTitle || 'Job not known yet'}</option>`;
+    return h`<div class="ed-job"><label class="ed-f"><span>Job</span><select data-ek="${en.key}" data-ef="job" aria-label="${label + ' job'}">${first}${jobs.map(j => {
+      const later = !!j.start && j.start > raw.work_date;
+      return h`<option value="${j.id}"${j.id === en.job ? ' selected' : ''}${later ? ' disabled' : ''}>${C.jobLabel(j.title) + (later ? ' (from ' + C.fmtMonthDay(j.start) + ')' : '')}</option>`;
+    })}</select></label></div>`;
+  }
+  // the shift's job in its header when the day shows each shift's job (C.shiftJobsShown) and no Job pick says it: "Job not
+  // known yet" on a Gusto shift the sync has no job for yet
+  function jobTag(en, raw) {
+    if (!raw || !C.shiftJobsShown(raw, jobsFor(raw))) return '';
+    const t = en.job || en.jobTitle ? C.jobLabel(en.jobTitle) : en.kind === 'shift' ? 'Job not known yet' : '';
+    return t ? h`<span class="ed-jt">${t}</span>` : '';
   }
   // The 12:00 AM part of a shift Gusto split at midnight (C.splitRole): its end is fixed on the day before, where a new end
   // fixes both days at once. "It really ended at midnight" asks the browser task to end the shift at 11:59 PM instead
@@ -5991,6 +6197,8 @@
     if (!en || !f) return;
     if (f === 'in') en.inT = t.value;
     else if (f === 'out') en.outT = t.value;
+    // the job picked (its title from the person's jobs): nothing else on the form changes
+    else if (f === 'job') { const j = (jobsFor(S.rows.get(E.rowId)) || []).find(x => x.id === t.value); en.job = j ? j.id : ''; en.jobTitle = j ? j.title : ''; }
     else {
       const b = en.breaks[+t.dataset.bi]; if (!b) return;
       if (f === 'bs') b.startT = t.value; else if (f === 'be') b.endT = t.value; else if (f === 'bt') b.kind = t.value === 'meal' ? 'meal' : 'rest';
@@ -6046,7 +6254,7 @@
     if (DEMO) {
       const list = [...S.edits.values()], now = Date.now();
       const res = op.type === 'cancel' ? C.cancelEdit(list, op.id, { email: who.email, is_admin: who.is_admin, now })
-        : C.submitEdit(list, raw, { shift_id: op.shift_id, action: op.action, after: op.after, note, expect: op.expect }, { email: who.email, now, id: 'demo-edit-' + (++demoSeq) });
+        : C.submitEdit(list, raw, { shift_id: op.shift_id, action: op.action, after: op.after, note, expect: op.expect }, { email: who.email, now, id: 'demo-edit-' + (++demoSeq), jobs: jobsFor(raw) });
       if (!res.ok) return { error: res.error };
       S.edits = new Map(res.edits.map(x => [x.id, x])); editsChanged();
       return { edit: res.edit };
@@ -6062,6 +6270,11 @@
         : op.action === 'note' && /action must be update, add or delete/i.test(errText(error)) ? 'Adding notes is not switched on yet.'
         // the payroll guard words its refusal for hours
         : op.action === 'note' && /can no longer be changed here/i.test(errText(error)) ? NOTE_CLOSED
+        // the server's job refusals (supabase/ts-edit-jobs.sql) in the page's words; one that starts after the day names its date
+        : /jobs are not loaded yet/i.test(errText(error)) ? C.JOB_NOT_LOADED
+        : /not one of this person.s jobs/i.test(errText(error)) ? C.JOB_NOT_THEIRS
+        // a server without that file keeps no job, so a change of only the job is "nothing changed" there
+        : op.after && op.after.job && /Nothing changed/i.test(errText(error)) ? 'Changing jobs is not switched on yet.'
         : /being sent to Gusto right now/i.test(errText(error)) ? 'A change of this shift is being sent to Gusto right now. Reload once the board shows it is done.' : errText(error) };
       if (data && data.id) {
         // the server replaced any older waiting edit of this shift: do the same here until the re-read (a note replaces nothing)

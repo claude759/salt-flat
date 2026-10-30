@@ -1086,8 +1086,9 @@ check('demo rows have exactly the ts_days shape, shifts and breaks shapes', () =
     ok(r.ot_src == null || r.ot_src === 'gusto' || r.ot_src === 'est', 'ot_src');
     for (const f of r.flags) ok(SPEC_FLAGS.includes(f.code) && (f.sev === 'warn' || f.sev === 'info') && f.msg, 'flag ' + J(f));
     for (const s of r.shifts) {
-      // notes: only on a shift that has some (the sync leaves the key out otherwise), shaped like the sync writes them
-      eq(Object.keys(s).filter(k => k !== 'notes').sort(), ['breaks', 'hours_only', 'id', 'in', 'out', 'span_min', 'worked_min'], 'shift keys');
+      // notes: only on a shift that has some (the sync leaves the key out otherwise), shaped like the sync writes them; job:
+      // only once it is known (section 19 checks its shape)
+      eq(Object.keys(s).filter(k => k !== 'notes' && k !== 'job').sort(), ['breaks', 'hours_only', 'id', 'in', 'out', 'span_min', 'worked_min'], 'shift keys');
       if ('notes' in s) {
         ok(Array.isArray(s.notes) && s.notes.length, 'notes on ' + s.id + ' are a list with something in it');
         for (const n of s.notes) {
@@ -2622,7 +2623,7 @@ check('review: an update or delete sends p_expect (the waiting changes the edito
 });
 check('review: managers are offered only the kinds of change the worker has sent with a person watching (adding, deleting and New York wait for a supervised run)', () => {
   const app = block('ts-app');
-  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false,[^}]*note: false, nyNote: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25), nor notes in either region (2026-10-29)');
+  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false,[^}]*note: false, nyNote: false,[^}]*job: false, nyJob: false,[^}]*addJob: false, nyAddJob: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25), nor notes in either region (2026-10-29), nor job changes or adds on a picked job (2026-10-30)');
   ok(/function mayEdit\(what\) \{ const a = actor\(\); return !!\(a && a\.is_admin\) \|\| C\.fullViewer\(a\) \|\| !!EDIT_PROVEN\[what\]; \}/.test(app), 'admins and full viewers keep them all');
   const fv = { is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, mgr = { is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
   ok(C.fullViewer(fv) && !C.fullViewer(mgr), 'a full viewer (every CA company) gets add and delete; a department manager does not');
@@ -3916,6 +3917,367 @@ check('page: a note goes through ts_edit_submit (action note), says when the ser
   ok(/if \(!note && editorDirty\(\) && E\.confirm !== id\)/.test(cc) && /if \(note\) \{ toast\([^\n]*renderEditor\(\); return; \}/.test(cc), 'cancelling a note keeps what is typed');
   ok(/C\.describeEdit\(e, tz\)/.test(appFn('editAdminRow')) && /C\.describeEdit\(e, tz\)\.join\(' · '\)/.test(appFn('histList')), 'Admin > Edits and Changes made here read Note: "..."');
 });
+
+// ---------------------------------------------------------------------------------------------
+// 19. Gusto jobs (Gianni 2026-10-30: "We also need a job selector in the timesheet app that will sync with google", that
+//     is Gusto): each person's jobs (ts_people.jobs), each shift's (ts_days.shifts[i].job from the timesheet sync), the
+//     Job pick in the editor, and a change of the job as ts_edits after.job riding the times part
+//     (supabase/ts-edit-jobs.sql). Made-up jobs, ids and days only, and never a pay figure.
+// ---------------------------------------------------------------------------------------------
+const JB = (id, title, o) => Object.assign({ id, title, primary: false, start: null }, o || {});
+const JOBS = [JB('j-trim', 'Trimmer', { primary: true }), JB('j-slane', 'Deleaf/Harvest - Slane'), JB('j-imp', 'Deleaf/Harvest - Imperial', { start: '2026-10-08' }), JB('j-blank', '')];
+const PJ = C.personJobs({ jobs: JOBS });
+const SJ = (id, title, src) => ({ id, title, src: src || 'csv' });
+const onJob = (s, job) => Object.assign({}, s, { job });
+const S1J = onJob(ED_S1, SJ('j-trim', 'Trimmer'));
+const TO_SLANE = { id: 'j-slane', title: 'Deleaf/Harvest - Slane' };
+const JCH = o => ED(Object.assign({ id: 'jc', before: C.shiftSnap(S1J), after: Object.assign(C.shiftSnap(S1J), { job: TO_SLANE }), times_status: 'pending' }, o));
+const SQL_JOBS = (() => { try { return fs.readFileSync(path.join(ROOT, 'supabase', 'ts-edit-jobs.sql'), 'utf8'); } catch { return ''; } })();
+check("a person's Gusto jobs (ts_people.jobs): primary first, then by title; only id, title, primary and start kept; null while not known", () => {
+  eq(PJ.map(j => j.id), ['j-trim', 'j-blank', 'j-imp', 'j-slane'], 'primary first, then A-Z (a job with no title first)');
+  eq(Object.keys(C.personJobs({ jobs: [Object.assign(JB('x', 'X'), { other: 1, more: [] })] })[0]).sort(), ['id', 'primary', 'start', 'title'], 'nothing else a job carries');
+  eq([C.personJobs(null), C.personJobs({}), C.personJobs({ jobs: null }), C.personJobs({ jobs: 'x' })], [null, null, null, null], 'not known');
+  eq(C.personJobs({ jobs: [null, { id: '' }, { id: 5 }, JB('ok', 'OK', { start: 'soon', primary: 'yes' })] }), [{ id: 'ok', title: 'OK', primary: false, start: null }], 'bad entries dropped, a bad start is none');
+  eq(C.personJobs({ jobs: [] }), [], 'known: no jobs');
+  eq([C.jobLabel(''), C.jobLabel('  '), C.jobLabel(null), C.jobLabel('Trimmer'), C.NO_JOB_TITLE], ['No job title', 'No job title', 'No job title', 'Trimmer', 'No job title']);
+});
+check("each shift's job on the board: shown when the person has more than one job or a shift is not on the day's job; No job title for a blank one (no difference from the day); nothing while not known", () => {
+  const s2 = ES('s2', '16:00', '18:00');
+  const same = edRow([S1J], { job_title: 'Trimmer' });
+  ok(!C.shiftJobsShown(same, [PJ[0]]) && !C.shiftJobsShown(same, null), "one job, the day's: nothing more on the board");
+  eq(C.shiftParts(same, [PJ[0]]).map(p => [p.job, p.edJob]), [[null, false]]);
+  ok(C.shiftJobsShown(same, PJ), 'more than one job: each shift says its job');
+  eq(C.shiftParts(same, PJ).map(p => p.job), ['Trimmer']);
+  const two = edRow([S1J, onJob(s2, SJ('j-slane', 'Deleaf/Harvest - Slane'))], { job_title: 'Trimmer' });
+  ok(C.shiftJobsShown(two, null), "a shift on another job than the day's (jobs not loaded): shown");
+  eq(C.shiftParts(two, null).map(p => p.job), ['Trimmer', 'Deleaf/Harvest - Slane'], 'in shift order');
+  const blank = edRow([onJob(ED_S1, SJ('j-blank', ''))], { job_title: 'Primary Position' });
+  ok(!C.shiftJobsShown(blank, null), "a job with no title is no difference (Gusto's export names it on the day itself)");
+  eq(C.shiftParts(blank, PJ).map(p => p.job), ['No job title'], 'and reads No job title where jobs show');
+  const unknown = edRow([ED_S1, onJob(s2, SJ('j-slane', 'Deleaf/Harvest - Slane'))]);
+  eq(C.shiftParts(unknown, PJ).map(p => p.job), [null, 'Deleaf/Harvest - Slane'], 'a shift whose job is not known yet: nothing on the board');
+  eq(C.shiftParts(edRow([onJob(Object.assign(ES('h1', '00:00', '23:59'), { hours_only: true }), SJ('j-slane', 'Deleaf/Harvest - Slane'))]), PJ).map(p => [p.hoursOnly, p.job]), [[true, 'Deleaf/Harvest - Slane']], 'hours entered carry their job too');
+  eq(C.shiftParts({ deleted_all: true, shifts: [] }, PJ), [{ deleted: true }]);
+  eq(C.shiftsText(two), '7:00 AM - 3:30 PM, 4:00 PM - 6:00 PM', 'the plain times line is as before');
+  // the page: desktop Job cell (one line per shift, level with its times), the line under the name and the date, phones
+  const app = block('ts-app');
+  ok(/function jobParts\(r\) \{ const jobs = jobsFor\(r\); return r && !r\.deleted_all && C\.shiftJobsShown\(r, jobs\) \? C\.shiftParts\(r, jobs\) : null; \}/.test(app), 'jobParts');
+  const dr = appFn('dayRowOf');
+  ok(/const jp = jobParts\(r\);/.test(dr) && /jp\.map\(p => h`<div\$\{p\.edJob \? JOB_ED : ''\}>\$\{p\.job \|\| h`&nbsp;`\}<\/div>`\)/.test(dr) && /jp\.filter\(p => p\.job\)\.map\(p => h`<span class="ej">\$\{p\.job\}<\/span>`\)/.test(dr), 'By Day: the Job cell and the narrow line under the name');
+  ok(/: h`<td class="c-job" title="\$\{r\.job_title \|\| ''\}">\$\{r\.job_title \|\| ''\}<\/td>`/.test(dr), "otherwise the day's job as before");
+  ok(/const jp = jobParts\(r\);/.test(appFn('empRow')) && /<span class="dj\$\{p\.edJob \? ' edv' : ''\}">\$\{p\.job\}<\/span>/.test(appFn('empRow')), 'By Employee: under the date');
+  const tl = appFn('timesLine');
+  ok(/C\.shiftParts\(r, jobsFor\(r\)\)/.test(tl) && /<span class="tj\$\{p\.edJob \? ' edv' : ''\}">\$\{p\.job\}<\/span>/.test(tl), 'phones: after each shift\'s times');
+  ok(/\.ts td\.c-job > div\{overflow:hidden;text-overflow:ellipsis;line-height:calc\(13px \* 1\.45\)\} \.ts td\.c-job > div \+ div\{margin-top:3px\}/.test(src) && /\n  \.tj\{color:var\(--muted\);font-size:13px\}/.test(src), 'the Job cell lines up with In and Out; the phone tag reads at 13px in --muted');
+});
+check("the editor: each entry carries the shift's job; an after sends a job only when Gusto does not have the shift on it; a change of only the job is sent, and putting it back sends nothing", () => {
+  const me = { email: 'm@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N };
+  const s2 = onJob(ES('s2', '16:00', '18:00'), SJ('j-slane', 'Deleaf/Harvest - Slane'));
+  const raw = edRow([S1J, s2]);
+  const en = C.editorEntries(raw, raw, [], me, ctx);
+  eq(en.map(e => [e.job, e.jobTitle, e.gustoJob]), [['j-trim', 'Trimmer', 'j-trim'], ['j-slane', 'Deleaf/Harvest - Slane', 'j-slane']]);
+  ok(!('job' in C.entryAfter(en[0], raw.work_date, C.TZ)), "left on its job: no job sent (the server keeps the shift's)");
+  const start = en[0].start;
+  en[0].job = 'j-slane'; en[0].jobTitle = 'Deleaf/Harvest - Slane';
+  ok(C.entryKey(en[0]) !== start, 'a picked job is a change on the form');
+  eq(C.entryAfter(en[0], raw.work_date, C.TZ).job, TO_SLANE);
+  eq(C.editPlan(raw, en, {}).ops.map(o => [o.action, o.shift_id, o.after.job, o.expect]), [['update', 's1', TO_SLANE, []]], 'a change of only the job is not dropped');
+  en[0].job = 'j-trim'; en[0].jobTitle = 'Trimmer';
+  ok(C.entryKey(en[0]) === start && !C.editPlan(raw, en, {}).ops.length, 'back on its own job: nothing to send');
+  // a shift whose job is not known: no job until one is picked
+  const unk = C.editorEntries(edRow([ED_S1]), edRow([ED_S1]), [], me, ctx)[0];
+  eq([unk.job, unk.jobTitle, unk.gustoJob, 'job' in C.entryAfter(unk, raw.work_date, C.TZ)], ['', '', '', false]);
+  // a new shift: none until picked, then that one
+  const n = Object.assign(C.newEntry('n1'), { inT: '19:00', outT: '20:00' });
+  ok(!('job' in C.entryAfter(n, raw.work_date, C.TZ)), 'a new shift leaves its job to the browser task');
+  n.job = 'j-slane'; n.jobTitle = 'Deleaf/Harvest - Slane';
+  eq(C.editPlan(raw, [n], {}).ops.map(o => [o.action, o.after.job]), [['add', TO_SLANE]], 'or takes the job picked');
+  // a waiting job change: the form shows the shift on that job; a time changed with it keeps it; Gusto's job again takes it back
+  const pend = JCH({ id: 'jp1' }), board = OV(raw, [pend]);
+  eq([board.shifts[0].job, board.shifts[0].edited.job, board.shifts[0].edited.in], [TO_SLANE, true, false], 'the board shows the job it waits for, tinted');
+  const ep = C.editorEntries(raw, board, [pend], me, ctx);
+  eq([ep[0].job, ep[0].gustoJob, ep[0].pendingIds], ['j-slane', 'j-trim', ['jp1']]);
+  ep[0].outT = '15:45';
+  eq(C.editPlan(raw, ep, {}).ops.map(o => o.after.job), [TO_SLANE], 'a time changed on a shift a waiting job change moved keeps that job');
+  ep[0].outT = '15:30'; ep[0].job = 'j-trim'; ep[0].jobTitle = 'Trimmer';
+  eq(C.editPlan(raw, ep, {}).ops.map(o => [o.action, 'job' in o.after, o.expect]), [['update', false, ['jp1']]], "back to Gusto's job: an update with none, which takes the waiting one back");
+  // a job changed in Gusto since the form opened makes it stale, like a moved time
+  ok(C.dayStamp(raw, []) !== C.dayStamp(edRow([onJob(ED_S1, SJ('j-slane', 'Deleaf/Harvest - Slane')), s2]), []), 'a job changed in Gusto since');
+  ok(C.dayStamp(raw, []) === C.dayStamp(edRow([onJob(S1J, SJ('j-trim', 'Trimmer', 'gusto')), s2]), []), 'the same job read again is no change');
+  eq(C.shiftSnap(S1J).job, { id: 'j-trim', title: 'Trimmer' }, 'before: the shift\'s job as {id, title}');
+  ok(!('job' in C.shiftSnap(onJob(ED_S1, SJ(null, 'An old title')))) && !('job' in C.shiftSnap(ED_S1)), 'no id, no job (ts_edit_shape)');
+  eq([C.editParts('update', C.shiftSnap(S1J), C.shiftSnap(ED_S1)), C.editParts('update', C.shiftSnap(S1J), Object.assign(C.shiftSnap(ED_S1), { job: TO_SLANE })),
+    C.editParts('update', C.shiftSnap(S1J), C.shiftSnap(S1J))], [{ times: 'none', breaks: 'none' }, { times: 'pending', breaks: 'none' }, { times: 'none', breaks: 'none' }], 'the job rides start and end');
+});
+check("ts_edit_submit with a job (the page's copy, for demo mode): the title is the person's, an update without one keeps the shift's, the server's refusals, a job-only change waits, an add on another job is another add", () => {
+  const s2 = ES('s2', '16:00', '18:00'), raw = edRow([S1J, s2]);
+  const ctx = (id, extra) => Object.assign({ email: 'm@wizardtrees.com', now: NOW_N, today: '2026-10-07', id, jobs: PJ }, extra || {});
+  const up = (job, o) => ({ shift_id: 's1', action: 'update', after: Object.assign(C.shiftSnap(ED_S1), job === undefined ? {} : { job }, o || {}) });
+  const no = (input, extra) => C.submitEdit([], raw, input, ctx('x', extra)).error || '';
+  const r1 = C.submitEdit([], raw, up({ id: 'j-slane', title: 'typed in the browser' }), ctx('j1'));
+  ok(r1.ok, r1.error);
+  eq(Object.keys(r1.edit).sort(), [...EDIT_COLS].sort(), 'a ts_edits row (no new column)');
+  eq([r1.edit.before.job, r1.edit.after.job, r1.edit.times_status, r1.edit.breaks_status, C.editStatus(r1.edit)], [{ id: 'j-trim', title: 'Trimmer' }, TO_SLANE, 'pending', 'none', 'pending'], "a job-only change waits on the times part, with the person's title");
+  const r2 = C.submitEdit([], raw, up(undefined, { out: EP('15:45') }), ctx('j2'));
+  eq([r2.edit.after.job, C.jobChange(r2.edit), r2.edit.times_status], [{ id: 'j-trim', title: 'Trimmer' }, null, 'pending'], "no job given: the shift keeps its own (before's)");
+  ok(C.submitEdit([], raw, up({ id: 'j-trim' }, { out: EP('15:45') }), ctx('j3', { jobs: null })).ok, "the shift's own job again is the same as none, even with no jobs loaded");
+  eq([no(up({ id: 'j-trim' })), no(up(null))], ['Nothing changed: the shift already has these times and breaks.', 'Nothing changed: the shift already has these times and breaks.'], 'its own job, or null: nothing changed');
+  eq([no(up({ id: 'j-slane' }), { jobs: null }), no(up({ id: 'nope' })), no(up('j-slane')), no(up({ id: 'j-imp' }))],
+    [C.JOB_NOT_LOADED, C.JOB_NOT_THEIRS, C.JOB_NOT_THEIRS, 'That job starts on Oct 8 in Gusto, after this day.'], "the server's refusals");
+  eq([C.JOB_NOT_LOADED, C.JOB_NOT_THEIRS, C.jobStartsText('2026-10-26')], ["This person's Gusto jobs are not loaded yet, so the job can't be changed here.", "That job is not one of this person's jobs in Gusto.", 'That job starts on Oct 26 in Gusto, after this day.']);
+  ok(C.submitEdit([], raw, up({ id: 'j-imp' }), ctx('j4', { jobs: C.personJobs({ jobs: [JB('j-trim', 'Trimmer', { primary: true }), JB('j-imp', 'Imperial job', { start: '2026-10-06' })] }) })).ok, 'a job that starts on the day itself is fine');
+  // a shift whose job is not known: before has none, and a picked one is a change
+  const r5 = C.submitEdit([], edRow([ED_S1]), up({ id: 'j-slane' }), ctx('j5'));
+  eq(['job' in r5.edit.before, r5.edit.after.job, r5.edit.times_status, C.describeEdit(r5.edit, C.TZ)], [false, TO_SLANE, 'pending', ['Job not known yet → Deleaf/Harvest - Slane']]);
+  // adds: none = the browser task picks; another job is another add; the same job is the same add
+  const add = job => ({ action: 'add', after: Object.assign(AFTER('19:00', '20:00'), job ? { job } : {}) });
+  const a1 = C.submitEdit([], raw, add(), ctx('a1'));
+  ok(a1.ok && !('job' in a1.edit.after), 'an add without a job leaves it to the browser task');
+  const a2 = C.submitEdit(a1.edits, raw, add({ id: 'j-slane' }), ctx('a2'));
+  ok(a2.ok, 'the same shift on a picked job is not the same add: ' + a2.error);
+  eq(a2.edit.after.job, TO_SLANE);
+  eq(C.submitEdit(a2.edits, raw, add({ id: 'j-slane', title: 'x' }), ctx('a3')).error, 'This shift is already waiting to be added.', 'on the same job it is');
+  eq(C.submitEdit([], raw, add({ id: 'j-imp' }), ctx('a4')).error, 'That job starts on Oct 8 in Gusto, after this day.', 'an add is checked the same way');
+  if (SQL_JOBS) {
+    const sql = SQL_JOBS.replace(/''/g, "'");
+    for (const m of [C.JOB_NOT_LOADED, C.JOB_NOT_THEIRS]) ok(sql.includes(m), 'supabase/ts-edit-jobs.sql does not say ' + J(m));
+    ok(/That job starts on % in Gusto, after this day\./.test(sql) && /'Mon FMDD'/.test(sql), 'the start refusal, dated like fmtMonthDay');
+    ok(/Nothing changed: the shift already has these times and breaks/.test(sql), 'the "Nothing changed" the page reads (from a server without the file: not switched on yet) is the same words');
+  }
+});
+check('the board shows a waiting job change (tinted), keeps a shift\'s job through a change of its breaks, and a Needs a look on a job clears only once Gusto has that job', () => {
+  const raw = edRow([S1J], { job_title: 'Trimmer' });
+  const o = OV(raw, [JCH()]);
+  eq([o.shifts[0].job, o.shifts[0].edited.job, o.shifts[0].edited.in, o.shifts[0].edited.out, o.worked_min, o.edit.pending.length], [TO_SLANE, true, false, false, raw.worked_min, 1], 'hours as they were, the Pending pill');
+  eq(C.shiftParts(o, PJ).map(p => [p.job, p.edJob, p.edIn, p.edOut]), [['Deleaf/Harvest - Slane', true, false, false]], 'only the job is tinted');
+  const bk = ED({ id: 'bk', before: C.shiftSnap(S1J), after: Object.assign(C.shiftSnap(S1J), { breaks: C.shiftSnap(S1J).breaks.slice(1) }), breaks_status: 'pending' });
+  const ob = OV(raw, [bk]);
+  eq([ob.shifts[0].job, 'job' in ob.shifts[0].edited], [S1J.job, false], "a change of its breaks: the shift's own job stays");
+  const att = JCH({ times_status: 'conflict', times_error: "Gusto changed the shift's job since the manager made this edit" });
+  eq(OV(raw, [att]).edit.attention.length, 1, 'Gusto still has the old job: Needs a look');
+  const fixed = edRow([onJob(ED_S1, SJ('j-slane', 'Deleaf/Harvest - Slane', 'gusto'))], { job_title: 'Trimmer' });
+  ok(OV(fixed, [att]) === fixed, 'Gusto has that job now: no look');
+  // an add on a picked job shows on it
+  const ad = ED({ id: 'ad', action: 'add', shift_id: null, before: null, after: Object.assign(AFTER('16:00', '18:00'), { job: TO_SLANE }), times_status: 'pending' });
+  const oa = OV(raw, [ad]);
+  eq(oa.shifts.map(s => [s.job && s.job.id, !!(s.edited && s.edited.job)]), [['j-trim', false], ['j-slane', true]]);
+});
+check("a waiting change of only the times shows the job Gusto has now, not the one the server copied into it, and the next save sends none (review 2026-10-30: it sent the old job back)", () => {
+  const me = { email: 'm@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N };
+  // its end moved here with no job picked, on Slane: the server copies the shift's job into after (no change of job)
+  const was = onJob(ED_S1, SJ('j-slane', 'Deleaf/Harvest - Slane'));
+  const tm = ED({ id: 'tm', before: C.shiftSnap(was), after: Object.assign(C.shiftSnap(was), { out: EP('16:00') }), times_status: 'pending' });
+  eq([tm.after.job, C.jobChange(tm)], [TO_SLANE, null]);
+  // since then Gusto has the shift on Imperial (the sync wrote it), and the change still waits
+  const raw = edRow([onJob(ED_S1, SJ('j-imp', 'Deleaf/Harvest - Imperial', 'gusto'))]);
+  const board = OV(raw, [tm]);
+  eq([board.shifts[0].job.id, 'job' in board.shifts[0].edited, board.shifts[0].edited.out], ['j-imp', false, true], "Gusto's job, untinted (the end is)");
+  eq(C.shiftParts(board, PJ).map(p => [p.job, p.edJob]), [['Deleaf/Harvest - Imperial', false]]);
+  const sent = OV(raw, [Object.assign({}, tm, { times_status: 'applied', times_applied_at: '2026-10-07T19:05:00Z' })]);
+  eq([sent.shifts[0].edited.times, sent.shifts[0].job.id, 'job' in sent.shifts[0].edited], ['sent', 'j-imp', false], 'and while it is sent');
+  const en = C.editorEntries(raw, board, [tm], me, ctx);
+  eq([en[0].job, en[0].gustoJob, en[0].pendingIds], ['j-imp', 'j-imp', ['tm']]);
+  en[0].outT = '16:15';
+  eq(C.editPlan(raw, en, {}).ops.map(o => [o.action, 'job' in o.after, o.expect]), [['update', false, ['tm']]], 'another time change sends no job');
+  // a real change of job still shows (and keeps sending) the job it waits for
+  const jb = OV(raw, [JCH()]);
+  eq([jb.shifts[0].job, jb.shifts[0].edited.job], [TO_SLANE, true]);
+});
+check('a job change in words: Job <old> → <new> (not known yet, when it was not); an add on a picked job: Job <title>; its part reads Job (or Start, end and job); held while the worker holds jobs (never Late then), and Save says so', () => {
+  const jc = JCH();
+  eq(C.describeEdit(jc, C.TZ), ['Job Trimmer → Deleaf/Harvest - Slane']);
+  const both = JCH({ after: Object.assign(C.shiftSnap(ED_S1), { out: EP('15:45'), job: TO_SLANE }) });
+  eq(C.describeEdit(both, C.TZ), ['End 3:30 PM → 3:45 PM', 'Job Trimmer → Deleaf/Harvest - Slane'], 'times first, then the job, then breaks');
+  eq(C.describeEdit(JCH({ before: C.shiftSnap(onJob(ED_S1, SJ('j-blank', ''))) }), C.TZ), ['Job No job title → Deleaf/Harvest - Slane']);
+  eq(C.describeEdit(JCH({ before: C.shiftSnap(ED_S1) }), C.TZ), ['Job not known yet → Deleaf/Harvest - Slane'], "the shift's job was not known");
+  eq(C.describeEdit(ED({ before: C.shiftSnap(S1J), after: C.shiftSnap(S1J) }), C.TZ), ['Back to what Gusto has'], 'the same job: no job line');
+  const add = ED({ action: 'add', shift_id: null, before: null, after: Object.assign(AFTER('19:00', '20:00', [['19:30', '19:40', 'rest']]), { job: TO_SLANE }), times_status: 'pending', breaks_status: 'pending' });
+  eq(C.describeEdit(add, C.TZ), ['Add a shift 7:00 PM - 8:00 PM', 'with rest 7:30-7:40', 'Job Deleaf/Harvest - Slane']);
+  eq(C.describeEdit(Object.assign({}, add, { after: AFTER('19:00', '20:00') }), C.TZ), ['Add a shift 7:00 PM - 8:00 PM'], 'none picked: as before');
+  eq(C.jobChange(add), { from: null, to: TO_SLANE });
+  eq([C.jobChange(ED({ action: 'delete' })), C.jobChange(ED({ action: 'note', after: null })), C.jobChange(null)], [null, null, null]);
+  // the part, while it waits and after
+  eq(C.editPartLines(jc, C.TZ, NOW_N), ['Job: going to Gusto at noon today']);
+  eq(C.editPartLines(both, C.TZ, NOW_N), ['Start, end and job: going to Gusto at noon today']);
+  eq(C.editPartLines(JCH({ breaks_status: 'pending' }), C.TZ, NOW_N), ['Job and breaks: going to Gusto at noon today']);
+  eq(C.editPartLines(JCH({ after: both.after, breaks_status: 'pending' }), C.TZ, NOW_N), ['Start, end, job and breaks: going to Gusto at noon today']);
+  eq(C.editPartLines(JCH({ times_status: 'applied' }), C.TZ, NOW_N), ['Job: in Gusto']);
+  eq(C.editPartLines(JCH({ times_status: 'conflict', times_error: "Gusto changed the shift's job since the manager made this edit" }), C.TZ, NOW_N), ["Job: Gusto changed the shift's job since the manager made this edit"]);
+  eq(C.editPartLines(ED({ times_status: 'pending', after: AFTER('07:30', '15:30') }), C.TZ, NOW_N), ['Start and end: going to Gusto at noon today'], 'a change of times only reads as before');
+  eq(C.editPartLines(add, C.TZ, NOW_N), ['The new shift: going to Gusto at noon today'], 'an add reads as before');
+  // held: the page's EDIT_PROVEN.job / .nyJob (here: California held, New York not)
+  C.setJobHeld(e => e.region !== 'NY');
+  try {
+    eq(C.editPartLines(jc, C.TZ, '2026-10-07T19:40:00Z'), ['Job: waits for the first job run Gianni watches'], 'not a run time it will not keep');
+    eq(C.editPartLines(JCH({ breaks_status: 'pending' }), C.TZ, NOW_N), ['Job and breaks: waits for the first job run Gianni watches'], 'the whole change waits');
+    ok(C.jobIsHeld(jc) && C.jobIsHeld(add) && !C.editLate(jc, '2026-10-08T19:40:00Z'), 'held: never Late');
+    ok(!C.jobIsHeld(ED({ times_status: 'pending', after: AFTER('07:30', '15:30') })) && !C.jobIsHeld(JCH({ times_status: 'applying' })) && !C.jobIsHeld(JCH({ region: 'NY' })), 'only a waiting job change in a held region');
+    eq(C.saveMessage([{ op: { type: 'submit' }, edit: jc }], 'at noon today'), 'Saved. It waits for the first job run Gianni watches, then goes to Gusto.');
+    eq(C.saveMessage([{ op: { type: 'submit' }, edit: jc }, { op: { type: 'submit' }, edit: ED({ id: 'o1', times_status: 'pending' }) }], 'at noon today'),
+      'Saved. It goes to Gusto at noon today and shows as Pending until then. A job change waits for the first job run Gianni watches.');
+    eq(C.saveMessage([{ op: { type: 'submit' }, edit: ED({ id: 'o1', times_status: 'pending' }) }], 'at noon today'), 'Saved. It goes to Gusto at noon today and shows as Pending until then.', 'no job change: as before');
+  } finally { C.setJobHeld(null); }
+  ok(!C.jobIsHeld(jc) && C.editLate(jc, '2026-10-08T19:40:00Z'), 'not held: a run that passed makes it late, as any change');
+});
+check('demo: some people have 2-3 Gusto jobs (made-up ids), every shift on a job of theirs as the sync writes it (or not known yet), and one shift waits to move to another job', () => {
+  const pOf = r => demo.people.find(p => p.company === r.company && p.employee_uuid === r.employee_uuid);
+  const multi = demo.people.filter(p => p.jobs.length > 1);
+  ok(multi.length >= 3 && multi.some(p => p.jobs.length === 3), 'several people with more than one job: ' + multi.length);
+  for (const p of demo.people) {
+    eq(C.personJobs(p), p.jobs, p.name + ': in ts_people.jobs order');
+    eq(p.jobs.filter(j => j.primary).length, 1, p.name + ': one primary');
+    for (const j of p.jobs) { ok(/^demo-job-\d+$/.test(j.id), 'made-up id ' + j.id); eq(Object.keys(j).sort(), ['id', 'primary', 'start', 'title'], 'job keys'); }
+  }
+  ok(demo.people.some(p => p.jobs.some(j => j.title === '')) && demo.people.some(p => p.jobs.some(j => j.start)), 'a job with no title, and one added lately');
+  let unknown = 0;
+  for (const r of demo.rows) for (const s of r.shifts) {
+    const p = pOf(r);
+    if (!('job' in s)) { unknown++; ok(p.jobs.length > 1, r.id + ': only a person with several jobs has a shift whose job is not known'); continue; }
+    eq(Object.keys(s.job).sort(), ['id', 'src', 'title'], 'shift job keys');
+    const j = p.jobs.find(x => x.id === s.job.id);
+    ok(j && j.title === s.job.title && (!j.start || j.start <= r.work_date), r.id + ': a job of theirs, started by the day');
+    ok(s.job.src === 'only' ? p.jobs.length === 1 : ['csv', 'gusto'].includes(s.job.src), r.id + ' src ' + s.job.src);
+  }
+  ok(unknown > 0, 'a shift whose job is not known yet');
+  ok(demo.rows.some(r => r.shifts.length > 1 && new Set(r.shifts.map(s => s.job && s.job.id)).size > 1), 'a day with shifts on two jobs');
+  ok(demo.rows.some(r => C.shiftJobsShown(r, C.personJobs(pOf(r)))) && demo.rows.some(r => !C.shiftJobsShown(r, C.personJobs(pOf(r)))), 'days that show each shift\'s job, and days that do not');
+  const je = demo.edits.filter(e => C.jobChange(e));
+  eq(je.map(e => [e.action, C.editStatus(e), e.times_status, e.breaks_status]), [['update', 'pending', 'pending', 'none']], 'one waiting job change');
+  ok(C.fullViewer(demo.access.find(a => a.email === je[0].created_by)), 'by a full viewer: a manager cannot pick a job until job changes are proven');
+  eq(C.describeEdit(je[0], C.TZ), ['Job Deleaf/Harvest - Slane → Deleaf/Harvest - Imperial']);
+  const r = C.normRow(demo.rows.find(x => x.id === je[0].day_id)), mine = pOf(r);
+  ok(mine.jobs.some(j => j.id === je[0].after.job.id && j.title === je[0].after.job.title), 'the job is one of theirs, with their title');
+  const o = C.overlayDay(r, demo.edits.filter(e => e.day_id === r.id), { today: demo.todays.CA });
+  eq(C.shiftParts(o, C.personJobs(mine)).map(p => [p.job, p.edJob]), [['Deleaf/Harvest - Imperial', true]], 'the board shows it');
+  // the demo page saves another the same way (runEditOp passes the person's jobs), and refuses one that started later
+  const other = C.normRow(demo.rows.filter(x => x.employee_uuid === r.employee_uuid && x.id !== r.id && !x.open && x.shifts.length === 1 && x.shifts[0].job && C.canEditDate(x.work_date, demo.todays.CA))[0]);
+  const back = mine.jobs.find(j => j.id !== other.shifts[0].job.id);
+  const sv = C.submitEdit(demo.edits, other, { shift_id: other.shifts[0].id, action: 'update', after: Object.assign(C.shiftSnap(other.shifts[0]), { job: { id: back.id } }) },
+    { email: 'demo.owner@wizardtrees.com', now: NOW, id: 'demo-edit-901', jobs: C.personJobs(mine) });
+  ok(sv.ok && sv.edit.after.job.title === back.title, sv.error);
+  const late = demo.people.find(p => p.jobs.some(j => j.start)), lj = late.jobs.find(j => j.start);
+  const ld = C.normRow(demo.rows.filter(x => x.employee_uuid === late.employee_uuid && x.work_date < lj.start && !x.open && x.shifts.length === 1 && C.canEditDate(x.work_date, demo.todays.CA))[0]);
+  eq(C.submitEdit(demo.edits, ld, { shift_id: ld.shifts[0].id, action: 'update', after: Object.assign(C.shiftSnap(ld.shifts[0]), { job: { id: lj.id } }) },
+    { email: 'demo.owner@wizardtrees.com', now: NOW, id: 'demo-edit-902', jobs: C.personJobs(late) }).error, C.jobStartsText(lj.start), 'a job added lately cannot take an earlier day');
+  ok(/C\.submitEdit\(list, raw, \{ shift_id: op\.shift_id, action: op\.action, after: op\.after, note, expect: op\.expect \}, \{ email: who\.email, now, id: 'demo-edit-' \+ \(\+\+demoSeq\), jobs: jobsFor\(raw\) \}\)/.test(appFn('runEditOp')), 'the demo page passes the person\'s jobs');
+});
+// The page's own job functions, run as written with stand-ins: who is signed in and the person's jobs. proven: EDIT_PROVEN
+// as it will be after a supervised run.
+function jobPage(me, jobs, proven) {
+  const app = block('ts-app'), pick = re => { const m = app.match(re); if (!m) throw new Error('not in ts-app: ' + re); return m[0]; };
+  const code = [proven ? 'const EDIT_PROVEN = ' + J(proven) + ';' : pick(/const EDIT_PROVEN = \{[\s\S]*?\};/), pick(/const rowRegion = [^\n]*\n/),
+    appFn('mayEdit'), appFn('mayJob'), appFn('jobPick'), appFn('jobField'), appFn('jobTag'), 'return { EDIT_PROVEN, mayEdit, mayJob, jobPick, jobField, jobTag };'].join('\n');
+  return new Function('C', 'h', 'actor', 'jobsFor', code)(C, C.h, () => me, () => jobs);
+}
+check('the Job pick: for a person with more than one job (loaded), on a shift that can be changed and on a new one; a job held until proven (admins and full viewers now, CA and NY apart); a later job listed but off; Job not known yet', () => {
+  const mgr = { email: 'm@wizardtrees.com', is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
+  const fv = { email: 'v@wizardtrees.com', is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, admin = { email: 'boss@wizardtrees.com', is_admin: true, active: true, grants: [] };
+  const ca = edRow([S1J]), ny = edRow([S1J], { id: 'wtny:e1:2026-10-06', company: 'wtny', region: 'NY' });
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N };
+  const en = C.editorEntries(ca, ca, [], me, ctx)[0];
+  const P = jobPage(mgr, PJ);
+  eq([P.EDIT_PROVEN.job, P.EDIT_PROVEN.nyJob, P.EDIT_PROVEN.addJob, P.EDIT_PROVEN.nyAddJob], [false, false, false, false], 'none proven yet');
+  eq([P.mayJob(ca), P.mayJob(ny), String(P.jobField(en, ca, 'Shift 1'))], [false, false, ''], 'a manager: no Job pick yet');
+  eq([jobPage(admin, PJ).mayJob(ca), jobPage(admin, PJ).mayJob(ny), jobPage(fv, PJ).mayJob(ca)], [true, true, true], 'admins and full viewers: now');
+  const caOnly = Object.assign({}, P.EDIT_PROVEN, { job: true });
+  eq([jobPage(mgr, PJ, caOnly).mayJob(ca), jobPage(mgr, PJ, caOnly).mayJob(ny), jobPage(mgr, PJ, Object.assign({}, caOnly, { nyJob: true })).mayJob(ny)], [true, false, true], 'once CA:job is proven, California days; New York days wait for NY:job');
+  eq([String(jobPage(admin, [PJ[0]]).jobField(en, ca, 'Shift 1')), String(jobPage(admin, null).jobField(en, ca, 'Shift 1'))], ['', ''], 'one job, or jobs not loaded: no pick');
+  const html = String(jobPage(admin, PJ).jobField(en, ca, 'Shift 1'));
+  ok(/<select data-ek="e1" data-ef="job" aria-label="Shift 1 job">/.test(html), 'a select the editor reads: ' + html);
+  eq([...html.matchAll(/<option value="([^"]*)"([^>]*)>([^<]*)<\/option>/g)].map(m => [m[1], m[2].trim(), m[3]]),
+    [['j-trim', 'selected', 'Trimmer'], ['j-blank', '', 'No job title'], ['j-imp', 'disabled', 'Deleaf/Harvest - Imperial (from Oct 8)'], ['j-slane', '', 'Deleaf/Harvest - Slane']], 'primary first, its own job picked, a later job off');
+  const unk = C.editorEntries(edRow([ED_S1]), edRow([ED_S1]), [], me, ctx)[0];
+  ok(/^<div class="ed-job"><label class="ed-f"><span>Job<\/span><select[^>]*><option value="" selected disabled>Job not known yet<\/option><option value="j-trim">/.test(String(jobPage(admin, PJ).jobField(unk, ca, 'Shift 1'))), 'a shift whose job is not known yet');
+  const n = Object.assign(C.newEntry('n1'), { inT: '19:00', outT: '20:00' });
+  ok(/<option value="" selected>Not picked \(the day's job, else their primary one\)<\/option>/.test(String(jobPage(admin, PJ).jobField(n, ca, 'New shift'))), 'a new shift: Not picked, the browser task picks as before');
+  // a new shift's pick is the worker's 'add-job', proven apart: CA:job alone does not offer it to a manager
+  const addOk = Object.assign({}, caOnly, { addJob: true });
+  eq([jobPage(mgr, PJ, caOnly).mayJob(ca, true), String(jobPage(mgr, PJ, caOnly).jobField(n, ca, 'New shift')), String(jobPage(mgr, PJ, caOnly).jobField(Object.assign({}, n, { kind: 'add' }), ca, 'Added shift'))],
+    [false, '', ''], 'CA:job proven, CA:add-job not: a manager has no pick on a new shift (nor a waiting add)');
+  eq([jobPage(mgr, PJ, addOk).mayJob(ca, true), jobPage(mgr, PJ, addOk).mayJob(ny, true), jobPage(mgr, PJ, Object.assign({}, addOk, { nyAddJob: true })).mayJob(ny, true), jobPage(mgr, PJ, { addJob: true }).mayJob(ca)],
+    [true, false, true, false], 'once CA:add-job is proven, on California days; New York waits for NY:add-job; moving a shift still needs CA:job');
+  ok(/<select data-ek="n1" data-ef="job"/.test(String(jobPage(mgr, PJ, addOk).jobField(n, ca, 'New shift'))) && /<select/.test(String(jobPage(admin, PJ).jobField(n, ny, 'New shift'))), 'then the pick, as admins have it now');
+  for (const [what, x] of [['read-only', { readonly: 'sent' }], ['waiting to be deleted', { del: true }], ['split at midnight', { split: { role: 'first', fix: true } }]])
+    eq(String(jobPage(admin, PJ).jobField(Object.assign({}, en, x), ca, 'Shift 1')), '', 'none on a shift ' + what);
+  // the header tag: where no pick says it
+  eq([String(jobPage(admin, PJ).jobTag(en, ca)), String(jobPage(admin, PJ).jobTag(unk, ca)), String(jobPage(admin, [PJ[0]]).jobTag(en, edRow([S1J], { job_title: 'Trimmer' })))],
+    ['<span class="ed-jt">Trimmer</span>', '<span class="ed-jt">Job not known yet</span>', ''], "the shift's job, Job not known yet, or nothing on a one-job day");
+  // wiring: entryHtml puts the pick under the times and the tag after the label; typing keeps everything else
+  const eh = appFn('entryHtml');
+  ok(/const raw = S\.rows\.get\(E\.rowId\), jf = jobField\(en, raw, label\);/.test(eh) && /const pend = h`\$\{jf \? '' : jobTag\(en, raw\)\}/.test(eh) && /<\/div>\n\s+\$\{jf\}\n/.test(eh), 'the pick under the start and end; the tag beside the label (read-only shifts too)');
+  ok(/else if \(f === 'job'\) \{ const j = \(jobsFor\(S\.rows\.get\(E\.rowId\)\) \|\| \[\]\)\.find\(x => x\.id === t\.value\); en\.job = j \? j\.id : ''; en\.jobTitle = j \? j\.title : ''; \}/.test(appFn('onEditorInput')), 'picking a job sets only the job (no re-render)');
+  const app = block('ts-app');
+  ok(/function mayJob\(r, add\) \{ return add \? mayEdit\('addJob'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyAddJob'\)\) : mayEdit\('job'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyJob'\)\); \}/.test(app), 'mayJob');
+  ok(/function jobPick\(r, add\) \{ const jobs = jobsFor\(r\); return jobs && jobs\.length > 1 && mayJob\(r, add\) \? jobs : null; \}/.test(app) && /jobPick\(raw, en\.kind !== 'shift'\)/.test(appFn('jobField')), "jobPick asks about an add for a shift that is not Gusto's yet");
+  ok(/\.ed-job \.ed-f select\{min-width:0\}/.test(src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1]), 'the pick fits a phone');
+});
+// The page's own rule for a job change the worker holds (its C.setJobHeld call), run as written. proven: EDIT_PROVEN as
+// it will be after a supervised run.
+function jobHeldRule(proven) {
+  const m = block('ts-app').match(/C\.setJobHeld\((e => \{[\s\S]*?\})\);\n/);
+  if (!m) throw new Error('no C.setJobHeld in ts-app');
+  return new Function('EDIT_PROVEN', 'S', 'rowRegion', 'return ' + m[1] + ';')(proven, { rows: new Map() }, r => r.region || C.regionOfCompany(r.company));
+}
+const ADD_ON = o => ED(Object.assign({ id: 'aj', action: 'add', shift_id: null, before: null, after: Object.assign(AFTER('16:00', '18:00'), { job: TO_SLANE }), times_status: 'pending' }, o));
+check("a waiting job change says it waits while the worker holds its kind: a shift moved to another job ('job'), or a new shift on a picked one ('add-job'), each in California and New York apart (review 2026-10-30)", () => {
+  const ny = { region: 'NY', company: 'wtny', day_id: 'wtny:e1:2026-10-06' };
+  const held = proven => { const f = jobHeldRule(proven); return [JCH(), JCH(ny), ADD_ON(), ADD_ON(ny)].map(f); };
+  eq(held({ job: false, nyJob: false, addJob: false, nyAddJob: false }), [true, true, true, true], 'none proven');
+  eq(held({ job: true, nyJob: false, addJob: false, nyAddJob: false }), [false, true, true, true], 'CA:job: a California move goes, an add on a picked job still waits');
+  eq(held({ job: true, nyJob: true, addJob: true, nyAddJob: false }), [false, false, false, true]);
+  eq(held({ job: false, nyJob: false, addJob: true, nyAddJob: true }), [true, true, false, false], 'CA:add-job and NY:add-job, no move proven');
+  // the add the review found: CA:job proven, CA:add-job not. It waits (never Late), and never promises a run time
+  C.setJobHeld(jobHeldRule({ job: true, nyJob: false, addJob: false, nyAddJob: false }));
+  try {
+    eq([C.editPartLines(ADD_ON(), C.TZ, NOW_N), C.editLate(ADD_ON(), '2026-10-07T20:00:00Z')], [['The new shift: waits for the first job run Gianni watches'], false]);
+    eq([C.editPartLines(JCH(), C.TZ, NOW_N), C.editLate(JCH(), '2026-10-07T20:00:00Z')], [['Job: going to Gusto at noon today'], true], 'a move of a California shift goes at the next run');
+  } finally { C.setJobHeld(null); }
+});
+check('page: ts_people is read with its jobs (and without, before supabase/ts-edit-jobs.sql); a job goes in p_after; the server\'s job refusals and an older server read plainly', () => {
+  const lm = appFn('loadMeta');
+  ok(/people\('company,employee_uuid,name,department,job_title,active,jobs'\)\.catch\(e => \{ if \(!noJobsColumn\(e\)\) throw e; return people\('company,employee_uuid,name,department,job_title,active'\); \}\)/.test(lm), 'with jobs, else as before');
+  ok(/const noJobsColumn = e => \/42703\|PGRST204\/\.test\(String\(\(e && e\.code\) \|\| ''\)\) && \/\\bjobs\\b\/\.test\(errText\(e\)\);/.test(block('ts-app')), 'only a missing jobs column falls back (any other error still shows)');
+  const ro = appFn('runEditOp');
+  ok(/: \/jobs are not loaded yet\/i\.test\(errText\(error\)\) \? C\.JOB_NOT_LOADED/.test(ro) && /: \/not one of this person\.s jobs\/i\.test\(errText\(error\)\) \? C\.JOB_NOT_THEIRS/.test(ro), "the server's refusals");
+  ok(/: op\.after && op\.after\.job && \/Nothing changed\/i\.test\(errText\(error\)\) \? 'Changing jobs is not switched on yet\.'/.test(ro), 'a server without the file: not switched on yet');
+  ok(/p_after: op\.after/.test(ro), 'the job rides p_after (no new argument: the signature stays)');
+  ok(/C\.saveMessage\(done, C\.nextEditRun\(Date\.now\(\), C\.rowTz\(raw\)\)\)/.test(appFn('saveDayEdits')), 'Save says when (or that a job change waits)');
+});
+// its twin: the daily list's describeChange (~/gusto-sync/ts-edit-mail.mjs, or TS_GUSTO_SYNC_DIR's) must read a job change
+// as the board does, once it knows jobs (until then it reads one as "Back to what Gusto has", and this is skipped)
+{
+  const dir = process.env.TS_GUSTO_SYNC_DIR || path.join(os.homedir(), 'gusto-sync'), where = dir.replace(os.homedir(), '~');
+  let mail = null;
+  try { const f = path.join(dir, 'ts-edit-mail.mjs'); mail = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { console.log('          (ts-edit-mail.mjs did not load: ' + String((e && e.message) || e).split('\n')[0] + ')'); }
+  check('a job change reads the same in the daily list as on the board (where ' + where + ' knows jobs)', () => {
+    const samples = [JCH(), JCH({ after: Object.assign(C.shiftSnap(ED_S1), { out: EP('15:45'), job: TO_SLANE }) }), JCH({ before: C.shiftSnap(onJob(ED_S1, SJ('j-blank', ''))) }), JCH({ before: C.shiftSnap(ED_S1) }),
+      ED({ action: 'add', shift_id: null, before: null, after: Object.assign(AFTER('19:00', '20:00', [['19:30', '19:40', 'rest']]), { job: TO_SLANE }), times_status: 'pending' })];
+    if (!mail || typeof mail.describeChange !== 'function' || !/^Job /.test((mail.describeChange(samples[0]) || [])[0] || '')) { console.log('          (skipped: the daily list in ' + where + ' does not read jobs yet)'); return true; }
+    for (const e of samples) eq(mail.describeChange(e), C.describeEdit(e, C.TZ), J(e.after));
+  });
+  // and the browser task's job kinds (WRITE_KINDS, ts-edit-plan.mjs) are the ones the page holds and offers by: each has its
+  // pair of EDIT_PROVEN flags, and the page holds a job change exactly when the browser task's heldKinds does (CA proven
+  // before NY, as Gianni sets them; adding a shift proven, as it is). An add on the very job the browser task would have
+  // picked is no 'add-job' there, and the page cannot tell: it says that one waits (the run sends it).
+  let plan = null;
+  try { const f = path.join(dir, 'ts-edit-plan.mjs'); plan = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { console.log('          (ts-edit-plan.mjs did not load: ' + String((e && e.message) || e).split('\n')[0] + ')'); }
+  check('the page holds job changes by the browser task\'s own job kinds (where ' + where + ' knows jobs)', () => {
+    const kinds = plan && plan.WRITE_KINDS ? Object.keys(plan.WRITE_KINDS).filter(k => /job/.test(k)).sort() : [];
+    if (!kinds.includes('job') || typeof plan.heldKinds !== 'function' || typeof plan.provenSet !== 'function') { console.log('          (skipped: the browser task in ' + where + ' has no job kinds yet)'); return true; }
+    const FLAGS = { job: ['job', 'nyJob'], 'add-job': ['addJob', 'nyAddJob'] };
+    const page = jobPage(null, null).EDIT_PROVEN;
+    eq(Object.keys(FLAGS).filter(k => FLAGS[k].every(f => f in page)).sort(), kinds, 'a pair of EDIT_PROVEN flags for each job kind, and no other');
+    const writes = e => e.action === 'add' ? ['add-shift', 'add-job'] : ['job'];
+    for (const ca of [[], ['job'], ['add-job'], ['job', 'add-job']]) for (const ny of [[], ...ca.map(k => [k]), ca]) {
+      const proven = plan.provenSet({ proven: ['CA:add-shift', 'NY:add-shift', ...ca.map(k => 'CA:' + k), ...ny.map(k => 'NY:' + k)].map(kind => ({ kind })) });
+      const flags = {};
+      for (const k of kinds) { flags[FLAGS[k][0]] = ca.includes(k); flags[FLAGS[k][1]] = ny.includes(k); }
+      const rule = jobHeldRule(flags);
+      for (const e of [JCH(), JCH({ region: 'NY' }), ADD_ON(), ADD_ON({ region: 'NY' })])
+        eq(rule(e), plan.heldKinds({ kind: e.action === 'add' ? 'add' : 'edit', writeKinds: writes(e) }, e.region, proven).length > 0, e.action + ' ' + e.region + ' with CA ' + J(ca) + ', NY ' + J(ny) + ' proven');
+    }
+  });
+}
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name
 try {
