@@ -2823,6 +2823,15 @@
     return (ps.why === 'processed' ? 'Payroll for ' + range + ' has already been processed in Gusto'
       : 'Gusto has locked the ' + range + ' pay period') + ', so this day can no longer be changed here. Fix it in Gusto, or have the hours added to the next payroll';
   }
+  // A day of someone who has left (2026-10-30): Gusto's API drops a person once they leave, so the sync rebuilds their days
+  // from Gusto's own export, with shift ids "csv-..." instead of Gusto's (no change of one could reach Gusto), and their
+  // ts_people row is inactive. Such a day is shown as any other but changed only in Gusto.
+  function leftDay(r, people) {
+    if (!r) return false;
+    if ((r.shifts || []).some(s => s && /^csv-/.test(String(s.id)))) return true;
+    return (people || []).some(p => p && p.company === r.company && p.employee_uuid === r.employee_uuid && p.active === false);
+  }
+  const LEFT_TEXT = 'This person has left the company, so this day can only be changed in Gusto';
   // A Needs a look that missed its payroll for good: Gusto refused it because that payroll was already processed, the
   // period locked or the day already paid (the worker's MISSED_PAYROLL, ~/gusto-sync/ts-edit-plan.mjs). The daily list
   // shows it once as Missed payroll, with a Done button that opens Admin > Edits > Missed payroll (?missed=<id>).
@@ -3659,7 +3668,7 @@
     validateAfter, shiftOverlap, fmtTimeSec, LONG_REST_MIN, longRestText, entryBreakNotes, hhmm, parseHhmm, fmtHhmm, entryOf, entryKey, entryAfter, newEntry, editedShift, dailySplit, estOvertime,
     rebuildDay, editStatus, EDIT_STATUS_WORDS, CLEARED_BY, replacedEdits, editShownStatus, replacedBy, EDIT_LATE_SEC, firstEditRun, partLate, editLate,
     rowAway, AWAY_CODES, AWAY_NOTE, AWAY_EDITOR_TEXT, entriesAway, splitRole, splitWhy, END_AT_MIDNIGHT_NOTE,
-    partShow, overlayDay, overlayRows, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, periodState, periodClosedText, MISSED_PAYROLL, isMissedEdit, saveMessage,
+    partShow, overlayDay, overlayRows, describeEdit, clockShort, runWords, nextEditRun, editRunsText, editTimingText, waitWords, canEditForRun, inLastPeriod, periodState, periodClosedText, leftDay, LEFT_TEXT, MISSED_PAYROLL, isMissedEdit, saveMessage,
     partWaits, editSending, CANCELLABLE,
     stampText, editPartLines, editTip, supersede, submitEdit, cancelEdit, stillWorking, editorEntries, editPlan, entriesPreview, dayStamp,
     isNoteEdit, editReason, APP_EDIT_PREFIX, APP_NOTE_PREFIX, parseAppNote, cleanNoteText, noteProblem, dayNotes, notesLabel, notesLook, noteWho, noteMeta,
@@ -4322,8 +4331,8 @@
   const rowRegion = r => r.region || C.regionOfCompany(r.company);
   // the current or previous pay period, never a future day, on the row's own calendar (ts_edit_submit's
   // window), and still in it when the next run takes the change to Gusto (C.canEditForRun); New York days
-  // once New York is proven
-  function canEditRow(r) { return editsOn() && !!r && C.canEditForRun(r.work_date, C.rowTz(r), Date.now()) && (rowRegion(r) !== 'NY' || mayEdit('ny')) && !periodClosed(r); }
+  // once New York is proven; never a day of someone who has left (C.leftDay)
+  function canEditRow(r) { return editsOn() && !!r && C.canEditForRun(r.work_date, C.rowTz(r), Date.now()) && (rowRegion(r) !== 'NY' || mayEdit('ny')) && !periodClosed(r) && !C.leftDay(r, S.people); }
   // A note can be added to a day by whoever may change it (the same rules; the server checks them again), once notes are
   // proven in the day's region (mayNote: EDIT_PROVEN.note, .nyNote; admins and full viewers before that), on a shift
   // Gusto can take one on (C.noteShifts, from the day as Gusto has it at the last sync)
@@ -4872,6 +4881,7 @@
       ${guessed ? h`<p class="pd-fine">${EST_BREAK_NOTE}</p>` : ''}
       ${r.ot_src === 'est' && (ot || dt) ? h`<p class="pd-fine">${r.region === 'NY' ? EST_OT_NOTE_NY : EST_OT_NOTE}</p>` : ''}
       ${histList(r)}
+      ${editsOn() && C.leftDay(r, S.people) ? h`<p class="pd-fine">${C.LEFT_TEXT}.</p>` : ''}
       ${canEditRow(r) ? h`<div class="pd-act"><button type="button" class="btn" data-act="edit-day" data-k="${r.id}">Edit times or breaks</button>${canNoteRow(r) ? h`<button type="button" class="btn" data-act="note-day" data-k="${r.id}">Add a note</button>` : ''}</div>` : ''}
     </div>`;
   }
@@ -5675,6 +5685,7 @@
   // window before the next run could take the change, or outside the window
   function noEditMsg(raw) {
     if (!raw) return 'That day is no longer on the board';
+    if (C.leftDay(raw, S.people)) return C.LEFT_TEXT;
     const tz = C.rowTz(raw);
     if (rowRegion(raw) === 'NY' && !mayEdit('ny')) return 'New York days cannot be changed here yet: change this day in Gusto';
     if (periodClosed(raw)) return C.periodClosedText(rowPeriod(raw));

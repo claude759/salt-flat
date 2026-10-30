@@ -1638,7 +1638,20 @@ check('edit window: the current and previous pay period through today, exactly l
   // the same 14-day grid as both regions' pay periods
   for (const g of C.REGIONS) eq(C.daysBetween(g.anchorEnd, C.EDIT_ANCHOR_END) % 14, 0, g.key + ' grid');
   if (SQL_EDITS) ok(/date '2026-10-09'/.test(SQL_EDITS) && /period_end - 27/.test(SQL_EDITS), 'supabase/ts-edits.sql has another window');
-  ok(/function canEditRow\(r\) \{ return editsOn\(\) && !!r && C\.canEditForRun\(r\.work_date, C\.rowTz\(r\), Date\.now\(\)\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('ny'\)\) && !periodClosed\(r\); \}/.test(block('ts-app')), 'Edit shows only inside the window (now and at the next run), on the row\'s own calendar, and never in a pay period Gusto has closed');
+  ok(/function canEditRow\(r\) \{ return editsOn\(\) && !!r && C\.canEditForRun\(r\.work_date, C\.rowTz\(r\), Date\.now\(\)\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('ny'\)\) && !periodClosed\(r\) && !C\.leftDay\(r, S\.people\); \}/.test(block('ts-app')), 'Edit shows only inside the window (now and at the next run), on the row\'s own calendar, never in a pay period Gusto has closed, never for someone who has left');
+});
+check('a day of someone who has left is shown but changed only in Gusto (2026-10-30)', () => {
+  const ppl = [{ company: 'wafgus', employee_uuid: 'u-gone', active: false }, { company: 'wafgus', employee_uuid: 'u-here', active: true }];
+  const day = (uuid, ids) => ({ id: 'wafgus:' + uuid + ':2026-10-27', company: 'wafgus', employee_uuid: uuid, shifts: ids.map(id => ({ id })) });
+  ok(C.leftDay(day('u-gone', ['123456789']), ppl), 'inactive in ts_people');
+  ok(C.leftDay(day('u-new', ['csv-20261027-1']), []), 'a shift rebuilt from the CSV, before the people list loads');
+  ok(C.leftDay(day('u-here', ['123456789', 'csv-20261027-2']), ppl), 'any CSV shift on the day');
+  ok(!C.leftDay(day('u-here', ['123456789']), ppl), 'someone still there');
+  ok(!C.leftDay(day('u-gone', ['123456789']), [{ company: 'slane', employee_uuid: 'u-gone', active: false }]), 'the same uuid at another company is not them');
+  ok(!C.leftDay(day('u-other', ['123456789']), ppl) && !C.leftDay(null, ppl), 'nobody known, or no day');
+  ok(/if \(C\.leftDay\(raw, S\.people\)\) return C\.LEFT_TEXT;/.test(appFn('noEditMsg')), 'Edit and Add a note say why they are not offered');
+  ok(/editsOn\(\) && C\.leftDay\(r, S\.people\) \? h`<p class="pd-fine">\$\{C\.LEFT_TEXT\}\.<\/p>`/.test(block('ts-app')), 'the day panel says it');
+  ok(/can only be changed in Gusto$/.test(C.LEFT_TEXT), 'words');
 });
 check('editor rules mirror ts_edit_submit: start and end, the same day or overnight within 16 h, the start on the work date', () => {
   const v = (a, extra) => codes(C.validateAfter(a, Object.assign({ tz: C.TZ, date: '2026-10-06' }, extra || {})));
