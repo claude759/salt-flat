@@ -517,6 +517,27 @@
   .edv{color:var(--ot-text)}
   .brk.ed{box-shadow:0 0 0 1px rgba(56,189,248,.6)}
   .pd-act{display:flex;flex-wrap:wrap;gap:8px}
+  /* where a deleaf crew shift was clocked in (2026-10-30): a quiet line under its job, the one-click move under the day's
+     flags, and Move all clear ones above the board. The place line under a job has a blank twin under its times. */
+  .ts td.c-job > div.pl,.ts td.io > div.pl-sp{margin-top:0;font-size:11px;line-height:15px;height:15px;color:var(--faint)}
+  .ts td.c-job > div.pl{overflow:hidden;text-overflow:ellipsis}
+  .ts .ej.pl,.ts td.c-date .dj.pl{color:var(--faint);font-size:11px}
+  .tpl{color:var(--faint);font-size:12.5px}
+  .ed-pl{font-size:12.5px;color:var(--faint);overflow-wrap:anywhere}
+  .ed-plh{margin:8px 0 0;font-size:12.5px;color:var(--warn-text);line-height:1.45}
+  .pmv{display:flex;flex-direction:column;align-items:flex-start;gap:4px;margin-top:6px}
+  .btn.pmove{white-space:normal;text-align:left;line-height:1.3;color:var(--accent2);border-color:rgba(124,92,255,.45);max-width:100%}
+  .btn.xs.pmove{padding:3px 8px;font-size:11.5px}
+  .btn.pmove:hover:not(:disabled){border-color:var(--accent);color:var(--text)}
+  .pmall{margin:-6px 0 14px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--warn-line);border-radius:10px;font-size:13.5px;line-height:1.5}
+  .pm-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 12px}
+  .pm-head .btn{margin-left:auto}
+  .pm-k{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--warn-text);white-space:nowrap}
+  .pm-t{flex:1 1 260px;min-width:0}
+  .pm-list{margin:8px 0 0;padding:0 0 0 18px;display:flex;flex-direction:column;gap:3px;overflow-wrap:anywhere}
+  .pm-list li.warn{color:var(--warn-text)} .pm-list li.ok{color:var(--paid-text)}
+  .pm-fine{margin:8px 0 0;font-size:12.5px;color:var(--faint)}
+  .pm-act{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
   #editPanel{z-index:65}
   #editPanel .sheet{width:min(820px,100%)}
   #editPanel .sheet-head{position:sticky;top:0;z-index:3;background:var(--panel);border-radius:16px 16px 0 0}
@@ -758,6 +779,11 @@
     .ts col.w-job{width:0} .ts col.w-emp{width:150px} .ts col.w-date{width:136px}
     .ts td.c-job,.ts th.c-job{padding:0;font-size:0;min-width:0;box-shadow:none}
     .ts .ej{display:block}
+    .ts td.io > div.pl-sp{display:none}
+    .pmall{margin-top:0;font-size:14px}
+    .pm-head .btn{margin-left:0;min-height:40px}
+    .pm-act .btn{min-height:44px;flex:1 1 140px}
+    .pd-act .btn.pmove{min-height:44px}
     table.ts.day-t{min-width:1280px}
     table.ts.emp-t{min-width:1270px}
     .legend{min-width:0;width:auto}
@@ -942,6 +968,8 @@
   </div>
 
   <p class="policy" id="policyNote" hidden></p>
+  <!-- Job vs place: Move all clear ones, for whoever may pick jobs today (renderPlaceBar; the toast says how it went) -->
+  <div class="pmall no-print" id="placeBar" role="region" aria-label="Job vs place" hidden></div>
   <div class="loaderr" id="loadErr" hidden></div>
   <div id="content"></div>
 </main>
@@ -1214,6 +1242,9 @@
     shift_overlap:  { label: 'Shifts overlap', msg: 'Two shifts overlap, or the same shift was entered twice' },
     // a person who clocks in outside Pacific time (the producer's personAway, 2026-10-25)
     other_zone:     { label: 'Other time zone', msg: 'Clocks in outside Pacific time: California break rules are shown as notes only', sev: 'info' },
+    // the page's own (2026-10-30, placeFlag): a deleaf crew shift whose job does not fit where it was clocked in. Never on a
+    // ts_days row: the page adds it to the day as the board shows it, with its own msg.
+    job_place:      { label: 'Job vs place',   msg: "The shift's job does not fit where it was clocked in" },
   };
   const FLAG_CODES = Object.keys(FLAGS);
   // New York uses the same codes with its own rule (a meal of 30 min on a shift over 6 hours, no rest
@@ -1842,6 +1873,134 @@
   const JOB_NOT_LOADED = "This person's Gusto jobs are not loaded yet, so the job can't be changed here.";
   const JOB_NOT_THEIRS = "That job is not one of this person's jobs in Gusto.";
   const jobStartsText = d => 'That job starts on ' + fmtMonthDay(d) + ' in Gusto, after this day.';
+
+  /* ---------- where a shift was clocked in (2026-10-30, Gianni: "Is there any way to set the job based on their sign in
+     location?", "close enough that it's obvious which location they are at", then "ya build it") ----------
+     Gusto keeps where each clock-in and clock-out happened, never which job goes with a place. The edit worker keeps the
+     site of every shift it reads (~/gusto-sync/ts-shift-places.json, by ~/gusto-sync/job-places.json: Gusto's approved work
+     locations by id, and a 150 m circle for a site Gusto has no location for), and the timesheet sync puts it on the
+     Filifera deleaf crew's shifts as ts_days.shifts[i].place = {site, how, at, other?}: site one of the sites or null; how
+     'named' (a Gusto work location), 'near' (inside a site's circle), 'elsewhere' (none of the sites) or 'none' (no
+     location: an edited punch, no phone, the web); at 'in', or 'out' when only the clock-out had a site (or, for
+     elsewhere, only the clock-out was somewhere); other: the clock-out's site when it is another one. The key is left out
+     for everyone else. Never a coordinate, an address, a location id or a note. The page only suggests: a move is the Job
+     pick's own change (ts_edits after.job), sent when someone clicks it, never by itself. */
+  const PLACE_SITES = ['Filifera', 'Slane', 'Imperial', 'Olympic'];
+  const PLACE_HOME = 'Filifera';                   // 25th St, where packing and deleafing both happen
+  const PLACE_JOB_PREFIX = 'Deleaf/Harvest - ';    // job-places.json jobPrefix: the per-site jobs of 10/26
+  const PLACE_PLAIN_JOB = 'Deleaf/Harvest';
+  const PLACE_PACK_JOB = 'Distro Packager';
+  const PLACE_HOWS = ['named', 'near', 'elsewhere', 'none'];
+  const placeSite = x => typeof x === 'string' && x.trim() && x.trim().length <= 40 ? x.trim() : null;
+  // a shift's place as the sync writes it, read strictly: null when there is none, or one the page cannot read. A site is
+  // one of PLACE_SITES today; another short name reads the same way (a site added to job-places.json later).
+  function shiftPlace(p) {
+    if (!p || typeof p !== 'object' || !PLACE_HOWS.includes(p.how)) return null;
+    const site = placeSite(p.site);
+    if ((p.how === 'named' || p.how === 'near') !== !!site) return null;
+    const out = { site, how: p.how, at: p.how !== 'none' && p.at === 'out' ? 'out' : 'in' };
+    const other = site && out.at === 'in' ? placeSite(p.other) : null;
+    if (other && other !== site) out.other = other;
+    return out;
+  }
+  // the words under the job: "At Slane" (a Gusto work location), "Near Imperial" (inside its circle), "Clocked out at
+  // Slane" (only the clock-out had a site), "Clocked in elsewhere" ("Clocked out elsewhere" when only the clock-out was
+  // somewhere); ", out at Olympic" when the shift ended at another site. '' when nothing is known.
+  function placeTag(p) {
+    if (!p) return '';
+    if (p.how === 'elsewhere') return p.at === 'out' ? 'Clocked out elsewhere' : 'Clocked in elsewhere';
+    if (!p.site) return '';
+    const base = p.at === 'out' ? 'Clocked out at ' + p.site : (p.how === 'near' ? 'Near ' : 'At ') + p.site;
+    return p.other ? base + ', out at ' + p.other : base;
+  }
+  // What the board makes of a shift's place (Gianni's rules, 2026-10-30): {tag, kind, to, starts, reason, msg, site, at},
+  // or null for a shift with no place. kind:
+  //   'clear'    the job the place says plainly: plain Deleaf/Harvest at a site (1; at 25th St too, 4), or another site's
+  //              deleaf job (2). Only these with a clock-in place go in Move all.
+  //   'check'    Distro Packager at Slane, Imperial or Olympic (3): packing there can be real, so never in Move all
+  //   'needsJob' the job the place says is not one of the person's Gusto jobs (5), or starts after the day (starts: its date)
+  //   'changed'  clocked in at one site and out at another (6): the fix may be splitting the shift
+  //   null       the tag only: the job matches; Distro Packager at 25th St (4: the place cannot tell packing from deleafing);
+  //              somewhere none of the sites or nowhere known (7); a shift that cannot change here now (8: still running, or
+  //              o.readonly by the editor's own rules); any other job, which works at several sites on purpose (9); a job
+  //              not known yet, or the person's jobs not loaded.
+  // to: the job to move to, {id, title} from the person's jobs (clear and check). reason: what a move sends with it,
+  // "Clocked in at Slane" (or "Clocked out at Slane"). jobs: the person's Gusto jobs (personJobs, null while not known).
+  // o: {date: the day, readonly}.
+  function placeLook(s, jobs, o) {
+    const p = shiftPlace(s && s.place);
+    if (!p) return null;
+    const c = o || {};
+    const look = { tag: placeTag(p), kind: null, to: null, starts: null, reason: '', msg: '', site: p.site, at: p.at };
+    const title = s.job && typeof s.job.title === 'string' ? s.job.title.trim() : null;
+    if (c.readonly || s.hours_only || !s.out || title == null) return look;                          // 8, and a job not known yet
+    const plain = title === PLACE_PLAIN_JOB, pack = title === PLACE_PACK_JOB;
+    const onSite = title.startsWith(PLACE_JOB_PREFIX) ? title.slice(PLACE_JOB_PREFIX.length).trim() : null;
+    if (!plain && !pack && onSite == null) return look;                                              // 9
+    if (!p.site) return look;                                                                        // 7
+    const where = (p.at === 'out' ? 'clocked out at ' : 'clocked in at ') + p.site;
+    look.reason = where.charAt(0).toUpperCase() + where.slice(1);
+    if (p.other) return Object.assign(look, { kind: 'changed', msg: 'Clocked in at ' + p.site + ' and out at ' + p.other + ', so check the job, or split the shift in Gusto' });   // 6
+    const kind = plain ? 'clear' : onSite != null ? (onSite === p.site ? null : 'clear') : p.site === PLACE_HOME ? null : 'check';   // 1, 2, 3, 4
+    if (!kind || !Array.isArray(jobs)) return look;
+    const want = PLACE_JOB_PREFIX + p.site, j = jobs.find(x => x && String(x.title || '').trim() === want);
+    if (!j) return Object.assign(look, { kind: 'needsJob', msg: look.reason + ', so it needs ' + want + ' in Gusto, which is not one of their jobs yet' });   // 5
+    if (isIsoDate(j.start) && isIsoDate(c.date) && j.start > c.date)
+      return Object.assign(look, { kind: 'needsJob', starts: j.start, msg: look.reason + ', so likely ' + want + ', but that job starts on ' + fmtMonthDay(j.start) + ' in Gusto, after this day' });
+    return Object.assign(look, { kind, to: { id: j.id, title: j.title },
+      msg: 'On ' + jobLabel(title) + ' but ' + where + (kind === 'check' ? ', so maybe ' + want + ' (packing there can be real)' : ', so likely ' + want) });
+  }
+  // Each place-carrying shift of a day as the board shows it, with what the board makes of it: [{shift, look, entry,
+  // waiting}]. A shift the editor could not change now gets the tag only (8), by the editor's own rules (editorEntries:
+  // still working, split at midnight, being sent, just sent; a shift waiting to be deleted is off the board), and so does
+  // every shift of a day that cannot change here at all (ctx.open false: outside the window before the next run, a pay
+  // period Gusto processed, someone who left). waiting: a change of the shift waits; a move there goes through Edit, where
+  // both show (the one-click move would replace it). raw: the day as Gusto has it; board: as the board shows it
+  // (overlayDay); jobs: the person's (personJobs); ctx: {today, now, neighbors (the person's Gusto shifts around the day,
+  // for editorEntries), who, open}.
+  function placeLooks(raw, board, edits, jobs, ctx) {
+    const c = ctx || {}, b = board || raw;
+    if (!raw || !b || !(b.shifts || []).some(s => s && s.place)) return [];
+    const ents = c.open ? editorEntries(raw, b, edits, c.who || null, { today: c.today, now: c.now, neighbors: c.neighbors, midnight: {} }) : [];
+    const out = [];
+    for (const s of b.shifts) {
+      if (!s || !s.place || s.id == null) continue;
+      const en = ents.find(x => x.kind === 'shift' && x.id === String(s.id)) || null;
+      const look = placeLook(s, jobs, { date: raw.work_date, readonly: !c.open || !en || !!en.readonly || !!en.del || !!en.split });
+      if (look) out.push({ shift: s, look, entry: en, waiting: !!(en && en.pendingIds && en.pendingIds.length) });
+    }
+    return out;
+  }
+  // a move the board may offer for one shift (the person's job that the place says, nothing waiting on the shift), and
+  // whether Move all clear ones takes it (clear, by its clock-in place)
+  const placeMovable = x => !!x && !!x.look && !!x.look.to && (x.look.kind === 'clear' || x.look.kind === 'check') && !x.waiting;
+  const placeInMoveAll = x => placeMovable(x) && x.look.kind === 'clear' && x.look.at === 'in';
+  // The day's Job vs place flag, a warning like the producer's flags (it counts, stripes the row, shows under Flagged only):
+  // one for the day, its message naming each shift's (with its start when the day has more than one shift); null when every
+  // shift's job fits where it was clocked in. tz: the day's zone.
+  function placeFlag(looks, tz, many) {
+    const off = (looks || []).filter(x => x.look.kind);
+    if (!off.length) return null;
+    return { code: 'job_place', sev: 'warn', msg: off.map(x => (many ? fmtTime(x.shift.in, tz) + ' shift: ' : '') + x.look.msg).join('. ') };
+  }
+  // What the editor's Job pick sends for one shift moved to job, nothing else changed: the editor's own steps (its
+  // entries, the pick, Save's plan), so a one-click move is exactly that change. {op} (Save's own: {type: 'submit', key,
+  // shift_id, action: 'update', after, expect}) or {error}. ctx: {today, now, neighbors (editorEntries'), around (the
+  // person's shifts the day before and after as the board shows them, Save's overlap check)}.
+  function placeMoveOp(raw, board, edits, who, ctx, shiftId, job) {
+    const c = ctx || {};
+    const entries = editorEntries(raw, board || raw, edits, who, { today: c.today, now: c.now, neighbors: c.neighbors, midnight: {} });
+    const en = entries.find(x => x.kind === 'shift' && x.id === String(shiftId));
+    if (!en) return { error: 'That shift is no longer on this day.' };
+    if (en.readonly || en.del || en.split) return { error: 'That shift cannot be changed here now. Open Edit to see why.' };
+    if (!job || typeof job.id !== 'string' || !job.id) return { error: JOB_NOT_THEIRS };
+    en.job = job.id; en.jobTitle = String(job.title || '');
+    const plan = editPlan(raw, entries, { now: c.now, neighbors: c.around });
+    if (plan.errors[en.key]) return { error: plan.errors[en.key].map(e => e.msg).join(' ') };
+    const ops = plan.ops.filter(o => o.type === 'submit');
+    if (Object.keys(plan.errors).length || ops.length !== 1 || ops[0].shift_id !== en.id || ops[0].action !== 'update') return { error: 'Nothing to move: the shift is on that job already.' };
+    return { op: ops[0] };
+  }
 
   /* ---------- the compact lines on a phone card ---------- */
   function fmtDayShort(iso) {               // "Mon 9/28"
@@ -2564,6 +2723,8 @@
         in: !!u.times && !sameMinute(b0.in, sIn), out: !!u.times && !sameMinute(b0.out, sOut) } };
     // Gusto's notes on the shift stay with it while a change of its times waits (dayNotes reads them)
     if (Array.isArray(b0.notes) && b0.notes.length) out.notes = b0.notes;
+    // and so does where it was clocked in (placeLook): the punches it was read from are Gusto's, whatever waits here
+    if (b0.place) out.place = b0.place;
     // its job: the edit's with its start and end (a job rides that part), else the shift's own; edited.job when it moved
     const aj = u.times && jobIdOf(a) ? { id: a.job.id, title: String(a.job.title || '') } : null;
     if (aj || b0.job) out.job = aj || b0.job;
@@ -3777,6 +3938,8 @@
     isNoteEdit, editReason, APP_EDIT_PREFIX, APP_NOTE_PREFIX, parseAppNote, cleanNoteText, noteProblem, dayNotes, notesLabel, notesLook, noteWho, noteMeta,
     noteStatusText, setNoteHeld, noteIsHeld, reasonProblem, cutUnits, notesTip, noteShifts, spanLabel,
     NO_JOB_TITLE, jobLabel, personJobs, shiftJobsShown, JOB_NOT_LOADED, JOB_NOT_THEIRS, jobStartsText, jobChange, setJobHeld, jobIsHeld,
+    PLACE_SITES, PLACE_HOME, PLACE_JOB_PREFIX, PLACE_PLAIN_JOB, PLACE_PACK_JOB, PLACE_HOWS, shiftPlace, placeTag, placeLook, placeLooks,
+    placeMovable, placeInMoveAll, placeFlag, placeMoveOp,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
@@ -3806,6 +3969,12 @@
     ['Saffron Tumbleweed',  'filifera', 'Packaging',   'Packaging Lead',   'std',     450],
     ['Pepper Moonwhistle',  'filifera', 'Packaging',   'Packager',         'std',     450],
     ['Indigo Fairweather',  'filifera', 'Packaging',   'Packager',         'std',     450],
+    // the deleaf crew (2026-10-30): plain Deleaf/Harvest, the per-site deleaf jobs and Distro Packager, and where each
+    // shift was clocked in (demoPlaces)
+    ['Thistle Gobbledew',   'filifera', 'Deleaf',      'Deleaf/Harvest',   'std',     420],
+    ['Mallow Snickerby',    'filifera', 'Deleaf',      'Deleaf/Harvest',   'std',     420],
+    ['Nettle Puddingham',   'filifera', 'Deleaf',      'Deleaf/Harvest',   'std',     420],
+    ['Clove Wobblesnout',   'filifera', 'Deleaf',      'Distro Packager',  'std',     450],
     ['Alder Mossbottom',    'slane',    'Cultivation', 'Head Grower',      'long',    360],
     ['Briar Sundew',        'slane',    'Cultivation', 'Grower',           'std',     390],
     ['Cedar Puddlejump',    'slane',    'Cultivation', 'Grower',           'std',     390],
@@ -3855,6 +4024,12 @@
     'Poppy Kettleburn':   [['Deleaf/Harvest - Slane', 9]],
     'Tansy Wobblestone':  [['']],
     'Marlowe Glimmerbee': [['Driver']],
+    // the deleaf crew: two hold every site's job (one got Olympic's lately), one only the plain job and packing, and a packer
+    // who also drives
+    'Thistle Gobbledew':  [['Deleaf/Harvest - Filifera'], ['Deleaf/Harvest - Slane'], ['Deleaf/Harvest - Imperial'], ['Deleaf/Harvest - Olympic'], ['Distro Packager']],
+    'Mallow Snickerby':   [['Deleaf/Harvest - Filifera'], ['Deleaf/Harvest - Slane'], ['Deleaf/Harvest - Imperial'], ['Deleaf/Harvest - Olympic', 2], ['Distro Packager']],
+    'Nettle Puddingham':  [['Distro Packager']],
+    'Clove Wobblesnout':  [['Deleaf/Harvest'], ['Deleaf/Harvest - Filifera'], ['Deleaf/Harvest - Slane'], ['Deleaf/Harvest - Imperial'], ['Deleaf/Harvest - Olympic'], ['Driver']],
   };
   // the job a made-up shift is on: the harvest week on the Slane deleaf job (once it started), Fridays on the job with no
   // title, the second stop of a two-stop day driving; anything else the primary job (jobs[0])
@@ -4139,8 +4314,57 @@
         members: [{ company: 'wtny', department: 'Distro Hourly' }, P('Dewberry Quillon')] },
     ].map(v => Object.assign(v, { updated_at: lastSync, updated_by: me.email }));
     demoNotes(rows, lastSync);
+    demoPlaces(rows, people, todays);
     const edits = demoEdits(rows, todays, now, lastSync, people);
     return { me, companies, people, rows, access, views, today, todays, edits };
+  }
+
+  // Where the made-up deleaf crew clocked in (ts_days.shifts[i].place, as the timesheet sync writes it from the edit worker's
+  // reads): each on a usual job at its usual site, and, on their nth most recent workdays, every case the board treats its
+  // own way (C.placeLook): a plain job at a site, a clock-out place only, another site's job, packing at a grow site, the
+  // plain job at 25th St, two sites in one shift, somewhere else, no place, a job they do not have, one that starts later,
+  // a driving job, packing at 25th St; and today's shift still running. Only the last two weeks have places (the worker
+  // keeps them from its first read on); a job not known yet stays not known.
+  const SITE = (site, how, at, other) => Object.assign({ site, how, at: at || 'in' }, other ? { other } : {});
+  const DEMO_PLACES = {
+    'Thistle Gobbledew': { job: 'Deleaf/Harvest - Slane', place: SITE('Slane', 'named'), days: {
+      1: ['Deleaf/Harvest', SITE('Slane', 'named')],                         // 1: clear, in Move all
+      2: ['Deleaf/Harvest', SITE('Slane', 'named', 'out')],                  // 1 by its clock-out: clear, not in Move all
+      3: ['Deleaf/Harvest - Imperial', SITE('Olympic', 'near')],             // 2: clear
+      4: ['Distro Packager', SITE('Slane', 'named')],                        // 3: check
+      5: ['Deleaf/Harvest', SITE('Filifera', 'named')],                      // 4: clear, to Deleaf/Harvest - Filifera
+      6: ['Deleaf/Harvest - Imperial', SITE('Imperial', 'near', 'in', 'Olympic')] } },   // 6: changed sites
+    'Mallow Snickerby': { job: 'Deleaf/Harvest - Imperial', place: SITE('Imperial', 'near'), days: {
+      1: ['Deleaf/Harvest - Imperial', SITE(null, 'elsewhere')],             // 7: Clocked in elsewhere
+      2: ['Deleaf/Harvest - Imperial', SITE(null, 'none')],                  // 7: no tag
+      3: ['Deleaf/Harvest', SITE('Olympic', 'near')],                        // 5: Olympic's job starts after the day
+      4: ['Deleaf/Harvest', SITE('Imperial', 'near')] } },                   // 1: clear, in Move all
+    'Nettle Puddingham': { job: 'Distro Packager', place: SITE('Filifera', 'named'), days: {
+      1: ['Deleaf/Harvest', SITE('Slane', 'named')],                         // 5: needs Deleaf/Harvest - Slane in Gusto
+      2: ['Distro Packager', SITE('Imperial', 'near')],                      // 3 then 5
+      3: ['Deleaf/Harvest', SITE('Filifera', 'named')] } },                  // 4 then 5
+    'Clove Wobblesnout': { job: 'Distro Packager', place: SITE('Filifera', 'named'), days: {
+      1: ['Driver', SITE('Slane', 'named')],                                 // 9: tag only
+      2: ['Distro Packager', SITE('Olympic', 'near')] } },                   // 3: check (4: the usual days, packing at 25th St)
+  };
+  function demoPlaces(rows, people, todays) {
+    for (const name of Object.keys(DEMO_PLACES)) {
+      const plan = DEMO_PLACES[name], p = people.find(x => x.name === name);
+      if (!p) continue;
+      const today = todays[C.regionOfCompany(p.company)], from = C.addDays(today, -13);
+      const mine = rows.filter(r => r.employee_uuid === p.employee_uuid && r.work_date >= from).sort((a, b) => a.work_date < b.work_date ? 1 : -1);
+      const past = mine.filter(r => r.work_date < today);
+      for (const r of mine) {
+        const n = past.indexOf(r) + 1, sc = (n && plan.days[n]) || [plan.job, plan.place];
+        for (const s of r.shifts) {
+          if (s.hours_only) continue;
+          const j = p.jobs.find(x => x.title === sc[0] && (!x.start || x.start <= r.work_date));
+          if (s.job && j) s.job = { id: j.id, title: j.title, src: s.job.src };
+          // a shift still running has only its clock-in place (today's is always the usual one)
+          s.place = s.out ? Object.assign({}, sc[1]) : SITE(sc[1].site, sc[1].how);
+        }
+      }
+    }
   }
 
   // The timesheet sync's day summary of the shift notes (ts_days.note): "text (author)" joined with " · ", a note
@@ -4476,7 +4700,8 @@
   function boardRow(r) { const es = editIndex().get(r.id); return es ? C.overlayDay(r, es, { today: rowToday(r), now: Date.now() }) : r; }
   // every row as the board shows it: the changes made here on top, and a change around midnight settled with the
   // person's other loaded days (C.overlayRows; a day next to one not loaded keeps Gusto's own midnight flag)
-  function boardRows() { return C.overlayRows([...S.rows.values()], editIndex(), { now: Date.now(), todayOf: rowToday, known: d => covered(d, d) }); }
+  // (and the Job vs place flag on a deleaf crew day whose shift's job does not fit where it was clocked in: withPlaces)
+  function boardRows() { return withPlaces(C.overlayRows([...S.rows.values()], editIndex(), { now: Date.now(), todayOf: rowToday, known: d => covered(d, d) })); }
   const rowRegion = r => r.region || C.regionOfCompany(r.company);
   // the current or previous pay period, never a future day, on the row's own calendar (ts_edit_submit's
   // window), and still in it when the next run takes the change to Gusto (C.canEditForRun); New York days
@@ -4498,6 +4723,56 @@
     return C.personJobs(jobIdx.get(r.company + ':' + r.employee_uuid));
   }
   function jobPick(r, add) { const jobs = jobsFor(r); return jobs && jobs.length > 1 && mayJob(r, add) ? jobs : null; }
+  /* Where a deleaf crew shift was clocked in (ts_days.shifts[i].place, C.placeLooks; 2026-10-30, Gianni: "ya build it"): a
+     tag under its job, a Job vs place flag when the job does not fit the place, and for whoever may pick jobs today (jobPick:
+     admins and full viewers until EDIT_PROVEN.job) a "Move to Deleaf/Harvest - <site>" that sends the Job pick's own change
+     with the reason "Clocked in at <site>", plus Move all clear ones. Never automatic. Everyone who sees the day sees its
+     tag and flag. */
+  let placeIdx = new Map();   // ts_days id -> C.placeLooks of the day as the board last showed it (withPlaces)
+  // whether a day could change here at all, by the editor's own day rules, whoever looks (canEditRow without the sign-in's
+  // part): the window before the next run, a pay period Gusto has not processed, someone still on the roster
+  function placeDayOpen(raw) { return !!raw && C.canEditForRun(raw.work_date, C.rowTz(raw), Date.now()) && !periodClosed(raw) && !C.leftDay(raw, S.people); }
+  function placeLooksFor(raw, board) {
+    return raw ? C.placeLooks(raw, board || raw, editsFor(raw.id), jobsFor(raw), { today: rowToday(raw), now: Date.now(), neighbors: rawNeighbors(raw), who: actor(), open: placeDayOpen(raw) }) : [];
+  }
+  // the board's rows with each crew day's looks kept (placeIdx) and its flag added; a day with no place is left as it is
+  function withPlaces(rows) {
+    const idx = new Map();
+    const out = rows.map(r => {
+      if (!(r.shifts || []).some(s => s && s.place)) return r;
+      const looks = placeLooksFor(S.rows.get(r.id), r);
+      idx.set(r.id, looks);
+      const f = C.placeFlag(looks, C.rowTz(r), r.shifts.filter(s => !s.hours_only).length > 1);
+      return f ? Object.assign({}, r, { flags: (r.flags || []).concat([f]) }) : r;
+    });
+    placeIdx = idx;
+    return out;
+  }
+  // each shift's look in the row's shift order (null for a shift with none)
+  function placeParts(r) {
+    const looks = (r && placeIdx.get(r.id)) || [];
+    return looks.length ? (r.shifts || []).map(s => { const x = looks.find(y => y.shift === s || (s.id != null && String(y.shift.id) === String(s.id))); return x && x.look.tag ? x : null; }) : null;
+  }
+  // the moves this sign-in may send now on a day (C.placeMovable): the day can change (canEditRow) and the Job pick is theirs
+  function placeMoves(r) {
+    const raw = r && S.rows.get(r.id), looks = (r && placeIdx.get(r.id)) || [];
+    if (!raw || !looks.length || !canEditRow(raw) || !jobPick(raw, false)) return [];
+    return looks.filter(C.placeMovable);
+  }
+  // the one-click moves (ts_days id|shift id being sent now) and Move all clear ones: open (its list on screen, waiting for
+  // a yes), items (what it moves, fixed when it opened), running, at (how far it got), done (what happened, until Done)
+  const PM = { busy: new Set(), open: false, items: [], running: false, at: 0, done: null };
+  const moveLabel = x => 'Move to ' + C.jobLabel(x.look.to.title);
+  function moveBtns(r, cls) {
+    const ms = placeMoves(r);
+    if (!ms.length) return '';
+    const tz = C.rowTz(r), many = r.shifts.filter(s => !s.hours_only).length > 1;
+    return h`${ms.map(x => {
+      const busy = PM.busy.has(r.id + '|' + x.shift.id) || PM.running;
+      const what = (many ? C.fmtTime(x.shift.in, tz) + ': ' : '') + moveLabel(x);
+      return h`<button type="button" class="btn ${cls}" data-act="place-move" data-k="${r.id}" data-s="${String(x.shift.id)}" data-to="${x.look.to.id}" title="${x.look.msg}"${busy ? ' disabled' : ''}>${PM.busy.has(r.id + '|' + x.shift.id) ? 'Moving...' : what}</button>`;
+    })}`;
+  }
   function noteTargets(raw) { return raw ? C.noteShifts(raw, { neighbors: rawNeighbors(raw), edits: editsFor(raw.id) }) : []; }
   function canNoteRow(r) { const raw = r && S.rows.get(r.id); return !!raw && canEditRow(raw) && mayNote(raw) && noteTargets(raw).length > 0; }
   // the day's pay period as Gusto has it (C.periodState): once Gusto processed its payroll, a change can no longer go in
@@ -4623,6 +4898,7 @@
     renderViewTabs();
     renderControls(base, depts, vis);
     renderPolicy(vis, lay);
+    renderPlaceBar(rows);
     renderFresh();
     renderLoadErr();
     renderContent(rows, base, vis);
@@ -4840,7 +5116,8 @@
   }
   // warning pills; info notes become one "i" mark. A change made here adds its Pending or Needs a look
   // pill on a line above them (the bubble says what changed, who made it and when it reaches Gusto).
-  function flagsCell(r) { const ep = editPills(r); return h`${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}`; }
+  // and under them, a deleaf crew day's one-click moves (moveBtns: only for whoever may pick jobs today)
+  function flagsCell(r) { const ep = editPills(r), mv = moveBtns(r, 'xs pmove'); return h`${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}${mv ? h`<div class="pmv no-print">${mv}</div>` : ''}`; }
   function editPills(r) {
     const ed = r && r.edit;
     if (!ed || (!ed.pending.length && !ed.attention.length)) return '';
@@ -4857,7 +5134,9 @@
   }
   // clock times on the row's own company clock (Pacific for California, Eastern for New York); a time
   // that is a change made here (not in Gusto yet) is tinted
-  function inOutCells(r) {
+  // pl: the shifts with a place line under their job in the Job column (By Day, placeParts): a blank line under their
+  // times keeps the next shift level with its job
+  function inOutCells(r, pl) {
     const stale = r.work_date < rowToday(r), tz = C.rowTz(r);
     if (r.deleted_all) return h`<td class="io he" colspan="2"><span class="pill he" title="Every shift of this day is waiting to be deleted in Gusto">shift deleted</span></td>`;
     const shifts = r.shifts.length ? r.shifts : [{ in: r.first_in, out: r.last_out, hours_only: r.hours_only }];
@@ -4867,7 +5146,8 @@
     const pillIn = h`<span class="pill in${stale ? ' stale' : ''}" title="${stale ? 'No clock-out recorded for this day' : 'Still clocked in'}">clocked in</span>`;
     // only the time that moved is tinted (an edit that fills in a missed clock-out leaves the start plain)
     const ed = (s, k) => s.edited && s.edited[k] ? h` class="edv" title="Changed here; not in Gusto yet"` : '';
-    return h`<td class="io">${shifts.map(s => s.hours_only ? h`<div><span class="pill he">hours entered</span></div>` : h`<div${ed(s, 'in')}>${C.fmtTime(s.in, tz)}</div>`)}</td><td class="io">${shifts.map(s => s.hours_only ? h`<div>&nbsp;</div>` : s.out ? h`<div${ed(s, 'out')}>${C.fmtTime(s.out, tz)}</div>` : h`<div>${pillIn}</div>`)}</td>`;
+    const sp = i => pl && pl[i] ? h`<div class="pl-sp" aria-hidden="true">&nbsp;</div>` : '';
+    return h`<td class="io">${shifts.map((s, i) => h`${s.hours_only ? h`<div><span class="pill he">hours entered</span></div>` : h`<div${ed(s, 'in')}>${C.fmtTime(s.in, tz)}</div>`}${sp(i)}`)}</td><td class="io">${shifts.map((s, i) => h`${s.hours_only ? h`<div>&nbsp;</div>` : s.out ? h`<div${ed(s, 'out')}>${C.fmtTime(s.out, tz)}</div>` : h`<div>${pillIn}</div>`}${sp(i)}`)}</td>`;
   }
   // each shift's job, one per shift in the row's order (C.shiftParts: job, edJob), when the day shows them
   // (C.shiftJobsShown: the person has more than one job, or a shift is not on the day's job); null when it does not, or
@@ -4921,12 +5201,19 @@
   function dayRow(r) { return dayRowOf(r, true); }   // one argument: it is used as a .map() callback
   // the Job cell (and, in a narrow window, the line under the name): the day's job, or each shift's on its own line,
   // level with its times (jobParts; a shift whose job is not known yet keeps its line empty)
+  // A deleaf crew shift's place (placeParts) goes on a line of its own under its job: in the Job column (a blank line under
+  // its times keeps the next shift level, inOutCells), or under the name where that column is hidden. A day that shows
+  // one job for all its shifts lists the places under it.
   function dayRowOf(r, job) {
-    const jp = jobParts(r);
-    const ej = jp ? jp.filter(p => p.job).map(p => h`<span class="ej">${p.job}</span>`) : r.job_title ? h`<span class="ej">${r.job_title}</span>` : '';
-    const jc = !job ? '' : jp ? h`<td class="c-job" title="${jp.map(p => p.job).filter(Boolean).join(', ')}">${jp.map(p => h`<div${p.edJob ? JOB_ED : ''}>${p.job || h`&nbsp;`}</div>`)}</td>`
+    const jp = jobParts(r), pp = placeParts(r);
+    const plj = i => pp && pp[i] ? h`<div class="pl" title="${pp[i].look.msg || pp[i].look.tag}">${pp[i].look.tag}</div>` : '';
+    const ple = i => pp && pp[i] ? h`<span class="ej pl">${pp[i].look.tag}</span>` : '';
+    const all = (f) => pp ? pp.map((x, i) => f(i)) : '';
+    const ej = jp ? jp.map((p, i) => h`${p.job ? h`<span class="ej">${p.job}</span>` : ''}${ple(i)}`) : h`${r.job_title ? h`<span class="ej">${r.job_title}</span>` : ''}${all(ple)}`;
+    const jc = !job ? '' : jp ? h`<td class="c-job" title="${jp.map(p => p.job).filter(Boolean).join(', ')}">${jp.map((p, i) => h`<div${p.edJob ? JOB_ED : ''}>${p.job || h`&nbsp;`}</div>${plj(i)}`)}</td>`
+      : pp ? h`<td class="c-job" title="${r.job_title || ''}"><div>${r.job_title || h`&nbsp;`}</div>${all(plj)}</td>`
       : h`<td class="c-job" title="${r.job_title || ''}">${r.job_title || ''}</td>`;
-    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-emp">${r.employee_name}${noteMark(r)}${ej}</td>${jc}${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
+    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-emp">${r.employee_name}${noteMark(r)}${ej}</td>${jc}${inOutCells(r, job && jp ? pp : null)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
   }
   function dayView(rows) {
     const t0 = today();
@@ -4952,9 +5239,12 @@
   const empCols = () => h`<colgroup><col class="w-date"><col class="w-in"><col class="w-out"><col><col class="w-paid"><col class="w-unpaid"><col class="w-hours"><col class="w-ot"><col class="w-flags">${edCol()}</colgroup>`;
   const empHead = () => h`<thead><tr><th scope="col" class="c-date">Date</th><th scope="col" class="num">In</th><th scope="col" class="num">Out</th><th scope="col">Breaks</th><th scope="col" class="num" title="Paid break time (rest). Already inside Hours.">Paid</th><th scope="col" class="num" title="Unpaid break time (meal). Taken out of Hours.">Unpaid</th><th scope="col" class="num c-hours" title="Hours worked: clock time minus unpaid breaks">Hours</th><th scope="col" class="num c-ot">OT</th><th scope="col">Flags</th>${edTh()}</tr></thead>`;
   // under the date: the day's job when it is not the person's usual one, or each shift's job on its own line (jobParts)
+  // and a deleaf crew shift's place on a line of its own under its job (placeParts)
   function empRow(r, e) {
-    const jp = jobParts(r);
-    const dj = jp ? jp.filter(p => p.job).map(p => h`<span class="dj${p.edJob ? ' edv' : ''}">${p.job}</span>`) : r.job_title && r.job_title !== e.job ? h`<span class="dj">${r.job_title}</span>` : '';
+    const jp = jobParts(r), pp = placeParts(r);
+    const pl = i => pp && pp[i] ? h`<span class="dj pl" title="${pp[i].look.msg || pp[i].look.tag}">${pp[i].look.tag}</span>` : '';
+    const dj = jp ? jp.map((p, i) => h`${p.job ? h`<span class="dj${p.edJob ? ' edv' : ''}">${p.job}</span>` : ''}${pl(i)}`)
+      : h`${r.job_title && r.job_title !== e.job ? h`<span class="dj">${r.job_title}</span>` : ''}${pp ? pp.map((x, i) => pl(i)) : ''}`;
     return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-date">${C.fmtDay(r.work_date)}${noteMark(r)}${dj}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
   }
   // coKey null: a saved view's flat card, which never names a company or department
@@ -4993,12 +5283,14 @@
   const nbsp = s => String(s).replace(/ /g, '\u00a0');   // "7:57 AM" never splits from its AM
   // "7:57 AM - 4:20 PM": a narrow By Employee line may break only after the dash (.dl-times .tm)
   // each shift's job after its times when the day shows them (C.shiftParts with the person's jobs), tinted when changed here
+  // and a deleaf crew shift's place after its job ("Deleaf/Harvest · At Slane", placeParts), kept whole when it is short
+  const tagWords = t => t.length <= 22 ? nbsp(t) : t;
   function timesLine(r) {
-    const stale = r.work_date < rowToday(r);
+    const stale = r.work_date < rowToday(r), pp = r.deleted_all ? null : placeParts(r);
     const tint = (on, t) => on ? h`<span class="edv">${t}</span>` : t;   // only the time that moved (a change made here)
-    const job = p => p.job ? h` <span class="tj${p.edJob ? ' edv' : ''}">${p.job}</span>` : '';
-    return sepd(C.shiftParts(r, jobsFor(r)).map(p => p.hoursOnly ? h`<span class="pill he">hours entered</span>${job(p)}` : p.deleted ? h`<span class="pill he">shift deleted</span>`
-      : h`<span class="tm">${tint(p.edIn, nbsp(p.in))}&nbsp;- ${p.open ? h`<span class="pill in${stale ? ' stale' : ''}">clocked in</span>` : tint(p.edOut, nbsp(p.out))}</span>${job(p)}`), ', ');
+    const job = (p, i) => h`${p.job ? h` <span class="tj${p.edJob ? ' edv' : ''}">${p.job}</span>` : ''}${pp && pp[i] ? h` <span class="tpl">${p.job ? '·\u00a0' : ''}${tagWords(pp[i].look.tag)}</span>` : ''}`;
+    return sepd(C.shiftParts(r, jobsFor(r)).map((p, i) => p.hoursOnly ? h`<span class="pill he">hours entered</span>${job(p, i)}` : p.deleted ? h`<span class="pill he">shift deleted</span>`
+      : h`<span class="tm">${tint(p.edIn, nbsp(p.in))}&nbsp;- ${p.open ? h`<span class="pill in${stale ? ' stale' : ''}">clocked in</span>` : tint(p.edOut, nbsp(p.out))}</span>${job(p, i)}`), ', ');
   }
   function breaksLine(r) {
     const s = C.breakSummary(r);
@@ -5059,7 +5351,7 @@
       ${r.ot_src === 'est' && (ot || dt) ? h`<p class="pd-fine">${r.region === 'NY' ? EST_OT_NOTE_NY : EST_OT_NOTE}</p>` : ''}
       ${histList(r)}
       ${editsOn() && C.leftDay(r, S.people) ? h`<p class="pd-fine">${C.LEFT_TEXT}.</p>` : ''}
-      ${canEditRow(r) ? h`<div class="pd-act"><button type="button" class="btn" data-act="edit-day" data-k="${r.id}">Edit times or breaks</button>${canNoteRow(r) ? h`<button type="button" class="btn" data-act="note-day" data-k="${r.id}">Add a note</button>` : ''}</div>` : ''}
+      ${canEditRow(r) ? h`<div class="pd-act">${moveBtns(r, 'pmove')}<button type="button" class="btn" data-act="edit-day" data-k="${r.id}">Edit times or breaks</button>${canNoteRow(r) ? h`<button type="button" class="btn" data-act="note-day" data-k="${r.id}">Add a note</button>` : ''}</div>` : ''}
     </div>`;
   }
   const openAttr = r => S.openCards.has(r.id) ? h` open` : '';
@@ -5973,9 +6265,11 @@
   }
   function entryHtml(en, i, tz) {
     const label = en.kind === 'shift' ? 'Shift ' + (i + 1) : en.kind === 'add' ? 'Added shift' : 'New shift';
-    const raw = S.rows.get(E.rowId), jf = jobField(en, raw, label);
-    // the marks after the label: the shift's job when no Job pick below says it (jobTag), then Pending
-    const pend = h`${jf ? '' : jobTag(en, raw)}${(en.pendingIds && en.pendingIds.length) || en.kind === 'add' ? h`<span class="flag epend">Pending</span>` : ''}`;
+    const raw = S.rows.get(E.rowId), jf = jobField(en, raw, label), pl = placeOfEntry(en);
+    // the marks after the label: the shift's job when no Job pick below says it (jobTag), where it was clocked in
+    // (placeOfEntry), then Pending; and under the Job pick, what the place says about the job
+    const pend = h`${jf ? '' : jobTag(en, raw)}${pl ? h`<span class="ed-pl">${pl.look.tag}</span>` : ''}${(en.pendingIds && en.pendingIds.length) || en.kind === 'add' ? h`<span class="flag epend">Pending</span>` : ''}`;
+    const plh = pl && pl.look.msg && !(pl.look.to && en.job === pl.look.to.id) ? h`<p class="ed-plh">${pl.look.msg}.</p>` : '';
     const times = (en.inT ? C.fmtHhmm(en.inT) : 'no start') + ' - ' + (en.outT ? C.fmtHhmm(en.outT) : 'still clocked in');
     const err = en.err ? h`<div class="inline-err" role="alert">${en.err}</div>` : '';
     const bad = !!en.err || !!(en.brkErr && Object.keys(en.brkErr).length);
@@ -6002,7 +6296,7 @@
         <label class="ed-f"><span>End</span>${tIn('out', en.outT, label + ' end')}</label>
         ${en.wasOpen && !en.outT ? h`<span class="ed-hint">Still clocked in: add the clock-out time.</span>` : ''}
       </div>
-      ${jf}
+      ${jf}${plh}
       ${en.split && en.split.fix ? h`<p class="pd-fine ed-split">Gusto ran this shift past midnight: it goes on as ${en.split.in ? C.fmtTime(en.split.in, tz) : '12:00 AM'} to ${en.split.out ? C.fmtTime(en.split.out, tz) : 'now (still clocked in)'} on ${C.fmtDay(en.split.date)} under the same Gusto shift (likely a missed clock-out). Set its real end time here: both days are fixed at once.</p>` : ''}
       <div class="ed-brks"><span class="ed-k">Breaks</span>
         ${en.breaks.length ? en.breaks.map((b, j) => h`<div class="ed-brk">
@@ -6031,6 +6325,13 @@
       const later = !!j.start && j.start > raw.work_date;
       return h`<option value="${j.id}"${j.id === en.job ? ' selected' : ''}${later ? ' disabled' : ''}>${C.jobLabel(j.title) + (later ? ' (from ' + C.fmtMonthDay(j.start) + ')' : '')}</option>`;
     })}</select></label></div>`;
+  }
+  // A deleaf crew shift's place, as the board shows it (placeIdx, from the last render): its tag goes in the header, and
+  // what it says about the job under the Job pick. Only for a Gusto shift with a place.
+  function placeOfEntry(en) {
+    if (!en || en.kind !== 'shift') return null;
+    const x = (placeIdx.get(E.rowId) || []).find(y => String(y.shift.id) === en.id);
+    return x && x.look.tag ? x : null;
   }
   // the shift's job in its header when the day shows each shift's job (C.shiftJobsShown) and no Job pick says it: "Job not
   // known yet" on a Gusto shift the sync has no job for yet
@@ -6392,6 +6693,101 @@
     E.err = okKeys.size ? 'Some changes were saved; the marked ones were not.' : 'Nothing was saved.';
     renderEditor();
   }
+  /* ---------- the one-click move of a deleaf crew shift to the job its place says (2026-10-30) ----------
+     The editor's own steps, without the form: the day read again (nothing goes if it changed since the board showed it),
+     the place looked at again, the Job pick's change (C.placeMoveOp: Save's own op) with the reason "Clocked in at <site>",
+     through the same call as Save (runEditOp). {ok, op, edit, raw} or {error}. opts.all (Move all clear ones, 2026-10-30
+     review): only what its list said goes, the shift still on the listed job (opts.from, its id) and still clear by its
+     clock-in (C.placeInMoveAll) with the listed reason, since the list waits on screen for a yes while the day can change
+     under it; the single button still takes a check or a clock-out move (C.placeMovable). */
+  const shiftJobId = s => s && s.job && typeof s.job.id === 'string' ? s.job.id : '';
+  async function placeMove(k, sid, to, opts) {
+    const o = opts || {};
+    const raw0 = S.rows.get(k);
+    if (!raw0 || !canEditRow(raw0)) return { error: noEditMsg(raw0) };
+    const stamp = C.dayStamp(raw0, editsFor(k));
+    const fresh = await refreshDay(k);
+    const raw = S.rows.get(k);
+    if (!fresh.ok) return { error: "Couldn't check this day for newer changes, so nothing was sent (" + fresh.error + ')' };
+    if (!raw || !canEditRow(raw)) return { error: noEditMsg(raw) };
+    if (C.dayStamp(raw, editsFor(k)) !== stamp) return { error: 'This day changed since the board showed it. Check it again.' };
+    const board = boardRow(raw);
+    const x = placeLooksFor(raw, board).find(y => String(y.shift.id) === String(sid));
+    if (!x || !C.placeMovable(x) || x.look.to.id !== to || !jobPick(raw, false)) return { error: 'This shift no longer needs that move. Check it again.' };
+    if (o.all && (shiftJobId(x.shift) !== o.from || !C.placeInMoveAll(x) || x.look.reason !== o.reason)) return { error: 'This shift changed since the list was made. Check it again.' };
+    const plan = C.placeMoveOp(raw, board, editsFor(k), actor(), { today: rowToday(raw), now: Date.now(), neighbors: rawNeighbors(raw), around: neighborShifts(raw) }, sid, x.look.to);
+    if (plan.error) return plan;
+    const rp = C.reasonProblem(x.look.reason);
+    if (rp) return { error: rp };
+    const res = await runEditOp(raw, plan.op, x.look.reason);
+    if (res.error) return res;
+    if (!DEMO) await fetchEdits(raw.work_date, raw.work_date);
+    return { ok: true, op: plan.op, edit: res.edit, raw };
+  }
+  // the button: says "Moving..." while it goes, then what Save says (C.saveMessage: when it goes to Gusto, or that a job
+  // change waits for the first job run Gianni watches), or why it did not go
+  async function placeMoveOne(k, sid, to) {
+    const key = k + '|' + sid;
+    if (PM.busy.has(key) || PM.running || E.busy) return;
+    PM.busy.add(key); render();
+    let res;
+    try { res = await placeMove(k, sid, to); } catch (e) { res = { error: errText(e) }; }
+    PM.busy.delete(key); render();
+    toast(res.error ? "Couldn't move it: " + res.error : C.saveMessage([{ op: res.op, edit: res.edit }], C.nextEditRun(Date.now(), C.rowTz(res.raw))));
+  }
+  // Move all clear ones: each shift on screen whose clock-in place says its job plainly (C.placeInMoveAll), for whoever
+  // may move it now. Listed first; after a yes they go one at a time, each as the button would send it.
+  function placeAllItems(rows) {
+    const out = [];
+    for (const r of rows) for (const x of placeMoves(r)) if (C.placeInMoveAll(x)) {
+      const tz = C.rowTz(r);
+      out.push({ k: r.id, sid: String(x.shift.id), to: x.look.to.id, toTitle: C.jobLabel(x.look.to.title), fromId: shiftJobId(x.shift), from: x.shift.job ? C.jobLabel(x.shift.job.title) : '',
+        name: r.employee_name || 'No name in Gusto', date: r.work_date, span: C.spanLabel(x.shift, tz), reason: x.look.reason, res: null });
+    }
+    return out.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : C.cmpName(a.name, b.name));
+  }
+  const pmItem = it => h`<b>${it.name}</b>, ${C.fmtDay(it.date)}, ${it.span}: ${it.from}${' → '}${it.toTitle} <span class="faint">(${it.reason})</span>`;
+  function renderPlaceBar(rows) {
+    const el = $('placeBar');
+    const items = PM.open || PM.running ? PM.items : placeAllItems(rows);
+    if (!S.me || (!items.length && !PM.done)) { el.hidden = true; return; }
+    if (PM.done) {
+      const d = PM.done, bad = d.items.filter(it => it.res && it.res.error);
+      setHTML(el, h`<div class="pm-head"><span class="pm-k">Job vs place</span><span class="pm-t">${'Moved ' + d.ok + ' of ' + d.items.length + '.'} ${d.msg}</span><button type="button" class="btn sm" data-act="place-all-done">Done</button></div>
+        ${bad.length ? h`<ul class="pm-list">${bad.map(it => h`<li class="warn">${pmItem(it)}. Not moved: ${it.res.error}</li>`)}</ul>` : ''}`);
+    } else if (PM.open || PM.running) {
+      const n = items.length;
+      setHTML(el, h`<div class="pm-head"><span class="pm-k">Job vs place</span><span class="pm-t">${PM.running ? 'Moving ' + Math.min(PM.at + 1, n) + ' of ' + n + '...' : n === 1 ? 'Move this shift to the job where it was clocked in?' : 'Move these ' + n + ' shifts to the job where each was clocked in?'}</span></div>
+        <ul class="pm-list">${items.map(it => h`<li class="${it.res ? it.res.error ? 'warn' : 'ok' : ''}">${pmItem(it)}${it.res ? it.res.error ? h`. <span>Not moved: ${it.res.error}</span>` : '. Saved' : ''}</li>`)}</ul>
+        <p class="pm-fine">Each is a job change, the same as picking the job in Edit, with its reason. Other shifts flagged Job vs place stay as they are.</p>
+        <div class="pm-act"><button type="button" class="btn primary" data-act="place-all-yes"${PM.running ? ' disabled' : ''}>${n === 1 ? 'Move 1 shift' : 'Move ' + n + ' shifts'}</button><button type="button" class="btn" data-act="place-all-no"${PM.running ? ' disabled' : ''}>Cancel</button></div>`);
+    } else {
+      const n = items.length;
+      setHTML(el, h`<div class="pm-head"><span class="pm-k">Job vs place</span><span class="pm-t">${n === 1 ? '1 deleaf shift on screen is plainly on the wrong job for where it was clocked in.' : n + ' deleaf shifts on screen are plainly on the wrong job for where they were clocked in.'}</span><button type="button" class="btn sm" data-act="place-all"${PM.busy.size ? ' disabled' : ''}>Move all clear ones (${n})</button></div>`);
+    }
+    el.hidden = false;
+  }
+  function placeAllOpen() {
+    if (PM.running || PM.busy.size) return;
+    PM.items = placeAllItems(shownRows(baseRows())); PM.open = PM.items.length > 0; PM.done = null; render();
+  }
+  async function placeAllRun() {
+    if (PM.running || !PM.open || !PM.items.length) return;
+    PM.running = true; PM.at = 0; render();
+    const done = [];
+    for (let i = 0; i < PM.items.length; i++) {
+      const it = PM.items[i];
+      PM.at = i; render();
+      try { it.res = await placeMove(it.k, it.sid, it.to, { all: true, from: it.fromId, reason: it.reason }); } catch (e) { it.res = { error: errText(e) }; }
+      if (it.res.ok) done.push({ op: it.res.op, edit: it.res.edit, raw: it.res.raw });
+    }
+    const raw = done.length ? done[0].raw : null;
+    PM.done = { items: PM.items, ok: done.length, msg: done.length ? C.saveMessage(done, C.nextEditRun(Date.now(), raw ? C.rowTz(raw) : regionDef().tz)) : 'Nothing was sent.' };
+    PM.running = false; PM.open = false; PM.items = [];
+    render();
+    toast(done.length === PM.done.items.length ? PM.done.msg : 'Moved ' + done.length + ' of ' + PM.done.items.length + '. The ones not moved say why.');
+  }
+
   // Cancel one waiting change (the editor's history, or Admin > Edits)
   async function cancelOne(id) {
     const e = S.edits.get(id); if (!e) return { error: 'That change is gone.' };
@@ -6534,6 +6930,11 @@
       case 'adm-e-x-yes': adminCancelEdit(d.id); break;
       case 'adm-e-open': closeAdmin(); openEditor(d.k); break;
       case 'edit-day': openEditor(d.k, el); break;
+      case 'place-move': placeMoveOne(d.k, d.s, d.to); break;
+      case 'place-all': placeAllOpen(); break;
+      case 'place-all-yes': placeAllRun(); break;
+      case 'place-all-no': if (!PM.running) { PM.open = false; PM.items = []; render(); } break;
+      case 'place-all-done': PM.done = null; render(); break;
       case 'note-day': openEditor(d.k, el, { note: true }); break;
       case 'ed-note-open': edNoteOpen(); break;
       case 'ed-note-cancel': edNoteClose(); break;

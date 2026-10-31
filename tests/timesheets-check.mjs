@@ -21,6 +21,11 @@ function check(name, fn) {
   try { const r = fn(); say(r !== false, name); }
   catch (e) { say(false, name + '\n          ' + String((e && e.message) || e).split('\n').slice(0, 3).join('\n          ')); }
 }
+// the same for a check that has to wait (the page's own async code run with stand-ins), awaited in order (2026-10-30)
+async function acheck(name, fn) {
+  try { const r = await fn(); say(r !== false, name); }
+  catch (e) { say(false, name + '\n          ' + String((e && e.message) || e).split('\n').slice(0, 3).join('\n          ')); }
+}
 function eq(got, want, what) { if (J(got) !== J(want)) throw new Error((what ? what + ': ' : '') + 'got ' + J(got) + ', want ' + J(want)); }
 function ok(cond, what) { if (!cond) throw new Error(what || 'condition failed'); }
 
@@ -829,7 +834,12 @@ const SPEC_FLAGS = ['no_meal', 'late_meal', 'short_meal', 'no_second_meal', 'few
   // the producer's data-error flags (2026-10-24): warnings, labelled on the board
   'tiny_shift', 'midnight_split', 'long_rest', 'shift_overlap',
   // a person who clocks in outside Pacific time (the producer's personAway, review 2026-10-25): an info note
-  'other_zone'];
+  'other_zone',
+  // the page's own (2026-10-30, C.placeFlag): a deleaf crew shift whose job does not fit where it was clocked in. Never on a
+  // ts_days row (section 20)
+  'job_place'];
+// the codes a ts_days row can carry (the producer's): every one but the page's own
+const ROW_FLAGS = SPEC_FLAGS.filter(c => c !== 'job_place');
 check('flag codes match the spec exactly; labels and messages exist; type_unsure is info', () => {
   eq([...C.FLAG_CODES].sort(), [...SPEC_FLAGS].sort());
   for (const c of SPEC_FLAGS) ok(C.flagLabel({ code: c }) && C.flagMsg({ code: c }), c);
@@ -1058,7 +1068,7 @@ check('demo covers all four CA companies and Wizard Trees NY, several department
   ok(demo.rows.some(r => r.department === 'No department'), 'a No department row');
   const codes = new Set(demo.rows.flatMap(r => r.flags.map(f => f.code)));
   // other_zone is the producer's verdict on a person over all their days (personAway): the demo has no one out of state
-  const missing = SPEC_FLAGS.filter(c => !codes.has(c) && c !== 'other_zone');
+  const missing = ROW_FLAGS.filter(c => !codes.has(c) && c !== 'other_zone');
   ok(!missing.length, 'flags never shown: ' + J(missing));
   const ls = new Set(demo.rows.map(r => r.label_src));
   ok(ls.has('gusto') && ls.has('rule') && ls.has('mixed'), 'label sources ' + J([...ls]));
@@ -1073,7 +1083,7 @@ check('demo flags show up on any weekday it is opened (scenarios follow "now")',
   for (let i = 0; i < 7; i++) {
     const d = D.build(Date.parse(NOW) + i * 86400000);
     const codes = new Set(d.rows.flatMap(r => r.flags.map(f => f.code)));
-    const missing = SPEC_FLAGS.filter(c => !codes.has(c) && c !== 'other_zone');   // the producer's, per person (see above)
+    const missing = ROW_FLAGS.filter(c => !codes.has(c) && c !== 'other_zone');   // the producer's, per person (see above)
     ok(!missing.length, d.today + ' missing ' + J(missing));
   }
   ok(D.build('2026-10-08T09:00:00Z').rows.length > 0, '2 AM build works');
@@ -1084,11 +1094,11 @@ check('demo rows have exactly the ts_days shape, shifts and breaks shapes', () =
     ok(r.id === r.company + ':' + r.employee_uuid + ':' + r.work_date, 'id ' + r.id);
     ok(['gusto', 'rule', 'mixed', 'none'].includes(r.label_src), 'label_src');
     ok(r.ot_src == null || r.ot_src === 'gusto' || r.ot_src === 'est', 'ot_src');
-    for (const f of r.flags) ok(SPEC_FLAGS.includes(f.code) && (f.sev === 'warn' || f.sev === 'info') && f.msg, 'flag ' + J(f));
+    for (const f of r.flags) ok(ROW_FLAGS.includes(f.code) && (f.sev === 'warn' || f.sev === 'info') && f.msg, 'flag ' + J(f));
     for (const s of r.shifts) {
       // notes: only on a shift that has some (the sync leaves the key out otherwise), shaped like the sync writes them; job:
-      // only once it is known (section 19 checks its shape)
-      eq(Object.keys(s).filter(k => k !== 'notes' && k !== 'job').sort(), ['breaks', 'hours_only', 'id', 'in', 'out', 'span_min', 'worked_min'], 'shift keys');
+      // only once it is known (section 19 checks its shape); place: only on the deleaf crew's (section 20 checks its shape)
+      eq(Object.keys(s).filter(k => k !== 'notes' && k !== 'job' && k !== 'place').sort(), ['breaks', 'hours_only', 'id', 'in', 'out', 'span_min', 'worked_min'], 'shift keys');
       if ('notes' in s) {
         ok(Array.isArray(s.notes) && s.notes.length, 'notes on ' + s.id + ' are a list with something in it');
         for (const n of s.notes) {
@@ -2044,7 +2054,7 @@ check('page: reads ts_edits with the days (paged), a missing table turns Edit of
   ok(/sb\.rpc\('ts_edit_cancel', \{ p_id: op\.id \}\)/.test(ro), 'ts_edit_cancel args');
   ok(/C\.supersede\(/.test(ro) && /await fetchEdits\(raw\.work_date, raw\.work_date\)/.test(appFn('saveDayEdits')), 'replaced edits marked at once, then the day re-read');
   if (SQL_EDITS) ok(/function public\.ts_edit_submit\(p_day_id text, p_shift_id text, p_action text,\s*p_after jsonb, p_note text\)/.test(SQL_EDITS) && /function public\.ts_edit_cancel\(p_id uuid\)/.test(SQL_EDITS), 'the RPCs in supabase/ts-edits.sql');
-  ok(/function boardRows\(\) \{ return C\.overlayRows\(\[\.\.\.S\.rows\.values\(\)\], editIndex\(\), \{ now: Date\.now\(\), todayOf: rowToday, known: d => covered\(d, d\) \}\); \}/.test(app) && /C\.filterRows\(boardRows\(\),/.test(appFn('baseRows')), 'the board (tables, cards, totals, CSV) shows waiting changes, midnight settled with the days it has loaded');
+  ok(/function boardRows\(\) \{ return withPlaces\(C\.overlayRows\(\[\.\.\.S\.rows\.values\(\)\], editIndex\(\), \{ now: Date\.now\(\), todayOf: rowToday, known: d => covered\(d, d\) \}\)\); \}/.test(app) && /C\.filterRows\(boardRows\(\),/.test(appFn('baseRows')), 'the board (tables, cards, totals, CSV) shows waiting changes, midnight settled with the days it has loaded');
   ok(/C\.editPlan\(raw0, E\.entries, \{ now: Date\.now\(\), neighbors: neighborShifts\(raw0\) \}\)/.test(appFn('saveDayEdits')) && /if \(Object\.keys\(plan\.errors\)\.length\)/.test(appFn('saveDayEdits')), 'Save checks everything first');
   ok(/if \(failed\.has\(op\.key\)\) continue;/.test(appFn('saveDayEdits')), 'a failed cancel never lets its new add through');
 });
@@ -2053,7 +2063,7 @@ check('page: an Edit button at the row end (desktop) and in a card\'s detail (ph
   ok(/\$\{editCell\(r\)\}<\/tr>/.test(appFn('dayRowOf')) && /\$\{editCell\(r\)\}<\/tr>/.test(appFn('empRow')), 'the last cell of a day row');
   ok(/data-act="edit-day" data-k="\$\{r\.id\}"/.test(appFn('editCell')) && /canEditRow\(r\)/.test(appFn('editCell')), 'only inside the window');
   ok(/edTd\(\)/.test(appFn('groupRow')) && /edTd\(\)/.test(appFn('empCard')), 'group and total rows keep the column count');
-  ok(/canEditRow\(r\) \? h`<div class="pd-act"><button type="button" class="btn" data-act="edit-day"/.test(appFn('detailBody')) && /histList\(r\)/.test(appFn('detailBody')), 'phone: in the detail, with the history');
+  ok(/canEditRow\(r\) \? h`<div class="pd-act">\$\{moveBtns\(r, 'pmove'\)\}<button type="button" class="btn" data-act="edit-day"/.test(appFn('detailBody')) && /histList\(r\)/.test(appFn('detailBody')), 'phone: in the detail, with the history');
   const eb = appFn('editorBody');
   ok(/C\.editTimingText\(tz\)/.test(eb) && /Times are \$\{C\.regionDef\(raw\.region\)\.tzName\}/.test(eb), 'the editor says when changes reach Gusto, and the time zone');
   ok(/data-act="ed-add-shift"/.test(eb) && /id="edNote"/.test(eb) && /id="edPreview"/.test(eb) && /editorHistory\(raw, tz\)/.test(eb), 'add a shift, reason, preview, history');
@@ -3963,9 +3973,10 @@ check("each shift's job on the board: shown when the person has more than one jo
   const app = block('ts-app');
   ok(/function jobParts\(r\) \{ const jobs = jobsFor\(r\); return r && !r\.deleted_all && C\.shiftJobsShown\(r, jobs\) \? C\.shiftParts\(r, jobs\) : null; \}/.test(app), 'jobParts');
   const dr = appFn('dayRowOf');
-  ok(/const jp = jobParts\(r\);/.test(dr) && /jp\.map\(p => h`<div\$\{p\.edJob \? JOB_ED : ''\}>\$\{p\.job \|\| h`&nbsp;`\}<\/div>`\)/.test(dr) && /jp\.filter\(p => p\.job\)\.map\(p => h`<span class="ej">\$\{p\.job\}<\/span>`\)/.test(dr), 'By Day: the Job cell and the narrow line under the name');
+  // (2026-10-30: with each shift's place on a line under its job, section 20)
+  ok(/const jp = jobParts\(r\), pp = placeParts\(r\);/.test(dr) && /jp\.map\(\(p, i\) => h`<div\$\{p\.edJob \? JOB_ED : ''\}>\$\{p\.job \|\| h`&nbsp;`\}<\/div>\$\{plj\(i\)\}`\)/.test(dr) && /jp\.map\(\(p, i\) => h`\$\{p\.job \? h`<span class="ej">\$\{p\.job\}<\/span>` : ''\}\$\{ple\(i\)\}`\)/.test(dr), 'By Day: the Job cell and the narrow line under the name');
   ok(/: h`<td class="c-job" title="\$\{r\.job_title \|\| ''\}">\$\{r\.job_title \|\| ''\}<\/td>`/.test(dr), "otherwise the day's job as before");
-  ok(/const jp = jobParts\(r\);/.test(appFn('empRow')) && /<span class="dj\$\{p\.edJob \? ' edv' : ''\}">\$\{p\.job\}<\/span>/.test(appFn('empRow')), 'By Employee: under the date');
+  ok(/const jp = jobParts\(r\), pp = placeParts\(r\);/.test(appFn('empRow')) && /<span class="dj\$\{p\.edJob \? ' edv' : ''\}">\$\{p\.job\}<\/span>/.test(appFn('empRow')), 'By Employee: under the date');
   const tl = appFn('timesLine');
   ok(/C\.shiftParts\(r, jobsFor\(r\)\)/.test(tl) && /<span class="tj\$\{p\.edJob \? ' edv' : ''\}">\$\{p\.job\}<\/span>/.test(tl), 'phones: after each shift\'s times');
   ok(/\.ts td\.c-job > div\{overflow:hidden;text-overflow:ellipsis;line-height:calc\(13px \* 1\.45\)\} \.ts td\.c-job > div \+ div\{margin-top:3px\}/.test(src) && /\n  \.tj\{color:var\(--muted\);font-size:13px\}/.test(src), 'the Job cell lines up with In and Out; the phone tag reads at 13px in --muted');
@@ -4204,7 +4215,7 @@ check('the Job pick: for a person with more than one job (loaded), on a shift th
     ['<span class="ed-jt">Trimmer</span>', '<span class="ed-jt">Job not known yet</span>', ''], "the shift's job, Job not known yet, or nothing on a one-job day");
   // wiring: entryHtml puts the pick under the times and the tag after the label; typing keeps everything else
   const eh = appFn('entryHtml');
-  ok(/const raw = S\.rows\.get\(E\.rowId\), jf = jobField\(en, raw, label\);/.test(eh) && /const pend = h`\$\{jf \? '' : jobTag\(en, raw\)\}/.test(eh) && /<\/div>\n\s+\$\{jf\}\n/.test(eh), 'the pick under the start and end; the tag beside the label (read-only shifts too)');
+  ok(/const raw = S\.rows\.get\(E\.rowId\), jf = jobField\(en, raw, label\), pl = placeOfEntry\(en\);/.test(eh) && /const pend = h`\$\{jf \? '' : jobTag\(en, raw\)\}/.test(eh) && /<\/div>\n\s+\$\{jf\}\$\{plh\}\n/.test(eh), 'the pick under the start and end; the tag beside the label (read-only shifts too)');
   ok(/else if \(f === 'job'\) \{ const j = \(jobsFor\(S\.rows\.get\(E\.rowId\)\) \|\| \[\]\)\.find\(x => x\.id === t\.value\); en\.job = j \? j\.id : ''; en\.jobTitle = j \? j\.title : ''; \}/.test(appFn('onEditorInput')), 'picking a job sets only the job (no re-render)');
   const app = block('ts-app');
   ok(/function mayJob\(r, add\) \{ return add \? mayEdit\('addJob'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyAddJob'\)\) : mayEdit\('job'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyJob'\)\); \}/.test(app), 'mayJob');
@@ -4276,6 +4287,338 @@ check('page: ts_people is read with its jobs (and without, before supabase/ts-ed
       for (const e of [JCH(), JCH({ region: 'NY' }), ADD_ON(), ADD_ON({ region: 'NY' })])
         eq(rule(e), plan.heldKinds({ kind: e.action === 'add' ? 'add' : 'edit', writeKinds: writes(e) }, e.region, proven).length > 0, e.action + ' ' + e.region + ' with CA ' + J(ca) + ', NY ' + J(ny) + ' proven');
     }
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// 20. where a deleaf crew shift was clocked in (Gianni 2026-10-30: "Is there any way to set the job based on their sign in
+//     location?", "close enough that it's obvious which location they are at", then "ya build it"): ts_days.shifts[i].place
+//     from the timesheet sync, the tag under the job, the Job vs place flag (C.placeLook's rules 1 to 9), the one-click
+//     move that sends the Job pick's own change, Move all clear ones, the demo. Made-up jobs, ids, sites and days only.
+// ---------------------------------------------------------------------------------------------
+const PL = (site, how, at, other) => Object.assign({ site, how, at: at || 'in' }, other ? { other } : {});
+const CJOBS = C.personJobs({ jobs: [JB('c-plain', 'Deleaf/Harvest', { primary: true }), JB('c-fil', 'Deleaf/Harvest - Filifera'), JB('c-sla', 'Deleaf/Harvest - Slane'),
+  JB('c-imp', 'Deleaf/Harvest - Imperial'), JB('c-oly', 'Deleaf/Harvest - Olympic', { start: '2026-10-08' }), JB('c-pack', 'Distro Packager'), JB('c-cult', 'Cultivator')] });
+const PJOBS = C.personJobs({ jobs: [JB('p-plain', 'Deleaf/Harvest', { primary: true }), JB('p-pack', 'Distro Packager')] });   // only the plain job and packing
+const JT = { 'Deleaf/Harvest': 'c-plain', 'Deleaf/Harvest - Filifera': 'c-fil', 'Deleaf/Harvest - Slane': 'c-sla', 'Deleaf/Harvest - Imperial': 'c-imp', 'Deleaf/Harvest - Olympic': 'c-oly', 'Distro Packager': 'c-pack', 'Cultivator': 'c-cult' };
+const PS = (title, place, o) => Object.assign(onJob(ED_S1, SJ(JT[title] || 'x-' + title, title)), place ? { place } : {}, o || {});
+const LK = (title, place, jobs, o) => C.placeLook(PS(title, place), jobs === undefined ? CJOBS : jobs, Object.assign({ date: '2026-10-06' }, o || {}));
+const kindTo = l => [l.kind, l.to && l.to.id];
+check('a shift\'s place as the sync writes it: read strictly (site, how, at, other only; never a coordinate, an address or an id), and its words under the job', () => {
+  eq([C.PLACE_SITES, C.PLACE_HOME, C.PLACE_JOB_PREFIX, C.PLACE_PLAIN_JOB, C.PLACE_PACK_JOB], [['Filifera', 'Slane', 'Imperial', 'Olympic'], 'Filifera', 'Deleaf/Harvest - ', 'Deleaf/Harvest', 'Distro Packager']);
+  eq(C.shiftPlace(PL('Slane', 'named')), { site: 'Slane', how: 'named', at: 'in' });
+  eq(C.shiftPlace(PL('Imperial', 'near', 'in', 'Olympic')), { site: 'Imperial', how: 'near', at: 'in', other: 'Olympic' });
+  eq(C.shiftPlace({ site: 'Slane', how: 'named', at: 'out', other: 'Imperial' }), { site: 'Slane', how: 'named', at: 'out' }, 'other only with a clock-in site');
+  eq(C.shiftPlace({ site: 'Slane', how: 'named', other: 'Slane' }), { site: 'Slane', how: 'named', at: 'in' }, 'the same site twice is no change of site');
+  eq([C.shiftPlace(PL(null, 'elsewhere')), C.shiftPlace(PL(null, 'elsewhere', 'out')), C.shiftPlace(PL(null, 'none', 'out'))],
+    [{ site: null, how: 'elsewhere', at: 'in' }, { site: null, how: 'elsewhere', at: 'out' }, { site: null, how: 'none', at: 'in' }]);
+  eq(Object.keys(C.shiftPlace(Object.assign(PL('Slane', 'named'), { lat: 1, lng: 2, address: 'x', id: 'y', note: 'z', why: 'edited' }))).sort(), ['at', 'how', 'site'], 'anything else a writer put there is never read');
+  for (const bad of [null, 'Slane', {}, PL('Slane', 'somewhere'), PL(null, 'named'), PL('', 'near'), PL('Slane', 'elsewhere'), PL('Slane', 'none'), PL('x'.repeat(41), 'named')])
+    eq(C.shiftPlace(bad), null, J(bad));
+  eq([PL('Slane', 'named'), PL('Imperial', 'near'), PL('Slane', 'named', 'out'), PL('Olympic', 'near', 'out'), PL(null, 'elsewhere'), PL(null, 'elsewhere', 'out'), PL(null, 'none'), PL('Imperial', 'near', 'in', 'Olympic'), PL('Filifera', 'named', 'in', 'Slane')].map(p => C.placeTag(C.shiftPlace(p))),
+    ['At Slane', 'Near Imperial', 'Clocked out at Slane', 'Clocked out at Olympic', 'Clocked in elsewhere', 'Clocked out elsewhere', '', 'Near Imperial, out at Olympic', 'At Filifera, out at Slane']);
+  eq([C.placeLook(ED_S1, CJOBS), C.placeLook(Object.assign({}, ED_S1, { place: { how: 'x' } }), CJOBS)], [null, null], 'no place (or one the page cannot read): nothing at all');
+});
+check('rules 1 to 4: the job the place says plainly (clear), packing at a grow site (check), nothing between packing and deleafing at 25th St', () => {
+  const l1 = LK('Deleaf/Harvest', PL('Slane', 'named'));
+  eq([kindTo(l1), l1.tag, l1.reason, l1.msg, l1.at], [['clear', 'c-sla'], 'At Slane', 'Clocked in at Slane', 'On Deleaf/Harvest but clocked in at Slane, so likely Deleaf/Harvest - Slane', 'in'], '1: plain at a site');
+  eq(l1.to, { id: 'c-sla', title: 'Deleaf/Harvest - Slane' }, 'the job from the person\'s own jobs');
+  const lo = LK('Deleaf/Harvest', PL('Slane', 'named', 'out'));
+  eq([kindTo(lo), lo.tag, lo.reason, lo.at, C.placeInMoveAll({ look: lo, waiting: false }), C.placeMovable({ look: lo, waiting: false })], [['clear', 'c-sla'], 'Clocked out at Slane', 'Clocked out at Slane', 'out', false, true], '1 by its clock-out: a button, never in Move all');
+  eq(kindTo(LK('Deleaf/Harvest', PL('Imperial', 'near'))), ['clear', 'c-imp'], '1: near a site Gusto has no location for');
+  const l2 = LK('Deleaf/Harvest - Imperial', PL('Slane', 'named'));
+  eq([kindTo(l2), l2.msg], [['clear', 'c-sla'], 'On Deleaf/Harvest - Imperial but clocked in at Slane, so likely Deleaf/Harvest - Slane'], '2: another site\'s deleaf job');
+  eq([kindTo(LK('Deleaf/Harvest - Slane', PL('Slane', 'named'))), kindTo(LK('Deleaf/Harvest - Imperial', PL('Imperial', 'near'))), LK('Deleaf/Harvest - Slane', PL('Slane', 'named')).tag], [[null, null], [null, null], 'At Slane'], 'the job fits: the tag only');
+  for (const site of ['Slane', 'Imperial', 'Olympic']) {
+    const l3 = LK('Distro Packager', PL(site, site === 'Slane' ? 'named' : 'near'), CJOBS, { date: '2026-10-09' });
+    eq([kindTo(l3), C.placeMovable({ look: l3, waiting: false }), C.placeInMoveAll({ look: l3, waiting: false })], [['check', JT['Deleaf/Harvest - ' + site]], true, false], '3: packing at ' + site + ': a button, never in Move all');
+  }
+  ok(/^On Distro Packager but clocked in at Slane, so maybe Deleaf\/Harvest - Slane \(packing there can be real\)$/.test(LK('Distro Packager', PL('Slane', 'named')).msg));
+  eq(kindTo(LK('Deleaf/Harvest', PL('Filifera', 'named'))), ['clear', 'c-fil'], '4: plain at 25th St goes to its own deleaf job');
+  const l4 = LK('Distro Packager', PL('Filifera', 'named'));
+  eq([kindTo(l4), l4.tag, l4.msg], [[null, null], 'At Filifera', ''], '4: packing at 25th St: the place cannot tell packing from deleafing');
+  eq(kindTo(LK('Deleaf/Harvest - Slane', PL('Filifera', 'named'))), ['clear', 'c-fil'], '2 at 25th St too');
+  eq(kindTo(LK(' Deleaf/Harvest ', PL('Slane', 'named'))), ['clear', 'c-sla'], 'a title with spaces around it reads the same');
+});
+check('rules 5 to 9: a job they do not have (or not yet), two sites in one shift, nowhere known, a shift that cannot change now, any other job', () => {
+  const l5 = LK('Deleaf/Harvest', PL('Slane', 'named'), PJOBS);
+  eq([kindTo(l5), l5.msg, C.placeMovable({ look: l5, waiting: false })], [['needsJob', null], 'Clocked in at Slane, so it needs Deleaf/Harvest - Slane in Gusto, which is not one of their jobs yet', false], '5: no button');
+  eq([kindTo(LK('Distro Packager', PL('Imperial', 'near'), PJOBS)), kindTo(LK('Deleaf/Harvest', PL('Filifera', 'named'), PJOBS)), kindTo(LK('Distro Packager', PL('Filifera', 'named'), PJOBS))],
+    [['needsJob', null], ['needsJob', null], [null, null]], '5 where 3 or 4 would apply; packing at 25th St stays nothing');
+  const lat = LK('Deleaf/Harvest', PL('Olympic', 'near'));
+  eq([kindTo(lat), lat.starts, lat.msg], [['needsJob', null], '2026-10-08', 'Clocked in at Olympic, so likely Deleaf/Harvest - Olympic, but that job starts on Oct 8 in Gusto, after this day'], '5: a job that starts after the day (the server refuses it too)');
+  eq(kindTo(LK('Deleaf/Harvest', PL('Olympic', 'near'), CJOBS, { date: '2026-10-08' })), ['clear', 'c-oly'], 'from its first day on, it can be moved to');
+  const l6 = LK('Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic'));
+  eq([kindTo(l6), l6.tag, l6.msg, C.placeMovable({ look: l6, waiting: false })], [['changed', null], 'Near Imperial, out at Olympic', 'Clocked in at Imperial and out at Olympic, so check the job, or split the shift in Gusto', false], '6: no button');
+  eq([kindTo(LK('Distro Packager', PL('Filifera', 'named', 'in', 'Slane'))), kindTo(LK('Deleaf/Harvest', PL('Slane', 'named', 'in', 'Imperial'), null))], [['changed', null], ['changed', null]], '6 whatever the deleaf or packing job, and before jobs load');
+  for (const p of [PL(null, 'elsewhere'), PL(null, 'none')]) {
+    const l7 = LK('Deleaf/Harvest', p);
+    eq([kindTo(l7), l7.tag], [[null, null], p.how === 'elsewhere' ? 'Clocked in elsewhere' : ''], '7: ' + p.how);
+  }
+  const ro = LK('Deleaf/Harvest', PL('Slane', 'named'), CJOBS, { readonly: true });
+  eq([kindTo(ro), ro.tag], [[null, null], 'At Slane'], '8: a shift the editor could not change now: the tag only');
+  eq(kindTo(C.placeLook(Object.assign(PS('Deleaf/Harvest', PL('Slane', 'named')), { out: null }), CJOBS, { date: '2026-10-06' })), [null, null], '8: still running');
+  eq(kindTo(C.placeLook(Object.assign(PS('Deleaf/Harvest', PL('Slane', 'named')), { hours_only: true }), CJOBS, { date: '2026-10-06' })), [null, null], 'hours entered');
+  for (const t of ['Cultivator', 'Driver', 'Trimmer', ''])
+    eq([kindTo(LK(t, PL('Slane', 'named'))), LK(t, PL('Slane', 'named')).tag], [[null, null], 'At Slane'], '9: ' + J(t) + ': the tag only');
+  eq(kindTo(C.placeLook(Object.assign({}, ED_S1, { place: PL('Slane', 'named') }), CJOBS, { date: '2026-10-06' })), [null, null], 'a job not known yet: the tag only');
+  eq(kindTo(LK('Deleaf/Harvest', PL('Slane', 'named'), null)), [null, null], "the person's jobs not loaded: nothing to suggest");
+});
+check("a day's looks by the editor's own rules: a shift being sent, just sent, split at midnight or on a day that cannot change gets the tag only; a waiting change keeps the flag but no button; a waiting job change to the place's job clears it", () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const s1 = PS('Deleaf/Harvest', PL('Slane', 'named')), raw = edRow([s1]);
+  const looks = C.placeLooks(raw, raw, [], CJOBS, ctx);
+  eq(looks.map(x => [x.shift.id, kindTo(x.look), !!x.entry, x.waiting, C.placeMovable(x), C.placeInMoveAll(x)]), [['s1', ['clear', 'c-sla'], true, false, true, true]]);
+  eq(C.placeLooks(raw, raw, [], CJOBS, Object.assign({}, ctx, { open: false })).map(x => [kindTo(x.look), x.look.tag]), [[[null, null], 'At Slane']], 'a day that cannot change here (outside the window, a processed pay period, someone who left)');
+  eq(C.placeLooks(edRow([ED_S1]), edRow([ED_S1]), [], CJOBS, ctx), [], 'a day with no place: nothing');
+  const send = ED({ id: 'ap', after: AFTER('07:00', '15:00'), times_status: 'applying' });
+  eq(C.placeLooks(raw, OV(raw, [send]), [send], CJOBS, ctx).map(x => kindTo(x.look)), [[null, null]], 'being sent to Gusto right now');
+  const wait = ED({ id: 'pw', after: AFTER('07:00', '15:00'), times_status: 'pending' }), wb = OV(raw, [wait]);
+  const wl = C.placeLooks(raw, wb, [wait], CJOBS, ctx);
+  eq(wl.map(x => [kindTo(x.look), x.waiting, C.placeMovable(x), x.look.tag]), [[['clear', 'c-sla'], true, false, 'At Slane']], 'a waiting change of its times: the place stays (the punches are Gusto\'s), the flag stays, the move goes through Edit');
+  const moved = ED({ id: 'pj', before: C.shiftSnap(s1), after: Object.assign(C.shiftSnap(s1), { job: { id: 'c-sla', title: 'Deleaf/Harvest - Slane' } }), times_status: 'pending' });
+  eq(C.placeLooks(raw, OV(raw, [moved]), [moved], CJOBS, ctx).map(x => [kindTo(x.look), x.look.tag]), [[[null, null], 'At Slane']], 'moved (waiting): the board shows the new job, which fits');
+  const del = ED({ id: 'pd', action: 'delete', after: null, breaks_status: 'pending' });
+  eq(C.placeLooks(raw, OV(raw, [del]), [del], CJOBS, ctx), [], 'waiting to be deleted: off the board');
+  // split at midnight (a forgotten clock-out): neither part takes a job here
+  const first = Object.assign(PS('Deleaf/Harvest', PL('Slane', 'named')), { id: 's9', out: '2026-10-06T23:59:59-07:00' }), day = edRow([first], { flags: [{ code: 'midnight_split', sev: 'warn', msg: C.MIDNIGHT_MSG.start }] });
+  const nb = [{ id: 's9', in: '2026-10-07T00:00:00-07:00', out: '2026-10-07T08:06:00-07:00', date: '2026-10-07', breaks: [] }];
+  eq(C.placeLooks(day, day, [], CJOBS, Object.assign({}, ctx, { neighbors: nb })).map(x => [kindTo(x.look), x.look.tag]), [[[null, null], 'At Slane']], 'split at midnight');
+  // the board keeps the place on a shift a waiting change redraws (editedShift), and leaves it off one that never had one
+  eq([OV(raw, [wait]).shifts[0].place, 'place' in C.editedShift(ED_S1, AFTER('07:30', '15:30'), C.TZ)], [PL('Slane', 'named'), false]);
+});
+check('the Job vs place flag: one warning for the day, counted like any other (totals, the row stripe, Flagged only, CSV), naming each shift on a day with more than one', () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const raw = edRow([PS('Deleaf/Harvest', PL('Slane', 'named'))]);
+  const f = C.placeFlag(C.placeLooks(raw, raw, [], CJOBS, ctx), C.TZ, false);
+  eq(f, { code: 'job_place', sev: 'warn', msg: 'On Deleaf/Harvest but clocked in at Slane, so likely Deleaf/Harvest - Slane' });
+  eq([C.flagLabel(f), C.flagSev(f), C.flagMsg(f), C.FLAGS.job_place.label], ['Job vs place', 'warn', f.msg, 'Job vs place']);
+  const s2 = Object.assign(PS('Distro Packager', PL('Imperial', 'near')), ES('s2', '16:00', '18:00'), { job: SJ('c-pack', 'Distro Packager'), place: PL('Imperial', 'near') });
+  const two = edRow([PS('Deleaf/Harvest - Slane', PL('Slane', 'named')), s2]);
+  eq(C.placeFlag(C.placeLooks(two, two, [], CJOBS, ctx), C.TZ, true).msg, '4:00 PM shift: On Distro Packager but clocked in at Imperial, so maybe Deleaf/Harvest - Imperial (packing there can be real)', 'only the shift that is off, by its start');
+  eq(C.placeFlag(C.placeLooks(edRow([PS('Deleaf/Harvest - Slane', PL('Slane', 'named'))]), null, [], CJOBS, ctx), C.TZ, false), null, 'every job fits: no flag');
+  const flagged = Object.assign({}, raw, { flags: [f] });
+  ok(C.hasWarn(flagged) && C.totals([flagged]).warn === 1 && C.filterRows([flagged, raw], { flaggedOnly: true }).length === 1, 'it counts, and Flagged only finds it');
+  ok(/<span class="flag warn" title="On Deleaf\/Harvest but clocked in at Slane, so likely Deleaf\/Harvest - Slane" tabindex="0">Job vs place<\/span>/.test(C.flagsHtml(flagged.flags, 'CA').html), 'a pill like the others');
+  ok(C.buildCsv([flagged]).includes('On Deleaf/Harvest but clocked in at Slane, so likely Deleaf/Harvest - Slane'), 'and in the CSV Flags column (its message, like every flag there)');
+});
+check('the one-click move sends exactly what the Job pick in the editor sends (Save\'s own op), with the reason "Clocked in at <site>"; the server rules take it as a job change; Save\'s words say it waits while job changes are held', () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N };
+  const s2 = onJob(ES('s2', '16:00', '18:00'), SJ('c-pack', 'Distro Packager'));
+  const raw = edRow([PS('Deleaf/Harvest', PL('Slane', 'named')), s2]);
+  const x = C.placeLooks(raw, raw, [], CJOBS, Object.assign({ who: me, open: true }, ctx))[0];
+  const mv = C.placeMoveOp(raw, raw, [], me, ctx, 's1', x.look.to);
+  // the editor: open the day, pick the job (onEditorInput: en.job, en.jobTitle), Save (editPlan)
+  const en = C.editorEntries(raw, raw, [], me, ctx), j = CJOBS.find(y => y.id === x.look.to.id);
+  en[0].job = j.id; en[0].jobTitle = j.title;
+  const save = C.editPlan(raw, en, { now: NOW_N });
+  eq(mv, { op: save.ops[0] }, 'the same op');
+  eq([mv.op.type, mv.op.action, mv.op.shift_id, mv.op.after.job, mv.op.after.in, mv.op.after.out, mv.op.after.breaks.length, mv.op.expect], ['submit', 'update', 's1', { id: 'c-sla', title: 'Deleaf/Harvest - Slane' }, ED_S1.in, ED_S1.out, 2, []], 'its times and breaks as Gusto has them, only the job moves');
+  ok(!C.reasonProblem(x.look.reason), 'the reason passes the server\'s check');
+  const sub = C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: mv.op.after, note: x.look.reason, expect: mv.op.expect }, { email: me.email, now: NOW_N, id: 'pm1', jobs: CJOBS });
+  ok(sub.ok, sub.error);
+  eq([sub.edit.note, sub.edit.times_status, sub.edit.breaks_status, C.jobChange(sub.edit).to, C.describeEdit(sub.edit, C.TZ)], ['Clocked in at Slane', 'pending', 'none', { id: 'c-sla', title: 'Deleaf/Harvest - Slane' }, ['Job Deleaf/Harvest → Deleaf/Harvest - Slane']]);
+  C.setJobHeld(() => true);
+  try { eq(C.saveMessage([{ op: mv.op, edit: sub.edit }], 'at noon today'), 'Saved. It waits for the first job run Gianni watches, then goes to Gusto.', 'held (CA:job not proven yet): the editor\'s words'); }
+  finally { C.setJobHeld(null); }
+  eq(C.saveMessage([{ op: mv.op, edit: sub.edit }], 'at noon today'), 'Saved. It goes to Gusto at noon today and shows as Pending until then.', 'once proven');
+  // the board then shows it moved, and the flag is gone
+  const after = OV(raw, [sub.edit]);
+  eq(C.placeFlag(C.placeLooks(raw, after, [sub.edit], CJOBS, Object.assign({ who: me, open: true }, ctx)), C.TZ, true), null);
+  eq(C.placeMoveOp(raw, after, [sub.edit], me, ctx, 's1', x.look.to).error, 'Nothing to move: the shift is on that job already.');
+  // never on a shift the editor shows read-only, or one that is gone
+  const send = ED({ id: 'ap', after: AFTER('07:00', '15:00'), times_status: 'applying' });
+  eq(C.placeMoveOp(raw, OV(raw, [send]), [send], me, ctx, 's1', x.look.to).error, 'That shift cannot be changed here now. Open Edit to see why.');
+  eq(C.placeMoveOp(raw, raw, [], me, ctx, 'nope', x.look.to).error, 'That shift is no longer on this day.');
+  // Gusto refuses a shift over another: the editor's overlap check stands (the person's shift the day after, as the board shows it)
+  const late = edRow([Object.assign(PS('Deleaf/Harvest', PL('Slane', 'named')), { in: EP('16:00'), out: '2026-10-07T01:00:00-07:00', span_min: 540, worked_min: 540, breaks: [] })]);
+  ok(/overlaps/.test(C.placeMoveOp(late, late, [], me, Object.assign({ around: [{ id: 'n1', in: '2026-10-07T00:30:00-07:00', out: '2026-10-07T06:00:00-07:00', date: '2026-10-07' }] }, ctx), 's1', x.look.to).error || ''), 'an overlap is refused as Save refuses it');
+});
+// The page's place functions, run as written with stand-ins
+function placePage(o) {
+  const code = [appFn('placeMoves'), appFn('placeParts'), 'return { placeMoves, placeParts };'].join('\n');
+  return new Function('C', 'S', 'placeIdx', 'canEditRow', 'jobPick', code)(C, { rows: o.rows }, o.idx, o.canEdit || (() => true), o.jobPick || (() => CJOBS));
+}
+check('page: the tag under each job (By Day, By Employee, phone cards, the editor), the move for whoever may pick jobs today, Move all only for the clear ones by their clock-in, after a yes, one at a time', () => {
+  const app = block('ts-app'), me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const raw = edRow([PS('Deleaf/Harvest', PL('Slane', 'named')), Object.assign(onJob(ES('s2', '16:00', '18:00'), SJ('c-imp', 'Deleaf/Harvest - Imperial')), { place: PL('Imperial', 'near') })]);
+  const looks = C.placeLooks(raw, raw, [], CJOBS, ctx), idx = new Map([[raw.id, looks]]), rows = new Map([[raw.id, raw]]);
+  const P = placePage({ rows, idx });
+  eq(P.placeMoves(raw).map(x => x.shift.id), ['s1'], 'only the shift that is off');
+  eq(P.placeParts(raw).map(x => x && x.look.tag), ['At Slane', 'Near Imperial'], 'a look per shift in the row\'s order');
+  eq([placePage({ rows, idx, jobPick: () => null }).placeMoves(raw), placePage({ rows, idx, canEdit: () => false }).placeMoves(raw)], [[], []], 'no Job pick (a manager before EDIT_PROVEN.job), or a day that cannot change: no button, the flag stays');
+  ok(/function placeMoves\(r\) \{[\s\S]*?!canEditRow\(raw\) \|\| !jobPick\(raw, false\)\) return \[\];\s*return looks\.filter\(C\.placeMovable\);/.test(appFn('placeMoves')), 'placeMoves: canEditRow and the Job pick (mayJob: admins and full viewers until EDIT_PROVEN.job)');
+  ok(/C\.placeLooks\(raw, board \|\| raw, editsFor\(raw\.id\), jobsFor\(raw\), \{ today: rowToday\(raw\), now: Date\.now\(\), neighbors: rawNeighbors\(raw\), who: actor\(\), open: placeDayOpen\(raw\) \}\)/.test(appFn('placeLooksFor')), 'the editor\'s own rules');
+  ok(/C\.canEditForRun\(raw\.work_date, C\.rowTz\(raw\), Date\.now\(\)\) && !periodClosed\(raw\) && !C\.leftDay\(raw, S\.people\)/.test(appFn('placeDayOpen')), 'a day open by the editor\'s day rules, whoever looks: the window, a pay period not processed, someone still on the roster');
+  const wp = appFn('withPlaces');
+  ok(/C\.placeFlag\(looks, C\.rowTz\(r\), r\.shifts\.filter\(s => !s\.hours_only\)\.length > 1\)/.test(wp) && /flags: \(r\.flags \|\| \[\]\)\.concat\(\[f\]\)/.test(wp) && /placeIdx = idx;/.test(wp), 'withPlaces adds the flag to the board\'s copy of the day');
+  // the move: the day again, the stamp, the look again, the editor's op, the same call as Save, the editor's words
+  const pm = appFn('placeMove');
+  for (const [re, what] of [[/const fresh = await refreshDay\(k\);/, 'the day read again'], [/C\.dayStamp\(raw, editsFor\(k\)\) !== stamp\) return \{ error: 'This day changed since the board showed it\. Check it again\.' \}/, 'nothing goes if it changed'],
+    [/x\.look\.to\.id !== to \|\| !jobPick\(raw, false\)\) return/, 'the place looked at again'], [/C\.placeMoveOp\(raw, board, editsFor\(k\), actor\(\), \{ today: rowToday\(raw\), now: Date\.now\(\), neighbors: rawNeighbors\(raw\), around: neighborShifts\(raw\) \}, sid, x\.look\.to\)/, 'the editor\'s op'],
+    [/C\.reasonProblem\(x\.look\.reason\)/, 'the reason checked like Save'], [/await runEditOp\(raw, plan\.op, x\.look\.reason\)/, 'sent like Save, with the reason'], [/if \(!DEMO\) await fetchEdits\(raw\.work_date, raw\.work_date\);/, 'then read back']])
+    ok(re.test(pm), what);
+  ok(/toast\(res\.error \? "Couldn't move it: " \+ res\.error : C\.saveMessage\(\[\{ op: res\.op, edit: res\.edit \}\], C\.nextEditRun\(Date\.now\(\), C\.rowTz\(res\.raw\)\)\)\);/.test(appFn('placeMoveOne')), "Save's words (held: it waits for the first job run Gianni watches)");
+  ok(/if \(C\.placeInMoveAll\(x\)\)/.test(appFn('placeAllItems')) && /for \(const x of placeMoves\(r\)\)/.test(appFn('placeAllItems')), 'Move all: the clear ones by their clock-in, of the moves this sign-in may send');
+  ok(/PM\.items = placeAllItems\(shownRows\(baseRows\(\)\)\); PM\.open = PM\.items\.length > 0;/.test(appFn('placeAllOpen')), 'the rows on screen, listed first');
+  // one at a time, each through placeMove as Move all (what goes, and what it refuses once the day changed): run below
+  for (const [act, fn] of [['place-move', /placeMoveOne\(d\.k, d\.s, d\.to\)/], ['place-all', /placeAllOpen\(\)/], ['place-all-yes', /placeAllRun\(\)/], ['place-all-no', /if \(!PM\.running\) \{ PM\.open = false;/], ['place-all-done', /PM\.done = null/]])
+    ok(new RegExp("case '" + act + "': " + fn.source).test(app), act);
+  ok(/renderPlaceBar\(rows\);/.test(appFn('render')) && /<div class="pmall no-print" id="placeBar" role="region" aria-label="Job vs place" hidden><\/div>/.test(markup), 'the bar above the board, never printed');
+  const rb = appFn('renderPlaceBar');
+  ok(/Move all clear ones \(\$\{n\}\)/.test(rb) && /data-act="place-all-yes"/.test(rb) && /data-act="place-all-no"/.test(rb) && /'Moved ' \+ d\.ok \+ ' of ' \+ d\.items\.length/.test(rb) && /Not moved: \$\{it\.res\.error\}/.test(rb), 'it lists what it moves, asks, and says what happened');
+  // the tags
+  ok(/plj\(i\)/.test(appFn('dayRowOf')) && /inOutCells\(r, job && jp \? pp : null\)/.test(appFn('dayRowOf')) && /<div class="pl-sp" aria-hidden="true">&nbsp;<\/div>/.test(appFn('inOutCells')), 'By Day: a line under the job, a blank line under its times');
+  ok(/<span class="dj pl"/.test(appFn('empRow')), 'By Employee: under the date');
+  ok(/<span class="tpl">\$\{p\.job \? '·\\u00a0' : ''\}\$\{tagWords\(pp\[i\]\.look\.tag\)\}<\/span>/.test(appFn('timesLine')), 'phones: after the job, a short tag kept whole');
+  ok(/<span class="ed-pl">\$\{pl\.look\.tag\}<\/span>/.test(appFn('entryHtml')) && /<p class="ed-plh">\$\{pl\.look\.msg\}\.<\/p>/.test(appFn('entryHtml')), 'the editor: the tag in the header, what the place says under the Job pick');
+  ok(/moveBtns\(r, 'xs pmove'\)/.test(appFn('flagsCell')) && /moveBtns\(r, 'pmove'\)/.test(appFn('detailBody')), 'the button under the flags (desktop) and beside Edit in a card (phone)');
+  ok(/data-act="place-move" data-k="\$\{r\.id\}" data-s="\$\{String\(x\.shift\.id\)\}" data-to="\$\{x\.look\.to\.id\}"/.test(appFn('moveBtns')) && /const moveLabel = x => 'Move to ' \+ C\.jobLabel\(x\.look\.to\.title\);/.test(app), '"Move to Deleaf/Harvest - <site>"');
+  // 375 px: the phone block hides the blank twins, the bar's buttons are tap-sized
+  const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1];
+  ok(/\.ts td\.io > div\.pl-sp\{display:none\}/.test(phone) && /\.pm-act \.btn\{min-height:44px;/.test(phone) && /\.pd-act \.btn\.pmove\{min-height:44px\}/.test(phone), 'the phone block');
+  ok(/\.btn\.pmove\{white-space:normal;/.test(src) && /\.pm-list\{[^}]*overflow-wrap:anywhere\}/.test(src), 'long job names wrap, never widen the page');
+  ok(!/latitude|longitude|\blat:|\blng:|radiusM/.test(src), 'no coordinates or circle anywhere in the page');
+});
+// The one-click move and Move all clear ones as the page runs them (placeMoves, placeMove, placeAllItems, placeAllOpen,
+// placeAllRun), with stand-ins for the server: o.S.rows the days as read, o.idx the board's looks, o.rows() the rows on
+// screen, o.sent what went to ts_edits (via runEditOp), o.toasts what the page said. o.refresh: the fresh read (refreshDay).
+function placeRunPage(o) {
+  const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
+  const code = [line(/\n  const shiftJobId = [^\n]*\n/), line(/\n  const PM = \{[^\n]*\n/), ...['placeMoves', 'placeMove', 'placeAllItems', 'placeAllOpen', 'placeAllRun'].map(appFn),
+    'return { placeMove, placeAllOpen, placeAllRun, PM };'].join('\n');
+  const env = { C, S: o.S, placeIdx: o.idx, DEMO: true, canEditRow: () => true, noEditMsg: () => 'That day cannot change.', editsFor: () => [],
+    refreshDay: async k => { if (o.refresh) o.refresh(k); return { ok: true }; }, boardRow: r => r, jobPick: () => CJOBS, actor: () => o.me,
+    rowToday: () => '2026-10-07', rawNeighbors: () => [], neighborShifts: () => [],
+    placeLooksFor: (raw, board) => C.placeLooks(raw, board, [], CJOBS, { today: '2026-10-07', now: NOW_N, neighbors: [], who: o.me, open: true }),
+    runEditOp: async (raw, op, note) => {
+      const s = raw.shifts.find(y => String(y.id) === String(op.shift_id));
+      o.sent.push({ day: raw.id, from: s && s.job ? s.job.id : null, to: op.after.job.id, note });
+      return { edit: { id: 'm' + o.sent.length, times_status: 'pending', breaks_status: 'none', after: op.after, before: op.expect } };
+    },
+    fetchEdits: async () => true, errText: e => String((e && e.message) || e), render: () => {}, toast: m => o.toasts.push(m), regionDef: () => ({ tz: C.TZ }),
+    shownRows: r => r, baseRows: () => o.rows() };
+  return new Function(...Object.keys(env), code)(...Object.values(env));
+}
+await acheck('Move all sends only what its list said: a listed shift since put on Distro Packager (a check) or left with only its clock-out place is refused, the single button still sends both, and a day that changed during the send is refused (2026-10-30 review)', async () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const day = (n, title, place) => edRow([PS(title, place)], { id: 'filifera:e' + n + ':2026-10-06', employee_uuid: 'e' + n, employee_name: 'Test Crew ' + n });
+  // the board the person saw: four plain Deleaf/Harvest shifts clocked in at Slane, all clear by their clock-in
+  const listed = [1, 2, 3, 4].map(n => day(n, 'Deleaf/Harvest', PL('Slane', 'named')));
+  const S = { rows: new Map(listed.map(r => [r.id, r])) }, idx = new Map(listed.map(r => [r.id, C.placeLooks(r, r, [], CJOBS, ctx)]));
+  const sent = [], toasts = [];
+  let refresh = null;
+  const P = placeRunPage({ S, idx, me, sent, toasts, rows: () => listed, refresh: k => refresh && refresh(k) });
+  P.placeAllOpen();
+  eq(P.PM.items.map(it => [it.k, it.fromId, it.to, it.reason]), listed.map(r => [r.id, 'c-plain', 'c-sla', 'Clocked in at Slane']), 'the list, with the job each was on');
+  ok(P.PM.open, 'it asks first');
+  // before the yes, the days change under the list (a reload after 10 minutes reads them again; PM.items stay)
+  const toPack = day(1, 'Distro Packager', PL('Slane', 'named')), toOut = day(2, 'Deleaf/Harvest', PL('Slane', 'named', 'out')), during = day(4, 'Distro Packager', PL('Slane', 'named'));
+  for (const r of [toPack, toOut]) S.rows.set(r.id, r);
+  eq([toPack, toOut].map(r => { const x = C.placeLooks(r, r, [], CJOBS, ctx)[0]; return [x.look.kind, x.look.at, C.placeMovable(x), C.placeInMoveAll(x)]; }), [['check', 'in', true, false], ['clear', 'out', true, false]], 'what each is now');
+  // and day 4 changes while Move all reads it again
+  refresh = k => { if (k === during.id) S.rows.set(k, during); };
+  await P.placeAllRun();
+  const CH = 'This shift changed since the list was made. Check it again.';
+  eq(listed.map((r, i) => P.PM.done.items[i].res.error || 'sent'), [CH, CH, 'sent', 'This day changed since the board showed it. Check it again.'], 'what Move all did with each');
+  eq(sent, [{ day: listed[2].id, from: 'c-plain', to: 'c-sla', note: 'Clocked in at Slane' }], 'only the one still as listed went');
+  eq([P.PM.done.ok, P.PM.running, P.PM.open, P.PM.items.length], [1, false, false, 0], 'then it says what happened');
+  eq(toasts, ['Moved 1 of 4. The ones not moved say why.'], 'the toast');
+  // the single button is not Move all: it offers a check and a clock-out move, so it sends them, with their own reasons
+  refresh = null; sent.length = 0;
+  const one = [await P.placeMove(toPack.id, 's1', 'c-sla'), await P.placeMove(toOut.id, 's1', 'c-sla')];
+  eq(one.map(r => r.error || 'sent'), ['sent', 'sent'], 'the button');
+  eq(sent, [{ day: toPack.id, from: 'c-pack', to: 'c-sla', note: 'Clocked in at Slane' }, { day: toOut.id, from: 'c-plain', to: 'c-sla', note: 'Clocked out at Slane' }], 'what the button sent');
+  // Move all asked for by its options with the listed job but now off it, or a reason not the listed one: refused, nothing sent
+  sent.length = 0;
+  const still = listed[2];
+  eq([await P.placeMove(still.id, 's1', 'c-sla', { all: true, from: 'c-pack', reason: 'Clocked in at Slane' }), await P.placeMove(still.id, 's1', 'c-sla', { all: true, from: 'c-plain', reason: 'Clocked out at Slane' })].map(r => r.error), [CH, CH], 'the listed job and reason are checked');
+  eq(sent, [], 'nothing went');
+});
+check('demo: a made-up deleaf crew with places on its last two weeks, covering every rule (clear by clock-in and by clock-out, check, needs a job, a job that starts later, two sites, elsewhere, no place, a driving job, packing at 25th St, a shift still running)', () => {
+  const crew = demo.people.filter(p => p.company === 'filifera' && p.jobs.some(j => j.title === 'Deleaf/Harvest' || j.title.startsWith('Deleaf/Harvest - ')));
+  eq(crew.map(p => p.department), ['Deleaf', 'Deleaf', 'Deleaf', 'Deleaf'], 'four made-up crew people');
+  const pOf = r => demo.people.find(p => p.company === r.company && p.employee_uuid === r.employee_uuid);
+  const kinds = new Map(), tags = new Set();
+  let moveAll = 0, running = 0;
+  for (const r of demo.rows) for (const s of r.shifts) {
+    if (!('place' in s)) continue;
+    ok(crew.includes(pOf(r)), r.id + ': a place only on the crew\'s shifts');
+    eq(C.shiftPlace(s.place), s.place, 'shaped as the sync writes it: ' + J(s.place));
+    ok(C.PLACE_SITES.includes(s.place.site) || s.place.site === null, 'one of the four sites');
+    ok(r.work_date >= C.addDays(demo.todays.CA, -13), 'the last two weeks only');
+  }
+  for (const r0 of demo.rows.filter(r => crew.includes(pOf(r)))) {
+    const r = C.normRow(r0), tz = C.rowTz(r);
+    const looks = C.placeLooks(r, C.overlayDay(r, demo.edits.filter(e => e.day_id === r.id), { today: demo.todays.CA }), demo.edits.filter(e => e.day_id === r.id), C.personJobs(pOf(r)),
+      { today: demo.todays.CA, now: NOW, who: demo.me, open: C.canEditForRun(r.work_date, tz, NOW) });
+    for (const x of looks) {
+      const k = (x.look.kind || 'tag') + (x.look.kind === 'needsJob' && x.look.starts ? ':starts' : '') + (x.look.at === 'out' && x.look.kind ? ':out' : '');
+      kinds.set(k, (kinds.get(k) || 0) + 1); tags.add(x.look.tag);
+      if (C.placeInMoveAll(x)) moveAll++;
+      if (!x.shift.out) running++;
+      if (x.look.kind === null && x.shift.job && x.shift.job.title === 'Driver') kinds.set('driver', 1);
+      if (x.look.kind === null && x.shift.out && x.shift.job && x.shift.job.title === 'Distro Packager' && x.look.site === 'Filifera') kinds.set('pack25', 1);
+    }
+  }
+  for (const k of ['clear', 'clear:out', 'check', 'needsJob', 'needsJob:starts', 'changed', 'tag', 'driver', 'pack25']) ok(kinds.has(k), 'the demo shows ' + k + ': ' + J([...kinds]));
+  for (const t of ['At Slane', 'Near Imperial', 'At Filifera', 'Near Olympic', 'Clocked out at Slane', 'Clocked in elsewhere', '', 'Near Imperial, out at Olympic']) ok(tags.has(t), 'tag ' + J(t) + ': ' + J([...tags]));
+  ok(moveAll >= 3, 'Move all clear ones has some: ' + moveAll);
+  ok(running >= 1, 'a crew shift still running (Thursday 11:30 AM): ' + running);
+  // any weekday it is opened, the board flags some of the crew's days
+  for (let i = 0; i < 7; i++) {
+    const d = D.build(Date.parse(NOW) + i * 86400000), nowI = Date.parse(NOW) + i * 86400000;
+    const n = d.rows.filter(r => r.shifts.some(s => s.place)).filter(r0 => {
+      const r = C.normRow(r0), p = d.people.find(x => x.employee_uuid === r.employee_uuid);
+      return C.placeFlag(C.placeLooks(r, r, [], C.personJobs(p), { today: d.todays.CA, now: nowI, who: d.me, open: C.canEditForRun(r.work_date, C.rowTz(r), nowI) }), C.TZ, false);
+    }).length;
+    ok(n >= 6, d.today + ': ' + n + ' flagged crew days');
+  }
+});
+// its twins (TS_GUSTO_SYNC_DIR's, else ~/gusto-sync's): the places file names the page's four sites and its job prefix, and
+// the timesheet sync's shiftPlace turns every side-file read into a place the page reads unchanged, by the agreed rule (C3).
+// Ids and coordinates in the places file are never printed.
+{
+  const named = !!process.env.TS_GUSTO_SYNC_DIR, dir = process.env.TS_GUSTO_SYNC_DIR || path.join(os.homedir(), 'gusto-sync'), where = dir.replace(os.homedir(), '~');
+  check('the places file (' + where + '/job-places.json) names the page\'s four sites and its job prefix', () => {
+    const f = path.join(dir, 'job-places.json');
+    if (!fs.existsSync(f)) { if (named && fs.existsSync(path.join(dir, 'ca-ts-core.mjs')) && /shiftPlace/.test(fs.readFileSync(path.join(dir, 'ca-ts-core.mjs'), 'utf8'))) throw new Error('TS_GUSTO_SYNC_DIR has places in its sync but no job-places.json'); console.log('          (skipped: no job-places.json in ' + where + ')'); return true; }
+    let cfg; try { cfg = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { throw new Error('job-places.json does not parse'); }
+    const fi = cfg && cfg.filifera;
+    ok(fi && typeof fi.named === 'object' && Array.isArray(fi.circles), 'filifera.named and filifera.circles');
+    eq(fi.jobPrefix, C.PLACE_JOB_PREFIX, 'jobPrefix');
+    eq([...new Set(Object.values(fi.named).concat(fi.circles.map(c => c.site)))].sort(), [...C.PLACE_SITES].sort(), 'its sites');
+    // 150 m today; the worker takes up to 300 m (places-core.mjs PLACE_RADIUS_MAX_M, its README says to widen a circle there),
+    // so a wider circle must not fail this page's check (final cross-check 2026-10-30). The page never reads the radius.
+    ok(fi.circles.every(c => typeof c.radiusM === 'number' && c.radiusM > 0 && c.radiusM <= 300 && Number.isFinite(c.lat) && Number.isFinite(c.lng)), 'each circle above 0 and at most 300 m, with a centre');
+  });
+  let core = null;
+  try { const f = path.join(dir, 'ca-ts-core.mjs'); core = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { console.log('          (ca-ts-core.mjs did not load: ' + String((e && e.message) || e).split('\n')[0] + ')'); }
+  check('the timesheet sync makes the places the page reads (' + where + '/ca-ts-core.mjs shiftPlace, the agreed rule)', () => {
+    if (!core || typeof core.shiftPlace !== 'function') { if (named && fs.existsSync(path.join(dir, 'job-places.json'))) throw new Error('TS_GUSTO_SYNC_DIR has job-places.json but its ca-ts-core.mjs has no shiftPlace'); console.log('          (skipped: no places in ' + where + ' yet)'); return true; }
+    if (core.PLACE_SITES) eq([...core.PLACE_SITES], C.PLACE_SITES, 'PLACE_SITES');
+    if (core.CREW_JOB_PREFIX != null) eq([core.CREW_JOB, core.CREW_JOB_PREFIX], [C.PLACE_PLAIN_JOB, C.PLACE_JOB_PREFIX], 'the crew jobs');
+    // the agreed rule (C3), written out: the clock-in's site, else the clock-out's, else elsewhere, else none
+    const want = (i, o) => i && i.site ? Object.assign({ site: i.site, how: i.how, at: 'in' }, o && o.site && o.site !== i.site ? { other: o.site } : {})
+      : o && o.site ? { site: o.site, how: o.how, at: 'out' }
+      : (i && i.how === 'elsewhere') || (o && o.how === 'elsewhere') ? { site: null, how: 'elsewhere' } : { site: null, how: 'none' };
+    const ends = [null, { site: 'Filifera', how: 'named' }, { site: 'Slane', how: 'named' }, { site: 'Imperial', how: 'near' }, { site: 'Olympic', how: 'near' }, { site: null, how: 'elsewhere' },
+      { site: null, how: 'none', why: 'edited' }, { site: null, how: 'none', why: 'no-device' }, { site: null, how: 'none', why: 'web' }, { site: null, how: 'none' }];
+    let n = 0;
+    for (const i of ends) for (const o of ends) {
+      const got = core.shiftPlace({ at: '2026-10-30T23:00:00Z', in: i, out: o });
+      // a read with no clock-out was taken while the shift ran: a shift since ended may leave it out until a newer read
+      if (got === null && o === null) { n++; continue; }
+      ok(got && !('why' in got), 'a place, never its why: ' + J([i, o, got]));
+      const sk = x => x && Object.fromEntries(Object.keys(x).sort().map(k => [k, x[k]]));
+      eq(sk(C.shiftPlace(got)), sk(Object.assign({ at: 'in' }, got)), 'the page reads it as written: ' + J([i, o]));
+      const w = want(i, o), g = Object.assign({}, got);
+      if (!w.site) delete g.at;   // elsewhere and none: the end it was is the sync's to say
+      eq(sk(g), sk(w), J([i, o])); n++;
+    }
+    // a shift still running: only its clock-in
+    if (core.shiftPlace.length >= 1) eq(core.shiftPlace({ in: { site: 'Slane', how: 'named' }, out: { site: 'Imperial', how: 'near' } }, { open: true }), { site: 'Slane', how: 'named', at: 'in' }, 'still running');
+    console.log('          (' + n + ' in/out reads compared)');
   });
 }
 
