@@ -126,7 +126,7 @@ const save=(k,v)=>{ try{ localStorage.setItem('fin_'+k,JSON.stringify(v)); }catc
 const S={ basis:['ttm','h','custom'].includes(ls('basis','ttm'))?ls('basis','ttm'):'ttm', from:ls('from',null), to:ls('to',null), mult:ls('mult',null), shareholder:ls('shareholder',true), cards:ls('cards',false),
   partMult:(o=>o&&typeof o==='object'&&!Array.isArray(o)?o:{})(ls('partMult',{})),
   plCo:ls('plCo','__cons'), plAccts:false, bsCo:ls('bsCo','__cons'), bsAccts:false, openPairs:new Set(), excluded:ls('excluded',[]),
-  page:ls('page','fin')==='est'?'est':'fin', est:(o=>o&&typeof o==='object'&&!Array.isArray(o)?o:{})(ls('est',{})), estOff:ls('estOff',[]), estOpen:new Set() };
+  page:ls('page','fin')==='est'?'est':'fin', est:(o=>o&&typeof o==='object'&&!Array.isArray(o)?o:{})(ls('est',{})), estOff:ls('estOff2',null), estOpen:new Set(), cashCo:ls('cashCo','__cons'), cashScott:ls('cashScott',false)===true };
 
 /* ── helpers ── */
 const $=(s,el=document)=>el.querySelector(s);
@@ -297,6 +297,7 @@ function render(){
   <div id="val"></div>
   <h2>Monthly revenue and EBITDA <span class="n">consolidated, after removing sales between the companies</span></h2>
   <div class="panel"><div class="legend"><span><i style="background:var(--s1)"></i>Revenue after corrections</span><span><i style="background:var(--s2)"></i>${ebLabel()}</span>${N()-1>lastClosed()?'<span class="m">* books not closed yet</span>':''}</div><div class="chart" id="chart"></div></div>
+  <h2>Money going out each month <span class="n">what has to come in to cover the bills, paid basis</span></h2><div id="cash"></div>
   <h2>EBITDA by company <span class="n" id="perLbl"></span></h2><div id="cos"></div>
   <h2>Monthly profit and loss</h2><div id="pl"></div>
   <h2>Balance sheets <span class="n">month-end balances</span></h2><div id="bs"></div>
@@ -311,7 +312,7 @@ function render(){
   $('#pageTabs').onclick=ev=>{ const p=ev.target.dataset.p; if(!p||p===S.page) return; S.page=p; save('page',p);
     for(const b of document.querySelectorAll('#pageTabs button')) b.classList.toggle('on',b.dataset.p===p);
     $('#pg-fin').hidden=p!=='fin'; $('#pg-est').hidden=p!=='est'; if(p==='fin') renderChart(); else renderEst(); };
-  renderVal(); renderChart(); renderCos(); renderPL(); renderBS(); renderIC(); renderRoy(); renderAdj(); renderOwn(); renderNotes(); renderEst();
+  renderVal(); renderChart(); renderCash(); renderCos(); renderPL(); renderBS(); renderIC(); renderRoy(); renderAdj(); renderOwn(); renderNotes(); renderEst();
 }
 
 function renderVal(){
@@ -391,29 +392,128 @@ function renderVal(){
   if($('#multReset')) $('#multReset').onclick=()=>{ S.mult={...DM}; S.partMult={}; try{ localStorage.removeItem('fin_mult'); localStorage.removeItem('fin_partMult'); }catch(e){} renderVal(); };
 }
 
+/* ── Money going out each month ──
+   raw.cashout (built by ~/ar-automation/lib/cashout-build.mjs): per company and category, one value per month, on a paid
+   basis: QuickBooks cash-basis costs (depreciation, inventory entries, and royalties and flower moving between the
+   companies left out) plus loan payments, equipment and money paid to or for Scott through a company account. The
+   Sure Summit payoff, and what Scott passed on to WT NY for it, are left out. Closed months only, like the rest. */
+// Money out per category for the companies in pick, one value per month. Money to Scott (group 'scott') is personal: it is
+// shown only when the viewer turns it on; older snapshots have one 'scott' line.
+function cashModel(X,pick,n){
+  const cats=X.cats, isScott=c=>c.group==='scott'||c.key==='scott', S_={};
+  for(const c of cats) S_[c.key]=Array.from({length:n},(_,i)=>pick.reduce((s,co)=>s+((X.companies[co][c.key]||[])[i]||0),0));
+  const sumS=list=>Array.from({length:n},(_,i)=>list.reduce((s,c)=>s+S_[c.key][i],0));
+  const bills=cats.filter(c=>c.bill), rest=cats.filter(c=>!c.bill&&!isScott(c)), scottC=cats.filter(isScott);
+  return {bills,rest,scottC,S_,billT:sumS(bills),bizT:sumS([...bills,...rest]),scottT:sumS(scottC)};
+}
+// What Scott passed on to WT NY for the Sure Summit payoff, already taken off his transfers: in months T, and in later
+// months whose books are not closed yet (they join once closed).
+function ptOf(X,pick,T){ const K=data.meta.month_keys, last=K[T[T.length-1]], P=(X.passthrough||[]).filter(p=>pick.includes(p.company)), later=P.filter(p=>p.month>last);
+  return {sum:P.filter(p=>T.some(i=>K[i]===p.month)).reduce((s,p)=>s+p.amount,0), later:later.reduce((s,p)=>s+p.amount,0), laterMonths:[...new Set(later.map(p=>p.month))].sort()}; }
+// The money-out table for months T: bills, then loans, equipment and deposits, then (with scott) the money to or for Scott.
+// extra.first / extra.last add a row above / below ([label, monthly values, class]); extra.head names the first column.
+function cashTable(M,T,scott,pt,extra={}){
+  const tot=a=>T.reduce((s,i)=>s+(a[i]||0),0), avg=a=>T.length?tot(a)/T.length:0, end=extra.last?'tot':'key';
+  const row=(lbl,a,cls='')=>`<tr class="${cls}"><td class="l" style="white-space:normal;min-width:220px">${lbl}</td>${T.map(i=>`<td>${whole(a[i])}</td>`).join('')}<td>${whole(tot(a))}</td><td>${whole(avg(a))}</td></tr>`;
+  const x=r=>r?row(esc(r[0]),r[1],r[2]):'';
+  const ptNote=pt.sum?` <span class="m">(less ${big(pt.sum)} he passed on to WT NY for the Sure Summit payoff${pt.later?`; the last ${big(pt.later)}, in ${esc(pt.laterMonths.map(m=>monthName(m,true)).join(' and '))}, joins once ${pt.laterMonths.length>1?'those months are':'that month is'} closed`:''})</span>`:'';
+  return `<div class="tbl"><table><thead><tr><th class="l">${esc(extra.head==null?'Paid out':extra.head)}</th>${T.map(i=>`<th>${shortM(i)}</th>`).join('')}<th>${T.length} months</th><th>A month</th></tr></thead><tbody>
+  ${x(extra.first)}
+  ${M.bills.map(c=>row(esc(c.label),M.S_[c.key])).join('')}
+  ${row('Bills',M.billT,'tot')}
+  ${M.rest.map(c=>row(esc(c.label),M.S_[c.key],'dim')).join('')}
+  ${scott?`${row('Business money out',M.bizT,'tot')}${M.scottC.map(c=>row(esc(c.label)+(c.key==='scott_transfers'||c.key==='scott'?ptNote:''),M.S_[c.key],'dim')).join('')}${row('Paid to or for Scott',M.scottT,'tot')}${row('Total money out, with Scott',addA(M.bizT,M.scottT),end)}`:row('Business money out',M.bizT,end)}
+  ${x(extra.last)}
+  </tbody></table></div>`;
+}
+function renderCash(){
+  const el=$('#cash'); if(!el) return;
+  const X=raw&&raw.cashout;
+  if(!X||!X.companies){ el.innerHTML='<p class="sub">Not available yet. It appears after the next data pull.</p>'; return; }
+  const inc=data.companies.map(c=>c.name).filter(n=>X.companies[n]);
+  if(S.cashCo!=='__cons'&&!inc.includes(S.cashCo)) S.cashCo='__cons';
+  const pick=S.cashCo==='__cons'?inc:[S.cashCo], T=ttmIdx(), M=cashModel(X,pick,N());
+  const avg=a=>T.length?T.reduce((s,i)=>s+(a[i]||0),0)/T.length:0, allT=addA(M.bizT,M.scottT);
+  el.innerHTML=`<p class="sub" style="margin:0 0 8px">${S.cashCo==='__cons'?'The companies':esc((coByName(S.cashCo)||{}).short||S.cashCo)} paid out about <b>${big(avg(M.billT))}</b> a month in bills from ${esc(span(T))}, and <b>${big(avg(M.bizT))}</b> a month counting loan payments, equipment and deposits${S.cashScott?`; another <b>${big(avg(M.scottT))}</b> a month went to or for Scott, <b>${big(avg(allT))}</b> a month in all`:''}.</p>
+  <div class="ctrl noprint"><label><input type="checkbox" id="cashScott" ${S.cashScott?'checked':''}> Show money to Scott (personal)</label><label>Show <select id="cashCo"><option value="__cons" ${S.cashCo==='__cons'?'selected':''}>All companies</option>${inc.map(c=>`<option value="${esc(c)}" ${S.cashCo===c?'selected':''}>${esc((coByName(c)||{}).short||c)}</option>`).join('')}</select></label></div>
+  ${cashTable(M,T,S.cashScott,ptOf(X,pick,T))}
+  <p class="small m" style="margin-top:6px">Paid basis: each cost counts in the month it was paid, from QuickBooks, whoever paid it, so big bills paid at once show as spikes (for example Slane's DWP catch-up bill in October 2025 and its DWP bill paid in cash in September 2026). Bills include the LA City cannabis tax, which the books record as a deduction from sales. Left out: transfers between a company's own accounts and card payments (the card charges count), money moving between the companies, royalties and flower sold between them, depreciation, write-offs and year-end inventory entries, and entries that moved no money (such as interest added to Scott's loans). Cash paid outside QuickBooks comes from Gianni's payroll app (and, before August 2026, his Total Payroll workbooks): people paid in cash, less the part Gusto already runs for them and any loan installment kept back from their pay, and the crews and contractors paid in cash; savings set aside, payments QuickBooks already has (GrowGen, Elevated, DWP, the 23rd and 25th St security guards and a few others) and family payments are left out. The Sure Summit loan payoff is left out: WT NY repaid the $500K with money Scott lent it, and that part of the companies' transfers to him is taken off the money to Scott. Money coming in (sales, loans, money Scott put in) is not shown. Money to Scott, shown with the switch, covers his wages and payroll tax, his apartment, the van and the Mercedes, personal charges the companies paid, and transfers, distributions and loan repayments to him. Loan payments are principal (including repayments to Gianni); Imperial's payoff of its previous owner is left out, like Sure Summit; interest is under bills. Imperial's rent and utilities paid outside QuickBooks are the board's estimate. A single company's months can include costs it paid for a sister company.</p>`;
+  $('#cashCo').onchange=ev=>{ S.cashCo=ev.target.value; save('cashCo',S.cashCo); renderCash(); };
+  $('#cashScott').onchange=ev=>{ S.cashScott=ev.target.checked; save('cashScott',S.cashScott); renderCash(); };
+}
+
 /* ── Estimate page ──
    The CA trim logs (raw.estimate.runs: farm, first day of the run, grams of bigs and smalls) priced as if every big had
    been packaged as a 3.5g jar and every small as prerolls: the 5-pack share of the smalls goes to .7g 5-packs (3.5 g each),
    the rest to 1g singles. Prices are what each product realized in the Sales Web App after discounts, credits and free
    samples (raw.estimate.prices, built by ~/ar-automation/lib/estimate-build.mjs). A viewer can type other prices or turn
    farms off; both are remembered in this browser. */
-function estParams(){ const P=raw.estimate.prices, o=S.est||{}, v=(k,d)=>typeof o[k]==='number'&&o[k]>=0?o[k]:d;
-  return {jar:v('jar',P.jar35.net), five:v('five',P.fivepk.net), one:v('one',P.pr1.net), share:Math.min(1,v('share',P.fivepk_share))}; }
+// Price = per unit actually sold (billed less discounts and credits); free samples and budtender pouches are their own
+// shares. An older snapshot without those parts keeps its all-in price (samples and pouches already inside it).
+function estParams(){ const P=raw.estimate.prices, o=S.est||{}, v=(k,d,max=1e9)=>typeof o[k]==='number'&&o[k]>=0?Math.min(max,o[k]):d, nu=P.jar35.paid_net!=null;
+  const pr=f=>nu?P[f].paid_net:P[f].net, sm=f=>nu?((P[f].samples||{}).share||0):0;
+  return {jar:v('jarP',pr('jar35')), five:v('fiveP',pr('fivepk')), one:v('oneP',pr('pr1')), share:v('share',P.fivepk_share,1),
+    jarS:v('jarS',sm('jar35'),0.9), fiveS:v('fiveS',sm('fivepk'),0.9), oneS:v('oneS',sm('pr1'),0.9), pouch:v('pouch',nu?((P.pouches||{}).share||0):0,0.9), nu}; }
+/* Against money going out: what the estimate companies (raw.cashout.estimate_companies: Waf & Gus, Filifera, Slane and
+   Imperial) paid out each month, the same paid-basis figures as the Financials page plus what they lent the other
+   companies, set against that month's estimated sales. Months: the board's closed months from January of the trim logs'
+   first year (the logs open with a run begun Dec 30) through the last month with a trim run. Money to Scott shows with the
+   same switch as the Financials page. */
+// The months the trim logs cover in full: from January of the logs' first year (by file name; the logs open with a run
+// begun Dec 30) through the last month with a run, n months in all.
+function estSpan(E,rows){ if(!rows.length) return {n:0};
+  const yrs=(E.files||[]).map(f=>+(String(f.name||'').match(/\b(20\d\d)\b/)||[])[1]).filter(Boolean), from=yrs.length?`${Math.min(...yrs)}-01`:rows[0].k, to=rows[rows.length-1].k;
+  const [ya,ma]=from.split('-').map(Number), [yb,mb]=to.split('-').map(Number); return {from,to,n:Math.max(0,(yb-ya)*12+mb-ma+1)}; }
+function estCash(rows,mShort){
+  const X=raw&&raw.cashout, cos=X&&X.companies?(X.estimate_companies||[]).filter(c=>X.companies[c]&&coByName(c)):[], head='<h2>Against money going out</h2>';
+  if(!rows.length) return '';
+  if(!cos.length) return head+'<p class="sub">Not available yet. It appears after the next data pull.</p>';
+  const K=data.meta.month_keys, {from,to}=estSpan(raw.estimate,rows), byK=Object.fromEntries(rows.map(m=>[m.k,m.b$+m.s$]));
+  const T=K.map((k,i)=>i).filter(i=>K[i]>=from&&K[i]<=to);   // month_keys holds the board's closed months only
+  if(!T.some(i=>byK[K[i]])) return head+'<p class="sub">No month the trim logs fully cover has closed books yet.</p>';
+  const est=K.map(k=>byK[k]||0), opening=rows.filter(m=>m.k<from), before=rows.filter(m=>m.k>=from&&m.k<K[T[0]]);
+  const nameOf=n=>(coByName(n)||raw.companies.find(c=>c.name===n)||{}).short||n, and=a=>a.length>1?`${a.slice(0,-1).join(', ')} and ${a[a.length-1]}`:a[0]||'';
+  // Money these companies lent the companies outside them, net of repayments, from their own balance sheets: each month's
+  // change in what those companies owe them less the change in what they owe those companies (loan and bank accounts, not
+  // A/R or A/P). On the Financials page it cancels out, since both sides are in.
+  const lent=K.map(()=>0), others=new Set();
+  for(const c of cos) for(const a of coByName(c).bs.accounts){ if(!/^ic_/.test(a.tag||'')||a.portion_of||!a.counterparty||cos.includes(a.counterparty)) continue;
+    const s=a.side==='asset'?1:-1; for(const i of T) if(i>0){ const d=s*((a.vals[i]||0)-(a.vals[i-1]||0)); if(Math.abs(d)>=0.5){ lent[i]+=d; others.add(a.counterparty); } } }
+  const M=cashModel(X,cos,N()), oth=and([...others].map(nameOf));
+  if(others.size){ M.rest=[...M.rest,{key:'__lent',label:`Net loans and repayments to ${oth}`}]; M.S_.__lent=lent; M.bizT=addA(M.bizT,lent); }
+  const left=subA(est,S.cashScott?addA(M.bizT,M.scottT):M.bizT), avg=a=>T.reduce((s,i)=>s+(a[i]||0),0)/T.length, lo=avg(left), list=and(cos.map(nameOf));
+  const skipped=[...(opening.length?[`${and(opening.map(m=>mShort(m.k)))} ${opening.length>1?'have':'has'} only the run that opened the logs`]:[]),
+    ...(before.length?[`${before.length>1?`${mShort(before[0].k)} to ${mShort(before[before.length-1].k)} are`:`${mShort(before[0].k)} is`} before the board’s 12 closed months`]:[])];
+  return `<h2>Against money going out <span class="n">${esc(list)}, paid basis</span></h2>
+  <p class="sub" style="max-width:900px">From ${esc(span(T))}, the flower trimmed could have sold for about <b>${big(avg(est))}</b> a month. ${esc(list)} paid out about <b>${big(avg(M.billT))}</b> a month in bills and <b>${big(avg(M.bizT))}</b> counting loan payments, equipment${others.size?`, deposits and net loans and repayments to ${esc(oth)}`:' and deposits'}${S.cashScott?`, plus <b>${big(avg(M.scottT))}</b> to or for Scott`:''}: ${lo>=0?`about <b>${big(lo)}</b> a month left over`:`about <b>${big(-lo)}</b> a month more than the estimate`}.</p>
+  <div class="ctrl noprint"><label><input type="checkbox" id="estScott" ${S.cashScott?'checked':''}> Show money to Scott (personal)</label></div>
+  ${cashTable(M,T,S.cashScott,ptOf(X,cos,T),{head:'',first:['Estimated sales',est,'tot'],last:[S.cashScott?'Left over, after Scott':'Left over',left,'key']})}
+  <p class="small m" style="margin-top:6px">The same paid-basis figures as Money going out on the Financials page, for these companies only: cash paid outside QuickBooks is in, and the Sure Summit and Imperial previous-owner payoffs are left out. ${others.size?`Net loans and repayments to ${esc(oth)} come from these companies’ balance sheets (the change in what each side owes the other); on the Financials page they cancel out between the companies. `:''}Estimated sales count in the month each trim run started, so that flower would sell in later months. Months: ${esc(span(T))}, the board’s closed months that the trim logs cover${skipped.length?` (${esc(skipped.join('; '))}, so not compared)`:''}. Olympic is Rio Verde’s flower on consignment: when it is ticked above, its full estimated sales count here, though much of that money would be owed to Rio Verde.</p>`;
+}
 function renderEst(){
   const el=$('#pg-est'); if(!el||S.page!=='est') return;
   const E=raw&&raw.estimate;
   if(!E||!(E.runs||[]).length||!E.prices){ el.innerHTML='<p class="sub">The estimate has not been built yet. It appears after the next data pull.</p>'; return; }
-  const P=E.prices, X=estParams(), gpl=E.grams_per_lb||454, off=new Set(S.estOff||[]);
+  const P=E.prices, X=estParams(), gpl=E.grams_per_lb||454;
   const farms=[...new Set(E.runs.map(r=>r.farm))].sort((a,b)=>(/olympic/i.test(a)-/olympic/i.test(b))||a.localeCompare(b)), farmLbl=f=>/olympic/i.test(f)?'Olympic (Rio Verde’s flower on consignment)':f.charAt(0)+f.slice(1).toLowerCase();
-  const val=g=>{ const jars=g.bigsG/3.5, five=g.smallsG*X.share/3.5, one=g.smallsG*(1-X.share); return {jars,five,one,b$:jars*X.jar,s$:five*X.five+one*X.one}; };
+  // farms left out: Olympic stays out until the viewer ticks it, since this page covers Waf & Gus, Filifera, Slane and Imperial
+  const off=new Set(S.estOff||farms.filter(f=>/olympic/i.test(f)));
+  // units made from the flower; units sold = made, less flower given away in budtender pouches, less free samples
+  const val=g=>{ const jars=g.bigsG/3.5, five=g.smallsG*X.share/3.5, one=g.smallsG*(1-X.share), k=1-X.pouch;
+    const jarsSold=jars*k*(1-X.jarS), fiveSold=five*k*(1-X.fiveS), oneSold=one*k*(1-X.oneS);
+    return {jars,five,one,jarsSold,fiveSold,oneSold,b$:jarsSold*X.jar,s$:fiveSold*X.five+oneSold*X.one}; };
   const months={}; for(const r of E.runs){ if(off.has(r.farm)) continue; const k=r.date.slice(0,7), m=months[k]||(months[k]={k,runs:[],bigsG:0,smallsG:0}); m.runs.push(r); m.bigsG+=r.bigsG; m.smallsG+=r.smallsG; }
   const rows=Object.values(months).sort((a,b)=>a.k<b.k?-1:1).map(m=>({...m,...val(m)}));
-  const T=rows.reduce((t,m)=>{ for(const k of ['bigsG','smallsG','jars','five','one','b$','s$']) t[k]+=m[k]; t.runs+=m.runs.length; return t; },{bigsG:0,smallsG:0,jars:0,five:0,one:0,b$:0,s$:0,runs:0});
+  const T=rows.reduce((t,m)=>{ for(const k of ['bigsG','smallsG','jars','five','one','jarsSold','fiveSold','oneSold','b$','s$']) t[k]+=m[k]; t.runs+=m.runs.length; return t; },{bigsG:0,smallsG:0,jars:0,five:0,one:0,jarsSold:0,fiveSold:0,oneSold:0,b$:0,s$:0,runs:0});
+  // a month on average, over the months the trim logs cover in full (a month with no run counts as nothing)
+  const SP=estSpan(E,rows), inSp=rows.filter(m=>m.k>=SP.from&&m.k<=SP.to), A=SP.n?Object.fromEntries(Object.keys(T).map(k=>[k,inSp.reduce((s,m)=>s+(k==='runs'?m.runs.length:m[k]),0)/SP.n])):null;
   const lb=g=>(g/gpl).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1}), n0=v=>Math.round(v).toLocaleString('en-US');
   const mShort=k=>{ const [y,m]=k.split('-'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]+' '+y; };
+  const mSpan=(a,b)=>a===b?mShort(a):a.slice(0,4)===b.slice(0,4)?`${mShort(a).split(' ')[0]} to ${mShort(b)}`:`${mShort(a)} to ${mShort(b)}`;   // 'Jan to Oct 2026'
   const money=v=>`$${n0(v)}`, price=v=>`$${(+v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`, dt=s=>{ const d=new Date(s); return isNaN(d)?'':d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
   const span=rows.length?(rows.length===1?mShort(rows[0].k):`${mShort(rows[0].k)} to ${mShort(rows[rows.length-1].k)}`):'';
-  const changed=['jar','five','one','share'].some(k=>typeof (S.est||{})[k]==='number');
+  const changed=['jarP','fiveP','oneP','share','jarS','fiveS','oneS','pouch'].some(k=>typeof (S.est||{})[k]==='number');
+  const pct=v=>`${(v*100).toFixed(1)}%`, smp=f=>(P[f]||{}).samples||{};
   const inp=(k,v,step)=>`<span class="est-in"><input data-e="${k}" value="${v}" inputmode="decimal" step="${step}" aria-label="${k}"></span>`;
   const pm=P.months||[], pspan=pm.length?`${mShort(pm[0])} to ${mShort(pm[pm.length-1])}`:'recent months', mix=P.mix_months||[];
   // stacked bars: bigs as jars (s1) under smalls as prerolls (s2)
@@ -425,12 +525,12 @@ function renderEst(){
     g+=`<text x="${x+bar/2}" y="${ys-4}" text-anchor="middle" font-size="11" fill="var(--text2)">${big(m.b$+m.s$)}</text><text x="${x+bar/2}" y="${H-8}" text-anchor="middle" font-size="11" fill="var(--muted)">${mShort(m.k).replace(/ 20(\d\d)$/," '$1")}</text>`; });
   const runRow=r=>{ const v=val(r); return `<tr class="run"><td class="l" style="padding-left:24px">${esc(farmLbl(r.farm).replace(/ \(.*/,''))} · ${esc(r.tab)}</td><td></td><td>${lb(r.bigsG)}</td><td>${lb(r.smallsG)}</td><td>${lb(r.bigsG+r.smallsG)}</td><td>${n0(v.jars)}</td><td>${n0(v.five)}</td><td>${n0(v.one)}</td><td>${money(v.b$)}</td><td>${money(v.s$)}</td><td>${money(v.b$+v.s$)}</td></tr>`; };
   el.innerHTML=`
-  <p class="sub" style="max-width:900px">What each month’s trimmed flower could have sold for if every big had been packaged as a 3.5g jar and every small as prerolls (.7g 5-packs and 1g singles), at what those products actually sold for after discounts, credits and free samples. It is an estimate of potential sales from the trim logs, not booked revenue.</p>
+  <p class="sub" style="max-width:900px">What each month’s trimmed flower could have sold for if every big had been packaged as a 3.5g jar and every small as prerolls (.7g 5-packs and 1g singles), at what those products actually sold for after discounts and credits, with the usual share given away as free samples and budtender pouches. It is an estimate of potential sales from the trim logs, not booked revenue.</p>
   <div class="heroes">
     <div class="hero"><div class="lbl">Pounds trimmed</div><div class="val">${lb(T.bigsG+T.smallsG)} lb</div><div class="note">${esc(span)}, ${T.runs} trim runs: ${lb(T.bigsG)} lb bigs, ${lb(T.smallsG)} lb smalls</div></div>
-    <div class="hero"><div class="lbl">Bigs as 3.5g jars</div><div class="val">${big(T.b$)}</div><div class="note">${n0(T.jars)} jars at ${price(X.jar)}</div></div>
-    <div class="hero"><div class="lbl">Smalls as prerolls</div><div class="val">${big(T.s$)}</div><div class="note">${n0(T.five)} 5-packs at ${price(X.five)} and ${n0(T.one)} 1g prerolls at ${price(X.one)}</div></div>
-    <div class="hero big"><div class="lbl">Estimated sales</div><div class="val">${big(T.b$+T.s$)}</div><div class="note">${esc(span)}; about ${big(rows.length?(T.b$+T.s$)/rows.length:0)} a month, ${price(T.bigsG+T.smallsG?(T.b$+T.s$)/((T.bigsG+T.smallsG)/gpl):0)} per pound trimmed</div></div>
+    <div class="hero"><div class="lbl">Bigs as 3.5g jars</div><div class="val">${big(T.b$)}</div><div class="note">${n0(T.jars)} jars made, ${n0(T.jarsSold)} sold at ${price(X.jar)} after free samples${X.pouch?' and pouches':''}</div></div>
+    <div class="hero"><div class="lbl">Smalls as prerolls</div><div class="val">${big(T.s$)}</div><div class="note">${n0(T.fiveSold)} 5-packs sold at ${price(X.five)} and ${n0(T.oneSold)} 1g prerolls at ${price(X.one)}, after free samples${X.pouch?' and pouches':''}</div></div>
+    <div class="hero big"><div class="lbl">Estimated sales</div><div class="val">${big(T.b$+T.s$)}</div><div class="note">${esc(span)}; about ${big(A?A.b$+A.s$:0)} a month${A&&rows.length&&SP.from!==rows[0].k?` (${esc(mSpan(SP.from,SP.to))})`:''}, ${price(T.bigsG+T.smallsG?(T.b$+T.s$)/((T.bigsG+T.smallsG)/gpl):0)} per pound trimmed</div></div>
   </div>
   <div class="farms noprint"><span>Farms:</span>${farms.map(f=>`<label><input type="checkbox" data-farm="${esc(f)}" ${off.has(f)?'':'checked'}> ${esc(farmLbl(f))}</label>`).join('')}</div>
   <div class="panel"><div class="legend"><span><i style="background:var(--s1)"></i>Bigs as 3.5g jars</span><span><i style="background:var(--s2)"></i>Smalls as prerolls</span><span class="m">by the month the trim run started</span></div>
@@ -439,20 +539,23 @@ function renderEst(){
   <div class="tbl"><table id="estT"><thead><tr><th class="l">Month</th><th>Trim runs</th><th>Bigs (lb)</th><th>Smalls (lb)</th><th>Total (lb)</th><th>3.5g jars</th><th>.7g 5-packs</th><th>1g prerolls</th><th>From bigs</th><th>From smalls</th><th>Estimated sales</th></tr></thead><tbody>
   ${rows.map(m=>{ const open=S.estOpen.has(m.k); return `<tr class="mo${open?' open':''}" data-k="${m.k}"><td class="l">${mShort(m.k)}</td><td>${m.runs.length}</td><td>${lb(m.bigsG)}</td><td>${lb(m.smallsG)}</td><td>${lb(m.bigsG+m.smallsG)}</td><td>${n0(m.jars)}</td><td>${n0(m.five)}</td><td>${n0(m.one)}</td><td>${money(m.b$)}</td><td>${money(m.s$)}</td><td><b>${money(m.b$+m.s$)}</b></td></tr>${open?m.runs.map(runRow).join(''):''}`; }).join('')}
   <tr class="key"><td class="l">Total</td><td>${T.runs}</td><td>${lb(T.bigsG)}</td><td>${lb(T.smallsG)}</td><td>${lb(T.bigsG+T.smallsG)}</td><td>${n0(T.jars)}</td><td>${n0(T.five)}</td><td>${n0(T.one)}</td><td>${money(T.b$)}</td><td>${money(T.s$)}</td><td>${money(T.b$+T.s$)}</td></tr>
+  ${A?`<tr class="tot"><td class="l">A month <span class="m" style="font-size:11px;font-weight:400">${esc(mSpan(SP.from,SP.to))}</span></td><td>${A.runs.toFixed(1)}</td><td>${lb(A.bigsG)}</td><td>${lb(A.smallsG)}</td><td>${lb(A.bigsG+A.smallsG)}</td><td>${n0(A.jars)}</td><td>${n0(A.five)}</td><td>${n0(A.one)}</td><td>${money(A.b$)}</td><td>${money(A.s$)}</td><td><b>${money(A.b$+A.s$)}</b></td></tr>`:''}
   </tbody></table></div>
-  <h2>Prices used <span class="n">type your own to try them; press Enter</span>${changed?' <button class="small noprint" id="estReset">Reset to the sales prices</button>':''}</h2>
-  <div class="tbl"><table><thead><tr><th class="l">Product</th><th class="l">Made from</th><th>List price</th><th>Sold for, net</th><th>Used here</th></tr></thead><tbody>
-    <tr><td class="l">3.5g jar</td><td class="l">bigs, 3.5 g each</td><td>${P.jar35.list!=null?price(P.jar35.list):''}</td><td>${price(P.jar35.net)}</td><td>${inp('jar',X.jar,'0.01')}</td></tr>
-    <tr><td class="l">.7g 5-pack</td><td class="l">smalls, 3.5 g each</td><td>${P.fivepk.list!=null?price(P.fivepk.list):''}</td><td>${price(P.fivepk.net)}</td><td>${inp('five',X.five,'0.01')}</td></tr>
-    <tr><td class="l">1g preroll</td><td class="l">smalls, 1 g each</td><td>${P.pr1.list!=null?price(P.pr1.list):''}</td><td>${price(P.pr1.net)}</td><td>${inp('one',X.one,'0.01')}</td></tr>
-    <tr><td class="l">Share of the smalls rolled into 5-packs</td><td class="l">the rest go into 1g prerolls</td><td></td><td>${Math.round(P.fivepk_share*100)}%</td><td>${inp('share',Math.round(X.share*1000)/10,'1')}%</td></tr>
+  ${A&&rows[0].k<SP.from?`<p class="small m" style="margin-top:6px">A month averages ${esc(mSpan(SP.from,SP.to))}, the months the trim logs cover in full; ${esc(rows.filter(m=>m.k<SP.from).map(m=>mShort(m.k)).join(' and '))} has only the run that opened the logs.</p>`:''}
+  ${estCash(rows,mShort)}
+  <h2>Prices and samples used <span class="n">type your own to try them; press Enter</span>${changed?' <button class="small noprint" id="estReset">Reset to the sales history</button>':''}</h2>
+  <div class="tbl"><table><thead><tr><th class="l">Product</th><th class="l">Made from</th><th>List price</th><th>Sold for, net</th><th>Price used</th><th>Free samples, history</th><th>Samples used</th></tr></thead><tbody>
+    ${[['jar35','3.5g jar','bigs, 3.5 g each','jarP','jarS',X.jar,X.jarS],['fivepk','.7g 5-pack','smalls, 3.5 g each','fiveP','fiveS',X.five,X.fiveS],['pr1','1g preroll','smalls, 1 g each','oneP','oneS',X.one,X.oneS]].map(([f,lbl,from,kp,ks,pv,sv])=>`<tr><td class="l">${lbl}</td><td class="l">${from}</td><td>${P[f].list!=null?price(P[f].list):''}</td><td>${price(X.nu?P[f].paid_net:P[f].net)}</td><td>${inp(kp,pv,'0.01')}</td><td>${X.nu?`${pct(smp(f).share||0)} <span class="m" style="font-size:11px">(${n0(smp(f).free||0)} of ${n0((smp(f).free||0)+(smp(f).paid||0))})</span>`:'in the price'}</td><td>${inp(ks,Math.round(sv*1000)/10,'0.1')}%</td></tr>`).join('')}
+    <tr><td class="l">Budtender sample pouches</td><td class="l">share of all flower given away</td><td></td><td></td><td></td><td>${X.nu&&P.pouches?pct(P.pouches.share||0):'in the price'}</td><td>${inp('pouch',Math.round(X.pouch*1000)/10,'0.1')}%</td></tr>
+    <tr><td class="l">Share of the smalls rolled into 5-packs</td><td class="l">the rest go into 1g prerolls</td><td></td><td></td><td>${inp('share',Math.round(X.share*1000)/10,'1')}%</td><td>${Math.round(P.fivepk_share*100)}%</td><td></td></tr>
   </tbody></table></div>
-  <p class="small m" style="margin-top:6px">Sold for, net: California sales ${esc(pspan)} in the Sales Web App (Distru and Nabis): what was billed less each order’s discounts and credits, divided by every unit shipped including free samples, less the ${P.pouches?P.pouches.share_of_flower:0}% of flower given away in budtender sample pouches. The 5-pack share is the gram mix of 5-packs and 1g prerolls sold in ${mix.length?esc(`${mShort(mix[0])} to ${mShort(mix[mix.length-1])}`):'recent months'}. Measured ${esc(dt(E.priced_at))}.</p>
+  <p class="small m" style="margin-top:6px">${X.nu?`Sold for, net: California sales ${esc(pspan)} in the Sales Web App (Distru and Nabis): what was billed less each order’s discounts and credits, per unit actually sold. Free samples: the share of units shipped that went out free, from the same sales over ${(()=>{ const s=smp('jar35'); return s.from?esc(`${mShort(s.from)} to ${mShort(s.to)}`):'the last 12 months'; })()} (5-packs and 1g prerolls since they launched). Budtender pouches: the flower given away in 1.5 g budtender sample pouches, as a share of all flower shipped. Units sold = units made, less the pouch share, less free samples.`:`Sold for, net: California sales ${esc(pspan)} in the Sales Web App: billed less discounts and credits, divided by every unit shipped including free samples and less the flower in budtender pouches, so samples are inside the price.`} The 5-pack share is the gram mix of 5-packs and 1g prerolls sold in ${mix.length?esc(`${mShort(mix[0])} to ${mShort(mix[mix.length-1])}`):'recent months'}. Measured ${esc(dt(E.priced_at))}.</p>
   <p class="small m">Trim: the CA trim logs in the shared Drive folder (${(E.files||[]).map(f=>esc(f.name)).join(', ')}), one tab per trim run, by the month the run started; read ${esc(dt(E.generated_at))}. Pounds use 454 g per lb as the logs do and come from each run’s Total Gms row, which counts every strain column (the logs’ TOTAL BIGS and TOTAL LITTLES cells stop at column T, so a few runs read higher here). Floor buds and phenos count where they were logged. No packaging loss or unsold stock is taken off.</p>`;
-  for(const cb of el.querySelectorAll('input[data-farm]')) cb.onchange=()=>{ const f=cb.dataset.farm, s=new Set(S.estOff||[]); cb.checked?s.delete(f):s.add(f); S.estOff=[...s]; save('estOff',S.estOff); renderEst(); };
+  for(const cb of el.querySelectorAll('input[data-farm]')) cb.onchange=()=>{ const f=cb.dataset.farm, s=new Set(off); cb.checked?s.delete(f):s.add(f); S.estOff=[...s]; save('estOff2',S.estOff); renderEst(); };
+  if($('#estScott')) $('#estScott').onchange=ev=>{ S.cashScott=ev.target.checked; save('cashScott',S.cashScott); renderEst(); renderCash(); };
   for(const tr of el.querySelectorAll('#estT tr.mo')) tr.onclick=()=>{ const k=tr.dataset.k; S.estOpen.has(k)?S.estOpen.delete(k):S.estOpen.add(k); renderEst(); };
   for(const i of el.querySelectorAll('input[data-e]')) i.onchange=()=>{ const s=i.value.trim().replace(',','.'), v=s===''?NaN:Number(s);
-    if(Number.isFinite(v)&&v>=0){ S.est={...(S.est||{}),[i.dataset.e]:i.dataset.e==='share'?Math.min(100,v)/100:v}; save('est',S.est); } renderEst(); };
+    if(Number.isFinite(v)&&v>=0){ const k=i.dataset.e, isPct=/^(share|jarS|fiveS|oneS|pouch)$/.test(k); S.est={...(S.est||{}),[k]:isPct?Math.min(100,v)/100:v}; save('est',S.est); } renderEst(); };
   if($('#estReset')) $('#estReset').onclick=()=>{ S.est={}; try{ localStorage.removeItem('fin_est'); }catch(e){} renderEst(); };
 }
 
