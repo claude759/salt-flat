@@ -3215,7 +3215,7 @@ function aggregateSku(){
     }
   });
   // order/invoice-level discounts + credit memos, per source, from the concession events
-  const dc={}, invMap={}; SRCS.forEach(s=>{ dc[s]=0; invMap[s]={}; });
+  const dc={}, invMap={}, invF={}; SRCS.forEach(s=>{ dc[s]=0; invMap[s]={}; });
   (CONC_EVENTS||[]).forEach(e=>{ if(dc[e.s]===undefined) return;
     if(!concInRange(e.d?new Date(e.d):null,start,end)) return;
     const edc=(e.invoiceDisc||0)+(e.creditMemos||0); dc[e.s]+=edc;
@@ -3230,25 +3230,46 @@ function aggregateSku(){
     let billed=(e.otherBill||0); if(e.s==='Nabis') billed+=(e.pouchBill||0);
     CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c) billed+=c.bill||0; });
     const ref=e.ref||'(no #)', g=invMap[e.s][ref]||(invMap[e.s][ref]={ref,customer:e.c||'',date:e.d||null,billed:0,dc:0});
-    g.billed+=billed; g.dc+=edc; if(e.d&&(!g.date||e.d<g.date)) g.date=e.d; });
+    g.billed+=billed; g.dc+=edc; if(e.d&&(!g.date||e.d<g.date)) g.date=e.d;
+    const fg=invF[e.s+'|'+ref]||(invF[e.s+'|'+ref]={s:e.s,bill:{},dc:0}); fg.dc+=edc;
+    CONC_FORMATS.forEach(f=>{ const c=e.fmt&&e.fmt[f.key]; if(c&&c.bill) fg.bill[f.key]=(fg.bill[f.key]||0)+c.bill; });
+    const ob=(e.otherBill||0)+(e.s==='Nabis'?(e.pouchBill||0):0); if(ob) fg.bill.other=(fg.bill.other||0)+ob; });
+  // Discounts + credits per product type, for the Net $/Unit column (Gianni, 2026-11-03). Each
+  // invoice's discounts and credits are split across the product types on that invoice by their share
+  // of its billing. A discount or credit whose invoice has no lines in the range (a credit dated in the
+  // range for an older delivery) is split by the source's overall mix, so the rows always add up to the
+  // Discounts/Credits total.
+  const fdc={}, mix={}; SRCS.forEach(s=>{ fdc[s]={}; mix[s]={}; });
+  Object.values(invF).forEach(g=>{ if(mix[g.s]) Object.entries(g.bill).forEach(([k,b])=>{ mix[g.s][k]=(mix[g.s][k]||0)+b; }); });
+  Object.values(invF).forEach(g=>{ if(!fdc[g.s] || Math.abs(g.dc)<0.005) return;
+    let w=g.bill, tot=Object.values(w).reduce((a,b)=>a+b,0);
+    if(!(tot>0.005)){ w=mix[g.s]; tot=Object.values(w).reduce((a,b)=>a+b,0); }
+    if(!(tot>0.005)){ fdc[g.s].other=(fdc[g.s].other||0)+g.dc; return; }
+    Object.entries(w).forEach(([k,b])=>{ fdc[g.s][k]=(fdc[g.s][k]||0)+g.dc*b/tot; }); });
   const mkRow=(units,projected,actualized)=>({units,projected,actualized,unitDisc:projected-actualized,avg:units?actualized/units:0});
-  const mkSkus=(map,L)=>Object.values(map).map(s=>Object.assign({sku:s.sku},mkRow(s.units,s.units*L,s.actualized)))
+  // net $/unit = (billed - its share of discounts/credits) / units, free samples included in units
+  const withNet=(r,dcAmt)=>Object.assign(r,{dc:dcAmt,net:r.units?(r.actualized-dcAmt)/r.units:0});
+  // a SKU carries its product type's discount/credit rate (lines are not tied to invoices here)
+  const mkSkus=(map,L,rate=0)=>Object.values(map).map(s=>withNet(Object.assign({sku:s.sku},mkRow(s.units,s.units*L,s.actualized)),s.actualized*rate))
       .filter(s=>s.units||Math.abs(s.actualized)>0.005).sort((a,b)=>b.actualized-a.actualized);
   const build=src=>{
     const rows=CONC_FORMATS.map(f=>{                       // always the main formats, even at 0
-      const g=acc[src][f.label]||{units:0,actualized:0,skus:{}}, L=A[f.key]||0;
-      return Object.assign({key:f.key,label:f.label},mkRow(g.units,g.units*L,g.actualized),{skus:mkSkus(g.skus,L)});
+      const g=acc[src][f.label]||{units:0,actualized:0,skus:{}}, L=A[f.key]||0, d=fdc[src][f.key]||0;
+      return withNet(Object.assign({key:f.key,label:f.label},mkRow(g.units,g.units*L,g.actualized),{skus:mkSkus(g.skus,L,g.actualized>0.005?d/g.actualized:0)}),d);
     });
     const o=other[src];
-    if(o.units>0.0001 || Math.abs(o.actualized)>0.005){    // surface unmapped sales (budtender pouches) so nothing is hidden
+    const oDc=fdc[src].other||0;
+    if(o.units>0.0001 || Math.abs(o.actualized)>0.005 || Math.abs(oDc)>0.005){    // surface unmapped sales (budtender pouches) so nothing is hidden
+      const oRate=o.actualized>0.005?oDc/o.actualized:0;
       const skus=Object.values(o.skus).map(s=>{ const L=pouchListFor(s.sku); const proj=L!=null?s.units*L:s.actualized;
-          return Object.assign({sku:s.sku},mkRow(s.units,proj,s.actualized)); })
+          return withNet(Object.assign({sku:s.sku},mkRow(s.units,proj,s.actualized)),s.actualized*oRate); })
         .filter(s=>s.units||Math.abs(s.actualized)>0.005).sort((a,b)=>b.actualized-a.actualized);
       const oProj=skus.reduce((a,s)=>a+s.projected,0);
-      rows.push(Object.assign({key:'other',label:'Other'},mkRow(o.units,oProj,o.actualized),{skus}));
+      rows.push(withNet(Object.assign({key:'other',label:'Other'},mkRow(o.units,oProj,o.actualized),{skus}),oDc));
     }
     const totals=rows.reduce((t,r)=>({units:t.units+r.units,projected:t.projected+r.projected,actualized:t.actualized+r.actualized,unitDisc:t.unitDisc+r.unitDisc}),{units:0,projected:0,actualized:0,unitDisc:0});
     totals.avg=totals.units?totals.actualized/totals.units:0;
+    totals.net=totals.units?(totals.actualized-(dc[src]||0))/totals.units:0;
     const invoices=Object.values(invMap[src]).filter(x=>Math.abs(x.billed)>0.005||Math.abs(x.dc)>0.005).sort((a,b)=>b.billed-a.billed);
     return {source:src, rows, discCredits:dc[src]||0, totals, invoices};
   };
@@ -3280,6 +3301,8 @@ function renderSku(){
         <td class="num money">${fmt$(x.actualized)}</td>
         <td class="num money">${x.unitDisc?fmt$(x.unitDisc):'—'}</td>
         <td class="num money">${x.units?fmt$(x.avg):'—'}</td>
+        <td class="num money">${Math.abs(x.dc||0)>0.005?('-'+fmt$(x.dc)):'—'}</td>
+        <td class="num money"><b>${x.units?fmt$(x.net):'—'}</b></td>
       </tr>`).join('');
       return `<tr class="parent">
         <td>${has?'<span class="caret">▶</span> ':''}Total ${esc(SKU_DISP[r.key]||r.label)}</td>
@@ -3288,11 +3311,12 @@ function renderSku(){
         <td class="num money">${fmt$(r.actualized)}</td>
         <td class="num money ud">${r.unitDisc?fmt$(r.unitDisc):'—'}</td>
         <td class="num money">${r.units?fmt$(r.avg):'—'}</td>
-        <td class="num"></td>
-        <td class="num"></td>
-      </tr>`+(has?`<tr class="detail hidden"><td colspan="8"><div class="detailbox">
+        <td class="num money dc">${Math.abs(r.dc||0)>0.005?('-'+fmt$(r.dc)):'—'}</td>
+        <td class="num money">${fmt$(r.actualized-(r.dc||0))}</td>
+        <td class="num money"><b>${r.units?fmt$(r.net):'—'}</b></td>
+      </tr>`+(has?`<tr class="detail hidden"><td colspan="9"><div class="detailbox">
         <div class="ddhead">${esc(SKU_DISP[r.key]||r.label)} — SKUs</div>
-        <table class="ddtable"><thead><tr><th>SKU / Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Disc</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${sub}</tbody></table>
+        <table class="ddtable"><thead><tr><th>SKU / Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Disc</th><th class="num">Avg $/Unit</th><th class="num" title="This product type's discounts and credits, shared out by billing">Disc/Credits</th><th class="num" title="After discounts, credits and free samples">Net $/Unit</th></tr></thead><tbody>${sub}</tbody></table>
       </div></td></tr>`:'');
     }).join('');
     const t=sys.totals, dc=sys.discCredits||0, invs=sys.invoices||[];
@@ -3306,14 +3330,14 @@ function renderSku(){
       <td class="num money">${fmt$(iv.billed-iv.dc)}</td>
     </tr>`).join('');
     const tB=invs.reduce((a,iv)=>a+iv.billed,0), tD=invs.reduce((a,iv)=>a+iv.dc,0);
-    const invDetail = invs.length ? `<tr class="invdetail hidden"><td colspan="8"><div class="detailbox">
+    const invDetail = invs.length ? `<tr class="invdetail hidden"><td colspan="9"><div class="detailbox">
         <div class="ddhead">Invoices / orders in this table — ${invs.length}</div>
         <div class="ddscroll"><table class="ddtable"><thead><tr><th>Invoice / Order #</th><th>Customer</th><th class="num">Date</th><th class="num">Billed</th><th class="num">Disc/Credits</th><th class="num">Actual Total</th></tr></thead><tbody>${invRows}</tbody><tfoot><tr class="totals"><td colspan="3">TOTAL · ${invs.length}</td><td class="num money">${fmt$(tB)}</td><td class="num money">${tD?('-'+fmt$(tD)):'—'}</td><td class="num money">${fmt$(tB-tD)}</td></tr></tfoot></table></div>
       </div></td></tr>` : '';
     return `<table class="skutbl">
       <thead>
-        <tr><th class="sys ${sys.source}" colspan="8" style="cursor:pointer" title="Click to see the invoices/orders that make up this table">${invs.length?'<span class="caret">▶</span> ':''}${sys.source}</th></tr>
-        <tr><th>Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Discounts</th><th class="num">Avg $/Unit</th><th class="num">Discounts/Credits</th><th class="num">Actual Total</th></tr>
+        <tr><th class="sys ${sys.source}" colspan="9" style="cursor:pointer" title="Click to see the invoices/orders that make up this table">${invs.length?'<span class="caret">▶</span> ':''}${sys.source}</th></tr>
+        <tr><th>Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Discounts</th><th class="num">Avg $/Unit</th><th class="num">Discounts/Credits</th><th class="num">Actual Total</th><th class="num" title="Actual Total divided by units, free samples included: the price per unit after discounts, credits and samples">Net $/Unit</th></tr>
       </thead>
       <tbody>${invDetail}${rowsHtml}</tbody>
       <tfoot><tr class="totals">
@@ -3325,6 +3349,7 @@ function renderSku(){
         <td class="num money">${t.units?fmt$(t.avg):'—'}</td>
         <td class="num money dc">${dc?('-'+fmt$(dc)):'—'}</td>
         <td class="num money">${fmt$(t.actualized-dc)}</td>
+        <td class="num money"><b>${t.units?fmt$(t.net):'—'}</b></td>
       </tr></tfoot>
     </table>`;
   };
@@ -8860,15 +8885,15 @@ $('#sku-export').onclick=()=>{
     const out=[['Drop','Product Type','Strain','SKU','Order #','Buyer','Order Date','Units','Line Total']];
     rows.sort((a,b)=>b.d-a.d).forEach(r=>out.push([r.drop?('Drop '+r.drop):'',r.format,r.strain,r.sku,r.ref,r.buyer,new Date(r.d).toISOString().slice(0,10),r.units,r.lineTotal.toFixed(2)]));
     downloadCSV('ny-sales-by-type.csv',out); return; }
-  const rows=[['System','Product','Units','Projected','Actualized','Unit Discounts','Avg $/Unit','Discounts/Credits','Actual Total']];
+  const rows=[['System','Product','Units','Projected','Actualized','Unit Discounts','Avg $/Unit','Discounts/Credits','Actual Total','Net $/Unit']];
   const f2=v=>(+v||0).toFixed(2);
   SKU.forEach(sys=>{
-    sys.rows.forEach(r=>rows.push([sys.source,'Total '+(SKU_DISP[r.key]||r.label),Math.round(r.units),f2(r.projected),f2(r.actualized),f2(r.unitDisc),r.units?f2(r.avg):'','','']));
+    sys.rows.forEach(r=>rows.push([sys.source,'Total '+(SKU_DISP[r.key]||r.label),Math.round(r.units),f2(r.projected),f2(r.actualized),f2(r.unitDisc),r.units?f2(r.avg):'',f2(-(r.dc||0)),f2(r.actualized-(r.dc||0)),r.units?f2(r.net):'']));
     const t=sys.totals;
-    rows.push([sys.source,'TOTALS',Math.round(t.units),f2(t.projected),f2(t.actualized),f2(t.unitDisc),t.units?f2(t.avg):'',f2(-(sys.discCredits||0)),f2(t.actualized-(sys.discCredits||0))]);
+    rows.push([sys.source,'TOTALS',Math.round(t.units),f2(t.projected),f2(t.actualized),f2(t.unitDisc),t.units?f2(t.avg):'',f2(-(sys.discCredits||0)),f2(t.actualized-(sys.discCredits||0)),t.units?f2(t.net):'']);
   });
   const net=SKU.reduce((a,sys)=>a+(sys.totals.actualized-(sys.discCredits||0)),0);
-  rows.push(['','Total for week (Distru + Nabis)','','','','','','',f2(net)]);
+  rows.push(['','Total for week (Distru + Nabis)','','','','','','',f2(net),'']);
   downloadCSV('sales-by-type.csv',rows);
 };
 
