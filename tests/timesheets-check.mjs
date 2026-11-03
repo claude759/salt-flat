@@ -4535,6 +4535,107 @@ await acheck('Move all sends only what its list said: a listed shift since put o
   eq([await P.placeMove(still.id, 's1', 'c-sla', { all: true, from: 'c-pack', reason: 'Clocked in at Slane' }), await P.placeMove(still.id, 's1', 'c-sla', { all: true, from: 'c-plain', reason: 'Clocked out at Slane' })].map(r => r.error), [CH, CH], 'the listed job and reason are checked');
   eq(sent, [], 'nothing went');
 });
+// the packing site (2026-11-03, Gianni: "we have a second packaging location ... just want to make sure that if a recommended
+// job change is offered that it take this into account"): Union Pacific, where only packing happens (C.placeLook rule 10)
+const UPP = (at, other) => PL('Union Pacific', 'near', at, other);
+check('rule 10 (2026-11-03): at Union Pacific, the packing site, Distro Packager fits; a deleaf job (plain or any site\'s) is a check to the person\'s own Distro Packager; changed sites either way (but Distro Packager between 25th St and Union Pacific fits both ends); Distro Packager at a grow keeps rule 3', () => {
+  eq([C.PLACE_SITES, C.PLACE_PACK_SITES, C.PLACE_ALL_SITES], [['Filifera', 'Slane', 'Imperial', 'Olympic'], ['Union Pacific'], ['Filifera', 'Slane', 'Imperial', 'Olympic', 'Union Pacific']]);
+  // the place as the sync writes it, and its words
+  eq(C.shiftPlace(UPP()), { site: 'Union Pacific', how: 'near', at: 'in' });
+  eq([UPP(), UPP('out'), PL('Union Pacific', 'named'), UPP('in', 'Olympic'), PL('Slane', 'named', 'in', 'Union Pacific')].map(p => C.placeTag(C.shiftPlace(p))),
+    ['Near Union Pacific', 'Clocked out at Union Pacific', 'At Union Pacific', 'Near Union Pacific, out at Olympic', 'At Slane, out at Union Pacific']);
+  // Distro Packager there: it fits, the tag only, no flag
+  const fit = LK('Distro Packager', UPP());
+  eq([kindTo(fit), fit.tag, fit.msg], [[null, null], 'Near Union Pacific', '']);
+  eq(C.placeFlag([{ shift: PS('Distro Packager', UPP()), look: fit }], C.TZ, false), null, 'no flag');
+  // a deleaf job there, plain or any site's (Union Pacific's own and one the page does not know too): Distro Packager
+  for (const t of ['Deleaf/Harvest', 'Deleaf/Harvest - Filifera', 'Deleaf/Harvest - Slane', 'Deleaf/Harvest - Imperial', 'Deleaf/Harvest - Olympic', 'Deleaf/Harvest - Union Pacific', 'Deleaf/Harvest - Vernon']) {
+    const l = LK(t, UPP());
+    eq([kindTo(l), l.to && l.to.title, l.reason, l.msg, l.tag, l.at, C.placeMovable({ look: l, waiting: false }), C.placeInMoveAll({ look: l, waiting: false })],
+      [['check', 'c-pack'], 'Distro Packager', 'Clocked in at Union Pacific', 'On ' + t + ' but clocked in at Union Pacific, a packing site, so likely Distro Packager', 'Near Union Pacific', 'in', true, false], t + ': a button, never in Move all');
+  }
+  eq(kindTo(LK('Deleaf/Harvest', PL('Union Pacific', 'named'))), ['check', 'c-pack'], 'the same once Gusto names it (an approved location)');
+  eq(kindTo(LK(' Deleaf/Harvest ', UPP())), ['check', 'c-pack'], 'a title with spaces around it reads the same');
+  // by its clock-out: a button, never in Move all, with its own reason
+  const lo = LK('Deleaf/Harvest - Imperial', UPP('out'));
+  eq([kindTo(lo), lo.tag, lo.reason, lo.msg, C.placeMovable({ look: lo, waiting: false }), C.placeInMoveAll({ look: lo, waiting: false })],
+    [['check', 'c-pack'], 'Clocked out at Union Pacific', 'Clocked out at Union Pacific', 'On Deleaf/Harvest - Imperial but clocked out at Union Pacific, a packing site, so likely Distro Packager', true, false]);
+  // a "Deleaf/Harvest - Union Pacific" job is never what the board suggests, even to someone who holds it
+  const UJOBS = C.personJobs({ jobs: [JB('u-plain', 'Deleaf/Harvest', { primary: true }), JB('u-up', 'Deleaf/Harvest - Union Pacific'), JB('u-sla', 'Deleaf/Harvest - Slane'), JB('u-pack', 'Distro Packager')] });
+  eq(kindTo(LK('Deleaf/Harvest', UPP(), UJOBS)), ['check', 'u-pack'], 'at Union Pacific: Distro Packager, never that job');
+  eq(kindTo(LK('Deleaf/Harvest - Union Pacific', UPP(), UJOBS)), ['check', 'u-pack'], 'on that job there: Distro Packager too');
+  eq(kindTo(LK('Deleaf/Harvest - Union Pacific', PL('Slane', 'named'), UJOBS)), ['clear', 'u-sla'], 'on it at a grow: that grow\'s deleaf job (rule 2)');
+  for (const site of C.PLACE_SITES) for (const t of ['Deleaf/Harvest', 'Distro Packager', 'Deleaf/Harvest - Union Pacific']) {
+    const l = LK(t, PL(site, 'named'), UJOBS);
+    ok(!l.to || l.to.id !== 'u-up', site + ' ' + t + ': never Deleaf/Harvest - Union Pacific');
+  }
+  // no Distro Packager job: it needs one in Gusto (no button); one that starts after the day: the same, with its date (5)
+  const nj = LK('Deleaf/Harvest', UPP(), C.personJobs({ jobs: [JB('n-plain', 'Deleaf/Harvest', { primary: true }), JB('n-sla', 'Deleaf/Harvest - Slane')] }));
+  eq([kindTo(nj), nj.msg, C.placeMovable({ look: nj, waiting: false })], [['needsJob', null], 'Clocked in at Union Pacific, a packing site, so it needs Distro Packager in Gusto, which is not one of their jobs yet', false]);
+  eq(kindTo(LK('Deleaf/Harvest', UPP(), PJOBS)), ['check', 'p-pack'], 'someone with only the plain job and packing: their Distro Packager');
+  const LJOBS = C.personJobs({ jobs: [JB('l-sla', 'Deleaf/Harvest - Slane', { primary: true }), JB('l-pack', 'Distro Packager', { start: '2026-10-08' })] });
+  const late = LK('Deleaf/Harvest - Slane', UPP(), LJOBS);
+  eq([kindTo(late), late.starts, late.msg], [['needsJob', null], '2026-10-08', 'Clocked in at Union Pacific, a packing site, so likely Distro Packager, but that job starts on Oct 8 in Gusto, after this day']);
+  eq(kindTo(LK('Deleaf/Harvest - Slane', UPP(), LJOBS, { date: '2026-10-08' })), ['check', 'l-pack'], 'from its first day on, it can be moved to');
+  // clocked in there and out at a grow, or the reverse: changed sites, check the job, no button (6), whatever the job; but
+  // Distro Packager between 25th St and Union Pacific (review 2026-11-03): packing happens at both ends, so the tag only
+  for (const [p, msg] of [[UPP('in', 'Olympic'), 'Clocked in at Union Pacific and out at Olympic'], [UPP('in', 'Filifera'), 'Clocked in at Union Pacific and out at Filifera'],
+    [PL('Slane', 'named', 'in', 'Union Pacific'), 'Clocked in at Slane and out at Union Pacific'], [PL('Imperial', 'near', 'in', 'Union Pacific'), 'Clocked in at Imperial and out at Union Pacific'],
+    [PL('Filifera', 'named', 'in', 'Union Pacific'), 'Clocked in at Filifera and out at Union Pacific']])
+    for (const t of ['Deleaf/Harvest', 'Deleaf/Harvest - Slane', 'Deleaf/Harvest - Filifera', 'Distro Packager']) {
+      if (t === 'Distro Packager' && [p.site, p.other].includes('Filifera')) continue;
+      const l = LK(t, p);
+      eq([kindTo(l), l.msg, C.placeMovable({ look: l, waiting: false })], [['changed', null], msg + ', so check the job, or split the shift in Gusto', false], t + ' ' + J(p));
+    }
+  for (const [p, tag] of [[UPP('in', 'Filifera'), 'Near Union Pacific, out at Filifera'], [PL('Filifera', 'named', 'in', 'Union Pacific'), 'At Filifera, out at Union Pacific'],
+    [PL('Union Pacific', 'named', 'in', 'Filifera'), 'At Union Pacific, out at Filifera']]) {
+    const l = LK('Distro Packager', p), x = { shift: PS('Distro Packager', p), look: l, waiting: false };
+    eq([kindTo(l), l.tag, l.msg, C.placeMovable(x), C.placeInMoveAll(x), C.placeFlag([x], C.TZ, false)], [[null, null], tag, '', false, false, null], 'Distro Packager ' + J(p) + ': fits both ends, no flag');
+  }
+  // Distro Packager at a grow site keeps rule 3 (a check to that site's deleaf job), and at 25th St rule 4 (nothing)
+  for (const site of ['Slane', 'Imperial']) eq(kindTo(LK('Distro Packager', PL(site, site === 'Slane' ? 'named' : 'near'))), ['check', JT['Deleaf/Harvest - ' + site]], '3 at ' + site);
+  eq(kindTo(LK('Distro Packager', PL('Filifera', 'named'))), [null, null], '4');
+  // any other job there: the tag only (9); a shift that cannot change now (8) or still running; jobs not loaded
+  for (const t of ['Cultivator', 'Driver', 'Packaging Lead', '']) eq([kindTo(LK(t, UPP())), LK(t, UPP()).tag], [[null, null], 'Near Union Pacific'], '9: ' + J(t));
+  eq([kindTo(LK('Deleaf/Harvest', UPP(), CJOBS, { readonly: true })), LK('Deleaf/Harvest', UPP(), CJOBS, { readonly: true }).tag], [[null, null], 'Near Union Pacific'], '8');
+  eq(kindTo(C.placeLook(Object.assign(PS('Deleaf/Harvest', UPP()), { out: null }), CJOBS, { date: '2026-10-06' })), [null, null], '8: still running');
+  eq(kindTo(LK('Deleaf/Harvest', UPP(), null)), [null, null], "the person's jobs not loaded: nothing to suggest");
+});
+await acheck('rule 10 on the board (2026-11-03): the Job vs place flag, "Move to Distro Packager" sends the Job pick\'s own change with the reason "Clocked in at Union Pacific", and Move all clear ones leaves it out', async () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const raw = edRow([PS('Deleaf/Harvest', UPP())]);
+  const looks = C.placeLooks(raw, raw, [], CJOBS, ctx);
+  eq(looks.map(x => [kindTo(x.look), C.placeMovable(x), C.placeInMoveAll(x)]), [[['check', 'c-pack'], true, false]]);
+  const f = C.placeFlag(looks, C.TZ, false);
+  eq([f, C.flagLabel(f)], [{ code: 'job_place', sev: 'warn', msg: 'On Deleaf/Harvest but clocked in at Union Pacific, a packing site, so likely Distro Packager' }, 'Job vs place']);
+  eq('Move to ' + C.jobLabel(looks[0].look.to.title), 'Move to Distro Packager', 'the button (moveLabel)');
+  // the button sends the editor's own job change: the times and breaks as Gusto has them, only the job moves
+  const mv = C.placeMoveOp(raw, raw, [], me, ctx, 's1', looks[0].look.to);
+  eq([mv.op.type, mv.op.action, mv.op.after.job, mv.op.after.in, mv.op.after.out, mv.op.after.breaks.length, mv.op.expect], ['submit', 'update', { id: 'c-pack', title: 'Distro Packager' }, ED_S1.in, ED_S1.out, 2, []]);
+  ok(!C.reasonProblem(looks[0].look.reason), 'the reason passes the server\'s check');
+  const sub = C.submitEdit([], raw, { shift_id: 's1', action: 'update', after: mv.op.after, note: looks[0].look.reason, expect: mv.op.expect }, { email: me.email, now: NOW_N, id: 'up1', jobs: CJOBS });
+  ok(sub.ok, sub.error);
+  eq([sub.edit.note, C.describeEdit(sub.edit, C.TZ)], ['Clocked in at Union Pacific', ['Job Deleaf/Harvest → Distro Packager']]);
+  eq(C.placeFlag(C.placeLooks(raw, OV(raw, [sub.edit]), [sub.edit], CJOBS, ctx), C.TZ, true), null, 'moved: Distro Packager there fits, the flag is gone');
+  // Move all clear ones: the plain shift at Slane goes, the one at Union Pacific stays for its button
+  const day = (n, title, place) => edRow([PS(title, place)], { id: 'filifera:u' + n + ':2026-10-06', employee_uuid: 'u' + n, employee_name: 'Test Crew ' + n });
+  const rows = [day(1, 'Deleaf/Harvest', PL('Slane', 'named')), day(2, 'Deleaf/Harvest', UPP()), day(3, 'Deleaf/Harvest - Slane', UPP()), day(4, 'Distro Packager', UPP()),
+    day(5, 'Distro Packager', PL('Filifera', 'named', 'in', 'Union Pacific'))];   // 5: packing at both ends (review 2026-11-03)
+  const S = { rows: new Map(rows.map(r => [r.id, r])) }, idx = new Map(rows.map(r => [r.id, C.placeLooks(r, r, [], CJOBS, ctx)]));
+  eq(rows.map(r => C.placeFlag(idx.get(r.id), C.TZ, false) ? 'Job vs place' : null), ['Job vs place', 'Job vs place', 'Job vs place', null, null], 'the flags');
+  const sent = [], toasts = [];
+  const P = placeRunPage({ S, idx, me, sent, toasts, rows: () => rows });
+  P.placeAllOpen();
+  eq(P.PM.items.map(it => [it.k, it.to, it.reason]), [[rows[0].id, 'c-sla', 'Clocked in at Slane']], 'Move all lists only the clear one');
+  await P.placeAllRun();
+  eq(sent, [{ day: rows[0].id, from: 'c-plain', to: 'c-sla', note: 'Clocked in at Slane' }]);
+  // its own button sends it, and Move all asked to take it is refused
+  sent.length = 0;
+  eq((await P.placeMove(rows[1].id, 's1', 'c-pack')).error || 'sent', 'sent');
+  eq((await P.placeMove(rows[2].id, 's1', 'c-pack', { all: true, from: 'c-sla', reason: 'Clocked in at Union Pacific' })).error, 'This shift changed since the list was made. Check it again.');
+  eq((await P.placeMove(rows[3].id, 's1', 'c-pack')).error, 'This shift no longer needs that move. Check it again.', 'Distro Packager there: nothing to move');
+  eq(sent, [{ day: rows[1].id, from: 'c-plain', to: 'c-pack', note: 'Clocked in at Union Pacific' }]);
+});
 check('demo: a made-up deleaf crew with places on its last two weeks, covering every rule (clear by clock-in and by clock-out, check, needs a job, a job that starts later, two sites, elsewhere, no place, a driving job, packing at 25th St, a shift still running)', () => {
   const crew = demo.people.filter(p => p.company === 'filifera' && p.jobs.some(j => j.title === 'Deleaf/Harvest' || j.title.startsWith('Deleaf/Harvest - ')));
   eq(crew.map(p => p.department), ['Deleaf', 'Deleaf', 'Deleaf', 'Deleaf'], 'four made-up crew people');
@@ -4545,7 +4646,7 @@ check('demo: a made-up deleaf crew with places on its last two weeks, covering e
     if (!('place' in s)) continue;
     ok(crew.includes(pOf(r)), r.id + ': a place only on the crew\'s shifts');
     eq(C.shiftPlace(s.place), s.place, 'shaped as the sync writes it: ' + J(s.place));
-    ok(C.PLACE_SITES.includes(s.place.site) || s.place.site === null, 'one of the four sites');
+    ok(C.PLACE_ALL_SITES.includes(s.place.site) || s.place.site === null, 'one of the sites (the four deleaf sites and, since 2026-11-03, the packing site)');
     ok(r.work_date >= C.addDays(demo.todays.CA, -13), 'the last two weeks only');
   }
   for (const r0 of demo.rows.filter(r => crew.includes(pOf(r)))) {
@@ -4575,22 +4676,67 @@ check('demo: a made-up deleaf crew with places on its last two weeks, covering e
     ok(n >= 6, d.today + ': ' + n + ' flagged crew days');
   }
 });
-// its twins (TS_GUSTO_SYNC_DIR's, else ~/gusto-sync's): the places file names the page's four sites and its job prefix, and
-// the timesheet sync's shiftPlace turns every side-file read into a place the page reads unchanged, by the agreed rule (C3).
-// Ids and coordinates in the places file are never printed.
+check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the packing site: a deleaf job there (a check to Distro Packager, by its clock-in and by its clock-out), packing there (the tag only), and in there, out at a grow (changed sites)', () => {
+  const pOf = r => demo.people.find(p => p.company === r.company && p.employee_uuid === r.employee_uuid);
+  const seen = [];
+  for (const r0 of demo.rows) {
+    if (!r0.shifts.some(s => s.place && (s.place.site === 'Union Pacific' || s.place.other === 'Union Pacific'))) continue;
+    const r = C.normRow(r0), p = pOf(r);
+    eq(p.department, 'Deleaf', r.id + ': on the made-up crew');
+    const looks = C.placeLooks(r, r, [], C.personJobs(p), { today: demo.todays.CA, now: NOW, who: demo.me, open: true });
+    for (const x of looks) seen.push([x.shift.job.title, x.look.tag, x.look.kind, x.look.to && x.look.to.title, C.placeInMoveAll(x)]);
+  }
+  const has = (title, tag, kind, to) => seen.some(x => x[0] === title && x[1] === tag && x[2] === kind && x[3] === to);
+  ok(has('Deleaf/Harvest', 'Near Union Pacific', 'check', 'Distro Packager'), 'a deleaf job there, by its clock-in: ' + J(seen));
+  ok(has('Deleaf/Harvest - Imperial', 'Clocked out at Union Pacific', 'check', 'Distro Packager'), 'by its clock-out: ' + J(seen));
+  ok(has('Distro Packager', 'Near Union Pacific', null, null), 'packing there: the tag only: ' + J(seen));
+  ok(has('Deleaf/Harvest', 'Near Union Pacific, out at Olympic', 'changed', null), 'in there, out at a grow: ' + J(seen));
+  ok(seen.every(x => !x[4]), 'none of them in Move all');
+  ok(!/'Union Pacific'/.test(block('ts-demo')), 'the demo names the site through C.PLACE_PACK_SITES (the no-names check)');
+});
+// its twins (TS_GUSTO_SYNC_DIR's, else ~/gusto-sync's): the places file names the page's four deleaf sites (and, since
+// 2026-11-03, a packing site only under "packing") and its job prefix, the worker's places-core.mjs reads it with the page's
+// sites, and the timesheet sync's shiftPlace turns every side-file read into a place the page reads unchanged, by the agreed
+// rule (C3). A sync from before the packing site (no "packing", no Union Pacific) still passes: the page reads its places the
+// same way. Ids and coordinates in the places file are never printed.
 {
   const named = !!process.env.TS_GUSTO_SYNC_DIR, dir = process.env.TS_GUSTO_SYNC_DIR || path.join(os.homedir(), 'gusto-sync'), where = dir.replace(os.homedir(), '~');
-  check('the places file (' + where + '/job-places.json) names the page\'s four sites and its job prefix', () => {
+  let placesFile = null;   // job-places.json as read by the first check (null: none, or it did not parse)
+  check('the places file (' + where + '/job-places.json) names the page\'s four deleaf sites, a packing site only as packing, and its job prefix', () => {
     const f = path.join(dir, 'job-places.json');
     if (!fs.existsSync(f)) { if (named && fs.existsSync(path.join(dir, 'ca-ts-core.mjs')) && /shiftPlace/.test(fs.readFileSync(path.join(dir, 'ca-ts-core.mjs'), 'utf8'))) throw new Error('TS_GUSTO_SYNC_DIR has places in its sync but no job-places.json'); console.log('          (skipped: no job-places.json in ' + where + ')'); return true; }
     let cfg; try { cfg = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { throw new Error('job-places.json does not parse'); }
+    placesFile = cfg;
     const fi = cfg && cfg.filifera;
     ok(fi && typeof fi.named === 'object' && Array.isArray(fi.circles), 'filifera.named and filifera.circles');
     eq(fi.jobPrefix, C.PLACE_JOB_PREFIX, 'jobPrefix');
-    eq([...new Set(Object.values(fi.named).concat(fi.circles.map(c => c.site)))].sort(), [...C.PLACE_SITES].sort(), 'its sites');
+    // every deleaf site, and any other site only a packing site the file lists under "packing" (2026-11-03)
+    const sites = [...new Set(Object.values(fi.named).concat(fi.circles.map(c => c.site)))].sort();
+    const packing = fi.packing === undefined ? [] : fi.packing;
+    ok(Array.isArray(packing) && packing.every(x => C.PLACE_PACK_SITES.includes(x)) && new Set(packing).size === packing.length, '"packing" lists packing sites only, each once: ' + J(packing));
+    eq(sites.filter(x => C.PLACE_SITES.includes(x)), [...C.PLACE_SITES].sort(), 'its deleaf sites');
+    eq(sites.filter(x => !C.PLACE_SITES.includes(x)), sites.filter(x => packing.includes(x)), 'its other sites, each a packing site it lists: ' + J(sites));
     // 150 m today; the worker takes up to 300 m (places-core.mjs PLACE_RADIUS_MAX_M, its README says to widen a circle there),
     // so a wider circle must not fail this page's check (final cross-check 2026-10-30). The page never reads the radius.
     ok(fi.circles.every(c => typeof c.radiusM === 'number' && c.radiusM > 0 && c.radiusM <= 300 && Number.isFinite(c.lat) && Number.isFinite(c.lng)), 'each circle above 0 and at most 300 m, with a centre');
+  });
+  // the worker's reading of the file (places-core.mjs placesConfig, 2026-11-03): the page's site lists, the file taken whole
+  // (a places-core.mjs from before the packing site drops Filifera's whole section over a Union Pacific circle: install them
+  // together), and a packing site's deleaf job puts no one on the crew
+  let pcore = null;
+  try { const f = path.join(dir, 'places-core.mjs'); pcore = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { console.log('          (places-core.mjs did not load: ' + String((e && e.message) || e).split('\n')[0] + ')'); }
+  check('the edit worker reads the places file with the page\'s sites (' + where + '/places-core.mjs placesConfig)', () => {
+    if (!pcore || typeof pcore.placesConfig !== 'function' || !placesFile) { if (named && placesFile) throw new Error('TS_GUSTO_SYNC_DIR has job-places.json but no places-core.mjs placesConfig'); console.log('          (skipped: no places in ' + where + ' yet)'); return true; }
+    eq([...pcore.PLACE_SITES], C.PLACE_SITES, 'PLACE_SITES, the deleaf sites');
+    const fi = placesFile.filifera, packs = (fi && fi.packing) || [];
+    if (!pcore.PLACE_PACK_SITES) { if (packs.length) throw new Error('job-places.json lists a packing site, but its places-core.mjs has no PLACE_PACK_SITES (install them together)'); console.log('          (no packing site in ' + where + ' yet)'); }
+    else { eq([...pcore.PLACE_PACK_SITES], C.PLACE_PACK_SITES, 'PLACE_PACK_SITES'); eq([...pcore.PLACE_ALL_SITES], C.PLACE_ALL_SITES, 'PLACE_ALL_SITES'); }
+    const read = pcore.placesConfig(placesFile);
+    eq(read.problems, [], 'the worker takes the file');
+    const cfg = read.companies.filifera;
+    ok(cfg && cfg.jobPrefix === C.PLACE_JOB_PREFIX && cfg.plainJob === C.PLACE_PLAIN_JOB, 'its jobs');
+    for (const x of C.PLACE_SITES) ok(pcore.isCrewTitle(C.PLACE_JOB_PREFIX + x, cfg), x + "'s deleaf job is a crew job");
+    if (pcore.PLACE_PACK_SITES) for (const x of C.PLACE_PACK_SITES) ok(!pcore.isCrewTitle(C.PLACE_JOB_PREFIX + x, cfg), x + "'s deleaf job is no crew job");
   });
   let core = null;
   try { const f = path.join(dir, 'ca-ts-core.mjs'); core = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { console.log('          (ca-ts-core.mjs did not load: ' + String((e && e.message) || e).split('\n')[0] + ')'); }
@@ -4598,12 +4744,19 @@ check('demo: a made-up deleaf crew with places on its last two weeks, covering e
     if (!core || typeof core.shiftPlace !== 'function') { if (named && fs.existsSync(path.join(dir, 'job-places.json'))) throw new Error('TS_GUSTO_SYNC_DIR has job-places.json but its ca-ts-core.mjs has no shiftPlace'); console.log('          (skipped: no places in ' + where + ' yet)'); return true; }
     if (core.PLACE_SITES) eq([...core.PLACE_SITES], C.PLACE_SITES, 'PLACE_SITES');
     if (core.CREW_JOB_PREFIX != null) eq([core.CREW_JOB, core.CREW_JOB_PREFIX], [C.PLACE_PLAIN_JOB, C.PLACE_JOB_PREFIX], 'the crew jobs');
+    // the packing site (2026-11-03): the same lists, and the crew still by the deleaf sites' jobs only
+    if (core.PLACE_PACK_SITES) {
+      eq([[...core.PLACE_PACK_SITES], [...core.PLACE_ALL_SITES]], [C.PLACE_PACK_SITES, C.PLACE_ALL_SITES], 'PLACE_PACK_SITES and PLACE_ALL_SITES');
+      if (typeof core.isPlaceCrew === 'function') for (const x of C.PLACE_PACK_SITES) eq(core.isPlaceCrew([{ id: 'j', title: C.PLACE_JOB_PREFIX + x, primary: true, start: null }]), false, x + "'s deleaf job is no crew job");
+    } else if (placesFile && ((placesFile.filifera || {}).packing || []).length) throw new Error('job-places.json lists a packing site, but its ca-ts-core.mjs has no PLACE_PACK_SITES (its reads there would be dropped)');   // a half install: in the plain run too (review 2026-11-03)
+    const packs = core.PLACE_PACK_SITES ? C.PLACE_PACK_SITES.filter(x => core.PLACE_PACK_SITES.includes(x)) : [];
     // the agreed rule (C3), written out: the clock-in's site, else the clock-out's, else elsewhere, else none
     const want = (i, o) => i && i.site ? Object.assign({ site: i.site, how: i.how, at: 'in' }, o && o.site && o.site !== i.site ? { other: o.site } : {})
       : o && o.site ? { site: o.site, how: o.how, at: 'out' }
       : (i && i.how === 'elsewhere') || (o && o.how === 'elsewhere') ? { site: null, how: 'elsewhere' } : { site: null, how: 'none' };
     const ends = [null, { site: 'Filifera', how: 'named' }, { site: 'Slane', how: 'named' }, { site: 'Imperial', how: 'near' }, { site: 'Olympic', how: 'near' }, { site: null, how: 'elsewhere' },
-      { site: null, how: 'none', why: 'edited' }, { site: null, how: 'none', why: 'no-device' }, { site: null, how: 'none', why: 'web' }, { site: null, how: 'none' }];
+      { site: null, how: 'none', why: 'edited' }, { site: null, how: 'none', why: 'no-device' }, { site: null, how: 'none', why: 'web' }, { site: null, how: 'none' }]
+      .concat(packs.map(x => ({ site: x, how: 'near' })));
     let n = 0;
     for (const i of ends) for (const o of ends) {
       const got = core.shiftPlace({ at: '2026-10-30T23:00:00Z', in: i, out: o });
