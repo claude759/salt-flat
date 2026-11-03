@@ -508,6 +508,7 @@
   th.sys.Nabis{background:rgba(255,143,94,.13);color:var(--nabis)}
   th.sys.Distru{background:rgba(78,161,255,.13);color:var(--distru)}
   th.sys.QuickBooks{background:rgba(47,191,113,.13);color:#7fe0b0}
+  th.sys.LeafLink{background:rgba(124,92,255,.13);color:var(--accent2)}
   table.skutbl{margin:0 0 26px}
   table.skutbl td.ud{color:var(--orange)}
   table.skutbl td.dc{color:var(--red)}
@@ -4698,6 +4699,19 @@ const nyMonthShipped=st=>/ship|fulfil|complet|deliver/i.test(st||'');
 // grossed back up to what dispensaries paid: only HM OPS's remittances on DROP invoices; a bulk purchase
 // by HM OPS (0000376788, $51,480) or a store paying us directly is already the full amount (2026-10-05 audit)
 const nyPayIsHm=p=>/HM OPS/i.test(p.c||''), nyPayGrossUp=p=>nyPayIsHm(p)&&/\(\s*drop\s*[\d.]+\s*\)/i.test(p.inv||''), nyPayGross=p=>{ const a=+p.amt||0; return nyPayGrossUp(p)?a/0.9*1.09:a; };
+// One NY order's discount: HM OPS's own invoice discount when it has billed the order, else the 5% early-pay
+// its delivery sheet shows, else LeafLink's order credit. Shared by the monthly report and Sales by Type.
+// Only a monthly recon carries HM OPS's real discounts: invoices loaded from a Paid-vs-Unpaid export are at
+// gross with disc 0, so those orders fall through to the sheet's 5% / LeafLink credit (2026-10-05 audit).
+function nyOrderDiscFn(){
+  const ordMap=nyInvOrderMap(), refDisc={}; (NY_INV||[]).forEach(x=>{ if(/Paid-vs-Unpaid export at gross/i.test(x.dsum||'')) return; const ref=ordMap[x.inv]; if(ref) refDisc[ref]=(refDisc[ref]||0)+(x.disc||0); });
+  const sheetTot=nyscSheetTotals();
+  return (ref0,amt,cr)=>{ const ref=String(ref0||'').trim();
+    if(refDisc[ref]!=null){ const disc=refDisc[ref]; return {disc, dsrc:disc>0.005?'HM OPS invoice':'HM OPS invoice (none)'}; }
+    if(sheetTot[ref]!=null && Math.abs(sheetTot[ref]-amt*0.95)<=0.02) return {disc:amt*0.05, dsrc:'5% early pay (HM OPS sheet)'};
+    if((cr||0)>0.005) return {disc:cr, dsrc:'LeafLink credit'};
+    return {disc:0, dsrc:''}; };
+}
 function nyMonthData(ym){
   const [y,m]=ym.split('-').map(Number);
   const win=(yy,mm)=>({a:new Date(yy,mm-1,1).getTime(), b:new Date(yy,mm,0,23,59,59,999).getTime()});
@@ -4709,17 +4723,10 @@ function nyMonthData(ym){
   const inWin=(list,w)=>list.filter(r=>r.when!=null&&r.when>=w.a&&r.when<=w.b);
   const sum=a=>a.reduce((s,r)=>s+(r.amt||0),0);
   const cm=inWin(deliv,cur).sort((a,b)=>(a.when-b.when)||(b.amt-a.amt)), pm=inWin(deliv,prev).sort((a,b)=>(a.when-b.when)||(b.amt-a.amt));
-  // gross -> net to Wizard Trees, per order (the purchase-order basis): discount from HM OPS's own invoice
-  // when it has billed the order, else the 5% early-pay its delivery sheet shows, else LeafLink's order credit;
+  // gross -> net to Wizard Trees, per order (the purchase-order basis): the order's discount (nyOrderDiscFn);
   // excise = 9/109 of what is left; HM OPS's fee = 10% of the rest; net = 90% of (gross - discount) / 1.09
-  // only a monthly recon carries HM OPS's real discounts: invoices loaded from a Paid-vs-Unpaid export are at
-  // gross with disc 0, so those orders fall through to the sheet's 5% / LeafLink credit (2026-10-05 audit)
-  const ordMap=nyInvOrderMap(), refDisc={}; (NY_INV||[]).forEach(x=>{ if(/Paid-vs-Unpaid export at gross/i.test(x.dsum||'')) return; const ref=ordMap[x.inv]; if(ref) refDisc[ref]=(refDisc[ref]||0)+(x.disc||0); });
-  const sheetTot=nyscSheetTotals();
-  const netOf=r=>{ const ref=String(r.ref||'').trim(); let disc=0, dsrc='';
-    if(refDisc[ref]!=null){ disc=refDisc[ref]; dsrc=disc>0.005?'HM OPS invoice':'HM OPS invoice (none)'; }
-    else if(sheetTot[ref]!=null && Math.abs(sheetTot[ref]-r.amt*0.95)<=0.02){ disc=r.amt*0.05; dsrc='5% early pay (HM OPS sheet)'; }
-    else if((r.cr||0)>0.005){ disc=r.cr; dsrc='LeafLink credit'; }
+  const discOf=nyOrderDiscFn();
+  const netOf=r=>{ const {disc,dsrc}=discOf(r.ref,r.amt,r.cr);
     const base=r.amt-disc, excise=base*9/109, fee=(base-excise)*0.1;
     return {...r, disc, dsrc, excise, fee, net:base-excise-fee}; };
   cm.forEach((r,i)=>{ cm[i]=netOf(r); }); pm.forEach((r,i)=>{ pm[i]=netOf(r); });
@@ -6123,16 +6130,36 @@ applyHmPreset('week');   // show the active window in the boxes from the start (
 
 // ── NY Sales by Type: LeafLink line items grouped by product format → strain, with Drop cohorts ──
 let nyDropFilter=0;   // 0 = all drops
+// NY list price per product type: the price most of its paid units sold at. LeafLink lines carry no list
+// price, and NY sells each type at one wholesale price, so the most common one is it. Free samples ($0 and
+// $0.01 lines) are left out; a type with no paid units in the range falls back to all of its LeafLink lines.
+let nyListAllMemo={items:null,val:null};
+function nyListPrices(rows){
+  const mode=list=>{ const by={}; list.forEach(x=>{ if(!(x.units>0)) return; const pu=Math.round(x.lineTotal/x.units*100)/100; if(pu<=0.01) return;
+      const g=by[x.format]||(by[x.format]={}); g[pu]=(g[pu]||0)+x.units; });
+    const out={}; Object.entries(by).forEach(([f,g])=>{ out[f]=+Object.entries(g).sort((a,b)=>(b[1]-a[1])||(b[0]-a[0]))[0][0]; }); return out; };
+  if(nyListAllMemo.items!==NY_ITEMS) nyListAllMemo={items:NY_ITEMS, val:mode((NY_ITEMS||[]).map(it=>({format:nyParseProduct(it.product).format, units:it.units, lineTotal:it.lineTotal})))};
+  return Object.assign({}, nyListAllMemo.val, mode(rows));
+}
 function nySkuRows(){
   // join line items → their orders (buyer/date come from the order; cancelled orders drop out)
   const byRef={}; (NY_EVENTS||[]).forEach(e=>{ byRef[e.ref]=e; });
   const sd=parseDate(($('#sku-start')||{}).value), ed=parseDate(($('#sku-end')||{}).value);
   const s=sd?(sd.setHours(0,0,0,0), sd.getTime()):-Infinity, e=ed?(ed.setHours(23,59,59,999), ed.getTime()):Infinity;
-  const rows=[];
+  const rows=[], ordLines={};
   (NY_ITEMS||[]).forEach(it=>{ const o=byRef[it.ref]; if(!o||o.d==null||o.d<s||o.d>e) return;
     const drop=nyDropOf(o.d); const p=nyParseProduct(it.product);
+    const ol=ordLines[it.ref]||(ordLines[it.ref]={total:0,units:0}); ol.total+=it.lineTotal; ol.units+=it.units;
     rows.push({ref:it.ref, buyer:o.c, d:o.d, units:it.units, lineTotal:it.lineTotal, format:p.format, strain:p.strain, sku:p.sku, drop:drop?drop.n:null, dropLabel:drop?drop.label:'—'});
   });
+  // Each order's discount (the monthly report's rule: HM OPS invoice, else 5% early pay, else LeafLink
+  // credit) is split across its lines by their share of the order's billing, so the product-type rows
+  // always add up to the order totals (Gianni, 2026-11-03).
+  const discOf=nyOrderDiscFn(), disc={}; Object.keys(ordLines).forEach(ref=>{ const o=byRef[ref]; disc[ref]=discOf(ref,o.amt,o.cr); });
+  const listOf=nyListPrices(rows);
+  rows.forEach(r=>{ const ol=ordLines[r.ref], d=disc[r.ref];
+    const share=ol.total>0.005?r.lineTotal/ol.total:(ol.units?r.units/ol.units:0);
+    r.dc=d.disc*share; r.dsrc=d.dsrc; r.list=listOf[r.format]||0; r.projected=r.units*r.list; });
   return rows;
 }
 function renderSkuNY(){
@@ -6140,6 +6167,10 @@ function renderSkuNY(){
   const all=nySkuRows();
   if(!all.length){ note.innerHTML='';
     wrap.innerHTML=`<div class="empty" style="padding:34px;text-align:center">No New York line items in this date range yet — they publish with the hourly refresh.</div>`; return; }
+  const intl=n=>Math.round(n).toLocaleString();
+  const shortD=v=>{ if(!v) return ''; const p=v.split('-'); return p.length===3?(+p[1])+'/'+(+p[2]):v; };
+  const sv=$('#sku-start').value, ev=$('#sku-end').value;
+  const rng=(sv||ev)?`${shortD(sv)||'…'} – ${shortD(ev)||'today'}`:'all time';
   // Drop summary cards (range-filtered, ignoring the drop filter so you can always compare drops)
   const byDrop={}; all.forEach(r=>{ const k=r.drop||0; const g=byDrop[k]||(byDrop[k]={n:r.drop,label:r.dropLabel,units:0,rev:0,orders:new Set()});
     g.units+=r.units; g.rev+=r.lineTotal; g.orders.add(r.ref); });
@@ -6153,20 +6184,31 @@ function renderSkuNY(){
     ${nyDropDefs().map(d=>`<button class="${nyDropFilter===d.n?'on':''}" data-drop="${d.n}"${d.inv?` title="${esc(d.inv)}"`:''}>${esc(d.label)}</button>`).join('')}
   </div></div>`;
   const view=nyDropFilter?all.filter(r=>r.drop===nyDropFilter):all;
-  // group format → strain
-  const fmts={};
-  view.forEach(r=>{ const f=fmts[r.format]||(fmts[r.format]={format:r.format,units:0,rev:0,orders:new Set(),strains:{}});
-    f.units+=r.units; f.rev+=r.lineTotal; f.orders.add(r.ref);
-    const st=f.strains[r.strain]||(f.strains[r.strain]={strain:r.strain,units:0,rev:0,orders:new Set()});
-    st.units+=r.units; st.rev+=r.lineTotal; st.orders.add(r.ref); });
-  const flist=Object.values(fmts).sort((a,b)=>b.rev-a.rev);
-  const strainTable=f=>{ const ss=Object.values(f.strains).sort((a,b)=>b.rev-a.rev);
-    return `<div class="ddhead">Strains</div><table class="ddtable"><thead><tr><th>Strain</th><th class="num">Units</th><th class="num">Orders</th><th class="num">Revenue</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${
-      ss.map(x=>`<tr><td>${esc(x.strain)}</td><td class="num">${Math.round(x.units).toLocaleString()}</td><td class="num">${x.orders.size}</td><td class="num money">${fmt$(x.rev)}</td><td class="num money">${x.units?fmt$(x.rev/x.units):'—'}</td></tr>`).join('')}</tbody></table>`; };
-  const body=flist.map(f=>`<tr class="parent"><td><span class="caret">▶</span> ${esc(f.format)}</td>
-      <td class="num">${Math.round(f.units).toLocaleString()}</td><td class="num">${f.orders.size}</td><td class="num money">${fmt$(f.rev)}</td><td class="num money">${f.units?fmt$(f.rev/f.units):'—'}</td></tr>
-    <tr class="detail hidden"><td colspan="5"><div class="detailbox">${strainTable(f)}</div></td></tr>`).join('');
-  const totU=view.reduce((s2,r)=>s2+r.units,0), totR=view.reduce((s2,r)=>s2+r.lineTotal,0), totO=new Set(view.map(r=>r.ref)).size;
+  // group format → strain, CA columns: Projected (units × list) / Actualized (billed) / order discounts
+  const acc=()=>({units:0,projected:0,actualized:0,dc:0,orders:new Set()});
+  const add=(g,r)=>{ g.units+=r.units; g.projected+=r.projected; g.actualized+=r.lineTotal; g.dc+=r.dc; g.orders.add(r.ref); };
+  const fin=g=>Object.assign(g,{unitDisc:g.projected-g.actualized, avg:g.units?g.actualized/g.units:0, net:g.units?(g.actualized-g.dc)/g.units:0});
+  const fmts={}, T=acc(), ords={};
+  view.forEach(r=>{ const f=fmts[r.format]||(fmts[r.format]=Object.assign(acc(),{format:r.format,list:r.list,strains:{}}));
+    add(f,r); add(T,r);
+    add(f.strains[r.strain]||(f.strains[r.strain]=Object.assign(acc(),{strain:r.strain})), r);
+    const o=ords[r.ref]||(ords[r.ref]={ref:r.ref,buyer:r.buyer,d:r.d,billed:0,dc:0,dsrc:r.dsrc}); o.billed+=r.lineTotal; o.dc+=r.dc; });
+  fin(T);
+  const flist=Object.values(fmts).map(fin).sort((a,b)=>b.actualized-a.actualized);
+  const dcCell=(v,cls='')=>`<td class="num money${cls}">${Math.abs(v||0)>0.005?('-'+fmt$(v)):'—'}</td>`;
+  const strainTable=f=>{ const ss=Object.values(f.strains).map(fin).sort((a,b)=>b.actualized-a.actualized);
+    return `<div class="ddhead">${esc(f.format)} — strains</div><table class="ddtable"><thead><tr><th>Strain</th><th class="num">Units</th><th class="num">Orders</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Disc</th><th class="num">Avg $/Unit</th><th class="num" title="This strain's share of its orders' discounts">Disc/Credits</th><th class="num" title="After discounts, credits and free samples">Net $/Unit</th></tr></thead><tbody>${
+      ss.map(x=>`<tr><td>${esc(x.strain)}</td><td class="num">${intl(x.units)}</td><td class="num">${x.orders.size}</td><td class="num money">${fmt$(x.projected)}</td><td class="num money">${fmt$(x.actualized)}</td><td class="num money">${Math.abs(x.unitDisc)>0.005?fmt$(x.unitDisc):'—'}</td><td class="num money">${x.units?fmt$(x.avg):'—'}</td>${dcCell(x.dc)}<td class="num money"><b>${x.units?fmt$(x.net):'—'}</b></td></tr>`).join('')}</tbody></table>`; };
+  const body=flist.map(f=>`<tr class="parent"><td><span class="caret">▶</span> Total ${esc(f.format)}</td>
+      <td class="num">${intl(f.units)}</td>
+      <td class="num money">${fmt$(f.projected)}</td>
+      <td class="num money">${fmt$(f.actualized)}</td>
+      <td class="num money ud">${Math.abs(f.unitDisc)>0.005?fmt$(f.unitDisc):'—'}</td>
+      <td class="num money">${f.units?fmt$(f.avg):'—'}</td>
+      ${dcCell(f.dc,' dc')}
+      <td class="num money">${fmt$(f.actualized-f.dc)}</td>
+      <td class="num money"><b>${f.units?fmt$(f.net):'—'}</b></td></tr>
+    <tr class="detail hidden"><td colspan="9"><div class="detailbox">${strainTable(f)}</div></td></tr>`).join('');
   // Filtered-drop empty state: the drop EXISTS but has no orders inside the selected DATE RANGE
   // (e.g. "Last 30 days" starts after Drop 1's June orders ended). A bare zero-row table here read
   // as "this drop's sales are missing" — say what's going on and how wide the drop actually runs.
@@ -6178,13 +6220,29 @@ function renderSkuNY(){
     const hint=span.length?`Its ${new Set((NY_EVENTS||[]).filter(e=>e.d!=null&&(nyDropOf(e.d)||{}).n===nyDropFilter).map(e=>e.ref)).size} orders ran <b>${fmtDt(Math.min(...span))} – ${fmtDt(Math.max(...span))}</b> — widen the date range above (e.g. “All time”) to see them.`:'No orders have been assigned to this drop yet.';
     tableHtml=`<div class="empty" style="padding:30px;text-align:center">No <b>${esc(dr?dr.label:'this drop')}</b> line items in the selected date range. ${hint}</div>`;
   } else {
-    tableHtml=`<table id="ny-sku-table"><thead><tr><th>Product Type</th><th class="num">Units</th><th class="num">Orders</th><th class="num">Revenue</th><th class="num">Avg $/Unit</th></tr></thead><tbody>${body}</tbody>
-    <tfoot><tr class="totals"><td>Total · ${totO} order${totO!==1?'s':''}</td><td class="num">${Math.round(totU).toLocaleString()}</td><td class="num">${totO}</td><td class="num money">${fmt$(totR)}</td><td class="num money">${totU?fmt$(totR/totU):'—'}</td></tr></tfoot></table>`;
+    const fmtD=ms=>ms?new Date(ms).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—';
+    const olist=Object.values(ords).sort((a,b)=>b.billed-a.billed);
+    const oRows=olist.map(o=>`<tr><td>${esc(o.ref)}</td><td>${esc(o.buyer||'—')}</td><td class="num">${fmtD(o.d)}</td><td class="num money">${fmt$(o.billed)}</td><td class="num money"${o.dsrc&&Math.abs(o.dc)>0.005?` title="${esc(o.dsrc)}"`:''}>${Math.abs(o.dc)>0.005?('-'+fmt$(o.dc)):'—'}</td><td class="num money">${fmt$(o.billed-o.dc)}</td></tr>`).join('');
+    const ordDetail=`<tr class="invdetail hidden"><td colspan="9"><div class="detailbox">
+        <div class="ddhead">LeafLink orders in this table — ${olist.length}</div>
+        <div class="ddscroll"><table class="ddtable"><thead><tr><th>Order #</th><th>Buyer</th><th class="num">Order Date</th><th class="num">Billed</th><th class="num" title="HM OPS invoice discount, else 5% early pay, else LeafLink credit (hover a figure for which)">Disc/Credits</th><th class="num">Actual Total</th></tr></thead><tbody>${oRows}</tbody><tfoot><tr class="totals"><td colspan="3">TOTAL · ${olist.length}</td><td class="num money">${fmt$(T.actualized)}</td><td class="num money">${Math.abs(T.dc)>0.005?('-'+fmt$(T.dc)):'—'}</td><td class="num money">${fmt$(T.actualized-T.dc)}</td></tr></tfoot></table></div>
+      </div></td></tr>`;
+    tableHtml=`<table id="ny-sku-table" class="skutbl"><thead>
+      <tr><th class="sys LeafLink" colspan="9" style="cursor:pointer" title="Click to see the LeafLink orders that make up this table"><span class="caret">▶</span> LeafLink</th></tr>
+      <tr><th>Product</th><th class="num">Units</th><th class="num">Projected</th><th class="num">Actualized</th><th class="num">Unit Discounts</th><th class="num">Avg $/Unit</th><th class="num">Discounts/Credits</th><th class="num">Actual Total</th><th class="num" title="Actual Total divided by units, free samples included: the price per unit after discounts, credits and samples">Net $/Unit</th></tr></thead>
+    <tbody>${ordDetail}${body}</tbody>
+    <tfoot><tr class="totals"><td>TOTALS · ${olist.length} order${olist.length!==1?'s':''}</td><td class="num">${intl(T.units)}</td><td class="num money">${fmt$(T.projected)}</td><td class="num money">${fmt$(T.actualized)}</td><td class="num money ud">${Math.abs(T.unitDisc)>0.005?fmt$(T.unitDisc):'—'}</td><td class="num money">${T.units?fmt$(T.avg):'—'}</td>${dcCell(T.dc,' dc')}<td class="num money">${fmt$(T.actualized-T.dc)}</td><td class="num money"><b>${T.units?fmt$(T.net):'—'}</b></td></tr></tfoot></table>`;
+    // net to Wizard Trees, the monthly report's waterfall: 9/109 excise out of what is left, then HM OPS's 10%
+    const base=T.actualized-T.dc, toWT=base*100/109*0.9, dr=nyDropFilter?nyDropDefs().find(x=>x.n===nyDropFilter):null;
+    tableHtml+=`<div class="sku-weektotal"><div class="lbl">Total for range (LeafLink${dr?' · '+esc(dr.label):''})</div><div class="amt money">${fmt$(base)}</div></div>
+    <div class="sku-week" style="margin-top:8px">Net to Wizard Trees after the 9% excise and HM OPS's 10% fee: <b>${fmt$(toWT)}</b>${T.units?` (<b>${fmt$(toWT/T.units)}</b> per unit)`:''}</div>`;
   }
-  wrap.innerHTML=`<div class="tier-cards">${dropCards}</div>${seg}${tableHtml}`;
+  wrap.innerHTML=`<div class="tier-cards">${dropCards}</div>${seg}<div class="sku-week">Range: <b>${esc(rng)}</b></div>${tableHtml}`;
   wrap.querySelectorAll('#ny-drop-seg button').forEach(b=>b.onclick=()=>{ nyDropFilter=+b.dataset.drop||0; renderSkuNY(); });
   wrap.querySelectorAll('tr.parent').forEach(tr=>tr.onclick=()=>{ const d=tr.nextElementSibling; if(d&&d.classList.contains('detail')){ d.classList.toggle('hidden'); tr.classList.toggle('open'); } });
-  note.innerHTML=`<b>New York sales by product type</b> from LeafLink order line items (crawled per order). <b>Drops</b> are harvest cohorts assigned by order date — ${nyDropDefs().map(d=>`${esc(d.label)} from ${d.start}${d.inv?' (inv '+esc(d.inv)+')':''}`).join(' · ')} (the list comes from the Wizard Trees NY drop invoices in QuickBooks; if a new drop ships under new SKUs we can switch to exact SKU-based mapping). Click a product type for its strains. Date range above applies; cancelled orders excluded.`;
+  wrap.querySelectorAll('th.sys').forEach(th=>th.onclick=()=>{ const tbl=th.closest('table'), d=tbl&&tbl.querySelector('.invdetail'); if(d){ d.classList.toggle('hidden'); th.parentElement.classList.toggle('open'); } });
+  const lp=flist.map(f=>`${esc(f.format)} ${fmt$(f.list)}`).join(', ');
+  note.innerHTML=`<b>New York sales by product type</b> from LeafLink order line items (crawled per order). <b>Projected</b> = units × list price (${lp||'none in range'}: the price most units of each type sold at). <b>Actualized</b> = what the orders billed. <b>Unit Discounts</b> = Projected − Actualized, mostly free samples ($0 lines are counted in Units at list price, the give-away cost). <b>Avg $/Unit</b> = Actualized ÷ Units. <b>Discounts/Credits</b> = each order's discount, shared out across its lines by billing: HM OPS's invoice discount once it has billed the order, else the 5% early pay on its delivery sheet, else LeafLink's order credit (the same rule as the monthly report). <b>Actual Total</b> = Actualized − Discounts/Credits. <b>Net $/Unit</b> = Actual Total ÷ Units. Click a product row for its strains, or the <b>LeafLink</b> header for the orders behind the table. <b>Drops</b> are harvest cohorts assigned by order date — ${nyDropDefs().map(d=>`${esc(d.label)} from ${d.start}${d.inv?' (inv '+esc(d.inv)+')':''}`).join(' · ')} (the list comes from the Wizard Trees NY drop invoices in QuickBooks). Date range above applies, by order date; cancelled orders excluded.`;
 }
 /* ============================ Customer Tiers ============================ */
 // Tier each account by trailing net revenue. Treatment per tier (editable here) — the team
@@ -8882,8 +8940,8 @@ $('#cd-export').onclick=()=>concExport(concFilterSort(CONC,'cd-search','cd-sourc
 $('#cb-export').onclick=()=>concExport(concFilterSort(CONC_BRAND,'cb-search',null,cbSort),'Brand','credits-discounts-by-brand.csv');
 $('#sku-export').onclick=()=>{
   if(APP_STATE==='NY'){ const rows=nySkuRows().filter(r=>!nyDropFilter||r.drop===nyDropFilter);
-    const out=[['Drop','Product Type','Strain','SKU','Order #','Buyer','Order Date','Units','Line Total']];
-    rows.sort((a,b)=>b.d-a.d).forEach(r=>out.push([r.drop?('Drop '+r.drop):'',r.format,r.strain,r.sku,r.ref,r.buyer,new Date(r.d).toISOString().slice(0,10),r.units,r.lineTotal.toFixed(2)]));
+    const out=[['Drop','Product Type','Strain','SKU','Order #','Buyer','Order Date','Units','List $/Unit','Projected','Actualized','Unit Discount','Discounts/Credits','Actual Total','Net $/Unit','Discount Source']];
+    rows.sort((a,b)=>b.d-a.d).forEach(r=>out.push([r.drop?('Drop '+r.drop):'',r.format,r.strain,r.sku,r.ref,r.buyer,new Date(r.d).toISOString().slice(0,10),r.units,r.list.toFixed(2),r.projected.toFixed(2),r.lineTotal.toFixed(2),(r.projected-r.lineTotal).toFixed(2),r.dc.toFixed(2),(r.lineTotal-r.dc).toFixed(2),r.units?((r.lineTotal-r.dc)/r.units).toFixed(2):'',Math.abs(r.dc)>0.005?r.dsrc:'']));
     downloadCSV('ny-sales-by-type.csv',out); return; }
   const rows=[['System','Product','Units','Projected','Actualized','Unit Discounts','Avg $/Unit','Discounts/Credits','Actual Total','Net $/Unit']];
   const f2=v=>(+v||0).toFixed(2);
