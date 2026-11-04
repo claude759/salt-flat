@@ -231,6 +231,8 @@
   .cmp-filters{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin-bottom:12px}
   .cmp-periodsel{background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--text);font:inherit;font-size:12.5px;padding:6px 9px;cursor:pointer}
   .cmp-periodsel:focus{outline:1px solid var(--accent)}
+  .cmp-sitehead{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--line);font-size:15px;font-weight:700}
+  .cmp-sitehead span{color:var(--muted);font-size:12.5px;font-weight:500}
   .cmp-cos{display:flex;align-items:center;gap:8px}
   .cmp-coslabel{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
   #cmp-cos button::before{content:"✓ ";opacity:.9}
@@ -302,6 +304,7 @@
     .cmp-filters{ display:block !important; margin:0 0 8pt !important }
     .cmp-grandtot{ display:block !important; color:#000 !important; font-size:11pt; margin:0 0 4pt }
     .cmp-grandtot b{ color:#000 !important }
+    .cmp-sitehead,.cmp-sitehead span{ color:#000 !important; border-color:#000 !important }
     /* one person per block, never split across a page */
     .cmp-emp{ break-inside:avoid; page-break-inside:avoid; overflow:visible !important;
       border:0 !important; border-top:1pt solid #000 !important; border-radius:0 !important;
@@ -1137,6 +1140,8 @@ const tsState = {
   comparePreset: 'period',   // the Combined page's own date window
   compareCos: new Set(),     // companies EXCLUDED from the Combined page (empty = show all)
   harvestGroup: 'company',   // Harvest log grouping: 'company' | 'day'
+  normaWork: 'all',     // Combined > Norma's Team buttons: 'all' | 'packaging' | 'deleaf'
+  normaSite: '',        // Deleaf/Harvest location; '' = All locations, grouped by location
   review: null,         // {company, sheet_date, rows:[...], dataUrl, path}
 };
 try{ const v = JSON.parse(localStorage.getItem('lc.tsview')||'{}');
@@ -1144,8 +1149,10 @@ try{ const v = JSON.parse(localStorage.getItem('lc.tsview')||'{}');
   if (v.view) tsState.view = v.view;
   if (['cards','norma','justin','gusto','simplified'].includes(v.compareView)) tsState.compareView = v.compareView;
   if (['company','day'].includes(v.harvestGroup)) tsState.harvestGroup = v.harvestGroup;
+  if (['all','packaging','deleaf'].includes(v.normaWork)) tsState.normaWork = v.normaWork;
+  if (typeof v.normaSite === 'string') tsState.normaSite = v.normaSite;
   if (['harvest','distro','roster','compare'].includes(v.category)) tsState.category = v.category; }catch(_){}
-function saveTsView(){ try{ localStorage.setItem('lc.tsview', JSON.stringify({preset:tsState.filter.preset, view:tsState.view, compareView:tsState.compareView, harvestGroup:tsState.harvestGroup, category:tsState.category})); }catch(_){} }
+function saveTsView(){ try{ localStorage.setItem('lc.tsview', JSON.stringify({preset:tsState.filter.preset, view:tsState.view, compareView:tsState.compareView, harvestGroup:tsState.harvestGroup, normaWork:tsState.normaWork, normaSite:tsState.normaSite, category:tsState.category})); }catch(_){} }
 
 const tsFullName = s => [s.last, s.first].filter(Boolean).join(' ').trim() || (s.first || s.last || '');
 // match a name against the crew roster (exact last+first, then aliases, then
@@ -1693,8 +1700,10 @@ function copySummary(){
 // By person / By Employee Simplified give a person's Gusto-paid rows their own line, keyed
 // '<person key>|gusto'; this counts people, not lines
 const CMP_GUSTO_SUFFIX = '|gusto';
+const CMP_SITE_SEP = '|site:';   // Norma's Team > Deleaf/Harvest: one line per person per location
 function cmpPeopleCount(keys){
-  return new Set(keys.map(k => String(k).endsWith(CMP_GUSTO_SUFFIX) ? String(k).slice(0, -CMP_GUSTO_SUFFIX.length) : String(k))).size;
+  return new Set(keys.map(k => { const b = String(k).split(CMP_SITE_SEP)[0];
+    return b.endsWith(CMP_GUSTO_SUFFIX) ? b.slice(0, -CMP_GUSTO_SUFFIX.length) : b; })).size;
 }
 // "By Employee Simplified": one row per person, both categories combined. A person with
 // Gusto-paid rows gets a second row with Team "Gusto", so Gusto pay is never added into a
@@ -1759,7 +1768,10 @@ function renderCompare(){
   const coLabel = s => s.company || '(no company)';
   const allCos = [...new Set(dateRows.map(coLabel))];
   for (const c of [...tsState.compareCos]) if (!allCos.includes(c)) tsState.compareCos.delete(c);   // forget stale exclusions
-  const rows = dateRows.filter(s => !tsState.compareCos.has(coLabel(s)));
+  // Norma's Team work buttons. Deleaf/Harvest brings its own location buttons, which stand in for the company chips.
+  const normaWork = tsState.compareView === 'norma' ? tsState.normaWork : 'all';
+  const normaDeleaf = normaWork === 'deleaf';
+  const rows = dateRows.filter(s => normaDeleaf || !tsState.compareCos.has(coLabel(s)));
   // distro rows store "Last First", harvest rows keep the raw self-reported
   // name ("First Last") — sort the name's words so both spellings of the same
   // person land in ONE group and their hours actually get compared
@@ -1821,6 +1833,18 @@ function renderCompare(){
   else if (tsState.compareView === 'justin') emps = emps.filter(k => /justin/i.test(teamOfKey.get(k) || ''));
   else if (tsState.compareView === 'gusto') emps = emps.filter(k => byEmp.get(k).length);
   const catOf = s => (s.category || 'distro') === 'harvest' ? 'harvest' : 'distro';
+  // Packaging keeps Norma's crew's distro rows, Deleaf/Harvest their harvest rows, and a location narrows those to one site
+  let normaSites = [];
+  if (normaWork !== 'all'){
+    const want = normaDeleaf ? 'harvest' : 'distro';
+    for (const k of emps) byEmp.set(k, byEmp.get(k).filter(s => catOf(s) === want));
+    if (normaDeleaf){
+      normaSites = [...new Set(emps.flatMap(k => byEmp.get(k).map(coLabel)))];
+      if (!normaSites.includes(tsState.normaSite)) tsState.normaSite = '';   // no such rows in this window
+      if (tsState.normaSite) for (const k of emps) byEmp.set(k, byEmp.get(k).filter(s => coLabel(s) === tsState.normaSite));
+    }
+    emps = emps.filter(k => byEmp.get(k).length);
+  }
   const badge = s => '<span class="cbadge ' + catOf(s) + '">' + (catOf(s) === 'harvest' ? 'Harvest/Deleaf' : 'Distro') + '</span>';
   // grand total for exactly what's shown below (view + team + company + date filters all applied)
   let dispH = 0, dispG = 0;
@@ -1848,6 +1872,19 @@ function renderCompare(){
     }
     emps = split;
   }
+  const CO_ORDER = ['Filifera','Slane','Portal','Imperial','Olympic'];
+  const coRank = c => CO_ORDER.indexOf(c) + 1 || 99;
+  // Deleaf/Harvest > All locations: a person worked at two sites gets a line under each, so each site adds up on its own
+  const siteOfKey = new Map();
+  if (normaDeleaf && !tsState.normaSite){
+    const split = [];
+    for (const k of emps) for (const site of new Set(byEmp.get(k).map(coLabel))){
+      const sk = k + CMP_SITE_SEP + site;
+      byEmp.set(sk, byEmp.get(k).filter(s => coLabel(s) === site)); baseOf.set(sk, k); siteOfKey.set(sk, site); split.push(sk);
+    }
+    emps = split.sort((a, b) => (coRank(siteOfKey.get(a)) - coRank(siteOfKey.get(b)))
+      || siteOfKey.get(a).localeCompare(siteOfKey.get(b)));
+  }
   const nShown = cmpPeopleCount(emps);
   const grandTot = '<div class="cmp-grandtot">' + nShown + ' ' + (nShown === 1 ? 'person' : 'people')
     + ' · ' + tsNum(dispH) + ' h · <b>' + tsMoney(dispG) + '</b>'
@@ -1870,25 +1907,37 @@ function renderCompare(){
   const viewSeg = '<div class="seg" id="cmp-view">'
     + CMP_VIEWS.map(([k, l]) => '<button data-v="' + k + '" class="' + (tsState.compareView === k ? 'on' : '') + '">' + l + '</button>').join('')
     + '</div>';
+  const NORMA_WORK = [['all','All'],['packaging','Packaging'],['deleaf','Deleaf/Harvest']];
+  const workSeg = tsState.compareView === 'norma'
+    ? '<div class="cmp-filters" style="margin-bottom:8px"><div class="seg" id="cmp-work">'
+      + NORMA_WORK.map(([k, l]) => '<button data-w="' + k + '" class="' + (normaWork === k ? 'on' : '') + '">' + l + '</button>').join('')
+      + '</div></div>'
+    : '';
+  const siteSeg = normaDeleaf && normaSites.length
+    ? '<div class="cmp-filters" style="margin-bottom:8px"><div class="seg" id="cmp-site">'
+      + [['', 'All locations']].concat(normaSites.slice().sort((a, b) => (coRank(a) - coRank(b)) || a.localeCompare(b)).map(c => [c, c]))
+        .map(([k, l]) => '<button data-site="' + esc(k) + '" class="' + (tsState.normaSite === k ? 'on' : '') + '">' + esc(l) + '</button>').join('')
+      + '</div></div>'
+    : '';
   // one toggle chip per company present in this window; on = included
-  const CO_ORDER = ['Filifera','Slane','Portal','Imperial','Olympic'];
-  const cosSorted = allCos.slice().sort((a, b) =>
-    ((CO_ORDER.indexOf(a) + 1 || 99) - (CO_ORDER.indexOf(b) + 1 || 99)) || a.localeCompare(b));
+  const cosSorted = allCos.slice().sort((a, b) => (coRank(a) - coRank(b)) || a.localeCompare(b));
   // show the chips whenever there's more than one company OR an exclusion is
   // active (so a filter that narrows to one company can still be undone)
-  const cosSeg = (allCos.length > 1 || tsState.compareCos.size)
+  const cosSeg = !normaDeleaf && (allCos.length > 1 || tsState.compareCos.size)
     ? '<div class="cmp-cos"><span class="cmp-coslabel">Companies</span><div class="seg" id="cmp-cos">'
       + cosSorted.map(c => '<button data-co="' + esc(c) + '" class="' + (tsState.compareCos.has(c) ? '' : 'on') + '">' + esc(c) + '</button>').join('')
       + '</div></div>'
     : '';
   // a company filter narrows every total, so the exported images say so
-  const coNote = tsState.compareCos.size
+  const coNote = !normaDeleaf && tsState.compareCos.size
     ? ' · ' + (cosSorted.filter(c => !tsState.compareCos.has(c)).join(', ') || 'no companies') + ' only'
     : '';
+  const workNote = normaDeleaf ? ' · Deleaf/Harvest' + (tsState.normaSite ? ' · ' + tsState.normaSite : ' by location')
+    : normaWork === 'packaging' ? ' · Packaging' : '';
   const presetLabel = (CMP_PRESETS.find(([k]) => k === tsState.comparePreset) || [])[1]
     || (isPeriodStart(tsState.comparePreset) ? fPeriodFull(tsState.comparePreset) : 'All');
   const rangeLabel = presetLabel
-    + (c0 ? ' · ' + fDayMDY(c0) + ' – ' + fDayMDY(c1) : ' recorded dates') + coNote;
+    + (c0 ? ' · ' + fDayMDY(c0) + ' – ' + fDayMDY(c1) : ' recorded dates') + coNote + workNote;
   CMP_CARDS = {}; CMP_ORDER = emps.slice(); CMP_RANGE = rangeLabel;
   let html = '<div class="card" style="background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px">'
     + '<div style="display:flex;align-items:flex-start;gap:10px">'
@@ -1901,7 +1950,7 @@ function renderCompare(){
     + 'Rows that overlap in time on the same day are flagged — usually the same hours submitted twice. '
     + 'Delete the duplicate, or Keep both if the person really worked both. '
     + 'This pay period / Last pay period bill by the paid period, so a day missed last period but carried forward shows here under this one (flagged on its row); the rolling windows go by the actual work date.</div>'
-    + '<div class="cmp-filters" style="margin-bottom:8px">' + viewSeg + '</div>'
+    + '<div class="cmp-filters" style="margin-bottom:8px">' + viewSeg + '</div>' + workSeg + siteSeg
     + '<div class="cmp-filters">' + presetSeg + periodSel + cosSeg + grandTot + '</div>';
   // one pass builds every person's totals (drives the cards, the team views,
   // the simplified rollup, and the copy-image payloads)
@@ -1923,11 +1972,11 @@ function renderCompare(){
     const empOverlaps = new Set(list.filter(s => overlapIds.has(s.id)).map(s => s.id));
     const rep = list.find(s => s.last && s.first) || list[0];
     const team = tsState.compareView === 'gusto' ? 'Gusto Distro' : gusto ? 'Gusto' : (teamOfKey.get(k) || '');
-    const name = displayOf.get(base);
-    CMP_CARDS[k] = { name: gusto ? name + ' (Gusto)' : name, rows: list, dH, hH, gross, rangeLabel,
+    const name = displayOf.get(base), site = siteOfKey.get(k) || '';
+    CMP_CARDS[k] = { name: gusto ? name + ' (Gusto)' : site ? name + ' (' + site + ')' : name, rows: list, dH, hH, gross, rangeLabel,
       overlapIds: empOverlaps, overlapCount: empOverlaps.size,
       last: rep.last || '', first: rep.first || '', team, gusto };
-    return { k, list, dH, hH, gross, pairs, name, team, gusto,
+    return { k, list, dH, hH, gross, pairs, name, team, gusto, site,
       last: rep.last || '', first: rep.first || '' };
   });
   if (!people.length){
@@ -1937,14 +1986,22 @@ function renderCompare(){
   } else if (tsState.compareView === 'simplified'){
     html += cmpSimplifiedHtml(people);
   } else {
+    let lastSite = '';
     for (const p of people){
       const { list, pairs } = p;
+      if (p.site && p.site !== lastSite){
+        lastSite = p.site;
+        const at = people.filter(q => q.site === p.site);
+        html += '<div class="cmp-sitehead">' + esc(p.site) + '<span>' + at.length + ' ' + (at.length === 1 ? 'person' : 'people')
+          + ' · ' + tsNum(at.reduce((a, q) => a + q.hH, 0)) + ' h · ' + tsMoney(at.reduce((a, q) => a + q.gross, 0)) + '</span></div>';
+      }
       html += '<div class="cmp-emp' + (pairs.length ? ' warn' : '') + '">'
         + '<div class="cmp-head"><b>' + esc(p.name) + '</b>' + (p.gusto ? GUSTO_TAG : '')
         + (pairs.length ? ' <span class="cmp-flag">⚠️ ' + pairs.length + ' overlap' + (pairs.length > 1 ? 's' : '') + '</span>' : '')
         + ' <button class="pbtn cmp-copy" data-k="' + esc(p.k) + '" title="Copy this person’s timesheet as an image — paste it straight into a chat">📋 Copy image</button>'
         + '<span class="cmp-tot">' + (p.gusto ? 'Paid by Gusto, not crew pay · ' : '')
-        + 'Distro ' + tsNum(p.dH) + 'h · Harvest ' + tsNum(p.hH) + 'h · Combined ' + tsNum(p.dH + p.hH) + 'h · ' + tsMoney(p.gross) + '</span></div>';
+        + (normaDeleaf ? 'Deleaf/Harvest ' + tsNum(p.hH) + 'h · ' : normaWork === 'packaging' ? 'Packaging ' + tsNum(p.dH) + 'h · '
+          : 'Distro ' + tsNum(p.dH) + 'h · Harvest ' + tsNum(p.hH) + 'h · Combined ' + tsNum(p.dH + p.hH) + 'h · ') + tsMoney(p.gross) + '</span></div>';
       for (const [a, b] of pairs){
         const span = s => fClock(s.clock_in) + '–' + fClock(s.clock_out);
         const crossGusto = isGustoRow(a) !== isGustoRow(b);
@@ -1979,6 +2036,12 @@ function renderCompare(){
   box.innerHTML = html;
   box.querySelectorAll('#cmp-view button').forEach(bn => bn.onclick = () => {
     tsState.compareView = bn.dataset.v; saveTsView(); renderCompare();
+  });
+  box.querySelectorAll('#cmp-work button').forEach(bn => bn.onclick = () => {
+    tsState.normaWork = bn.dataset.w; saveTsView(); renderCompare();
+  });
+  box.querySelectorAll('#cmp-site button').forEach(bn => bn.onclick = () => {
+    tsState.normaSite = bn.dataset.site; saveTsView(); renderCompare();
   });
   box.querySelectorAll('#cmp-preset button').forEach(bn => bn.onclick = () => {
     tsState.comparePreset = bn.dataset.k; renderCompare();
