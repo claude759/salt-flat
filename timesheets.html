@@ -142,6 +142,9 @@
   #q{flex:1 1 120px}
   /* Flagged only and More wrap together, so More never sits alone on a line */
   .ctl-tail{display:flex;align-items:center;gap:8px 10px;flex:1 0 auto;justify-content:space-between}
+  /* a deleaf crew's Packaging and Deleaf/Harvest buttons, and the locations beside them */
+  .seg.wsites{flex-wrap:wrap}
+  .wnote{font-size:12.5px}
 
   /* the break policy: a highlighted box, not fine print (Gianni 2026-10-13: "isn't basically hidden text");
      "paid rest" and "unpaid meal" use the same colors as the break chips in the tables */
@@ -927,6 +930,7 @@
         <button type="button" data-act="view" data-view="day"><span class="by">By </span>Day</button><button type="button" data-act="view" data-view="emp"><span class="by">By </span>Employee</button>
       </div>
     </div>
+    <div class="ctl-row" id="workRow" hidden></div>
     <div class="ctl-row">
       <div class="chips" id="coChips" role="group" aria-label="Companies"></div>
       <select id="deptSel" aria-label="Department"></select>
@@ -2022,6 +2026,70 @@
     return { op: ops[0] };
   }
 
+  /* ---------- a deleaf crew's Packaging and Deleaf/Harvest buttons (2026-11-04, Gianni: buttons for "Packaging" and
+     "Deleaf/Harvest" on the crew's tab, "then under deleaf options to organize by location") ----------
+     The crew packs and deleafs, often on one day, and a row is a whole day, so the buttons go by each shift's job. A day with
+     both kinds of work shows under each button with only that button's shifts; a day at two sites shows under each site.
+     Deleaf/Harvest is any job of that name; every other job counts as packaging, so the two buttons add up to All. A site is
+     the job's own ("Deleaf/Harvest - Slane"); a plain Deleaf/Harvest shift takes the deleaf site it was clocked in at
+     (shift.place), else it shows under No location. The tab that has them is told by its crew (workView), so the page
+     names nobody. */
+  const WORK_KINDS = [['all', 'All'], ['pack', 'Packaging'], ['deleaf', 'Deleaf/Harvest']];
+  const NO_SITE = 'No location';
+  const DELEAF_JOB = /^deleaf\s*\/\s*harvest(?:\s*-\s*(.+))?$/i;
+  // a shift's job title; one not known yet, or a day with no shifts (s null), goes by the day's
+  const shiftTitle = (r, s) => String((s && s.job && s.job.title) || '').trim() || String((r && r.job_title) || '').trim();
+  // a saved view that is a deleaf crew: at least three in four of its active people hold a Deleaf/Harvest job
+  function workView(view, people) {
+    let n = 0, d = 0;
+    for (const p of people || []) if (p && p.active !== false && viewHas(view, p.company, p.employee_uuid, p.department || NO_DEPT)) {
+      n++;
+      if ((personJobs(p) || []).some(j => DELEAF_JOB.test(j.title.trim()))) d++;
+    }
+    return n > 0 && d * 4 >= n * 3;
+  }
+  function shiftWork(r, s) {
+    const m = shiftTitle(r, s).match(DELEAF_JOB);
+    if (!m) return { kind: 'pack', site: '' };
+    const at = s && s.place && s.place.site;
+    return { kind: 'deleaf', site: m[1] ? m[1].trim() : PLACE_SITES.includes(at) ? at : NO_SITE };
+  }
+  const siteRank = x => x === NO_SITE ? 99 : PLACE_SITES.includes(x) ? PLACE_SITES.indexOf(x) : 50;
+  const cmpSite = (a, b) => siteRank(a) - siteRank(b) || cmpName(a, b);
+  // One day with only some of its shifts (part: true): their hours and breaks, the breaks of finished shifts as on the sync's
+  // day. Overtime belongs to the whole day (Gusto does not split it between jobs), so a part leaves it blank. The day's flags
+  // stay on every part. A part's gaps are the day's between two of its shifts that follow each other: with another job's
+  // shift between them the person was on the clock.
+  function dayPart(r, ss) {
+    if (!r.shifts || ss.length >= r.shifts.length) return r;
+    const brks = ss.filter(s => s.out).flatMap(s => s.breaks || []), sum = (xs, f) => xs.reduce((a, x) => a + (+f(x) || 0), 0);
+    const day = r.shifts.filter(s => !s.hours_only), own = ss.filter(s => !s.hours_only), last = own[own.length - 1];
+    const gaps = shiftGaps(day, rowTz(r)).filter(g => own.includes(day[g.afterShift]) && own.includes(day[g.afterShift + 1]))
+      .map(g => Object.assign({}, g, { afterShift: own.indexOf(day[g.afterShift]) }));
+    return Object.assign({}, r, { shifts: ss, first_in: own.length ? own[0].in : null, last_out: last && own.every(s => s.out) ? last.out : null,
+      span_min: sum(ss, s => s.span_min), worked_min: sum(ss, s => s.worked_min), reg_min: null, ot_min: null, dt_min: null, ot_src: null,
+      paid_break_min: sum(brks.filter(b => b.paid), b => b.min), unpaid_break_min: sum(brks.filter(b => !b.paid), b => b.min),
+      open: ss.some(s => !s.out), hours_only: ss.every(s => s.hours_only), part: true, part_gaps: gaps });
+  }
+  const dayGaps = (r, tz) => r.part ? r.part_gaps : shiftGaps(r.shifts, tz);
+  // the rows of a button: work 'pack' or 'deleaf', site '' for every location. A deleaf row says its site (work_site).
+  function workRows(rows, work, site) {
+    const out = [];
+    for (const r of rows || []) {
+      const ss = r.shifts && r.shifts.length ? r.shifts : [null];
+      const kept = ss.map(s => ({ s, w: shiftWork(r, s) })).filter(x => x.w.kind === work && (!site || x.w.site === site));
+      for (const [at, xs] of groupBy(kept, x => x.w.site)) {
+        const list = xs.map(x => x.s);
+        out.push(Object.assign({}, dayPart(r, list), { job_title: shiftTitle(r, list[0]) }, work === 'deleaf' ? { work_site: at } : {}));
+      }
+    }
+    return out;
+  }
+  function workSites(rows) { return [...new Set(workRows(rows, 'deleaf', '').map(r => r.work_site))].sort(cmpSite); }
+  function bySite(rows) {
+    return [...groupBy(rows || [], r => r.work_site).entries()].sort((a, b) => cmpSite(a[0], b[0])).map(([site, rs]) => ({ site, rows: rs, totals: totals(rs) }));
+  }
+
   /* ---------- the compact lines on a phone card ---------- */
   function fmtDayShort(iso) {               // "Mon 9/28"
     const ms = utcOf(iso); if (isNaN(ms)) return '';
@@ -2064,7 +2132,7 @@
       groups.push({ kind, label: kind === 'meal' ? 'Meal' : 'Rest', items: bs.map(b => b.open || !b.end ? 'open' : fmtMins(b.min)),
         ests, est: ests.some(Boolean), allEst: ests.every(Boolean) });
     }
-    const gaps = shiftGaps(r.shifts, rowTz(r));
+    const gaps = dayGaps(r, rowTz(r));
     if (gaps.length) groups.push({ kind: 'off', label: 'Off', items: gaps.map(g => fmtMins(g.min)), ests: gaps.map(() => false), est: false, allEst: false });
     return { hoursEntered: false, groups };
   }
@@ -3943,6 +4011,7 @@
     departmentOptions, viewHeadcount, viewMemberCounts, describeViewMembers, viewPicker, slugify, uniqueViewId,
     viewsFor, ALL_MINE, ALL_MINE_LABEL, fullViewer, grantsIn, crewsFor, pickCrew, describeAccess, viewsToSave, LIVE_URL, viewLink,
     normText, filterRows, gustoMinute, MEAL_GAP_MIN, shiftGaps, labelSrcText, onlyHoursEntered,
+    WORK_KINDS, NO_SITE, workView, workRows, workSites, bySite, dayGaps,
     fmtDayShort, shiftParts, shiftsText, breakUnsure, breakSummary, breakSummaryText, BREAK_POLICY, BREAK_POLICY_NY, breakPolicyText,
     csvCell, csvEditCell, buildCsv, csvFilename, freshness, freshSummary,
     esc, SafeHTML, h, flagsHtml,
@@ -4332,6 +4401,8 @@
       // New York: the whole packing and distro department plus one cultivation tech who helps pack
       { id: 'packing-and-distro', label: 'Packing and Distro', sort: 50,
         members: [{ company: 'wtny', department: 'Distro Hourly' }, P('Dewberry Quillon')] },
+      // a deleaf crew: it gets the Packaging and Deleaf/Harvest buttons (C.workView)
+      { id: 'deleaf-crew', label: 'Deleaf Crew', sort: 60, members: [{ company: 'filifera', department: 'Deleaf' }, P('Wren Copperkettle'), P('Poppy Kettleburn')] },
     ].map(v => Object.assign(v, { updated_at: lastSync, updated_by: me.email }));
     demoNotes(rows, lastSync);
     demoPlaces(rows, people, todays);
@@ -4559,6 +4630,7 @@
     view: (QV === 'emp' || QV === 'day' ? QV : store.get('view', 'day')) === 'emp' ? 'emp' : 'day',   // ?view=emp links straight to By Employee
     fmt: store.get('fmt', 'dec') === 'hm' ? 'hm' : 'dec',
     coSel: [], dept: '', q: '', flaggedOnly: false,
+    work: 'all', site: '',                     // a deleaf crew's buttons (C.workRows); like the other filters, they start clear
     loading: false, loadErr: '', lastLoad: 0, access: [], accessState: '',   // accessState: '' | 'ok' | 'error' (ts_admin_list)
     missedState: '',   // Admin > Edits > Missed payroll: '' | 'loading' | 'ok' | 'error' (fetchMissed)
     // saved views (ts_views): every view for an admin, the views given to a manager. crew = the id of the
@@ -4782,7 +4854,8 @@
   }
   // the moves this sign-in may send now on a day (C.placeMovable): the day can change (canEditRow) and the Job pick is theirs
   function placeMoves(r) {
-    const raw = r && S.rows.get(r.id), looks = (r && placeIdx.get(r.id)) || [];
+    // part of a day (C.workRows) offers only its own shifts', so a day at two sites never lists a move twice
+    const raw = r && S.rows.get(r.id), looks = ((r && placeIdx.get(r.id)) || []).filter(x => !r.part || r.shifts.some(s => String(s.id) === String(x.shift.id)));
     if (!raw || !looks.length || !canEditRow(raw) || !jobPick(raw, false)) return [];
     return looks.filter(C.placeMovable);
   }
@@ -4894,8 +4967,14 @@
       return { ok: false, error: errText(e) };
     }
   }
+  // a deleaf crew's buttons: only on its tab, so a hidden control never filters
+  const workOn = () => { const v = activeView(); return !!v && C.workView(v, S.people); };
+  const workNow = () => workOn() ? S.work : 'all';
+  const sitesOn = () => workNow() === 'deleaf' && !S.site;   // every location: one heading per site
   function shownRows(base, extra) {
-    return C.filterRows(base, Object.assign({ companies: S.coSel, department: S.dept, search: S.q, flaggedOnly: S.flaggedOnly }, extra || {}));
+    const rows = C.filterRows(base, Object.assign({ companies: S.coSel, department: S.dept, search: S.q, flaggedOnly: S.flaggedOnly }, extra || {}));
+    const w = extra && extra.allWork ? 'all' : workNow();
+    return w === 'all' ? rows : C.workRows(rows, w, w === 'deleaf' ? S.site : '');
   }
   // departments of active people this viewer can see (inside the view), plus any department on a day in the range
   function deptOptions(base) {
@@ -4920,10 +4999,11 @@
     const base = baseRows();
     const depts = deptOptions(base);
     if (S.dept && !depts.includes(S.dept)) S.dept = '';
+    if (S.site && !S.loading && !C.workSites(base).includes(S.site)) S.site = '';
     const rows = shownRows(base);
     renderHeader();
     renderViewTabs();
-    renderControls(base, depts, vis);
+    renderControls(base, depts, vis, rows);
     renderPolicy(vis, lay);
     renderPlaceBar(rows);
     renderFresh();
@@ -5027,7 +5107,7 @@
     el.classList.toggle('fade-r', inn.scrollLeft + inn.clientWidth < inn.scrollWidth - 2);
   }
 
-  function renderControls(base, depts, vis) {
+  function renderControls(base, depts, vis, rows) {
     setHTML($('presets'), h`${C.PRESETS.map(p => h`<button type="button" data-act="preset" data-preset="${p.id}" aria-pressed="${String(S.preset === p.id)}">${p.label}</button>`)}`);
     setHTML($('presetSel'), h`${C.PRESETS.map(p => h`<option value="${p.id}"${S.preset === p.id ? ' selected' : ''}>${p.label}</option>`)}`);
     $('presetSel').value = S.preset;
@@ -5056,10 +5136,13 @@
     })}`);
     setHTML($('deptSel'), h`<option value="">All departments</option>${depts.map(d => h`<option value="${d}"${d === S.dept ? ' selected' : ''}>${d}</option>`)}`);
     $('deptSel').value = S.dept;
-    const flaggedHere = shownRows(base, { flaggedOnly: true }).length;
+    const flaggedHere = new Set(shownRows(base, { flaggedOnly: true }).map(r => r.id)).size;   // a day shown under two sites is one day
     $('flagCount').textContent = flaggedHere ? '(' + flaggedHere + ')' : '';
     $('flagOnly').checked = S.flaggedOnly;
     $('flagChip').classList.toggle('active', S.flaggedOnly);
+    const wr = $('workRow'), sites = workNow() === 'deleaf' ? C.workSites(base) : [];
+    wr.hidden = !workOn();
+    if (workOn()) setHTML(wr, h`<div class="seg" role="group" aria-label="Work">${C.WORK_KINDS.map(([id, label]) => h`<button type="button" data-act="work" data-work="${id}" aria-pressed="${String(S.work === id)}">${label}</button>`)}</div>${sites.length ? h`<div class="seg wsites" role="group" aria-label="Location">${['', ...sites].map(x => h`<button type="button" data-act="work-site" data-site="${x}" aria-pressed="${String(S.site === x)}">${x || 'All locations'}</button>`)}</div>` : ''}${rows.some(r => r.part) ? h`<span class="faint wnote">Days split between jobs show only these hours. Their overtime shows under All.</span>` : ''}`);
   }
 
   // header sync indicator: one dot + the oldest company's sync time; the popover lists every company,
@@ -5202,7 +5285,7 @@
   function breaksCell(r) {
     if (C.onlyHoursEntered(r)) return h`<span class="nobrk">-</span>`;
     const tz = C.rowTz(r);
-    const gaps = C.shiftGaps(r.shifts, tz);
+    const gaps = C.dayGaps(r, tz);
     const parts = [];
     r.shifts.forEach((s, i) => {
       for (const b of s.breaks || []) parts.push(breakChip(b, tz));
@@ -5251,13 +5334,18 @@
       </table></div></div>
     </section>`)}`;
   }
+  // a deleaf crew at every location (sitesOn): the deleaf sites as headings; a site is where the work was, not a company
+  const siteRows = (rows, job) => C.bySite(rows).map(g => h`${groupRow('co', g.site, g.totals)}${g.rows.map(r => dayRowOf(r, job))}`);
+  const siteEmps = rows => h`${C.bySite(rows).map(g => h`<section class="co-block"><div class="co-head"><h2>${g.site}</h2>${statLine(g.totals)}</div>${C.flatByPerson(g.rows).map(e => empCard(e, null))}</section>`)}`;
+  const siteCards = rows => C.bySite(rows).map(g => h`${glab('co', g.site, g.totals)}<div class="pcards">${g.rows.map(r => dayCard(r))}</div>`);
+  const sitePeople = rows => h`${C.bySite(rows).map(g => h`<section class="pday">${glab('co', g.site, g.totals)}<div class="pcards">${C.flatByPerson(g.rows).map(e => personCard(e))}</div></section>`)}`;
   // a saved view, By Day: one table per day, people A-Z, no company or department rows
   function flatDayView(rows, job) {
     const t0 = today();
     return h`${C.flatByDay(rows).map(d => h`<section class="day">
       <div class="sec-head"><h3>${C.fmtDay(d.date)}${d.date === t0 ? h`<span class="today">Today</span>` : ''}</h3>${statLine(d.totals, { short: true })}</div>
       <div class="card"><div class="tablewrap"><table class="ts day-t flat${job ? '' : ' nojob'}${edCls()}">${dayCols(job)}${dayHead(job)}
-        <tbody>${d.rows.map(r => dayRowOf(r, job))}</tbody>
+        <tbody>${sitesOn() ? siteRows(d.rows, job) : d.rows.map(r => dayRowOf(r, job))}</tbody>
       </table></div></div>
     </section>`)}`;
   }
@@ -5295,6 +5383,7 @@
   }
   // a saved view, By Employee: one card per person A-Z (a person at two companies is one card)
   function flatEmpView(rows) {
+    if (sitesOn()) return siteEmps(rows);
     return h`<section class="flat-emp">${C.flatByPerson(rows).map(e => empCard(e, null))}</section>`;
   }
 
@@ -5401,7 +5490,7 @@
   const glab = (kind, label, t) => h`<div class="glab ${kind}"><span>${label}</span><span class="glab-m">${plural(t.people, 'person', 'people')} · ${onClockOnly(t) ? t.open + ' clocked in' : hrs(t.worked_min) + ' hours'}${t.warn ? ' · ' + plural(t.warn, 'flag', 'flags') : ''}</span></div>`;
   // flat (a manager, or a saved view): each day's people A-Z, no company or department labels
   function phoneFlatDay(rows) {
-    return h`${C.flatByDay(rows).map(d => h`<section class="pday">${phoneDayHead(d)}<div class="pcards">${d.rows.map(r => dayCard(r))}</div></section>`)}`;
+    return h`${C.flatByDay(rows).map(d => h`<section class="pday">${phoneDayHead(d)}${sitesOn() ? siteCards(d.rows) : h`<div class="pcards">${d.rows.map(r => dayCard(r))}</div>`}</section>`)}`;
   }
   // Everyone (admins): the same cards under slim company and department labels
   function phoneDay(rows) {
@@ -5425,6 +5514,7 @@
     </article>`;
   }
   function phoneFlatEmp(rows) {
+    if (sitesOn()) return sitePeople(rows);
     return h`<div class="pcards">${C.flatByPerson(rows).map(e => personCard(e))}</div>`;
   }
   function phoneEmp(rows) {
@@ -5469,14 +5559,14 @@
         [off.length === 1 ? 'Its hours show up here after Gianni connects it.' : names + '. Their hours show up here after Gianni connects them.']));
       return;
     }
-    const filtered = S.coSel.length || S.dept || S.q || S.flaggedOnly;
+    const filtered = S.coSel.length || S.dept || S.q || S.flaggedOnly || workNow() !== 'all';
     const cur = activeView();
     // a name search that only finds people outside the saved view: say so, and offer Everyone (a
     // manager, who has no Everyone, gets their tab that has them). The search stays, so they show up.
     const ci = crewInfo();
     if (cur && S.q) {
       const hits = shownRows(C.filterRows([...S.rows.values()], { from: S.from, to: S.to, region: S.region, viewer: filterViewer() }),
-        { companies: [], department: '' });
+        { companies: [], department: '', allWork: true });
       const outside = hits.filter(r => !C.viewHas(cur, r.company, r.employee_uuid, C.deptOf(r)));
       if (outside.length && outside.length === hits.length) {
         const who = [...new Set(outside.map(r => r.employee_name || ''))].filter(Boolean);
@@ -5510,6 +5600,8 @@
     // a saved view prints like the screen: its name, no company or department
     const parts = [C.fmtRange(S.from, S.to)].concat(cur ? [cur.label] : [],
       layout().flat ? [] : [S.coSel.length ? S.coSel.map(coName).join(', ') : 'All companies', S.dept || 'All departments']);
+    if (workNow() !== 'all') parts.push(S.site || C.WORK_KINDS.find(k => k[0] === S.work)[1]);
+    if (shownRows(baseRows()).some(r => r.part)) parts.push('Overtime of days split between jobs shows under All');
     if (S.q) parts.push('Search: ' + S.q);
     if (S.flaggedOnly) parts.push('Flagged only');
     const sum = freshNow();
@@ -5708,7 +5800,7 @@
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     const cur = activeView();
-    a.download = C.csvFilename(S.from, S.to, cur && cur.id);
+    a.download = C.csvFilename(S.from, S.to, [cur && cur.id, workNow() === 'all' ? '' : S.site || S.work].filter(Boolean).join('-'));
     document.body.appendChild(a); a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
     toast('Exported ' + plural(rows.length, 'row', 'rows'));
@@ -7002,7 +7094,9 @@
       }
       case 'region': enterRegion(d.region); break;
       case 'clear-filters':
-        S.coSel = []; S.dept = ''; S.q = ''; $('q').value = ''; S.flaggedOnly = false; render(); break;
+        S.coSel = []; S.dept = ''; S.q = ''; $('q').value = ''; S.flaggedOnly = false; S.work = 'all'; S.site = ''; render(); break;
+      case 'work': S.work = d.work === 'pack' || d.work === 'deleaf' ? d.work : 'all'; S.site = ''; render(); break;
+      case 'work-site': S.site = d.site || ''; render(); break;
       case 'csv': setPop(''); exportCsv(); break;
       case 'print': setPop(''); window.print(); break;
       case 'reload': setPop(''); reload(false); break;

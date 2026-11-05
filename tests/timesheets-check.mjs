@@ -160,7 +160,7 @@ check('Export CSV names the active view in the file name', () => {
   eq(C.csvFilename('2026-09-26', '2026-10-09', 'trim-crew'), 'timesheets-trim-crew-2026-09-26-to-2026-10-09.csv');
   eq(C.csvFilename('2026-09-26', '2026-10-09', null), 'timesheets-2026-09-26-to-2026-10-09.csv', 'Everyone');
   eq(C.csvFilename('2026-09-26', '2026-10-09', '../Odd Name'), 'timesheets-odd-name-2026-09-26-to-2026-10-09.csv', 'only safe characters');
-  ok(/a\.download = C\.csvFilename\(S\.from, S\.to, cur && cur\.id\)/.test(appFn('exportCsv')), 'exportCsv does not pass the active view');
+  ok(/a\.download = C\.csvFilename\(S\.from, S\.to, \[cur && cur\.id, /.test(appFn('exportCsv')), 'exportCsv does not pass the active view');
 });
 check('a search that only finds people outside the active view says so and offers Show everyone', () => {
   const f = appFn('renderContent');
@@ -1011,7 +1011,7 @@ check('esc() and h`` escape every data value, once', () => {
 // ---------------------------------------------------------------------------------------------
 const NOW = '2026-10-08T18:30:00Z';      // Thu 11:30 AM PDT
 const demo = D.build(NOW);
-const DEMO_VIEW_LABELS = ['Trim Crew', 'Grow Team', 'Ambassadors', 'Office and Drivers', 'Packing and Distro'];   // made-up crews, no person's name
+const DEMO_VIEW_LABELS = ['Trim Crew', 'Grow Team', 'Ambassadors', 'Office and Drivers', 'Packing and Distro', 'Deleaf Crew'];   // made-up crews, no person's name
 const DEMO_CA_VIEWS = 4;   // the first four are California crews; the last is the New York one
 const DAY_COLS = ['id', 'company', 'region', 'employee_uuid', 'employee_name', 'department', 'job_title', 'work_date', 'first_in', 'last_out',
   'shifts', 'span_min', 'worked_min', 'paid_break_min', 'unpaid_break_min', 'reg_min', 'ot_min', 'dt_min', 'ot_src', 'label_src',
@@ -1131,11 +1131,11 @@ check('demo arithmetic holds: worked = span - unpaid, break totals, OT split, Gu
     ok(r.work_date <= rToday, 'no future rows');
   }
 });
-check('demo views: 4 made-up California crews and 1 New York crew over demo people only, valid ids, each with days this pay period', () => {
+check('demo views: 5 made-up California crews and 1 New York crew over demo people only, valid ids, each with days this pay period', () => {
   const vs = C.normViews(demo.views);
-  eq(vs.length, 5, 'views');
+  eq(vs.length, 6, 'views');
   eq(vs.map(v => v.label), DEMO_VIEW_LABELS, 'labels (in order)');
-  eq(vs.map(v => C.viewRegions(v).join('+')), ['CA', 'CA', 'CA', 'CA', 'NY'], 'regions');
+  eq(vs.map(v => C.viewRegions(v).join('+')), ['CA', 'CA', 'CA', 'CA', 'NY', 'CA'], 'regions');
   ok(vs.every(v => C.VIEW_ID_RE.test(v.id)) && new Set(vs.map(v => v.id)).size === vs.length, 'ids');
   const ppl = new Set(demo.people.map(p => p.company + ':' + p.employee_uuid));
   const depts = new Set(demo.people.map(p => p.company + ':' + p.department));
@@ -1586,7 +1586,7 @@ check('page: region tabs from the sign-in, every clock time on its row\'s zone, 
   // every clock time the page itself formats names a zone
   const calls = [...app.matchAll(/C\.fmt(Time|Clock)\(([^()]*(?:\([^()]*\))?[^()]*)\)/g)].map(m => m[2]);
   ok(calls.length >= 8 && calls.every(a => /,\s*tz\s*$/.test(a)), 'a clock time formatted without its row zone: ' + J(calls.filter(a => !/,\s*tz\s*$/.test(a))));
-  ok(/tz = C\.rowTz\(r\)/.test(appFn('inOutCells')) && /const tz = C\.rowTz\(r\);/.test(appFn('breaksCell')) && /C\.shiftGaps\(r\.shifts, tz\)/.test(appFn('breaksCell')), 'in/out and break chips on the row clock');
+  ok(/tz = C\.rowTz\(r\)/.test(appFn('inOutCells')) && /const tz = C\.rowTz\(r\);/.test(appFn('breaksCell')) && /C\.dayGaps\(r, tz\)/.test(appFn('breaksCell')), 'in/out and break chips on the row clock');
   ok(/r\.work_date < rowToday\(r\)/.test(appFn('inOutCells')) && /r\.work_date < rowToday\(r\)/.test(appFn('timesLine')), 'the stale clocked-in pill uses the row\'s own today');
   ok(/estMark\(otTip\(r\.region\)\)/.test(appFn('otCell')) && /New York rules: over 40 h in the Saturday to Friday workweek is OT/.test(app), 'the est. OT tip says New York rules on a New York row');
   ok(/Times are \$\{regionDef\(\)\.tzName\}\./.test(appFn('renderPrintHead')), 'print says Pacific or Eastern');
@@ -4772,6 +4772,103 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     // a shift still running: only its clock-in
     if (core.shiftPlace.length >= 1) eq(core.shiftPlace({ in: { site: 'Slane', how: 'named' }, out: { site: 'Imperial', how: 'near' } }, { open: true }), { site: 'Slane', how: 'named', at: 'in' }, 'still running');
     console.log('          (' + n + ' in/out reads compared)');
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// 21. a deleaf crew's Packaging and Deleaf/Harvest buttons (Gianni 2026-11-04: buttons on the crew's tab, "then under deleaf
+//     options to organize by location")
+// ---------------------------------------------------------------------------------------------
+{
+  const sh = (id, title, min, o) => Object.assign({ id, in: '2026-10-27T07:00:00-07:00', out: '2026-10-27T08:00:00-07:00', span_min: min, worked_min: min, breaks: [] }, title ? { job: { id: 'j' + id, title } } : {}, o);
+  const day = (shifts, o) => Object.assign({ id: 'd1', company: 'filifera', employee_uuid: 'u1', employee_name: 'Made Up', region: 'CA', work_date: '2026-10-27', job_title: 'Distro Packager',
+    worked_min: shifts.reduce((a, s) => a + s.worked_min, 0), span_min: shifts.reduce((a, s) => a + s.span_min, 0), reg_min: 480, ot_min: 49, dt_min: 0, ot_src: 'gusto', paid_break_min: 25, unpaid_break_min: 30,
+    flags: [{ code: 'no_meal' }], shifts }, o);
+  const mixed = () => day([
+    sh('1', 'Distro Packager', 285, { breaks: [{ paid: true, min: 25 }, { paid: false, min: 30 }] }),
+    sh('2', 'Deleaf/Harvest - Imperial', 70),
+    sh('3', 'Distro Packager', 174, { out: null }) ]);
+  check('the buttons: a day with packing and deleaf shows under each with only those shifts and their hours', () => {
+    const [p] = C.workRows([mixed()], 'pack', ''), [d] = C.workRows([mixed()], 'deleaf', '');
+    eq(p.shifts.map(s => s.id), ['1', '3']); eq(p.worked_min, 459); eq(p.paid_break_min, 25); eq(p.unpaid_break_min, 30); eq(p.open, true); eq(p.last_out, null);
+    eq(d.shifts.map(s => s.id), ['2']); eq(d.worked_min, 70); eq(d.unpaid_break_min, 0); eq(d.job_title, 'Deleaf/Harvest - Imperial'); eq(d.work_site, 'Imperial');
+  });
+  check('the buttons: a part of a day keeps the day\'s flags, and leaves overtime blank', () => {
+    const [p] = C.workRows([mixed()], 'pack', '');
+    eq(p.part, true); eq(p.ot_min, null); eq(p.dt_min, null); eq(p.reg_min, null); eq(p.flags, [{ code: 'no_meal' }]);
+    eq(C.buildCsv([p]).split('\r\n')[1].split(',').slice(10, 13), ['', '', ''], 'Regular, OT and DT in the CSV');
+  });
+  check('the buttons: time on another job is never a gap off the clock', () => {
+    const at = (a, b) => ({ in: '2026-10-27T' + a + ':00-07:00', out: '2026-10-27T' + b + ':00-07:00' });
+    const r = day([sh('1', 'Distro Packager', 315, at('06:58', '12:13')), sh('2', 'Deleaf/Harvest - Imperial', 70, at('13:00', '14:10')), sh('3', 'Distro Packager', 174, at('14:28', '17:22'))]);
+    eq(C.dayGaps(r, 'America/Los_Angeles').map(g => g.min), [47, 18], 'the whole day has both');
+    eq(C.dayGaps(C.workRows([r], 'pack', '')[0], 'America/Los_Angeles'), [], 'Packaging has none: the Imperial shift is between its two');
+    const two = day([sh('1', 'Distro Packager', 60, at('07:00', '08:00')), sh('2', 'Distro Packager', 60, at('08:40', '09:40')), sh('3', 'Deleaf/Harvest - Slane', 60, at('10:00', '11:00'))]);
+    eq(C.dayGaps(C.workRows([two], 'pack', '')[0], 'America/Los_Angeles').map(g => [g.min, g.afterShift]), [[40, 0]], 'two in a row keep theirs');
+    ok(/const gaps = C\.dayGaps\(r, tz\);/.test(appFn('breaksCell')), 'the chips');
+    ok(/const gaps = dayGaps\(r, rowTz\(r\)\);/.test(src), 'the phone line');
+  });
+  check('the buttons: a part counts the breaks of finished shifts, and no last clock-out while a shift is open', () => {
+    const r = day([sh('1', 'Distro Packager', 60), sh('2', 'Deleaf/Harvest - Slane', 60), sh('3', 'Deleaf/Harvest - Slane', 0, { out: null, breaks: [{ paid: false, min: 30 }] })]);
+    const [d] = C.workRows([r], 'deleaf', '');
+    eq(d.unpaid_break_min, 0); eq(d.last_out, null); eq(d.open, true);
+  });
+  check('the location headings print a site and nothing else', () => {
+    const m = block('ts-app').match(/const siteRows =[\s\S]*?const sitePeople =[^\n]*\n/);
+    ok(m, 'the helpers'); ok(!/coName|department|\.company/.test(m[0]), 'no company or department');
+    ok(m[0].match(/g\.site/g).length === 4, 'each takes its heading from the site');
+  });
+  check('the buttons: a whole day keeps its overtime', () => {
+    const [p] = C.workRows([day([sh('1', 'Distro Packager', 529)])], 'pack', '');
+    eq(p.ot_min, 49); eq(p.part, undefined); eq(p.worked_min, 529);
+  });
+  check('the buttons: Packaging and Deleaf/Harvest always add up to All', () => {
+    const rows = [mixed(), day([sh('4', 'Distro/Trim Lead', 300)], { id: 'd2' }), day([sh('5', 'Deleaf/Harvest', 100), sh('6', 'Deleaf/Harvest - Slane', 50)], { id: 'd3' }), day([sh('7', '', 60)], { id: 'd4', job_title: '' })];
+    const sum = rs => rs.reduce((a, r) => a + r.worked_min, 0);
+    eq(sum(C.workRows(rows, 'pack', '')) + sum(C.workRows(rows, 'deleaf', '')), sum(rows));
+  });
+  check('the buttons: a site is the job\'s; a plain job takes the deleaf site it was clocked in at, else No location', () => {
+    const rows = [day([sh('1', 'Deleaf/Harvest - Olympic', 60), sh('2', 'Deleaf/Harvest', 60, { place: { site: 'Slane', how: 'named' } }), sh('3', 'Deleaf/Harvest', 60, { place: { site: 'Union Pacific', how: 'near' } }), sh('4', 'Deleaf/Harvest', 60)])];
+    eq(C.workRows(rows, 'deleaf', '').map(r => [r.work_site, r.worked_min]), [['Olympic', 60], ['Slane', 60], [C.NO_SITE, 120]]);
+    eq(C.workSites(rows), ['Slane', 'Olympic', C.NO_SITE]);
+  });
+  check('the buttons: one location shows that site\'s shifts only, and a day at two sites shows under each', () => {
+    const r = day([sh('1', 'Deleaf/Harvest - Imperial', 305), sh('2', 'Deleaf/Harvest - Olympic', 387)]);
+    eq(C.workRows([r], 'deleaf', 'Olympic').map(x => x.shifts.map(s => s.id)), [['2']]);
+    eq(C.bySite(C.workRows([r], 'deleaf', '')).map(g => [g.site, g.totals.worked_min, g.totals.people]), [['Imperial', 305, 1], ['Olympic', 387, 1]]);
+  });
+  check('the buttons: a shift whose job is not known yet, and a day with no shifts, go by the day\'s job', () => {
+    eq(C.workRows([day([sh('1', '', 60)], { job_title: 'Deleaf/Harvest - Slane' })], 'deleaf', '').map(r => r.work_site), ['Slane']);
+    eq(C.workRows([day([], { job_title: 'Deleaf/Harvest - Slane', worked_min: 240 })], 'deleaf', 'Slane').map(r => r.worked_min), [240]);
+    eq(C.workRows([day([], { job_title: 'Distro Packager', worked_min: 240 })], 'deleaf', ''), []);
+  });
+  check('the buttons: never change the rows they read', () => {
+    const r = mixed(), was = J(r);
+    C.workRows([r], 'pack', ''); C.workRows([r], 'deleaf', ''); C.workSites([r]);
+    eq(J(r), was);
+  });
+  check('the buttons: only on a tab whose crew mostly holds Deleaf/Harvest jobs', () => {
+    const job = title => ({ id: 'j' + title, title }), who = (u, jobs, o) => Object.assign({ company: 'filifera', employee_uuid: u, department: 'Crew', active: true, jobs }, o);
+    const view = { members: ['a', 'b', 'c', 'd', 'e'].map(u => ({ company: 'filifera', employee_uuid: u })) };
+    const dl = [job('Distro Packager'), job('Deleaf/Harvest - Slane')], pk = [job('Distro Packager')];
+    eq(C.workView(view, [who('a', dl), who('b', dl), who('c', dl), who('d', dl)]), true, 'all of them');
+    eq(C.workView(view, [who('a', dl), who('b', dl), who('c', dl), who('d', pk)]), true, 'three in four');
+    eq(C.workView(view, [who('a', dl), who('b', dl), who('c', dl), who('d', pk), who('e', pk)]), false, 'three in five');
+    eq(C.workView(view, [who('a', dl), who('b', dl), who('c', dl), who('d', pk), who('e', pk, { active: false })]), true, 'someone who left does not count');
+    eq(C.workView(view, [who('a', null)]), false, 'jobs not loaded');
+    eq(C.workView(view, []), false, 'nobody');
+    eq(C.workView({ members: [] }, [who('a', dl)]), false, 'nobody in the view');
+  });
+  check('the buttons: part of a day offers only its own shifts\' moves', () => {
+    ok(/\.filter\(x => !r\.part \|\| r\.shifts\.some\(/.test(appFn('placeMoves')), 'placeMoves');
+  });
+  check('the buttons: a demo tab shows them, and a hidden control never filters', () => {
+    const vs = C.normViews(demo.views);
+    eq(vs.filter(v => C.workView(v, demo.people)).map(v => v.label), ['Deleaf Crew']);
+    ok(/const workNow = \(\) => workOn\(\) \? S\.work : 'all';/.test(src), 'workNow');
+    ok(/id="workRow" hidden/.test(src), 'the row starts hidden');
+    ok(/case 'clear-filters':[\s\S]{0,160}S\.work = 'all'/.test(src), 'Clear filters clears them');
+    ok(!/store\.(get|set)\('work'/.test(src), 'they start clear, like every other filter');
   });
 }
 
