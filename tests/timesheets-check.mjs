@@ -655,7 +655,7 @@ check('page: a view hides the company chips + department select and renders the 
   ok(/layout\(\)\.flat \? \[\] : \[/.test(appFn('renderPrintHead')), 'print header lists companies and departments only outside a view');
   ok(/C\.buildCsv\(rows, \{ companyName: coName, flat: layout\(\)\.flat, edits: editsLoaded\(\) \}\)/.test(appFn('exportCsv')), 'CSV follows the layout');
   ok(/function dayRow\(r\) \{ return dayRowOf\(r, true\); \}/.test(block('ts-app')), 'dayRow stays a one-argument .map() callback with the Job column');
-  ok(/@media \(max-width:1219\.98px\)\{[\s\S]*?table\.ts\.day-t\.nojob\{min-width:/.test(src), 'a table without the Job column needs its own min-width');
+  ok(/@media \(max-width:1295\.98px\)\{[\s\S]*?table\.ts\.day-t\.nojob\{min-width:/.test(src), 'a table without the Job column needs its own min-width');
 });
 // ---------------------------------------------------------------------------------------------
 // 6c. views given to a sign-in (ts_view_grants): a manager sees exactly the people in their views,
@@ -2078,7 +2078,7 @@ check('page: an Edit button at the row end (desktop) and in a card\'s detail (ph
   ok(/env\(safe-area-inset-bottom/.test(phone.slice(phone.indexOf('#editPanel'))), 'Save clears the home indicator');
   ok(/if \(!\$\('editPanel'\)\.hidden\) \{ requestCloseEditor\(\); return; \}/.test(app) && /editorDirty\(\) && E\.confirm !== 'close'/.test(appFn('requestCloseEditor')), 'Escape asks before throwing typed changes away');
   ok(/\.ts th\.c-edit,\.ts td\.c-edit,\.ts col\.w-edit\{display:none\}/.test(src.slice(src.indexOf('@media print'))), 'print leaves the Edit column out');
-  ok(/table\.ts\.day-t\.ed\{min-width:1460px\}/.test(src), 'the narrower-window tables make room for the Edit column');
+  ok(/table\.ts\.day-t\.ed\{min-width:1536px\}/.test(src), 'the narrower-window tables make room for the Edit column');
   const ea = appFn('editsAdminHtml');
   ok(/\['all', 'All'\], \['pending', 'Pending'\], \['conflict', 'Conflict'\], \['failed', 'Failed'\]/.test(ea) && /e\.work_date >= S\.from && e\.work_date <= S\.to/.test(ea), 'Admin > Edits: the dates on screen, filtered to pending / conflict / failed');
   ok(/canX = mayCancel\(e\) && \(st === 'pending' \|\| clear\)/.test(appFn('editAdminRow')) && /canX \? h`<button type="button" class="btn sm \$\{done \? 'primary' : 'danger'\}" data-act="adm-e-x"/.test(appFn('editAdminRow')) && /case 'adm-e-x-yes': adminCancelEdit\(d\.id\); break;/.test(app), 'Cancel for waiting ones and Clear for Needs a look, after a confirm');
