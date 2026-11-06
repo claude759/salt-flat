@@ -568,6 +568,8 @@
   .ed-k{font-size:11px;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--faint)}
   .ed-brk{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 10px}
   .ed-brk + .ed-brk .ed-f > span{display:none}
+  .ed-blen{min-width:58px} .ed-blen b{display:block;line-height:34px;font-size:13px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ed-btot{margin:0;font-size:12.5px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums} .ed-btot:empty{display:none}
   .ed-bmsg{flex-basis:100%;grid-column:1/-1;margin:0;font-size:12.5px;line-height:1.4}
   .ed-bmsg.err{color:#ffc2bd} .ed-bmsg.warn{color:var(--unpaid-text)}
   .ed-none{margin:0;font-size:12.5px}
@@ -763,6 +765,7 @@
     .ed-brks{align-items:stretch}
     .ed-brk{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:end;padding-top:10px;border-top:1px solid var(--row-line)}
     .ed-brk + .ed-brk .ed-f > span{display:inline}
+    .ed-blen{grid-column:1/-1;flex-direction:row;align-items:baseline;gap:6px} .ed-blen b{line-height:1.4}
     .ed-f input[type=time],.ed-f select{width:100%}
     .ed-copy,.ed-sum,.ed-bline,.ed-hist li{font-size:14px}
     .ed-f{font-size:13px}
@@ -1934,7 +1937,8 @@
   //              (10, 2026-11-03) a deleaf job, plain or any site's, at a packing site (Union Pacific): only packing happens
   //              there, so the person's own Distro Packager, by the one-click button only, never in Move all
   //   'needsJob' the job the place says is not one of the person's Gusto jobs (5), or starts after the day (starts: its date)
-  //   'changed'  clocked in at one site and out at another (6): the fix may be splitting the shift (the packing site and a
+  //   'changed'  clocked in at one site and out at another (6; settled, no flag, when the day is already split there:
+  //              splitAtMove in placeLooks): the fix may be splitting the shift (the packing site and a
   //              grow site, either way, too; but not Distro Packager between 25th St and the packing site, below)
   //   null       the tag only: the job matches (Distro Packager at a packing site, 10); Distro Packager at 25th St (4: the
   //              place cannot tell packing from deleafing); Distro Packager clocked in at 25th St and out at the packing
@@ -1982,6 +1986,19 @@
   // both show (the one-click move would replace it). raw: the day as Gusto has it; board: as the board shows it
   // (overlayDay); jobs: the person's (personJobs); ctx: {today, now, neighbors (the person's Gusto shifts around the day,
   // for editorEntries), who, open}.
+  // 6 settled (2026-11-06): on the job of the site they clocked in at, clocked out at another site, and their next shift clocks
+  // in at that site, so the day is already split where they moved. The tag under the job stays, the flag goes. Nothing else
+  // settles it: one long shift across two sites, a job that fits neither end, or a next shift somewhere else still asks.
+  function splitAtMove(s, shifts) {
+    const p = shiftPlace(s && s.place);
+    if (!p || !p.other) return false;
+    const title = String((s.job && s.job.title) || '').trim();
+    if (title !== PLACE_JOB_PREFIX + p.site && !(title === PLACE_PACK_JOB && packPlace(p.site))) return false;
+    const at = x => Date.parse(x.in);
+    const next = (shifts || []).filter(x => x && x !== s && x.in && at(x) > at(s)).sort((x, y) => at(x) - at(y))[0];
+    const np = next ? shiftPlace(next.place) : null;
+    return !!np && np.at === 'in' && np.site === p.other;
+  }
   function placeLooks(raw, board, edits, jobs, ctx) {
     const c = ctx || {}, b = board || raw;
     if (!raw || !b || !(b.shifts || []).some(s => s && s.place)) return [];
@@ -1991,6 +2008,7 @@
       if (!s || !s.place || s.id == null) continue;
       const en = ents.find(x => x.kind === 'shift' && x.id === String(s.id)) || null;
       const look = placeLook(s, jobs, { date: raw.work_date, readonly: !c.open || !en || !!en.readonly || !!en.del || !!en.split });
+      if (look && look.kind === 'changed' && splitAtMove(s, b.shifts)) Object.assign(look, { kind: null, msg: '', reason: '' });
       if (look) out.push({ shift: s, look, entry: en, waiting: !!(en && en.pendingIds && en.pendingIds.length) });
     }
     return out;
@@ -1999,6 +2017,20 @@
   // whether Move all clear ones takes it (clear, by its clock-in place)
   const placeMovable = x => !!x && !!x.look && !!x.look.to && (x.look.kind === 'clear' || x.look.kind === 'check') && !x.waiting;
   const placeInMoveAll = x => placeMovable(x) && x.look.kind === 'clear' && x.look.at === 'in';
+  // The Edit panel's break lengths, from the time boxes as typed: minutes, or null until both are filled and the end is after
+  // the start. A rest is paid and a meal unpaid, as on the board.
+  function breakLenMin(b) {
+    const m = t => { const x = /^(\d{1,2}):(\d{2})/.exec(String(t == null ? '' : t)); return x ? +x[1] * 60 + +x[2] : null; };
+    const a = m(b && b.startT), z = m(b && b.endT);
+    return a == null || z == null || z <= a ? null : z - a;
+  }
+  const breakLenText = b => { const n = breakLenMin(b); return n == null ? '' : n + ' min'; };
+  function breaksTotalText(breaks) {
+    let paid = 0, unpaid = 0;
+    for (const b of breaks || []) { const n = breakLenMin(b) || 0; if (b && b.kind === 'meal') unpaid += n; else paid += n; }
+    const all = paid + unpaid;
+    return !all ? '' : !unpaid ? 'Total ' + all + ' min paid' : !paid ? 'Total ' + all + ' min unpaid' : 'Total ' + all + ' min (' + paid + ' paid, ' + unpaid + ' unpaid)';
+  }
   // The day's Job vs place flag, a warning like the producer's flags (it counts, stripes the row, shows under Flagged only):
   // one for the day, its message naming each shift's (with its start when the day has more than one shift); null when every
   // shift's job fits where it was clocked in. tz: the day's zone.
@@ -4028,7 +4060,7 @@
     noteStatusText, setNoteHeld, noteIsHeld, reasonProblem, cutUnits, notesTip, noteShifts, spanLabel,
     NO_JOB_TITLE, jobLabel, personJobs, shiftJobsShown, JOB_NOT_LOADED, JOB_NOT_THEIRS, jobStartsText, jobChange, setJobHeld, jobIsHeld,
     PLACE_SITES, PLACE_PACK_SITES, PLACE_ALL_SITES, PLACE_HOME, PLACE_JOB_PREFIX, PLACE_PLAIN_JOB, PLACE_PACK_JOB, PLACE_HOWS, shiftPlace, placeTag, placeLook, placeLooks,
-    placeMovable, placeInMoveAll, placeFlag, placeMoveOp,
+    placeMovable, placeInMoveAll, placeFlag, placeMoveOp, breakLenText, breaksTotalText,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
@@ -6421,10 +6453,12 @@
         ${en.breaks.length ? en.breaks.map((b, j) => h`<div class="ed-brk">
           <label class="ed-f"><span>Start</span>${tIn('bs', b.startT, label + ', break ' + (j + 1) + ' start', j)}</label>
           <label class="ed-f"><span>End</span>${tIn('be', b.endT, label + ', break ' + (j + 1) + ' end', j)}</label>
+          <div class="ed-f ed-blen"><span>Length</span><b data-blen="${en.key + ':' + j}">${C.breakLenText(b)}</b></div>
           <label class="ed-f"><span>Type</span><select data-ek="${en.key}" data-ef="bt" data-bi="${j}" aria-label="${label + ', break ' + (j + 1) + ' type'}"><option value="rest"${b.kind === 'rest' ? ' selected' : ''}>Paid rest</option><option value="meal"${b.kind === 'meal' ? ' selected' : ''}>Unpaid meal</option></select></label>
           <button type="button" class="btn sm ed-rm" data-act="ed-rm-brk" data-ek="${en.key}" data-bi="${j}" aria-label="${'Remove break ' + (j + 1) + ' of ' + label.toLowerCase()}">Remove</button>
           ${brkMsgHtml(en, j, notes[j])}
         </div>`) : h`<p class="faint ed-none">No breaks on this shift.</p>`}
+        ${en.breaks.length ? h`<p class="ed-btot" data-btot="${en.key}">${C.breaksTotalText(en.breaks)}</p>` : ''}
         ${away ? h`<span class="faint ed-none">Add breaks for this person in Gusto.</span>` : en.breaks.length < C.EDIT_RULES.maxBreaks ? h`<button type="button" class="linkbtn" data-act="ed-add-brk" data-ek="${en.key}">+ Add break</button>` : h`<span class="faint ed-none">${C.EDIT_RULES.maxBreaks} breaks is the most one shift can have.</span>`}
       </div>
       ${err}
@@ -6631,6 +6665,9 @@
       const el = $('edForm').querySelector('[data-bw="' + en.key + ':' + j + '"]');
       if (el) { el.textContent = note; el.hidden = !note; }
     });
+    en.breaks.forEach((b, j) => { const el = $('edForm').querySelector('[data-blen="' + en.key + ':' + j + '"]'); if (el) el.textContent = C.breakLenText(b); });
+    const tot = $('edForm').querySelector('[data-btot="' + en.key + '"]');
+    if (tot) tot.textContent = C.breaksTotalText(en.breaks);
   }
   function edFocus(k, f, bi) {
     const x = [...$('edForm').querySelectorAll('[data-ek][data-ef]')].find(el => el.dataset.ek === k && el.dataset.ef === f && (bi == null || el.dataset.bi === String(bi)));

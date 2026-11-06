@@ -4387,6 +4387,32 @@ check("a day's looks by the editor's own rules: a shift being sent, just sent, s
   // the board keeps the place on a shift a waiting change redraws (editedShift), and leaves it off one that never had one
   eq([OV(raw, [wait]).shifts[0].place, 'place' in C.editedShift(ED_S1, AFTER('07:30', '15:30'), C.TZ)], [PL('Slane', 'named'), false]);
 });
+check('rule 6 settled: a day already split where the person moved keeps the tag and loses the flag; anything less still asks', () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const SH = (id, a, z, title, place) => Object.assign(onJob(ES(id, a, z, []), SJ(JT[title] || 'x-' + title, title)), place ? { place } : {});
+  const day = (...sh) => edRow(sh), looks = r => C.placeLooks(r, r, [], CJOBS, ctx), kinds = r => looks(r).map(x => x.look.kind);
+  const moved = day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Olympic', PL('Olympic', 'near')));
+  eq(kinds(moved), [null, null], 'next shift clocks in where this one clocked out');
+  eq([looks(moved)[0].look.tag, looks(moved)[0].look.msg, C.placeFlag(looks(moved), C.TZ, true)], ['Near Imperial, out at Olympic', '', null], 'the tag stays, the flag goes');
+  eq(kinds(day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Olympic', PL('Olympic', 'near', 'in', 'Filifera')), SH('s2', '12:03', '15:30', 'Distro Packager', PL('Filifera', 'named')))), [null, null], 'on to packing at 25th St');
+  eq(kinds(day(SH('s1', '07:00', '12:00', 'Distro Packager', PL('Filifera', 'named', 'in', 'Slane')), SH('s2', '12:30', '15:30', 'Deleaf/Harvest - Slane', PL('Slane', 'named')))), [null, null], 'packing, then deleaf at the next site');
+  eq(kinds(day(SH('s1', '07:00', '15:30', 'Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic')))), ['changed'], 'one shift across two sites still asks');
+  eq(kinds(day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Slane', PL('Imperial', 'near', 'in', 'Olympic')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Olympic', PL('Olympic', 'near')))), ['changed', null], 'a job that fits neither end still asks');
+  eq(kinds(day(SH('s1', '07:00', '12:00', 'Distro Packager', PL('Imperial', 'near', 'in', 'Slane')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Slane', PL('Slane', 'named')))), ['changed', null], 'packing at a grow site still asks');
+  eq(kinds(day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Slane', PL('Slane', 'named')))), ['changed', null], 'the next shift somewhere else still asks');
+  eq(kinds(day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Olympic'))), ['changed'], 'a next shift with no place still asks');
+  eq(kinds(day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Olympic', PL('Olympic', 'near')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic')))), [null, 'changed'], 'only a later shift counts, never an earlier one');
+});
+check('the Edit panel shows each break\'s length and the shift\'s total, as typed', () => {
+  const B = (startT, endT, kind) => ({ startT, endT, kind });
+  eq([C.breakLenText(B('10:02', '10:12')), C.breakLenText(B('12:08', '13:08')), C.breakLenText(B('', '13:08')), C.breakLenText(B('12:08', '')), C.breakLenText(B('13:08', '12:08')), C.breakLenText(B('12:08', '12:08'))], ['10 min', '60 min', '', '', '', '']);
+  eq(C.breaksTotalText([B('10:02', '10:12', 'rest'), B('12:08', '13:08', 'meal'), B('15:02', '15:12', 'rest')]), 'Total 80 min (20 paid, 60 unpaid)');
+  eq([C.breaksTotalText([B('12:00', '12:30', 'meal')]), C.breaksTotalText([B('10:00', '10:15', 'rest')]), C.breaksTotalText([]), C.breaksTotalText([B('', '', 'rest')])], ['Total 30 min unpaid', 'Total 15 min paid', '', '']);
+  eq(C.breaksTotalText([B('10:00', '10:15', 'rest'), B('12:00', '', 'meal')]), 'Total 15 min paid', 'a break still being typed does not count yet');
+  ok(/data-blen="\$\{en\.key \+ ':' \+ j\}"/.test(block('ts-app')) && /data-btot="\$\{en\.key\}"/.test(block('ts-app')), 'each row and the shift carry their own place');
+  ok(/\[data-blen="' \+ en\.key \+ ':' \+ j \+ '"\]/.test(block('ts-app')) && /\[data-btot="' \+ en\.key \+ '"\]/.test(block('ts-app')), 'and both update as the times are typed');
+  ok(/\.ed-blen\{grid-column:1\/-1/.test(src), 'on a phone the length takes its own line, so Type and Remove stay side by side');
+});
 check('the Job vs place flag: one warning for the day, counted like any other (totals, the row stripe, Flagged only, CSV), naming each shift on a day with more than one', () => {
   const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
   const raw = edRow([PS('Deleaf/Harvest', PL('Slane', 'named'))]);
