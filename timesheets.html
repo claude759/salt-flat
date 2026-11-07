@@ -289,6 +289,10 @@
   .flag{display:inline-block;font-size:11px;font-weight:600;border-radius:999px;padding:0 8px;line-height:18px;
     border:1px solid;white-space:nowrap;cursor:help}
   .flag.warn{border-color:var(--warn-line);color:var(--warn-text)}
+  .flag.late{border-color:var(--red);color:#ffc2bd;background:color-mix(in srgb,var(--red) 22%,var(--panel));font-weight:700;white-space:normal;max-width:100%;line-height:15px;padding:2px 8px;border-radius:9px}
+  .ts tr.latepay td{background:color-mix(in srgb,var(--red) 12%,var(--panel))}
+  .ts tr.latepay td:first-child{box-shadow:inset 3px 0 0 var(--red)}
+  .pc.latepay,.dl.latepay{background:color-mix(in srgb,var(--red) 10%,var(--panel));box-shadow:inset 3px 0 0 var(--red)}
   /* info notes (for example a guessed break type) are one quiet mark, not a pill */
   .infomark{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;
     border:1px solid #3a4252;color:var(--faint);font:italic 700 11px/1 Georgia,"Times New Roman",serif;cursor:help;flex:none}
@@ -3941,6 +3945,22 @@
   // Gusto, not on the board yet), edit (the ts_edits row of one added here)}. One added here that is in Gusto (or needs a
   // look) leaves the list once Gusto's copy shows on its shift: the same words from the same manager. edits: the
   // ts_edits rows of any days (cancelled ones never show).
+  // Late pay (2026-11-07): hours a processed pay period missed, paid in the open one. They go in Gusto on a day of the open
+  // period the person did not work, with a note that says "LATE PAY for m/d/yyyy" (the day the hours were worked); the
+  // board shows that day in red with the day it is for. latePayDate(text): 'yyyy-mm-dd' or null. latePayDates(row, edits):
+  // every such day named in the day's Gusto notes, its note, or a change made here, oldest first ([] on a normal day).
+  const LATE_PAY_RE = /\bLATE PAY for (\d{1,2})\/(\d{1,2})\/(\d{4})\b/i;
+  function latePayDate(text) {
+    const m = LATE_PAY_RE.exec(String(text == null ? '' : text));
+    if (!m) return null;
+    const iso = m[3] + '-' + pad2(+m[1]) + '-' + pad2(+m[2]);
+    return isIsoDate(iso) ? iso : null;
+  }
+  function latePayDates(row, edits) {
+    const texts = [row && row.note].concat(((row && row.shifts) || []).flatMap(s => ((s && s.notes) || []).map(n => n && n.text)),
+      (edits || []).filter(e => e && !e.cancelled_at).map(e => e.note));
+    return [...new Set(texts.map(latePayDate).filter(Boolean))].sort();
+  }
   function dayNotes(row, edits) {
     const r = row || {}, shifts = Array.isArray(r.shifts) ? r.shifts : [];
     const perShift = new Map();
@@ -4058,7 +4078,7 @@
     stampText, editPartLines, editTip, supersede, submitEdit, cancelEdit, stillWorking, editorEntries, editPlan, entriesPreview, dayStamp,
     isNoteEdit, editReason, APP_EDIT_PREFIX, APP_NOTE_PREFIX, parseAppNote, cleanNoteText, noteProblem, dayNotes, notesLabel, notesLook, noteWho, noteMeta,
     noteStatusText, setNoteHeld, noteIsHeld, reasonProblem, cutUnits, notesTip, noteShifts, spanLabel,
-    NO_JOB_TITLE, jobLabel, personJobs, shiftJobsShown, JOB_NOT_LOADED, JOB_NOT_THEIRS, jobStartsText, jobChange, setJobHeld, jobIsHeld,
+    latePayDate, latePayDates, NO_JOB_TITLE, jobLabel, personJobs, shiftJobsShown, JOB_NOT_LOADED, JOB_NOT_THEIRS, jobStartsText, jobChange, setJobHeld, jobIsHeld,
     PLACE_SITES, PLACE_PACK_SITES, PLACE_ALL_SITES, PLACE_HOME, PLACE_JOB_PREFIX, PLACE_PLAIN_JOB, PLACE_PACK_JOB, PLACE_HOWS, shiftPlace, placeTag, placeLook, placeLooks,
     placeMovable, placeInMoveAll, placeFlag, placeMoveOp, breakLenText, breaksTotalText,
   };
@@ -5259,7 +5279,15 @@
   // warning pills; info notes become one "i" mark. A change made here adds its Pending or Needs a look
   // pill on a line above them (the bubble says what changed, who made it and when it reaches Gusto).
   // and under them, a deleaf crew day's one-click moves (moveBtns: only for whoever may pick jobs today)
-  function flagsCell(r) { const ep = editPills(r), mv = moveBtns(r, 'xs pmove'); return h`${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}${mv ? h`<div class="pmv no-print">${mv}</div>` : ''}`; }
+  // a late-pay day (C.latePayDates): the row in red and a pill naming the day the hours are for
+  const latePay = r => C.latePayDates(r, editsFor(r.id));
+  const lateCls = r => latePay(r).length ? ' latepay' : '';
+  function latePill(r) {
+    const ds = latePay(r); if (!ds.length) return '';
+    const days = ds.map(d => C.fmtDay(d)).join(' and ');
+    return h`<span class="flag late" title="${'Late pay: hours worked ' + days + ', missed in that pay period\'s payroll and paid on this day in Gusto. Not worked on ' + C.fmtDay(r.work_date) + '.'}" tabindex="0">Late pay · for ${days}</span>`;
+  }
+  function flagsCell(r) { const ep = editPills(r), mv = moveBtns(r, 'xs pmove'), lp = latePill(r); return h`${lp ? h`<div class="flags">${lp}</div>` : ''}${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}${mv ? h`<div class="pmv no-print">${mv}</div>` : ''}`; }
   function editPills(r) {
     const ed = r && r.edit;
     if (!ed || (!ed.pending.length && !ed.attention.length)) return '';
@@ -5355,7 +5383,7 @@
     const jc = !job ? '' : jp ? h`<td class="c-job" title="${jp.map(p => p.job).filter(Boolean).join(', ')}">${jp.map((p, i) => h`<div${p.edJob ? JOB_ED : ''}>${p.job || h`&nbsp;`}</div>${plj(i)}`)}</td>`
       : pp ? h`<td class="c-job" title="${r.job_title || ''}"><div>${r.job_title || h`&nbsp;`}</div>${all(plj)}</td>`
       : h`<td class="c-job" title="${r.job_title || ''}">${r.job_title || ''}</td>`;
-    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-emp">${r.employee_name}${noteMark(r)}${ej}</td>${jc}${inOutCells(r, job && jp ? pp : null)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
+    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}${lateCls(r)}"><td class="c-emp">${r.employee_name}${noteMark(r)}${ej}</td>${jc}${inOutCells(r, job && jp ? pp : null)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
   }
   function dayView(rows) {
     const t0 = today();
@@ -5392,7 +5420,7 @@
     const pl = i => pp && pp[i] ? h`<span class="dj pl" title="${pp[i].look.msg || pp[i].look.tag}">${pp[i].look.tag}</span>` : '';
     const dj = jp ? jp.map((p, i) => h`${p.job ? h`<span class="dj${p.edJob ? ' edv' : ''}">${p.job}</span>` : ''}${pl(i)}`)
       : h`${r.job_title && r.job_title !== e.job ? h`<span class="dj">${r.job_title}</span>` : ''}${pp ? pp.map((x, i) => pl(i)) : ''}`;
-    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}"><td class="c-date">${C.fmtDay(r.work_date)}${noteMark(r)}${dj}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
+    return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}${lateCls(r)}"><td class="c-date">${C.fmtDay(r.work_date)}${noteMark(r)}${dj}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
   }
   // coKey null: a saved view's flat card, which never names a company or department
   function empCard(e, coKey) {
@@ -5459,7 +5487,8 @@
   function flagPills(r, cls, extra) {
     const warn = C.sortFlags(r.flags).filter(f => C.flagSev(f) === 'warn');
     const ep = editPills(r);   // Pending / Needs a look: the card opens to say what changed
-    return warn.length || ep || extra ? h`<div class="${cls}">${ep}${warn.map(f => h`<span class="flag warn">${C.flagLabel(f)}</span>`)}${extra || ''}</div>` : '';
+    const lp = latePill(r);
+    return warn.length || ep || extra || lp ? h`<div class="${cls}">${lp}${ep}${warn.map(f => h`<span class="flag warn">${C.flagLabel(f)}</span>`)}${extra || ''}</div>` : '';
   }
   // the changes made here to one day, newest first: what, who, when and where each stands (a phone card's
   // detail; the editor lists them too)
@@ -5506,7 +5535,7 @@
   // a card's hours: blank while someone is still on their first shift (the times line says clocked in)
   function cardHours(r) { return r.open && !r.worked_min ? '' : hoursCell(r); }
   function dayCard(r) {
-    return h`<details class="pc${C.hasWarn(r) ? ' flagged' : ''}" data-k="${r.id}"${openAttr(r)}>
+    return h`<details class="pc${C.hasWarn(r) ? ' flagged' : ''}${lateCls(r)}" data-k="${r.id}"${openAttr(r)}>
       <summary><div class="pc-l1"><span class="pc-name">${r.employee_name || 'No name in Gusto'}</span><span class="pc-hrs">${cardHours(r)}</span></div>
         <div class="pc-l2">${timesLine(r)}</div>${breaksLine(r)}${flagPills(r, 'pc-flags')}</summary>
       ${detailBody(r, r.job_title || '')}
@@ -5532,7 +5561,7 @@
   }
   function dayLine(r, e) {
     const job = r.job_title && r.job_title !== e.job ? r.job_title : '';
-    return h`<details class="dl${C.hasWarn(r) ? ' flagged' : ''}" data-k="${r.id}"${openAttr(r)}>
+    return h`<details class="dl${C.hasWarn(r) ? ' flagged' : ''}${lateCls(r)}" data-k="${r.id}"${openAttr(r)}>
       <summary><span class="dl-date">${C.fmtDayShort(r.work_date)}</span><span class="dl-times">${timesLine(r)}</span><span class="dl-hrs">${cardHours(r)}</span>${flagPills(r, 'dl-flags', noteTag(r))}</summary>
       ${detailBody(r, job)}
     </details>`;

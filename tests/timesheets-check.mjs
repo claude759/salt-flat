@@ -4403,6 +4403,18 @@ check('rule 6 settled: a day already split where the person moved keeps the tag 
   eq(kinds(day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Olympic'))), ['changed'], 'a next shift with no place still asks');
   eq(kinds(day(SH('s1', '07:00', '12:00', 'Deleaf/Harvest - Olympic', PL('Olympic', 'near')), SH('s2', '12:03', '15:30', 'Deleaf/Harvest - Imperial', PL('Imperial', 'near', 'in', 'Olympic')))), [null, 'changed'], 'only a later shift counts, never an earlier one');
 });
+check('late pay: a day whose Gusto note says "LATE PAY for m/d/yyyy" shows in red with the day the hours are for', () => {
+  eq([C.latePayDate('LATE PAY for 10/19/2026 (Oct 10-23 pay period): worked at Portal'), C.latePayDate('late pay for 1/5/2027'), C.latePayDate('LATE PAY for 13/40/2026'), C.latePayDate('paid late'), C.latePayDate(null)],
+    ['2026-10-19', '2027-01-05', null, null, null]);
+  const r = edRow([Object.assign({}, ED_S1, { notes: [{ text: 'LATE PAY for 10/23/2026 (Oct 10-23 pay period): worked 2:30 PM to 6:00 PM', app: true, kind: 'edit', by: 'boss@wizardtrees.com' }] })]);
+  eq([C.latePayDates(r, []), C.latePayDates(edRow([ED_S1]), [{ note: 'LATE PAY for 10/19/2026: worked at Portal' }]), C.latePayDates(edRow([ED_S1]), [{ note: 'LATE PAY for 10/19/2026', cancelled_at: '2026-11-07T00:00:00Z' }]), C.latePayDates(edRow([ED_S1]), [])],
+    [['2026-10-23'], ['2026-10-19'], [], []], 'from a Gusto note, or from a change made here that still stands');
+  const app = block('ts-app');
+  ok(/<tr class="r\$\{C\.hasWarn\(r\) \? ' flagged' : ''\}\$\{lateCls\(r\)\}"><td class="c-emp">/.test(app) && /<tr class="r\$\{C\.hasWarn\(r\) \? ' flagged' : ''\}\$\{lateCls\(r\)\}"><td class="c-date">/.test(app), 'both tables mark the row');
+  ok(/<details class="pc\$\{C\.hasWarn\(r\) \? ' flagged' : ''\}\$\{lateCls\(r\)\}"/.test(app) && /<details class="dl\$\{C\.hasWarn\(r\) \? ' flagged' : ''\}\$\{lateCls\(r\)\}"/.test(app), 'and both phone cards');
+  ok(/Late pay · for \$\{days\}/.test(app) && /const lp = latePill\(r\);/.test(appFn('flagPills')) && /lp = latePill\(r\)/.test(app), 'the pill names the day, on the board and on the cards');
+  ok(/\.ts tr\.latepay td\{background:color-mix\(in srgb,var\(--red\) 12%,var\(--panel\)\)\}/.test(src), 'an opaque red: the first cell is sticky on narrower windows');
+});
 check('the Edit panel shows each break\'s length and the shift\'s total, as typed', () => {
   const B = (startT, endT, kind) => ({ startT, endT, kind });
   eq([C.breakLenText(B('10:02', '10:12')), C.breakLenText(B('12:08', '13:08')), C.breakLenText(B('', '13:08')), C.breakLenText(B('12:08', '')), C.breakLenText(B('13:08', '12:08')), C.breakLenText(B('12:08', '12:08'))], ['10 min', '60 min', '', '', '', '']);
