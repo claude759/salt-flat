@@ -1810,42 +1810,55 @@ check('status pills: Pending and Needs a look, with a bubble that says what chan
   const tip = C.editTip(e, C.TZ, now);
   for (const want of ['Pending: changed here, not in Gusto yet.', 'Start 7:00 AM → 7:30 AM', 'Start, end and breaks: going to Gusto at noon today',
     'By m@wizardtrees.com, Oct 7, 11:20 AM.', 'Reason: forgot']) ok(tip.includes(want), 'tip is missing ' + J(want) + ': ' + tip);
-  ok(!/within minutes/.test(src), 'nothing on the page promises "within minutes" any more: every change goes at 5 AM, noon or 7 PM Pacific');
-  // the runs, Pacific wall clock (Gianni 2026-10-23: 5 AM, noon and 7 PM)
-  eq(C.EDIT_RUNS_PT, [300, 720, 1140]);
-  // overdue: 30 min after the first 5 AM, noon or 7 PM Pacific run that came after the change, for every part
-  // (start and end, breaks, deletes: the same run, the same Gusto save); the page says Late instead of
-  // promising when
+  ok(!/within minutes/.test(src), 'nothing on the page promises "within minutes" any more: every change goes at 5 AM or on the hour from 7 AM to 7 PM Pacific');
+  // the runs, Pacific wall clock (Gianni 2026-10-23: 5 AM, noon and 7 PM; Gianni 2026-11-07: hourly, 5 AM and every
+  // hour from 7 AM to 7 PM)
+  eq(C.EDIT_RUNS_PT, [300, 420, 480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080, 1140]);
+  eq(C.EDIT_RUNS_PT, [5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(h => h * 60), '5 AM, then every hour on the hour from 7 AM to 7 PM: 14 runs, none at 6 AM, none after 7 PM');
+  eq(C.firstEditRun('2026-10-08T02:30:00Z'), Date.parse('2026-10-08T12:00:00Z') / 1000, 'a change made at 7:30 PM is first due at 5 AM the next day');
+  eq(C.firstEditRun('2026-10-07T16:10:00Z'), Date.parse('2026-10-07T17:00:00Z') / 1000, 'a change made at 9:10 AM is due at 10 AM');
+  // overdue: 30 min after the first run (5 AM, then hourly from 7 AM to 7 PM Pacific) that came after the change, for
+  // every part (start and end, breaks, deletes: the same run, the same Gusto save); the page says Late instead of
+  // promising when. Gianni 2026-11-07: hourly, so Late fires 30 minutes after the next hourly run.
   eq(C.EDIT_LATE_SEC, 1800);
   const at = (t, part, made) => C.partLate(ED({ [part + '_status']: 'pending', created_at: made || '2026-10-07T15:00:00Z' }), part, t);   // made 8:00 AM Pacific
-  eq([at('2026-10-07T15:30:00Z', 'times'), at('2026-10-07T19:29:00Z', 'times'), at('2026-10-07T19:30:00Z', 'times')], [false, false, true], 'start and end: the noon run, plus 30 minutes (no longer within minutes)');
-  eq([at('2026-10-07T19:29:00Z', 'breaks'), at('2026-10-07T19:30:00Z', 'breaks')], [false, true], 'breaks: the noon run, plus 30 minutes');
-  eq([at('2026-10-08T02:29:00Z', 'breaks', '2026-10-07T20:05:00Z'), at('2026-10-08T02:30:00Z', 'breaks', '2026-10-07T20:05:00Z')], [false, true], 'made at 1:05 PM: the 7 PM run');
-  eq([at('2026-10-08T02:29:00Z', 'times', '2026-10-07T20:05:00Z'), at('2026-10-08T02:30:00Z', 'times', '2026-10-07T20:05:00Z')], [false, true], 'start and end the same');
+  eq([at('2026-10-07T15:30:00Z', 'times'), at('2026-10-07T16:29:00Z', 'times'), at('2026-10-07T16:30:00Z', 'times')], [false, false, true], 'start and end: the 9 AM run, plus 30 minutes (no longer within minutes)');
+  eq([at('2026-10-07T16:29:00Z', 'breaks'), at('2026-10-07T16:30:00Z', 'breaks')], [false, true], 'breaks: the 9 AM run, plus 30 minutes');
+  eq([at('2026-10-07T17:29:00Z', 'times', '2026-10-07T16:10:00Z'), at('2026-10-07T17:30:00Z', 'times', '2026-10-07T16:10:00Z')], [false, true], 'made at 9:10 AM: Late 30 minutes after the 10 AM run');
+  eq([at('2026-10-07T21:29:00Z', 'breaks', '2026-10-07T20:05:00Z'), at('2026-10-07T21:30:00Z', 'breaks', '2026-10-07T20:05:00Z')], [false, true], 'made at 1:05 PM: the 2 PM run');
+  eq([at('2026-10-07T21:29:00Z', 'times', '2026-10-07T20:05:00Z'), at('2026-10-07T21:30:00Z', 'times', '2026-10-07T20:05:00Z')], [false, true], 'start and end the same');
+  eq([at('2026-10-08T02:29:00Z', 'times', '2026-10-08T01:30:00Z'), at('2026-10-08T02:30:00Z', 'times', '2026-10-08T01:30:00Z')], [false, true], 'made at 6:30 PM: the 7 PM run, the last of the day');
   eq([at('2026-10-08T12:29:00Z', 'times', '2026-10-08T03:00:00Z'), at('2026-10-08T12:30:00Z', 'times', '2026-10-08T03:00:00Z')], [false, true], 'made at 8 PM: the next morning\'s 5 AM run');
-  eq(C.firstEditRun('2026-10-08T02:30:00Z'), Date.parse('2026-10-08T12:00:00Z') / 1000, 'after 7 PM: the next day\'s 5 AM run');
+  eq([at('2026-10-08T12:29:00Z', 'times', '2026-10-08T02:30:00Z'), at('2026-10-08T12:30:00Z', 'times', '2026-10-08T02:30:00Z')], [false, true], 'made at 7:30 PM: Late 30 minutes after 5 AM the next day');
   eq(C.firstEditRun('2026-10-07T11:59:59Z'), Date.parse('2026-10-07T12:00:00Z') / 1000, 'a second before 5 AM: that run');
-  eq(C.firstEditRun('2026-10-07T12:00:00Z'), Date.parse('2026-10-07T19:00:00Z') / 1000, 'exactly 5 AM: the noon run');
+  eq(C.firstEditRun('2026-10-07T12:00:00Z'), Date.parse('2026-10-07T14:00:00Z') / 1000, 'exactly 5 AM: the 7 AM run (none at 6 AM)');
   eq(C.firstEditRun('2026-10-07T18:59:59Z'), Date.parse('2026-10-07T19:00:00Z') / 1000, 'a second before noon: that run');
   eq(C.firstEditRun('2026-11-10T02:30:00Z'), Date.parse('2026-11-10T03:00:00Z') / 1000, 'standard time: 7 PM PST');
+  eq(C.firstEditRun('2026-11-10T17:10:00Z'), Date.parse('2026-11-10T18:00:00Z') / 1000, 'standard time: 9:10 AM PST, the 10 AM run');
   ok(!C.partLate(ED({ times_status: 'applied', created_at: '2026-10-01T15:00:00Z' }), 'times', now) && !C.partLate(ED({ times_status: 'conflict' }), 'times', now), 'only a waiting part is late');
-  const both = ED({ times_status: 'pending', breaks_status: 'pending', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['12:00', '12:30', 'meal']]) });   // made 8:00 AM
+  // the changes below are made at 11:20 AM, so the noon run takes them (made at 8:00 AM, the 9 AM run would, and
+  // at 11:30 AM they would read Late)
+  const EDN = o => ED(Object.assign({ created_at: '2026-10-07T18:20:00Z' }, o));
+  const both = EDN({ times_status: 'pending', breaks_status: 'pending', after: AFTER('07:30', '15:30', [['09:00', '09:10', 'rest'], ['12:00', '12:30', 'meal']]) });   // made 11:20 AM
   eq(C.editPartLines(both, C.TZ, now), ['Start, end and breaks: going to Gusto at noon today'], 'both parts wait for the same run: one line');
   eq(C.editPartLines(both, C.TZ, '2026-10-07T19:10:00Z'), ['Start, end and breaks: going to Gusto now'], 'while its run is on');
   eq(C.editPartLines(both, C.TZ, '2026-10-07T21:00:00Z'), ['Start, end and breaks: late, not in Gusto yet']);
   ok(C.editTip(both, C.TZ, '2026-10-07T21:00:00Z').startsWith('Late: not in Gusto yet.') && !/going to Gusto/.test(C.editTip(both, C.TZ, '2026-10-07T21:00:00Z')), 'the bubble says Late, never the promise');
   ok(C.editTip(both, C.TZ, now).startsWith('Pending: changed here, not in Gusto yet.'), 'on time: Pending');
-  eq(C.editPartLines(ED({ times_status: 'applied', breaks_status: 'pending', after: AFTER('07:30', '15:30', [['12:00', '12:30', 'meal']]) }), C.TZ, now),
+  eq(C.editPartLines(EDN({ times_status: 'applied', breaks_status: 'pending', after: AFTER('07:30', '15:30', [['12:00', '12:30', 'meal']]) }), C.TZ, now),
     ['Start and end: in Gusto', 'Breaks: going to Gusto at noon today'], 'one part in, one waiting: a line each');
-  eq(C.editPartLines(ED({ action: 'add', before: null, shift_id: null, times_status: 'pending', breaks_status: 'pending', after: AFTER('16:00', '18:00', [['17:00', '17:10', 'rest']]) }), C.TZ, now),
+  eq(C.editPartLines(EDN({ action: 'add', before: null, shift_id: null, times_status: 'pending', breaks_status: 'pending', after: AFTER('16:00', '18:00', [['17:00', '17:10', 'rest']]) }), C.TZ, now),
     ['The new shift: going to Gusto at noon today'], 'an added shift and its breaks: one line');
-  eq(C.editPartLines(ED({ action: 'add', before: null, shift_id: null, times_status: 'pending', after: AFTER('16:00', '18:00') }), C.TZ, now), ['The new shift: going to Gusto at noon today']);
-  eq(C.editPartLines(ED({ action: 'delete', after: null, breaks_status: 'pending' }), C.TZ, now), ['Deleting it: going to Gusto at noon today']);
+  eq(C.editPartLines(EDN({ action: 'add', before: null, shift_id: null, times_status: 'pending', after: AFTER('16:00', '18:00') }), C.TZ, now), ['The new shift: going to Gusto at noon today']);
+  eq(C.editPartLines(EDN({ action: 'delete', after: null, breaks_status: 'pending' }), C.TZ, now), ['Deleting it: going to Gusto at noon today']);
+  eq(C.editPartLines(ED({ times_status: 'pending', after: AFTER('07:30', '15:30') }), C.TZ, now), ['Start and end: late, not in Gusto yet'], 'made at 8:00 AM: the 9 AM run passed, so at 11:30 AM it is Late');
   ok(/Deleting it: late, not in Gusto yet/.test(C.editTip(ED({ action: 'delete', after: null, breaks_status: 'pending' }), C.TZ, '2026-10-07T21:00:00Z')), 'a delete waits for the same run');
   // a New York row reads the same runs on its own clock: 5 AM Pacific is 8 AM Eastern, noon is 3 PM, 7 PM is 10 PM
   eq(C.editPartLines(both, 'America/New_York', now), ['Start, end and breaks: going to Gusto at 3 PM today']);
-  eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-07T21:00:00Z' }), 'America/New_York', '2026-10-07T21:10:00Z'), ['Start, end and breaks: going to Gusto at 10 PM today']);
-  eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-07T21:00:00Z' }), C.TZ, '2026-10-07T21:10:00Z'), ['Start, end and breaks: going to Gusto at 7 PM today']);
+  eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-07T21:00:00Z' }), 'America/New_York', '2026-10-07T21:10:00Z'), ['Start, end and breaks: going to Gusto at 6 PM today'], 'made at 2 PM Pacific: the 3 PM run, 6 PM Eastern');
+  eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-07T21:00:00Z' }), C.TZ, '2026-10-07T21:10:00Z'), ['Start, end and breaks: going to Gusto at 3 PM today']);
+  eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-08T01:30:00Z' }), 'America/New_York', '2026-10-08T01:40:00Z'), ['Start, end and breaks: going to Gusto at 10 PM today'], 'made at 6:30 PM Pacific: the last run');
+  eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-08T01:30:00Z' }), C.TZ, '2026-10-08T01:40:00Z'), ['Start, end and breaks: going to Gusto at 7 PM today']);
   eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-08T03:00:00Z' }), 'America/New_York', '2026-10-08T03:10:00Z'), ['Start, end and breaks: going to Gusto at 8 AM tomorrow'], 'made at 11 PM Eastern');
   eq(C.editPartLines(Object.assign({}, both, { created_at: '2026-10-08T03:00:00Z' }), C.TZ, '2026-10-08T03:10:00Z'), ['Start, end and breaks: going to Gusto at 5 AM tomorrow'], 'made at 8 PM Pacific');
   ok(C.editTip(ED({ times_status: 'conflict', times_error: 'Clock-in moved in Gusto.', after: AFTER('07:30', '15:30') }), C.TZ, now).includes('Clock-in moved in Gusto.'), 'the reason Gusto gave');
@@ -1856,29 +1869,31 @@ check('status pills: Pending and Needs a look, with a bubble that says what chan
   eq(C.editPartLines(ED({ times_status: 'cancelled', cancelled_by: 'superseded', cancelled_at: 'x' }), C.TZ, now), ['Replaced by a later change']);
   eq(C.editPartLines(ED({ times_status: 'cancelled', cancelled_by: 'superseded', cancelled_at: 'x' }), C.TZ, now, ED({ id: 'x2', created_by: 'b@wizardtrees.com', created_at: '2026-10-07T17:05:00Z' })),
     ["Replaced by b@wizardtrees.com's change, Oct 7, 10:05 AM"], 'naming the change that replaced it');
-  // when changes reach Gusto: 5 AM, noon and 7 PM Pacific, said on the row's clock
-  eq(C.editTimingText(C.TZ, now), 'Changes go to Gusto at 5 AM, noon and 7 PM.');
-  eq(C.editTimingText('America/New_York', now), 'Changes go to Gusto at 8 AM, 3 PM and 10 PM.');
-  eq([C.editRunsText(C.TZ, '2026-01-15T20:00:00Z'), C.editRunsText('America/New_York', '2026-01-15T20:00:00Z')], ['5 AM, noon and 7 PM', '8 AM, 3 PM and 10 PM'], 'the same in winter (standard time)');
+  // when changes reach Gusto: 5 AM and every hour from 7 AM to 7 PM Pacific, said on the row's clock
+  eq(C.editTimingText(C.TZ, now), 'Changes go to Gusto at 5 AM and every hour from 7 AM to 7 PM.');
+  eq(C.editTimingText('America/New_York', now), 'Changes go to Gusto at 8 AM and every hour from 10 AM to 10 PM.');
+  eq([C.editRunsText(C.TZ, '2026-01-15T20:00:00Z'), C.editRunsText('America/New_York', '2026-01-15T20:00:00Z')], ['5 AM and every hour from 7 AM to 7 PM', '8 AM and every hour from 10 AM to 10 PM'], 'the same in winter (standard time)');
   eq([C.clockShort('2026-10-07T12:00:00-07:00', C.TZ), C.clockShort('2026-10-07T00:00:00-07:00', C.TZ), C.clockShort('2026-10-07T12:30:00-07:00', C.TZ)], ['noon', 'midnight', '12:30 PM']);
   eq([C.nextEditRun(now, C.TZ), C.nextEditRun('2026-10-07T21:00:00Z', C.TZ), C.nextEditRun('2026-10-08T02:00:00Z', 'America/New_York'), C.nextEditRun('2026-10-08T05:00:00Z', C.TZ)],
-    ['at noon today', 'at 7 PM today', 'at 8 AM tomorrow', 'at 5 AM tomorrow']);
+    ['at noon today', 'at 3 PM today', 'at 8 AM tomorrow', 'at 5 AM tomorrow']);
   eq([C.nextEditRun('2026-10-07T15:00:00Z', 'America/New_York'), C.nextEditRun('2026-10-07T10:00:00Z', C.TZ), C.nextEditRun('2026-10-07T10:00:00Z', 'America/New_York')],
-    ['at 3 PM today', 'at 5 AM today', 'at 8 AM today'], 'New York at 11 AM; 3 AM Pacific (6 AM Eastern)');
+    ['at noon today', 'at 5 AM today', 'at 8 AM today'], 'New York at 11 AM (the 9 AM Pacific run); 3 AM Pacific (6 AM Eastern)');
+  eq([C.nextEditRun('2026-10-07T13:00:00Z', C.TZ), C.nextEditRun('2026-10-07T13:00:00Z', 'America/New_York')], ['at 7 AM today', 'at 10 AM today'], '6 AM Pacific: no 6 AM run, so 7 AM (10 AM Eastern)');
   eq(C.nextEditRun('2026-10-08T02:00:00Z', C.TZ), 'at 5 AM tomorrow', 'exactly 7 PM: that run has started, so the next one');
-  eq(C.nextEditRun('2026-10-07T19:00:00Z', C.TZ), 'at 7 PM today', 'exactly noon: the 7 PM run');
+  eq(C.nextEditRun('2026-10-07T19:00:00Z', C.TZ), 'at 1 PM today', 'exactly noon: the 1 PM run');
   // New York just after midnight Eastern (9:30 PM Pacific the evening before): the 5 AM Pacific run is 8 AM that day
   eq(C.nextEditRun('2026-10-07T04:30:00Z', 'America/New_York'), 'at 8 AM today', '12:30 AM Eastern');
   eq(C.nextEditRun('2026-10-07T04:30:00Z', C.TZ), 'at 5 AM tomorrow', 'the same moment on a Pacific row');
   // the 5 AM run on the daylight saving days: Sun Nov 1 2026 (fall back at 2 AM) and Sun Mar 14 2027 (spring forward)
   eq(C.firstEditRun('2026-11-01T08:30:00Z'), Date.parse('2026-11-01T13:00:00Z') / 1000, 'Nov 1, 1:30 AM PDT: 5 AM is PST');
   eq(C.firstEditRun('2026-11-01T09:30:00Z'), Date.parse('2026-11-01T13:00:00Z') / 1000, 'Nov 1, the second 1:30 AM (PST)');
-  eq(C.firstEditRun('2026-11-01T13:00:00Z'), Date.parse('2026-11-01T20:00:00Z') / 1000, 'Nov 1, at 5 AM: noon PST');
+  eq(C.firstEditRun('2026-11-01T13:00:00Z'), Date.parse('2026-11-01T15:00:00Z') / 1000, 'Nov 1, at 5 AM: 7 AM PST');
   eq([C.nextEditRun('2026-11-01T09:30:00Z', C.TZ), C.nextEditRun('2026-11-01T09:30:00Z', 'America/New_York')], ['at 5 AM today', 'at 8 AM today']);
   eq(C.firstEditRun('2027-03-14T09:30:00Z'), Date.parse('2027-03-14T12:00:00Z') / 1000, 'Mar 14, 1:30 AM PST: 5 AM is PDT');
-  eq(C.firstEditRun('2027-03-14T12:00:00Z'), Date.parse('2027-03-14T19:00:00Z') / 1000, 'Mar 14, at 5 AM: noon PDT');
+  eq(C.firstEditRun('2027-03-14T12:00:00Z'), Date.parse('2027-03-14T14:00:00Z') / 1000, 'Mar 14, at 5 AM: 7 AM PDT');
   eq([C.nextEditRun('2027-03-14T09:30:00Z', C.TZ), C.nextEditRun('2027-03-14T09:30:00Z', 'America/New_York')], ['at 5 AM today', 'at 8 AM today']);
-  eq([C.editRunsText(C.TZ, '2026-11-01T20:00:00Z'), C.editRunsText('America/New_York', '2027-03-14T20:00:00Z')], ['5 AM, noon and 7 PM', '8 AM, 3 PM and 10 PM'], 'the words on both days');
+  eq([C.editRunsText(C.TZ, '2026-11-01T20:00:00Z'), C.editRunsText('America/New_York', '2027-03-14T20:00:00Z')], ['5 AM and every hour from 7 AM to 7 PM', '8 AM and every hour from 10 AM to 10 PM'], 'the words on both days');
+  eq([C.editRunsText('America/New_York', '2026-11-01T20:00:00Z'), C.editRunsText(C.TZ, '2027-03-14T20:00:00Z')], ['8 AM and every hour from 10 AM to 10 PM', '5 AM and every hour from 7 AM to 7 PM'], 'and the other clock on each day');
   eq([C.partLate(ED({ times_status: 'pending', created_at: '2026-11-01T09:30:00Z' }), 'times', '2026-11-01T13:29:00Z'),
     C.partLate(ED({ times_status: 'pending', created_at: '2026-11-01T09:30:00Z' }), 'times', '2026-11-01T13:30:00Z')], [false, true], 'Late 30 minutes after 5 AM PST');
   // the page: the pills sit above the flag pills, open the same bubble, and never count as flags
@@ -2124,7 +2139,7 @@ check('the runs the page promises are the ones the LaunchAgent source fires at (
 });
 check('the launch switch went on with the LaunchAgent (launched 2026-10-22); no ?beta switch any more', () => {
   const app = block('ts-app');
-  ok(/const EDITS_FOR_MANAGERS = true;/.test(app), 'managers have Edit: the worker runs on its own at 5 AM, noon and 7 PM');
+  ok(/const EDITS_FOR_MANAGERS = true;/.test(app), 'managers have Edit: the worker runs on its own at 5 AM and every hour from 7 AM to 7 PM');
   ok(/Turn it on in the SAME step that installs the LaunchAgent/.test(app), 'it says when it may go on');
   ok(!/\bBETA\b/.test(app) && !/QS\.has\('beta'\)/.test(app), 'no ?beta switch left over');
   ok(/edits: editsLoaded\(\)/.test(appFn('exportCsv')), 'the CSV marks changes whenever the board shows them, Edit or not');
@@ -2132,27 +2147,28 @@ check('the launch switch went on with the LaunchAgent (launched 2026-10-22); no 
   ok(/function canEditRow\(r\) \{ return editsOn\(\) && !!r && C\.canEditForRun\(r\.work_date, C\.rowTz\(r\), Date\.now\(\)\)/.test(app), 'Edit inside the current and previous pay period');
   if (SQL_EDITS) ok(/ts_can_view\(/.test(SQL_EDITS) && /grant execute on function public\.ts_edit_submit\([^)]*\) to authenticated/i.test(SQL_EDITS), 'ts_edit_submit is open to signed-in managers and checks who can see the day');
 });
-check('every promise of timing says 5 AM, noon and 7 PM Pacific (8 AM, 3 PM and 10 PM Eastern), for start and end times too', () => {
+check('every promise of timing says 5 AM and every hour from 7 AM to 7 PM Pacific (8 AM and every hour from 10 AM to 10 PM Eastern), for start and end times too', () => {
   const app = block('ts-app');
   ok(/<p class="ed-copy">\$\{C\.editTimingText\(tz\)\} Times are \$\{C\.regionDef\(raw\.region\)\.tzName\}\.<\/p>/.test(appFn('editorBody')), 'the editor: when, on the row\'s clock, and the zone');
   ok(!/Deleting a shift goes to Gusto with the breaks/.test(src), 'a delete has no separate timing line (the editor\'s top line covers it)');
-  ok(/<span class="flag epend">Pending<\/span><span>changed here, goes to Gusto at <span id="keyRuns">5 AM, noon and 7 PM<\/span>; the row shows the change \(the pill reads Late if a run passed without it\)<\/span>/.test(markup), 'the Key (one grid cell for the words: the legend rows are display:contents)');
-  ok(/if \(S\.pop === 'key'\) \$\('keyRuns'\)\.textContent = C\.editRunsText\(regionDef\(\)\.tz\);/.test(appFn('setPop')), 'the Key reads the region\'s clock (8 AM, 3 PM and 10 PM on New York)');
-  ok(/Changes go to Gusto at 5 AM, noon and 7 PM Pacific \(8 AM, 3 PM and 10 PM Eastern\), start and end times and breaks together\./.test(app), 'Admin > Edits says both clocks');
-  ok(/<span id="edHintRuns">5 AM, noon and 7 PM<\/span>/.test(markup), 'the first-use hint before it fills in');
+  ok(/<span class="flag epend">Pending<\/span><span>changed here, goes to Gusto at <span id="keyRuns">5 AM and every hour from 7 AM to 7 PM<\/span>; the row shows the change \(the pill reads Late if a run passed without it\)<\/span>/.test(markup), 'the Key (one grid cell for the words: the legend rows are display:contents)');
+  ok(/if \(S\.pop === 'key'\) \$\('keyRuns'\)\.textContent = C\.editRunsText\(regionDef\(\)\.tz\);/.test(appFn('setPop')), 'the Key reads the region\'s clock (8 AM and every hour from 10 AM to 10 PM on New York)');
+  ok(/Changes go to Gusto at 5 AM and every hour from 7 AM to 7 PM Pacific \(8 AM and every hour from 10 AM to 10 PM Eastern\)\. Start and end times and breaks go together\./.test(app), 'Admin > Edits says both clocks');
+  ok(/<span id="edHintRuns">5 AM and every hour from 7 AM to 7 PM<\/span>/.test(markup), 'the first-use hint before it fills in');
+  ok(!/5 AM, noon and 7 PM|8 AM, 3 PM and 10 PM/.test(markup) && !/at 5 AM, noon and 7 PM Pacific/.test(app), 'nothing on screen left of the three runs (Gianni 2026-11-07: hourly)');
   ok(!/\b(1|4|9) PM and (9 PM|midnight)\b/.test(src), 'nothing left of the old 1 PM and 9 PM runs');
   ok(/toast\(C\.saveMessage\(done, C\.nextEditRun\(Date\.now\(\), C\.rowTz\(raw\)\)\)\);/.test(appFn('saveDayEdits')) && /done\.push\(\{ op, edit: res\.edit \}\)/.test(appFn('saveDayEdits')), 'Save says when, on the row\'s clock, from what the server stored');
   ok(/Changes made here stay in this tab and never go to Gusto\./.test(markup), 'the demo bar says nothing reaches Gusto');
   ok(!/breaks task|Breaks go to Gusto|within minutes/.test(src.replace(block('ts-core'), '')), 'no copy left from the old two-speed plan');
   // the demo editor on a New York day and on a California day, as words
   const ny = demo.rows.find(r => r.region === 'NY');
-  eq([C.editTimingText(C.rowTz(ny), NOW), C.regionDef(ny.region).tzName], ['Changes go to Gusto at 8 AM, 3 PM and 10 PM.', 'Eastern']);
+  eq([C.editTimingText(C.rowTz(ny), NOW), C.regionDef(ny.region).tzName], ['Changes go to Gusto at 8 AM and every hour from 10 AM to 10 PM.', 'Eastern']);
 });
 check('a first-use hint for managers: one line, Got it closes it for good on this device, never for admins', () => {
   const app = block('ts-app');
   ok(/<div class="a2hs edhint no-print" id="edHint" role="note" hidden>/.test(markup) && /data-act="edhint-close">Got it</.test(markup), 'the note, hidden until wanted, never printed');
   const hint = markup.match(/<div class="a2hs edhint[\s\S]*?<\/div>/)[0].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-  ok(hint.length < 120, 'one short line: ' + hint);
+  ok(hint.length < 130, 'one short line: ' + hint);   // was < 120; the hourly runs' words (Gianni 2026-11-07) are longer
   const rh = appFn('renderEdHint');
   ok(/edHintCan && editsOn\(\) && !!v && !v\.is_admin && !shut && \$\('a2hs'\)\.hidden && !S\.printing/.test(rh), 'managers only, only with an Edit button on screen, never beside the home-screen note');
   ok(/store\.get\('edHint', ''\) === 'closed'/.test(rh) && /C\.editRunsText\(regionDef\(\)\.tz\)/.test(rh), 'remembered; the runs on the region\'s clock');
@@ -2165,7 +2181,8 @@ check('overdue: a waiting part past its time reads Late, and the demo shows one 
   const late = demo.edits.filter(e => C.editLate(e, NOW)), onTime = demo.edits.filter(e => C.editStatus(e) === 'pending' && !C.editLate(e, NOW) && e.times_status === 'pending');
   ok(late.some(e => e.times_status === 'pending'), 'a late start and end in the demo');
   ok(onTime.length >= 1, 'a start and end still on time in the demo');
-  // at any time of day (the runs are 5 AM, noon and 7 PM Pacific, so "late" depends on the clock): one late, the rest on time
+  // at any time of day (the runs are 5 AM and every hour from 7 AM to 7 PM Pacific, so "late" depends on the clock): one
+  // late, the rest on time
   for (let i = 0; i < 48; i++) {
     const t = Date.parse(NOW) + i * 30 * 60000 + 7 * 60000, d = D.build(t), wait = d.edits.filter(e => C.editStatus(e) === 'pending');
     const lateN = wait.filter(e => C.editLate(e, t)).length;
@@ -3527,7 +3544,9 @@ check('pay periods Gusto closed take no change; one sent to payroll warns; Misse
 //     here (ts_edits action 'note', supabase/ts-edit-notes.sql), and how a note stays out of everything about hours.
 //     Made-up days and people only.
 // ---------------------------------------------------------------------------------------------
-const NOW_N = '2026-10-07T16:00:00Z';     // 9 AM Pacific, the day after the made-up day
+// 8:30 AM Pacific, the day after the made-up day (was 9 AM; Gianni 2026-11-07: hourly, so 9 AM is now a run, and a change
+// made at 8 AM, as ED's, goes at that 9 AM run)
+const NOW_N = '2026-10-07T15:30:00Z';
 const GN = (text, author, o) => Object.assign({ text, author, at: null, app: false, by: null, kind: 'other', src: 'csv' }, o || {});
 const AN = (kind, by, text, o) => GN(text, 'Claude Claude', Object.assign({ app: true, by, kind }, o || {}));
 const NTE = o => ED(Object.assign({ id: 'n1', action: 'note', after: null, note: 'Last day, 8 hours as agreed', breaks_status: 'pending' }, o));
@@ -3614,13 +3633,13 @@ check("dayNotes: each shift's notes in shift order (a manager's line under their
 });
 check('dayNotes: a note added here reads Pending until its run (Late after it), Needs a look when Gusto did not take it, In Gusto until the sync brings Gusto\'s copy, then only that copy', () => {
   const r = edRow([ED_S1]);
-  const pend = NTE();          // made Oct 7 8 AM Pacific: the noon run takes it
+  const pend = NTE();          // made Oct 7 8 AM Pacific: the 9 AM run takes it (was the noon run; Gianni 2026-11-07: hourly)
   let ns = C.dayNotes(r, [pend]);
   eq(ns.map(n => [n.shiftId, n.text, n.status, C.noteWho(n), n.edit.id]), [['s1', 'Last day, 8 hours as agreed', 'pending', 'm@wizardtrees.com via this app', 'n1']]);
   eq(C.notesLook(ns), 'pend');
-  eq([C.noteStatusText(ns[0], NOW_N, C.TZ), C.noteStatusText(ns[0], '2026-10-07T19:10:00Z', C.TZ), C.noteStatusText(ns[0], '2026-10-07T19:30:00Z', C.TZ)],
-    ['Goes to Gusto at noon today.', 'Going to Gusto now.', 'Late, not in Gusto yet.']);
-  eq(C.noteStatusText(ns[0], NOW_N, 'America/New_York'), 'Goes to Gusto at 3 PM today.', "on the row's own clock");
+  eq([C.noteStatusText(ns[0], NOW_N, C.TZ), C.noteStatusText(ns[0], '2026-10-07T16:10:00Z', C.TZ), C.noteStatusText(ns[0], '2026-10-07T16:30:00Z', C.TZ)],
+    ['Goes to Gusto at 9 AM today.', 'Going to Gusto now.', 'Late, not in Gusto yet.']);
+  eq(C.noteStatusText(ns[0], NOW_N, 'America/New_York'), 'Goes to Gusto at noon today.', "on the row's own clock");
   // while the worker holds notes in the region (the page's EDIT_PROVEN), a waiting note says so instead of a run time or Late
   C.setNoteHeld(e => e.id === 'n1');
   eq([C.noteStatusText(ns[0], NOW_N, C.TZ), C.noteStatusText(ns[0], '2026-10-07T19:30:00Z', C.TZ)], ['Waits for the first note run Gianni watches, then goes to Gusto.', 'Waits for the first note run Gianni watches, then goes to Gusto.']);
@@ -3628,9 +3647,9 @@ check('dayNotes: a note added here reads Pending until its run (Late after it), 
   eq(C.editPartLines(pend, C.TZ, '2026-10-07T19:30:00Z'), ['The note: waits for the first note run Gianni watches'], 'Changes to this day says the same');
   ok(C.noteIsHeld(pend) && !C.noteIsHeld(NTE({ breaks_status: 'applied' })) && !C.noteIsHeld(ED({ id: 'n1', times_status: 'pending' })), 'only a waiting note');
   C.setNoteHeld(null);
-  eq(C.noteStatusText(ns[0], NOW_N, C.TZ), 'Goes to Gusto at noon today.');
+  eq(C.noteStatusText(ns[0], NOW_N, C.TZ), 'Goes to Gusto at 9 AM today.');
   eq(C.noteStatusText(C.dayNotes(r, [NTE({ breaks_status: 'applying', breaks_claimed_at: '2026-10-07T19:00:00Z' })])[0], '2026-10-07T19:05:00Z', C.TZ), 'Going to Gusto now.');
-  eq(C.notesTip(ns, r, NOW_N), 'Last day, 8 hours as agreed\nm@wizardtrees.com via this app, Oct 7, 8:00 AM\nGoes to Gusto at noon today.', 'the bubble says when it goes');
+  eq(C.notesTip(ns, r, NOW_N), 'Last day, 8 hours as agreed\nm@wizardtrees.com via this app, Oct 7, 8:00 AM\nGoes to Gusto at 9 AM today.', 'the bubble says when it goes');
   const failed = NTE({ breaks_status: 'failed', breaks_error: "Couldn't open this timesheet in Gusto." });
   ns = C.dayNotes(r, [failed]);
   eq([ns[0].status, C.notesLook(ns), C.noteStatusText(ns[0], NOW_N, C.TZ)], ['attention', 'att', "Not in Gusto: Couldn't open this timesheet in Gusto."]);
@@ -3762,7 +3781,7 @@ check('a note never touches the hours: no Pending pill, nothing replaced either 
   ok(!('notes' in C.editedShift(ED_S1, AFTER('07:30', '15:30'), C.TZ)), 'no notes key on a shift without notes');
   // in words: Changes made here, the editor's history and Admin > Edits
   eq(C.describeEdit(n1.edit, C.TZ), ['Note: "Bus was late"', 'Shift 7:00 AM - 3:30 PM']);
-  eq(C.editPartLines(n1.edit, C.TZ, NOW_N), ['The note: going to Gusto at noon today']);
+  eq(C.editPartLines(n1.edit, C.TZ, NOW_N), ['The note: going to Gusto at 9 AM today']);
   eq(C.editPartLines(Object.assign({}, n1.edit, { breaks_status: 'failed', breaks_error: 'Gusto said no.' }), C.TZ, NOW_N), ['The note: Gusto said no.']);
   eq([C.editReason(n1.edit), C.editReason(t1.edit), C.editReason(null)], ['', 'late bus', '']);
   const tip = C.editTip(n1.edit, C.TZ, NOW_N);
@@ -4108,14 +4127,14 @@ check('a job change in words: Job <old> → <new> (not known yet, when it was no
   eq(C.jobChange(add), { from: null, to: TO_SLANE });
   eq([C.jobChange(ED({ action: 'delete' })), C.jobChange(ED({ action: 'note', after: null })), C.jobChange(null)], [null, null, null]);
   // the part, while it waits and after
-  eq(C.editPartLines(jc, C.TZ, NOW_N), ['Job: going to Gusto at noon today']);
-  eq(C.editPartLines(both, C.TZ, NOW_N), ['Start, end and job: going to Gusto at noon today']);
-  eq(C.editPartLines(JCH({ breaks_status: 'pending' }), C.TZ, NOW_N), ['Job and breaks: going to Gusto at noon today']);
-  eq(C.editPartLines(JCH({ after: both.after, breaks_status: 'pending' }), C.TZ, NOW_N), ['Start, end, job and breaks: going to Gusto at noon today']);
+  eq(C.editPartLines(jc, C.TZ, NOW_N), ['Job: going to Gusto at 9 AM today']);
+  eq(C.editPartLines(both, C.TZ, NOW_N), ['Start, end and job: going to Gusto at 9 AM today']);
+  eq(C.editPartLines(JCH({ breaks_status: 'pending' }), C.TZ, NOW_N), ['Job and breaks: going to Gusto at 9 AM today']);
+  eq(C.editPartLines(JCH({ after: both.after, breaks_status: 'pending' }), C.TZ, NOW_N), ['Start, end, job and breaks: going to Gusto at 9 AM today']);
   eq(C.editPartLines(JCH({ times_status: 'applied' }), C.TZ, NOW_N), ['Job: in Gusto']);
   eq(C.editPartLines(JCH({ times_status: 'conflict', times_error: "Gusto changed the shift's job since the manager made this edit" }), C.TZ, NOW_N), ["Job: Gusto changed the shift's job since the manager made this edit"]);
-  eq(C.editPartLines(ED({ times_status: 'pending', after: AFTER('07:30', '15:30') }), C.TZ, NOW_N), ['Start and end: going to Gusto at noon today'], 'a change of times only reads as before');
-  eq(C.editPartLines(add, C.TZ, NOW_N), ['The new shift: going to Gusto at noon today'], 'an add reads as before');
+  eq(C.editPartLines(ED({ times_status: 'pending', after: AFTER('07:30', '15:30') }), C.TZ, NOW_N), ['Start and end: going to Gusto at 9 AM today'], 'a change of times only reads as before');
+  eq(C.editPartLines(add, C.TZ, NOW_N), ['The new shift: going to Gusto at 9 AM today'], 'an add reads as before');
   // held: the page's EDIT_PROVEN.job / .nyJob (here: California held, New York not)
   C.setJobHeld(e => e.region !== 'NY');
   try {
@@ -4241,7 +4260,7 @@ check("a waiting job change says it waits while the worker holds its kind: a shi
   C.setJobHeld(jobHeldRule({ job: true, nyJob: false, addJob: false, nyAddJob: false }));
   try {
     eq([C.editPartLines(ADD_ON(), C.TZ, NOW_N), C.editLate(ADD_ON(), '2026-10-07T20:00:00Z')], [['The new shift: waits for the first job run Gianni watches'], false]);
-    eq([C.editPartLines(JCH(), C.TZ, NOW_N), C.editLate(JCH(), '2026-10-07T20:00:00Z')], [['Job: going to Gusto at noon today'], true], 'a move of a California shift goes at the next run');
+    eq([C.editPartLines(JCH(), C.TZ, NOW_N), C.editLate(JCH(), '2026-10-07T20:00:00Z')], [['Job: going to Gusto at 9 AM today'], true], 'a move of a California shift goes at the next run');
   } finally { C.setJobHeld(null); }
 });
 check('page: ts_people is read with its jobs (and without, before supabase/ts-edit-jobs.sql); a job goes in p_after; the server\'s job refusals and an older server read plainly', () => {

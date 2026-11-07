@@ -918,7 +918,7 @@
     <span class="a2hs-act"><button type="button" class="btn sm primary" id="a2hsAdd" data-act="a2hs-add" hidden>Add</button><button type="button" class="btn sm" data-act="a2hs-close">Got it</button></span>
   </div>
   <div class="a2hs edhint no-print" id="edHint" role="note" hidden>
-    <span class="a2hs-t"><b>New:</b> fix a missed clock-in, clock-out or break with <b id="edHintHow">Edit</b>. Changes go to Gusto at <span id="edHintRuns">5 AM, noon and 7 PM</span>.</span>
+    <span class="a2hs-t"><b>New:</b> fix a missed clock-in, clock-out or break with <b id="edHintHow">Edit</b>. Changes go to Gusto at <span id="edHintRuns">5 AM and every hour from 7 AM to 7 PM</span>.</span>
     <span class="a2hs-act"><button type="button" class="btn sm" data-act="edhint-close">Got it</button></span>
   </div>
 
@@ -968,7 +968,7 @@
                 <span><span class="infomark" aria-hidden="true">i</span> a note, for example a break type guessed from its length</span>
                 <span><span class="notemark">1 note</span> notes on this day in Gusto, click to read them</span>
                 <span><span class="notemark pend">1 note</span> a note added here that goes to Gusto at the next run (amber if Gusto did not take it)</span>
-                <span><span class="flag epend">Pending</span><span>changed here, goes to Gusto at <span id="keyRuns">5 AM, noon and 7 PM</span>; the row shows the change (the pill reads Late if a run passed without it)</span></span>
+                <span><span class="flag epend">Pending</span><span>changed here, goes to Gusto at <span id="keyRuns">5 AM and every hour from 7 AM to 7 PM</span>; the row shows the change (the pill reads Late if a run passed without it)</span></span>
                 <span><span class="flag eatt">Needs a look</span> a change made here that Gusto did not take, click for why</span>
               </div>
             </div>
@@ -2630,16 +2630,18 @@
      One edit is the wanted final state of one shift, {in, out, breaks: [{start, end, kind}]} (kind rest =
      paid, meal = unpaid), next to the shift as it was (before). It has two parts, start and end
      (times_status) and breaks, or deleting the shift (breaks_status), and both go to Gusto in the same save
-     by a browser task at 5 AM, noon and 7 PM Pacific (8 AM, 3 PM and 10 PM Eastern). Each part is none, pending,
-     applied, conflict, failed or cancelled. The rules below mirror ts_edit_submit, so the editor refuses what
-     the server would; the server decides. */
+     by a browser task at 5 AM and every hour from 7 AM to 7 PM Pacific (8 AM and every hour from 10 AM to 10 PM
+     Eastern). Each part is none, pending, applied, conflict, failed or cancelled. The rules below mirror
+     ts_edit_submit, so the editor refuses what the server would; the server decides. */
   const EDIT_ANCHOR_END = '2026-10-09';     // the server's pay period anchor: the same 14-day grid as every region
   // noteMax: the reason that goes with a change; gustoNoteMax: a note added on its own (action 'note'), which the browser
   // task writes to Gusto as "Note from <email>: <text>" inside Gusto's 560 characters
   const EDIT_RULES = { maxBreaks: 6, breakMinSec: 60, breakMaxSec: 240 * 60, overnightMaxSec: 16 * 3600, noteMax: 500, gustoNoteMax: 400 };
   // the browser task's runs, Pacific wall clock: every change goes then (Gianni 2026-10-23: 5 AM, noon and 7 PM;
-  // the LaunchAgent ~/gusto-sync/launchd/com.wizardtrees.ts-edit-worker.plist must fire at the same times)
-  const EDIT_RUNS_PT = [5 * 60, 12 * 60, 19 * 60];
+  // Gianni 2026-11-07: hourly, 5 AM and every hour from 7 AM to 7 PM, 14 runs, like the downloads at half past;
+  // 7 PM is still the last run of the day; the LaunchAgent ~/gusto-sync/launchd/com.wizardtrees.ts-edit-worker.plist
+  // must fire at the same times)
+  const EDIT_RUNS_PT = [5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(h => h * 60);
   // the days a change can be made: the first day of the previous pay period through today (the row's own today)
   function editWindow(today) {
     const cur = payPeriodFor(today, EDIT_ANCHOR_END);
@@ -2966,11 +2968,12 @@
       String(x.shift_id) === String(e.shift_id) && cmpEdit(x, e) > 0).sort(cmpEdit);
     return later.find(x => !isNaN(at) && secOf(x.created_at) >= at - 1) || later[later.length - 1] || null;
   }
-  // A part that should be in Gusto by now and is not: 30 minutes after the first 5 AM, noon or 7 PM Pacific run
+  // A part that should be in Gusto by now and is not: 30 minutes after the first run (EDIT_RUNS_PT, Pacific)
   // that came after the change was made (start and end, breaks and deletes all go in that run). The page
-  // then says it is late instead of promising when it gets there.
+  // then says it is late instead of promising when it gets there. Gianni 2026-11-07: hourly, so Late now fires
+  // 30 minutes after the next hourly run (a change made after 7 PM: 30 minutes after 5 AM the next day).
   const EDIT_LATE_SEC = 30 * 60;
-  function firstEditRun(t) {                // seconds of the first 5 AM, noon or 7 PM Pacific run after t
+  function firstEditRun(t) {                // seconds of the first Pacific run (EDIT_RUNS_PT) after t; after 7 PM, 5 AM the next day
     const s = secOf(t); if (isNaN(s)) return NaN;
     const d0 = zDate(t, TZ);
     for (const d of [d0, addDays(d0, 1)]) for (const m of EDIT_RUNS_PT) { const r = secOf(zIso(d, m, TZ)); if (r > s) return r; }
@@ -3149,10 +3152,12 @@
     const ms = now == null ? Date.now() : +new Date(now), r = firstEditRun(new Date(ms).toISOString());
     return isNaN(r) ? 'at the next run' : runWords(r, ms, tz);
   }
-  // "5 AM, noon and 7 PM" on a Pacific row, "8 AM, 3 PM and 10 PM" on an Eastern one
+  // "5 AM and every hour from 7 AM to 7 PM" on a Pacific row, "8 AM and every hour from 10 AM to 10 PM" on an
+  // Eastern one (Gianni 2026-11-07: hourly; a short list that is not hourly reads "5 AM, noon and 7 PM")
   function editRunsText(tz, now) {
     const la = todayIn(TZ, now == null ? Date.now() : +new Date(now));
-    const w = EDIT_RUNS_PT.map(m => clockShort(zIso(la, m, TZ), tz || TZ));
+    const w = EDIT_RUNS_PT.map(m => clockShort(zIso(la, m, TZ), tz || TZ)), r = EDIT_RUNS_PT;
+    if (r.length > 3 && r.slice(2).every((m, i) => m - r[i + 1] === 60)) return w[0] + ' and every hour from ' + w[1] + ' to ' + w[w.length - 1];
     return w.length > 1 ? w.slice(0, -1).join(', ') + ' and ' + w[w.length - 1] : w.join('');
   }
   function editTimingText(tz, now) { return 'Changes go to Gusto at ' + editRunsText(tz, now) + '.'; }
@@ -4574,8 +4579,8 @@
       add(basil, s, { after: { in: snap.in, out: snap.out, breaks: C.snapBreaks(snap.breaks.concat([{ start: plus(s.in, 200, tz), end: plus(s.in, 230, tz), kind: 'meal' }])) },
         breaks_status: 'pending', note: 'Took lunch at the warehouse, forgot to clock it', created_by: 'field.lead@wizardtrees.com', created_at: ago(20) });
     }
-    // the missed clock-out from a previous day: late, made before a 5 AM, noon or 7 PM run that is over half an
-    // hour past (one made 20 minutes ago, like the meal above, can never be late)
+    // the missed clock-out from a previous day: late, made before a run that is over half an hour past (the runs
+    // are 5 AM and every hour from 7 AM to 7 PM Pacific; one made 20 minutes ago, like the meal above, can never be late)
     const rue = days('Rue Bramblewick').find(r => r.open && r.work_date < todays.CA);
     if (rue) {
       const s = rue.shifts[0], tz = C.rowTz(rue), snap = C.shiftSnap(s);
@@ -4807,7 +4812,8 @@
   // THE LAUNCH SWITCH for managers (Gianni 2026-10-21: "roll out the edit feature to all the current managers").
   // Off until the worker that takes changes to Gusto runs on its own: every promise on the page ("goes to Gusto
   // at 7 PM today") depends on the LaunchAgent com.wizardtrees.ts-edit-worker (~/gusto-sync, --scheduled at 5 AM,
-  // noon and 7 PM Pacific, the times in EDIT_RUNS_PT) being installed on Gianni's Mac.
+  // noon and 7 PM Pacific; Gianni 2026-11-07: hourly, 5 AM and every hour from 7 AM to 7 PM; the times in
+  // EDIT_RUNS_PT) being installed on Gianni's Mac.
   // Turn it on in the SAME step that installs the LaunchAgent (~/gusto-sync/ts-edit-worker.README.md, "Launch"),
   // never before. Admins have Edit either way; what anyone already changed still shows and still goes to Gusto.
   // The server decides who may change what (ts_edit_submit: only days the sign-in can see, in the current or
@@ -5994,7 +6000,7 @@
   const ADMIN_HINTS = {
     users: 'Each sign-in sees only the views, companies and departments ticked for it. Admins see everything and can change this list. Use Preview to check what someone sees before telling them it is ready.',
     views: 'A view is a saved crew. Its tab at the top of the page shows only those people. Tick a view for a sign-in under Sign-ins and that manager sees exactly its people, on a simple list that opens straight onto it. Copy link gives a link that opens the view.',
-    edits: 'Every change made with Edit on this page, for the dates on screen. Changes go to Gusto at 5 AM, noon and 7 PM Pacific (8 AM, 3 PM and 10 PM Eastern), start and end times and breaks together. A change Gusto did not take shows Needs a look with the reason; once Gusto is checked and right, Clear takes it off the board. The next run clears one by itself when Gusto now matches it or the shift was fixed in Gusto by hand (it then reads Cleared, with why), except a change Gusto may have taken only in part and one refused because the hours already went to payroll: those wait for a person. A change still waiting can be cancelled. Missed payroll lists, for all dates, the changes that reached Gusto after it had processed that payroll: add the hours to the next payroll, then press Done.',
+    edits: 'Every change made with Edit on this page, for the dates on screen. Changes go to Gusto at 5 AM and every hour from 7 AM to 7 PM Pacific (8 AM and every hour from 10 AM to 10 PM Eastern). Start and end times and breaks go together. A change Gusto did not take shows Needs a look with the reason; once Gusto is checked and right, Clear takes it off the board. The next run clears one by itself when Gusto now matches it or the shift was fixed in Gusto by hand (it then reads Cleared, with why), except a change Gusto may have taken only in part and one refused because the hours already went to payroll: those wait for a person. A change still waiting can be cancelled. Missed payroll lists, for all dates, the changes that reached Gusto after it had processed that payroll: add the hours to the next payroll, then press Done.',
   };
   function renderAdminTabs() {
     const tabs = [['users', 'Sign-ins'], ['views', 'Views']].concat(editsOn() ? [['edits', 'Edits']] : []);
