@@ -91,6 +91,17 @@ function grab(startRe) {
     say(!err && inline.length && inline.every(Boolean) && core.every(Boolean),
       "a Gusto Deleaf/Harvest import (source 'import', source_id 'gusto-filifera-hv:x') is Gusto-paid, a sheet row is not (inline fallback and core)"
       + (err ? ': ' + err : (inline.every(Boolean) ? '' : ' · inline ' + inline) + (core.every(Boolean) ? '' : ' · core ' + core)));
+    // "[crew pay]": a Gusto person's distro day that Gusto could not take is crew pay; a Gusto import never is
+    let crew = [], cerr = '';
+    try {
+      const ctx = { roster: [{ id: 'rL', last: 'Torres', first: 'Lucero', gusto_distro: true, gusto_distro_from: '2026-09-16' }], rosterMatch: () => null };
+      ctx.window = ctx; vm.createContext(ctx); vm.runInContext(fns.join('\n'), ctx);
+      const row = (o) => ({ category: 'distro', source: 'ocr', source_id: null, team: "Norma's Team", roster_id: 'rL', last: 'Torres', first: 'Lucero', work_date: '2026-10-19', note: null, ...o });
+      crew = [ctx.isGustoPaidRow(row({})), !ctx.isGustoPaidRow(row({ note: '[crew pay] Gusto refused, payroll processed' })),
+        ctx.isGustoPaidRow(row({ source: 'import', source_id: 'gusto-filifera-pkg:rL:2026-10-19', note: '[crew pay]' }))];
+    } catch (e) { cerr = String(e && e.message || e); }
+    say(!cerr && crew.length === 3 && crew.every(Boolean),
+      "a Gusto person's distro row marked [crew pay] goes on the crew's list; unmarked rows and Gusto imports stay Gusto-paid" + (cerr ? ': ' + cerr : crew.every(Boolean) ? '' : ' · ' + crew));
   }
   // the inline fallback uses the core's prefix, and every split goes through isGustoPaidRow
   const coreSrc = fs.existsSync(path.join(ROOT, 'labor-billing-core.js')) ? fs.readFileSync(path.join(ROOT, 'labor-billing-core.js'), 'utf8') : '';
