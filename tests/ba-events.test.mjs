@@ -48,7 +48,7 @@ const exp = (id, extra = {}) => ({ id, ba_id: 'auto', expense_date: '2026-10-01'
 
 test('the build is bumped and every inline script parses', () => {
   const v = /const APP_VERSION = '([^']+)'/.exec(html)[1];
-  assert.notEqual(v, '2026-10-15.124'); assert.match(v, /^2026-10-2\d\.\d+$/);
+  assert.match(v, /^\d{4}-\d\d-\d\d\.\d+$/); assert.ok(v > '2026-10-15.124', `build ${v} is not past the events release`);
   const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);
   const tmp = path.join(os.tmpdir(), `ba-inline-${process.pid}.mjs`);
   fs.writeFileSync(tmp, scripts.join('\n;\n'));
