@@ -2653,7 +2653,7 @@ check('review: an update or delete sends p_expect (the waiting changes the edito
 });
 check('review: managers are offered only the kinds of change the worker has sent with a person watching (adding, deleting and New York wait for a supervised run)', () => {
   const app = block('ts-app');
-  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false,[^}]*note: false, nyNote: false,[^}]*job: false, nyJob: false,[^}]*addJob: false, nyAddJob: false,[^}]*startAfterClockout: false, nyStartAfterClockout: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25), nor notes in either region (2026-10-29), nor job changes or adds on a picked job (2026-10-30), nor a start moved once the shift ended (2026-11-09)');
+  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false,[^}]*note: false, nyNote: false,[^}]*job: false, nyJob: false,[^}]*addJob: false, nyAddJob: false,[^}]*startAfterClockout: true, nyStartAfterClockout: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25), nor notes in either region (2026-10-29), nor job changes or adds on a picked job (2026-10-30), and a start moved once the shift ended proven in CA 2026-11-09 (not yet in New York)');
   ok(/function mayEdit\(what\) \{ const a = actor\(\); return !!\(a && a\.is_admin\) \|\| C\.fullViewer\(a\) \|\| !!EDIT_PROVEN\[what\]; \}/.test(app), 'admins and full viewers keep them all');
   const fv = { is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, mgr = { is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
   ok(C.fullViewer(fv) && !C.fullViewer(mgr), 'a full viewer (every CA company) gets add and delete; a department manager does not');
@@ -5141,7 +5141,7 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
       ok(!C.startIsHeld(b) && C.startWaits(b), 'still running: it waits for the clock-out, not for the held run');
       eq(C.editPartLines(b, C.TZ, NOW_T), ['Waiting for clock-out: start moves to 7:46 AM after they clock out']);
       ok(/C\.setStartHeld\(e => \{ const r = S\.rows\.get\(e\.day_id\), reg = e\.region \|\| \(r \? rowRegion\(r\) : 'CA'\); return !EDIT_PROVEN\.startAfterClockout \|\| \(reg === 'NY' && !EDIT_PROVEN\.nyStartAfterClockout\); \}\);/.test(app)
-        && /startAfterClockout: false, nyStartAfterClockout: false \};/.test(app), 'the page holds it like the worker, per region');
+        && /startAfterClockout: true, nyStartAfterClockout: false \};/.test(app), 'the page holds it like the worker, per region');
       // a server without supabase/ts-edit-start-waits.sql: "End is missing" for a start alone reads as not switched on yet
       ok(/op\.action === 'update' && op\.after && op\.after\.out == null && \/End is missing\/i\.test\(errText\(error\)\) \? 'Moving the start of a shift still clocked in is not switched on yet: change its start once they clock out\.'/.test(appFn('runEditOp')), 'not switched on yet');
     } finally { C.setShiftOutOf(null); C.setStartHeld(null); }
