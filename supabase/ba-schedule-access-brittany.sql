@@ -9,3 +9,10 @@ update public.profiles
    set full_name = 'Brittany Rohrbach', region = 'CA', active = true, non_ba = true
  where email = 'brittany@wizardtrees.com' and role = 'ba'
 returning full_name, email, region, active, non_ba;
+
+-- Gianni, same day: "she can see the ny side too". Region stays CA (her home board); the NY board's
+-- allowlist adds her, so she gets both boards and the CA/NY switcher.
+update public.schedule_board
+   set allowed_emails = array_append(allowed_emails, 'brittany@wizardtrees.com'), updated_at = now()
+ where state = 'NY' and not ('brittany@wizardtrees.com' = any(allowed_emails))
+returning state, allowed_emails;
