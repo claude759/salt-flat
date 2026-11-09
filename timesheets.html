@@ -1249,7 +1249,11 @@
     // data errors the producer flags (2026-10-24, Gianni: "timesheet needs to do a better job of flagging errors like this")
     tiny_shift:     { label: 'Tiny shift',     msg: 'A shift under 5 minutes: likely a mis-tap or a missed clock-in' },
     midnight_split: { label: 'Past midnight',  msg: 'Gusto ran this shift past midnight: likely a missed clock-out' },
-    long_rest:      { label: 'Long rest',      msg: 'A paid rest over 30 minutes: was it ever ended?' },
+    // the page's own (Gianni 2026-11-09: clock-in tap fix, C.clockInTap): a morning tap that closed the day before's open
+    // shift was likely that day's clock-in. Never on a ts_days row: the page adds it to the day as the board shows it.
+    clockin_tap:    { label: 'Clock-in tap',   msg: "A morning tap likely was this day's clock-in: it ended the day before's open shift" },
+    long_rest:     { label: 'Long rest',      msg: 'A paid rest over 30 minutes: was it ever ended?' },
+    long_meal:     { label: 'Long meal',      msg: 'An unpaid meal over 90 minutes: was the clock-in after it missed?' },
     shift_overlap:  { label: 'Shifts overlap', msg: 'Two shifts overlap, or the same shift was entered twice' },
     // a person who clocks in outside Pacific time (the producer's personAway, 2026-10-25)
     other_zone:     { label: 'Other time zone', msg: 'Clocks in outside Pacific time: California break rules are shown as notes only', sev: 'info' },
@@ -2422,6 +2426,8 @@
   //                  times"); as the day's only record, a clock-in at the wrong time ("Fix the times").
   //   long_rest      a paid rest over 30 minutes (LONG_REST_MIN, the editor's warning too); a break that never
   //                  ended is break_open's.
+  //   long_meal      an unpaid meal over 90 minutes (2026-11-09, the producer's LONG_MEAL_MIN): likely a missed
+  //                  clock-in after lunch, so those hours go unpaid.
   //   shift_overlap  two different shifts on the clock at once for a minute or more (a running shift covers
   //                  everything after its clock-in), or the same shift twice (same clock-in and clock-out minute).
   //                  Back-to-back shifts never overlap.
@@ -2437,6 +2443,8 @@
     // (in the producer's flag order: long_rest, tiny_shift, shift_overlap)
     const longRests = punched.flatMap(x => x.breaks || []).filter(b => b && b.end && !b.open && b.paid && b.kind === 'rest' && +b.min > LONG_REST_MIN);
     if (longRests.length) add('long_rest', 'Rest of ' + durWords(Math.max(...longRests.map(b => +b.min))) + ': was it ever ended?');
+    const longMeals = punched.flatMap(x => x.breaks || []).filter(b => b && b.end && !b.open && !b.paid && b.kind === 'meal' && +b.min > LONG_MEAL_MIN);
+    if (longMeals.length) add('long_meal', 'Unpaid meal of ' + durWords(Math.max(...longMeals.map(b => +b.min))) + ': was the clock-in after it missed?');
     const tiny = punched.filter(x => x.out && !midIn(x) && !midOut(x) && ms(x.out) - ms(x.in) < TINY_SHIFT_MS);
     if (tiny.length) {
       const n = Math.max(...tiny.map(x => Math.max(1, Math.ceil(Math.max(0, ms(x.out) - ms(x.in)) / 60000))));
@@ -2740,6 +2748,26 @@
     }
     return errs;
   }
+  // A start moved on a shift still clocked in (Gianni 2026-11-09: clock-in tap fix), checked like ts_edit_submit in
+  // supabase/ts-edit-start-waits.sql: an update whose after.out is null goes only for a shift Gusto still shows with no
+  // clock-out (before.out null), and only its start may change (breaks and job as before); the start stays on the day. The
+  // page also keeps it before the shift's first break (Gusto refuses a break outside its shift). [] when it is fine, else
+  // [{code, msg}]. ctx: tz, date (the row's work_date), now (the page only: a start later than now is refused).
+  function validateStartOnly(after, before, ctx) {
+    const o = ctx || {}, tz = o.tz || TZ, a = after && typeof after === 'object' ? after : {}, b = before || {}, errs = [];
+    const add = (code, msg) => errs.push({ code, msg });
+    if (b.out) { add('no_out', 'Enter an end time.'); return errs; }
+    const sIn = secOf(a.in);
+    if (isNaN(sIn)) { add('no_in', 'Enter a start time.'); return errs; }
+    if (o.date && zDate(a.in, tz) !== o.date && !(b.in && zDate(a.in, tz) === zDate(b.in, tz))) add('in_date', 'The start must be on ' + fmtDay(o.date) + '.');
+    if (sameMinute(a.in, b.in)) add('same', 'Nothing changed: the shift already starts then.');
+    if (!sameBreaks(a.breaks, b.breaks) || (jobIdOf(a) && jobIdOf(a) !== jobIdOf(b)))
+      add('start_only', 'This shift is still clocked in, so only its start can change now. Change its breaks or job after they clock out.');
+    const first = snapBreaks(b.breaks).filter(x => !isNaN(secOf(x.start)))[0];
+    if (first && sIn > secOf(first.start)) add('brk_outside', 'The start must be before the shift\'s first break (' + fmtTimeSec(first.start, tz) + ').');
+    if (o.now != null && sIn > Math.floor(+new Date(o.now) / 1000) + 300) add('future', "The start can't be later than now.");
+    return errs;
+  }
   // '10:17:20 AM' when the time has seconds, else as fmtTime
   function fmtTimeSec(t, tz) {
     const p = zParts(t, tz); if (!p) return '';
@@ -2755,6 +2783,7 @@
   // A rest longer than 30 minutes is most often one that was never ended (Gusto then refuses a meal placed inside
   // it, as on 2026-10-23): a warning on that break, never a block. '' when the break looks fine.
   const LONG_REST_MIN = 30;
+  const LONG_MEAL_MIN = 90;   // long_meal, the producer's LONG_MEAL_MIN (2026-11-09)
   function durWords(min) { const h = Math.floor(min / 60), m = min % 60; return (h ? h + ' h' : '') + (h && m ? ' ' : '') + (m || !h ? m + ' min' : ''); }
   function longRestText(b) {
     if (!b || b.kind === 'meal') return '';
@@ -2926,6 +2955,25 @@
   function setJobHeld(fn) { jobHeld = typeof fn === 'function' ? fn : null; }
   // a job change waiting while the worker holds them: the whole change waits for that run (its times and breaks too)
   function jobIsHeld(e) { return !!e && !isNoteEdit(e) && e.times_status === 'pending' && !!jobChange(e) && !!jobHeld && !!jobHeld(e); }
+  // A start moved on a shift still clocked in (Gianni 2026-11-09: clock-in tap fix; ts_edits after.out null, which only
+  // supabase/ts-edit-start-waits.sql allows): the worker sends nothing while Gusto shows no clock-out, then moves the start
+  // and keeps Gusto's end, breaks and job. The page tells the core where the shift's clock-out stands (setShiftOutOf: the
+  // out Gusto had at the last sync, null while it runs, undefined when the day is not loaded).
+  function isStartOnly(e) { return !!e && e.action === 'update' && !!e.after && (e.after.out == null || e.after.out === ''); }
+  let shiftOutOf = null;
+  function setShiftOutOf(fn) { shiftOutOf = typeof fn === 'function' ? fn : null; }
+  // the clock-out Gusto had for the shift at the last sync, or null (still running, or not known)
+  function startOnlyOut(e) { const o = isStartOnly(e) && shiftOutOf ? shiftOutOf(e) : null; return o || null; }
+  // still waiting for the clock-out: nothing goes to Gusto yet, and it is never Late
+  function startWaits(e) { return isStartOnly(e) && e.times_status === 'pending' && !startOnlyOut(e); }
+  // (review 2026-11-09: clock-in tap fix) the worker holds a start moved once the shift ended ('start-after-clockout') until a
+  // supervised run proves it (the page's EDIT_PROVEN.startAfterClockout / .nyStartAfterClockout, set by the page): once Gusto
+  // shows the clock-out it waits for that run instead, and is never Late for it (like jobIsHeld)
+  let startHeld = null;
+  function setStartHeld(fn) { startHeld = typeof fn === 'function' ? fn : null; }
+  function startIsHeld(e) { return isStartOnly(e) && e.times_status === 'pending' && !startWaits(e) && !!startHeld && !!startHeld(e); }
+  // the first run that can send a change: the first after it was made; for a start that waited, the first after the clock-out
+  function editDueSec(e) { const o = startOnlyOut(e); return firstEditRun(o && secOf(o) > secOf(e.created_at) ? o : e.created_at); }
   const cmpEdit =(a, b) => ((secOf(a.created_at) - secOf(b.created_at)) || 0) || String(a.id).localeCompare(String(b.id));
   // one word for an edit: anything that needs a look first, then waiting (or being sent), then done
   function editStatus(e) {
@@ -2983,11 +3031,12 @@
     const st = e && e[part + '_status'];
     if (!partWaits(st)) return false;
     if (jobIsHeld(e)) return false;         // it waits for a supervised run on purpose (jobIsHeld), not for a run that passed
+    if (part === 'times' && (startWaits(e) || startIsHeld(e))) return false;   // it waits for the clock-out (2026-11-09), or then for a run Gianni watches, not for a run that passed
     const n = Math.floor((now == null ? Date.now() : +new Date(now)) / 1000);
     // being sent: late once the run's claim is half an hour old (a run that stopped half way; the next run
     // takes it again)
     const claimed = st === 'applying' ? secOf(e[part + '_claimed_at']) : NaN;
-    const due = isNaN(claimed) ? firstEditRun(e.created_at) : claimed;
+    const due = isNaN(claimed) ? editDueSec(e) : claimed;
     return !isNaN(due) && n >= due + EDIT_LATE_SEC;
   }
   const editLate = (e, now) => partLate(e, 'times', now) || partLate(e, 'breaks', now);
@@ -3027,9 +3076,12 @@
       const e = latest.get(String(s.id));
       if (!e) { shifts.push(s); continue; }
       let t = partShow(e, 'times', syncedSec), b = partShow(e, 'breaks', syncedSec);
+      // a start moved on a shift still clocked in (isStartOnly, 2026-11-09) keeps whatever end Gusto has: none while it runs,
+      // its clock-out once Gusto shows one
+      const af = e.after && isStartOnly(e) ? Object.assign({}, e.after, { out: s.out || null }) : e.after;
       // a part Gusto already shows as wanted needs no look (fixed in Gusto since); a job change only once Gusto has that job
       const jc = jobChange(e);
-      if (e.after && t === 'attention' && sameMinute(s.in, e.after.in) && sameMinute(s.out, e.after.out) && (!jc || jobIdOf(s) === jc.to.id)) t = null;
+      if (af && t === 'attention' && sameMinute(s.in, af.in) && sameMinute(s.out, af.out) && (!jc || jobIdOf(s) === jc.to.id)) t = null;
       if (e.after && b === 'attention' && sameBreaks(s.breaks, e.after.breaks)) b = null;
       mark(e, t, b);
       if (e.action === 'delete') {
@@ -3041,7 +3093,7 @@
       changed = true;
       // the edit's job only when it moves the shift (jobChange): one the server copied from before.job is the job the shift
       // had then, and Gusto's since stays shown (review 2026-10-30: shown as the edit's, the next save sent it back)
-      shifts.push(editedShift(s, jc ? e.after : Object.assign({}, e.after, { job: null }), tz, { times: ut, breaks: ub }));
+      shifts.push(editedShift(s, jc ? af : Object.assign({}, af, { job: null }), tz, { times: ut, breaks: ub }));
     }
     // an update whose shift is no longer on the row still says what it waits for (a delete is simply done)
     for (const [id, e] of latest) if (!onRow.has(id) && e.action !== 'delete') mark(e, partShow(e, 'times', syncedSec), partShow(e, 'breaks', syncedSec));
@@ -3230,24 +3282,30 @@
   function waitWords(e, part, now, tz) {
     if (part === 'breaks' && noteIsHeld(e)) return 'waits for the first note run Gianni watches';
     if (jobIsHeld(e)) return 'waits for the first job run Gianni watches';
+    if (part === 'times' && startWaits(e)) return startWaitText(e, tz);
+    if (part === 'times' && startIsHeld(e)) return 'waits for the first run of this kind Gianni watches';
     if (partLate(e, part, now)) return 'late, not in Gusto yet';
     if (e[part + '_status'] === 'applying') return 'going to Gusto now';
-    const due = firstEditRun(e.created_at), n = Math.floor((now == null ? Date.now() : +new Date(now)) / 1000);
+    const due = editDueSec(e), n = Math.floor((now == null ? Date.now() : +new Date(now)) / 1000);
     return isNaN(due) ? 'going to Gusto ' + nextEditRun(now, tz) : n >= due ? 'going to Gusto now' : 'going to Gusto ' + runWords(due, now, tz);
   }
   // each part in words: "Breaks: going to Gusto at 7 PM today", "Start and end: in Gusto", "Breaks: late, not
   // in Gusto yet". Both parts go in the same run, so when both wait they share one line ("Start, end and
   // breaks: going to Gusto at noon today"). by: the edit that replaced this one (replacedBy), if known. A job change rides
   // start and end: "Job: ..." when only the job changes, "Start, end and job: ..." when the times change with it.
+  // A start that waits for the clock-out says so in one line (2026-11-09): "Waiting for clock-out: start moves to 7:46 AM after
+  // they clock out"
+  function startWaitText(e, tz) { return 'waiting for clock-out: start moves to ' + fmtTime(e.after && e.after.in, tz) + ' after they clock out'; }
   function editPartLines(e, tz, now, by) {
     const out = [];
     const b = e.before || {}, a = e.after || {}, jc = e.action === 'update' && jobChange(e), moved = !sameMinute(b.in, a.in) || !sameMinute(b.out, a.out);
-    const times = e.action === 'add' ? 'The new shift' : !jc ? 'Start and end' : moved ? 'Start, end and job' : 'Job';
+    const times = e.action === 'add' ? 'The new shift' : isStartOnly(e) ? 'Start' : !jc ? 'Start and end' : moved ? 'Start, end and job' : 'Job';
     const word = { times, breaks: e.action === 'delete' ? 'Deleting it' : isNoteEdit(e) ? 'The note' : 'Breaks' };
     const both = partWaits(e.times_status) && partWaits(e.breaks_status);
     if (both) out.push((e.action === 'add' ? word.times : !jc ? 'Start, end and breaks' : moved ? 'Start, end, job and breaks' : 'Job and breaks') + ': ' + waitWords(e, 'times', now, tz));
     for (const part of ['times', 'breaks']) {
       const st = e[part + '_status'], err = e[part + '_error'];
+      if (part === 'times' && !both && startWaits(e)) { const w = startWaitText(e, tz); out.push(w.charAt(0).toUpperCase() + w.slice(1)); continue; }
       if (partWaits(st)) { if (!both) out.push(word[part] + ': ' + waitWords(e, part, now, tz)); }
       else if (st === 'applied') out.push(word[part] + ': in Gusto');
       else if (st === 'conflict') out.push(word[part] + ': ' + (err || 'Gusto changed after this edit was made.'));
@@ -3336,7 +3394,15 @@
     }
     const before = shiftSnap(shift);
     let after = null;
-    if (action !== 'delete') {
+    // a start moved on a shift still clocked in (2026-11-09, supabase/ts-edit-start-waits.sql): after.out null, only on an
+    // update of a shift Gusto shows with no clock-out, only its start changing (validateStartOnly); anything else needs an end
+    const startOnly = action === 'update' && !!before && !before.out && !!inp.after && typeof inp.after === 'object' && (inp.after.out == null || inp.after.out === '');
+    if (startOnly) {
+      const errs = validateStartOnly(inp.after, before, { tz, date: row.work_date });
+      if (errs.length) return fail(errs[0].msg);
+      after = { in: inp.after.in, out: null, breaks: snapBreaks(inp.after.breaks) };
+      if (before.job) after.job = before.job;
+    } else if (action !== 'delete') {
       const errs = validateAfter(inp.after, { tz, date: row.work_date, beforeIn: before && before.in });
       if (errs.length) return fail(errs[0].msg);
       after = { in: inp.after.in, out: inp.after.out, breaks: snapBreaks(inp.after.breaks) };
@@ -3435,6 +3501,190 @@
     if (!sp.forgotten) return 'This shift ran past midnight: Gusto keeps it on two days under one id (it goes on as ' + rest + '). Change it in Gusto.';
     if (!sp.samePeriod) return 'Gusto ran this shift past midnight (likely a missed clock-out), and its part on ' + fmtDay(sp.date) + ' is in another pay period. Fix its end time in Gusto.';
     return 'Gusto ran this shift past midnight: it goes on as ' + rest + ' (likely a missed clock-out). Fix its end time in Gusto.';
+  }
+
+  /* ---------- a morning tap that closed the day before's open shift (Gianni 2026-11-09: clock-in tap fix) ----------
+     Someone forgets to clock out on day N. Next morning their clock-in tap at T CLOSES the open shift instead, so Gusto
+     shows day N's shift running to 11:59:59 PM and a part carried into day N+1 from 12:00 AM to T (one Gusto shift id), and
+     usually a new clock-in a few minutes later. Gianni: yesterday ends at its real time, and today starts at T. The fix is two
+     changes through the usual ts_edit_submit: the first day's end (the editor's own first-day fix, the worker's
+     'midnight-split'), and the next shift's start moved to T (a start-only change while it is still clocked in, which the
+     worker holds until Gusto shows the clock-out: 'start-after-clockout'). */
+  const TAP_FROM_MIN = 4 * 60, TAP_TO_MIN = 12 * 60;   // a morning tap: from 4:00 AM to before noon, on the row's clock
+  const TAP_NEXT_MAX_MIN = 120;                         // the next clock-in within 2 hours of the tap
+  // The tap on a day (raw: the ts_days row as Gusto has it; neighbors: the person's Gusto shifts the day before and after,
+  // as editorEntries takes them): a part splitRole calls 'carried' on a day the producer flagged as a forgotten clock-out
+  // (midnight_split), whose end is a real tap (not Gusto's 11:59:59 PM, not midnight) in the morning, followed on the day
+  // by the person's next shift within TAP_NEXT_MAX_MIN after it, or by none yet (only on the row's today). opts: {today}.
+  // {shift (the carried part), at (its end, the tap), prev (the first day's part: {id, in, out, date, breaks}), date (the first
+  // day), next (the day's next Gusto shift, or null), running (next still clocked in), samePeriod} or null.
+  function clockInTap(raw, neighbors, opts) {
+    const o = opts || {};
+    if (!raw || !(raw.flags || []).some(f => f && f.code === 'midnight_split')) return null;
+    const tz = rowTz(raw), clock = rowClock(raw), today = o.today || todayIn(tz, o.now);
+    for (const s of raw.shifts || []) {
+      if (!s || !s.out) continue;
+      const sp = splitRole(s, raw.work_date, neighbors, tz, clock);
+      if (!sp || sp.role !== 'carried') continue;
+      const p = clockParts(s.out, tz, clock);
+      if (!p || p.date !== raw.work_date || hmsIs(p, 23, 59, 59) || hmsIs(punchParts(s.out, tz), 23, 59, 59) || hmsIs(p, 0, 0, 0)) continue;
+      const m = p.h * 60 + p.m;
+      if (m < TAP_FROM_MIN || m >= TAP_TO_MIN) continue;
+      const outMs = Date.parse(s.out);
+      const next = (raw.shifts || []).filter(x => x && x !== s && !x.hours_only && x.in && Date.parse(x.in) >= outMs)
+        .sort((a, b) => Date.parse(a.in) - Date.parse(b.in))[0] || null;
+      if (next ? Date.parse(next.in) - outMs > TAP_NEXT_MAX_MIN * 60000 : raw.work_date !== today) continue;
+      return { shift: s, at: s.out, prev: sp.other, date: sp.other.date, next, running: !!next && !next.out,
+        samePeriod: payPeriodFor(raw.work_date, EDIT_ANCHOR_END).from === payPeriodFor(sp.other.date, EDIT_ANCHOR_END).from };
+    }
+    return null;
+  }
+  // the tap as an ISO time with its offset, to the second (Gusto's own clock-out of the carried part)
+  function tapIso(tap, tz) { return OFFSET_ISO.test(String(tap.at)) ? tap.at : zIso(zDate(tap.at, tz), zMinutes(tap.at, tz), tz); }
+  // Where the fix stands in the changes made here (edits of any days): end, a change still waiting (or in Gusto, until the
+  // next sync) that ends the first day's part before 11:59 PM on its day; start, one that starts the next shift at the tap.
+  function tapFixed(tap, raw, edits) {
+    const tz = rowTz(raw);
+    const live = e => !!e && !e.cancelled_at && e.action === 'update' && !!e.after && e.company === raw.company && e.employee_uuid === raw.employee_uuid &&
+      (partWaits(e.times_status) || e.times_status === 'applied');
+    const end = (edits || []).find(e => live(e) && e.work_date === tap.date && String(e.shift_id) === String(tap.shift.id) && !!e.after.out &&
+      zDate(e.after.out, tz) === tap.date && !(zParts(e.after.out, tz).h === 23 && zParts(e.after.out, tz).m === 59)) || null;
+    const start = tap.next ? (edits || []).find(e => live(e) && e.work_date === raw.work_date && String(e.shift_id) === String(tap.next.id) && sameMinute(e.after.in, tap.at)) || null : null;
+    return { end, start };
+  }
+  // the words: the flag ("The 7:46 AM tap likely was today's clock-in: it ended yesterday's open shift."), the button ("7:46 AM
+  // was the clock-in for today") and the form's field ("Yesterday's real end"); a day before today names the days instead.
+  // fx (tapFixed): once the first day's end waits with no next shift yet, the flag says to use it again after they clock in.
+  function clockInTapText(tap, raw, today, fx) {
+    const tz = rowTz(raw), t = fmtTime(tap.at, tz), isToday = raw.work_date === today;
+    const head = isToday ? 'The ' + t + " tap likely was today's clock-in: it ended yesterday's open shift."
+      : 'The ' + t + " tap likely was this day's clock-in: it ended the open shift from " + fmtDay(tap.date) + '.';
+    return fx && fx.end && !tap.next ? head + ' The end of ' + fmtDay(tap.date) + ' is fixed here; once they clock in again, use this again to move the start to ' + t + '.' : head;
+  }
+  function clockInTapFlag(tap, raw, today, fx) { return { code: 'clockin_tap', sev: 'warn', msg: clockInTapText(tap, raw, today, fx) }; }
+  function clockInTapLabel(tap, raw, today) { return fmtTime(tap.at, rowTz(raw)) + ' was the clock-in for ' + (raw.work_date === today ? 'today' : fmtDay(raw.work_date)); }
+  function tapEndLabel(tap, raw, today) { return raw.work_date === today ? "Yesterday's real end" : 'Real end on ' + fmtDay(tap.date); }
+  // "Marigold has not clocked in again today. Ask them to clock in, then use this again to move the start to 7:46 AM." (the
+  // person's first name, never a pronoun guessed for them; "They have not" without a name)
+  function tapNotInText(name, tap, tz) {
+    const first = String(name || '').trim().split(/\s+/)[0];
+    return (first ? first + ' has' : 'They have') + ' not clocked in again today. Ask them to clock in, then use this again to move the start to ' + fmtTime(tap.at, tz) + '.';
+  }
+  // The real end the person wrote in their own note, as minutes after midnight, or null: "In 11 To 5:35" (5:35 PM), "out
+  // 4:50pm", "-6" (6 PM), "11-5:35 pm", "out at 17:35". A bare hour from 1 to 11 is PM; the end must land after the shift's
+  // start (startMin) and before 11:59 PM, else the note says nothing usable.
+  const NOTE_END_RES = [/\b(?:to|out|till|until)\b\s*(?:at\s+)?:?\s*(\d{1,2})(?::([0-5]\d))?(?:\s*([ap])\.?\s*m\b\.?)?(?![\d:/])/i,
+    /(?:^|[\s\d])-\s*(\d{1,2})(?::([0-5]\d))?(?:\s*([ap])\.?\s*m\b\.?)?(?![\d:/])/i];
+  function noteEndTime(text, startMin) {
+    const s = String(text == null ? '' : text);
+    for (const re of NOTE_END_RES) {
+      const m = re.exec(s);
+      if (!m) continue;
+      let h = +m[1];
+      const mm = m[2] ? +m[2] : 0, ap = m[3] ? m[3].toLowerCase() : '';
+      if (ap) { if (h < 1 || h > 12) continue; h = h % 12 + (ap === 'p' ? 12 : 0); }
+      else if (h > 23) continue;
+      else if (h >= 1 && h <= 11) h += 12;
+      const at = h * 60 + mm;
+      if ((startMin != null && !(at > startMin)) || at >= 23 * 60 + 59) continue;
+      return at;
+    }
+    return null;
+  }
+  // The real end the person's own notes give for the first day ({min, text}) or null: their notes on the split shift, either
+  // day, or the first day's one note (a sync from before notes came per shift). Lines written through this page never count.
+  function tapNoteEnd(prev, raw, tap) {
+    const tz = rowTz(raw), sp = zParts(tap.prev.in, tz), pp = clockParts(tap.prev.in, tz, rowClock(raw)), id = String(tap.shift.id);
+    // (review 2026-11-09) the form's field is on the row's zone, like the editor's: a person who punches on another clock
+    // (rowClock 'punch', e.g. Pacific punches on a New York row) writes their note on that clock, so it fills in nothing
+    if (!sp || !pp || sp.h !== pp.h || sp.m !== pp.m) return null;
+    const start = sp.h * 60 + sp.m;
+    const notes = [].concat(prev ? dayNotes(prev, []).filter(n => n.shiftId === id || n.shiftId == null) : [], dayNotes(raw, []).filter(n => n.shiftId === id));
+    for (const n of notes) {
+      if (n.kind !== 'other') continue;
+      const m = noteEndTime(n.text, start);
+      if (m != null) return { min: m, text: n.text };
+    }
+    return null;
+  }
+  // the reasons that go with the two changes when the manager gave none
+  function tapNotes(tap, end, tz) {
+    const t = fmtTime(tap.at, tz);
+    return { end: 'Ended at ' + fmtTime(end, tz) + ': the ' + t + ' tap the next morning was the clock-in', start: 'Started at ' + t + ": that tap ended yesterday's open shift" };
+  }
+  // What the form's Save sends (c: {day: {raw, board, edits, neighbors}, prev: {raw, board, edits, neighbors, around} (the
+  // first day: its row, as the board shows it, its changes, the person's Gusto shifts around it, and their shifts as the board
+  // shows them around it, as the editor takes them), who, now, endT ('HH:MM', the first day's real end), fix (this sign-in
+  // may send the first-day end fix: mayEdit('midnight'))}. {ops: [{day: 'prev' | 'day', op}], wait: 'running' | 'finished' |
+  // 'none' (no next shift yet) | 'same' (it already starts at the tap), tap, end (ISO), already (that end already waits, so
+  // only the start goes)} or {error}. The end goes first: it takes the carried part away, so the start can move there.
+  function clockInTapPlan(c) {
+    const fail = msg => ({ error: msg });
+    const d = c.day || {}, p = c.prev || {}, raw = d.raw;
+    if (!raw) return fail('This day is no longer on the board. Close this and reload.');
+    const tz = rowTz(raw), nowMs = c.now == null ? Date.now() : +new Date(c.now), today = todayIn(tz, nowMs);
+    const tap = clockInTap(raw, d.neighbors, { today });
+    if (!tap) return fail('This day no longer looks like a clock-in tap (Gusto may have changed). Reload it and check again.');
+    const prev = p.raw, day = fmtDay(tap.date);
+    if (!prev || prev.work_date !== tap.date || prev.company !== raw.company || prev.employee_uuid !== raw.employee_uuid) return fail(day + ' is not loaded here. Show it on the board, then try again.');
+    const ptz = rowTz(prev), endM = parseHhmm(c.endT);
+    if (isNaN(endM)) return fail('Enter the real end time for ' + day + '.');
+    // the end typed is on the row's zone (as the editor's fields are), so the start it must follow is too
+    const sp = zParts(tap.prev.in, ptz), startM = sp ? sp.h * 60 + sp.m : NaN;
+    if (!(endM > startM)) return fail("The end must be after the shift's start (" + fmtTime(tap.prev.in, ptz) + ' on ' + day + ').');
+    if (endM >= 23 * 60 + 59) return fail('Give the time they really left, before 11:59 PM on ' + day + '.');
+    const endT = pad2(Math.floor(endM / 60)) + ':' + pad2(endM % 60), ops = [];
+    // the first day's end: the editor's own first-day fix (en.split.fix), with every check Save makes there
+    const pe = editorEntries(prev, p.board || prev, p.edits, c.who || null, { today: todayIn(ptz, nowMs), now: nowMs, neighbors: p.neighbors, midnight: { fix: !!c.fix, end: false } });
+    const en = pe.find(x => x.kind === 'shift' && x.id === String(tap.shift.id));
+    if (!en || !en.split || en.split.role !== 'first') return fail('Gusto no longer shows the ' + day + ' shift running past midnight. Reload the board and check again.');
+    const shown = en.orig && en.orig.out;
+    const already = !!shown && zDate(shown, ptz) === tap.date && hhmm(shown, ptz) === endT && ((en.pendingIds || []).length > 0 || en.readonly === 'sent');
+    if (!already) {
+      if (en.readonly === 'applying') return fail('A change of the ' + day + ' shift is being sent to Gusto right now. Try again once it is done.');
+      if (en.readonly === 'sent') return fail('A change of the ' + day + ' shift just went to Gusto. Try again after the next sync.');
+      if (en.readonly || !en.split.fix) return fail(splitWhy(en, ptz));
+      en.outT = endT;
+      const pl = editPlan(prev, pe, { now: nowMs, neighbors: p.around });
+      const errs = Object.values(pl.errors || {}).reduce((a, x) => a.concat(x), []);
+      if (errs.length) return fail(day + ': ' + errs[0].msg);
+      const op = pl.ops.find(o => o.type === 'submit' && o.key === en.key);
+      if (!op) return fail('Nothing to change on ' + day + '.');
+      ops.push({ day: 'prev', op });
+    }
+    // the next shift's start: a start-only change while it is still clocked in, else an ordinary start change (its end kept)
+    const next = tap.next, at = tapIso(tap, tz);
+    let wait = 'none';
+    if (next && sameMinute(next.in, at)) wait = 'same';
+    else if (next) {
+      const de = editorEntries(raw, d.board || raw, d.edits, c.who || null, { today, now: nowMs, neighbors: d.neighbors, midnight: {} });
+      const ne = de.find(x => x.kind === 'shift' && x.id === String(next.id)), what = 'The ' + fmtTime(next.in, tz) + ' shift';
+      if (!ne) return fail(what + ' is not on this day any more (it may have changed in Gusto). Reload and try again.');
+      if (ne.readonly === 'applying') return fail(what + ' is being sent to Gusto right now. Try again once it is done.');
+      if (ne.readonly === 'sent') return fail(what + ' just went to Gusto. Try again after the next sync.');
+      if (ne.del) return fail(what + ' is waiting to be deleted here: cancel that change first.');
+      let after, errs;
+      if (!next.out) {
+        after = { in: at, out: null, breaks: snapBreaks(next.breaks) };
+        errs = validateStartOnly(after, shiftSnap(next), { tz, date: raw.work_date, now: nowMs });
+      } else {
+        after = Object.assign(entryAfter(ne, raw.work_date, tz), { in: at });
+        errs = validateAfter(after, { tz, date: raw.work_date, beforeIn: next.in, now: nowMs });
+      }
+      if (errs.length) return fail(what + ': ' + errs[0].msg);
+      ops.push({ day: 'day', op: { type: 'submit', key: ne.key, shift_id: ne.id, action: 'update', after, expect: (ne.pendingIds || []).slice() } });
+      wait = next.out ? 'finished' : 'running';
+    }
+    return { ops, wait, tap, end: zIso(tap.date, endM, ptz), already };
+  }
+  // what the form says once both went (when: nextEditRun's words; name: the person's)
+  function tapSavedText(plan, o) {
+    const c = o || {}, tz = c.tz || TZ, day = fmtDay(plan.tap.date), end = fmtTime(plan.end, tz), t = fmtTime(plan.tap.at, tz), when = c.when || 'at the next run';
+    const first = plan.already ? 'Saved. ' + day + ' already ends at ' + end + ' here.' : 'Saved. ' + day + ' ends at ' + end + ', going to Gusto ' + when + '.';
+    if (plan.wait === 'running') return first + ' The start moves to ' + t + ' after they clock out.';
+    if (plan.wait === 'finished') return first + ' The next shift starts at ' + t + ', going to Gusto ' + when + '.';
+    if (plan.wait === 'same') return first + ' The next shift already starts at ' + t + '.';
+    return first + ' ' + tapNotInText(c.name, plan.tap, tz);
   }
   // One entry per Gusto shift, as the board shows it (a shift waiting to be deleted shows as deleted),
   // then each shift waiting to be added. readonly: 'hours' (hours entered, change them in Gusto), 'open'
@@ -4086,6 +4336,10 @@
     latePayDate, latePayDates, NO_JOB_TITLE, jobLabel, personJobs, shiftJobsShown, JOB_NOT_LOADED, JOB_NOT_THEIRS, jobStartsText, jobChange, setJobHeld, jobIsHeld,
     PLACE_SITES, PLACE_PACK_SITES, PLACE_ALL_SITES, PLACE_HOME, PLACE_JOB_PREFIX, PLACE_PLAIN_JOB, PLACE_PACK_JOB, PLACE_HOWS, shiftPlace, placeTag, placeLook, placeLooks,
     placeMovable, placeInMoveAll, placeFlag, placeMoveOp, breakLenText, breaksTotalText,
+    // the clock-in tap fix (Gianni 2026-11-09)
+    isStartOnly, setShiftOutOf, startWaits, setStartHeld, startIsHeld, startWaitText, editDueSec, validateStartOnly, TAP_FROM_MIN, TAP_TO_MIN, TAP_NEXT_MAX_MIN,
+    clockInTap, tapIso, tapFixed, clockInTapText, clockInTapFlag, clockInTapLabel, tapEndLabel, tapNotInText, noteEndTime, tapNoteEnd, tapNotes,
+    clockInTapPlan, tapSavedText,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
@@ -4248,7 +4502,17 @@
       shifts: [{ inM: 690, outM: 1440, cut: true, breaks: [R(690, 110, 10, 'rest'), R(690, 240, 30, 'meal'), R(690, 360, 10, 'rest'),
                                                             R(690, 480, 30, 'meal'), R(690, 600, 10, 'rest')] }] }),
       next: () => ({ shifts: [{ inM: 0, outM: 120, cont: true, breaks: [] }] }) },
-    'Dewberry Quillon':    { n: 2, make: s => ({
+    // long_meal (2026-11-09): back from lunch without clocking in, so Gusto counts a 2 h 30 min unpaid meal
+    'Linden Fogsworth':    { n: 4, make: s => ({ note: 'Forgot to clock back in from lunch',
+      shifts: [{ inM: s, outM: s + 480, breaks: [R(s, 110, 10, 'rest'), R(s, 230, 150, 'meal')] }] }) },
+    // the clock-in tap (Gianni 2026-11-09: clock-in tap fix): a forgotten clock-out that the next morning's clock-in tap closed
+    // instead (Gusto carried it to 7:46 AM under the same id), then a clock-in 16 minutes later; the person's own note says
+    // when they really left. Both days in one pay period (onePeriod), so the fix can be tried on the demo any day.
+    'Marigold Puddleby':   { n: 2, onePeriod: true, make: s => ({ note: 'In 7 to 3:35, forgot to clock out',
+      shifts: [{ inM: s, outM: 1440, cut: true, breaks: [R(s, 110, 10, 'rest'), R(s, 240, 30, 'meal'), R(s, 360, 10, 'rest')] }] }),
+      next: () => ({ shifts: [{ inM: 0, outM: 466, cont: true, breaks: [] },
+        { inM: 482, outM: 482 + 505, breaks: [R(482, 110, 10, 'rest'), R(482, 240, 30, 'meal'), R(482, 360, 10, 'rest')] }] }) },
+    'Dewberry Quillon':   { n: 2, make: s => ({
       shifts: [{ inM: s, outM: s + 420, breaks: [R(s, 90, 68, 'rest'), R(s, 240, 30, 'meal')] }] }) },
     'Bramble Featherstone':{ n: 4, make: () => ({ shifts: [{ inM: 1004, outM: 1005, breaks: [] }] }) },
   };
@@ -4339,7 +4603,10 @@
       todays[Z.region] = Z.today;
       const plan = PLANS[planKey];
       const sc = SCENARIOS[name];
-      const scDate = sc ? nthWorkday(plan, sc.n, today) : null;
+      let scDate = sc ? nthWorkday(plan, sc.n, today) : null;
+      // a scenario whose two days must be in one pay period (onePeriod: the clock-in tap fix is offered only then) starts a
+      // workday earlier when its first day ends a pay period
+      if (sc && sc.onePeriod && C.payPeriodFor(scDate, C.EDIT_ANCHOR_END).to === scDate) scDate = nthWorkday(plan, sc.n + 1, today);
       const nextDate = sc && sc.next ? C.addDays(scDate, 1) : null;   // a scenario that runs into the next day
       let cutId = null;   // Gusto keeps one id for both parts of a shift it split at midnight
       for (const date of C.eachDate(Z.from, today)) {
@@ -4707,8 +4974,12 @@
   // loading: the day is being read again before the form shows; stamp: the day as it opened (C.dayStamp);
   // stale: Save found the day changed since (the foot offers to reload it). The note box under Notes in Gusto (a note
   // on its own, saved by its own button): noteOpen, noteText, noteShift (the Gusto shift id it is for), noteErr, noteBusy
+  // The clock-in tap's small form (2026-11-09) on the carried part: tap (C.clockInTap on the day as it opened), tapOpen,
+  // tapEnd (the first day's real end, 'HH:MM'), tapFrom (the person's note it came from), tapErr, tapBusy, tapStamp (the
+  // first day as the form opened, C.dayStamp)
   const E = { rowId: '', entries: [], note: '', err: '', busy: false, seq: 0, confirm: '', back: null, loading: false, stamp: '', stale: false, nbRows: [],
-    noteOpen: false, noteText: '', noteShift: '', noteErr: '', noteBusy: false };
+    noteOpen: false, noteText: '', noteShift: '', noteErr: '', noteBusy: false,
+    tap: null, tapOpen: false, tapEnd: '', tapFrom: '', tapErr: '', tapBusy: false, tapStamp: '' };
   let demoSeq = 100;                           // ids for edits made in demo mode
 
   const EST_BREAK_TIP = "This break is 21 to 24 min, so it could be either type. It was counted from its length; check it in Gusto.";
@@ -4841,12 +5112,21 @@
     job: false, nyJob: false,
     // review 2026-10-30: a new shift on a job picked here is the worker's 'add-job' (an added shift proves nothing about
     // moving one), held and proven apart. addJob once CA:add-job is proven, nyAddJob once NY:add-job is.
-    addJob: false, nyAddJob: false };
+    addJob: false, nyAddJob: false,
+    // (review 2026-11-09: clock-in tap fix) a start moved on a shift still clocked in, which the worker sends once Gusto shows
+    // the clock-out ('start-after-clockout'), is held and proven apart too. startAfterClockout once CA:start-after-clockout
+    // is proven, nyStartAfterClockout once NY:start-after-clockout is. Who may send one is unchanged (mayTap).
+    startAfterClockout: false, nyStartAfterClockout: false };
   // a note waiting while the worker holds notes in its region says so, not a run time it will not keep
   C.setNoteHeld(e => { const r = S.rows.get(e.day_id), reg = e.region || (r ? rowRegion(r) : 'CA'); return !EDIT_PROVEN.note || (reg === 'NY' && !EDIT_PROVEN.nyNote); });
   // and so does a job change while the worker holds those (an add on a picked job: while it holds 'add-job')
   C.setJobHeld(e => { const r = S.rows.get(e.day_id), reg = e.region || (r ? rowRegion(r) : 'CA'), add = e.action === 'add';
     return !EDIT_PROVEN[add ? 'addJob' : 'job'] || (reg === 'NY' && !EDIT_PROVEN[add ? 'nyAddJob' : 'nyJob']); });
+  // a start moved on a shift still clocked in (2026-11-09: clock-in tap fix) waits for the clock-out Gusto shows at the last
+  // sync: never Late before that (C.startWaits); undefined when its day is not loaded (it then counts as still waiting)
+  C.setShiftOutOf(e => { const r = S.rows.get(e.day_id), s = r && (r.shifts || []).find(x => x && String(x.id) === String(e.shift_id)); return s ? s.out || null : undefined; });
+  // and once Gusto shows the clock-out, it waits for the first supervised run while the worker holds that kind (C.startIsHeld)
+  C.setStartHeld(e => { const r = S.rows.get(e.day_id), reg = e.region || (r ? rowRegion(r) : 'CA'); return !EDIT_PROVEN.startAfterClockout || (reg === 'NY' && !EDIT_PROVEN.nyStartAfterClockout); });
   // A full viewer (every CA company and department, e.g. Victoria) edits like an admin (Gianni 2026-10-22: "give
   // victoria full edit access like I have"): adding and deleting shifts too. The worker still holds a kind it has
   // not sent once with a person watching, so the first one waits for Gianni's supervised run.
@@ -4858,7 +5138,8 @@
   // every row as the board shows it: the changes made here on top, and a change around midnight settled with the
   // person's other loaded days (C.overlayRows; a day next to one not loaded keeps Gusto's own midnight flag)
   // (and the Job vs place flag on a deleaf crew day whose shift's job does not fit where it was clocked in: withPlaces)
-  function boardRows() { return withPlaces(C.overlayRows([...S.rows.values()], editIndex(), { now: Date.now(), todayOf: rowToday, known: d => covered(d, d) })); }
+  // (and the Clock-in tap flag on a day whose morning tap closed the day before's open shift: withTaps)
+  function boardRows() { return withTaps(withPlaces(C.overlayRows([...S.rows.values()], editIndex(), { now: Date.now(), todayOf: rowToday, known: d => covered(d, d) }))); }
   const rowRegion = r => r.region || C.regionOfCompany(r.company);
   // the current or previous pay period, never a future day, on the row's own calendar (ts_edit_submit's
   // window), and still in it when the next run takes the change to Gusto (C.canEditForRun); New York days
@@ -4904,6 +5185,44 @@
     });
     placeIdx = idx;
     return out;
+  }
+  /* The clock-in tap (Gianni 2026-11-09: clock-in tap fix, C.clockInTap): a day whose morning tap closed the day before's open
+     shift gets the Clock-in tap flag, on the board and the phone cards, until the start change waits here (C.tapFixed). For
+     whoever may make the fix (mayTap: the first-day end fix's own rule, mayEdit('midnight'), both days editable here and in
+     one pay period), a "7:46 AM was the clock-in for today" button under it opens the day's editor with the small form. */
+  let tapIdx = new Map();   // ts_days id -> {tap, fx} of the day as the board last showed it (withTaps)
+  // the tap on a day as Gusto has it at the last sync, or null; only a day the producer flagged and that has a piece Gusto
+  // split at midnight is looked at (the neighbor scan is the costly part)
+  function tapOfRaw(raw) {
+    if (!raw || !(raw.flags || []).some(f => f && f.code === 'midnight_split') || !C.touchesMidnight(raw.shifts, C.rowTz(raw), C.rowClock(raw))) return null;
+    return C.clockInTap(raw, rawNeighbors(raw), { today: rowToday(raw) });
+  }
+  // the first day's row, when the board has it loaded (like "Open <the day before>" on a carried part: the fix needs it)
+  function tapPrev(raw, tap) { return S.rows.get(raw.company + ':' + raw.employee_uuid + ':' + tap.date) || null; }
+  // every change made here to either day (C.tapFixed reads where the fix stands)
+  function tapEdits(raw, tap) { const p = tapPrev(raw, tap); return editsFor(raw.id).concat(p ? editsFor(p.id) : []); }
+  function mayTap(raw, tap) {
+    const prev = raw && tap ? tapPrev(raw, tap) : null;
+    return !!prev && tap.samePeriod && mayEdit('midnight') && canEditRow(raw) && canEditRow(prev);
+  }
+  function withTaps(rows) {
+    const idx = new Map();
+    const out = rows.map(r => {
+      const raw = S.rows.get(r.id), tap = tapOfRaw(raw);
+      if (!tap) return r;
+      const fx = C.tapFixed(tap, raw, tapEdits(raw, tap));
+      if (fx.start) return r;               // the start change waits (or is in Gusto): its Pending pill says the rest
+      idx.set(r.id, { tap, fx });
+      return Object.assign({}, r, { flags: (r.flags || []).concat([C.clockInTapFlag(tap, raw, rowToday(raw), fx)]) });
+    });
+    tapIdx = idx;
+    return out;
+  }
+  // the button under the flag (only for whoever may make the fix)
+  function tapBtn(r, cls) {
+    const x = r && tapIdx.get(r.id), raw = r && S.rows.get(r.id);
+    if (!x || !raw || !mayTap(raw, x.tap)) return '';
+    return h`<button type="button" class="btn ${cls}" data-act="tap-open" data-k="${r.id}" title="${C.clockInTapText(x.tap, raw, rowToday(raw), x.fx)}">${C.clockInTapLabel(x.tap, raw, rowToday(raw))}</button>`;
   }
   // each shift's look in the row's shift order (null for a shift with none)
   function placeParts(r) {
@@ -5293,7 +5612,8 @@
     const days = ds.map(d => C.fmtDay(d)).join(' and ');
     return h`<span class="flag late" title="${'Late pay: hours worked ' + days + ', missed in that pay period\'s payroll and paid on this day in Gusto. Not worked on ' + C.fmtDay(r.work_date) + '.'}" tabindex="0">Late pay · for ${days}</span>`;
   }
-  function flagsCell(r) { const ep = editPills(r), mv = moveBtns(r, 'xs pmove'), lp = latePill(r); return h`${lp ? h`<div class="flags">${lp}</div>` : ''}${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}${mv ? h`<div class="pmv no-print">${mv}</div>` : ''}`; }
+  // and the clock-in tap's button (tapBtn: only for whoever may make the fix)
+  function flagsCell(r) { const ep = editPills(r), mv = moveBtns(r, 'xs pmove'), lp = latePill(r), tb = tapBtn(r, 'xs'); return h`${lp ? h`<div class="flags">${lp}</div>` : ''}${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}${tb ? h`<div class="pmv no-print">${tb}</div>` : ''}${mv ? h`<div class="pmv no-print">${mv}</div>` : ''}`; }
   function editPills(r) {
     const ed = r && r.edit;
     if (!ed || (!ed.pending.length && !ed.attention.length)) return '';
@@ -5534,7 +5854,7 @@
       ${r.ot_src === 'est' && (ot || dt) ? h`<p class="pd-fine">${r.region === 'NY' ? EST_OT_NOTE_NY : EST_OT_NOTE}</p>` : ''}
       ${histList(r)}
       ${editsOn() && C.leftDay(r, S.people) ? h`<p class="pd-fine">${C.LEFT_TEXT}.</p>` : ''}
-      ${canEditRow(r) ? h`<div class="pd-act">${moveBtns(r, 'pmove')}<button type="button" class="btn" data-act="edit-day" data-k="${r.id}">Edit times or breaks</button>${canNoteRow(r) ? h`<button type="button" class="btn" data-act="note-day" data-k="${r.id}">Add a note</button>` : ''}</div>` : ''}
+      ${canEditRow(r) ? h`<div class="pd-act">${tapBtn(r, '')}${moveBtns(r, 'pmove')}<button type="button" class="btn" data-act="edit-day" data-k="${r.id}">Edit times or breaks</button>${canNoteRow(r) ? h`<button type="button" class="btn" data-act="note-day" data-k="${r.id}">Add a note</button>` : ''}</div>` : ''}
     </div>`;
   }
   const openAttr = r => S.openCards.has(r.id) ? h` open` : '';
@@ -6360,7 +6680,7 @@
     if (!S.rows.get(dayId) || !canEditRow(S.rows.get(dayId))) { toast(noEditMsg(S.rows.get(dayId))); return; }
     hideTip(); setPop('');
     const tok = ++edTok;
-    E.rowId = dayId; E.note = ''; E.err = ''; E.busy = false; E.confirm = ''; E.entries = []; E.stamp = ''; E.stale = false; E.nbRows = []; resetNoteBox();
+    E.rowId = dayId; E.note = ''; E.err = ''; E.busy = false; E.confirm = ''; E.entries = []; E.stamp = ''; E.stale = false; E.nbRows = []; resetNoteBox(); resetTap();
     E.back = back || document.activeElement;
     E.loading = !DEMO;
     $('editPanel').hidden = false; document.body.classList.add('modal');
@@ -6380,9 +6700,13 @@
       midnight: { fix: mayEdit('midnight'), end: mayEdit('midnightEnd') } });
     E.stamp = C.dayStamp(raw, editsFor(dayId));
     E.seq = E.entries.length;
+    // the clock-in tap on this day, as Gusto has it now (the days around it read above); opts.tap: open its form straight away
+    E.tap = C.clockInTap(raw, rawNeighbors(raw), { today: rowToday(raw) });
     if (opts && opts.note && canNoteRow(raw)) { E.noteOpen = true; E.noteShift = String(noteTargets(raw)[0].id); }
+    else if (opts && opts.tap && tapOffered(raw)) openTapForm(raw);
     renderEditor();
     if (E.noteOpen) { noteFocus(); return; }   // scrolled to, on a phone too
+    if (E.tapOpen) { tapFocus(); return; }
     const first = !phoneLike() && $('edForm').querySelector('input[data-ef="in"]');
     (first || $('edClose')).focus({ preventScroll: true });
   }
@@ -6391,7 +6715,7 @@
     const k = E.rowId;
     $('editPanel').hidden = true;
     if ($('adminPanel').hidden) document.body.classList.remove('modal');
-    E.rowId = ''; E.entries = []; E.note = ''; E.err = ''; E.confirm = ''; E.busy = false; E.loading = false; E.stamp = ''; E.stale = false; E.nbRows = []; resetNoteBox();
+    E.rowId = ''; E.entries = []; E.note = ''; E.err = ''; E.confirm = ''; E.busy = false; E.loading = false; E.stamp = ''; E.stale = false; E.nbRows = []; resetNoteBox(); resetTap();
     const b = E.back; E.back = null;
     const to = b && b.isConnected ? b : rowEditTarget(k);   // a re-render (after Save) replaced the button
     if (to && to.focus) to.focus({ preventScroll: true });
@@ -6409,7 +6733,7 @@
   function reloadEditor() { const k = E.rowId, b = E.back; closeEditor(); if (k) openEditor(k, b); }
   // Cancel, Close, Escape and a click beside the sheet: typed changes are only thrown away on a second yes
   function requestCloseEditor() {
-    if (E.busy || E.noteBusy) return;
+    if (E.busy || E.noteBusy || E.tapBusy) return;
     if (editorDirty() && E.confirm !== 'close') { E.confirm = 'close'; renderEditor(); const y = $('edForm').querySelector('[data-act="ed-close-no"]'); if (y) y.focus(); return; }
     closeEditor();
   }
@@ -6547,9 +6871,97 @@
     const canEnd = !!en.split.end && !(en.pendingIds || []).length && !en.del;
     if (en.endAtMidnight) return h`<div class="ed-shift del" data-ek="${en.key}"><div class="ed-sh-head"><b>${label}</b>${pend}<span class="spacer"></span><button type="button" class="btn sm" data-act="ed-end-midnight-undo" data-ek="${en.key}">Keep this part</button></div>
       <p class="ed-ro"><s>${times}</s> goes, and the ${prevDay} shift ends at 11:59 PM.</p></div>`;
+    // the clock-in tap (2026-11-09): this part ended at a morning tap that was likely the day's clock-in (tapHtml)
+    const tp = !en.del && E.tap && String(E.tap.shift.id) === en.id && raw && tapOffered(raw) ? tapHtml(raw) : '';
     return h`<div class="ed-shift ro" data-ek="${en.key}"><div class="ed-sh-head"><b>${label}</b>${pend}</div><p class="ed-ro">${en.del ? 'Deleted: ' : ''}${times}</p>
       <p class="pd-fine">${carriedText(en, prevDay, canOpen)}</p>
-      ${canOpen || canEnd ? h`<div class="ed-more">${canOpen ? h`<button type="button" class="btn sm" data-act="ed-open-day" data-k="${prevKey}"${E.busy ? ' disabled' : ''}>Open ${prevDay}</button>` : ''}${canEnd ? h`<button type="button" class="linkbtn" data-act="ed-end-midnight" data-ek="${en.key}"${E.busy ? ' disabled' : ''}>It really ended at midnight: end it at 11:59 PM</button>` : ''}</div>` : ''}</div>`;
+      ${canOpen || canEnd ? h`<div class="ed-more">${canOpen ? h`<button type="button" class="btn sm" data-act="ed-open-day" data-k="${prevKey}"${E.busy ? ' disabled' : ''}>Open ${prevDay}</button>` : ''}${canEnd ? h`<button type="button" class="linkbtn" data-act="ed-end-midnight" data-ek="${en.key}"${E.busy ? ' disabled' : ''}>It really ended at midnight: end it at 11:59 PM</button>` : ''}</div>` : ''}${tp}</div>`;
+  }
+  /* The clock-in tap's small form (Gianni 2026-11-09: clock-in tap fix), on the carried part of the day it ended: "7:46 AM was
+     the clock-in for today" opens "Yesterday's real end" (from the person's own note when it gives one) and Save. Save sends
+     two changes through the usual ts_edit_submit (runEditOp): the first day's end (the editor's own first-day fix), then the
+     next shift's start moved to the tap (C.clockInTapPlan). With no next shift yet only the end goes, and the form says so. */
+  // offered for this day: a tap, a sign-in that may make the fix (mayTap), and no start change of it waiting here yet
+  function tapOffered(raw) {
+    if (!raw || !E.tap || !mayTap(raw, E.tap)) return false;
+    return !C.tapFixed(E.tap, raw, tapEdits(raw, E.tap)).start;
+  }
+  function resetTap() { E.tap = null; E.tapOpen = false; E.tapEnd = ''; E.tapFrom = ''; E.tapErr = ''; E.tapBusy = false; E.tapStamp = ''; }
+  function tapFocus() { const t = $('edTapEnd'); if (t) t.focus(); }
+  const minHhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+  // the form opens with the end of a fix already waiting here, else the one the person's own note gives (C.tapNoteEnd), else
+  // empty (it is required)
+  function openTapForm(raw) {
+    const prev = tapPrev(raw, E.tap), tz = C.rowTz(raw), fx = C.tapFixed(E.tap, raw, tapEdits(raw, E.tap)), n = C.tapNoteEnd(prev, raw, E.tap);
+    E.tapOpen = true; E.tapErr = '';
+    E.tapEnd = fx.end ? C.hhmm(fx.end.after.out, tz) : n ? minHhmm(n.min) : '';
+    E.tapFrom = !fx.end && n ? n.text : '';
+    E.tapStamp = prev ? C.dayStamp(prev, editsFor(prev.id)) : '';
+  }
+  function tapHtml(raw) {
+    const tap = E.tap, tz = C.rowTz(raw), today = rowToday(raw), t = C.fmtTime(tap.at, tz), prevDay = C.fmtDay(tap.date);
+    if (!E.tapOpen) return h`<div class="ed-tap"><p class="pd-fine">${C.clockInTapText(tap, raw, today)}</p><div class="ed-more"><button type="button" class="btn sm" data-act="ed-tap-open"${E.busy ? ' disabled' : ''}>${C.clockInTapLabel(tap, raw, today)}</button></div></div>`;
+    const then = !tap.next ? ' once they clock in again' : tap.running ? ' (it moves once they clock out)' : '';
+    return h`<div class="ed-nform ed-tap" id="edTapForm">
+      <p class="pd-fine">${prevDay} ends at its real time, and the next shift starts at ${t}${then}. A reason typed under Reason goes with both.</p>
+      <label class="ed-f"><span>${C.tapEndLabel(tap, raw, today)}</span><input type="time" step="60" id="edTapEnd" value="${E.tapEnd}" required></label>
+      ${E.tapFrom ? h`<p class="hint">From their note: "${E.tapFrom}"</p>` : ''}
+      ${!tap.next ? h`<p class="hint">${C.tapNotInText(raw.employee_name, tap, tz)} Saving now fixes the end on ${prevDay}.</p>` : ''}
+      ${E.tapErr ? h`<div class="inline-err" role="alert">${E.tapErr}</div>` : ''}
+      <div class="ed-nact"><span class="spacer"></span><button type="button" class="btn sm" data-act="ed-tap-cancel"${E.tapBusy ? ' disabled' : ''}>Cancel</button><button type="button" class="btn sm primary" data-act="ed-tap-save"${E.tapBusy || E.busy ? ' disabled' : ''}>${E.tapBusy ? 'Saving...' : 'Save'}</button></div>
+    </div>`;
+  }
+  function edTapOpen() { const raw = S.rows.get(E.rowId); if (!raw || E.busy || !tapOffered(raw)) return; openTapForm(raw); renderEditor(); tapFocus(); }
+  function edTapClose() { if (E.tapBusy) return; E.tapOpen = false; E.tapErr = ''; renderEditor(); const b = $('edForm').querySelector('[data-act="ed-tap-open"]'); if (b) b.focus(); }
+  // the plan on the days as the page has them now (C.clockInTapPlan)
+  function tapPlanNow(raw, prev) {
+    return C.clockInTapPlan({ day: { raw, board: boardRow(raw), edits: editsFor(raw.id), neighbors: rawNeighbors(raw) },
+      prev: { raw: prev, board: boardRow(prev), edits: editsFor(prev.id), neighbors: rawNeighbors(prev), around: neighborShifts(prev) },
+      who: actor(), now: Date.now(), endT: E.tapEnd, fix: mayEdit('midnight') });
+  }
+  // Save: checked first; both days read again (nothing goes if either changed since the form opened), checked again, then the
+  // end and the start, one after the other, each with the manager's reason or its own (C.tapNotes)
+  async function edSaveTap() {
+    if (E.tapBusy || E.busy || E.loading || E.noteBusy) return;
+    const k = E.rowId, raw0 = S.rows.get(k), tap0 = E.tap;
+    const stop = msg => { E.tapBusy = false; E.tapErr = msg; if (E.rowId === k) { renderEditor(); tapFocus(); } };
+    if (!raw0 || !tap0) return stop('This day is no longer on the board. Close this and reload.');
+    if (E.entries.some(en => (!en.readonly && C.entryKey(en) !== en.start) || en.endAtMidnight)) return stop('Save or cancel what you changed above first, then use this.');
+    if (E.noteOpen && E.noteText.trim()) return stop(NOTE_FIRST);
+    const prev0 = tapPrev(raw0, tap0);
+    if (!prev0 || !mayTap(raw0, tap0)) return stop('This fix cannot be made here for these days: fix the end time in Gusto.');
+    const reason = E.note.trim(), rp = C.reasonProblem(reason);
+    if (rp) return stop(rp);
+    const first = tapPlanNow(raw0, prev0);
+    if (first.error) return stop(first.error);
+    E.tapBusy = true; E.tapErr = ''; renderEditor();
+    const prevId = prev0.id, fresh = await Promise.all([refreshDay(k), refreshDay(prevId)]);
+    const raw = S.rows.get(k), prev = S.rows.get(prevId), okRead = fresh.every(f => f.ok);
+    if (!okRead || !raw || !prev || C.dayStamp(raw, editsFor(k)) !== E.stamp || C.dayStamp(prev, editsFor(prevId)) !== E.tapStamp) {
+      E.stale = okRead && !!raw; render();
+      return stop(okRead ? 'This day or ' + C.fmtDay(tap0.date) + ' changed since you opened it. Reload this day and try again.'
+        : "Couldn't check these days for newer changes, so nothing was saved. Try again in a moment.");
+    }
+    const plan = tapPlanNow(raw, prev);
+    if (plan.error) return stop(plan.error);
+    const tz = C.rowTz(raw), notes = C.tapNotes(plan.tap, plan.end, tz), day = C.fmtDay(plan.tap.date);
+    let sent = 0;
+    for (const x of plan.ops) {
+      const res = await runEditOp(x.day === 'prev' ? prev : raw, x.op, reason || (x.day === 'prev' ? notes.end : notes.start));
+      if (res.error) {
+        if (!DEMO && sent) await fetchEdits(prev.work_date, raw.work_date);
+        // what went through is this form's own: a retry may go (the end then already waits, so only the start is sent)
+        E.stamp = C.dayStamp(S.rows.get(k), editsFor(k)); E.tapStamp = C.dayStamp(prev, editsFor(prevId));
+        render();
+        return stop(x.day === 'prev' ? "Couldn't save the end on " + day + ': ' + res.error
+          : (sent ? 'The end on ' + day + ' is saved, but the start could not move: ' : "Couldn't move the start: ") + res.error);
+      }
+      sent++;
+    }
+    if (!DEMO) await fetchEdits(prev.work_date, raw.work_date);
+    E.tapBusy = false;
+    closeEditor(); render();
+    toast(C.tapSavedText(plan, { tz, when: C.nextEditRun(Date.now(), tz), name: raw.employee_name }));
   }
   // "Open <the day before>" on a carried-over part: that day's editor, once nothing typed here would be lost
   function edOpenDay(k) {
@@ -6682,6 +7094,7 @@
     if (t.id === 'edNote') { E.note = t.value; return; }
     if (t.id === 'edNoteText') { E.noteText = t.value; const c = $('edNoteCount'); if (c) c.textContent = t.value.length + ' / ' + C.EDIT_RULES.gustoNoteMax; return; }
     if (t.id === 'edNoteShift') { E.noteShift = t.value; return; }
+    if (t.id === 'edTapEnd') { E.tapEnd = t.value; return; }
     const en = edEntry(t.dataset && t.dataset.ek), f = t.dataset && t.dataset.ef;
     if (!en || !f) return;
     if (f === 'in') en.inT = t.value;
@@ -6767,6 +7180,8 @@
         : /not one of this person.s jobs/i.test(errText(error)) ? C.JOB_NOT_THEIRS
         // a server without that file keeps no job, so a change of only the job is "nothing changed" there
         : op.after && op.after.job && /Nothing changed/i.test(errText(error)) ? 'Changing jobs is not switched on yet.'
+        // (review 2026-11-09: clock-in tap fix) a server without supabase/ts-edit-start-waits.sql refuses a start alone
+        : op.action === 'update' && op.after && op.after.out == null && /End is missing/i.test(errText(error)) ? 'Moving the start of a shift still clocked in is not switched on yet: change its start once they clock out.'
         : /being sent to Gusto right now/i.test(errText(error)) ? 'A change of this shift is being sent to Gusto right now. Reload once the board shows it is done.' : errText(error) };
       if (data && data.id) {
         // the server replaced any older waiting edit of this shift: do the same here until the re-read (a note replaces nothing)
@@ -6812,7 +7227,7 @@
   }
   async function saveDayEdits() {
     if (E.busy || E.loading) return;
-    if (E.noteBusy) return;
+    if (E.noteBusy || E.tapBusy) return;
     const k = E.rowId, raw0 = S.rows.get(k);
     if (!raw0 || !canEditRow(raw0)) { E.err = !raw0 ? 'This day is no longer on the board. Close this and reload.' : noEditMsg(raw0) + '.'; renderEditor(); return; }
     // a note typed under Notes in Gusto goes with its own Save note: Save changes never sends it, and never drops it
@@ -7127,6 +7542,10 @@
       case 'place-all-no': if (!PM.running) { PM.open = false; PM.items = []; render(); } break;
       case 'place-all-done': PM.done = null; render(); break;
       case 'note-day': openEditor(d.k, el, { note: true }); break;
+      case 'tap-open': openEditor(d.k, el, { tap: true }); break;
+      case 'ed-tap-open': edTapOpen(); break;
+      case 'ed-tap-cancel': edTapClose(); break;
+      case 'ed-tap-save': edSaveTap(); break;
       case 'ed-note-open': edNoteOpen(); break;
       case 'ed-note-cancel': edNoteClose(); break;
       case 'ed-note-save': edSaveNote(); break;
