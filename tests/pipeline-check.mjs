@@ -3,10 +3,33 @@
 // made-up task tracker rows for plan vs actual.
 // Run: node tests/pipeline-check.mjs [real pipeline export.csv] [--supply=real supply export.csv]
 //        [--batches=pipeline_batches rows as JSON] [--tasks=packaging_tasks rows as JSON] [--trims=pipeline_trims rows as JSON]
-import { readFileSync } from 'node:fs';
+// Run this before every push that touches pipeline.html: any failure means do not push.
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 
 const html = readFileSync(new URL('../pipeline.html', import.meta.url), 'utf8');
+
+// the page as a whole: a truncated write or one syntax error takes the whole board down for the crew
+assert.ok(html.length > 150_000 && /<\/html>\s*$/i.test(html), `pipeline.html is complete (${Math.round(html.length / 1024)} KB, ends with </html>)`);
+{
+  const scripts = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  const tmp = path.join(os.tmpdir(), `pipeline-inline-${process.pid}.js`);
+  writeFileSync(tmp, scripts.join('\n;\n'));
+  try { execFileSync(process.execPath, ['--check', tmp], { stdio: 'pipe' }); }
+  catch (e) { assert.fail('an inline script does not parse:\n' + String(e.stderr || e.message).split('\n').slice(0, 6).join('\n')); }
+  finally { rmSync(tmp, { force: true }); }
+  // every page is three pieces: its nav button, its <section id="view-X">, and its entry in RENDER
+  const markup = html.replace(/<script[\s\S]*?<\/script>/g, '');
+  const nav = [...markup.matchAll(/<button[^>]*data-view="([^"]+)"/g)].map(m => m[1]);
+  const secs = [...markup.matchAll(/<section id="view-([^"]+)"/g)].map(m => m[1]);
+  const rend = [...((html.match(/const RENDER = \{(.*)\};/) || [])[1] || '').matchAll(/(?:^|,)\s*([\w-]+):/g)].map(m => m[1]);
+  for (const v of nav) assert.ok(secs.includes(v) && rend.includes(v), `page "${v}" has a nav button, a <section id="view-${v}"> and a RENDER entry`);
+  for (const v of secs) assert.ok(nav.includes(v), `<section id="view-${v}"> has a nav button`);
+  console.log(`page structure: ${scripts.length} inline script(s) parse; pages ${nav.join(', ')} each have a button, a section and a renderer`);
+}
 const src = html.split('/* ===== PIPELINE PARSER START =====')[1].split('/* ===== PIPELINE PARSER END ===== */')[0];
 const PIPE = new Function(`/*${src}; return PIPE;`)();
 const supSrc = html.split('/* ===== SUPPLY PARSER START =====')[1].split('/* ===== SUPPLY PARSER END ===== */')[0];
