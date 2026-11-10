@@ -19,6 +19,7 @@ create table if not exists public.pipeline_editors (
 comment on table public.pipeline_editors is
   'Who may edit the Production Pipeline sheet from the app (pipeline-sheet-write). Changed from Gianni''s computer only.';
 alter table public.pipeline_editors enable row level security;   -- no policies: read only through pipeline_can_edit()
+revoke all on table public.pipeline_editors from anon, authenticated;
 
 create or replace function public.pipeline_can_edit(p_scope text)
 returns boolean
@@ -94,7 +95,8 @@ alter table public.pipeline_edits enable row level security;
 drop policy if exists pipeline_edits_select on public.pipeline_edits;
 create policy pipeline_edits_select on public.pipeline_edits
   for select to authenticated using (public.pipeline_can_view());
-revoke insert, update, delete, truncate on table public.pipeline_edits from anon, authenticated;
+revoke all on table public.pipeline_edits from anon;
+revoke insert, update, delete, truncate, references, trigger on table public.pipeline_edits from authenticated;
 
 -- cell_key = '<target>:<tab>!<A1>'. A lock lasts for the save (a few seconds) and expires by itself if the save dies.
 create table if not exists public.pipeline_edit_locks (

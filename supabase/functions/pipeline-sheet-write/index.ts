@@ -348,6 +348,14 @@ async function save(job: Job): Promise<Any> {
 async function undo(who: Who, admin: Any, id: unknown): Promise<Any> {
   const n = Number(id);
   if (!Number.isInteger(n) || n <= 0) return { ok: false, reason: "refused", message: R.MSG.bad };
+  // an editor of some tab first, so the log is not read for anyone else (save() then checks the edit's own tabs)
+  let editor = false;
+  for (const scope of ["plan", "supply"]) {
+    const { data, error: e } = await who.userClient.rpc("pipeline_can_edit", { p_scope: scope });
+    if (e) { console.error("pipeline_can_edit", e.message); return { ok: false, reason: "off", message: SAY.notSetUp }; }
+    if (data === true) { editor = true; break; }
+  }
+  if (!editor) return { ok: false, reason: "not-editor", message: SAY.notEditor };
   const { data: edit, error } = await admin.from("pipeline_edits")
     .select("id,action,status,target,intent,cells,undone_by").eq("id", n).maybeSingle();
   if (error) throw new Error("undo read: " + error.message);
