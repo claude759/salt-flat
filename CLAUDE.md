@@ -14,7 +14,8 @@ person asking for a change should never have to touch git. These rules keep that
    and puts them back afterwards; never discard them to make a pull succeed.
 2. **Make only the requested change.** Edit only the files the request needs.
 3. **Check it.** Run the check for the app you changed: NY Packaging `node tests/ny-check.mjs`,
-   Production Pipeline `node tests/pipeline-check.mjs`. If anything fails, fix it before pushing.
+   Production Pipeline `node tests/pipeline-check.mjs` and `node tests/pipeline-write-check.mjs`.
+   If anything fails, fix it before pushing.
    Never push a failing check.
 4. **Commit only your files, by name.** `git add <file> <file>`, never `git add -A` or `git add .`:
    this folder holds other people's unfinished work that must not ride along. Write the commit
@@ -87,7 +88,9 @@ example https://claude759.github.io/salt-flat/labor-calculator-ny.html?beta . Re
 - **Who changes it:** Gianni and Victoria (production manager), each through their own Claude.
 - **Victoria's sessions change only Production Pipeline files:** `pipeline.html`,
   `tests/pipeline-*`, `supabase/pipeline-*.sql`, and this file. Every other app in this repo
-  belongs to someone else.
+  belongs to someone else. The sheet save program is Gianni's, not hers:
+  `supabase/functions/pipeline-sheet-write/`, `tests/pipeline-write-check.mjs` and
+  `supabase/pipeline-edits.sql`.
 - **The check** (`node tests/pipeline-check.mjs`) makes sure the page is whole, its script parses,
   every page is wired up, and the sheet readers and models still give the right answers.
 
@@ -109,8 +112,12 @@ launch. The check fails if one of the three pieces is missing.
 - **The plan** (Week board, Strains): the DISTRO PIPELINE tab of Victoria's WIZARD TREES workbook,
   read live by the browser every few minutes. **Supplies:** the DISTRO SUPPLY and ACCESSORY SUPPLY
   tabs, read the same way. The sheet is the source of truth: to change the plan, change the sheet.
-  The page does not write to the sheet. Writing back to it is being designed in Gianni's Claude
-  (November 2026); until that lands, add nothing that writes to the sheet.
+- **Editing the sheet from the page** (release 1a, November 2026, not switched on yet): an Edit
+  button shows only with `?beta`, only for people listed in `pipeline_editors`, and only from this
+  week on. Every write goes through the save program in `supabase/functions/pipeline-sheet-write/`,
+  which checks each edit against the sheet as it is right now; `CONTRACT.md` there is the agreement
+  between the page and the program. The page builds edits in its EDIT MODEL block. Add no other
+  way to write to the sheet, and don't loosen what the program refuses from the page side.
 - **Everything else is copied into the database by jobs on Gianni's computer**, and the page reads
   the copies: the sheet's red cells every 5 minutes, the Batch Label Sheet hourly (with test dates,
   COA dates and THC from Metrc and the lab's COA emails), the 2026 TRIM SHEETS hourly (pounds

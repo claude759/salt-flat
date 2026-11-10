@@ -3,8 +3,9 @@
 // made-up task tracker rows for plan vs actual.
 // Run: node tests/pipeline-check.mjs [real pipeline export.csv] [--supply=real supply export.csv]
 //        [--batches=pipeline_batches rows as JSON] [--tasks=packaging_tasks rows as JSON] [--trims=pipeline_trims rows as JSON]
+//        [--live=folder with the write-back research's saved copies of the sheet (grid.json, meta.json, sup/)]
 // Run this before every push that touches pipeline.html: any failure means do not push.
-import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -42,11 +43,16 @@ const actSrc = html.split('/* ===== ACTUALS MODEL START =====')[1].split('/* ===
 const ACT = new Function('PIPE', `/*${actSrc}; return ACT;`)(PIPE);
 const trySrc = html.split('/* ===== TRIM YIELD MODEL START =====')[1].split('/* ===== TRIM YIELD MODEL END ===== */')[0];
 const TRIMY = new Function('PIPE', `/*${trySrc}; return TRIMY;`)(PIPE);
+// the edit model reads crew lines back with WEEK.parseCrew, which the page defines later in the same script
+const editSrc = html.split('/* ===== EDIT MODEL START =====')[1].split('/* ===== EDIT MODEL END ===== */')[0];
+const EDIT = new Function('PIPE', 'SUP', 'WEEK', `/*${editSrc}; return EDIT;`)(PIPE, SUP, WEEK);
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
   realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9),
   realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10),
   realTasks = (args.find(a => a.startsWith('--tasks=')) || '').slice(8),
-  realTrims = (args.find(a => a.startsWith('--trims=')) || '').slice(8);
+  realTrims = (args.find(a => a.startsWith('--trims=')) || '').slice(8),
+  // read-only copies of the live sheet saved by the write-back research, outside the repo; skipped when missing
+  liveDir = (args.find(a => a.startsWith('--live=')) || '').slice(7) || path.join(os.homedir(), 'ar-automation/docs/pipeline-writeback/research-scripts');
 
 // one week band: 14 columns, a (task, detail) pair per day
 const blank = () => Array(14).fill('');
@@ -95,6 +101,12 @@ const weeks = PIPE.parse(csv);
   assert.deepEqual(trim.raw[0].at, [[2, 0], [2, 1], [3, 1]], 'the trim title cell and its two detail cells');
   assert.deepEqual(pre.raw[0].at, [[5, 0]], 'the pre-roll instruction row');
   assert.deepEqual(pre.lines.find(l => l.strain === 'TIDE' && l.size === '5pk').at, [[8, 0], [8, 1], [9, 1]], 'a strain line keeps its strain row');
+  // and, for editing, the one cell its amount was read from, and every item its title cell
+  assert.deepEqual(pre.lines.map(l => l.cell), [[6, 1], [7, 1], [8, 1], [9, 1]], 'each pre-roll line keeps the cell its amount is in');
+  assert.deepEqual([trim.cell, pre.cell, mon.find(i => i.type === 'crew').cell], [[2, 0], [5, 0], [4, 0]], 'an item keeps its title cell');
+  const jr = weeks[0].days[1].items.find(i => i.type === 'jars');
+  assert.deepEqual([jr.cell, jr.lines.map(l => l.cell)], [null, [[3, 2], [5, 2]]], 'a jar run has no title cell of its own; each jar line keeps the cell naming its strain');
+  assert.deepEqual(weeks.map(x => [x.headRow, x.lastRow]), [[1, 11], [12, 12]], 'each week keeps its header row and last row');
 }
 assert.equal(weeks.length, 2, 'two week bands');
 const [w] = weeks;
@@ -167,6 +179,9 @@ assert.deepEqual([bundle.at.VOID, bundle.raw.VOID, bundle.total, bundle.sum], [6
 const acc = SUP.parse('Column 1,ITEM,TOTAL QTY,STATUS,PAR ,23RD,25TH,PORTAL,MYLARS,Vendor ,NOTES\nWizzy Lego,ACCESSORY,1560,IN STOCK,,,,1560,,,', 'ACCESSORY SUPPLY');
 assert.deepEqual([acc.sites[3], acc.items[0].par, acc.items[0].below], ['MYLARS', null, false]);
 assert.equal(SUP.parse('nothing,here\n1,2', 'X'), null, 'a tab without the header row is refused');
+// for editing: each item's row (0-based), the column of each header, its ITEM cell as written; the tab's headers as written
+assert.deepEqual([jar.r, jar.cols['23RD'], jar.cols.PAR, jar.cols.NOTES, jar.catText, lid.catText], [1, 5, 4, 10, 'JAR', 'LIDS']);
+assert.deepEqual([sp.headRow, sp.headers[4], sp.grid[1][0]], [0, 'PAR ', 'Jar - 3.5g']);
 
 // ---------------- Week board model ----------------
 // parser fixes: "5PK .7G PREROLL- 700", and "PREROLLS- ...: SMOOTHIE" naming the strain its lines are for
@@ -568,5 +583,259 @@ if (realPipe) {
   assert.equal(PIPE.typeOf('LOREZNO OFF / JUSTIN DISTRO'), 'crew');
   assert.equal(PIPE.typeOf('TRIM -LORENZO'), 'trim', 'a trim led by a person stays a trim');
   console.log('live wording: current jar lines, "DROP 2-" testing lists and who-is-where crew lines read right');
+}
+
+// ---------------- Edit model (release 1a): an edit -> the exact cells to rewrite, proven by reading them back ----------------
+{
+  const blankE = () => Array(14).fill('');
+  const g = [['WIZARD TREES PRODUTION PIPELINE ', ...Array(13).fill('')]];
+  const head = labels => { const h = blankE(); labels.forEach((t, k) => { h[k * 2] = t; }); return h; };
+  g.push(head(['NOVEMBER, MONDAY 2ND', 'NOVEMBER, TUESDAY 3RD', 'NOVEMBER, WEDNESDAY 4TH', 'NOVEMBER, THURSDAY 5TH', 'NOVEMBER, FRIDAY 6TH',
+    'NOVEMBER, SATURDAY 7TH', 'NOVEMBER,SUNDAY 8TH']));
+  const put = (r, day, task, detail = '') => { while (g.length <= r) g.push(blankE()); g[r][day * 2] = task; g[r][day * 2 + 1] = detail; };
+  const JAR = s => `SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): \n${s} --- 3.5G & 1.5G BUDTENDER SAMPLE`;
+  // Mon: two crew lines, a pre-roll run, two jar lines (one written "TIDE---")
+  put(2, 0, 'JUSTIN DISTRO / LORENZO TRIM'); put(3, 0, 'NOURI ON CALL FOR PORTAL WORK');
+  put(4, 0, 'PREROLLS- GRIND, PRODUCE, PACKAGE, ADD BATCH LABEL (ADD VERIFICATION STICKER)');
+  put(5, 0, 'VOODOO', '5PK .7G -- 600'); put(6, 0, '', '1G PREROLL- 600');
+  put(7, 0, 'TIDE', '5PK .7G -- 1,200'); put(8, 0, '', '1G PREROLL- 700');
+  put(9, 0, JAR('BLACK MAGIC')); put(10, 0, 'SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): \nTIDE--- 3.5G & 1.5G BUDTENDER SAMPLE');
+  // Tue: both TIDE sizes in one cell with a CRLF; VOODOO 1g at 500, not 600; a Nabis line
+  put(2, 1, 'LOREZNO & JUSTIN DISTRO');
+  put(3, 1, 'TIDE', '5PK .7G -- 1,200\r\n1G PREROLL- 700');
+  put(4, 1, 'VOODOO', '5PK .7G -- 600'); put(5, 1, '', '1G PREROLL- 500');
+  put(6, 1, JAR('BLACK MAGIC')); put(7, 1, 'STAGE DEC DROP 3 FOR NABIS');
+  // Wed: a pre-roll job with no strain list (does not end the run), an older-style jar job, testing
+  put(2, 2, 'PREROLLS- GRIND, PRODUCE, PACKAGE');
+  put(3, 2, 'SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): SMOOTHIE', '10 LBS- 3.5G (4-5 NUG MAX)'); put(4, 2, '', '10 CASES OF 1.5G BAGS (1-2  NUG MAX)');
+  put(5, 2, 'TBD - TESTING SCHEDULED FOR DEC DROP 2-  TIDEBANGER, ANTIDOTE');
+  // Thu: the strain list again; Fri: no pre-rolls (the run ends); Sat: VOODOO 1g in two jobs
+  put(2, 3, 'VOODOO', '5PK .7G -- 600'); put(3, 3, '', '1G PREROLL- 600');
+  put(4, 3, 'TIDE', '5PK .7G -- 1,200'); put(5, 3, '', '1G PREROLL- 700'); put(6, 3, 'DEC DROP 1');
+  put(2, 4, 'MAKE SURE SUPPLY COUNTS ARE ON POINT FOR 25TH & 23RD!!');
+  put(2, 5, 'PREROLLS FOR CARLOS- GRIND'); put(3, 5, 'VOODOO', '1G PREROLL- 100'); put(4, 5, 'FINISH PREROLLS'); put(5, 5, 'VOODOO', '1G PREROLL- 200');
+  put(2, 6, 'JUSTIN/NOURI/LORENZO OFF');
+  put(11, 0, '');
+  // the next week lists VOODOO too: a run never leaves its own week band
+  g.push(head(['NOVEMBER, MONDAY 9TH', 'NOVEMBER, TUESDAY 10TH', 'NOVEMBER, WEDNESDAY 11TH', 'NOVEMBER, THURSDAY 12TH', 'NOVEMBER, FRIDAY 13TH',
+    'NOVEMBER, SATURDAY 14TH', 'NOVEMBER,SUNDAY 15TH']));
+  put(13, 0, 'VOODOO', '5PK .7G -- 600'); put(14, 0, '', '1G PREROLL- 600');
+  const W = PIPE.parse(g), HEAD = 'NOVEMBER, MONDAY 2ND';
+  const frozen = JSON.stringify(g);
+  const cellsOf = r => r.ops.map(o => [o.r, o.c]);
+  EDIT.setToday('2026-11-02');   // the made-up week is "this week"; past weeks are hidden in the sheet and never edited
+  const okR = (r, why) => { assert.ok(r.ok, `${why}: ${r.message}`); return r; };
+  const no = (r, re, why) => { assert.equal(r.ok, false, why); assert.match(r.message, re, why); assert.ok(!/—/.test(r.message), 'no em dash in messages'); };
+
+  // pre-roll amount: every day of the run, only the number changes, each op carries its week header and day
+  const v1 = okR(EDIT.prerollAmount(W, g, { date: '2026-11-02', strain: 'VOODOO', size: '1g', n: 450 }), 'VOODOO 1g run');
+  assert.deepEqual(cellsOf(v1), [[6, 1], [5, 3], [3, 7]], 'Mon and Tue, past the listless Wednesday to Thu; Fri ends the run');
+  assert.deepEqual(v1.ops.map(o => [o.expect, o.text]), [['1G PREROLL- 600', '1G PREROLL- 450'], ['1G PREROLL- 500', '1G PREROLL- 450'], ['1G PREROLL- 600', '1G PREROLL- 450']]);
+  assert.ok(v1.ops.every(o => o.tab === 'DISTRO PIPELINE' && o.find.week === HEAD && o.find.day === o.c >> 1 && o.find.owner === 'VOODOO' && o.number === false), 'every op names its week, day and strain');
+  assert.deepEqual([v1.intent, v1.summary], ['VOODOO 1g pre-rolls to 450, every day of the run', 'Writes 3 cells: 1G PREROLL- 450 on Mon, Tue, Thu']);
+  assert.deepEqual(v1.cells.map(c => c.a1), ['B7', 'D6', 'H4']);
+  assert.deepEqual(v1.reads, ['Mon Nov 2: VOODOO 1g 450', 'Tue Nov 3: VOODOO 1g 450', 'Thu Nov 5: VOODOO 1g 450']);
+  {
+    const after = PIPE.parse(EDIT.apply(g, v1.ops));
+    const n1 = (wk, k) => after[wk].days[k].items.filter(i => i.type === 'prerolls').flatMap(i => i.lines).filter(l => l.strain === 'VOODOO' && l.size === '1g').map(l => l.n);
+    assert.deepEqual([n1(0, 0), n1(0, 1), n1(0, 3), n1(0, 5), n1(1, 0)], [[450], [450], [450], [100, 200], [600]], 'the next week and the Saturday jobs keep their amounts');
+    assert.equal(JSON.stringify(g), frozen, 'apply works on a copy');
+  }
+  const t5 = okR(EDIT.prerollAmount(W, g, { date: '2026-11-03', strain: 'TIDE', size: '5pk', n: '1500' }), 'TIDE 5-pack run');
+  assert.deepEqual(t5.ops.map(o => o.text), ['5PK .7G -- 1,500', '5PK .7G -- 1,500\r\n1G PREROLL- 700', '5PK .7G -- 1,500'],
+    'commas kept; in a cell holding both sizes only the 5-pack line changes and the line break stays');
+  assert.equal(t5.intent, 'TIDE 5-pack pre-rolls 1200 to 1500, every day of the run');
+  const only = okR(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'VOODOO', size: '1g', n: 450, only: true }), 'only Thursday');
+  assert.deepEqual([cellsOf(only), only.intent], [[[3, 7]], 'VOODOO 1g pre-rolls 600 to 450, only Thu Nov 5']);
+  no(EDIT.prerollAmount(W, g, { date: '2026-11-07', strain: 'VOODOO', size: '1g', n: 450, only: true }), /more than once on Sat/, 'two jobs list VOODOO 1g on Saturday');
+  const sat = okR(EDIT.prerollAmount(W, g, { date: '2026-11-07', strain: 'VOODOO', size: '1g', n: 150, only: true, cell: [3, 11] }), 'the clicked Saturday line');
+  assert.deepEqual([cellsOf(sat), sat.ops[0].text], [[[3, 11]], '1G PREROLL- 150']);
+  no(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'VOODOO', size: '1g', n: 600, only: true }), /Nothing to change/, 'same amount');
+  no(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'VOODOO', size: '1g', n: 'lots' }), /whole number/, 'not a number');
+  no(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'NEBULA', size: '1g', n: 5 }), /isn't on Thu/, 'a strain the day does not list');
+  no(EDIT.prerollAmount(W, g, { date: '2027-03-01', strain: 'VOODOO', size: '1g', n: 5 }), /Couldn't find that day/, 'a day the sheet does not have');
+  assert.deepEqual([EDIT.rewriteAmount('1.5G PREROLL- 300', '1.5g', 250).text, EDIT.rewriteAmount('5PK- 128 UNITS', '5pk', 130).text, EDIT.rewriteAmount('JUST A NOTE', '1g', 5)],
+    ['1.5G PREROLL- 250', '5PK- 130 UNITS', null], 'the amount is the first number that is not part of a size');
+
+  // jar strain swap: only the name changes, so colored words around it keep their places
+  const j1 = okR(EDIT.jarStrain(W, g, { date: '2026-11-03', strain: 'BLACK MAGIC', to: 'tea  party' }), 'BLACK MAGIC to TEA PARTY');
+  assert.deepEqual(cellsOf(j1), [[9, 0], [6, 2]], 'Mon and Tue; Wednesday packs another strain');
+  assert.ok(j1.ops.every(o => o.text === JAR('TEA PARTY') && o.expect === JAR('BLACK MAGIC')));
+  assert.deepEqual([j1.intent, j1.summary], ['Jars BLACK MAGIC to TEA PARTY, every day of the run', 'Writes 2 cells: TEA PARTY in place of BLACK MAGIC on Mon to Tue']);
+  const j2 = okR(EDIT.jarStrain(W, g, { date: '2026-11-02', strain: 'TIDE', to: 'NEBULA' }), 'TIDE--- style');
+  assert.equal(j2.ops[0].text, 'SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): \nNEBULA--- 3.5G & 1.5G BUDTENDER SAMPLE', 'her spacing around --- is kept');
+  const j3 = okR(EDIT.jarStrain(W, g, { date: '2026-11-04', strain: 'SMOOTHIE', to: 'ZOZA' }), 'older style with pounds');
+  assert.equal(j3.ops[0].text, 'SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): ZOZA');
+  {
+    const wed = PIPE.parse(EDIT.apply(g, j3.ops))[0].days[2].items.find(i => i.type === 'jars').lines[0];
+    assert.deepEqual([wed.strain, wed.lbs, wed.cases], ['ZOZA', 10, 10], 'the pounds and cases lines stay with it');
+  }
+  no(EDIT.jarStrain(W, g, { date: '2026-11-03', strain: 'BLACK MAGIC', to: 'TEA & PARTY' }), /new strain name/, 'a name the reader would not take');
+  no(EDIT.jarStrain(W, g, { date: '2026-11-03', strain: 'BLACK MAGIC', to: 'Black Magic' }), /Nothing to change/, 'same strain');
+
+  // one-line tasks: reworded in capitals; the kind of job must stay the same unless asked
+  const n1 = okR(EDIT.taskText(W, g, { date: '2026-11-03', cell: [7, 2], text: 'stage dec drop 2 for nabis' }), 'Nabis line');
+  assert.deepEqual([n1.ops[0].expect, n1.ops[0].text, n1.ops[0].find.day, n1.reads[0]],
+    ['STAGE DEC DROP 3 FOR NABIS', 'STAGE DEC DROP 2 FOR NABIS', 1, 'Tue Nov 3: Orders & Nabis, DEC DROP 2']);
+  no(EDIT.taskText(W, g, { date: '2026-11-03', cell: [7, 2], text: 'DEC DROP 3' }), /move this from Orders & Nabis to Supplies & other/, 'a Nabis line that would read as Other');
+  okR(EDIT.taskText(W, g, { date: '2026-11-03', cell: [7, 2], text: 'DEC DROP 3', anyKind: true }), 'unless that is asked for');
+  const t1 = okR(EDIT.taskText(W, g, { date: '2026-11-04', cell: [5, 4], text: 'TBD - TESTING SCHEDULED FOR DEC DROP 2-  TIDEBANGER, ANTIDOTE, VOODOO' }), 'testing list');
+  assert.equal(t1.reads[0], 'Wed Nov 4: Testing, DEC DROP 2: TIDEBANGER, ANTIDOTE, VOODOO', 'the new strain list reads back');
+  no(EDIT.taskText(W, g, { date: '2026-11-02', cell: [4, 0], text: 'PREROLLS- GRIND' }), /more than one cell/, 'a pre-roll job with its strain rows');
+  no(EDIT.taskText(W, g, { date: '2026-11-03', cell: [7, 2], text: '  ' }), /Type the new wording/, 'empty wording');
+  no(EDIT.taskText(W, g, { date: '2026-11-03', cell: [9, 9], text: 'X' }), /Couldn't find that line/, 'a cell with no item');
+  assert.equal(t1.ops[0].text, 'TBD - TESTING SCHEDULED FOR DEC DROP 2-  TIDEBANGER, ANTIDOTE, VOODOO', 'her double space is kept');
+  assert.deepEqual([EDIT.wording('FOO  BAR baz ', 'FOO  BAR ', false), EDIT.wording('FOO  baz ', 'FOO  BAR ', false), EDIT.wording('A\r\nb', 'A\r\nX', false), EDIT.wording('  new  words ', 'OLD', false),
+    EDIT.wording('Keep  me', 'Keep  it', true)], ['FOO  BAR BAZ', 'FOO  BAZ ', 'A\r\nB', 'NEW WORDS', 'Keep  me'], 'only the changed stretch is tidied');
+  // a past week: hidden in the sheet, so no edit is built for it
+  EDIT.setToday('2026-11-09');
+  no(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'VOODOO', size: '1g', n: 450, only: true }), /week is over/, 'last week');
+  no(EDIT.taskText(W, g, { date: '2026-11-03', cell: [7, 2], text: 'stage dec drop 2 for nabis' }), /week is over/, 'last week, wording');
+  assert.deepEqual([EDIT.pastDay('2026-11-08'), EDIT.pastDay('2026-11-09'), EDIT.pastDay('2026-11-15')], [true, false, false]);
+  EDIT.setToday('2026-11-02');
+
+  // Who's on: written the way Victoria writes it, and read back by the board's own crew reader
+  const crewT = (date, cell, people) => EDIT.crew(W, g, { date, cell, people });
+  const c1 = okR(crewT('2026-11-02', [2, 0], [{ name: 'Lorenzo', st: 'off' }, { name: 'Justin', st: 'Distro' }]), 'A3 crew line');
+  assert.deepEqual([c1.ops[0].expect, c1.ops[0].text, c1.intent], ['JUSTIN DISTRO / LORENZO TRIM', 'LORENZO OFF / JUSTIN DISTRO', "Who's on, Mon Nov 2: LORENZO OFF / JUSTIN DISTRO"]);
+  assert.equal(okR(crewT('2026-11-03', [2, 2], [{ name: 'JUSTIN', st: 'DISTRO' }, { name: 'NOURI', st: 'DISTRO' }]), 'two on distro').ops[0].text, 'JUSTIN & NOURI DISTRO');
+  assert.equal(okR(crewT('2026-11-03', [2, 2], [{ name: 'JUSTIN', st: 'TRIM' }, { name: 'LORENZO', st: 'TRIM' }]), 'two trimming').ops[0].text, 'JUSTIN TRIM / LORENZO TRIM',
+    '"JUSTIN & LORENZO TRIM" would not read as Who\'s on, so each person gets a status');
+  assert.equal(okR(crewT('2026-11-08', [2, 12], [{ name: 'JUSTIN', st: 'OFF' }, { name: 'NOURI', st: 'OFF' }, { name: 'LORENZO', st: 'OOO' }]), 'Sunday').ops[0].text, 'JUSTIN OFF / NOURI OFF / LORENZO OOO');
+  assert.equal(okR(crewT('2026-11-02', [3, 0], [{ name: 'NOURI', st: 'On call', note: 'distro work' }]), 'on call').ops[0].text, 'NOURI ON CALL FOR DISTRO WORK');
+  assert.equal(okR(crewT('2026-11-02', [2, 0], [{ name: 'DREA', st: 'LEAD' }, { name: 'JUSTIN', st: 'OFF' }]), 'lead').ops[0].text, 'DREA DISTRO LEAD / JUSTIN OFF');
+  no(crewT('2026-11-02', [2, 0], [{ name: 'LORENZO', st: 'TRIM' }]), /couldn't read that line back/, '"LORENZO TRIM" alone reads as a task, not Who\'s on');
+  no(crewT('2026-11-02', [2, 0], [{ name: 'LORENZO', st: 'NAPPING' }]), /Pick a status/, 'an unknown status');
+  no(crewT('2026-11-02', [2, 0], [{ name: 'JUSTIN', st: 'DISTRO' }, { name: 'LORENZO', st: 'TRIM' }]), /Nothing to change/, 'the line already says that');
+  no(crewT('2026-11-03', [7, 2], [{ name: 'JUSTIN', st: 'OFF' }]), /Who's on line/, 'a Nabis line is not a crew line');
+
+  // verify refuses what the board would read differently, or cells that are not what this page read
+  const bad = (ops, check, re, why) => { const v = EDIT.verify(g, ops, check); assert.equal(v.ok, false, why); assert.ok(v.problems.some(p => re.test(p)), `${why}: ${v.problems.join(' | ')}`); };
+  const ownerAt = (r, c) => { if (!(c % 2)) return undefined; for (let k = r; k > 1; k--) if ((g[k] || [])[c - 1]) return g[k][c - 1]; return ''; };
+  const op = (r, c, expect, text, extra = {}) => Object.assign({ tab: 'DISTRO PIPELINE', r, c, expect, text, find: Object.assign({ week: HEAD, day: c >> 1 }, c % 2 ? { owner: ownerAt(r, c) } : {}), number: false }, extra);
+  const vcheck = { kind: 'prerolls', start: '2026-11-02', strain: 'VOODOO', size: '1g', n: 450 };
+  assert.ok(EDIT.verify(g, v1.ops, v1.check).ok, 'the builder\'s own ops verify');
+  bad([op(6, 1, '1G PREROLL- 650', '1G PREROLL- 450')], vcheck, /changed in the sheet since/, 'a stale expect');
+  bad([op(6, 1, '1G PREROLL- 600', '1G PREROLL- 450', { find: { week: HEAD, day: 0 } })], vcheck, /item it belongs to/, 'no owner');
+  bad([op(6, 1, '1G PREROLL- 600', '1G PRE-ROLL- 450')], vcheck, /read differently/, 'words around the amount changed');
+  bad([op(9, 0, JAR('BLACK MAGIC'), JAR('TEA PARTY').replace('VERIFICATION', 'VERIFY'))], { kind: 'jars', start: '2026-11-02', strain: 'BLACK MAGIC', to: 'TEA PARTY' }, /read differently/, 'words around the strain changed');
+  bad([op(8, 1, '1G PREROLL- 700', '1G PREROLL- 450')], vcheck, /Mon Nov 2 would read differently/, 'a cell of another strain');
+  bad([op(1, 0, 'NOVEMBER, MONDAY 2ND', 'NOVEMBER, MONDAY 3RD')], vcheck, /not inside a week/, 'a week header');
+  bad([op(6, 1, '1G PREROLL- 600', '1G PREROLL- 450', { find: { week: HEAD, day: 3 } })], vcheck, /labelled with its week and day/, 'the wrong day');
+  bad([op(6, 1, '1G PREROLL- 600', '1G PREROLL- 450', { find: { week: 'NOVEMBER, MONDAY 9TH', day: 0 } })], vcheck, /labelled with its week and day/, 'the wrong week header');
+  bad([op(11, 0, '', 'NEW TASK')], { kind: 'task', start: '2026-11-02' }, /only cells that already hold something/, 'an empty cell');
+  {
+    const gO = EDIT.apply(g, [{ r: 6, c: 14, text: 'X' }]), v = EDIT.verify(gO, [op(6, 14, 'X', 'Y')], vcheck);
+    assert.ok(!v.ok && v.problems.some(p => /columns A to N/.test(p)), 'past column N');
+  }
+  bad(Array.from({ length: 21 }, (_, i) => op(6, 1, '1G PREROLL- 600', '1G PREROLL- 45' + i)), vcheck, /at most 20 cells/, 'too many cells');
+  bad([op(6, 1, '1G PREROLL- 600', '1G PREROLL- 450'), op(6, 1, '1G PREROLL- 600', '1G PREROLL- 451')], vcheck, /changed twice/, 'one cell twice');
+  bad([op(7, 2, 'STAGE DEC DROP 3 FOR NABIS', 'TIDE')], { kind: 'task', start: '2026-11-02', type: 'orders' }, /move this from|read differently/, 'a reword that turns into a strain row');
+
+  assert.deepEqual([EDIT.kindsFor(W[0].days[0].items.find(i => i.type === 'prerolls')), EDIT.kindsFor(W[0].days[0].items.find(i => i.type === 'jars')),
+    EDIT.kindsFor(W[0].days[0].items.find(i => i.type === 'crew')), EDIT.kindsFor(W[0].days[1].items.find(i => i.type === 'orders'))],
+  [['prerollAmount'], ['jarStrain'], ['crew', 'taskText'], ['taskText']], 'the edits each item offers');
+
+  // supplies: counts as numbers, STATUS / PAR / NOTES as text, never TOTAL QTY; the row found by item + category, the column by header
+  const sup1 = (item, header, value) => EDIT.supply(sp, { item, header, value });
+  const s1 = okR(sup1(jar, '23RD', 50000), 'a site count');
+  assert.deepEqual(s1.ops, [{ tab: 'DISTRO SUPPLY', r: 1, c: 5, expect: '50352', text: '50000', find: { item: 'Jar - 3.5g', category: 'JAR', header: '23RD' }, number: true }]);
+  assert.deepEqual([s1.intent, s1.reads], ['Jar - 3.5g: 23RD count 50352 to 50000', ['Jar - 3.5g: 23RD count 50000']]);
+  assert.deepEqual(okR(sup1(jar, 'portal', '12'), 'an empty count').ops[0], { tab: 'DISTRO SUPPLY', r: 1, c: 7, expect: '', text: '12', find: { item: 'Jar - 3.5g', category: 'JAR', header: 'PORTAL' }, number: true },
+    'a count may fill an empty cell');
+  no(sup1(bl, '25TH', '1,200'), /Nothing to change/, '"1,200" is 1200');
+  no(sup1(bundle, 'VOID', 7), /has words in it/, 'a count with words is left to the sheet');
+  no(sup1(jar, '23RD', -5), /as a number/, 'a negative count');
+  const st1 = okR(sup1(lid, 'status', 'in stock'), 'status');
+  assert.deepEqual([st1.ops[0].expect, st1.ops[0].text, st1.ops[0].number, st1.ops[0].find.category], ['Running Low', 'IN STOCK', false, 'LIDS']);
+  no(sup1(lid, 'STATUS', 'maybe'), /Pick a status/, 'not a status');
+  const par = okR(sup1(jar, 'PAR', '25,000'), 'PAR');
+  assert.deepEqual([par.ops[0].expect, par.ops[0].text, par.ops[0].number, par.ops[0].find.header], ['20,000', '25000', true, 'PAR'], 'PAR goes as a number; its header is named without the sheet\'s trailing space');
+  assert.equal(okR(sup1(jar, 'NOTES', '  50K jar order   arrives Friday '), 'notes').ops[0].text, '50K jar order arrives Friday');
+  no(sup1(jar, 'NOTES', ''), /later release/, 'a note is not emptied in 1a');
+  // an item listed twice (same name and category) can't be told apart by the save program
+  const twin = Object.assign({}, sp, { items: [...sp.items, Object.assign({}, jar, { r: 99 })], grid: Object.assign([], sp.grid, { 99: sp.grid[jar.r] }) });
+  no(EDIT.supply(twin, { item: jar, header: '23RD', value: 5 }), /listed twice/, 'a twin row');
+  assert.equal(EDIT.listedTwice(sp, jar), false);
+  no(sup1(bl, 'NOTES', 'new note'), /no NOTES in the sheet yet/, 'release 1a does not fill an empty note');
+  no(sup1(jar, 'TOTAL QTY', 1), /sheet's own sum/, 'TOTAL QTY');
+  no(sup1(jar, 'Vendor', 'X'), /Only the site counts/, 'vendor');
+  {
+    const bs = (ops, re, why) => { const v = EDIT.verify(sp.grid, ops, { kind: 'supply', tab: 'DISTRO SUPPLY' }); assert.equal(v.ok, false, why); assert.ok(v.problems.some(p => re.test(p)), `${why}: ${v.problems.join(' | ')}`); };
+    const sop = (c, header, text, number, extra = {}) => Object.assign({ tab: 'DISTRO SUPPLY', r: 1, c, expect: sp.grid[1][c], text, find: { item: 'Jar - 3.5g', category: 'JAR', header }, number }, extra);
+    assert.ok(EDIT.verify(sp.grid, s1.ops, s1.check).ok);
+    bs([sop(4, '23RD', '5', true)], /not under 23RD/, 'a header that is not the cell\'s column');
+    bs([sop(2, 'TOTAL QTY', '5', true)], /never written/, 'TOTAL QTY by hand');
+    bs([sop(5, '23RD', '5', false)], /written as a number/, 'a count sent as text');
+    bs([sop(5, '23RD', '5', true, { find: { item: 'Lid - 1g', category: 'JAR', header: '23RD' } })], /row of the item it names/, 'another item\'s name');
+  }
+  const acc1 = SUP.parse('Column 1,ITEM,TOTAL QTY,STATUS,PAR ,23RD,25TH,PORTAL,MYLARS,Vendor ,NOTES\nWizzy Lego,ACCESSORY,1560,IN STOCK,,,,1560,,,', 'ACCESSORY SUPPLY');
+  no(EDIT.supply(acc1, { item: acc1.items[0], header: 'PAR', value: 100 }), /no PAR in the sheet yet/, 'an empty PAR');
+  assert.equal(okR(EDIT.supply(acc1, { item: acc1.items[0], header: 'MYLARS', value: 3 }), 'accessory count').ops[0].tab, 'ACCESSORY SUPPLY');
+  console.log('edit model: pre-roll amounts, jar strains, task wording, Who\'s on and supplies build and read back right');
+}
+
+// the plan's examples on the saved copy of the live sheet (2026-11-10), when that copy is on this computer
+{
+  const gridFile = path.join(liveDir, 'grid.json');
+  if (existsSync(gridFile)) {
+    const dense = rows => { for (let i = 0; i < rows.length; i++) if (!rows[i]) rows[i] = []; return rows; };
+    const g = [];
+    for (const d of JSON.parse(readFileSync(gridFile, 'utf8')).sheets[0].data)
+      (d.rowData || []).forEach((row, i) => { g[(d.startRow || 0) + i] = (row.values || []).map(v => v.formattedValue || ''); });
+    dense(g);
+    EDIT.setToday('2026-11-09');
+    const W = PIPE.parse(g), HEAD = 'NOVEMBER, MONDAY 9TH', JAR = s => `SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): \n${s} --- 3.5G & 1.5G BUDTENDER SAMPLE`;
+    const okR = (r, why) => { assert.ok(r.ok, `${why}: ${r.message}`); return r; };
+    const vo = okR(EDIT.prerollAmount(W, g, { date: '2026-11-12', strain: 'VOODOO', size: '1g', n: 450 }), 'live VOODOO 1g');
+    assert.deepEqual(vo.cells.map(c => c.a1), ['B651', 'D650', 'F648', 'H647', 'J648', 'L647'], 'VOODOO 1g is six cells, Mon to Sat');
+    assert.ok(vo.ops.every(o => o.expect === '1G PREROLL- 600' && o.text === '1G PREROLL- 450' && o.find.week === HEAD && o.find.owner === 'VOODOO'), 'only the number changes');
+    assert.deepEqual([vo.intent, vo.summary], ['VOODOO 1g pre-rolls 600 to 450, every day of the run', 'Writes 6 cells: 1G PREROLL- 450 on Mon to Sat']);
+    const bm = okR(EDIT.jarStrain(W, g, { date: '2026-11-11', strain: 'BLACK MAGIC', to: 'TEA PARTY' }), 'live BLACK MAGIC jars');
+    assert.deepEqual(bm.cells.map(c => c.a1), ['A673', 'C671', 'E669']);
+    assert.ok(bm.ops.every(o => o.expect === JAR('BLACK MAGIC') && o.text === JAR('TEA PARTY')));
+    const mon = W.find(w => w.start === '2026-11-09').days[0].items.find(i => i.type === 'crew' && /LORENZO TRIM/.test(i.title));
+    const cr = okR(EDIT.crew(W, g, { date: '2026-11-09', cell: mon.cell, people: [{ name: 'LORENZO', st: 'OFF' }, { name: 'JUSTIN', st: 'DISTRO' }] }), 'live crew');
+    assert.deepEqual([cr.cells[0].a1, cr.ops[0].expect, cr.ops[0].text, cr.ops[0].find], ['A642', 'JUSTIN DISTRO / LORENZO TRIM', 'LORENZO OFF / JUSTIN DISTRO', { week: HEAD, day: 0 }]);
+    // a status change keeps how Victoria joined the note ("FOR PORTAL WORK", not "- PORTAL WORK")
+    const ocDay = W.find(w => w.start === '2026-11-09').days.find(d => d.items.some(i => i.type === 'crew' && i.cell && /ON CALL FOR PORTAL WORK/.test(g[i.cell[0]][i.cell[1]])));
+    if (ocDay) {
+      const oc = ocDay.items.find(i => i.type === 'crew' && i.cell && /ON CALL FOR PORTAL WORK/.test(g[i.cell[0]][i.cell[1]]));
+      const note = WEEK.parseCrew(g[oc.cell[0]][oc.cell[1]]).people.NOURI.note;
+      assert.equal(okR(EDIT.crew(W, g, { date: ocDay.date, cell: oc.cell, people: [{ name: 'NOURI', st: 'OFF', note }] }), 'on call to off').ops[0].text, 'NOURI OFF FOR PORTAL WORK');
+    }
+    const nb = okR(EDIT.taskText(W, g, { date: '2026-11-12', cell: [665, 6], text: 'STAGE DEC DROP 2 FOR NABIS' }), 'live Nabis line');
+    assert.deepEqual([nb.cells[0].a1, nb.ops[0].expect], ['G666', 'STAGE DEC DROP 3 FOR NABIS']);
+    // every pre-roll amount and jar line from Nov 9 on can be rewritten on its own day and reads back
+    let tried = 0;
+    for (const w of W.filter(x => x.start >= '2026-11-09')) for (const d of w.days) {
+      const lines = d.items.filter(i => i.type === 'prerolls').flatMap(i => i.lines);
+      for (const size of ['5pk', '1g']) {
+        const l = lines.find(x => x.size === size && x.cell);
+        if (l) { okR(EDIT.prerollAmount(W, g, { date: d.date, strain: l.strain, size, n: l.n + 1, only: true, cell: l.cell }), `${d.date} ${l.strain} ${size}`); tried++; }
+      }
+      const jl = d.items.filter(i => i.type === 'jars').flatMap(i => i.lines).find(x => x.cell);
+      if (jl) { okR(EDIT.jarStrain(W, g, { date: d.date, strain: jl.strain, to: 'ZZTEST', only: true, cell: jl.cell }), `${d.date} ${jl.strain} jars`); tried++; }
+    }
+    // the whole tab gives the same cells as the saved part of it
+    const metaFile = path.join(liveDir, 'meta.json');
+    if (existsSync(metaFile)) {
+      const full = dense(JSON.parse(readFileSync(metaFile, 'utf8')).grid.rowData.map(r => (r.values || []).map(v => v.formattedValue || '')));
+      const vf = okR(EDIT.prerollAmount(PIPE.parse(full), full, { date: '2026-11-12', strain: 'VOODOO', size: '1g', n: 450 }), 'whole tab VOODOO 1g');
+      assert.deepEqual(vf.ops, vo.ops, 'the whole tab gives the same ops');
+    }
+    // one supply row from the saved DISTRO SUPPLY tab
+    const supDir = path.join(liveDir, 'sup');
+    const dsFile = existsSync(supDir) && readdirSync(supDir).filter(f => /^ds-\d+\.csv$/.test(f)).sort((a, b) => +a.match(/\d+/)[0] - +b.match(/\d+/)[0]).pop();
+    if (dsFile) {
+      const ds = SUP.parse(readFileSync(path.join(supDir, dsFile), 'utf8'), 'DISTRO SUPPLY');
+      const it = ds.items.find(i => i.name === 'Black Light - 3.5g - Label');
+      const s = okR(EDIT.supply(ds, { item: it, header: '23RD', value: 5000 }), 'live supply count');
+      assert.deepEqual([s.cells[0].a1, s.ops[0].expect, s.ops[0].text, s.ops[0].number, s.ops[0].find], ['F11', '5250', '5000', true, { item: 'Black Light - 3.5g - Label', category: 'LABEL', header: '23RD' }]);
+      const st = okR(EDIT.supply(ds, { item: it, header: 'STATUS', value: 'Running low' }), 'live supply status');
+      assert.deepEqual([st.cells[0].a1, st.ops[0].expect, st.ops[0].text], ['D11', 'IN STOCK', 'RUNNING LOW']);
+    }
+    console.log(`edit model on the saved live sheet: the plan's examples match (VOODOO 6 cells, BLACK MAGIC jars, A642, G666${dsFile ? ', a supply row' : ''}); ${tried} more amounts and jar lines rewrite and read back`);
+  }
 }
 console.log('pipeline-check: all checks passed');
