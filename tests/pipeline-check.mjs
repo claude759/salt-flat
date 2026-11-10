@@ -556,4 +556,17 @@ if (realPipe) {
     console.log(`real plan vs actual: ${A.runs.prerolls.length} pre-roll runs, ${A.runs.jars.length} jar runs; Sep 7-15 5-packs plan ${f.plan}, made ${f.made}, counted ${f.counted}`);
   }
 }
+// the live sheet's wording that the reader used to miss (cells E669, I668 and A642 on 2026-11-10)
+{
+  const [j] = PIPE.structure([{ title: 'SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): \nBLACK MAGIC --- 3.5G & 1.5G BUDTENDER SAMPLE', details: [] }]);
+  assert.equal(j.type, 'jars');
+  assert.deepEqual(j.lines.map(l => [l.strain, l.lbs, l.notes]), [['BLACK MAGIC', null, ['3.5G & 1.5G BUDTENDER SAMPLE']]], 'a jar job written "STRAIN --- products" names its strain, with no pounds');
+  assert.deepEqual(PIPE.listedStrains('TBD - TESTING SCHEDULED FOR DEC DROP 2-  TIDEBANGER, ANTIDOTE, BLUEBANGER, ZANGBANGER, VOODOO'),
+    ['TIDEBANGER', 'ANTIDOTE', 'BLUEBANGER', 'ZANGBANGER', 'VOODOO'], '"DROP 2-  TIDEBANGER" keeps its first strain');
+  assert.deepEqual(PIPE.listedStrains('TESTING SCHEDULED FOR NOV DROP 1 - BLUEBANGER, TIDEBANGER'), ['BLUEBANGER', 'TIDEBANGER']);
+  assert.equal(PIPE.typeOf('JUSTIN DISTRO / LORENZO TRIM'), 'crew', 'a who-is-where line is crew');
+  assert.equal(PIPE.typeOf('LOREZNO OFF / JUSTIN DISTRO'), 'crew');
+  assert.equal(PIPE.typeOf('TRIM -LORENZO'), 'trim', 'a trim led by a person stays a trim');
+  console.log('live wording: current jar lines, "DROP 2-" testing lists and who-is-where crew lines read right');
+}
 console.log('pipeline-check: all checks passed');

@@ -1022,7 +1022,7 @@ const PIPE = (() => {
   /* item types, checked in order (first match wins) */
   const TYPES = [
     { id: 'supply', re: /ARRIVES|SUPPLY|SUPPLIES|\bCOUNTS?\b|PALLETS?\b|INVENTORY|SHIPMENT/i },
-    { id: 'crew', re: new RegExp(String.raw`^(?:NO DISTRO WORK|DISTRO OFF)|^[A-Z\s\/&,.\-]*(?<!DROP\s)\bOFF\b(?!\s+(?:JARS|LABEL))|\bOOO\b|\bON CALL\b|DISTRO LEAD|@ DISTRO\b|^(?:(?:${NAMES})\s*[\/&,]?\s*)+-?\s*DISTRO$|NORMA'?S? (?:TEAM|CREW)|^CC\b|\bWFH\b|OVERSEE TRIM|\bPPL$|^(?:PORTAL|25TH|23RD)\s*-\s*(?:CESAR|CC)\s*-\s*\d|^[A-Z\/ ]+-\s*\d{1,2}(?::?\d\d)?\s*(?:AM|PM)$|^\d{1,2}\s*(?:AM|PM)\s*-\s*\d{1,2}\s*(?:AM|PM) AT `, 'i') },
+    { id: 'crew', re: new RegExp(String.raw`^(?:NO DISTRO WORK|DISTRO OFF)|^[A-Z\s\/&,.\-]*(?<!DROP\s)\bOFF\b(?!\s+(?:JARS|LABEL))|\bOOO\b|\bON CALL\b|DISTRO LEAD|@ DISTRO\b|^(?:(?:${NAMES})\s*[\/&,]?\s*)+-?\s*DISTRO$|^(?:(?:${NAMES})\s+(?:DISTRO|TRIM|OFF|LEAD|OOO)\s*[\/&,]\s*)+(?:${NAMES})\s+(?:DISTRO|TRIM|OFF|LEAD|OOO)$|NORMA'?S? (?:TEAM|CREW)|^CC\b|\bWFH\b|OVERSEE TRIM|\bPPL$|^(?:PORTAL|25TH|23RD)\s*-\s*(?:CESAR|CC)\s*-\s*\d|^[A-Z\/ ]+-\s*\d{1,2}(?::?\d\d)?\s*(?:AM|PM)$|^\d{1,2}\s*(?:AM|PM)\s*-\s*\d{1,2}\s*(?:AM|PM) AT `, 'i') },
     { id: 'testing', re: /TESTING|\bCOAS?\b|\bLAB\b/i },
     { id: 'orders', re: /\bVOID\b|NABIS|SELF DISTRO|PICK ?UP\b(?! FOR PRE)|\bSTAGE\b|\bSO-\d+|DELIVER|DROP OFF|\bORDERS?\b|STIIIZY DROP/i },
     { id: 'harvest', re: /^HARVEST|\bHARVEST @/i },
@@ -1077,13 +1077,16 @@ const PIPE = (() => {
   }
   // the strains a testing line names: "TESTING SCHEDULED FOR NOV DROP 1 - BLUEBANGER, TIDEBANGER"
   function listedStrains(text) {
-    const t = clean(text).replace(/\n/g, ' ');
+    // "DROP 2-  TIDEBANGER" is written without a space before the dash: make it a separator like " - "
+    const t = clean(text).replace(/\n/g, ' ').replace(/(\bDROP\s*\d+)\s*-\s+/gi, '$1 - ');
     let seg = t.includes(':') ? t.slice(t.lastIndexOf(':') + 1) : t.split(/\s-\s/).slice(1).join(' - ');
     seg = seg.split('|')[0].replace(/\([^)]*\)/g, ' ').replace(/\b\.?\d+(?:\.\d+)?\s*G\b/gi, ' ');
-    return seg.split(/[,\/]|\s&\s|\+/).map(s => s.replace(/&/g, ' ').replace(/\s+/g, ' ').trim())
-      .filter(s => /^[A-Za-z][A-Za-z0-9 #']{1,28}$/.test(s) && s.split(' ').length <= 4 && !NOT_STRAIN.test(s) &&
-        !/\b(STRAINS?|UIDS?|NO RUSH|TEST)\b/i.test(s))
-      .map(strainKey);
+    const ok = s => /^[A-Za-z][A-Za-z0-9 #']{1,28}$/.test(s) && s.split(' ').length <= 4 && !NOT_STRAIN.test(s) &&
+      !/\b(STRAINS?|UIDS?|NO RUSH|TEST)\b/i.test(s);
+    // a piece can still carry the line's label ("TESTING SCHEDULED FOR DEC DROP 2 - TIDEBANGER" after a "TBD - "
+    // prefix) or a note ("TIDEBANGER - 2 CHAIN OF CUSTODY"): keep the parts around " - " that read as a strain
+    return seg.split(/[,\/]|\s&\s|\+/).flatMap(s => s.split(/\s-\s/))
+      .map(s => s.replace(/&/g, ' ').replace(/\s+/g, ' ').trim()).filter(ok).map(strainKey);
   }
 
   const SITE_RE = '(\\d{2}(?:ST|ND|RD|TH)|OLYMPIC|PORTAL|IMPERIAL|HQ)';
@@ -1173,9 +1176,13 @@ const PIPE = (() => {
         let rest = title.includes(':') ? title.slice(title.lastIndexOf(':') + 1) : (title.match(/JARS?\s*(?:--|-)\s*(.*)$/i) || [])[1] || '';
         const tag = (title.match(/1A[0-9A-Z]{20,}/) || [])[0] || '';
         rest = rest.replace(/1A[0-9A-Z]{20,}/g, '').replace(/\([^)]*\)/g, '').replace(/^[\s\-]+|[\s\-]+$/g, '');
+        // since late Oct 2026 the products follow the strain after "---", with no pounds: "BLACK MAGIC --- 3.5G & 1.5G BUDTENDER SAMPLE"
+        let what = '';
+        const dash = rest.match(/^(.*?)\s*-{2,}\s*(.+)$/);
+        if (dash && dash[1].trim()) { rest = dash[1].trim(); what = dash[2].trim(); }
         const strain = rest && rest.length <= 30 && /^[A-Za-z0-9 #'.x\-]+$/.test(rest) ? strainKey(rest) : '';
         if (strain && !/\bVOID\b/i.test(title)) {
-          const line = { strain, tag, lbs: null, size: '', cases: null, caseSize: '', lbsNote: '', casesNote: '', notes: [], at: it.at };
+          const line = { strain, tag, lbs: null, size: '', cases: null, caseSize: '', lbsNote: '', casesNote: '', notes: what ? [what] : [], at: it.at };
           for (const d of details) {
             const q = jarQty(d);
             if (q && q.kind === 'lbs' && line.lbs == null) { line.lbs = q.n; line.size = q.size; line.lbsNote = q.note; }
@@ -2397,10 +2404,14 @@ const ACT = ((PIPE) => {
     return LANE_PRODS[run.lane].map(prod => {
       const ls = a.lines.filter(l => run.lane === 'jars' ? true : l.size === prod);
       const t = a.tracker[prod];
-      let plan = null, counted = null;
+      let plan = null, counted = null, noAmt = 0, noAmtN = 0;
       if (prod === 'jar') {
-        plan = ls.some(l => l.lbs != null) ? ls.reduce((s, l) => s + (l.lbs || 0), 0) : null;   // in lb
-        counted = ls.some(l => l.counted != null) ? ls.reduce((s, l) => s + (l.counted || 0), 0) : null;
+        // since late Oct 2026 most jar jobs name a strain with no pounds: only strains with pounds are compared with
+        // their pounds; jars of the others are counted beside the plan, not against it
+        const withLb = ls.filter(l => l.lbs != null), cmp = withLb.length ? withLb : ls;
+        plan = withLb.length ? withLb.reduce((s, l) => s + l.lbs, 0) : null;   // in lb
+        counted = cmp.some(l => l.counted != null) ? cmp.reduce((s, l) => s + (l.counted || 0), 0) : null;
+        if (withLb.length) { const rest = ls.filter(l => l.lbs == null); noAmtN = rest.length; noAmt = rest.reduce((s, l) => s + (l.counted || 0), 0); }
       } else if (prod === 'bud') {
         plan = ls.some(l => l.cases != null) ? ls.reduce((s, l) => s + (l.cases || 0), 0) : null;   // in cases
         counted = ls.some(l => l.buds != null) ? ls.reduce((s, l) => s + (l.buds || 0), 0) : null;
@@ -2409,7 +2420,7 @@ const ACT = ((PIPE) => {
         counted = ls.some(l => l.counted != null) ? ls.reduce((s, l) => s + (l.counted || 0), 0) : null;
       }
       const ext = a.extra.filter(x => x.prod === prod || (prod === 'bud' && x.prod === 'jar'));
-      return { prod, plan, counted, made: t.made, sticks: t.sticks, madePh: t.madePh, labelPh: t.labelPh, label1: t.label1, label2: t.label2, label: t.label,
+      return { prod, plan, counted, noAmt, noAmtN, made: t.made, sticks: t.sticks, madePh: t.madePh, labelPh: t.labelPh, label1: t.label1, label2: t.label2, label: t.label,
         days: t.days.size, extra: ext.reduce((s, x) => s + (prod === 'bud' ? (x.buds || 0) : x.units), 0) };
     }).filter(r => r.plan != null || r.made || r.counted != null || r.label1 || r.label2 || r.label);
   }
@@ -2933,7 +2944,7 @@ function crewBubbleHTML(date, gridRow) {
   const names = list => list.map(p => cap(p.name) + (p.conflict ? ' (on trim!)' : '')).join(', ');
   const lines = [];
   if (D.flag) lines.push(`<b>${esc(D.flag === 'NO DISTRO WORK' ? 'No distro work' : 'Distro off')}</b>`);
-  [['LEAD', 'Lead'], ['DISTRO', 'Distro'], ['ON CALL', 'On call'], ['OFF', 'Off'], ['OOO', 'Out'], ['WFH', 'WFH']].forEach(([st, word]) => {
+  [['LEAD', 'Lead'], ['DISTRO', 'Distro'], ['TRIM', 'Trim'], ['ON CALL', 'On call'], ['OFF', 'Off'], ['OOO', 'Out'], ['WFH', 'WFH']].forEach(([st, word]) => {
     const ps = by(st);
     if (!ps.length) return;
     lines.push(`<span><em>${word}</em> ${esc(names(ps))}</span>`);
@@ -4327,7 +4338,8 @@ function renderActuals() {
       const tone = of == null ? '' : of >= 90 ? 'ok' : r.act.closed ? 'short' : 'run';
       const unit = jar ? ' jars' : '';
       const note = [left == null ? (got == null ? 'not counted yet' : '') : left > 0 ? `${fmtN(left)}${unit} ${r.act.closed ? 'short' : 'left'}` : left < 0 ? `${fmtN(-left)}${unit} over` : 'all counted',
-        made != null && made ? `${fmtN(made)}${unit} made` : '', jar && p.plan != null ? `plan ${fmtN(p.plan)} lb` : ''].filter(Boolean).join(' · ');
+        made != null && made ? `${fmtN(made)}${unit} made` : '', jar && p.plan != null ? `plan ${fmtN(p.plan)} lb` : '',
+        p.noAmtN ? `${p.noAmt ? `+ ${fmtN(p.noAmt)} jars of ` : ''}${p.noAmtN} strain${p.noAmtN === 1 ? '' : 's'} with no amount on the sheet` : ''].filter(Boolean).join(' · ');
       return `<div class="pv-line"><span class="pv-prod">${esc(PROD_WORD[p.prod] === 'jars' ? '3.5g jars' : PROD_LONG[p.prod])}</span>` +
         `<span class="pv-bar ${tone}" title="${esc(`${got != null ? fmtN(got) : 'None'} counted, ${made != null ? fmtN(made) + ' made, ' : ''}plan ${plan != null ? fmtN(plan) : 'not set'}`)}">` +
         `${made ? `<i class="m" style="width:${w(made)}%"></i>` : ''}<i class="c" style="width:${w(got)}%"></i>${plan ? `<b style="left:${w(plan)}%"></b>` : ''}</span>` +
@@ -4430,7 +4442,7 @@ function pvDetailHTML(r) {
     const mk = prods.filter(p => p.madePh).map(p => `${jars ? 'packing' : 'making'} ${PROD_WORD[p.prod]} ${fmtN(Math.round(p.madePh))}${p.made ? ` (${fmtN(Math.round(p.made / p.madePh * 10) / 10)} per person-hr)` : ''}`);
     lines.push(`<p><b>Person-hours:</b> ${esc([...mk, `labeling ${fmtN(Math.round(lab))}`, `other ${fmtN(Math.round(a.otherPh))}`].join(' · '))}.</p>`);
     if (a.missing.length) lines.push(`<p class="pv-warn">No task tracker rows for ${jars ? 'jars' : 'pre-rolls'} on ${esc(a.missing.map(d => `${dowOf(d)} ${md(d)}`).join(', '))}, ${a.missing.length === 1 ? 'a day' : 'days'} the sheet planned them.</p>`);
-  } else if (A.hasTracker) lines.push(`<p class="pv-q">This run is from before ${esc(md(A.firstLogged))}, when the task tracker moved to the table this page reads, so only the batch sheet is compared.</p>`);
+  } else if (A.hasTracker && A.firstLogged) lines.push(`<p class="pv-q">This run is from before ${esc(md(A.firstLogged))}, when the task tracker moved to the table this page reads, so only the batch sheet is compared.</p>`);
   if (a.extra.length) lines.push(`<p><b>On the batch sheet in this run, not in the plan:</b> ${esc(a.extra.map(x => `${sLabel(x.strain)} ${PROD_WORD[x.prod]} ${fmtN(x.units)}`).join(' · '))}.</p>`);
   if (r.side.length) {
     const jobs = new Map();
