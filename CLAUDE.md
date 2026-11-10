@@ -152,6 +152,10 @@ launch. The check fails if one of the three pieces is missing.
   counts are boxes. A 5-pack is five 0.7g sticks. Jar plans are in pounds: 1 lb = 129.6 jars of 3.5g.
 - **Plan vs actual.** The batch sheet's counts are the official actual; the task tracker is a
   reconciling line. Reaching 90% of plan counts as on plan. Labor shows person-hours, never dollars.
+- **Jar jobs without pounds.** Since late October 2026 jar jobs read "STRAIN --- 3.5G & 1.5G
+  BUDTENDER SAMPLE" with no amount. Plan vs actual compares jars counted only for strains that have
+  pounds on the sheet; jars of the others are shown beside the plan, and Inventory's "coming" leaves
+  them out.
 - **Trim estimates** = room lights x the site's average pounds per light over its last 3 trims
   (bigs plus littles). Trims under 1.2 lb per light are partial and left out of the average.
 - **Inventory.** On hand = Distru ready + Distru in testing + Nabis available. Coming = planned
