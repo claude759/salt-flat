@@ -172,3 +172,35 @@ launch. The check fails if one of the three pieces is missing.
   carry the COA value.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
+- **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them
+  to feel like they can use this or the sheet until they're comfortable only using this"). For the
+  production sheet (DISTRO PIPELINE and the supply tabs) that means what the app writes into the
+  sheet looks as if Victoria typed it, and changes made in the sheet show in the app within minutes.
+  The Delivery/Visit schedule is the BA app's own schedule; its app-made tasks live in the app, as
+  they always have.
+- **The Week tab is called "Production schedule"** ("Production" on phones). Its key is still
+  `week` (`data-view="week"`, `#view=week` links, the CSS and the script); change only the words.
+- **Lane buttons** (beta, behind `?beta`): a row of small solid buttons in the schedule's toolbar,
+  one per lane in board order and the sheet's fills: Who's on, Harvest, Trim, Jars, Pre-rolls,
+  Testing, Nabis & orders, Supplies & other, plus All. None pressed shows everything; pressing some
+  shows only those lanes on the week board, the day panel, the phone's day view and the month. The
+  week strip, the urgent bar and the sentence above the board still count everything. The choice
+  lives in the address (`&lanes=jars,prerolls`), never in the sheet. These are not the removed
+  highlight-a-name chips.
+- **Month view** (beta): a Week | Month toggle in the toolbar (Day | Week | Month on phones), drawn
+  by the script (`data-wkmode`), not a page of its own. One row per week, Monday first, each row the
+  board's own week model, so a run that crosses Sunday continues on the next row. A click opens only
+  the item clicked; a day's header opens the whole day; the week strip offers "Show this week on the
+  board". Rows cap at about 6 tracks, then "+N more" per day (supplies hidden first). Phones get a
+  compact grid with a thin stripe per kind of work. Address: `&mode=month&month=YYYY-MM`. The
+  removed-on-purpose list applies here too.
+- **Delivery/Visit schedule tab** (beta, right of Production schedule): the BA app's CA schedule
+  shown inside the pipeline. Its code lives in `ba/` and is Gianni's, not Victoria's; the pipeline
+  side only hosts it. The frame opens `ba/index.html?embed=schedule&board=CA` (same site, same
+  sign-in), sits in a fixed box outside `<main>`, loads in the background after the board draws when
+  `schedule_states()` lists CA, and is never moved. Messages, each side checking the origin and the
+  other window: the frame sends `{source:'ba-schedule', status:'loading'|'ready'|'signed-out'|
+  'no-access'|'error', board:'CA', message?}`; the page sends `{source:'pipeline', type:'show'}`
+  when the tab opens and `{source:'pipeline', type:'refresh'}` for Refresh. The frame shows only
+  after it has answered; with no answer in 12 seconds (an old BA build) the page drops it and offers
+  a link to the BA app, so the whole BA app never shows inside the pipeline.

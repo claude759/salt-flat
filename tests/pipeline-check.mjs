@@ -30,6 +30,16 @@ assert.ok(html.length > 150_000 && /<\/html>\s*$/i.test(html), `pipeline.html is
   for (const v of nav) assert.ok(secs.includes(v) && rend.includes(v), `page "${v}" has a nav button, a <section id="view-${v}"> and a RENDER entry`);
   for (const v of secs) assert.ok(nav.includes(v), `<section id="view-${v}"> has a nav button`);
   console.log(`page structure: ${scripts.length} inline script(s) parse; pages ${nav.join(', ')} each have a button, a section and a renderer`);
+  // the Delivery/Visit schedule: beta until its owner says launch; its frame lives outside <main> (a frame inside a hidden
+  // section has no size, and moving a loaded frame reloads it); the address and messages are the agreement with ba/index.html
+  assert.match(markup, /<button[^>]*data-view="visits"[^>]*data-beta/, 'the Delivery/Visit schedule tab keeps data-beta until launch');
+  assert.match(markup, /<\/main>\s*(?:<!--[\s\S]*?-->\s*)?<div id="vs-host"/, 'the schedule frame host sits right after </main>');
+  assert.ok(!/<main[\s\S]*id="vs-host"[\s\S]*<\/main>/.test(markup), 'the schedule frame host is not inside <main>');
+  assert.ok(html.includes(`'ba/index.html?embed=schedule&board=CA'`), 'the frame opens the BA app in schedule-only mode for the CA board');
+  assert.ok(/source: 'pipeline', type/.test(html) && /d\.source !== 'ba-schedule'/.test(html) && /e\.origin !== location\.origin/.test(html),
+    'the page speaks the agreed messages and checks where they come from');
+  // the Week | Month toggle is drawn by the script (data-wkmode), never a static page button
+  assert.ok(!/data-view="month"/.test(markup) && !/<section id="view-month"/.test(markup), 'the month view is a mode of the production schedule, not a page');
 }
 const src = html.split('/* ===== PIPELINE PARSER START =====')[1].split('/* ===== PIPELINE PARSER END ===== */')[0];
 const PIPE = new Function(`/*${src}; return PIPE;`)();
@@ -308,6 +318,64 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.deepEqual([thuPre.n, thuPre.m, thuPre.borrowedFrom], [4, 5, '2026-10-14'], 'no list on Thursday: show Wednesday\'s, labelled');
   const thuTrim = thu.cards.find(c => c.lane === 'trim');
   assert.deepEqual([thuTrim.n, thuTrim.m, thuTrim.range], [1, 3, 'THU – SAT']);
+}
+
+// the lane buttons (beta): what a link's &lanes= opens, and what a press does
+{
+  assert.deepEqual(WEEK.pickLanes('prerolls,jars,bogus,jars'), ['jars', 'prerolls'], 'board order, no repeats, unknown names dropped');
+  assert.deepEqual(WEEK.pickLanes(' Testing , ORDERS'), ['testing', 'orders']);
+  assert.deepEqual(WEEK.pickLanes(''), [], 'none picked: everything shows');
+  assert.deepEqual(WEEK.pickLanes(null), []);
+  assert.deepEqual(WEEK.pickLanes(WEEK.LANES.join(',')), [], 'every lane picked is the same as none');
+  assert.deepEqual(WEEK.toggleLane([], 'testing'), ['testing']);
+  assert.deepEqual(WEEK.toggleLane(['testing'], 'jars'), ['jars', 'testing']);
+  assert.deepEqual(WEEK.toggleLane(['jars', 'testing'], 'jars'), ['testing']);
+  assert.deepEqual(WEEK.toggleLane(['testing'], 'testing'), [], 'the last one off shows everything again');
+  assert.deepEqual(WEEK.toggleLane(WEEK.LANES.filter(l => l !== 'crew'), 'crew'), [], 'pressing the last lane left is everything');
+  assert.ok(WEEK.LANES.every(l => WEEK.laneShown([], l)), 'nothing picked shows every lane');
+  assert.ok(WEEK.laneShown(['supplies'], 'supply') && WEEK.laneShown(['supplies'], 'labels') && WEEK.laneShown(['supplies'], 'other'),
+    'supply, labels and other items sit in Supplies & other');
+  assert.ok(WEEK.laneShown(['jars'], 'jars') && !WEEK.laneShown(['jars'], 'prerolls') && !WEEK.laneShown(['jars'], 'crew'));
+}
+
+// the month view (beta): a month's week rows, Monday first, and moving by months
+{
+  assert.deepEqual(WEEK.monthWeeks('2026-11'), ['2026-10-26', '2026-11-02', '2026-11-09', '2026-11-16', '2026-11-23', '2026-11-30'],
+    'Nov 1 2026 is a Sunday and Nov 30 a Monday: six rows');
+  assert.deepEqual(WEEK.monthWeeks('2027-02'), ['2027-02-01', '2027-02-08', '2027-02-15', '2027-02-22'], 'Feb 2027 starts on a Monday and fills four rows');
+  assert.deepEqual(WEEK.monthWeeks('2026-12'), ['2026-11-30', '2026-12-07', '2026-12-14', '2026-12-21', '2026-12-28']);
+  for (const ym of ['2026-01', '2026-02', '2026-05', '2026-08', '2026-10', '2027-03', '2028-02']) {
+    const ws = WEEK.monthWeeks(ym);
+    assert.ok(ws.length >= 4 && ws.length <= 6 && ws.every(w => WEEK.dowIdx(w) === 0), `${ym}: 4 to 6 Mondays`);
+    const [y, m] = ym.split('-').map(Number), days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const covered = ws.flatMap(w => Array.from({ length: 7 }, (_, k) => PIPE.addDays(w, k))).filter(d => d.startsWith(ym));
+    assert.equal(covered.length, days, `${ym}: every day of the month is in exactly one row`);
+  }
+  assert.deepEqual([WEEK.monthWeeks('2026-13'), WEEK.monthWeeks(''), WEEK.monthWeeks('Nov')], [[], [], []], 'a bad month gives no rows');
+  assert.deepEqual([WEEK.addMonths('2026-11', 1), WEEK.addMonths('2026-12', 1), WEEK.addMonths('2027-01', -1), WEEK.addMonths('2026-11', -12)],
+    ['2026-12', '2027-01', '2026-12', '2025-11']);
+  // a month row is the board's own week: a run that crosses Sunday continues on the next row
+  const rows3 = [blank()], hd = blank();
+  ['OCTOBER, MONDAY 26TH', 'OCTOBER, TUESDAY 27TH', 'OCTOBER, WEDNESDAY 28TH', 'OCTOBER, THURSDAY 29TH', 'OCTOBER, FRIDAY 30TH',
+    'OCTOBER, SATURDAY 31ST', 'NOVEMBER, SUNDAY 1ST'].forEach((t, k) => { hd[k * 2] = t; });
+  rows3.push(hd);
+  const hd2 = blank();
+  ['NOVEMBER, MONDAY 2ND', 'NOVEMBER, TUESDAY 3RD', 'NOVEMBER, WEDNESDAY 4TH', 'NOVEMBER, THURSDAY 5TH', 'NOVEMBER, FRIDAY 6TH',
+    'NOVEMBER, SATURDAY 7TH', 'NOVEMBER, SUNDAY 8TH'].forEach((t, k) => { hd2[k * 2] = t; });
+  const at3 = (r, day, task, detail) => { while (rows3.length <= r) rows3.push(blank()); rows3[r][day * 2] = task; rows3[r][day * 2 + 1] = detail; };
+  at3(2, 5, 'TESTING SCHEDULED FOR NOV DROP 1 - BLUEBANGER', ''); at3(2, 6, 'TESTING SCHEDULED FOR NOV DROP 1 - BLUEBANGER', '');
+  rows3.push(blank(), hd2);
+  const r2 = rows3.length;
+  at3(r2, 0, 'TESTING SCHEDULED FOR NOV DROP 1 - BLUEBANGER', '');
+  const toCsv3 = rs => rs.map(r => r.map(c => /[",\n]/.test(c) ? `"${c.replace(/"/g, '""')}"` : c).join(',')).join('\n');
+  const wks3 = PIPE.parse(toCsv3(rows3));
+  assert.deepEqual(wks3.map(w => w.start), ['2026-10-26', '2026-11-02']);
+  const M3 = WEEK.buildModel(wks3);
+  const [row1, row2] = WEEK.monthWeeks('2026-11').slice(0, 2).map(ws => WEEK.buildBoard(M3, ws, { today: '2026-11-10', summary: { jars: [], pre: [] }, drops: new Map() }));
+  const t1 = row1.lanes.find(l => l.id === 'testing').headTracks.flat()[0], t2 = row2.lanes.find(l => l.id === 'testing').headTracks.flat()[0];
+  assert.deepEqual([t1.a, t1.b, t1.contL, t1.contR, t2.a, t2.b, t2.contL, t2.contR], [5, 6, false, true, 0, 0, true, false],
+    'Sat-Mon testing: Sat-Sun on the first row, carried on to Monday on the next');
+  console.log('lane buttons and month view: &lanes= reads in board order, presses toggle, every month has 4 to 6 Monday rows, runs carry across rows');
 }
 
 // the Batches view: batch codes, statuses, item names and grouping, as the Batch Label Sheet writes them
