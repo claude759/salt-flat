@@ -1471,6 +1471,13 @@ const EDIT = ((PIPE, SUP) => {
   }
   // a day before this week's Monday: the sheet hides past weeks, and the save program never writes a hidden row
   const pastDay = date => str(date) < thisMonday();
+  // a day before today: its work is done, so changing a run of days never rewrites it (the clicked day itself can be)
+  const beforeToday = date => str(date) < (today || isoOf(new Date()));
+  const keptText = (kept, noun) => !kept.length ? ''
+    : ` (${daysText(kept)} ${kept.length > 1 ? `are past and keep their ${noun}s` : `is past and keeps its ${noun}`})`;
+  // a run is changed from today or later; from a past day only that day can change (it would skip the days between)
+  const pastRun = (b, only, run) => !only && beforeToday(b.day.date) && (run.picked.length > 1 || run.kept.length > 0)
+    ? `${dayLabel(b.day)} is already past, so a change from it can't follow the run. Under "Which days", pick only that day, or make the change from today.` : '';
   function bandOf(weeks, grid, date) {
     const hits = [];
     for (const w of weeks || []) w.days.forEach((d, k) => { if (d.date === date) hits.push({ week: w, day: d, dow: k }); });
@@ -1500,22 +1507,28 @@ const EDIT = ((PIPE, SUP) => {
     return Object.assign({ ok: true, ops, check }, out, { reads: v.reads });
   }
 
-  // the clicked line and, unless only that day, the days either side of it that list the same thing, one line each
+  // the clicked line and, unless only that day, the days either side of it that list the same thing, one line each.
+  // Days before today are never picked (kept): they still carry the run, so it goes on to the days after them.
   function runOf(b, linesOn, cell, only, what, passOver) {
     const here = linesOn(b.day).filter(l => !cell || same(l.cell, cell));
     if (here.length !== 1) return { err: here.length ? `${what} is listed more than once on ${DAY[b.dow]}. Change it in the sheet.`
       : `${what} isn't on ${DAY[b.dow]} in the sheet any more. Reload the page and try again.` };
-    const picked = [[b.dow, here[0]]];
+    const picked = [[b.dow, here[0]]], kept = [];
     if (!only) for (const step of [-1, 1]) {
       for (let k = b.dow + step; k >= 0 && k <= 6; k += step) {
         const ls = linesOn(b.week.days[k]);
+        if (beforeToday(b.week.days[k].date)) {
+          if (ls.length) { kept.push(k); continue; }
+          if (passOver && passOver(b.week.days[k])) continue;
+          break;
+        }
         if (ls.length === 1) { picked.push([k, ls[0]]); continue; }
         if (ls.length > 1) return { err: `${what} is listed more than once on ${DAY[k]}. Change it in the sheet, or change only this day.` };
         if (passOver && passOver(b.week.days[k])) continue;
         break;
       }
     }
-    return { picked: picked.sort((x, y) => x[0] - y[0]) };
+    return { picked: picked.sort((x, y) => x[0] - y[0]), kept: kept.sort((x, y) => x - y) };
   }
 
   /* ---------- pre-roll amounts: "1G PREROLL- 600" -> "1G PREROLL- 450", "5PK .7G -- 600" -> "5PK .7G -- 450" ---------- */
@@ -1549,6 +1562,7 @@ const EDIT = ((PIPE, SUP) => {
     const listless = d => { const p = d.items.filter(i => i.type === 'prerolls'); return p.length > 0 && p.every(i => !(i.lines || []).length); };
     const run = runOf(b, linesOn, cell, only, what, listless);
     if (run.err) return fail(run.err);
+    if (pastRun(b, only, run)) return fail(pastRun(b, only, run));
     const ops = [], olds = new Set();
     for (const [k, l] of run.picked) {
       const before = at(grid, l.cell[0], l.cell[1]), w = rewriteAmount(before, size, amt);
@@ -1559,8 +1573,8 @@ const EDIT = ((PIPE, SUP) => {
     }
     const texts = new Set(ops.map(o => oneLine(o.text))), ks = ops.map(o => o.c >> 1);
     return finish(grid, ops, { kind: 'prerolls', start: b.week.start, strain: key, size, n: amt }, {
-      intent: `${what} pre-rolls ${olds.size === 1 ? [...olds][0] + ' to ' : 'to '}${amt}, ${only ? 'only ' + dayLabel(b.day) : 'every day of the run'}`,
-      summary: `Writes ${plural(ops.length, 'cell')}${texts.size === 1 ? ': ' + [...texts][0] : ''} on ${daysText(ks)}`,
+      intent: `${what} pre-rolls ${olds.size === 1 ? [...olds][0] + ' to ' : 'to '}${amt}, ${only ? 'only ' + dayLabel(b.day) : run.kept.length ? 'every day of the run from today' : 'every day of the run'}`,
+      summary: `Writes ${plural(ops.length, 'cell')}${texts.size === 1 ? ': ' + [...texts][0] : ''} on ${daysText(ks)}${keptText(run.kept, 'amount')}`,
       cells: cellsOf(b, ops) });
   }
 
@@ -1586,6 +1600,7 @@ const EDIT = ((PIPE, SUP) => {
     const linesOn = d => d.items.filter(i => i.type === 'jars').flatMap(i => i.lines || []).filter(l => l.strain === key && l.cell);
     const run = runOf(b, linesOn, cell, only, `${key} jars`);
     if (run.err) return fail(run.err);
+    if (pastRun(b, only, run)) return fail(pastRun(b, only, run));
     const ops = [];
     for (const [k, l] of run.picked) {
       const before = at(grid, l.cell[0], l.cell[1]), sp = jarSpan(before);
@@ -1593,8 +1608,8 @@ const EDIT = ((PIPE, SUP) => {
       ops.push(planOp(grid, b, l.cell, before.slice(0, sp.i) + name + before.slice(sp.j)));
     }
     return finish(grid, ops, { kind: 'jars', start: b.week.start, strain: key, to: toKey }, {
-      intent: `Jars ${key} to ${toKey}, ${only ? 'only ' + dayLabel(b.day) : 'every day of the run'}`,
-      summary: `Writes ${plural(ops.length, 'cell')}: ${name} in place of ${key} on ${daysText(ops.map(o => o.c >> 1))}`,
+      intent: `Jars ${key} to ${toKey}, ${only ? 'only ' + dayLabel(b.day) : run.kept.length ? 'every day of the run from today' : 'every day of the run'}`,
+      summary: `Writes ${plural(ops.length, 'cell')}: ${name} in place of ${key} on ${daysText(ops.map(o => o.c >> 1))}${keptText(run.kept, 'strain')}`,
       cells: cellsOf(b, ops) });
   }
 

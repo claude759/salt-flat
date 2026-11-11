@@ -673,6 +673,28 @@ if (realPipe) {
   no(EDIT.jarStrain(W, g, { date: '2026-11-03', strain: 'BLACK MAGIC', to: 'TEA & PARTY' }), /new strain name/, 'a name the reader would not take');
   no(EDIT.jarStrain(W, g, { date: '2026-11-03', strain: 'BLACK MAGIC', to: 'Black Magic' }), /Nothing to change/, 'same strain');
 
+  // a run never rewrites a day before today: that work is done. Those days keep what they say, and the run goes on past them
+  EDIT.setToday('2026-11-05');
+  const p1 = okR(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'VOODOO', size: '1g', n: 450 }), 'run from Thursday, today Thursday');
+  assert.deepEqual([cellsOf(p1), p1.intent, p1.summary], [[[3, 7]], 'VOODOO 1g pre-rolls 600 to 450, every day of the run from today',
+    'Writes 1 cell: 1G PREROLL- 450 on Thu (Mon to Tue are past and keep their amounts)'], 'Mon and Tue are past');
+  EDIT.setToday('2026-11-03');
+  const p2 = okR(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'VOODOO', size: '1g', n: 450 }), 'run from Thursday, today Tuesday');
+  assert.deepEqual([cellsOf(p2), p2.summary], [[[5, 3], [3, 7]], 'Writes 2 cells: 1G PREROLL- 450 on Tue, Thu (Mon is past and keeps its amount)']);
+  no(EDIT.prerollAmount(W, g, { date: '2026-11-02', strain: 'VOODOO', size: '1g', n: 450 }), /Mon Nov 2 is already past, so a change from it can't follow the run/, 'a run is never changed from a past day');
+  const p3 = okR(EDIT.prerollAmount(W, g, { date: '2026-11-02', strain: 'VOODOO', size: '1g', n: 450, only: true }), 'only the past Monday');
+  assert.deepEqual([cellsOf(p3), p3.intent], [[[6, 1]], 'VOODOO 1g pre-rolls 600 to 450, only Mon Nov 2'], 'a past day of this week can still be changed on its own');
+  const p4 = okR(EDIT.prerollAmount(W, g, { date: '2026-11-05', strain: 'VOODOO', size: '1g', n: 450, only: true }), 'only Thursday, today Tuesday');
+  assert.deepEqual([cellsOf(p4), p4.summary], [[[3, 7]], 'Writes 1 cell: 1G PREROLL- 450 on Thu'], 'only this day says nothing about past days');
+  const j4 = okR(EDIT.jarStrain(W, g, { date: '2026-11-03', strain: 'BLACK MAGIC', to: 'TEA PARTY' }), 'jars from Tuesday, today Tuesday');
+  assert.deepEqual([cellsOf(j4), j4.intent, j4.summary], [[[6, 2]], 'Jars BLACK MAGIC to TEA PARTY, every day of the run from today',
+    'Writes 1 cell: TEA PARTY in place of BLACK MAGIC on Tue (Mon is past and keeps its strain)']);
+  EDIT.setToday('2026-11-05');
+  no(EDIT.jarStrain(W, g, { date: '2026-11-03', strain: 'BLACK MAGIC', to: 'TEA PARTY' }), /Tue Nov 3 is already past/, 'jars: never a run from a past day');
+  const j5 = okR(EDIT.jarStrain(W, g, { date: '2026-11-04', strain: 'SMOOTHIE', to: 'ZOZA' }), 'a past day whose run is only that day');
+  assert.deepEqual([cellsOf(j5), j5.intent], [cellsOf(j3), 'Jars SMOOTHIE to ZOZA, every day of the run'], 'nothing else to follow, so it is allowed');
+  EDIT.setToday('2026-11-02');
+
   // one-line tasks: reworded in capitals; the kind of job must stay the same unless asked
   const n1 = okR(EDIT.taskText(W, g, { date: '2026-11-03', cell: [7, 2], text: 'stage dec drop 2 for nabis' }), 'Nabis line');
   assert.deepEqual([n1.ops[0].expect, n1.ops[0].text, n1.ops[0].find.day, n1.reads[0]],
@@ -791,6 +813,11 @@ if (realPipe) {
     assert.deepEqual(vo.cells.map(c => c.a1), ['B651', 'D650', 'F648', 'H647', 'J648', 'L647'], 'VOODOO 1g is six cells, Mon to Sat');
     assert.ok(vo.ops.every(o => o.expect === '1G PREROLL- 600' && o.text === '1G PREROLL- 450' && o.find.week === HEAD && o.find.owner === 'VOODOO'), 'only the number changes');
     assert.deepEqual([vo.intent, vo.summary], ['VOODOO 1g pre-rolls 600 to 450, every day of the run', 'Writes 6 cells: 1G PREROLL- 450 on Mon to Sat']);
+    EDIT.setToday('2026-11-10');   // the day the test copy run found it: from Thursday, Monday is past and keeps its amount
+    const vt = okR(EDIT.prerollAmount(W, g, { date: '2026-11-12', strain: 'VOODOO', size: '1g', n: 450 }), 'live VOODOO 1g on Tuesday');
+    assert.deepEqual([vt.cells.map(c => c.a1), vt.intent, vt.summary], [['D650', 'F648', 'H647', 'J648', 'L647'],
+      'VOODOO 1g pre-rolls 600 to 450, every day of the run from today', 'Writes 5 cells: 1G PREROLL- 450 on Tue to Sat (Mon is past and keeps its amount)']);
+    EDIT.setToday('2026-11-09');
     const bm = okR(EDIT.jarStrain(W, g, { date: '2026-11-11', strain: 'BLACK MAGIC', to: 'TEA PARTY' }), 'live BLACK MAGIC jars');
     assert.deepEqual(bm.cells.map(c => c.a1), ['A673', 'C671', 'E669']);
     assert.ok(bm.ops.every(o => o.expect === JAR('BLACK MAGIC') && o.text === JAR('TEA PARTY')));
