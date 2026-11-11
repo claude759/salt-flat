@@ -234,7 +234,7 @@ say(/<select id="reportSel">[\s\S]*?<option value="billing">[\s\S]*?<\/select>/.
     const ok = !err && company === 'Olympic'
       && /Nothing to bill: every Gusto deleaf \/ harvest day at Rio Verde \(Olympic\)/.test(older) && /Not billable/.test(older) && /\$80\.00/.test(older)
       && !/bill-person/.test(older)
-      && /bill-person/.test(newer) && /\$100\.00/.test(newer) && !/class="bill-nb"/.test(newer) && /Filifera invoice only/.test(newer)
+      && /bill-person/.test(newer) && /\$100\.00/.test(newer) && !/class="bill-nb"/.test(newer) && !/Filifera invoice only/.test(newer)   // 2026-11-11: The Maccabiah Group gets a mirror bill now
       && copied === 'node --env-file=.env qbo/labor-billing.mjs --company rioverde --period 2026-10-24';
     say(ok, 'Labor billing > Rio Verde: days before 2026-10-24 show as not billable, later days are billed, the command says --company rioverde'
       + (ok ? '' : ': ' + (err || JSON.stringify({ company, copied, older: older.slice(0, 300), newer: newer.slice(0, 300) }))));

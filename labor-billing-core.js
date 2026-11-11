@@ -77,8 +77,9 @@
   const SITES = Object.freeze({
     Slane: Object.freeze({ customer: 'Slane Inc (Customer)', label: '23rd Street', legal: 'Slane Inc.', key: 'slane' }),
     Imperial: Object.freeze({ customer: 'Imperial Project LLC (Customer)', label: 'Imperial', legal: 'Imperial Project LLC', key: 'imperial' }),
+    // 2026-11-11 (Gianni: yes to a matching bill in The Maccabiah Group's own QuickBooks): mirror bill like Slane's and Imperial's
     Olympic: Object.freeze({ customer: 'The Maccabiah Group [Rio Verde]', label: 'Rio Verde (Olympic)', legal: 'Rio Verde', key: 'rioverde',
-      billedFrom: '2026-10-24', noMirrorBill: true }),
+      billedFrom: '2026-10-24' }),
   });
   const BILLED = Object.keys(SITES);
 
