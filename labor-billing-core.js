@@ -1,7 +1,16 @@
 /* Labor billing core: what Filifera LLC bills a site's company (Slane Inc. for
-   23rd Street, Imperial Project LLC for Imperial, and Rio Verde for the Olympic
-   grow) for deleaf and harvest labor done at that site by Filifera's Gusto
-   employees.
+   23rd Street, Imperial Project LLC for Imperial, and The Maccabiah Group for
+   Rio Verde, the Olympic grow) for deleaf and harvest labor done at that site by
+   Filifera's Gusto employees.
+
+   This file is the BOARD ESTIMATE that Reports > Labor billing shows: straight-
+   time board hours x board rate, plus a formula employer tax. Since 2026-11-10
+   the invoice itself (qbo/labor-billing.mjs) bills only what Filifera's
+   processed Gusto payroll paid (Gianni: "The invoice/bills should only be for
+   what's in Gusto"): each person's pay lines on the site's Deleaf/Harvest job,
+   overtime included, plus their employer taxes from that payroll. The script
+   still loads this file for the pay-period calendar, the site names and the
+   estimate it prints beside the invoice.
 
    Rio Verde (board company Olympic) is billed only for work from 2026-10-24,
    the first day of the pay period Gianni chose on 2026-10-26 ("filifera will
@@ -61,12 +70,14 @@
     wageBase: 7000,
   });
 
-  // Keyed by the board's company name. billedFrom: the first work date billed (no billedFrom = every date).
-  // noMirrorBill: the company has no QuickBooks, so Filifera's invoice is the only document.
+  // Keyed by the board's company name. customer: the Filifera QuickBooks customer the invoice goes to.
+  // billedFrom: the first work date billed (no billedFrom = every date). noMirrorBill: Filifera's invoice is the
+  // only document. Olympic's invoice goes to The Maccabiah Group, which manages Rio Verde (Gianni, 2026-11-10:
+  // "They should see The Maccabiah Group [Rio Verde]").
   const SITES = Object.freeze({
     Slane: Object.freeze({ customer: 'Slane Inc (Customer)', label: '23rd Street', legal: 'Slane Inc.', key: 'slane' }),
     Imperial: Object.freeze({ customer: 'Imperial Project LLC (Customer)', label: 'Imperial', legal: 'Imperial Project LLC', key: 'imperial' }),
-    Olympic: Object.freeze({ customer: 'Rio Verde (Olympic) (Customer)', label: 'Rio Verde (Olympic)', legal: 'Rio Verde', key: 'rioverde',
+    Olympic: Object.freeze({ customer: 'The Maccabiah Group [Rio Verde]', label: 'Rio Verde (Olympic)', legal: 'Rio Verde', key: 'rioverde',
       billedFrom: '2026-10-24', noMirrorBill: true }),
   });
   const BILLED = Object.keys(SITES);
