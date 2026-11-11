@@ -150,10 +150,10 @@ launch. The check fails if one of the three pieces is missing.
   minutes. Plan vs actual also reads the CA task tracker (labor-calculator.html) directly.
 - **Red cells, trim sheets and the batch sheet have cloud versions in this repo**
   (`supabase/functions/pipeline-{marks,trims,batches}-sync/`, deployed 2026-11-11 and switched
-  off). Their schedules are a one-time setup on Gianni's computer
-  (`supabase/postgres/pipeline-sync-cron.sql`, then `pipeline-sync-cron-on.sql`). After that an
-  admin moves each job off, then shadow (compares only), then write, on the Admin page, after pasting
-  its source link there; the Mac jobs keep running until then. Victoria's Claude can change these.
+  off). Their timers run in the database since 2026-11-11 (red cells every 5 minutes, trims and
+  the batch sheet hourly); a job that is off answers at once and does nothing. An admin moves each job
+  off, then shadow (compares only), then write, on the Admin page, after pasting its source link
+  there; the Mac jobs keep running until then. Victoria's Claude can change these.
 - **These stay on Gianni's computer** and Victoria's Claude cannot change them: the lab dates and
   THC (from Metrc and the lab's COA emails), Distru and Nabis stock, the COA watcher that fills the
   Batch Label Sheet, and the hourly backup copy of the sheet's tabs (the restore point if a sheet
