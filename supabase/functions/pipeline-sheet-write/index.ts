@@ -1,9 +1,11 @@
-// pipeline-sheet-write: the Production Pipeline page's edits to Victoria's sheet (release 1a).
+// pipeline-sheet-write: the Production Pipeline page's edits to Victoria's sheet (release 1a: rewrite a cell's text or
+// a supply count; release 1b: add a one-line item under a day's last line, with the look of a named line).
 // The page (pipeline.html) builds each edit as ops (CONTRACT.md in this folder). This function checks them against
 // the sheet as it is right now, writes them in one all-or-nothing batchUpdate with its own Google account
 // (pipeline-writer: no roles, no domain-wide delegation; its JSON key is the PIPELINE_WRITER_KEY secret), reads the
 // cells back, and logs the save in pipeline_edits so it can be undone. The rules (where it may write, finding a
-// moved cell, carrying colored words) live in rules.js, shared with tests/pipeline-write-check.mjs.
+// moved cell, carrying colored words, where an added line goes and whose look it copies) live in rules.js, shared
+// with tests/pipeline-write-check.mjs.
 // Self-contained like read-timesheet: it deploys from the repo root. Never the bookkeeping service account.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import * as Rules from "./rules.js";
@@ -40,6 +42,8 @@ const SAY = {
   notEditor: "Your account can see the plan but cannot change the sheet from the app. Ask Gianni if you need to.",
   off: "Saving to the sheet from the app is switched off right now. Make the change in the sheet.",
   tabOff: (tab: string) => `Saving to the ${tab} tab from the app is not switched on yet. Make the change in the sheet.`,
+  addOff: "Adding lines to the sheet from the app is not switched on yet. Add the line in the sheet.",
+  rewriteOff: "Changing lines in the sheet from the app is switched off right now. Make the change in the sheet.",
   notSetUp: "Saving to the sheet from the app is not set up yet. Make the change in the sheet for now.",
   noCopy: "The test copy of the sheet is not set up yet, so nothing was saved.",
   noLive: "The app could not tell which sheet to save to, so nothing was saved. Tell Gianni.",
@@ -140,12 +144,15 @@ async function gget(token: string, url: string): Promise<Any> {
   }
 }
 const quote = (tab: string) => `'${tab.replace(/'/g, "''")}'`;
-const GRID_FIELDS = "sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),merges," +
-  "data(startRow,startColumn,rowMetadata(hiddenByUser,hiddenByFilter),rowData(values(userEnteredValue,formattedValue,textFormatRuns))))";
+// looks: also each cell's userEnteredFormat, only for a save that adds a line or takes one out (R.needsFormats), so a
+// 1a save's reads stay small
+const gridFields = (looks: boolean) => "sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),merges," +
+  "data(startRow,startColumn,rowMetadata(hiddenByUser,hiddenByFilter),rowData(values(userEnteredValue,formattedValue,textFormatRuns" +
+  (looks ? ",userEnteredFormat" : "") + "))))";
 const tabsOf = (ops: Any[]) => [...new Set(ops.map((o) => o.tab))] as string[];
 
-// Step 1: the tab's text only, to find which rows to read with formats: each op's week band on DISTRO PIPELINE
-// (null = a supply tab, read whole).
+// Step 1: the tab's text only, to find which rows to read with formats: each op's week band on DISTRO PIPELINE, an
+// add's 'like' week band too, and the last week to the end of the sheet (null = a supply tab, read whole).
 async function readWindows(token: string, wb: string, ops: Any[]): Promise<Record<string, number[][] | null>> {
   const out: Record<string, number[][] | null> = {};
   await Promise.all(tabsOf(ops).map(async (tab) => {
@@ -156,14 +163,14 @@ async function readWindows(token: string, wb: string, ops: Any[]): Promise<Recor
   }));
   return out;
 }
-// Step 2: those rows with values, colored words, hidden flags and merges
-async function readGrids(token: string, wb: string, windows: Record<string, number[][] | null>): Promise<Record<string, Any>> {
+// Step 2: those rows with values, colored words, hidden flags and merges (and looks, for an add or its undo)
+async function readGrids(token: string, wb: string, windows: Record<string, number[][] | null>, looks: boolean): Promise<Record<string, Any>> {
   const grids: Record<string, Any> = {};
   await Promise.all(Object.entries(windows).map(async ([tab, wins]) => {
     if (wins && !wins.length) { grids[tab] = R.gridFromSheet(null, tab); return; }   // week not in the sheet: plan() says so
     // an open end (Infinity) reads to the end of the sheet: "A640:N"
     const ranges = wins ? wins.map(([s, e]) => `${quote(tab)}!A${s + 1}:N${Number.isFinite(e) ? e : ""}`) : [quote(tab)];
-    const j = await gget(token, `${SHEETS}${wb}?includeGridData=true&fields=${encodeURIComponent(GRID_FIELDS)}&` +
+    const j = await gget(token, `${SHEETS}${wb}?includeGridData=true&fields=${encodeURIComponent(gridFields(looks))}&` +
       ranges.map((r) => "ranges=" + encodeURIComponent(r)).join("&"));
     const sheet = (j.sheets ?? []).find((s: Any) => s?.properties?.title === tab);
     if (!sheet) throw new GoogleFail("tab", 404);
@@ -172,12 +179,14 @@ async function readGrids(token: string, wb: string, windows: Record<string, numb
   }));
   return grids;
 }
-// after the write: just the written cells
+// after the write: just the written cells. An added line (or one taken out) reads its pair and any merge it cleared
+// (`read`), with looks and merges, so the check sees the merge and the log keeps what an undo must find there.
 async function readBack(token: string, wb: string, cells: Any[]): Promise<Record<string, Any>> {
-  const fields = "sheets(properties(sheetId,title),data(startRow,startColumn,rowMetadata(hiddenByUser)," +
-    "rowData(values(userEnteredValue,formattedValue,textFormatRuns))))";
+  const looks = cells.some((x) => x.kind != null);
+  const fields = `sheets(properties(sheetId,title),${looks ? "merges," : ""}data(startRow,startColumn,rowMetadata(hiddenByUser),` +
+    `rowData(values(userEnteredValue,formattedValue,textFormatRuns${looks ? ",userEnteredFormat" : ""}))))`;
   const j = await gget(token, `${SHEETS}${wb}?includeGridData=true&fields=${encodeURIComponent(fields)}&` +
-    cells.map((x) => "ranges=" + encodeURIComponent(`${quote(x.tab)}!${x.a1}`)).join("&"));
+    cells.map((x) => "ranges=" + encodeURIComponent(`${quote(x.tab)}!${x.read ?? x.a1}`)).join("&"));
   const grids: Record<string, Any> = {};
   for (const s of j.sheets ?? []) grids[s.properties.title] = R.gridFromSheet(s, s.properties.title);
   return grids;
@@ -206,12 +215,16 @@ async function batchUpdate(token: string, wb: string, requests: Any[]): Promise<
 
 /* ---------- Supabase ---------- */
 
+// select('*'): kinds_on (release 1b) may not be applied yet, and naming a missing column would stop every save. Without
+// it only rewrites are on.
 async function loadSettings(admin: Any) {
-  const { data, error } = await admin.from("pipeline_write_settings")
-    .select("enabled,test_mode,target,test_workbook,tabs_on").eq("id", 1).maybeSingle();
+  const { data, error } = await admin.from("pipeline_write_settings").select("*").eq("id", 1).maybeSingle();
   if (error) { console.error("settings", error.message); return null; }   // table not applied yet: treat as not set up
-  return data;
+  if (!data) return data;
+  return { ...data, kinds_on: Array.isArray(data.kinds_on) ? data.kinds_on : ["rewrite"] };
 }
+// the kind of edit an op from the page is: 'rewrite' (1a) or 'add' (1b)
+const kindOf = (op: Any) => (op.kind == null ? "rewrite" : String(op.kind));
 async function workbookFor(admin: Any, target: string, settings: Any): Promise<string | null> {
   if (target === "test") return settings.test_workbook || null;
   const { data, error } = await admin.from("schedule_board").select("workbook_id").eq("state", "CA").limit(1);
@@ -230,16 +243,19 @@ async function logUpdate(admin: Any, id: number, patch: Any) {
 
 /* ---------- one save ---------- */
 
-// the reply's cells (the contract's shape) and the log's cells (with colored words, for undo)
+// the reply's cells (the contract's shape) and the log's cells (with colored words and, for an added line, both cells'
+// looks and the merge, for undo). An added line (or one taken out) also says its kind, its range (G682:H682), the line
+// its look came from (like), whether a new merge was made and which empty merges were cleared.
 const replyCells = (cells: Any[]) => cells.map((x) => ({ tab: x.tab, a1: x.a1, r: x.r, c: x.c,
-  before: x.before.text, after: x.after.text, moved: x.moved }));
-const logCells = (cells: Any[]) => cells.map((x) => ({ tab: x.tab, r: x.r, c: x.c, a1: x.a1, find: x.find, moved: x.moved,
-  before: x.before, after: x.after }));
+  before: x.before.text, after: x.after.text, moved: x.moved,
+  ...(x.kind != null ? { kind: x.kind, range: x.range, merged: x.merged, cleared: x.cleared ?? [], ...(x.like ? { like: x.like.a1 } : {}) } : {}) }));
+const logCells = (cells: Any[]) => cells.map((x) => R.logCell(x));
 // what was asked, for a save that was refused or conflicted (with what the sheet holds, where known)
 const askedCells = (ops: Any[], found: Any[] = []) => ops.map((op) => {
   const a1 = R.a1(op.r, op.c), f = found.find((x) => x.tab === op.tab && x.a1 === a1);
   return { tab: op.tab, r: op.r, c: op.c, a1, find: op.find, before: { text: op.expect }, after: { text: op.text },
-    ...(f ? { found: f.found ?? null, why: f.why } : {}) };
+    ...(op.kind != null ? { kind: op.kind } : {}), ...(op.like ? { like: op.like } : {}),
+    ...(f ? { found: f.found ?? null, why: f.why, ...(f.role ? { role: f.role } : {}) } : {}) };
 });
 
 type Job = { who: Who; admin: Any; action: "write" | "dry" | "undo"; intent: string; ops: Any[]; undoOf?: number; target?: string };
@@ -256,14 +272,18 @@ async function save(job: Job): Promise<Any> {
     if (data !== true) return { ok: false, reason: "not-editor", message: SAY.notEditor };
   }
 
-  // 2. switched on for these tabs (a dry run only reads); test mode plans without writing
+  // 2. switched on for these tabs and this kind of edit (a dry run only reads); test mode plans without writing. An undo
+  // follows the master switch and the tabs but not kinds_on, so switching adds off never strands a line the app added.
   const settings = await loadSettings(admin);
   if (!settings) return { ok: false, reason: "off", message: SAY.notSetUp };
   if (action !== "dry") {
     if (!settings.enabled) return { ok: false, reason: "off", message: SAY.off };
     const tabOff = tabsOf(ops).find((t) => !(settings.tabs_on ?? []).includes(t));
     if (tabOff) return { ok: false, reason: "off", message: SAY.tabOff(tabOff) };
+    const kindOff = action === "write" ? ops.map(kindOf).find((k) => !settings.kinds_on.includes(k)) : undefined;
+    if (kindOff) return { ok: false, reason: "off", message: kindOff === "add" ? SAY.addOff : SAY.rewriteOff };
   }
+  const looks = R.needsFormats(ops) === true;
   const dryRun = action === "dry" || settings.test_mode === true;
   const target = job.target ?? settings.target;
   const rawKey = Deno.env.get("PIPELINE_WRITER_KEY");
@@ -275,13 +295,14 @@ async function save(job: Job): Promise<Any> {
   const stopped = async (p: Any) => {
     await logInsert(admin, { ...base, status: p.reason, message: p.message, cells: askedCells(ops, p.cells) });
     return { ok: false, reason: p.reason, message: p.message, cells: p.reason === "conflict" ? p.cells.map((x: Any) =>
-      ({ tab: x.tab, a1: x.a1, r: x.r, c: x.c, expect: x.expect, found: x.found ?? "", why: x.why ?? "changed" })) : undefined };
+      ({ tab: x.tab, a1: x.a1, r: x.r, c: x.c, expect: x.expect, found: x.found ?? "", why: x.why ?? "changed",
+        ...(x.role ? { role: x.role } : {}) })) : undefined };
   };
 
   // 3-6. read the tab fresh and run every rule
   const token = await googleToken(rawKey);
   const windows = await readWindows(token, wb, ops);
-  const first = R.plan(ops, await readGrids(token, wb, windows));
+  const first = R.plan(ops, await readGrids(token, wb, windows, looks));
   if (!first.ok) return await stopped(first);
   if (dryRun) {
     const id = await logInsert(admin, { ...base, status: "dry", message: action === "dry" ? null : "Test mode: nothing written.",
@@ -298,7 +319,7 @@ async function save(job: Job): Promise<Any> {
   if (!lock?.ok) return await stopped({ reason: "conflict", message: SAY.locked(nameOf(lock?.email)), cells: [] });
   const lockedAt = Date.now();
   try {
-    const plan = R.plan(ops, await readGrids(token, wb, windows));
+    const plan = R.plan(ops, await readGrids(token, wb, windows, looks));
     if (!plan.ok) return await stopped(plan);
     if (plan.keys.join("|") !== first.keys.join("|")) return await stopped({ reason: "conflict", message: SAY.moved, cells: [] });
 
@@ -316,19 +337,24 @@ async function save(job: Job): Promise<Any> {
       // nothing written for sure, or Google gave no answer and the cells do not show the new text
       const landed = sent.result === "unsure" && back && check.ok;
       if (!landed) {
+        // Google refuses a merge (or unmerge) that runs into cells someone merged by hand since the re-check: the
+        // whole batch is refused, so nothing was written, and the sheet changed under the save
+        const merging = plan.requests.some((q: Any) => q.mergeCells || q.unmergeCells);
+        if (sent.result === "refused" && sent.status === 400 && merging) {
+          await logUpdate(admin, id, { status: "conflict", message: SAY.moved });
+          return { ok: false, reason: "conflict", message: SAY.moved, cells: [] };
+        }
         const message = sent.result === "unsure" ? SAY.unsure : sent.status === 403 || sent.status === 404 ? SAY.noAccess : SAY.error;
         await logUpdate(admin, id, { status: "failed", message });
         return { ok: false, reason: "error", message };
       }
     }
-    // what each cell holds now is what an undo must find there
+    // what each cell holds now is what an undo must find there (an added line: also both cells' looks, the merge, and
+    // the look of each cell a cleared merge freed)
     const wrongAt = new Set(check.wrong.map((w: Any) => `${w.tab}!${w.a1}`));
     const cells = plan.cells.map((x: Any) => {
-      const g = back?.[x.tab], now = g ? R.cellAt(g, x.r, x.c) : null;
-      if (!now || wrongAt.has(`${x.tab}!${x.a1}`)) return x;
-      const v = now.value ?? {};
-      return { ...x, after: { text: typeof v.stringValue === "string" ? v.stringValue : now.text, runs: now.runs,
-        number: typeof v.numberValue === "number" ? v.numberValue : null } };
+      const now = back && !wrongAt.has(`${x.tab}!${x.a1}`) ? R.readAfter(x, back) : null;
+      return now ? { ...x, after: now } : x;
     });
     const note = check.ok ? null : back ? SAY.mismatch : SAY.unchecked;
     await logUpdate(admin, id, { status: "written", cells: logCells(cells), message: note });
@@ -344,7 +370,9 @@ async function save(job: Job): Promise<Any> {
   }
 }
 
-// Undo: put back each cell of a written edit, only where the cell still holds what that edit wrote
+// Undo: put back each cell of a written edit, only where the cell still holds what that edit wrote (an added line is
+// taken out only while it is exactly as the add left it, and no newer change from the app on that day is left undone:
+// R.undoOps builds an 'unadd' for it)
 async function undo(who: Who, admin: Any, id: unknown): Promise<Any> {
   const n = Number(id);
   if (!Number.isInteger(n) || n <= 0) return { ok: false, reason: "refused", message: R.MSG.bad };
@@ -362,17 +390,31 @@ async function undo(who: Who, admin: Any, id: unknown): Promise<Any> {
   if (!edit) return { ok: false, reason: "refused", message: SAY.notInLog };
   if (edit.action !== "write" || edit.status !== "written") return { ok: false, reason: "refused", message: SAY.notWritten };
   if (edit.undone_by) return { ok: false, reason: "refused", message: SAY.undone };
+  // an added line is found again by its words, so a newer change from the app on that day (the same line copied again
+  // after hers was reworded, or a rewording) is undone first, or the newer line could be taken out in its place
+  if ((edit.cells ?? []).some((x: Any) => x?.kind === "add")) {
+    const { data: later, error: laterErr } = await admin.from("pipeline_edits").select("id,target,cells")
+      .eq("action", "write").eq("status", "written").eq("target", edit.target).is("undone_by", null).gt("id", n);
+    if (laterErr) throw new Error("undo read: " + laterErr.message);
+    if (R.newerOnDay(edit, later ?? []).length) return { ok: false, reason: "refused", message: R.MSG.undoNewer };
+  }
   return await save({ who, admin, action: "undo", intent: `Undo of change ${n}` + (edit.intent ? `: ${edit.intent}` : ""),
     ops: R.undoOps(edit), undoOf: n, target: edit.target });
 }
 
-// only the fields the contract names; never `restore`, which only undo() builds
+// only the fields the contract names; never `restore`, `undo` or the kind 'unadd', which only undo() builds. A kind
+// other than 'add' is passed on as one checkOps does not know, so the save is refused rather than read as a rewrite.
 function pageOps(raw: unknown): Any[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((x: Any) => {
     const f = x?.find ?? {};
-    return { tab: x?.tab, r: x?.r, c: x?.c, expect: x?.expect, text: x?.text, number: x?.number ?? false,
-      find: { week: f.week, day: f.day, owner: f.owner, item: f.item, category: f.category, header: f.header } };
+    const base = { tab: x?.tab, r: x?.r, c: x?.c, expect: x?.expect, text: x?.text, number: x?.number ?? false };
+    if (x?.kind == null)
+      return { ...base, find: { week: f.week, day: f.day, owner: f.owner, item: f.item, category: f.category, header: f.header } };
+    if (x.kind !== "add") return { ...base, kind: "page:" + String(x.kind).slice(0, 40), find: {} };
+    const l = x?.like ?? {};
+    return { ...base, kind: "add", find: { week: f.week, day: f.day, after: f.after, afterOwner: f.afterOwner },
+      like: { week: l?.week, day: l?.day, text: l?.text } };
   });
 }
 

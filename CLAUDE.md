@@ -118,6 +118,10 @@ launch. The check fails if one of the three pieces is missing.
   which checks each edit against the sheet as it is right now; `CONTRACT.md` there is the agreement
   between the page and the program. The page builds edits in its EDIT MODEL block. Add no other
   way to write to the sheet, and don't loosen what the program refuses from the page side.
+  Release 1b (built November 2026, beta) adds an Add row to a day's view: Copy a line, Jars, or
+  Who's on. It writes one merged one-row line in the first empty row under that day's last line,
+  styled like a matching line Victoria already has, never inserts rows, and refuses a full day.
+  Each kind is switched on separately (`pipeline_write_settings.kinds_on`: 'rewrite', 'add').
 - **Everything else is copied into the database by jobs on Gianni's computer**, and the page reads
   the copies: the sheet's red cells every 5 minutes, the Batch Label Sheet hourly (with test dates,
   COA dates and THC from Metrc and the lab's COA emails), the 2026 TRIM SHEETS hourly (pounds

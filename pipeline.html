@@ -922,6 +922,11 @@
   .wk-card.f-urgent .ed-row{border-top-color:rgba(255,255,255,.35)}
   .wk-card.f-urgent .ed-by{color:#FFFFFF}
   #wk-pop>.ed-row{margin-top:8px}
+  /* adding a line (release 1b): under the day's cards in the day panel, where the line lands in the sheet */
+  .ed-add{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0 6px;padding-top:10px;border-top:1px dashed #B8BEC8}
+  .ed-addt{flex:1 1 auto;min-width:0;font-size:14px;font-weight:800;color:#1F3A93}
+  .ed-seg button:disabled{opacity:.45;cursor:default}
+  .ed-seg button:disabled:hover{border-color:#B8BEC8}
   /* saved, waiting for the next read of the sheet to show it */
   .wk-bar.ed-pend .wk-fill,.wk-bub.ed-pend,.wk-card.ed-pend{outline:2px dashed rgba(31,58,147,.55);outline-offset:2px}
   .sup-row.ed-pend{outline:1.5px dashed rgba(157,134,255,.75);outline-offset:-3px}
@@ -1543,7 +1548,9 @@ const SUP = (() => {
    Turns an edit asked for on the board ("VOODOO 1g to 450, every day of the run") into the exact cells to rewrite,
    as Ops for the pipeline-sheet-write program (supabase/functions/pipeline-sheet-write/CONTRACT.md):
    {tab, r, c, expect, text, find, number}. Release 1a only rewrites cells that already hold something, or sets a
-   supply count; it never adds cells, colors, merges or rows. Builders take the page's parsed weeks plus the CSV grid
+   supply count; it never adds cells, colors, merges or rows. Release 1b (addItem) also adds a one-line item in the row
+   under a day's last line, with the look of a named line of the same kind ({kind: 'add', ..., like}); the save program
+   finds that row itself and copies the look, and never inserts rows. Builders take the page's parsed weeks plus the CSV grid
    they were read from, keep Victoria's wording (only the number, or only the strain name, changes), and prove the
    result before handing it back: apply() writes the ops into a copy of the grid and verify() reads that copy with
    the page's own readers, so an edit the board would read differently is refused here, before anything is sent.
@@ -1818,6 +1825,178 @@ const EDIT = ((PIPE, SUP) => {
       cells: cellsOf(b, ops) });
   }
 
+  /* ---------- release 1b: a one-line item added under a day's last line ---------- */
+  // CONTRACT.md "Op: add a line": the page names the day's last line (`after`, with its owner when that line is in the
+  // day's right column) and a line of the same kind whose look the new one takes (`like`, found by its words). The save
+  // program works out the row itself (the row under that last line) and its reply says where the line went; the page's
+  // row is a guess. As in 1a, the result is proven here first: the board must read each day as before plus the new line.
+  const ADD_MODES = ['copy', 'jars', 'crew'], ADD_MAX_DAYS = 7;
+  const DAYL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const longLabel = d => `${DAYL[d.dow]}, ${MON[+d.date.slice(5, 7) - 1]} ${+d.date.slice(8, 10)}`;
+  // where adding stops in a week: the next week's header. The last week has none under it, so it stops after its last row
+  // holding text in A to N, and the blank rows under it are never written.
+  function bandStop(grid, w) {
+    if (w.lastRow + 1 < grid.length) return w.lastRow + 1;
+    let last = w.headRow;
+    for (let r = w.headRow + 1; r <= w.lastRow; r++) for (let c = 0; c < 14; c++) if (at(grid, r, c) !== '') { last = r; break; }
+    return last + 1;
+  }
+  // a day's last line and the row under it, the way the save program finds them: the last row of the week where the day's
+  // left or right cell holds anything, exactly as the CSV shows it. The program also steps over a merge on that row,
+  // which the CSV can't show, so its row can be lower; its reply says.
+  function slotIn(grid, w, dow) {
+    const c0 = 2 * dow, c1 = c0 + 1, stop = bandStop(grid, w);
+    let L = w.headRow;
+    for (let r = w.headRow + 1; r < stop; r++) if (at(grid, r, c0) !== '' || at(grid, r, c1) !== '') L = r;
+    const c = L === w.headRow ? null : at(grid, L, c0) !== '' ? c0 : c1;
+    return { r: L + 1, c: c0, after: c == null ? '' : at(grid, L, c), afterOwner: c === c1 ? ownerOf(grid, w.headRow, L, c1) : '',
+      last: c == null ? null : [L, c], stop, full: L + 1 >= stop, lastWeek: w.lastRow + 1 >= grid.length };
+  }
+  // -> {r, c, after, afterOwner, last, stop, full, lastWeek}; null when the sheet has no such day, {past: true} for a past week
+  function slotOf(weeks, grid, date) {
+    const b = bandOf(weeks, grid, date);
+    return !b || b.past ? b : slotIn(grid, b.week, b.dow);
+  }
+  // the same words as the save program's refusal of a full day
+  const fullText = (d, s) => s.lastWeek
+    ? `${longLabel(d)} is in the last week in the sheet, and that day has no row left under its last line. Add the line in the sheet.`
+    : `${longLabel(d)} has no empty row left under its last line in the sheet. Add a row at the bottom of that week in the sheet, then try again.`;
+  // the rows of a week (its header row included) where a day's left column says exactly `text`
+  function rowsWith(grid, w, dow, text) {
+    const want = nl(text), out = [];
+    for (let r = w.headRow; r <= w.lastRow; r++) { const t = at(grid, r, 2 * dow); if (t !== '' && nl(t) === want) out.push(r); }
+    return out;
+  }
+  // a line a new one can take its look from: a one-row item in its day's left column, its words on that day only once
+  const lookOk = (grid, w, dow, cell) => !!cell && cell[1] === 2 * dow && rowsWith(grid, w, dow, at(grid, cell[0], cell[1])).length === 1;
+  // the days whose lines can lend their look to a new line on day b, nearest first: that day, the other days of its week
+  // (the earlier of two equally near), the later weeks, then the earlier weeks the sheet still shows. Never a hidden week.
+  function lookDays(weeks, b) {
+    const ws = (weeks || []).filter(w => w.headRow != null && !pastDay(w.start)).sort((x, y) => x.start.localeCompare(y.start));
+    const i = ws.indexOf(b.week), near = [0, 1, 2, 3, 4, 5, 6].sort((x, y) => Math.abs(x - b.dow) - Math.abs(y - b.dow) || x - y);
+    return (i < 0 ? [b.week] : [b.week, ...ws.slice(i + 1), ...ws.slice(0, i).reverse()]).flatMap(w => near.map(k => ({ week: w, day: w.days[k], dow: k })));
+  }
+  // the nearest line that `ok(text, item)` accepts -> {week (its header), day, text, cell, date}, or null. avoid(r, c): lines
+  // the page knows the save program would refuse to copy the look from (marked urgent with a red fill)
+  function templateFor(weeks, grid, date, ok, avoid = null) {
+    const b = bandOf(weeks, grid, date);
+    if (!b || b.past) return null;
+    for (const x of lookDays(weeks, b)) for (const it of x.day.items) {
+      const cells = it.type === 'jars' && it.lines ? it.lines.filter(l => (l.at || []).length === 1).map(l => l.cell) : oneCell(it) ? [it.cell] : [];
+      for (const cell of cells) {
+        if (!lookOk(grid, x.week, x.dow, cell) || (avoid && avoid(cell[0], cell[1]))) continue;
+        const text = at(grid, cell[0], cell[1]);
+        if (ok(text, it)) return { week: at(grid, x.week.headRow, 0), day: x.dow, text, cell, date: x.day.date };
+      }
+    }
+    return null;
+  }
+  const jarLook = (t, it) => it.type === 'jars' && !!jarSpan(t) && !!PIPE.jarName(PIPE.clean(t)).what;   // "STRAIN --- products"
+  // Copy a line: every one-line item (one cell, no detail lines) the sheet shows from this week on, each wording once (its
+  // copy nearest the day), by date. Left out: Who's on lines (Who's on has its own form), lines the day already has, and
+  // lines on their own day twice (the program finds the look by its words), and lines avoid(r, c) names (marked urgent).
+  // -> [{date, label, week, day, text, type, cell}]
+  function addSources(weeks, grid, date, avoid = null) {
+    const b = bandOf(weeks, grid, date);
+    if (!b || b.past) return [];
+    const there = new Set(), seen = new Set(), out = [];
+    for (let r = b.week.headRow + 1; r <= b.week.lastRow; r++) { const t = at(grid, r, 2 * b.dow); if (t !== '') there.add(nl(t)); }
+    for (const x of lookDays(weeks, b)) for (const it of x.day.items) {
+      if (it.type === 'crew' || !oneCell(it) || !lookOk(grid, x.week, x.dow, it.cell) || (avoid && avoid(it.cell[0], it.cell[1]))) continue;
+      const text = at(grid, it.cell[0], it.cell[1]), k = nl(text);
+      if (there.has(k) || seen.has(k)) continue;
+      seen.add(k);
+      out.push({ date: x.day.date, label: dayLabel(x.day), week: at(grid, x.week.headRow, 0), day: x.dow, text, type: it.type, cell: it.cell });
+    }
+    return out.sort((p, q) => p.date.localeCompare(q.date) || p.cell[0] - q.cell[0]);
+  }
+  // the line Copy starts from, found again by its words on its day (rows may have moved since the list was drawn)
+  function findSource(weeks, grid, source) {
+    const s = source || {}, b = bandOf(weeks, grid, str(s.date));
+    if (!b || b.past) return { err: "That line isn't in a week the sheet shows any more. Pick another line." };
+    const rs = rowsWith(grid, b.week, b.dow, str(s.text)).filter(r => r > b.week.headRow);
+    if (rs.length > 1) return { err: "That line is on its day twice in the sheet, so the app can't tell which look to copy. Pick another line." };
+    const it = rs.length ? b.day.items.find(i => same(i.cell, [rs[0], 2 * b.dow])) : null;
+    if (!it) return { err: "That line isn't in the sheet the same way any more. Pick it again." };
+    if (it.type === 'crew') return { err: "Who's on lines aren't copied. Pick Who's on instead." };
+    if (!oneCell(it)) return { err: "That item takes up more than one cell, so it can't be copied yet. Add it in the sheet." };
+    return { week: b.head, dow: b.dow, cell: it.cell, text: at(grid, it.cell[0], it.cell[1]), type: it.type };
+  }
+  // {mode: copy | jars | crew, date (the day it was opened from), days (dates of that week, one line each; default [date]),
+  //  source: {date, text} and text (copy: the line and its new wording), strain (jars), people (crew: [{name, st, note}]),
+  //  avoid(r, c): lines not to take the look from (as for templateFor)}
+  function addItem(weeks, grid, { mode, date, days, source = null, text = null, strain = '', people = [], avoid = null } = {}) {
+    const b = bandOf(weeks, grid, date);
+    if (!b || b.past) return noDay(b);
+    if (!ADD_MODES.includes(mode)) return fail("Pick what to add: Copy a line, Jars or Who's on.");
+    const ds = (Array.isArray(days) ? days : [date]).map(str);
+    if (!ds.length) return fail('Pick at least one day.');
+    if (new Set(ds).size !== ds.length) return fail('Only one line can be added to each day in one save.');
+    if (ds.length > ADD_MAX_DAYS) return fail(`Add to at most ${ADD_MAX_DAYS} days at a time.`);
+    const targets = [];
+    for (const d of ds.slice().sort()) {
+      const k = b.week.days.findIndex(x => x.date === d);
+      if (k < 0) return fail('Pick days of the same week.');
+      const day = b.week.days[k], s = slotIn(grid, b.week, k);
+      if (beforeToday(d)) return fail(`${dayLabel(day)} is already past, so nothing is added to it. Pick today or a later day.`);
+      if (s.full) return fail(fullText(day, s));
+      targets.push({ day, dow: k, s });
+    }
+    // what to write
+    let src = null, words = '', key = '', name = '', ps = null;
+    if (mode === 'copy') {
+      src = findSource(weeks, grid, source);
+      if (src.err) return fail(src.err);
+      words = text == null ? src.text : wording(text, src.text, false);
+      if (!words.trim()) return fail('Type what the new line should say.');
+    } else if (mode === 'jars') {
+      name = strainName(strain); key = PIPE.strainKey(name);
+      if (!okStrain(name)) return fail('Type the strain name, for example TEA PARTY.');
+    } else {
+      ps = (people || []).map(p => ({ name: str(p.name).toUpperCase().replace(/[^A-Z]/g, ''), st: crewStatus(p.st),
+        note: str(p.note).toUpperCase().replace(/\s+/g, ' ').trim() }));
+      if (!ps.length) return fail('Pick at least one person.');
+      if (ps.some(p => !p.name || !p.st)) return fail('Pick a status for each person: Distro, Trim, Lead, On call or Off.');
+      if (new Set(ps.map(p => p.name)).size !== ps.length) return fail('Each person can be on the line only once.');
+      words = crewTexts(ps).find(x => crewReads(x, ps));
+      if (!words) return fail("The board couldn't read that line back as Who's on. Add it in the sheet.");
+    }
+    // each day: its text and the line it takes its look from (Copy: the line copied; else the nearest of that kind)
+    const ops = [], adds = [], likes = [];
+    for (const { day, dow, s } of targets) {
+      let tx = words, like;
+      if (mode === 'copy') like = { week: src.week, day: src.dow, text: src.text, cell: src.cell };
+      else if (mode === 'jars') {
+        // a second line of a strain the day lists already would stop 1a finding either one ("listed more than once")
+        if (day.items.some(i => i.type === 'jars' && (i.lines || []).some(l => l.strain === key)))
+          return fail(`${key} jars are already on ${DAY[dow]}, and a second line would list them twice. Pick another strain or day.`);
+        like = templateFor(weeks, grid, day.date, jarLook, avoid);
+        if (!like) return fail("There's no jar line written \"STRAIN --- ...\" in the weeks the sheet shows to copy the look from. Add the first one in the sheet.");
+        const sp = jarSpan(like.text);
+        tx = like.text.slice(0, sp.i) + name + like.text.slice(sp.j);
+      } else {
+        if (day.items.some(i => i.type === 'crew')) return fail(`${DAY[dow]} already has a Who's on line. Change that line instead (Edit under Who's on).`);
+        const onCall = ps.every(p => p.st === 'ON CALL');
+        like = templateFor(weeks, grid, day.date, (t, it) => it.type === 'crew' && /\bON CALL\b/i.test(t) === onCall, avoid);
+        if (!like) return fail(`There's no ${onCall ? 'On call' : "Who's on"} line in the weeks the sheet shows to copy the look from. Add the first one in the sheet.`);
+      }
+      // 1a finds a line by its words, so a day never gets two lines that say the same
+      if (rowsWith(grid, b.week, dow, tx).some(r => r > b.week.headRow))
+        return fail(`${DAY[dow]} already has a line that says exactly that. Change the wording, or change the line that is there.`);
+      ops.push({ kind: 'add', tab: PLAN, r: s.r, c: s.c, expect: '', text: tx, find: { week: b.head, day: dow, after: s.after, afterOwner: s.afterOwner },
+        like: { week: like.week, day: like.day, text: like.text }, number: false });
+      adds.push({ day: dow, mode, type: src ? src.type : mode === 'jars' ? 'jars' : 'crew', strain: key, people: ps });
+      likes.push(a1(like.cell[0], like.cell[1]));
+    }
+    if (ops.length * 2 > MAX_OPS) return fail(`That would change ${ops.length * 2} cells; one save can change at most ${MAX_OPS}. Add to fewer days at a time.`);
+    const ks = ops.map(o => o.c >> 1), texts = [...new Set(ops.map(o => oneLine(o.text)))];
+    const what = mode === 'jars' ? `${key} jars` : mode === 'crew' ? `Who's on ${words}` : texts.join(' / ');
+    return finish(grid, ops, { kind: 'add', start: b.week.start, adds }, {
+      intent: `Add to ${ops.length === 1 ? dayLabel(targets[0].day) : `${daysText(ks)} (week of ${dayLabel(b.week.days[0]).slice(4)})`}: ${what}`,
+      summary: `Adds ${plural(ops.length, 'line')}: ${what} on ${daysText(ks)} (${ops.map(o => a1(o.r, o.c)).join(', ')}), styled like ${[...new Set(likes)].join(', ')}`,
+      cells: cellsOf(b, ops).map((x, i) => Object.assign(x, { range: `${x.a1}:${a1(ops[i].r, ops[i].c + 1)}`, like: likes[i] })) });
+  }
+
   /* ---------- supplies: a site count (as a number), STATUS, PAR or NOTES; never TOTAL QTY ---------- */
   const STATUSES = ['IN STOCK', 'RUNNING LOW', 'ON ORDER', 'OOS', 'NOT REORDERING'];
   const SUP_TEXT = ['STATUS', 'PAR', 'NOTES'];
@@ -1880,21 +2059,25 @@ const EDIT = ((PIPE, SUP) => {
     return out;
   }
   // reads the grid with the ops applied and confirms the intended change reads back exactly and nothing else
-  // changes meaning. check: {kind: prerolls | jars | task | crew | supply, ...} as the builders make it.
+  // changes meaning. check: {kind: prerolls | jars | task | crew | supply | add, ...} as the builders make it.
   // -> {ok, problems: [plain English], reads: [what the board will show]}
   function verify(grid, ops, check) {
     const problems = [], reads = [];
     const say = m => { if (!problems.includes(m)) problems.push(m); };
-    const bag = { problems, reads, say };
+    const bag = { problems, reads, say, W: null };
     const done = () => ({ ok: !problems.length, problems, reads });
     if (!Array.isArray(ops) || !ops.length) { say('Nothing to save.'); return done(); }
-    if (ops.length > MAX_OPS) say(`One save can change at most ${MAX_OPS} cells; this one changes ${ops.length}.`);
-    const seen = new Set();
+    // an added line writes its pair of cells
+    const count = ops.reduce((n, o) => n + (o && o.kind === 'add' ? 2 : 1), 0);
+    if (count > MAX_OPS) say(`One save can change at most ${MAX_OPS} cells; this one changes ${count}.`);
+    if (ops.some(o => o && o.kind != null) && ops.some(o => !o || o.kind == null)) say('Adding a line and changing other cells are saved separately. Save one, then the other.');
+    const seen = new Set(), addDays = new Set();
     for (const o of ops) {
       const where = `Cell ${a1(o.r, o.c)}`;
       if (o.tab !== ops[0].tab) say('One save changes one tab of the sheet.');
       if (seen.has(o.r + ':' + o.c)) say(`${where} is changed twice in one save.`);
       seen.add(o.r + ':' + o.c);
+      if (o.kind != null) { verifyAddOp(grid, o, bag, addDays); continue; }
       if (nl(at(grid, o.r, o.c)) !== nl(o.expect)) say(`${where} has changed in the sheet since this page read it. Reload and try again.`);
       if (nl(o.text) === nl(o.expect)) say(`${where} would not change.`);
       if (!o.number && !str(o.expect).trim()) say(`${where} is empty, and for now only cells that already hold something can be changed.`);
@@ -1904,6 +2087,72 @@ const EDIT = ((PIPE, SUP) => {
     else verifyPlan(grid, ops, check || {}, bag);
     return done();
   }
+  // an added line (CONTRACT.md "Op: add a line"): both cells of its pair empty, in the row under the day's last line, which
+  // must still be the line the op names, and the line it copies its look from once on its day in a week the sheet shows
+  function verifyAddOp(grid, o, bag, addDays) {
+    const { say } = bag, where = `Cell ${a1(o.r, o.c)}`, f = o.find || {};
+    if (o.kind !== 'add') { say('The app can only add a line or change what a cell says.'); return; }
+    if (o.tab !== PLAN) { say('Lines can only be added to the DISTRO PIPELINE tab.'); return; }
+    if (o.expect !== '' || o.number) { say(`${where} is not sent as a new line.`); return; }
+    if (!nl(o.text).trim()) { say('Type what the new line should say.'); return; }
+    if (!Number.isInteger(o.c) || o.c < 0 || o.c > 12 || o.c % 2) { say(`${where} is not the first column of a day.`); return; }
+    if (at(grid, o.r, o.c) !== '' || at(grid, o.r, o.c + 1) !== '') { say(`${where} is not empty in the sheet any more. Reload and try again.`); return; }
+    const W = bag.W || (bag.W = PIPE.parse(grid)), w = W.find(x => o.r > x.headRow && o.r <= x.lastRow), dow = o.c >> 1;
+    if (!w) { say(`${where} is not inside a week of the plan.`); return; }
+    const k = at(grid, w.headRow, 0) + '|' + dow;
+    if (addDays.has(k)) say('Only one line can be added to each day in one save.');
+    addDays.add(k);
+    const s = slotIn(grid, w, dow), d = w.days[dow], ownKey = t => PIPE.clean(t).toUpperCase();
+    if (s.full) { say(fullText(d, s)); return; }
+    if (typeof f.after !== 'string' || nl(f.after) !== nl(s.after) || ownKey(f.afterOwner || '') !== ownKey(s.afterOwner)) {
+      say(`${dayLabel(d)} ends with a different line in the sheet than the one this page read. Reload and try again.`); return;
+    }
+    if (o.r !== s.r) { say(`${where} is not the first empty row under ${dayLabel(d)}'s last line.`); return; }
+    // the look line: once on its day, in a week the sheet shows, and a one-line item (a 1x2 merge shows its right cell empty)
+    const L = o.like || {}, lw = W.filter(x => at(grid, x.headRow, 0) === L.week);
+    const lr = typeof L.text === 'string' && L.text.trim() && Number.isInteger(L.day) && L.day >= 0 && L.day <= 6 && lw.length === 1 && !pastDay(lw[0].start)
+      ? rowsWith(grid, lw[0], L.day, L.text).filter(r => r > lw[0].headRow) : [];
+    if (lr.length !== 1) say(`The line the new one in ${where} copies its look from isn't in the sheet the same way any more. Reload and try again.`);
+    else if (at(grid, lr[0], 2 * L.day + 1) !== '') say(`The line the new one in ${where} copies its look from is not a one-line item. Pick another line to copy.`);
+  }
+  // a day with a line added reads as before plus exactly one new thing at the new cell: a new last item, or one more line
+  // of the jar run the day ends with (the parser folds jar lines that follow each other). It must read as what was asked.
+  function readAdd(d, d2, cells, ops, check, bag, changed) {
+    const { say, reads } = bag, cell = cells[0];
+    const o = ops.find(x => same([x.r, x.c], cell)), want = (check.adds || []).find(x => x.day === d.dow);
+    if (cells.length !== 1 || !o || !want) { say(changed); return; }
+    const n = d.items.length, m = d2.items.length;
+    let it = null, line = null;
+    if (m === n + 1 && sig(d.items) === sig(d2.items.slice(0, n))) {
+      it = d2.items[n];
+      if (it.type === 'jars' && it.lines) { line = it.lines.length === 1 && same(it.lines[0].cell, cell) ? it.lines[0] : null; if (!line) it = null; }
+      else if (!same(it.cell, cell)) it = null;
+    } else if (m === n && n > 0 && sig(d.items.slice(0, n - 1)) === sig(d2.items.slice(0, n - 1))) {
+      const x = d.items[n - 1], z = d2.items[n - 1], ls = z.lines || [];
+      if (x.type === 'jars' && z.type === 'jars' && x.lines && ls.length === x.lines.length + 1 && same(ls[ls.length - 1].cell, cell) &&
+          sig(Object.assign({}, z, { lines: ls.slice(0, -1) })) === sig(x)) { it = z; line = ls[ls.length - 1]; }
+    }
+    if (!it) { say(changed); return; }
+    if (want.mode === 'jars') {
+      if (!line) { say(`With that strain the board would read the new line as ${laneName(it.type)}, not jars. Add it in the sheet.`); return; }
+      if (line.strain !== want.strain) { say(changed); return; }
+      reads.push(`${dayLabel(d)}: jars of ${want.strain}`);
+      return;
+    }
+    if (want.mode === 'crew') {
+      if (line || it.type !== 'crew' || it.title !== PIPE.clean(o.text) || !crewReads(it.title, want.people || [])) {
+        say("The board couldn't read that line back as Who's on. Add it in the sheet."); return;
+      }
+      reads.push(`${dayLabel(d)}, Who's on: ${(want.people || []).map(p => `${p.name} ${p.st}`).join(', ')}`);
+      return;
+    }
+    // Copy: the board lane stays the copied line's, as for a reworded line in 1a
+    const type = line ? 'jars' : it.type;
+    if (laneOf(type) !== laneOf(want.type)) { say(`With that wording the board would move this from ${laneName(want.type)} to ${laneName(type)}. Reword it, or add it in the sheet.`); return; }
+    if (line || it.title !== PIPE.clean(o.text)) { say(changed); return; }
+    const strains = (it.strains || []).map(s => s.strain);
+    reads.push(`${dayLabel(d)}: ${laneName(it.type)}${it.drop ? ', ' + it.drop : ''}${strains.length ? ': ' + strains.join(', ') : ''}`);
+  }
 
   // the board's lanes, as the Week board names them (supplies, labels and other share one lane)
   const laneOf = t => (t === 'supply' || t === 'labels' || t === 'other') ? 'supplies' : t;
@@ -1912,7 +2161,7 @@ const EDIT = ((PIPE, SUP) => {
   const laneName = t => LANE[laneOf(t)] || t;
   function verifyPlan(grid, ops, check, bag) {
     const { say, reads } = bag;
-    const before = PIPE.parse(grid);
+    const before = bag.W || PIPE.parse(grid);
     const band = o => before.findIndex(w => o.r > w.headRow && o.r <= w.lastRow);
     const touched = new Map();   // "week:day" -> the cells written there
     for (const o of ops) {
@@ -1937,6 +2186,7 @@ const EDIT = ((PIPE, SUP) => {
       const d2 = after[wi].days[k], cells = touched.get(wi + ':' + k);
       const changed = `After this change ${dayLabel(d)} would read differently than intended, so nothing was saved. Make this change in the sheet.`;
       if (!cells) { if (sig(d.items) !== sig(d2.items) || d.note !== d2.note) say(changed); return; }
+      if (check.kind === 'add') { readAdd(d, d2, cells, ops, check, bag, changed); return; }
       const hit = l => !!l.cell && cells.some(c => same(c, l.cell));
       if (check.kind === 'prerolls' || check.kind === 'jars') {
         // the same day with only the intended lines changed
@@ -2030,8 +2280,8 @@ const EDIT = ((PIPE, SUP) => {
   }
 
   return { prerollAmount, jarStrain, taskText, crew, supply, apply, verify, kindsFor, crewTexts, rewriteAmount, jarSpan, a1,
-    pastDay, listedTwice, wording, setToday: d => { today = d || null; },
-    STATUSES, CREW_STATUSES: Object.keys(CREW_WORDS), MAX_OPS };
+    pastDay, beforeToday, listedTwice, wording, addItem, addSources, slotOf, setToday: d => { today = d || null; },
+    STATUSES, CREW_STATUSES: Object.keys(CREW_WORDS), MAX_OPS, ADD_MODES };
 })(PIPE, SUP);
 /* ===== EDIT MODEL END ===== */
 
@@ -4509,6 +4759,7 @@ function renderDay(el, date, opt) {
   if (D.cards.filter(others).length) h += D.cards.filter(others).map(c => cardHTML(c, date)).join('');
   else if (S.lanes.length) { if (!D.urgent.filter(others).length && lanePickText(true)) h += `<p class="wk-empty">Nothing ${picked ? 'else ' : ''}in ${esc(lanePickText(true))} on ${dowLong(date)}.</p>`; }
   else if (!D.urgent.length && !picked) h += `<p class="wk-empty">Nothing on the sheet for ${dowLong(date)}.</p>`;
+  h += edAddRow(date);   // beta, editors: whatever the lane buttons show, a new line goes under the day's last line
   if ((laneOn('jars') || laneOn('prerolls') || (kf && kf.lane === 'made')) && S.act && S.act.hasTracker && ((S.act.days.get(date) || { rows: [] }).rows.length || missedDay('prerolls', date) || missedDay('jars', date))) h += madeCardHTML(date, null);
   if (opt.phone && date === today && MODEL.days.has(tomorrow)) {
     const T2 = WEEK.dayBoard(MODEL, tomorrow, { drops: S.drops });
@@ -5674,6 +5925,7 @@ const ED_SAY = {
   noRights: "Your account can see this but can't change the sheet from the app.",
   off: 'Saving to the sheet from the app is switched off right now. Make the change in the sheet.',
   tabOff: tab => `Saving to the ${tab} tab from the app isn't switched on yet. Make the change in the sheet.`,
+  addOff: "Adding lines from the app isn't switched on yet. Add it in the sheet.",
   test: 'Test mode: Save checks the change against the sheet but writes nothing.',
   copy: 'Saves go to the test copy of the sheet, not the sheet this page reads.',
 };
@@ -5711,6 +5963,7 @@ const edStrains = (date, lane) => [...edPer(date, lane)].filter(([, ls]) => ls.s
 /* ---- who may edit, and whether the page can right now ---- */
 async function edStatus() {
   if (!BETA || !sb) return;
+  const adding = edAddOn();
   try {
     const { data, error } = await sb.rpc('pipeline_edit_status');
     if (error) throw error;
@@ -5721,7 +5974,7 @@ async function edStatus() {
     ED.on = on;
     if (on) await edLoadLog(true, true);
     if (S.renderOk && !ED.open) render();
-  }
+  } else if (on && adding !== edAddOn() && S.renderOk && !ED.open) render();   // adds switched on or off: the Add rows follow
   if (ED.open && ED.open.phase === 'edit') edPreview();
 }
 // a plan edit is offered only from this week on: the sheet hides past weeks, and the save program won't write them
@@ -5740,6 +5993,7 @@ function edBlock(o) {
   if (!ED.status['can_' + o.scope]) return ED_SAY.noRights;
   if (!ED.status.enabled) return ED_SAY.off;
   if (!(ED.status.tabs_on || []).includes(o.tab)) return ED_SAY.tabOff(o.tab);
+  if (o.kind === 'add' && !edAddOn()) return ED_SAY.addOff;
   return '';
 }
 // load() and loadSupplies() call this after each read of the full sheet; drawn: whether they just redrew the page
@@ -5834,6 +6088,78 @@ function edCrewFoot(date) {
   const cells = edItems(date).filter(i => i.type === 'crew' && i.cell).map(i => i.cell);
   return edFoot(edByText(TAB, cells), edCanDay(date) && edCrewLines(date).length ? edBtn({ '': 'crew', date }, "Who's on") : '');
 }
+/* ---- adding a line (release 1b): "+ Add to Thursday" under the day's cards in the day panel (laptop panel, phone Day
+   view, and the month view's day header). It goes in the sheet under the day's last line, with the look of a line of
+   the same kind, so in the sheet it looks as if Victoria typed it. Only from today on, only while kinds_on has 'add'. ---- */
+const ED_ADD = [['copy', 'Copy a line'], ['jars', 'Jars'], ['crew', "Who's on"]];
+// a database from before release 1b has no kinds_on: rewrites only, so Add stays hidden until Gianni applies the SQL
+function edAddOn() { return !!ED.status && (Array.isArray(ED.status.kinds_on) ? ED.status.kinds_on : ['rewrite']).includes('add'); }
+function edCanAdd(date) { return edCanDay(date) && !EDIT.beforeToday(date) && edAddOn(); }
+function edHasCrew(date) { return edItems(date).some(i => i.type === 'crew'); }
+// a line marked urgent (red fill) in the sheet: the save program won't copy its look, so the page never offers it
+function edUrgent(r, c) { const m = markAt(r, c); return !!(m && m.fill); }
+function edAddRow(date) {
+  if (!edCanAdd(date)) return '';
+  // Who's on only for a day without a Who's on line (a person is added to a line with that line's Edit)
+  const modes = ED_ADD.filter(([m]) => m !== 'crew' || !edHasCrew(date));
+  return `<div class="ed-add"><span class="ed-addt">+ Add to ${esc(dowLong(date))}</span>` + modes.map(([m, t]) =>
+    `<button type="button" class="ed-btn" data-ed="add" data-ed-date="${esc(date)}" data-ed-mode="${m}" aria-label="${esc(`Add to ${dowLong(date)}: ${t}`)}">${esc(t)}</button>`).join('') + '</div>';
+}
+// Copy a line: the lines to copy by day, then the wording (prefilled with the line's, can be changed)
+function edAddCopyHTML(o) {
+  const D = o.draft, list = o.srcs = EDIT.addSources(S.weeks, S.grid, o.date, edUrgent);
+  if (!list.length) return `<p class="ed-hint">There's no one-line item in the weeks the sheet shows to copy. Add the line in the sheet.</p>`;
+  const pick = D.src ? list.findIndex(x => x.date === D.src.date && edNl(x.text) === edNl(D.src.text)) : -1;
+  let h = `<label class="ed-l" for="ed-src">Line to copy</label><select id="ed-src" data-f="src"><option value="">Pick a line</option>`, day = '';
+  list.forEach((x, i) => {
+    if (x.label !== day) { h += (day ? '</optgroup>' : '') + `<optgroup label="${esc(x.label)}">`; day = x.label; }
+    h += `<option value="${i}"${i === pick ? ' selected' : ''}>${esc(edOne(x.text))}</option>`;
+  });
+  h += (day ? '</optgroup>' : '') + '</select>';
+  if (D.src) h += `<label class="ed-l" for="ed-text">Wording</label><textarea id="ed-text" data-f="text" rows="3" spellcheck="false">${esc(D.text)}</textarea>` +
+    `<p class="ed-hint">Change the words if you need to. The line keeps the look of the one you copy, and is saved in capitals.</p>`;
+  return h;
+}
+// Jars: a strain; the line is the nearest jar line's with only the strain changed
+function edAddJarsHTML(o) {
+  const on = [...edPer(o.date, 'jars').keys()], names = [...STRAIN_LABEL.keys()].filter(k => !on.includes(k)).sort();
+  return `<label class="ed-l" for="ed-to">Strain</label><input id="ed-to" data-f="strain" list="ed-strains" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="For example TEA PARTY" value="${esc(o.draft.strain)}">` +
+    `<datalist id="ed-strains">${names.map(k => `<option value="${esc(k)}">`).join('')}</datalist>` +
+    (on.length ? `<p class="ed-hint">Jars already on ${esc(dowLong(o.date))}: ${esc(on.map(sLabel).join(', '))}</p>` : '');
+}
+// Who's on: people and their status, as in 1a's Who's on editor
+function edAddCrewHTML(o) {
+  const D = o.draft;
+  let h = D.people.map((p, i) => `<div class="ed-per"><div class="ed-pn"><b>${esc(cap(p.name))}</b>` +
+    `<button type="button" class="ed-rm" data-eda="rm" data-i="${i}" aria-label="${esc('Take ' + cap(p.name) + ' off this line')}">Remove</button></div>` +
+    `<div class="ed-seg" role="group" aria-label="${esc(cap(p.name))}">` + ED_ST.map(([v, text]) =>
+      `<button type="button" data-edv="st" data-i="${i}" data-v="${esc(v)}" class="${p.st === v ? 'on' : ''}" aria-pressed="${p.st === v}">${esc(text)}</button>`).join('') + '</div>' +
+    (p.st === 'ON CALL' || p.note ? `<input data-f="note" data-i="${i}" value="${esc(p.note)}" placeholder="What for (optional), for example PORTAL WORK" aria-label="${esc('Note for ' + cap(p.name))}" autocomplete="off">` : '') +
+    '</div>').join('');
+  const more = WEEK.ROSTER.filter(n => !D.people.some(p => p.name === n));
+  if (more.length) h += `<label class="ed-l" for="ed-who">${D.people.length ? 'Add someone' : 'Who'}</label><select id="ed-who" data-f="add"><option value="">Pick a name</option>` +
+    more.map(n => `<option value="${esc(n)}">${esc(cap(n))}</option>`).join('') + '</select>';
+  return h;
+}
+// Which days: the week's days as chips, one line on each day picked. Past days, days with no empty row left under their
+// last line, and (for Who's on) days that have a Who's on line are greyed, with the reason under them.
+function edAddDaysHTML(o) {
+  const D = o.draft, w = S.weeks.find(x => x.days.some(d => d.date === o.date));
+  if (!w) return '';
+  const why = { past: [], full: [], crew: [] };
+  const chips = w.days.map(d => {
+    const on = D.days.includes(d.date), s = EDIT.slotOf(S.weeks, S.grid, d.date);
+    const r = EDIT.beforeToday(d.date) ? 'past' : !s || s.past || s.full ? 'full' : o.mode === 'crew' && edHasCrew(d.date) ? 'crew' : '';
+    if (r) why[r].push(shortDate(d.date));
+    return `<button type="button" data-edv="day" data-v="${esc(d.date)}" class="${on ? 'on' : ''}" aria-pressed="${on}"${r && !on ? ' disabled' : ''}>${esc(shortDate(d.date))}</button>`;
+  }).join('');
+  const be = (xs, one, many) => `${xs.join(', ')} ${xs.length > 1 ? many : one}`;
+  const notes = [why.past.length ? be(why.past, 'is past.', 'are past.') : '',
+    why.full.length ? be(why.full, 'has', 'have') + ' no empty row left under the last line in the sheet.' : '',
+    why.crew.length ? be(why.crew, 'already has', 'already have') + " a Who's on line." : ''].filter(Boolean);
+  return `<div class="ed-l">Which days</div><div class="ed-seg" role="group" aria-label="Which days">${chips}</div>` +
+    `<p class="ed-hint">One line on each day picked, under that day's last line in the sheet.${notes.length ? ' ' + notes.join(' ') : ''}</p>`;
+}
 
 /* ---- the editor ---- */
 function edOpenFrom(btn) {
@@ -5845,7 +6171,7 @@ function edOpenFrom(btn) {
   }
   const d = btn.dataset, kind = d.ed, scope = kind === 'supply' ? 'supply' : 'plan';
   if (!edCan(scope)) return;
-  const src = btn.closest('#wk-pop') || btn.closest('.wk-card, .sup-row') || btn, r = src.getBoundingClientRect();
+  const src = btn.closest('#wk-pop') || btn.closest('.wk-card, .sup-row, .ed-add') || btn, r = src.getBoundingClientRect();
   const o = { kind, scope, tab: scope === 'plan' ? TAB : d.edTab, date: d.edDate || '', phase: 'edit', dirty: false, touched: new Set(),
     draft: {}, rect: { left: r.left, top: r.top, width: r.width }, back: btn };
   if (!edSetup(o, d)) return;
@@ -5897,6 +6223,13 @@ function edSetup(o, d) {
     edPickSupply(o, t, it);
     return true;
   }
+  if (o.kind === 'add') {
+    if (!edCanAdd(o.date)) return false;
+    o.mode = ED_ADD.some(([m]) => m === d.edMode) ? d.edMode : 'copy';
+    Object.assign(o.draft, { days: [o.date], src: null, text: '', strain: '', people: [] });
+    o.slot0 = {};   // the row each day's line was first shown going in, to say when the sheet moves it
+    return true;
+  }
   return false;
 }
 // the lines of the picked strain (and, for pre-rolls, size) on the day
@@ -5929,6 +6262,8 @@ function edPickSupply(o, t, it) {
 }
 // what the person is looking at in the sheet, to tell whether the sheet changes under the open editor
 function edSnap(o) {
+  // an add: each picked day's last line and the row under it (the preview follows them; nothing there is overwritten)
+  if (o.kind === 'add') return o.draft.days.map(d => { const s = EDIT.slotOf(S.weeks, S.grid, d); return s && !s.past ? `${d}:${s.r}:${s.after}` : d; }).join(ED_SEP);
   if (o.kind === 'prerolls' || o.kind === 'jars') {
     const ls = edPer(o.date, o.kind).get(o.draft.strain) || [];
     return ls.length ? ls.map(l => l.cell ? edCell(l.cell[0], l.cell[1]) : '').join(ED_SEP) : null;
@@ -5949,6 +6284,9 @@ function edLocate(o) {
 }
 // null while the sheet still says what the person saw; else what it says now
 function edConflict(o) {
+  // an add writes only empty cells under the day's last line: a sheet that changed moves the line (the preview says
+  // where it goes now), and the save program checks the last line again
+  if (o.kind === 'add') return null;
   if (o.kind === 'prerolls' || o.kind === 'jars') {
     const ls = edPer(o.date, o.kind).get(o.draft.strain) || [], texts = ls.map(l => l.cell ? edCell(l.cell[0], l.cell[1]) : '');
     if (ls.length && texts.join(ED_SEP) === o.seen) return null;
@@ -5984,6 +6322,8 @@ function edRebase(o) {
     const lines = edCrewLines(o.date).map(i => i.cell), i = lines.findIndex(c => edSameCell(c, o.cell));
     if (i < 0) return false;
     o.lines = lines; o.draft.line = i;
+  } else if (o.kind === 'add') {
+    o.slot0 = {};   // built again on the sheet as it is now
   } else {
     const t = edSupTab(o), it = t && edSupItem(o, t);
     if (!it) return false;
@@ -6026,6 +6366,21 @@ function edBuild(o) {
       if (b.ok) b.cells = b.cells.map(x => Object.assign({}, x, { label: shortDate(x.date) }));
       return edOut(b);
     }
+    if (o.kind === 'add') {
+      if (!D.days.length) return { error: 'Pick at least one day under "Which days".' };
+      if (o.mode === 'copy' ? !D.src : o.mode === 'jars' ? !String(D.strain || '').trim() : !D.people.length) return { none: true };
+      const b = EDIT.addItem(S.weeks, S.grid, { mode: o.mode, date: o.date, days: D.days, source: D.src, text: o.mode === 'copy' ? D.text : null,
+        strain: D.strain, people: D.people, avoid: edUrgent });
+      if (!b.ok) return edOut(b);
+      // the page's row is a guess the save program settles; a re-read that moves it is said, not treated as a conflict
+      const moved = [];
+      b.cells = b.cells.map(x => {
+        if (o.slot0[x.date] == null) o.slot0[x.date] = x.r;
+        else if (o.slot0[x.date] !== x.r) moved.push(`${dowLong(x.date)} changed in the sheet; the line now goes in ${x.a1}.`);
+        return Object.assign({}, x, { label: shortDate(x.date) });
+      });
+      return Object.assign(b, { note: moved.join(' '), board: 'On the board: ' + b.reads.join('; ') });
+    }
     // supplies: each changed field is one cell; all of them go in one save, checked together
     const t = edSupTab(o), it = t && edSupItem(o, t);
     if (!it) return { error: "Couldn't find that item in the supply sheet. Reload the page and try again." };
@@ -6053,7 +6408,10 @@ function edBuild(o) {
 }
 const ED_NONE = { prerolls: 'Change the amount to see what will be written.', jars: 'Type the new strain to see what will be written.',
   task: 'Change the wording to see what will be written.', crew: "Change someone's status to see what will be written.",
-  supply: 'Change a count, the status, PAR or the notes to see what will be written.' };
+  supply: 'Change a count, the status, PAR or the notes to see what will be written.',
+  'add-copy': 'Pick a line to copy to see what will be added.', 'add-jars': 'Type the strain to see what will be added.',
+  'add-crew': "Pick who's on to see what will be added." };
+const edNone = o => ED_NONE[o.kind === 'add' ? 'add-' + o.mode : o.kind];
 
 /* ---- drawing the editor ---- */
 function edTitle(o) {
@@ -6061,9 +6419,10 @@ function edTitle(o) {
   if (o.kind === 'jars') return o.strains.length > 1 ? 'Jars' : `${sLabel(o.draft.strain)} jars`;
   if (o.kind === 'task') return 'Change the wording';
   if (o.kind === 'crew') return "Who's on";
+  if (o.kind === 'add') return `Add to ${dowLong(o.date)}, ${md(o.date)}`;
   return o.name;
 }
-const edWhere = o => o.scope === 'supply' ? o.label : `${dowLong(o.date)}, ${md(o.date)}`;
+const edWhere = o => o.scope === 'supply' ? o.label : o.kind === 'add' ? "A new line under the day's last line in the sheet" : `${dowLong(o.date)}, ${md(o.date)}`;
 function edSeg(field, label, opts, value, extra = '') {
   return `<div class="ed-l">${esc(label)}</div><div class="ed-seg" role="group" aria-label="${esc(label)}">` + opts.map(([v, text]) => {
     const on = String(v) === String(value);
@@ -6109,6 +6468,10 @@ function edFormHTML(o) {
     if (more.length) h += `<label class="ed-l" for="ed-add">Add someone</label><select id="ed-add" data-f="add"><option value="">Pick a name</option>` +
       more.map(n => `<option value="${esc(n)}">${esc(cap(n))}</option>`).join('') + '</select>';
     h += (o.rebased ? edWas(o.seen) : '');
+  } else if (o.kind === 'add') {
+    h += edSeg('mode', 'What', ED_ADD.filter(([m]) => m !== 'crew' || o.mode === 'crew' || !edHasCrew(o.date)), o.mode);
+    h += o.mode === 'copy' ? edAddCopyHTML(o) : o.mode === 'jars' ? edAddJarsHTML(o) : edAddCrewHTML(o);
+    h += edAddDaysHTML(o);
   } else {
     const counts = o.fields.filter(f => f.kind === 'count');
     if (counts.length) h += `<div class="ed-l">Counts</div><div class="ed-cnts">` + counts.map(f =>
@@ -6127,7 +6490,7 @@ function edFormHTML(o) {
 function edCellsHTML(cells, open) {
   if (!cells || !cells.length) return '';
   return `<details class="ed-cells"${open ? ' open' : ''}><summary>${cells.length === 1 ? 'Show the cell' : `Show the ${cells.length} cells`}</summary><ul>` +
-    cells.map(x => `<li><em>${esc([x.label, x.a1].filter(Boolean).join(' · '))}</em>${esc(edOne(x.before)) || 'empty'} → <b>${esc(edOne(x.after)) || 'empty'}</b></li>`).join('') +
+    cells.map(x => `<li><em>${esc([x.label, x.range || x.a1, x.like ? 'looks like ' + x.like : ''].filter(Boolean).join(' · '))}</em>${esc(edOne(x.before)) || 'empty'} → <b>${esc(edOne(x.after)) || 'empty'}</b></li>`).join('') +
     '</ul></details>';
 }
 function edDraw() {
@@ -6159,15 +6522,33 @@ function edDraw() {
       : `<button type="button" class="ed-b" data-eda="back"${dis}>Back to the edit</button>`) + `<button type="button" class="ed-b pri" data-eda="close"${dis}>Done</button>`;
   } else if (o.phase === 'undone') {
     const u = o.undone;
-    body = u.wrote ? `<div class="ed-note ok"><b>Undone, ${edClock(u.at)}</b>The sheet says what it said before.</div>`
+    body = u.wrote ? `<div class="ed-note ok"><b>Undone, ${edClock(u.at)}</b>${o.kind === 'add' ? 'Taken off the sheet. The row is empty again.' : 'The sheet says what it said before.'}</div>`
       : `<div class="ed-note info"><b>Test mode: nothing was put back</b>This is what would have been put back:</div>`;
     body += edCellsHTML(u.cells, !u.wrote);
     foot = `<button type="button" class="ed-b pri" data-eda="close">Done</button>`;
   }
+  // a redraw of the same screen keeps where the person was: the form's scroll (a phone scrolls it back to the top
+  // otherwise) and the control in use, found again by what it is
+  const screen = o.phase === 'saving' ? 'edit' : o.phase === 'undoing' ? 'done' : o.phase, same = o.drawn === screen;
+  const top = same && el.querySelector('.ed-body') ? el.querySelector('.ed-body').scrollTop : 0;
+  const was = same && el.contains(document.activeElement) ? edCtlAt(el, document.activeElement) : null;
   el.innerHTML = `<div class="ed-h"><div><b>${esc(edTitle(o))}</b><span>${esc(edWhere(o))}</span></div>` +
     `<button type="button" class="ed-x" data-eda="close" aria-label="Close"${dis}>×</button></div><div class="ed-body">${body}</div><div class="ed-foot">${foot}</div>`;
+  o.drawn = screen;
   if (o.phase === 'edit' || o.phase === 'saving') edPreview();
+  if (top) el.querySelector('.ed-body').scrollTop = top;
+  if (was && was.key) { const f = edCtls(el).filter(n => edCtlKey(n) === was.key)[was.nth]; if (f) f.focus({ preventScroll: true }); }
   edPlace();
+}
+// a control in the editor, found again after a redraw by its tag, id and the data attributes that say what it changes
+// (and which of its twins it is: the corner's Close and the Cancel button both close)
+const ED_CTL = 'button, input, select, textarea, summary';
+function edCtls(el) { return [...el.querySelectorAll(ED_CTL)]; }
+function edCtlKey(n) { return [n.tagName, n.id, ...['data-edv', 'data-eda', 'data-f', 'data-i', 'data-v'].map(k => n.getAttribute(k) || '')].join('|'); }
+function edCtlAt(el, n) {
+  if (!n.matches || !n.matches(ED_CTL)) return null;
+  const key = edCtlKey(n);
+  return { key, nth: edCtls(el).filter(x => edCtlKey(x) === key).indexOf(n) };
 }
 // the parts of the editor that follow the draft: the mode line, what will be written, Save
 function edPreview() {
@@ -6180,7 +6561,8 @@ function edPreview() {
   const block = edBlock(o), s = ED.status;
   mode.innerHTML = !block && s && s.test_mode ? `<p class="ed-note info">${ED_SAY.test}</p>` : !block && s && s.target === 'test' ? `<p class="ed-note info">${ED_SAY.copy}</p>` : '';
   const shown = !!prev.querySelector('details[open]');   // a cell list the person opened stays open
-  prev.innerHTML = b.ok ? `<b>${esc(b.summary)}</b>${edCellsHTML(b.cells, shown)}` : b.error ? `<p class="ed-err">${esc(b.error)}</p>` : `<p class="ed-quiet">${esc(ED_NONE[o.kind])}</p>`;
+  prev.innerHTML = b.ok ? `${b.note ? `<p class="ed-note info">${esc(b.note)}</p>` : ''}<b>${esc(b.summary)}</b>${b.board ? `<p class="ed-hint">${esc(b.board)}</p>` : ''}${edCellsHTML(b.cells, shown)}`
+    : b.error ? `<p class="ed-err">${esc(b.error)}</p>` : `<p class="ed-quiet">${esc(edNone(o))}</p>`;
   $('ed').querySelectorAll('input[data-f]').forEach(i => i.classList.toggle('bad', !!(b.bad && b.bad[i.dataset.f])));
   msg.innerHTML = o.phase === 'saving' ? `<p class="ed-note info"><span class="ed-spin"></span>${ED_SAY.saving}</p>`
     : block ? `<p class="ed-note bad">${esc(block)}</p>` : o.notice ? `<p class="ed-note ${o.notice.tone}">${esc(o.notice.text)}</p>` : '';
@@ -6199,7 +6581,7 @@ function edPlace() {
   el.style.top = Math.round(Math.max(gap, Math.min(o.rect.top, innerHeight - el.offsetHeight - gap))) + 'px';
 }
 function edFocus() {
-  const el = $('ed'), f = el.querySelector('#ed-n, #ed-to, #ed-text, .ed-cnt input:not(:disabled)') || el.querySelector('.ed-b.pri:not(:disabled)') || el.querySelector('.ed-x');
+  const el = $('ed'), f = el.querySelector('#ed-n, #ed-to, #ed-text, #ed-src, #ed-who, .ed-cnt input:not(:disabled)') || el.querySelector('.ed-b.pri:not(:disabled)') || el.querySelector('.ed-x');
   if (!f) return;
   f.focus({ preventScroll: true });
   if (f.id === 'ed-n') f.select();
@@ -6267,16 +6649,36 @@ async function edSave() {
     // only a write to the sheet this page reads can show up on the board; the test copy never will
     if (j.wrote && j.mode === 'live') edPend(o, b.ops, j.cells || []);
     if (j.wrote) edLoadLog(true);
-  } else if (j.reason === 'conflict' && (j.cells || []).length && j.cells.every(x => !x.why || ['changed', 'item-gone', 'week-gone'].includes(x.why))) {
-    // the sheet changed under the draft: show what it says now. Other conflicts (an item listed twice, the same text
-    // twice on a day) are not changes, so the draft stays with the program's message, like a refusal.
-    o.phase = 'conflict';
-    o.conflict = { server: true, message: j.message, gone: '', now: j.cells.map((x, i) => ({ label: [labelOf(x, i), x.a1].filter(Boolean).join(' · '), text: x.found })) };
-    edReread(o.scope);
+  } else if (j.reason === 'conflict' && (j.cells || []).length && j.cells.every(x => !x.why || ['changed', 'item-gone', 'week-gone'].includes(x.why)) &&
+      j.cells.every(x => !x.role || x.role === 'after')) {
+    // the sheet changed under the draft: show what it says now (for an add, what the day ends with now). Other conflicts
+    // (an item listed twice, the same text twice on a day, a full day, the line an add copies its look from) are not
+    // changes to what was edited, so the draft stays with the program's message, like a refusal.
+    // An add's day the program found ending with nothing is an empty day only when the program read its week (why
+    // 'changed') and a fresh read shows the day empty. Its week gone (the header retyped) or not read whole is not an
+    // empty day: the draft stays with the program's message.
+    const opOf = (x, i) => b.ops.find(op => op.tab === x.tab && op.r === x.r && op.c === x.c) || b.ops[i] || {};
+    const blank = j.cells.map((x, i) => ({ x, i })).filter(({ x }) => x.role === 'after' && !x.found);
+    let fresh = false;
+    if (blank.length && blank.every(({ x }) => x.why === 'changed')) {
+      try { await edReread(o.scope); } catch (_) {}
+      fresh = true;
+      if (ED.open !== o) return;
+    }
+    if (blank.every(({ x, i }) => x.why === 'changed' && edDayEmpty(opOf(x, i).find))) {
+      o.phase = 'conflict';
+      o.conflict = { server: true, message: j.message, gone: '', now: j.cells.map((x, i) => x.role === 'after'
+        ? { label: `${labelOf(x, i) || 'That day'} now ends with`, text: x.found || 'Nothing (the day is empty in the sheet)' }
+        : { label: [labelOf(x, i), x.a1].filter(Boolean).join(' · '), text: x.found }) };
+    } else {
+      o.phase = 'edit'; o.notice = { tone: 'bad', text: j.message || ED_SAY.odd };
+    }
+    if (!fresh) edReread(o.scope);
   } else {
     // refused, switched off, signed out, unreachable: the draft stays and Save can be pressed again
     o.phase = 'edit'; o.notice = { tone: 'bad', text: j.message || ED_SAY.odd };
     if (j.reason === 'off' || j.reason === 'not-editor') edStatus();
+    if (o.kind === 'add' && j.reason === 'conflict') edReread(o.scope);   // the preview follows the sheet as it is now
   }
   edDraw();
 }
@@ -6327,20 +6729,30 @@ function edFresh() {
 // a save is shown with a dashed outline on its item until a read of the sheet shows the new text (or 5 minutes pass)
 function edPend(o, ops, cells) {
   ED.pending.push({ tab: o.tab, until: Date.now() + 5 * 60 * 1000,
-    cells: cells.map((x, i) => ({ r: x.r, c: x.c, after: x.after, find: (ops[i] || {}).find || {} })) });
+    cells: cells.map((x, i) => ({ r: x.r, c: x.c, after: x.after, kind: x.kind, before: x.before, find: (ops[i] || {}).find || {} })) });
   edDecorate();
   ED.chase.forEach(clearTimeout);
   ED.chase = [1500, 4000, 8000, 15000, 30000, 60000, 120000].map(ms => setTimeout(() => {
     if (ED.pending.some(p => (p.tab === TAB) === (o.scope === 'plan'))) edReread(o.scope);
   }, ms));
 }
+// the week a plan op's find names by its header text, as the page last read it (null when the page doesn't show it)
+function edWeekOf(f) { return (f && f.day != null && S.weeks.find(w => w.headRow != null && edCell(w.headRow, 0) === f.week)) || null; }
+// does that week's day hold, in these columns, a cell test() accepts?
+function edDayHas(w, cols, test) {
+  for (let r = w.headRow + 1; r <= w.lastRow; r++) for (const c of cols) if (test(edCell(r, c))) return true;
+  return false;
+}
+// an add's day as the page last read it: true only when its week is there and the day's two columns hold nothing
+function edDayEmpty(f) { const w = edWeekOf(f); return !!w && !edDayHas(w, [2 * f.day, 2 * f.day + 1], t => t !== ''); }
 function edHolds(p, x) {
   if (p.tab === TAB) {
+    const w = edWeekOf(x.find), c0 = 2 * (x.find || {}).day;
+    // an undone add leaves a blank pair, and any blank cell reads like that: the read has caught up only once the
+    // added line is gone from its day's left column
+    if (x.kind === 'unadd' && edOne(x.before)) return !!w && !edDayHas(w, [c0], t => edSame(t, x.before));
     if (edSame(edCell(x.r, x.c), x.after)) return true;
-    const w = S.weeks.find(w => w.headRow != null && edCell(w.headRow, 0) === x.find.week);
-    if (!w || x.find.day == null) return false;
-    for (let r = w.headRow + 1; r <= w.lastRow; r++) for (const c of [2 * x.find.day, 2 * x.find.day + 1]) if (edSame(edCell(r, c), x.after)) return true;
-    return false;
+    return !!w && edDayHas(w, [c0, c0 + 1], t => edSame(t, x.after));
   }
   const t = S.sup && S.sup.tabs.find(t => t.name === p.tab);
   const it = t && t.items.find(i => i.name === cellText(x.find.item) && i.catText === x.find.category);
@@ -6375,8 +6787,15 @@ function edDecorate() {
       if (f === 'strain') { o.draft.strain = val; edPickStrain(o); o.seen = edSnap(o); edDraw(); return; }
       if (f === 'size') { o.draft.size = val; edPickStrain(o); edDraw(); return; }
       if (f === 'line') { o.draft.line = +val; edPickCrew(o); o.seen = edSnap(o); edDraw(); return; }
+      // adding a line: what to add, and the days (several can be picked)
+      if (f === 'mode') { o.mode = val; o.notice = null; edDraw(); return; }
+      if (f === 'day') {
+        const ds = o.draft.days, i = ds.indexOf(val);
+        if (i >= 0) ds.splice(i, 1); else ds.push(val);
+        ds.sort(); o.dirty = true; o.notice = null; edDraw(); return;
+      }
       if (f === 'only') o.draft.only = val === '1';
-      else if (f === 'st') { o.draft.people[+v.dataset.i].st = val; o.dirty = true; }
+      else if (f === 'st') { o.draft.people[+v.dataset.i].st = val; o.dirty = true; if (o.kind === 'add') { o.notice = null; edDraw(); return; } }
       else { o.draft[f] = val; o.touched.add(f); o.dirty = true; }
       v.parentNode.querySelectorAll('button').forEach(b => { const on = b === v; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
       edPreview(); return;
@@ -6400,13 +6819,19 @@ function edDecorate() {
   });
   el.addEventListener('input', e => {
     const o = ED.open, f = e.target.dataset && e.target.dataset.f;
-    if (!o || !f || f === 'add' || o.phase !== 'edit') return;
+    if (!o || !f || f === 'add' || f === 'src' || o.phase !== 'edit') return;
     if (f === 'note') o.draft.people[+e.target.dataset.i].note = e.target.value.toUpperCase().replace(/\s+/g, ' ').trim();
     else { o.draft[f] = e.target.value; o.touched.add(f); }
     o.dirty = true; o.notice = null; edPreviewSoon();
   });
   el.addEventListener('change', e => {
     const o = ED.open;
+    // Copy a line: the line picked; its words become the wording to start from
+    if (o && o.phase === 'edit' && e.target.dataset.f === 'src') {
+      const x = e.target.value === '' ? null : (o.srcs || [])[+e.target.value];
+      o.draft.src = x ? { date: x.date, text: x.text } : null; o.draft.text = x ? x.text : '';
+      o.dirty = true; o.notice = null; edDraw(); return;
+    }
     if (!o || e.target.dataset.f !== 'add' || !e.target.value) return;
     o.draft.people.push({ name: e.target.value, st: 'DISTRO', note: '' }); o.dirty = true; edDraw();
   });

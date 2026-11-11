@@ -863,6 +863,127 @@ if (realPipe) {
   no(EDIT.supply(acc1, { item: acc1.items[0], header: 'PAR', value: 100 }), /no PAR in the sheet yet/, 'an empty PAR');
   assert.equal(okR(EDIT.supply(acc1, { item: acc1.items[0], header: 'MYLARS', value: 3 }), 'accessory count').ops[0].tab, 'ACCESSORY SUPPLY');
   console.log('edit model: pre-roll amounts, jar strains, task wording, Who\'s on and supplies build and read back right');
+
+  // release 1b, adding a line: it goes in the row under the day's last line (never a new row), names that last line and a
+  // line of the same kind to take the look from (CONTRACT.md "Op: add a line"), and the day must read as before plus it
+  {
+    EDIT.setToday('2026-11-02');
+    const D = k => `2026-11-0${2 + k}`;   // Mon Nov 2 + k days
+    const TIDE_JAR = 'SORT/PACKAGE TO JARS (ADD VERIFICATION STICKER): \nTIDE--- 3.5G & 1.5G BUDTENDER SAMPLE', TESTING = 'TBD - TESTING SCHEDULED FOR DEC DROP 2-  TIDEBANGER, ANTIDOTE';
+    const NABIS = { date: D(1), text: 'STAGE DEC DROP 3 FOR NABIS' }, at1 = o => EDIT.a1(o.r, o.c);
+    // where each day's line goes: the row under its last line, whatever column that line is in
+    const sl = [0, 1, 2, 3, 4, 5, 6].map(k => EDIT.slotOf(W, g, D(k)));
+    assert.deepEqual(sl.map(s => EDIT.a1(s.r, s.c)), ['A12', 'C9', 'E7', 'G8', 'I4', 'K7', 'M4'], 'each day: the row under its last line');
+    assert.deepEqual(sl.map(s => [s.after, s.afterOwner, s.full]).slice(0, 3), [[TIDE_JAR, '', false], ['STAGE DEC DROP 3 FOR NABIS', '', false], [TESTING, '', false]]);
+    const s9 = EDIT.slotOf(W, g, '2026-11-09'), s10 = EDIT.slotOf(W, g, '2026-11-10');
+    assert.deepEqual([s9.r, s9.after, s9.afterOwner, s9.full, s9.lastWeek], [15, '1G PREROLL- 600', 'VOODOO', true, true],
+      'the last week ends after its last row holding text: Monday Nov 9 is full; its last line is in the right column, with its owner');
+    assert.deepEqual([s10.r, s10.after, s10.afterOwner, s10.full], [13, '', '', false], 'an empty day: the row under the header');
+
+    // Copy a line: one-line items only, no Who's on lines, nothing the day has already
+    assert.deepEqual(EDIT.addSources(W, g, D(3)).map(s => [s.label, s.text]), [['Tue Nov 3', 'STAGE DEC DROP 3 FOR NABIS'],
+      ['Wed Nov 4', 'PREROLLS- GRIND, PRODUCE, PACKAGE'], ['Wed Nov 4', TESTING], ['Fri Nov 6', 'MAKE SURE SUPPLY COUNTS ARE ON POINT FOR 25TH & 23RD!!']],
+    'what Thursday can copy');
+    const cp = okR(EDIT.addItem(W, g, { mode: 'copy', date: D(3), source: NABIS }), 'copy the Tuesday Nabis line to Thursday');
+    assert.deepEqual(cp.ops, [{ kind: 'add', tab: 'DISTRO PIPELINE', r: 7, c: 6, expect: '', text: 'STAGE DEC DROP 3 FOR NABIS',
+      find: { week: HEAD, day: 3, after: 'DEC DROP 1', afterOwner: '' }, like: { week: HEAD, day: 1, text: 'STAGE DEC DROP 3 FOR NABIS' }, number: false }],
+    'the op as CONTRACT.md has it');
+    assert.deepEqual([cp.intent, cp.summary, cp.reads, cp.cells[0].range, cp.cells[0].like], ['Add to Thu Nov 5: STAGE DEC DROP 3 FOR NABIS',
+      'Adds 1 line: STAGE DEC DROP 3 FOR NABIS on Thu (G8), styled like C8', ['Thu Nov 5: Orders & Nabis, DEC DROP 3'], 'G8:H8', 'C8']);
+    {
+      const thu = PIPE.parse(EDIT.apply(g, cp.ops))[0].days[3].items;
+      assert.deepEqual(thu.map(i => [i.type, i.cell]), [['prerolls', null], ['other', [6, 6]], ['orders', [7, 6]]], 'Thursday reads as before plus the new line');
+      assert.equal(JSON.stringify(g), frozen, 'apply works on a copy');
+    }
+    const cp3 = okR(EDIT.addItem(W, g, { mode: 'copy', date: D(3), days: [D(5), D(3), D(4)], source: NABIS, text: 'stage dec drop 1 for nabis' }), 'reworded, on three days');
+    assert.deepEqual(cp3.ops.map(o => [at1(o), o.text, o.find.after, o.like.day]), [['G8', 'STAGE DEC DROP 1 FOR NABIS', 'DEC DROP 1', 1],
+      ['I4', 'STAGE DEC DROP 1 FOR NABIS', 'MAKE SURE SUPPLY COUNTS ARE ON POINT FOR 25TH & 23RD!!', 1], ['K7', 'STAGE DEC DROP 1 FOR NABIS', 'VOODOO', 1]]);
+    assert.deepEqual([cp3.summary, cp3.reads.length], ['Adds 3 lines: STAGE DEC DROP 1 FOR NABIS on Thu to Sat (G8, I4, K7), styled like C8', 3]);
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(3), source: NABIS, text: 'DEC DROP 3' }), /move this from Orders & Nabis to Supplies & other/, 'a reworded copy that changes lane');
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(1), source: NABIS }), /Tue already has a line that says exactly that/, 'a twin line on the day');
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(3), days: [D(3), D(3)], source: NABIS }), /one line can be added to each day/, 'two lines on one day');
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(3), days: [D(3), '2026-11-10'], source: NABIS }), /same week/, 'a day of another week');
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(3), source: { date: D(1), text: 'NOT IN THE SHEET' } }), /isn't in the sheet the same way/, 'a line that is gone');
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(3), source: { date: D(0), text: 'JUSTIN DISTRO / LORENZO TRIM' } }), /Who's on lines aren't copied/, 'a Who\'s on line');
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(3), source: { date: D(0), text: 'PREROLLS- GRIND, PRODUCE, PACKAGE, ADD BATCH LABEL (ADD VERIFICATION STICKER)' } }),
+      /more than one cell/, 'a pre-roll job with its strain rows');
+    no(EDIT.addItem(W, g, { mode: 'copy', date: D(3), source: NABIS, text: '   ' }), /Type what the new line should say/, 'no words');
+
+    // Jars: the nearest "STRAIN --- products" jar line with only the strain changed (Wednesday's own is the older style)
+    const jr = okR(EDIT.addItem(W, g, { mode: 'jars', date: D(0), days: [D(0), D(1), D(2)], strain: 'tea  party' }), 'TEA PARTY jars, Mon to Wed');
+    assert.deepEqual(jr.ops.map(o => [at1(o), o.text, o.like, o.find.after]), [['A12', JAR('TEA PARTY'), { week: HEAD, day: 0, text: JAR('BLACK MAGIC') }, TIDE_JAR],
+      ['C9', JAR('TEA PARTY'), { week: HEAD, day: 1, text: JAR('BLACK MAGIC') }, 'STAGE DEC DROP 3 FOR NABIS'],
+      ['E7', JAR('TEA PARTY'), { week: HEAD, day: 1, text: JAR('BLACK MAGIC') }, TESTING]]);
+    assert.deepEqual([jr.summary, jr.reads], ['Adds 3 lines: TEA PARTY jars on Mon to Wed (A12, C9, E7), styled like A10, C7',
+      ['Mon Nov 2: jars of TEA PARTY', 'Tue Nov 3: jars of TEA PARTY', 'Wed Nov 4: jars of TEA PARTY']]);
+    {
+      const wk = PIPE.parse(EDIT.apply(g, jr.ops))[0];
+      assert.deepEqual(wk.days[0].items.filter(i => i.type === 'jars').map(i => i.lines.map(l => l.strain)), [['BLACK MAGIC', 'TIDE', 'TEA PARTY']],
+        'Monday: the line joins the jar run the day ends with');
+      assert.deepEqual(wk.days[1].items.map(i => i.type).slice(-2), ['orders', 'jars'], 'Tuesday: a jar run of its own under the Nabis line');
+    }
+    // a line marked urgent in the sheet (red fill) never lends its look: the next nearest one does, and Copy doesn't list it
+    const urgent = (r, c) => r === 6 && c === 2;   // C7, Tuesday's jar line
+    assert.equal(okR(EDIT.addItem(W, g, { mode: 'jars', date: D(1), strain: 'TEA PARTY', avoid: urgent }), 'past an urgent line').cells[0].like, 'A10');
+    assert.ok(!EDIT.addSources(W, g, D(3), (r, c) => r === 7 && c === 2).some(s => s.text === 'STAGE DEC DROP 3 FOR NABIS'), 'an urgent line is not offered to copy');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: D(1), strain: 'BLACK MAGIC' }), /BLACK MAGIC jars are already on Tue/, 'a strain the day lists already');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: D(2), strain: 'smoothie' }), /SMOOTHIE jars are already on Wed/, 'also in the older style');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: D(3), strain: 'TEA & PARTY' }), /Type the strain name/, 'a bad strain name');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: D(3), strain: 'THE VOID' }), /read the new line as Orders & Nabis, not jars/, '"THE VOID" reads as an order');
+
+    // Who's on: only for a day without one, in the look of the nearest Who's on line (an On call line for On call)
+    const wo = okR(EDIT.addItem(W, g, { mode: 'crew', date: D(3), people: [{ name: 'Drea', st: 'lead' }] }), "Who's on, Thursday");
+    assert.deepEqual([wo.ops[0].text, at1(wo.ops[0]), wo.ops[0].like, wo.reads], ['DREA DISTRO LEAD', 'G8', { week: HEAD, day: 1, text: 'LOREZNO & JUSTIN DISTRO' },
+      ["Thu Nov 5, Who's on: DREA LEAD"]]);
+    const oc = okR(EDIT.addItem(W, g, { mode: 'crew', date: D(4), people: [{ name: 'NOURI', st: 'On call', note: 'distro work' }] }), 'On call, Friday');
+    assert.deepEqual([oc.ops[0].text, oc.ops[0].like.text], ['NOURI ON CALL FOR DISTRO WORK', 'NOURI ON CALL FOR PORTAL WORK']);
+    no(EDIT.addItem(W, g, { mode: 'crew', date: D(0), people: [{ name: 'DREA', st: 'LEAD' }] }), /Mon already has a Who's on line/, 'a day with a Who\'s on line');
+    no(EDIT.addItem(W, g, { mode: 'crew', date: D(3), people: [] }), /Pick at least one person/, 'nobody');
+
+    // only today or later, never a hidden week, never a full day
+    EDIT.setToday('2026-11-04');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: D(3), days: [D(1), D(3)], strain: 'TEA PARTY' }), /Tue Nov 3 is already past/, 'a day before today');
+    okR(EDIT.addItem(W, g, { mode: 'jars', date: D(2), strain: 'TEA PARTY' }), 'today itself, in the look of a past day of the week');
+    assert.deepEqual([EDIT.beforeToday('2026-11-03'), EDIT.beforeToday('2026-11-04')], [true, false]);
+    EDIT.setToday('2026-11-09');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: D(3), strain: 'TEA PARTY' }), /week is over/, 'a past week');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: '2026-11-09', strain: 'TEA PARTY' }),
+      /^Monday, Nov 9 is in the last week in the sheet, and that day has no row left under its last line\. Add the line in the sheet\.$/, 'a full day in the last week');
+    no(EDIT.addItem(W, g, { mode: 'jars', date: '2026-11-10', strain: 'TEA PARTY' }), /no jar line .* to copy the look from/, 'no jar line to copy the look from');
+    EDIT.setToday('2026-11-02');
+    {
+      const g2 = EDIT.apply(g, [{ r: 11, c: 0, text: 'LABEL PREROLLS WITH THC%' }]);
+      no(EDIT.addItem(PIPE.parse(g2), g2, { mode: 'copy', date: D(0), source: NABIS }),
+        /^Monday, Nov 2 has no empty row left under its last line in the sheet\. Add a row at the bottom of that week in the sheet, then try again\.$/, 'a full day');
+    }
+
+    // verify: an added line only into the empty pair under the day's last line, which must be the line the op names
+    const addOp = (r, c, text, after, extra = {}) => Object.assign({ kind: 'add', tab: 'DISTRO PIPELINE', r, c, expect: '', text,
+      find: { week: HEAD, day: c >> 1, after, afterOwner: '' }, like: { week: HEAD, day: 1, text: 'STAGE DEC DROP 3 FOR NABIS' }, number: false }, extra);
+    const ac = { kind: 'add', start: '2026-11-02', adds: [{ day: 3, mode: 'copy', type: 'orders' }, { day: 4, mode: 'copy', type: 'orders' }] };
+    assert.ok(EDIT.verify(g, cp.ops, cp.check).ok && EDIT.verify(g, jr.ops, jr.check).ok, "the builder's own adds verify");
+    bad([addOp(6, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1')], ac, /G7 is not empty in the sheet/, 'a filled slot');
+    bad([addOp(8, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1')], ac, /G9 is not the first empty row under Thu Nov 5's last line/, 'a row lower down');
+    {
+      const g3 = EDIT.apply(g, [{ r: 5, c: 8, text: 'LABEL PREROLLS WITH THC%' }]), v = EDIT.verify(g3, [addOp(3, 8, 'STAGE DEC DROP 3 FOR NABIS', 'LABEL PREROLLS WITH THC%')], ac);
+      assert.ok(!v.ok && v.problems.some(p => /I4 is not the first empty row under Fri Nov 6's last line/.test(p)), 'a gap above the last line');
+    }
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'TIDE')], ac, /Thu Nov 5 ends with a different line in the sheet/, 'a stale after');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1', { find: { week: HEAD, day: 3, after: 'DEC DROP 1', afterOwner: 'VOODOO' } })], ac, /ends with a different line/, 'a stale owner');
+    bad([addOp(12, 2, 'STAGE DEC DROP 3 FOR NABIS', '')], ac, /C13 is not empty in the sheet/, 'a header row');
+    bad([addOp(7, 7, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1')], ac, /not the first column of a day/, 'the right column');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1', { expect: 'X' })], ac, /not sent as a new line/, 'an add that expects text');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1', { like: { week: HEAD, day: 1, text: 'GONE' } })], ac, /copies its look from isn't in the sheet/, 'a look line that is gone');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1', { like: { week: 'NOVEMBER, MONDAY 9TH', day: 0, text: 'VOODOO' } })], ac, /is not a one-line item/, 'a look line with a detail beside it');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1', { like: { week: 'NOVEMBER, MONDAY 99TH', day: 1, text: 'STAGE DEC DROP 3 FOR NABIS' } })], ac, /copies its look from isn't/, 'a look line in a week the sheet does not have');
+    bad([addOp(7, 6, 'DEC DROP 3', 'DEC DROP 1')], ac, /move this from Orders & Nabis to Supplies & other/, 'a copy that changes lane');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1'), op(6, 1, '1G PREROLL- 600', '1G PREROLL- 450')], ac, /saved separately/, 'an add with a rewrite');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1'), addOp(7, 6, 'STAGE DEC DROP 2 FOR NABIS', 'DEC DROP 1')], ac, /changed twice|one line can be added/, 'two adds on one day');
+    bad(Array.from({ length: 11 }, (_, i) => addOp(7, 6, 'LINE ' + i, 'DEC DROP 1')), ac, /at most 20 cells; this one changes 22/, 'eleven adds are 22 cells');
+    bad([addOp(7, 6, 'STAGE DEC DROP 3 FOR NABIS', 'DEC DROP 1', { kind: 'unadd' })], ac, /only add a line/, 'the page never sends an undo of its own');
+    bad([op(11, 0, '', 'NEW TASK')], { kind: 'task', start: '2026-11-02' }, /only cells that already hold something/, 'a 1a op into an empty cell is still refused');
+    console.log("adding a line: slots under each day's last line, Copy, Jars and Who's on build and read back; past, full, twin, lane and look refusals hold");
+  }
 }
 
 // the plan's examples on the saved copy of the live sheet (2026-11-10), when that copy is on this computer
@@ -912,6 +1033,30 @@ if (realPipe) {
       const jl = d.items.filter(i => i.type === 'jars').flatMap(i => i.lines).find(x => x.cell);
       if (jl) { okR(EDIT.jarStrain(W, g, { date: d.date, strain: jl.strain, to: 'ZZTEST', only: true, cell: jl.cell }), `${d.date} ${jl.strain} jars`); tried++; }
     }
+    // release 1b, adding a line: the design's two examples, the full Monday of the last week, and every day from today on
+    let adds = 0;
+    {
+      EDIT.setToday('2026-11-10');
+      const no = (r, re, why) => { assert.equal(r.ok, false, why); assert.match(r.message, re, why); assert.ok(!/—/.test(r.message), 'no em dash in messages'); };
+      const ad = okR(EDIT.addItem(W, g, { mode: 'copy', date: '2026-11-19', source: { date: '2026-11-20', text: g[678][8] } }), 'live copy of I679 to Thu Nov 19');
+      assert.deepEqual([ad.cells[0].a1, ad.cells[0].like, ad.ops[0].find, ad.ops[0].like, ad.summary, ad.reads], ['G682', 'I679',
+        { week: 'NOVEMBER, MONDAY 16TH', day: 3, after: 'TBD - TESTING SCHEDULED FOR DEC PREROLL DROP ', afterOwner: '' },
+        { week: 'NOVEMBER, MONDAY 16TH', day: 4, text: 'DEC DROP 1 - STAGE FOR NABIS PICKUP' },
+        'Adds 1 line: DEC DROP 1 - STAGE FOR NABIS PICKUP on Thu (G682), styled like I679', ['Thu Nov 19: Orders & Nabis, DEC DROP 1']], 'the CONTRACT.md example: G682 under G681');
+      const aj = okR(EDIT.addItem(W, g, { mode: 'jars', date: '2026-11-12', strain: 'TEA PARTY' }), 'live jars on Thu Nov 12');
+      assert.deepEqual([aj.cells[0].a1, aj.ops[0].text, aj.ops[0].find.after], ['G667', JAR('TEA PARTY'), 'STAGE DEC DROP 3 FOR NABIS'], 'jars go to G667, under G666');
+      no(EDIT.addItem(W, g, { mode: 'jars', date: '2026-11-12', strain: 'THE VOID' }), /not jars/, 'live THE VOID reads as an order');
+      no(EDIT.addItem(W, g, { mode: 'jars', date: '2027-01-18', strain: 'TEA PARTY' }), /^Monday, Jan 18 is in the last week in the sheet/, 'Mon Jan 18 has no row left (A869, A870)');
+      for (const w of W.filter(x => x.start >= '2026-11-09')) for (const d of w.days) {
+        if (EDIT.beforeToday(d.date)) continue;
+        if (EDIT.slotOf(W, g, d.date).full) { no(EDIT.addItem(W, g, { mode: 'copy', date: d.date, source: {} }), /no row left|no empty row/, `${d.date} is full`); continue; }
+        const src = EDIT.addSources(W, g, d.date)[0];
+        if (src) { okR(EDIT.addItem(W, g, { mode: 'copy', date: d.date, source: src }), `${d.date} copy of ${src.text}`); adds++; }
+        okR(EDIT.addItem(W, g, { mode: 'jars', date: d.date, strain: 'ZZTEST' }), `${d.date} jars`); adds++;
+        if (!d.items.some(i => i.type === 'crew')) { okR(EDIT.addItem(W, g, { mode: 'crew', date: d.date, people: [{ name: 'DREA', st: 'LEAD' }] }), `${d.date} Who's on`); adds++; }
+      }
+      EDIT.setToday('2026-11-09');
+    }
     // the whole tab gives the same cells as the saved part of it
     const metaFile = path.join(liveDir, 'meta.json');
     if (existsSync(metaFile)) {
@@ -931,6 +1076,7 @@ if (realPipe) {
       assert.deepEqual([st.cells[0].a1, st.ops[0].expect, st.ops[0].text], ['D11', 'IN STOCK', 'RUNNING LOW']);
     }
     console.log(`edit model on the saved live sheet: the plan's examples match (VOODOO 6 cells, BLACK MAGIC jars, A642, G666${dsFile ? ', a supply row' : ''}); ${tried} more amounts and jar lines rewrite and read back`);
+    console.log(`adding a line on the saved live sheet: copy of I679 lands at G682, jars at G667, Mon Jan 18 is full; ${adds} more adds from today on build and read back`);
   }
 }
 console.log('pipeline-check: all checks passed');

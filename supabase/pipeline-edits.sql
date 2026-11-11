@@ -1,4 +1,5 @@
--- Production Pipeline page (pipeline.html): editing Victoria's sheet from the app (release 1a).
+-- Production Pipeline page (pipeline.html): editing Victoria's sheet from the app (release 1a: rewrite a cell; release
+-- 1b: add a one-line item under a day's last line, switched on separately in kinds_on).
 -- The page never writes to Google itself. It sends each edit to the Edge Function pipeline-sheet-write
 -- (supabase/functions/pipeline-sheet-write/, owned by Gianni's Claude; CONTRACT.md there is the agreement with the
 -- page). The function checks the edit against the sheet as it is right now, writes it with its own Google account,
@@ -6,7 +7,8 @@
 --   pipeline_editors          who may edit: scope 'plan' (DISTRO PIPELINE), 'supply' (the two supply tabs) or 'all'
 --   pipeline_can_edit(scope)  true when the signed-in caller is an editor for that scope
 --   pipeline_write_settings   the switches, one row; no policies, so only the save program (service role) reads it
---   pipeline_edit_status()    what the page needs to show Edit: can_plan, can_supply, enabled, test_mode, target, tabs_on
+--   pipeline_edit_status()    what the page needs to show Edit and Add: can_plan, can_supply, enabled, test_mode,
+--                             target, tabs_on, kinds_on
 --   pipeline_edits            the log of every save, dry run, refusal and conflict; read by pipeline_can_view() accounts
 --   pipeline_edit_locks       a short lock per cell, so two saves of one cell cannot both run (save program only)
 -- Editors and the settings row are seeded out-of-band (emails and file ids are never committed). Safe to re-run.
@@ -51,7 +53,15 @@ comment on table public.pipeline_write_settings is
 alter table public.pipeline_write_settings enable row level security;   -- no policies: nobody reads it from the page
 revoke all on table public.pipeline_write_settings from anon, authenticated;
 
--- what the page needs to decide whether to show Edit (never a workbook id)
+-- Release 1b: which kinds of edit may be written. 'rewrite' = change a cell that holds something (1a), 'add' = add a
+-- one-line item (1b). Victoria approves each kind on the test copy before it goes in here. The save program reads the
+-- row with select('*') and treats a missing column as {rewrite}, so this can be applied before or after the new code.
+-- Undoing an add is not blocked by it (only by enabled and tabs_on).
+alter table public.pipeline_write_settings
+  add column if not exists kinds_on text[] not null default array['rewrite']::text[]
+      check (kinds_on <@ array['rewrite', 'add']::text[]);
+
+-- what the page needs to decide whether to show Edit and Add (never a workbook id)
 create or replace function public.pipeline_edit_status()
 returns json
 language sql stable security definer
@@ -63,7 +73,8 @@ as $$
     'enabled',    coalesce(s.enabled, false),
     'test_mode',  coalesce(s.test_mode, true),
     'target',     coalesce(s.target, 'test'),
-    'tabs_on',    coalesce(to_json(s.tabs_on), '[]'::json))
+    'tabs_on',    coalesce(to_json(s.tabs_on), '[]'::json),
+    'kinds_on',   coalesce(to_json(s.kinds_on), '["rewrite"]'::json))
   from (select 1) one
   left join public.pipeline_write_settings s on s.id = 1;
 $$;
@@ -71,8 +82,11 @@ revoke all on function public.pipeline_edit_status() from public, anon;
 grant execute on function public.pipeline_edit_status() to authenticated;
 
 -- One row per save attempt. cells: [{tab, r, c, a1, find, moved, before: {text, runs, number}, after: {...}}], where
--- runs are the cell's textFormatRuns (its colored words) as the Sheets API gave them. Written only by the save
--- program (service role); the person is stamped there from their sign-in, never sent by the page.
+-- runs are the cell's textFormatRuns (its colored words) as the Sheets API gave them. An added line (release 1b) is
+-- one entry for its pair: {kind: 'add', ..., range, like, merged, cleared, find: {week, day, after, afterOwner},
+-- before: {formats: [left, right], merged, cleared, freed}, after: {text, runs, formats: [left, right], merged}}, where
+-- formats are the cells' userEnteredFormat (their look), so an undo can put back exactly what was there. Written only
+-- by the save program (service role); the person is stamped there from their sign-in, never sent by the page.
 create table if not exists public.pipeline_edits (
   id        bigint generated always as identity primary key,
   at        timestamptz not null default now(),
