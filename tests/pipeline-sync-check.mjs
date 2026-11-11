@@ -15,9 +15,10 @@
 //               live.json ({meta, rows} of the table). Default ~/ar-automation/docs/pipeline-sync/fixtures; skipped
 //               when missing. Sections that need the Mac scripts or SheetJS are skipped when they are not here (CI).
 // Run this before every push that touches the sync functions or pipeline-sync.sql: any failure means do not push.
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync } from 'node:crypto';
+import * as NodeModule from 'node:module';
 import { createRequire, registerHooks } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import os from 'node:os';
@@ -28,6 +29,11 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const JOBS = ['marks', 'trims', 'batches'];
 const fnDir = (j) => path.join(ROOT, 'supabase/functions', `pipeline-${j}-sync`);
 const read = (p) => readFileSync(p, 'utf8');
+// TypeScript files are stripped of their types here, not by node itself: how node treats a .ts file under --check and
+// on import changes between node releases (24.14 strips the types under --check, 24.22 on GitHub does not).
+const stripTypes = NodeModule.stripTypeScriptTypes;
+assert.equal(typeof stripTypes, 'function', 'this node has no module.stripTypeScriptTypes; use node 24');
+const asJs = (file) => stripTypes(read(file), { mode: 'strip' });
 const args = process.argv.slice(2);
 const FIX = (args.find((a) => a.startsWith('--fixtures=')) || '').slice(11) || process.env.PIPELINE_SYNC_FIXTURES ||
   path.join(os.homedir(), 'ar-automation/docs/pipeline-sync/fixtures');
@@ -54,10 +60,16 @@ const jsonb = (x) => (x === undefined ? undefined : jsonbOrder(JSON.parse(JSON.s
   for (const j of JOBS) {
     const files = readdirSync(fnDir(j)).filter((f) => !f.startsWith('.')).sort();
     assert.deepEqual(files, ['core.js', 'index.ts', 'job.js', 'runtime.ts'], `pipeline-${j}-sync holds index.ts, runtime.ts, job.js and core.js only`);
-    for (const f of files) {
-      try { execFileSync(process.execPath, ['--check', path.join(fnDir(j), f)], { stdio: 'pipe' }); }
-      catch (e) { assert.fail(`pipeline-${j}-sync/${f} does not parse:\n` + String(e.stderr || e.message).split('\n').slice(0, 6).join('\n')); }
-    }
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'pipeline-sync-check-'));
+    try {
+      for (const f of files) {
+        let file = path.join(fnDir(j), f);
+        try {
+          if (f.endsWith('.ts')) { const js = path.join(tmp, f.replace(/\.ts$/, '.mjs')); writeFileSync(js, asJs(file)); file = js; }
+          execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' });
+        } catch (e) { assert.fail(`pipeline-${j}-sync/${f} does not parse:\n` + String(e.stderr || e.message).split('\n').slice(0, 6).join('\n')); }
+      }
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
   }
   for (const f of ['core.js', 'runtime.ts']) {
     const a = read(path.join(fnDir('marks'), f));
@@ -549,6 +561,10 @@ else {
       if (spec === 'jsr:@supabase/supabase-js@2') return { url: 'data:text/javascript,export const createClient = (...a) => globalThis.__pipelineSyncFakeSupabase(...a);', shortCircuit: true };
       if (spec === 'npm:xlsx@0.18.5') return { url: xlsxUrl, shortCircuit: true };
       return next(spec, ctx);
+    },
+    load(url, ctx, next) {
+      if (url.startsWith('file:') && url.endsWith('.ts')) return { format: 'module', source: asJs(fileURLToPath(url)), shortCircuit: true };
+      return next(url, ctx);
     },
   });
 
