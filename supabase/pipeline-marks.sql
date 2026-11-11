@@ -6,6 +6,8 @@
 -- seeded out-of-band, never committed). Each mark keeps the cell's text, so the page only paints a cell when its
 -- text still matches (rows Victoria inserts between two runs never shift a mark onto the wrong item).
 -- Readers: the same accounts as the Batches view (pipeline_can_view(), from pipeline-batches.sql). Safe to re-run.
+-- Applied by the Pipeline deploy workflow as pipeline_owner (supabase/pipeline-order.txt).
+set role pipeline_owner;
 
 create table if not exists public.pipeline_marks (
   r      int not null,                 -- row in the tab, 0-based, as in the CSV export (hidden rows included)
@@ -81,3 +83,5 @@ begin
 end $$;
 revoke all on function public.pipeline_marks_save(text, jsonb, jsonb) from public;
 grant execute on function public.pipeline_marks_save(text, jsonb, jsonb) to anon, authenticated;
+
+reset role;

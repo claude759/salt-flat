@@ -1,0 +1,197 @@
+# Production Pipeline deploys, with nobody in the loop (Gianni, November 2026: Victoria must never need him for an
+# update). On every push to main that touches the pipeline:
+#   1. check      runs the pipeline checks and the SQL checks. No secrets, no database.
+#   2. database   signs in as pipeline_owner (a role that owns the Production Pipeline objects and nothing else; what
+#                 else it can reach, pg_net above all, is in supabase/postgres/pipeline-owner-bootstrap.sql's header) and
+#                 applies each file in supabase/pipeline-order.txt whose text changed since it was last applied, each in
+#                 its own transaction, rolled back if it fails or breaks a check. Then a smoke test.
+#   3. functions  deploys each supabase/functions/pipeline-* folder whose files changed since its last deploy, with
+#                 the Supabase CLI pinned to 2.108.0. No reviewer: Gianni accepted that whoever can push to main can
+#                 deploy code that runs with the project's service role.
+#   4. record     notes those deploys in public.pipeline_sql_applied, so the next run knows.
+#   5. requeue    only when a re-run of an older run found main had moved on: starts a fresh run of main (below).
+# The page itself (pipeline.html) goes live through GitHub Pages whatever happens here, so it must keep working
+# before its SQL or function lands.
+#
+# Old runs never roll anything back. database, functions and record each first compare this run's commit with main
+# (scripts/pipeline-ci/lib.mjs mainHasNewerDeployChanges): if a newer commit changes pipeline SQL, functions or these
+# scripts, the job changes nothing and leaves it to that commit's run; if it cannot tell, it fails and changes nothing.
+#
+# One-time setup (Gianni, after supabase/postgres/pipeline-owner-bootstrap.sql, lockdown-public-execute.sql and
+# scripts/pipeline-ci/owner-login.mjs), at https://github.com/claude759/salt-flat/settings/environments:
+#   * environment pipeline-db: deployment branches "Selected branches", rule main; secret PIPELINE_DB_URL (the session
+#     pooler connection string for pipeline_owner that owner-login.mjs puts on the clipboard)
+#   * environment supabase-functions: deployment branches main; no required reviewer; secret SUPABASE_ACCESS_TOKEN (a
+#     scoped Supabase token: this project only, Edge Functions read-write, nothing else, expiring within a year)
+# Use environment secrets, never repository secrets. Until a secret is set, its job reports "not set up" and passes.
+# Manual runs: Actions, Pipeline deploy, Run workflow, mode "plan" (what would change) or "apply". Re-running an older
+# run never rolls anything back: it changes nothing and, when it notices main has moved on, starts a fresh run of main.
+# If that re-run fails before it notices, push again or run "apply" by hand so main's newest commit is applied.
+name: Pipeline deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/pipeline-*.sql'
+      - 'supabase/pipeline-order.txt'
+      - 'supabase/functions/pipeline-*/**'
+      - 'supabase/functions/_shared/**'
+      - 'tests/pipeline-*'
+      - 'pipeline.html'
+      - 'scripts/pipeline-ci/**'
+      - '.github/workflows/pipeline-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'apply, or plan (say what would change, change nothing)'
+        type: choice
+        options: [apply, plan]
+        default: apply
+
+permissions:
+  contents: read
+
+# One deploy at a time. Only runs that deploy main share the queue "pipeline-deploy": pushes to main and Run workflow
+# with mode apply on main (and re-runs of those). A newer one waits, and GitHub keeps only the newest waiting run,
+# cancelling the one it replaces. That loses nothing, because each run applies everything not yet recorded, not just
+# its own push, and a newer arrival is either main's newest commit or, when it is a re-run of an older run, starts a
+# fresh run of main itself (the requeue job). Plan runs and runs from other branches never deploy, so they wait in a
+# queue of their own ("pipeline-deploy-no-apply", one at a time) and can never cancel a waiting deploy; plan takes no
+# database lock either, so it never holds one up.
+concurrency:
+  group: ${{ (github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'apply')) && 'pipeline-deploy' || 'pipeline-deploy-no-apply' }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check (no secrets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Production Pipeline checks (every tests/pipeline-*check.mjs)
+        run: |
+          set -euo pipefail
+          for f in tests/pipeline-*check.mjs; do
+            echo "::group::$f"
+            node "$f"
+            echo "::endgroup::"
+          done
+      - name: SQL files and deploy list check
+        run: node scripts/pipeline-ci/check-sql.mjs
+
+  database:
+    name: Database (as pipeline_owner)
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: pipeline-db
+    outputs:
+      functions: ${{ steps.apply.outputs.functions }}
+      stale: ${{ steps.apply.outputs.stale }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install the Postgres client (exact versions from the lockfile, no install scripts)
+        run: npm ci --prefix scripts/pipeline-ci --ignore-scripts --no-audit --no-fund
+      - name: Apply SQL and smoke test
+        id: apply
+        run: node scripts/pipeline-ci/apply-sql.mjs
+        env:
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'apply' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  functions:
+    name: Deploy save-program functions
+    needs: database
+    if: github.ref == 'refs/heads/main' && needs.database.outputs.functions != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: supabase-functions
+    outputs:
+      deployed: ${{ steps.deploy.outputs.deployed }}
+      stale: ${{ steps.deploy.outputs.stale }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install Supabase CLI 2.108.0 (checksum pinned)
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/supabase.tgz" \
+            https://github.com/supabase/cli/releases/download/v2.108.0/supabase_2.108.0_linux_amd64.tar.gz
+          echo "01e467428fe615952cfd576f964e4fb053fecb546a4d81dee85853ec0f3f8220  $RUNNER_TEMP/supabase.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/supabase-cli"
+          tar -xzf "$RUNNER_TEMP/supabase.tgz" -C "$RUNNER_TEMP/supabase-cli"
+          echo "$RUNNER_TEMP/supabase-cli" >> "$GITHUB_PATH"
+      - name: Deploy
+        id: deploy
+        run: |
+          supabase --version
+          node scripts/pipeline-ci/deploy-functions.mjs
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          FUNCTIONS: ${{ needs.database.outputs.functions }}
+
+  record:
+    name: Record deploys
+    needs: [database, functions]
+    if: always() && github.ref == 'refs/heads/main' && needs.functions.outputs.deployed != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: pipeline-db
+    outputs:
+      stale: ${{ steps.record.outputs.stale }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install the Postgres client
+        run: npm ci --prefix scripts/pipeline-ci --ignore-scripts --no-audit --no-fund
+      - name: Record
+        id: record
+        run: node scripts/pipeline-ci/apply-sql.mjs
+        env:
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          MODE: record-functions
+          DEPLOYED: ${{ needs.functions.outputs.deployed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  # A re-run of an older run joins the deploy queue like any deploy, so it may have cancelled the waiting run of main's
+  # newest commit, and then (being older) changed nothing itself. So when a re-run finds main has moved on, this starts
+  # a fresh Run workflow (apply) on main, which applies and deploys whatever is not recorded yet. A first run never
+  # needs it: a newer commit's run is still waiting behind it. No secrets and no checkout: it runs this one command,
+  # with a token that can manage this repo's Actions runs (actions: write) only while the job lasts.
+  requeue:
+    name: Start a fresh run of main (re-runs of older runs only)
+    needs: [database, functions, record]
+    if: >-
+      always() && github.ref == 'refs/heads/main' && github.run_attempt != '1' &&
+      (needs.database.outputs.stale == 'true' || needs.functions.outputs.stale == 'true' || needs.record.outputs.stale == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Run workflow Pipeline deploy (apply) on main
+        run: gh workflow run pipeline-deploy.yml --repo "$GITHUB_REPOSITORY" --ref main -f mode=apply
+        env:
+          GH_TOKEN: ${{ github.token }}

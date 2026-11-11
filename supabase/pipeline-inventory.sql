@@ -6,6 +6,8 @@
 -- pipeline_inventory_save() (token-gated; the token hash is seeded out-of-band, never committed). No prices or costs
 -- are stored. Readers: the same accounts as the Batches view (pipeline_can_view(), from pipeline-batches.sql).
 -- Safe to re-run.
+-- Applied by the Pipeline deploy workflow as pipeline_owner (supabase/pipeline-order.txt).
+set role pipeline_owner;
 
 create table if not exists public.pipeline_inventory (
   src         text not null check (src in ('distru', 'nabis')),
@@ -95,3 +97,5 @@ begin
 end $$;
 revoke all on function public.pipeline_inventory_save(text, text, jsonb, jsonb) from public;
 grant execute on function public.pipeline_inventory_save(text, text, jsonb, jsonb) to anon, authenticated;
+
+reset role;

@@ -11,7 +11,9 @@
 --                             target, tabs_on, kinds_on
 --   pipeline_edits            the log of every save, dry run, refusal and conflict; read by pipeline_can_view() accounts
 --   pipeline_edit_locks       a short lock per cell, so two saves of one cell cannot both run (save program only)
--- Editors and the settings row are seeded out-of-band (emails and file ids are never committed). Safe to re-run.
+-- Editors and the settings row are seeded out-of-band (emails and file ids are never committed).
+-- Applied by the Pipeline deploy workflow as pipeline_owner (supabase/pipeline-order.txt). Safe to re-run.
+set role pipeline_owner;
 
 create table if not exists public.pipeline_editors (
   email    text primary key check (email = lower(email)),
@@ -30,7 +32,7 @@ set search_path = public
 as $$
   select coalesce(p_scope in ('plan', 'supply'), false)
      and exists (select 1 from public.pipeline_editors e
-                 where e.email = lower(coalesce(auth.jwt()->>'email', ''))
+                 where e.email = public.pipeline_jwt_email()
                    and e.email like '%@wizardtrees.com'
                    and e.scope in ('all', p_scope));
 $$;
@@ -164,3 +166,5 @@ begin
 end $$;
 revoke all on function public.pipeline_unlock_cells(text[], text) from public, anon, authenticated;
 grant execute on function public.pipeline_unlock_cells(text[], text) to service_role;
+
+reset role;

@@ -7,6 +7,8 @@
 -- seeded out-of-band, never committed). The page turns past trims into pounds per light and estimates the trims
 -- still to come. Readers: the same accounts as the Batches view (pipeline_can_view(), from pipeline-batches.sql).
 -- Safe to re-run.
+-- Applied by the Pipeline deploy workflow as pipeline_owner (supabase/pipeline-order.txt).
+set role pipeline_owner;
 
 create table if not exists public.pipeline_trims (
   file        text not null,                       -- workbook, e.g. 'FILIFERA 2026.xlsx'
@@ -98,3 +100,5 @@ begin
 end $$;
 revoke all on function public.pipeline_trims_save(text, jsonb, jsonb) from public;
 grant execute on function public.pipeline_trims_save(text, jsonb, jsonb) to anon, authenticated;
+
+reset role;

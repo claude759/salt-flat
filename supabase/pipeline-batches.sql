@@ -5,7 +5,8 @@
 -- (~/ar-automation/pipeline-batches-sync.mjs) downloads it, keeps the active rows plus recently finished ones,
 -- and sends the whole set through pipeline_batches_save() (token-gated; the token hash is seeded out-of-band,
 -- never committed). Readers: the same accounts pipeline_source() lets in (universal admins + pipeline_viewers).
--- Safe to re-run.
+-- Applied by the Pipeline deploy workflow as pipeline_owner (supabase/pipeline-order.txt). Safe to re-run.
+set role pipeline_owner;
 
 create or replace function public.pipeline_can_view()
 returns boolean
@@ -14,7 +15,7 @@ set search_path = public
 as $$
   select public.is_universal_admin()
       or exists (select 1 from public.pipeline_viewers v
-                 where v.email = lower(coalesce(auth.jwt()->>'email', '')));
+                 where v.email = public.pipeline_jwt_email());
 $$;
 revoke all on function public.pipeline_can_view() from public, anon;
 grant execute on function public.pipeline_can_view() to authenticated;
@@ -135,3 +136,5 @@ begin
 end $$;
 revoke all on function public.pipeline_batches_save(text, jsonb, jsonb) from public;
 grant execute on function public.pipeline_batches_save(text, jsonb, jsonb) to anon, authenticated;
+
+reset role;

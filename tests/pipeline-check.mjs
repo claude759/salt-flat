@@ -40,6 +40,34 @@ assert.ok(html.length > 150_000 && /<\/html>\s*$/i.test(html), `pipeline.html is
     'the page speaks the agreed messages and checks where they come from');
   // the Week | Month toggle is drawn by the script (data-wkmode), never a static page button
   assert.ok(!/data-view="month"/.test(markup) && !/<section id="view-month"/.test(markup), 'the month view is a mode of the production schedule, not a page');
+  // the Admin page: beta until its owner says launch, and hidden until pipeline_is_admin() says yes for this account
+  assert.match(markup, /<button(?=[^>]*data-view="admin")(?=[^>]*data-beta)(?=[^>]*\shidden)[^>]*>/, 'the Admin tab keeps data-beta and starts hidden');
+  assert.ok(/sb\.rpc\('pipeline_is_admin'\)/.test(html) && /btn\.hidden = !ok/.test(html), 'the Admin tab shows only when pipeline_is_admin() says yes');
+  for (const fn of ['pipeline_admin_editors', 'pipeline_admin_settings', 'pipeline_admin_log_list', 'pipeline_admin_settings_set', 'pipeline_admin_editor_set',
+    'pipeline_admin_editor_add', 'pipeline_admin_editor_remove', 'pipeline_sync_status', 'pipeline_sync_set'])
+    assert.ok(html.includes(`sb.rpc('${fn}'`), `the Admin page calls ${fn}`);
+  assert.ok(!/from\('pipeline_(editors|write_settings|admin_log|sync_settings|sync_state|sync_runs)'\)/.test(html),
+    'the page never reads the editors, the switches, the admin log or the sync tables directly');
+  // Add only adds: it calls pipeline_admin_editor_add, never the add-or-change pipeline_admin_editor_set
+  const addFn = (html.match(/\nfunction adminAdd\(\) \{[\s\S]*?\n\}\n/) || [''])[0];
+  assert.ok(addFn.includes("sb.rpc('pipeline_admin_editor_add'") && !addFn.includes('pipeline_admin_editor_set') && addFn.includes("'editor-exists'"),
+    'Add calls pipeline_admin_editor_add and handles its "already on the list" refusal');
+  // the live-sheet yes: sent only after a confirm, and asked again when the server says the page's switches were out of date
+  const setFn = (html.match(/\nfunction adminSet\(patch, after\) \{[\s\S]*?\n\}\n/) || [''])[0];
+  assert.ok(/ADMIN\.liveAsk\(s, patch\)/.test(setFn) && /p_live_ok: true/.test(setFn) && /hint === 'confirm-live'/.test(setFn) &&
+    /sb\.rpc\('pipeline_admin_settings'\)/.test(setFn) && (setFn.match(/confirm\(/g) || []).length === 2,
+    'a change that opens real writes asks first, and asks again on fresh switches when the server refuses it');
+  // the server side of both: pipeline-admin.sql refuses without the yes, and Add refuses someone already listed
+  const adminSql = readFileSync(new URL('../supabase/pipeline-admin.sql', import.meta.url), 'utf8');
+  assert.match(adminSql, /p_live_ok\s+boolean default null\)/, 'pipeline_admin_settings_set takes p_live_ok');
+  assert.match(adminSql, /drop function if exists public\.pipeline_admin_settings_set\(boolean, boolean, text, text\[\], text\[\], text\);/,
+    'the old six-argument pipeline_admin_settings_set is dropped');
+  assert.match(adminSql, /if v_now and not coalesce\(p_live_ok, false\)[\s\S]*?hint = 'confirm-live'/, 'the server refuses new real writes without the yes');
+  assert.match(adminSql, /pipeline_admin_editor_add[\s\S]*?lock table public\.pipeline_editors[\s\S]*?hint = 'editor-exists'[\s\S]*?return public\.pipeline_admin_editor_set\(/,
+    'pipeline_admin_editor_add refuses someone already listed, under the editors lock, before adding');
+  assert.match(adminSql, /grant execute on function public\.pipeline_admin_editor_add\(text, text, boolean\) to authenticated;/);
+  // a sync job's source id never reaches the page in full: the status gives only its last characters
+  assert.ok(!/\.source_id\b/.test(html), 'the page never reads a sync source id');
 }
 const src = html.split('/* ===== PIPELINE PARSER START =====')[1].split('/* ===== PIPELINE PARSER END ===== */')[0];
 const PIPE = new Function(`/*${src}; return PIPE;`)();
@@ -56,6 +84,8 @@ const TRIMY = new Function('PIPE', `/*${trySrc}; return TRIMY;`)(PIPE);
 // the edit model reads crew lines back with WEEK.parseCrew, which the page defines later in the same script
 const editSrc = html.split('/* ===== EDIT MODEL START =====')[1].split('/* ===== EDIT MODEL END ===== */')[0];
 const EDIT = new Function('PIPE', 'SUP', 'WEEK', `/*${editSrc}; return EDIT;`)(PIPE, SUP, WEEK);
+const adminSrc = html.split('/* ===== ADMIN MODEL START =====')[1].split('/* ===== ADMIN MODEL END ===== */')[0];
+const ADMIN = new Function(`/*${adminSrc}; return ADMIN;`)();
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
   realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9),
   realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10),
@@ -604,6 +634,188 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.deepEqual(w2.bars.filter(b => b.lane === 'trim').map(b => [b.a, b.b, b.contL]), [[0, 0, true]]);
   const test = R.bars.find(b => b.lane === 'testing');
   assert.equal(test.spillEnd, 6, 'a note spills right only to its own Sunday, never into the next week');
+}
+
+// the Admin page (beta): what an admin types, the words it shows, the warning before real writes, the change log
+{
+  // an editor's address: lower case, Wizard Trees only, a bare name gets the domain
+  assert.deepEqual(ADMIN.email('  Maria.Lopez' + '@WizardTrees.com '), { email: 'maria.lopez' + '@wizardtrees.com' });
+  assert.deepEqual(ADMIN.email('maria'), { email: 'maria' + '@wizardtrees.com' }, 'a bare name gets the Wizard Trees domain');
+  for (const bad of ['', '   ', 'maria' + '@gmail.com', 'maria' + '@wizardtrees.com.evil.io', 'ma ria', '@wizardtrees.com', 'maria' + '@sub.wizardtrees.com'])
+    assert.ok(ADMIN.email(bad).error, `"${bad}" is refused`);
+  // a test copy's id from its address or the bare id; anything else is ''
+  const id = '1AbCdEfGhIjKlMnOpQrStUvWxYz_0123456789-abcd';
+  assert.equal(ADMIN.sheetId(`https://docs.google.com/spreadsheets/d/${id}/edit#gid=0`), id);
+  assert.equal(ADMIN.sheetId(`https://docs.google.com/spreadsheets/d/${id}`), id);
+  assert.equal(ADMIN.sheetId(`https://docs.google.com/spreadsheets/u/1/d/${id}/edit?usp=sharing`), '', 'only the plain /spreadsheets/d/ address');
+  assert.equal(ADMIN.sheetId(`  ${id} `), id, 'a bare id is taken as it is');
+  for (const bad of ['', 'not a sheet', `https://drive.google.com/file/d/${id}/view`, 'https://docs.google.com/spreadsheets/d/e/2PACX/pubhtml', 'short_id'])
+    assert.equal(ADMIN.sheetId(bad), '', `"${bad}" is not a sheet id`);
+  // only what is changing goes to pipeline_admin_settings_set; '' clears the test copy
+  assert.deepEqual(ADMIN.args({ enabled: true }), { p_enabled: true });
+  assert.deepEqual(ADMIN.args({ test_workbook: '', tabs_on: [] }), { p_tabs_on: [], p_test_workbook: '' });
+  assert.deepEqual(ADMIN.args({ test_mode: false, target: 'live', kinds_on: ['rewrite', 'add'], extra: 1 }), { p_test_mode: false, p_target: 'live', p_kinds_on: ['rewrite', 'add'] });
+  // ticking a tab or a kind keeps the fixed order, with no repeats
+  assert.deepEqual(ADMIN.toggled(ADMIN.TABS, ['ACCESSORY SUPPLY'], 'DISTRO PIPELINE', true), ['DISTRO PIPELINE', 'ACCESSORY SUPPLY']);
+  assert.deepEqual(ADMIN.toggled(ADMIN.TABS, ADMIN.TABS, 'DISTRO SUPPLY', false), ['DISTRO PIPELINE', 'ACCESSORY SUPPLY']);
+  assert.deepEqual(ADMIN.toggled(ADMIN.KINDS, ['add'], 'rewrite', true), ['rewrite', 'add']);
+  assert.deepEqual(ADMIN.toggled(ADMIN.KINDS, null, 'add', true), ['add']);
+  // real writes to the live sheet start only with saving on, test mode off and the real sheet picked: that change asks first
+  const off = { enabled: false, test_mode: true, target: 'test', tabs_on: ADMIN.TABS, kinds_on: ['rewrite'], has_test_copy: true };
+  const almost = { ...off, enabled: true, test_mode: false, target: 'test' };
+  assert.equal(ADMIN.goesLive(almost, { target: 'live' }), true, 'pointing an unlocked save at the real sheet asks first');
+  assert.equal(ADMIN.goesLive({ ...off, target: 'live', test_mode: false }, { enabled: true }), true, 'switching saving on when it would write the real sheet asks first');
+  assert.equal(ADMIN.goesLive({ ...off, enabled: true, target: 'live' }, { test_mode: false }), true, 'turning test mode off on the real sheet asks first');
+  assert.equal(ADMIN.goesLive(off, { enabled: true }), false, 'test mode on: no warning');
+  assert.equal(ADMIN.goesLive(almost, { tabs_on: ['DISTRO PIPELINE'] }), false, 'the test copy: no warning');
+  assert.equal(ADMIN.goesLive({ ...almost, target: 'live' }, { tabs_on: ['DISTRO PIPELINE'] }), false, 'already live, fewer tabs: no second warning');
+  // every way real writes become possible asks, not only the three main switches
+  const liveNoTabs = { ...almost, target: 'live', tabs_on: [] };
+  assert.equal(ADMIN.isLive(liveNoTabs), false, 'no tabs on: nothing can be written');
+  assert.equal(ADMIN.goesLive(liveNoTabs, { tabs_on: ['DISTRO PIPELINE'] }), true, 'ticking the first tab with everything else live asks');
+  assert.equal(ADMIN.goesLive({ ...almost, target: 'live', kinds_on: [] }, { kinds_on: ['add'] }), true, 'ticking the first kind with everything else live asks');
+  const liveRewrite = { ...almost, target: 'live', kinds_on: ['rewrite'] };
+  assert.equal(ADMIN.goesLive(liveRewrite, { kinds_on: ['rewrite', 'add'] }), true, 'adding new lines while live asks');
+  assert.equal(ADMIN.goesLive({ ...liveRewrite, tabs_on: ['DISTRO PIPELINE'] }, { tabs_on: ['DISTRO PIPELINE', 'DISTRO SUPPLY'] }), true, 'another tab while live asks');
+  assert.equal(ADMIN.goesLive(liveRewrite, { kinds_on: [] }), false, 'switching a kind off asks nothing');
+  assert.equal(ADMIN.goesLive(liveRewrite, { test_mode: true }), false, 'test mode back on asks nothing');
+  assert.equal(ADMIN.goesLive(liveRewrite, { test_workbook: '' }), false, 'clearing the test copy while live asks nothing');
+  assert.equal(ADMIN.liveAsk(almost, { target: 'live' }),
+    'Saves from the app will change the real sheet the whole crew works from, right away: changing lines on the DISTRO PIPELINE, DISTRO SUPPLY and ACCESSORY SUPPLY tabs.\n\nTurn this on?');
+  assert.equal(ADMIN.liveAsk({ ...liveRewrite, tabs_on: ['DISTRO PIPELINE'] }, { kinds_on: ['rewrite', 'add'] }),
+    'Saves from the app already change the real sheet the whole crew works from. After this they can also add new lines on the DISTRO PIPELINE tab, right away.\n\nGo ahead?');
+  assert.equal(ADMIN.liveAsk({ ...liveRewrite, tabs_on: ['DISTRO PIPELINE'] }, { tabs_on: ['DISTRO PIPELINE', 'DISTRO SUPPLY'] }),
+    'Saves from the app already change the real sheet the whole crew works from. After this they can also change lines on the DISTRO SUPPLY tab, right away.\n\nGo ahead?');
+  assert.equal(ADMIN.liveAsk(liveRewrite, { kinds_on: [] }), '');
+  // the same rule as the server's, case by case (pipeline_admin_settings_set: v_now and (not v_was or a new tab or kind))
+  const server = (b, p) => { const a = { ...b, ...p }, L = x => x.enabled && !x.test_mode && x.target === 'live' && x.tabs_on.length > 0 && x.kinds_on.length > 0;
+    return L(a) && (!L(b) || a.tabs_on.some(t => !b.tabs_on.includes(t)) || a.kinds_on.some(k => !b.kinds_on.includes(k))); };
+  const states = [];
+  for (const enabled of [false, true]) for (const test_mode of [false, true]) for (const target of ['test', 'live'])
+    for (const tabs_on of [[], ['DISTRO PIPELINE'], ADMIN.TABS]) for (const kinds_on of [[], ['rewrite'], ['rewrite', 'add']])
+      states.push({ enabled, test_mode, target, tabs_on, kinds_on, has_test_copy: true });
+  const patches = [{ enabled: true }, { enabled: false }, { test_mode: false }, { test_mode: true }, { target: 'live' }, { target: 'test' },
+    { tabs_on: [] }, { tabs_on: ['DISTRO PIPELINE'] }, { tabs_on: ADMIN.TABS }, { kinds_on: [] }, { kinds_on: ['rewrite'] }, { kinds_on: ['add'] }, { kinds_on: ['rewrite', 'add'] }];
+  for (const st of states) for (const p of patches)
+    assert.equal(ADMIN.goesLive(st, p), server(st, p), `page and server agree on ${JSON.stringify(st)} + ${JSON.stringify(p)}`);
+  // what Save does right now, in one sentence
+  assert.match(ADMIN.summary(off), /^Saving to the sheet from the app is off\./);
+  assert.match(ADMIN.summary({ ...off, enabled: true }), /^Test mode: Save checks each change against the test copy and writes nothing\. Only changing lines\.$/);
+  assert.match(ADMIN.summary({ ...off, enabled: true, has_test_copy: false }), /no test copy is set/);
+  assert.match(ADMIN.summary({ ...off, enabled: true, has_test_copy: false, target: 'live' }), /^Test mode: Save checks each change against the real sheet/, 'the real sheet needs no test copy');
+  assert.match(ADMIN.summary({ ...off, enabled: true, tabs_on: [] }), /no tabs are switched on/);
+  assert.match(ADMIN.summary({ ...off, enabled: true, kinds_on: [] }), /no kinds of change/);
+  assert.equal(ADMIN.summary({ ...almost, target: 'live', tabs_on: ['DISTRO PIPELINE'], kinds_on: ['rewrite', 'add'] }),
+    'Saving is on: Save writes each change to the real sheet the crew works from. Only the DISTRO PIPELINE tab.');
+  assert.equal(ADMIN.summary({ ...almost, tabs_on: ['DISTRO SUPPLY', 'ACCESSORY SUPPLY'], kinds_on: ['add'] }),
+    'Saving is on: Save writes each change to the test copy. Only the DISTRO SUPPLY and ACCESSORY SUPPLY tabs. Only adding new lines.');
+  assert.equal(ADMIN.isLive({ ...almost, target: 'live' }), true);
+  assert.equal(ADMIN.isLive({ ...almost, target: 'live', enabled: false }), false);
+  // the last admin on the list stays: never removed, never made not-admin (yourself included)
+  const eds = [{ email: 'a', admin: true }, { email: 'b', admin: false }];
+  assert.ok(ADMIN.removeBlock(eds, 'a') && ADMIN.changeBlock(eds, 'a', false), 'the only admin cannot be removed or lose admin');
+  assert.equal(ADMIN.changeBlock(eds, 'a', true), '', 'the only admin can still change what they edit');
+  assert.equal(ADMIN.removeBlock(eds, 'b'), '');
+  assert.equal(ADMIN.removeBlock([...eds, { email: 'c', admin: true }], 'a'), '', 'with another admin, an admin can go');
+  assert.equal(ADMIN.removeBlock([{ email: 'b', admin: false }], 'b'), '', 'no admins on the list (universal admins only): editors can go');
+  // the change log, as sentences (never a sheet id)
+  const at = '2026-11-11T15:29:40Z', who = 'pat.lee' + '@wizardtrees.com', m = 'maria' + '@wizardtrees.com';
+  assert.equal(ADMIN.nameOf(who), 'Pat');
+  assert.equal(ADMIN.describe({ at, email: who, action: 'editor_add', subject: m, after: { scope: 'plan', admin: true, viewer_added: true } }),
+    `Added ${m} as an editor of the plan, and an admin`);
+  assert.equal(ADMIN.describe({ at, email: who, action: 'editor_change', subject: m, before: { scope: 'plan', admin: true }, after: { scope: 'all', admin: false } }),
+    `Changed ${m}: can now change the plan and supplies, no longer an admin`);
+  assert.equal(ADMIN.describe({ at, email: who, action: 'editor_remove', subject: m, before: { scope: 'supply', admin: false } }), `Took ${m} off the editors list`);
+  const before = { enabled: false, test_mode: true, target: 'test', tabs_on: ['DISTRO PIPELINE', 'DISTRO SUPPLY', 'ACCESSORY SUPPLY'], kinds_on: ['rewrite'], test_copy: true };
+  assert.equal(ADMIN.describe({ at, email: who, action: 'settings', before,
+    after: { ...before, enabled: true, test_mode: false, target: 'live', tabs_on: ['DISTRO PIPELINE'], kinds_on: ['rewrite', 'add'] } }),
+    'Turned saving to the sheet on; turned test mode off; pointed saves at the real sheet; switched off the DISTRO SUPPLY and ACCESSORY SUPPLY tabs; switched on adding new lines');
+  assert.equal(ADMIN.describe({ at, email: who, action: 'settings', before, after: { ...before, test_copy: true, test_copy_changed: true } }), 'Changed the test copy');
+  assert.equal(ADMIN.describe({ at, email: who, action: 'settings', before, after: { ...before, test_copy: false } }), 'Cleared the test copy');
+  assert.equal(ADMIN.describe({ at, email: who, action: 'settings', before: { ...before, test_copy: false }, after: before }), 'Set the test copy');
+  assert.equal(ADMIN.describe({ at, email: who, action: 'settings', before, after: { ...before, kinds_on: [] } }), 'Switched off changing lines');
+  // Add says what the server did, not what was asked
+  assert.equal(ADMIN.alreadyListed({ email: m, scope: 'all', admin: true }), `${m} is already on the list, and can change the plan and supplies, and is an admin. Nothing was changed.`);
+  assert.equal(ADMIN.addedSay({ email: m, scope: 'plan', admin: false, added: true }, m),
+    `Added ${m}. They can change the plan whenever saving is on.`);
+  assert.equal(ADMIN.addedSay({ email: m, scope: 'all', admin: true, added: false }, m),
+    `${m} was already on the list, so nothing new was added. They can change the plan and supplies whenever saving is on. They are also an admin.`);
+  assert.match(ADMIN.addedSay(null, m), /^Saved\. The list below shows/);
+  assert.equal(ADMIN.changedSay({ email: m, scope: 'supply', admin: false, added: false }, m), `Saved: ${m} can change the supplies.`);
+  assert.match(ADMIN.changedSay({ email: m, scope: 'supply', admin: false, added: true }, m), /no longer on the list \(someone took them off meanwhile\), so they were added back/);
+  console.log('admin page: addresses, test copy ids, the live-sheet warning, the summary sentence, the last-admin rule and the change log read right');
+  console.log('admin page: the live-sheet question comes up however real writes are opened, page and server agree, and Add reports what the server did');
+}
+
+// the Admin page's cloud sync jobs card (supabase/pipeline-sync.sql): links, words, the comparison report
+{
+  const [marks, trims, batches] = ADMIN.SYNC;
+  assert.deepEqual(ADMIN.SYNC.map(j => j.job), ['marks', 'trims', 'batches'], 'the three jobs pipeline-sync.sql seeds');
+  assert.deepEqual(ADMIN.SYNC_MODES.map(x => x[0]), ['off', 'shadow', 'write'], 'the modes pipeline_sync_settings allows');
+  // a pasted link becomes the bare Drive id; a file where a folder belongs (or the other way round) is refused
+  const fid = '1AbCdEfGhIjKlMnOpQrStUv_wx-YZ0123';
+  assert.deepEqual(ADMIN.driveId(`https://drive.google.com/drive/folders/${fid}?usp=sharing`, trims), { id: fid });
+  assert.deepEqual(ADMIN.driveId(`https://drive.google.com/drive/u/0/folders/${fid}`, trims), { id: fid });
+  assert.deepEqual(ADMIN.driveId(`https://docs.google.com/spreadsheets/d/${fid}/edit#gid=0`, batches), { id: fid });
+  assert.deepEqual(ADMIN.driveId(`https://drive.google.com/file/d/${fid}/view?usp=drive_link`, batches), { id: fid });
+  assert.deepEqual(ADMIN.driveId(`https://drive.google.com/open?id=${fid}`, batches), { id: fid });
+  assert.deepEqual(ADMIN.driveId(`  ${fid} `, trims), { id: fid }, 'a bare id is taken as it is');
+  assert.match(ADMIN.driveId(`https://drive.google.com/file/d/${fid}/view`, trims).error, /^That's the address of a file/);
+  assert.match(ADMIN.driveId(`https://drive.google.com/drive/folders/${fid}`, batches).error, /^That's the address of a folder/);
+  assert.match(ADMIN.driveId(`https://docs.google.com/spreadsheets/d/${fid}/edit`, batches, fid).error, /WIZARD TREES workbook/, 'the board\'s own workbook is refused');
+  for (const bad of ['', 'not a link', 'https://example.com/nothing', 'short'])
+    assert.ok(ADMIN.driveId(bad, trims).error, `"${bad}" is refused`);
+  // a job reads only once its source is set (red cells read the board's own workbook)
+  assert.equal(ADMIN.syncNeedsSource(marks, { source_set: false }), false);
+  assert.equal(ADMIN.syncNeedsSource(trims, { source_set: false }), true);
+  assert.match(ADMIN.syncModeBlock(trims, { source_set: false }, 'shadow'), /^Paste the address of the 2026 TRIM SHEETS folder first/);
+  assert.equal(ADMIN.syncModeBlock(trims, { source_set: false }, 'off'), '', 'Off never needs a source');
+  assert.equal(ADMIN.syncModeBlock(trims, { source_set: true }, 'write'), '');
+  // Write asks first and says how the comparisons went; leaving Write asks too; Off to Compare only does not
+  const okRun = { status: 'compared', at: '2026-11-10T10:00:00Z', diff: { ok: true, next: 362, live: 362, added: 0, removed: 0, changed: 0, same: 362, dup: 0, sample: [] } };
+  const badRun = { status: 'compared', at: '2026-11-11T10:00:00Z', diff: { ok: false, next: 913, live: 912, added: 1, removed: 0, changed: 1, same: 911, dup: 0,
+    sample: [{ key: '3|6', what: 'added' }, { key: '14|3', what: 'changed', fields: { fill: [false, true], txt: ['VOODOO', 'VOODOO 6'] } }] } };
+  assert.match(ADMIN.syncModeAsk(trims, { mode: 'shadow', runs: [okRun] }, 'write'), /^Switch Trim pounds to Write\?\n\nThe cloud job will write the trim pounds into the app on its next run\. Its last comparison matched\./);
+  assert.match(ADMIN.syncModeAsk(marks, { mode: 'shadow', runs: [badRun, okRun] }, 'write'), /Its last comparison found differences\./);
+  assert.match(ADMIN.syncModeAsk(marks, { mode: 'off', runs: [] }, 'write'), /It hasn't compared yet\./);
+  assert.match(ADMIN.syncModeAsk(marks, { mode: 'write', runs: [] }, 'off'), /stops writing the red cells into the app\. If the job on Gianni's computer has been switched off, ask him to turn it back on/);
+  assert.equal(ADMIN.syncModeAsk(marks, { mode: 'off', runs: [] }, 'shadow'), '');
+  assert.match(ADMIN.syncModeSaid(batches, 'shadow', 'write'), /^Write\. On its next run the cloud job writes the batches into the app/);
+  assert.match(ADMIN.syncModeSaid(batches, 'write', 'off'), /^Off\. The cloud job does nothing now\. If the job on Gianni's computer/);
+  // where a difference is, and what it is, in the sheet's own terms
+  assert.equal(ADMIN.syncWhere('marks', '14|3'), 'Cell D15');
+  assert.equal(ADMIN.syncWhere('marks', '0|27'), 'Cell AB1');
+  assert.equal(ADMIN.syncWhere('trims', 'SLANE 2026.xlsx|Oct 2-4|0|2'), 'SLANE 2026.xlsx, tab Oct 2-4, room 1, strain 3');
+  assert.equal(ADMIN.syncWhere('batches', '41'), 'Row 41');
+  assert.equal(ADMIN.syncDiffSay(trims, okRun.diff), 'all 362 trim lines match the app');
+  assert.equal(ADMIN.syncDiffSay(marks, badRun.diff), "2 differences in 913 marked cells (1 the app doesn't have, 1 that differ)");
+  assert.deepEqual(ADMIN.syncDiffItems('marks', badRun.diff), ["Cell G4: the cloud job found it, the app doesn't have it",
+    'Cell D15: red fill is no in the app, yes as the cloud job read it; the text is VOODOO in the app, VOODOO 6 as the cloud job read it']);
+  assert.deepEqual(ADMIN.syncDiffItems('batches', { sample: [{ key: '7', what: 'removed' }, { key: '9', what: 'changed', fields: { coa_date: [null, '2026-11-02'] } }] }),
+    ["Row 7: the app has it, the cloud job didn't find it", 'Row 9: coa date is blank in the app, 2026-11-02 as the cloud job read it']);
+  assert.equal(ADMIN.syncRunSay(trims, { status: 'saved', n_rows: 362 }), 'Saved 362 trim lines to the app');
+  assert.equal(ADMIN.syncRunSay(marks, { status: 'error', error: 'Google: could not read the sheet (HTTP 403)' }), 'Failed: Google: could not read the sheet (HTTP 403)');
+  assert.equal(ADMIN.syncRunSay(marks, { status: 'settings', mode: 'shadow', run_by: 'pat.lee' + '@wizardtrees.com' }), 'Settings changed by Pat: now Compare only');
+  for (const st of ['saved', 'unchanged', 'compared', 'waiting', 'partial', 'busy', 'settings', 'error'])
+    assert.ok(ADMIN.syncRunSay(marks, { status: st, mode: 'shadow', diff: okRun.diff }) && !/undefined/.test(ADMIN.syncRunSay(marks, { status: st, mode: 'shadow', diff: okRun.diff })), `a ${st} run reads as a sentence`);
+  const day = at => at.slice(0, 10);
+  assert.equal(ADMIN.syncTrack([], day), 'No comparisons yet.');
+  assert.equal(ADMIN.syncTrack([okRun, { status: 'busy' }, okRun], day), '2 comparisons since 2026-11-10: all matched.');
+  assert.equal(ADMIN.syncTrack([badRun, okRun], day), '2 comparisons since 2026-11-10: 1 of them found differences; the newest did too.');
+  assert.equal(ADMIN.syncTrack([okRun, badRun], day), '2 comparisons since 2026-11-11: 1 of them found differences; the newest matched.');
+  assert.equal(ADMIN.syncTrack([badRun], day), '1 comparison since 2026-11-11: none matched.');
+  // what Compare now answered
+  assert.deepEqual(ADMIN.syncCompareSay(trims, 200, { status: 'compared', diff: okRun.diff }), { bad: false, text: 'Compared just now: all 362 trim lines match the app.' });
+  assert.equal(ADMIN.syncCompareSay(trims, 200, { ok: true, skipped: 'busy' }).text, "It's running right now. Try again in a minute.");
+  assert.match(ADMIN.syncCompareSay(trims, 404, null).text, /isn't on the server yet/);
+  assert.match(ADMIN.syncCompareSay(trims, 401, { ok: false }).text, /didn't accept your sign-in/);
+  assert.match(ADMIN.syncCompareSay(trims, 0, null).text, /Couldn't reach the cloud job/);
+  assert.match(ADMIN.syncCompareSay(batches, 200, { status: 'error', error: 'Batch Label Sheet.xlsx is in the trash' }).text, /^It failed: Batch Label Sheet\.xlsx is in the trash$/);
+  for (const st of ['waiting', 'unchanged', 'partial']) assert.ok(ADMIN.syncCompareSay(marks, 200, { status: st }).text, `Compare now: ${st}`);
+  console.log('admin page, cloud sync jobs: links become Drive ids, Write asks first, and runs and differences read in plain words');
+  // the page's words, with no em dashes anywhere on the Admin page
+  const adminPage = html.split('/* ---------------- Admin page (beta, pipeline admins only) ----------------')[1].split('/* ---------------- Delivery/Visit schedule')[0];
+  assert.ok(!/\u2014/.test(adminSrc + adminPage), 'no em dashes on the Admin page');
 }
 
 // optional: a real export of the tab, to see it parses end to end

@@ -9,6 +9,8 @@
 -- out-of-band, never committed). The page shows these only where the sheet's own cell is still blank, marked as
 -- filled in automatically. Nothing here changes the sheet or pipeline_batches.
 -- Readers: the same accounts as the Batches view (pipeline_can_view(), from pipeline-batches.sql). Safe to re-run.
+-- Applied by the Pipeline deploy workflow as pipeline_owner (supabase/pipeline-order.txt).
+set role pipeline_owner;
 
 create table if not exists public.pipeline_batch_labs (
   metrc_uid   text primary key,      -- the batch's Metrc tag (the sheet's METRC UID column)
@@ -96,3 +98,5 @@ begin
 end $$;
 revoke all on function public.pipeline_batch_labs_save(text, jsonb) from public;
 grant execute on function public.pipeline_batch_labs_save(text, jsonb) to anon, authenticated;
+
+reset role;
