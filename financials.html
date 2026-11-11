@@ -174,16 +174,21 @@ async function rpc(name){
 }
 /* ── closed months only ──
    Months after the last closed one (meta.ttm[1], set by valuation.closed_through) are dropped from everything the page
-   shows: the chart, the P&L and balance sheets, the royalty and one-time item tables. A month appears once its books are
-   closed and closed_through moves past it. Every monthly array in the snapshot has one value per month_keys entry. */
+   shows, on both pages: the chart, the P&L and balance sheets, the royalty and one-time item tables, money going out, and
+   the Estimate page's trim runs. A month appears once its books are closed and closed_through moves past it. Every monthly
+   array in the snapshot has one value per month_keys entry; the dated lists (adjustments, trim runs, what Scott passed on
+   to WT NY) are filtered by their month. */
 function closedOnly(d){
   if(!d||!d.meta||!d.meta.ttm) return d;
   const n=d.meta.month_keys.length, L=d.meta.ttm[1]; if(L>=n-1) return d;
   const cut=x=>Array.isArray(x)?(x.length===n&&x.every(v=>typeof v==='number')?x.slice(0,L+1):x.map(cut)):x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,v])=>[k,cut(v)])):x;
-  const keep=new Set(d.meta.month_keys.slice(0,L+1)), {meta,adjustments,...rest}=d, [y,mo]=meta.month_keys[L].split('-').map(Number);
-  return {...cut(rest), adjustments:(adjustments||[]).filter(a=>keep.has(ym(a.month))),
+  const keep=new Set(d.meta.month_keys.slice(0,L+1)), {meta,adjustments,...rest}=d, [y,mo]=meta.month_keys[L].split('-').map(Number), last=meta.month_keys[L];
+  const out={...cut(rest), adjustments:(adjustments||[]).filter(a=>keep.has(ym(a.month))),
     meta:{...meta, months:meta.months.slice(0,L+1), month_keys:meta.month_keys.slice(0,L+1), mtd:null, as_of:new Date(Date.UTC(y,mo,0)).toISOString().slice(0,10),
       open_from:String(meta.months[L+1]||'').replace(/ (to date|\(not closed\))$/,'')}};
+  if(out.estimate&&Array.isArray(out.estimate.runs)) out.estimate={...out.estimate, runs:out.estimate.runs.filter(r=>ym(r.date)&&ym(r.date)<=last)};
+  if(out.cashout&&Array.isArray(out.cashout.passthrough)) out.cashout={...out.cashout, passthrough:out.cashout.passthrough.filter(p=>ym(p.month)&&ym(p.month)<=last)};
+  return out;
 }
 function adopt(j){ raw=closedOnly(j.data||null); rev=j.rev; scope=j.scope; derive();
   if(!S.mult&&data) S.mult={...((data.valuation||{}).multiples||{low:3,mid:5,high:7})}; }
@@ -414,17 +419,17 @@ function cashModel(X,pick,n){
   const bills=cats.filter(c=>c.bill), rest=cats.filter(c=>!c.bill&&!isScott(c)), scottC=cats.filter(isScott);
   return {bills,rest,scottC,S_,billT:sumS(bills),bizT:sumS([...bills,...rest]),scottT:sumS(scottC)};
 }
-// What Scott passed on to WT NY for the Sure Summit payoff, already taken off his transfers: in months T, and in later
-// months whose books are not closed yet (they join once closed).
-function ptOf(X,pick,T){ const K=data.meta.month_keys, last=K[T[T.length-1]], P=(X.passthrough||[]).filter(p=>pick.includes(p.company)), later=P.filter(p=>p.month>last);
-  return {sum:P.filter(p=>T.some(i=>K[i]===p.month)).reduce((s,p)=>s+p.amount,0), later:later.reduce((s,p)=>s+p.amount,0), laterMonths:[...new Set(later.map(p=>p.month))].sort()}; }
+// What Scott passed on to WT NY for the Sure Summit payoff, already taken off his transfers, in months T. Months whose
+// books are not closed yet are not mentioned (closedOnly drops them).
+function ptOf(X,pick,T){ const K=data.meta.month_keys, P=(X.passthrough||[]).filter(p=>pick.includes(p.company));
+  return {sum:P.filter(p=>T.some(i=>K[i]===p.month)).reduce((s,p)=>s+p.amount,0)}; }
 // The money-out table for months T: bills, then loans, equipment and deposits, then (with scott) the money to or for Scott.
 // extra.first / extra.last add a row above / below ([label, monthly values, class]); extra.head names the first column.
 function cashTable(M,T,scott,pt,extra={}){
   const tot=a=>T.reduce((s,i)=>s+(a[i]||0),0), avg=a=>T.length?tot(a)/T.length:0, end=extra.last?'tot':'key';
   const row=(lbl,a,cls='')=>`<tr class="${cls}"><td class="l" style="white-space:normal;min-width:220px">${lbl}</td>${T.map(i=>`<td>${whole(a[i])}</td>`).join('')}<td>${whole(tot(a))}</td><td>${whole(avg(a))}</td></tr>`;
   const x=r=>r?row(esc(r[0]),r[1],r[2]):'';
-  const ptNote=pt.sum?` <span class="m">(less ${big(pt.sum)} he passed on to WT NY for the Sure Summit payoff${pt.later?`; the last ${big(pt.later)}, in ${esc(pt.laterMonths.map(m=>monthName(m,true)).join(' and '))}, joins once ${pt.laterMonths.length>1?'those months are':'that month is'} closed`:''})</span>`:'';
+  const ptNote=pt.sum?` <span class="m">(less ${big(pt.sum)} he passed on to WT NY for the Sure Summit payoff)</span>`:'';
   return `<div class="tbl"><table><thead><tr><th class="l">${esc(extra.head==null?'Paid out':extra.head)}</th>${T.map(i=>`<th>${shortM(i)}</th>`).join('')}<th>${T.length} months</th><th>A month</th></tr></thead><tbody>
   ${x(extra.first)}
   ${M.bills.map(c=>row(esc(c.label),M.S_[c.key])).join('')}
@@ -571,7 +576,7 @@ function renderEst(){
   const nice=v=>`${v<0?'−':''}$${(Math.round(Math.abs(v)/10)*10).toLocaleString('en-US')}`, bulkNow=B.recent&&X.bulkP>0?X.bulkP:null, bulkTyped=!!(bulkNow&&X.bulkP!==B.recent.price), bulkYr=B.year&&B.year.price?B.year.price:null;
   const st={}, cashHtml=estCash(rows,mShort,st);
   $('#estHead').innerHTML=`
-  <p class="sub" style="max-width:900px">${rolling?`What each month’s trimmed flower could have sold for with ${rollPct}% of the bigs rolled into prerolls, the rest of the bigs packaged as 3.5g jars and every small as prerolls (.7g 5-packs and 1g singles)`:'What each month’s trimmed flower could have sold for if every big had been packaged as a 3.5g jar and every small as prerolls (.7g 5-packs and 1g singles)'}, at what those products actually sold for after discounts and credits, with the usual share given away as free samples and budtender pouches. It is an estimate of potential sales from the trim logs, not booked revenue.</p>
+  <p class="sub" style="max-width:900px">${rolling?`What each month’s trimmed flower could have sold for with ${rollPct}% of the bigs rolled into prerolls, the rest of the bigs packaged as 3.5g jars and every small as prerolls (.7g 5-packs and 1g singles)`:'What each month’s trimmed flower could have sold for if every big had been packaged as a 3.5g jar and every small as prerolls (.7g 5-packs and 1g singles)'}, at what those products actually sold for after discounts and credits, with the usual share given away as free samples and budtender pouches. It is an estimate of potential sales from the trim logs, not booked revenue.${data.meta.open_from?` Closed months only, as on the Financials page: ${esc(data.meta.open_from)} is added once its books are closed.`:''}</p>
   <div class="heroes">
     <div class="hero"><div class="lbl">Pounds trimmed</div><div class="val">${lb(T.bigsG+T.smallsG)} lb</div><div class="note">${esc(span)}, ${T.runs} trim runs: ${lb(T.bigsG)} lb bigs, ${lb(T.smallsG)} lb smalls</div></div>
     <div class="hero"><div class="lbl">Bigs as 3.5g jars</div><div class="val">${big(T.j$)}</div><div class="note">${n0(T.jars)} jars made, ${n0(T.jarsSold)} sold at ${price(X.jar)} after free samples${X.pouch?' and pouches':''}</div></div>
@@ -592,7 +597,7 @@ function renderEst(){
     let out=`<p class="small m">A pound keeps about <b>${nice(lbJar.keep)}</b> as jars and <b>${nice(lbMix.keep)}</b> as prerolls${bulkNow?`, against <b>${money(bulkNow)}</b> a pound in bulk ${bulkTyped?'at the price typed below':'lately'}`:''}, before growing costs. The table further down shows how.</p>`;
     if(rolling&&rows.length){ const left=st.left, left0=left==null?null:left+extra-dSales, m1=left!=null&&est>0?left/est:null, m0=left0!=null&&est0>0?left0/est0:null;
       const vsBulk=[bulkNow?[bulkNow,bulkTyped?'the price typed below':`${mSpan(B.recent.from,B.recent.to)} average`]:null,bulkYr?[bulkYr,`${mSpan(B.year.from,B.year.to)} average`]:null].filter(Boolean).map(([p,w],i)=>{ const d=movedLb*(lbMix.keep-p); return `about <b style="white-space:nowrap">${big(Math.abs(d))}</b> a month ${d<0?'less':'more'} ${i?'at':'than selling them bulk at'} ${money(p)} a pound (${esc(w)})`; });
-      const pmN=pm.length||1, soldG=((P.fivepk.paid_units||0)+(P.fivepk.sample_units||0))*3.5+((P.pr1.paid_units||0)+(P.pr1.sample_units||0))+(((P.pr15||{}).paid_units||0)+((P.pr15||{}).sample_units||0))*1.5, fiveMo=(P.fivepk.paid_units||0)/pmN, oneMo=(P.pr1.paid_units||0)/(mix.length||pmN), smallsMo=rows.filter(m=>pm.includes(m.k)).reduce((s,m)=>s+m.smallsG,0)/pmN;
+      const pmN=pm.length||1, soldG=((P.fivepk.paid_units||0)+(P.fivepk.sample_units||0))*3.5+((P.pr1.paid_units||0)+(P.pr1.sample_units||0))+(((P.pr15||{}).paid_units||0)+((P.pr15||{}).sample_units||0))*1.5, fiveMo=(P.fivepk.paid_units||0)/pmN, oneMo=(P.pr1.paid_units||0)/(mix.length||pmN), pmC=pm.filter(k=>k<=data.meta.month_keys[lastClosed()]), smallsMo=rows.filter(m=>pmC.includes(m.k)).reduce((s,m)=>s+m.smallsG,0)/(pmC.length||1);   // smalls over the price months that are closed (an older estimate's window can run past them)
       out=`<div class="heroes">
         ${hero('Moved a month',`${n0(movedLb)} lb`,`${n0(mo('fiveR'))} more 5-packs and ${n0(mo('oneR'))} more 1g prerolls, ${n0(mo('movedJars'))} fewer jars`)}
         ${hero('Estimated sales',signed(dSales),`from ${big(est0)} to ${big(est)} a month`,dSales<0)}
