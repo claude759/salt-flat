@@ -1,16 +1,17 @@
-// job.js (pipeline-batches-sync): Victoria's "Batch Label Sheet.xlsx" (Drive, tab WIZARD), hourly. The cloud copy of
+// job.js (pipeline-batches-sync): Victoria's batch list, hourly. Since 2026-11-11 it is the BATCH LABEL SHEET tab of
+// her WIZARD TREES WORKBOOK (a Google Sheet, read as an .xlsx export); before, the WIZARD tab of "Batch Label
+// Sheet.xlsx". The source link pasted on the Admin page is the workbook. The cloud copy of
 // ~/ar-automation/pipeline-batches-sync.mjs on Gianni's Mac: the same active rows (above the FINISHED/COMPLETE ITEMS
 // divider) plus the finished rows of the last FINISHED_DAYS days, the same rows and meta stamps (pipeline_batches_save's
 // rules, through pipeline_sync_apply). The file is read again only when its md5 or the day (UTC) changed, since the
-// finished window moves with the day. If the sheet is ever turned into a native Google Sheet, it is read as an .xlsx
-// export. Pure: Google, the database and SheetJS come in through `io`.
+// finished window moves with the day (a Google Sheet has no md5, so its modified time stands in). Pure: Google, the database and SheetJS come in through `io`.
 import { diffRows, sameInstant } from './core.js';
 
 export const JOB = 'batches';
 export const FUNCTION = 'pipeline-batches-sync';
 export const SCOPES = 'https://www.googleapis.com/auth/drive.readonly';   // read-only on purpose
 export const STALE_SECONDS = 600;
-export const TAB = 'WIZARD';
+export const TABS = ['BATCH LABEL SHEET', 'WIZARD'];   // the first that exists, as the Mac job does
 export const FINISHED_DAYS = 120;
 export const NATIVE = 'application/vnd.google-apps.spreadsheet';
 
@@ -60,12 +61,13 @@ const pct = n => n == null ? null : Math.round((n <= 1 ? n * 100 : n) * 100) / 1
 const isErr = v => typeof v === 'string' && /^#(REF|N\/A|VALUE|DIV\/0|NAME|NUM|NULL)!?/i.test(v.trim());
 const clean = v => String(v ?? '').replace(/\s+/g, ' ').trim();
 
-// the WIZARD tab as rows (the Mac job's sheet_to_json(header: 1, raw: true, defval: '', blankrows: true)) plus each
+// the batch tab as rows (the Mac job's sheet_to_json(header: 1, raw: true, defval: '', blankrows: true)) plus each
 // cell's hyperlink
 export function parseBatches(XLSX, bytes, today = iso(new Date())) {
   const wb = XLSX.read(bytes, { type: 'array', cellDates: false });
-  const ws = wb.Sheets[TAB];
-  if (!ws) throw new Error(`no ${TAB} tab (tabs: ${wb.SheetNames.join(', ')})`);
+  const tab = TABS.find((t) => wb.Sheets[t]);
+  const ws = tab && wb.Sheets[tab];
+  if (!ws) throw new Error(`no ${TABS.join(' or ')} tab (tabs: ${wb.SheetNames.join(', ')})`);
   const grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: true });
   const linkAt = (r, c) => { const x = ws[XLSX.utils.encode_cell({ r, c })]; return x && x.l && x.l.Target; };
   return parseGrid(grid, linkAt, today);

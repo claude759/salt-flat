@@ -372,7 +372,11 @@ const batchBook = (X) => book([{ name: 'OTHER', rows: [['x']] }, { name: 'WIZARD
   assert.deepEqual([p.rows[1].coa_url, p.rows[1].coa_text, p.rows[2].coa_url], ['https://example.org/coa1', 'COA', 'https://example.org/coa2'], 'batches: the COA cell\'s link, else its URL text');
   assert.equal(p.rows[3].notes, 'Units: about 40'); assert.equal(p.rows[4].notes, 'Test: TBD');
   assert.deepEqual(p.rows.filter((r) => r.finished).map((r) => r.strain), ['RECENT'], 'batches: finished rows older than 120 days are left out');
-  assert.throws(() => B.parseBatches(FakeXLSX, book([{ name: 'OTHER', rows: [] }]), '2026-11-11'), /no WIZARD tab/);
+  assert.throws(() => B.parseBatches(FakeXLSX, book([{ name: 'OTHER', rows: [] }]), '2026-11-11'), /no BATCH LABEL SHEET or WIZARD tab/);
+  // since 2026-11-11 the list is the BATCH LABEL SHEET tab of the main workbook; it wins over a leftover WIZARD tab
+  const moved = book([{ name: 'DISTRO PIPELINE', rows: [['x']] }, { name: 'WIZARD', rows: [HEAD] },
+    { name: 'BATCH LABEL SHEET', rows: batchRows(), links: { '2,15': 'https://example.org/coa1' } }]);
+  assert.deepEqual(B.parseBatches(FakeXLSX, moved, '2026-11-11'), p, 'batches: the BATCH LABEL SHEET tab reads the same as the old WIZARD tab');
 
   const meta = { name: 'Batch Label Sheet.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', modifiedTime: '2026-11-11T00:42:24.408Z', md5Checksum: 'abc', trashed: false };
   let io = fakeIo({ meta, bytes: { FILE: batchBook() } });
