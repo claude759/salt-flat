@@ -489,6 +489,19 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
     { work_date: '2026-10-07', task: 'General packaging activities', people: 4, hours: 1, packaged: 0, labeled: 0 },
     { work_date: '2026-10-28', task: '5pk (.7g) pre-roll labeled (post COA)(rec)', people: 5, hours: 3, packaged: 0, labeled: 1200 },
   ];
+  // lab turnaround and the expected results date on the Batches view
+  {
+    const labs = [{ sent_date: '2026-10-01', completed: '2026-10-07' }, { sent_date: '2026-10-02', collected: '2026-10-03', completed: '2026-10-08' },
+      { sent_date: '2026-10-05', completed: '2026-10-12' }, { collected: '2026-10-10', completed: '2026-10-15' }, { sent_date: '2026-10-20' }, null];
+    const t = BAT.turnaround(labs);
+    assert.deepEqual([t.n, t.sent, t.sent90, t.nColl, t.coll], [3, 6, 7, 2, 5], 'days from sending (and from collection) to the COA, middle and 9 in 10');
+    assert.deepEqual(BAT.expectedCoa({ sent_date: '2026-10-20' }, null, t, '2026-10-24'), { date: '2026-10-26', from: '2026-10-20', basis: 'sent', days: 6, late: 0 });
+    assert.equal(BAT.expectedCoa({ sent_date: '2026-10-20T00:00:00' }, null, t, '2026-10-29').late, 3, 'three days past the expected day');
+    assert.deepEqual(BAT.expectedCoa({ collected: '2026-10-21' }, null, t, '2026-10-22'), { date: '2026-10-26', from: '2026-10-21', basis: 'collected', days: 5, late: 0 });
+    assert.equal(BAT.expectedCoa(null, '2026-10-20', t, '2026-10-21').date, '2026-10-25', "the sheet's TEST DATE is the collection day");
+    assert.deepEqual([BAT.expectedCoa(null, null, t, '2026-10-21'), BAT.expectedCoa({ sent_date: '2026-10-20' }, null, null, '2026-10-21')], [null, null], 'nothing to count from');
+    assert.equal(BAT.turnaround([]).sent, null);
+  }
   const A = ACT.build(weeks, tasks, bat, '2026-10-16', BAT.statusKey);
   const R = A.byId.get('prerolls-2026-10-07'), line = key => R.act.lines.find(l => l.strain + '|' + l.size === key);
   assert.deepEqual([line('TIDE|5pk').counted, line('TIDE|1g').counted, line('VOODOO|5pk').counted, line('VOODOO|1g').counted], [700, null, 500, null],

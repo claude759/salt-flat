@@ -644,6 +644,8 @@
   .bt-d,.bt-thc{font-size:13px;white-space:nowrap}
   .bt-d.none,.bt-thc.none{color:#B8BEC8}
   .bt-d.fut{color:var(--wk-ink2);font-style:italic}
+  .bt-d.exp{color:var(--wk-ink2);font-style:italic}
+  .bt-d.exp.late small{color:#B45309;font-style:normal;font-weight:700}
   .bt-row.bt-up .bt-nm b{font-weight:600}
   .bt-uphd{display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;padding:7px 12px 5px;background:#F7F8FA;border-top:1px solid var(--wk-grid);font-size:13px}
   .bt-uphd b{font-weight:700}
@@ -2372,7 +2374,29 @@ const BAT = (() => {
       return { key, label: i.label, tone: i.tone, rank: i.rank, finished: fin, rows: list };
     }).sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
   }
-  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups };
+  // lab turnaround: days from a sample leaving for Excelbis (its Metrc lab manifest) to the finished COA, over the most
+  // recent finished samples; also from the lab's collection, for samples whose sending day isn't known
+  const dayMs = s => { const m = /^(\d{4})-(\d\d)-(\d\d)/.exec(String(s || '')); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : null; };
+  const daysFrom = (a, b) => { const x = dayMs(a), y = dayMs(b); return x == null || y == null ? null : Math.round((y - x) / 864e5); };
+  const pctOf = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))] : null; };
+  function turnaround(labs, last = 30) {
+    const done = [...labs].filter(x => x && x.completed).sort((a, b) => String(b.completed).localeCompare(String(a.completed)));
+    const span = from => done.map(x => daysFrom(x[from], x.completed)).filter(d => d != null && d >= 0 && d <= 60).slice(0, last);
+    const sent = span('sent_date'), coll = span('collected');
+    return { n: sent.length, sent: pctOf(sent, 0.5), sent90: pctOf(sent, 0.9), nColl: coll.length, coll: pctOf(coll, 0.5) };
+  }
+  // when a batch's results should be back: the day its sample left (else the day the lab collected it, or the sheet's
+  // TEST DATE, which is the collection day) plus the usual turnaround. null when there's nothing to count from.
+  function expectedCoa(lab, testDate, t, today) {
+    if (!t) return null;
+    let from = '', days = null, basis = '';
+    if (lab && lab.sent_date && t.sent != null) { from = String(lab.sent_date).slice(0, 10); days = t.sent; basis = 'sent'; }
+    else if (((lab && lab.collected) || testDate) && t.coll != null) { from = String((lab && lab.collected) || testDate).slice(0, 10); days = t.coll; basis = 'collected'; }
+    if (!from || dayMs(from) == null) return null;
+    const date = new Date(dayMs(from) + days * 864e5).toISOString().slice(0, 10), over = today ? daysFrom(date, today) : 0;
+    return { date, from, basis, days, late: over > 0 ? over : 0 };
+  }
+  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups, turnaround, expectedCoa };
 })();
 /* ===== BATCH MODEL END ===== */
 
@@ -5050,6 +5074,20 @@ function batchTrim(r) {
   const h = hits[0];
   return { ev: h.e, lb: h.ls.reduce((a, l) => a + l.bigs + l.littles, 0) / TRIMY.LB };
 }
+// the first day from today the pipeline sheet plans testing for a strain (its testing lines name the strains)
+function plannedTest(key) {
+  if (!key || !S.weeks.length) return null;
+  const today = todayISO();
+  if (S._ptWeeks !== S.weeks || S._ptDay !== today) {
+    S._ptWeeks = S.weeks; S._ptDay = today; S._pt = new Map();
+    for (const w of S.weeks) for (const d of w.days) if (d.date >= today) for (const it of d.items) if (it.type === 'testing')
+      for (const s of it.strains || []) {
+        const k = PIPE.strainKey(s.strain || '');
+        if (k && !S._pt.has(k)) S._pt.set(k, { date: d.date, tbd: /\bTBD\b/i.test(it.title || ''), drop: it.drop ? dropLabel(it.drop) : '' });
+      }
+  }
+  return S._pt.get(key) || null;
+}
 // a blank Test / COA / THC on the sheet, filled from the lab job (Metrc lab manifests + the Excelbis COA e-mails)
 const autoTag = (txt, tip) => `<span class="bt-auto" title="${esc(tip)}">${txt}</span>`;
 function btRowHTML(r, g) {
@@ -5068,12 +5106,32 @@ function btRowHTML(r, g) {
   if (!r.coa_date && !r.coa_url && lab && lab.completed) coa = btDate(lab.completed, 'COA', t => autoTag(lab.lab_url
     ? `<a href="${esc(lab.lab_url)}" target="_blank" rel="noopener">${esc(t)}</a>` : esc(t),
     `Not on the sheet yet. COA completed ${md(lab.completed)}${lab.result ? ', ' + lab.result.toLowerCase() : ''}, from ${fromCoa}.${lab.lab_url ? ' Opens the results on Confident LIMS (needs a Confident login).' : ''}`));
+  // no results yet but the sample is out: when they should be back, from the lab's usual turnaround
+  const resIn = !!(lab && (lab.completed || lab.thc_label != null)) || !!r.coa_date || !!r.coa_url || r.thc != null;
+  const exp = !resIn && !g.finished ? BAT.expectedCoa(lab, r.test_date, S.labTurn, todayISO()) : null;
+  if (exp) {
+    const t = S.labTurn, n = exp.basis === 'sent' ? t.n : t.nColl;
+    const tip = `Results expected about ${md(exp.date)}. Excelbis usually finishes a COA ${exp.days} days after the sample ${exp.basis === 'sent' ? 'is sent' : 'is collected'}` +
+      ` (the middle of the last ${n} sample${n === 1 ? '' : 's'}${exp.basis === 'sent' && t.sent90 != null ? `; 9 in 10 within ${t.sent90} days` : ''}).` +
+      ` ${exp.basis === 'sent' ? 'Sent' : 'Collected'} ${md(exp.from)}.` + (exp.late ? ` That was ${exp.late} day${exp.late === 1 ? '' : 's'} ago and no results are in yet.` : '');
+    coa = `<span class="bt-d exp${exp.late ? ' late' : ''}" title="${esc(tip)}"><i>COA</i>≈ ${esc(md(exp.date))}<small>${exp.late ? `${exp.late} day${exp.late === 1 ? '' : 's'} late` : 'expected'}</small></span>`;
+  }
+  // waiting for testing, nothing sent yet: the day the pipeline sheet plans its testing, and the results that follow
+  const pt = !exp && !resIn && !g.finished && k === 'WAITING FOR TESTING' && !r.test_date && !(lab && (lab.sent_date || lab.collected)) &&
+    S.labTurn && S.labTurn.sent != null ? plannedTest(PIPE.strainKey(r.strain || '')) : null;
+  if (pt) {
+    const t = S.labTurn, back = BAT.expectedCoa({ sent_date: pt.date }, null, t, null).date;
+    const tip = `If the sample goes to Excelbis ${md(pt.date)}, as the pipeline sheet plans${pt.drop ? ` for ${pt.drop}` : ''}${pt.tbd ? ' (marked TBD)' : ''},` +
+      ` results should be back about ${md(back)}. Excelbis usually finishes a COA ${t.sent} days after the sample is sent (the middle of the last ${t.n} samples).`;
+    coa = `<span class="bt-d exp" title="${esc(tip)}"><i>COA</i>≈ ${esc(md(back))}<small>if tested ${esc(md(pt.date))}</small></span>`;
+  }
   const coaOnly = !r.coa_date && r.coa_url ? `<span class="bt-d"><i>COA</i><a href="${esc(r.coa_url)}" target="_blank" rel="noopener" title="${esc(r.coa_text || 'Open the COA')}">COA</a></span>` : coa;
   let test = btDate(r.test_date, 'Test');
   const hasRes = !!(lab && (lab.completed || lab.thc_label != null)) || !!r.coa_date || !!r.coa_url || r.thc != null;
   if (!r.test_date && lab && (lab.collected || lab.sent_date)) test = btDate(lab.collected || lab.sent_date, 'Test', t => autoTag(esc(t), lab.collected
     ? `Not on the sheet yet. The lab collected the sample ${md(lab.collected)} (from ${fromCoa}).`
     : `Not on the sheet yet. A sample (Metrc ${lab.sample_uid || 'tag'}) went to Excelbis on ${md(lab.sent_date)}, the day its Metrc lab manifest was made${hasRes ? '.' : '; no results yet.'}`));
+  if (pt) test = btDate(pt.date, 'Test', d => `${esc(d)}${pt.tbd ? '<small>TBD</small>' : ''}`);
   const tr = batchTrim(r);
   const trimmed = tr ? `<span class="bt-d" title="${esc(`Trim sheet tab ${tr.ev.tab}${tr.ev.room ? ', room ' + tr.ev.room : ''}: ${Math.round(tr.lb * 10) / 10} lb of ${strain} (bigs + littles)`)}"><i>Trimmed</i>` +
     `${esc(md(tr.ev.start))}<small>${esc(String(Math.round(tr.lb * 10) / 10))} lb</small></span>` : btDate(null, 'Trimmed');
@@ -7220,6 +7278,7 @@ async function loadLabs(quiet) {
       const r = await sb.from('pipeline_batch_labs').select('metrc_uid,sample_uid,sample_id,sent_date,collected,completed,result,total_thc,thc_label,lab_url,coa_file,source');
       if (r.error) throw r.error;
       S.labs = new Map((r.data || []).map(x => [x.metrc_uid, x])); S.labsMeta = m.data.changed_at; fresh = true;
+      S.labTurn = BAT.turnaround(S.labs.values());   // the usual days to results, for "COA ≈ date expected"
     }
     S.labsAt = Date.now(); S.labsErr = '';
   } catch (e) {
