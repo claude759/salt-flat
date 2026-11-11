@@ -14,7 +14,8 @@ person asking for a change should never have to touch git. These rules keep that
    and puts them back afterwards; never discard them to make a pull succeed.
 2. **Make only the requested change.** Edit only the files the request needs.
 3. **Check it.** Run the check for the app you changed: NY Packaging `node tests/ny-check.mjs`,
-   Production Pipeline `node tests/pipeline-check.mjs` and `node tests/pipeline-write-check.mjs`.
+   Production Pipeline `node tests/pipeline-check.mjs`, `node tests/pipeline-write-check.mjs`,
+   `node tests/pipeline-sync-check.mjs` and `node scripts/pipeline-ci/check-sql.mjs`.
    If anything fails, fix it before pushing.
    Never push a failing check.
 4. **Commit only your files, by name.** `git add <file> <file>`, never `git add -A` or `git add .`:
@@ -24,7 +25,8 @@ person asking for a change should never have to touch git. These rules keep that
    `git pull --rebase --autostash origin main`, run the check again, and push again. Never force-push. Never
    rewrite, reset or revert someone else's commit unless the person you are working for asks.
 6. **Confirm it is live.** GitHub Pages takes about a minute. Fetch the live page and look for a
-   piece of text from your change before saying it is done.
+   piece of text from your change before saying it is done. A Production Pipeline push also starts
+   the Pipeline deploy job (below): check that its run for your commit passed before saying it is done.
 7. **Report in plain English.** What changed, where to see it, and anything the person must do.
 
 If a rebase conflicts on lines someone else just changed, keep both changes where they fit
@@ -87,12 +89,32 @@ example https://claude759.github.io/salt-flat/labor-calculator-ny.html?beta . Re
   step 3 is not optional.
 - **Who changes it:** Gianni and Victoria (production manager), each through their own Claude.
 - **Victoria's sessions change only Production Pipeline files:** `pipeline.html`,
-  `tests/pipeline-*`, `supabase/pipeline-*.sql`, and this file. Every other app in this repo
-  belongs to someone else. The sheet save program is Gianni's, not hers:
-  `supabase/functions/pipeline-sheet-write/`, `tests/pipeline-write-check.mjs` and
-  `supabase/pipeline-edits.sql`.
-- **The check** (`node tests/pipeline-check.mjs`) makes sure the page is whole, its script parses,
-  every page is wired up, and the sheet readers and models still give the right answers.
+  `tests/pipeline-*`, `supabase/pipeline-*.sql`, `supabase/pipeline-order.txt`,
+  `supabase/functions/pipeline-*/` (the sheet save program and the sync programs), and this file.
+  Every other app in this repo belongs to someone else. The deploy machinery stays Gianni's:
+  `.github/workflows/pipeline-deploy.yml`, `scripts/pipeline-ci/` and `supabase/postgres/`.
+- **The checks** (`node tests/pipeline-check.mjs`, `pipeline-write-check.mjs`,
+  `pipeline-sync-check.mjs`, and `node scripts/pipeline-ci/check-sql.mjs`) make sure the page is
+  whole, its script parses, every page is wired up, the sheet readers, models, save program and sync
+  programs still give the right answers, and the SQL files are safe for the deploy job.
+
+### How database and program changes go live (no Gianni needed)
+
+- Every push to `main` that touches the pipeline runs the **Pipeline deploy** job on GitHub
+  (`.github/workflows/pipeline-deploy.yml`, live since 2026-11-11). It runs the checks, then applies
+  each file in `supabase/pipeline-order.txt` whose text changed, as the database role
+  `pipeline_owner`, and deploys each `supabase/functions/pipeline-*` folder that changed.
+- `pipeline_owner` owns the `public.pipeline_*` tables and functions and nothing else. A change that
+  needs anything outside them (another app's table, `schedule_board`, auth, cron, pg_net, Vault)
+  still has to be applied from Gianni's computer.
+- A new SQL file goes in `supabase/pipeline-<what-it-does>.sql`, starts with `set role pipeline_owner;`,
+  ends with `reset role;`, must be safe to run again, and gets a line in `supabase/pipeline-order.txt`.
+  A failing file rolls back alone and the run goes red; fix it and push again.
+- Watch the run at https://github.com/claude759/salt-flat/actions/workflows/pipeline-deploy.yml , or
+  without signing in: https://api.github.com/repos/claude759/salt-flat/actions/workflows/pipeline-deploy.yml/runs?per_page=3 .
+  Never put `[skip ci]` in a pipeline commit: it skips the deploy.
+- Who may edit the sheet from the app, the edit switches, and the cloud sync jobs are set on the
+  **Admin** page (beta, pipeline admins only), not in SQL.
 
 ### Adding a page
 
@@ -113,8 +135,8 @@ launch. The check fails if one of the three pieces is missing.
   read live by the browser every few minutes. **Supplies:** the DISTRO SUPPLY and ACCESSORY SUPPLY
   tabs, read the same way. The sheet is the source of truth: to change the plan, change the sheet.
 - **Editing the sheet from the page** (release 1a, November 2026, not switched on yet): an Edit
-  button shows only with `?beta`, only for people listed in `pipeline_editors`, and only from this
-  week on. Every write goes through the save program in `supabase/functions/pipeline-sheet-write/`,
+  button shows only with `?beta`, only for people listed in `pipeline_editors` (admins add them on
+  the Admin page), and only from this week on. Every write goes through the save program in `supabase/functions/pipeline-sheet-write/`,
   which checks each edit against the sheet as it is right now; `CONTRACT.md` there is the agreement
   between the page and the program. The page builds edits in its EDIT MODEL block. Add no other
   way to write to the sheet, and don't loosen what the program refuses from the page side.
@@ -122,17 +144,24 @@ launch. The check fails if one of the three pieces is missing.
   Who's on. It writes one merged one-row line in the first empty row under that day's last line,
   styled like a matching line Victoria already has, never inserts rows, and refuses a full day.
   Each kind is switched on separately (`pipeline_write_settings.kinds_on`: 'rewrite', 'add').
-- **Everything else is copied into the database by jobs on Gianni's computer**, and the page reads
-  the copies: the sheet's red cells every 5 minutes, the Batch Label Sheet hourly (with test dates,
-  COA dates and THC from Metrc and the lab's COA emails), the 2026 TRIM SHEETS hourly (pounds
-  trimmed, and the estimates for trims to come), and Distru and Nabis stock every 30 minutes. Plan
-  vs actual also reads the CA task tracker (labor-calculator.html) directly.
-- Those jobs live on Gianni's computer, not in this repo, so Victoria's Claude cannot change them.
-  If a change needs a job to read something new, build the page so it works without it and tell
-  Victoria to ask Gianni.
-- **Structure changes** (a new table, a new column, a new access rule) can only be applied from
-  Gianni's computer. Write the SQL to `supabase/pipeline-<what-it-does>.sql`, commit it, and tell
-  the person to ask Gianni to apply it. Build the page so it keeps working before that happens.
+- **Everything else is copied into the database by jobs**, and the page reads the copies: the
+  sheet's red cells every 5 minutes, the Batch Label Sheet hourly, the 2026 TRIM SHEETS hourly
+  (pounds trimmed, and the estimates for trims to come), and Distru and Nabis stock every 30
+  minutes. Plan vs actual also reads the CA task tracker (labor-calculator.html) directly.
+- **Red cells, trim sheets and the batch sheet have cloud versions in this repo**
+  (`supabase/functions/pipeline-{marks,trims,batches}-sync/`, deployed 2026-11-11 and switched
+  off). Their schedules are a one-time setup on Gianni's computer
+  (`supabase/postgres/pipeline-sync-cron.sql`, then `pipeline-sync-cron-on.sql`). After that an
+  admin moves each job off, then shadow (compares only), then write, on the Admin page, after pasting
+  its source link there; the Mac jobs keep running until then. Victoria's Claude can change these.
+- **These stay on Gianni's computer** and Victoria's Claude cannot change them: the lab dates and
+  THC (from Metrc and the lab's COA emails), Distru and Nabis stock, the COA watcher that fills the
+  Batch Label Sheet, and the hourly backup copy of the sheet's tabs (the restore point if a sheet
+  edit goes wrong). If a change needs one of them to read something new,
+  build the page so it works without it and tell Victoria to ask Gianni.
+- **Structure changes** (a new table, a new column, a new access rule) on pipeline tables ship with
+  the push (see "How database and program changes go live"). Build the page so it keeps working
+  while the run is in flight.
 - **Nothing private goes in this repo:** the repo and the page are public. Never commit the
   workbook's id, any other file id, a token, a key or an email address. The page gets the
   workbook id from the database after sign-in.
