@@ -34,7 +34,9 @@ export const MSG = {
   title: 'That is the title row of the tab. The app does not change it.',
   header: 'That is a week header. Change it in the sheet.',
   hidden: 'That row is hidden in the sheet (a past week), so the app does not change it.',
-  formula: 'That cell is worked out by a formula in the sheet, so the app does not change it.',
+  hiddenSupply: 'That row is hidden in the sheet (by a filter, or by hand), so the app does not change it. Show the row in the sheet, then try again.',
+  countFormat: 'That count cell is set to show a date in the sheet, so a number there would read as a date. In the sheet, set the cell to Format, Number, Automatic, then try again.',
+  formula:'That cell is worked out by a formula in the sheet, so the app does not change it.',
   merged: 'That cell is part of a merged cell that starts elsewhere. Make that change in the sheet.',
   column: 'From the app, only the site counts, STATUS, PAR and NOTES of a supply row can be changed.',
   countKind: 'Counts and PAR are written as numbers. Reload the page and try again.',
@@ -160,6 +162,18 @@ export function ownerCell(g, bandStart, r, c) {
   return null;
 }
 export const ownerOf = (g, bandStart, r, c) => (ownerCell(g, bandStart, r, c) || { text: '' }).text;
+// The nearest text above a cell in its own column inside the band (the header row counts; '' when there is none).
+// Logged with each edit (find.prev) so an undo takes the cell it wrote, found by its words, only where that cell still
+// sits under the same line: a line someone typed elsewhere that day with the same words is never taken for it. Rows
+// inserted or deleted around it keep it (blank rows are skipped). `over` (r * 1000 + c -> text): cells this same save
+// rewrites, read as they will be after it.
+export function prevText(g, start, r, c, over) {
+  for (let k = r - 1; k >= start; k--) {
+    const t = over && over.has(k * 1000 + c) ? over.get(k * 1000 + c) : textAt(g, k, c);
+    if (t !== '') return t;
+  }
+  return '';
+}
 // which rows of DISTRO PIPELINE to read with formats: each op's week band (and an add's 'like' week band) and a few
 // rows more. The last week (no header under it in the text read, which leaves out the blank rows at the bottom) and a
 // band near the end of the tab are read to the end of the sheet (end = Infinity), so they are always read whole.
@@ -266,6 +280,7 @@ function checkAddOp(op) {
   if (!TABS[op.tab].plan) return MSG.addTab;
   if (!isText(f.week) || !clean(f.week) || !isDay(f.day) || op.c !== 2 * f.day) return MSG.bad;
   if (op.number || op.restore != null) return MSG.bad;
+  if (f.prev != null && (op.kind !== 'unadd' || !isText(f.prev))) return MSG.bad;   // only an undo, from the log
   if (op.kind === 'add') {
     if (op.expect !== '' || op.undo != null) return MSG.bad;
     if (!clean(nl(op.text))) return MSG.addText;
@@ -314,6 +329,7 @@ export function checkOps(ops) {
       if (!isText(f.week) || !clean(f.week) || !Number.isInteger(f.day) || f.day < 0 || f.day > 6) return MSG.bad;
       if (op.c >> 1 !== f.day) return MSG.bad;                     // the cell is in that day's two columns
       if (f.owner != null && !isText(f.owner)) return MSG.bad;
+      if (f.prev != null && (!op.restore || !isText(f.prev))) return MSG.bad;   // only an undo, from the log
       if (op.c % 2 === 1 && !op.restore && !clean(f.owner)) return MSG.bad;   // a detail line needs its item
       if (op.number && !op.restore) return MSG.textKind;
       if (op.expect === '') return MSG.empty;
@@ -329,7 +345,8 @@ export function checkOps(ops) {
 function locatePlan(g, op) {
   const f = op.find, bands = findBands(g, f.week);
   if (bands.length !== 1) return { why: bands.length ? 'week-twice' : 'week-gone', found: '' };
-  const b = bands[0], cols = [2 * f.day, 2 * f.day + 1], want = nl(op.expect), hits = [];
+  const b = bands[0], cols = [2 * f.day, 2 * f.day + 1], want = nl(op.expect);
+  let hits = [];
   // the band must end at the next week's header or at the end of the sheet, never at the edge of what was read
   // (rows inserted between the two reads can push part of the week, and a second copy of the text, past the window)
   const whole = isWeekHeaderRow(g, b.end) || g.rowCount == null || b.end >= g.rowCount || (g.toEnd && b.end >= g.readEnd);
@@ -340,6 +357,11 @@ function locatePlan(g, op) {
     const x = cellAt(g, r, c);
     if (x && x.text !== '' && nl(x.text) === want && ownerOk(r, c)) hits.push([r, c]);
   }
+  // an undo logged with the line above its cell (find.prev) takes only its own cell: in the column it wrote, and
+  // still at the row it wrote or still under that line (rows moved). Never a look-alike line typed elsewhere on that
+  // day (its own cell retyped), and its own cell even when another line that day says the same.
+  if (op.restore && isText(f.prev))
+    hits = hits.filter(([r, c]) => c === op.c && (r === op.r || nl(prevText(g, b.start, r, c)) === nl(f.prev)));
   if (hits.length === 1) return { r: hits[0][0], c: hits[0][1], band: b };
   // what the cell the page meant holds now, when it is still that item's cell
   const here = op.r >= b.start && op.r < b.end && ownerOk(op.r, op.c) ? textAt(g, op.r, op.c) : '';
@@ -358,20 +380,24 @@ function locateSupply(g, op) {
   if (rows.length !== 1) return { why: rows.length ? 'item-twice' : 'item-gone', found: '' };
   const r = rows[0], c = cols[0], now = textAt(g, r, c);
   if (nl(now) !== nl(op.expect)) return { why: 'changed', found: now };
-  return { r, c, head: L.h, role: L.roles[c] || null };
+  return { r, c, head: L.h, role: L.roles[c] || null, width: L.H.length };
 }
 
 // where a cell may not be written, whatever it holds
 function guard(g, op, at, plan) {
   if (at.r === 0 || (!plan && at.r <= at.head)) return MSG.title;
   if (plan && isWeekHeaderRow(g, at.r)) return MSG.header;
-  if (g.hidden[at.r]) return MSG.hidden;
+  if (g.hidden[at.r]) return plan ? MSG.hidden : MSG.hiddenSupply;
   const x = cellAt(g, at.r, at.c);
   if (x.value && x.value.formulaValue != null) return MSG.formula;
   if (coveredElsewhere(g, at.r, at.c)) return MSG.merged;
   if (!plan) {
     if (!at.role) return MSG.column;
     if (!op.restore && at.role === 'count' && !op.number) return MSG.countKind;
+    // a count written into a cell formatted as a date would show as a date (120 reads 4/29); index.ts reads each
+    // cell's number format for this
+    const nf = x.format && x.format.numberFormat;
+    if (!op.restore && at.role === 'count' && clean(op.text) !== '' && nf && /^(DATE|TIME|DATE_TIME)$/.test(nf.type)) return MSG.countFormat;
     if (!op.restore && at.role === 'text' && op.number) return MSG.textKind;
     if (op.expect === '' && at.role !== 'count') return MSG.empty;
   }
@@ -437,7 +463,7 @@ export function plan(ops, grids) {
   const bad = checkOps(ops);
   if (bad) return { ok: false, reason: 'refused', message: bad, cells: [] };
   if (ops[0].kind != null) return planAdds(ops, grids);         // checkOps: adds (or unadds) are never mixed with 1a ops
-  const cells = [], conflicts = [], seen = new Set();
+  const cells = [], conflicts = [], seen = new Set(), where = [];
   for (const op of ops) {
     const g = grids[op.tab], isPlan = TABS[op.tab].plan;
     const refuse = message => ({ ok: false, reason: 'refused', message, cells: [{ tab: op.tab, r: op.r, c: op.c, a1: a1(op.r, op.c), expect: op.expect }] });
@@ -463,11 +489,16 @@ export function plan(ops, grids) {
     const find = isPlan
       ? { week: op.find.week, day: op.find.day, owner: own ? own.text : '' }
       : { item: op.find.item, category: op.find.category || '', header: op.find.header };
+    // around: what index.ts reads again after the write to see that no row moved under it (the day's two columns in
+    // its week, or the supply row); never logged
+    const around = isPlan ? { r0: at.band.start, r1: aroundEnd(g, at.band.end), c0: 2 * op.find.day, c1: 2 * op.find.day + 2 }
+      : { r0: at.r, r1: at.r + 1, c0: 0, c1: Math.max(at.width || 0, at.c + 1) };
     cells.push({ tab: op.tab, r: at.r, c: at.c, a1: a1(at.r, at.c), key: k, moved: at.r !== op.r || at.c !== op.c,
-      find, own, before: w.before, after: w.after, same: w.same,
+      find, own, before: w.before, after: w.after, same: w.same, around,
       request: { updateCells: {
         range: { sheetId: g.sheetId, startRowIndex: at.r, endRowIndex: at.r + 1, startColumnIndex: at.c, endColumnIndex: at.c + 1 },
         rows: [{ values: [w.data] }], fields: w.fields } } });
+    where.push({ g, band: isPlan ? at.band : null, restore: !!op.restore });
   }
   if (conflicts.length) return { ok: false, reason: 'conflict', message: conflictMessage(conflicts), cells: conflicts };
   // an owner rewritten in this same save is found by its new text afterwards
@@ -475,6 +506,26 @@ export function plan(ops, grids) {
     const o = x.own && cells.find(y => y.tab === x.tab && y.r === x.own.r && y.c === x.own.c);
     if (o) x.find.owner = o.after.text;
     delete x.own;
+  }
+  // DISTRO PIPELINE: each cell as it will read after this save, for the line above it (find.prev) and for twins
+  const over = new Map();
+  cells.forEach((x, i) => { if (where[i].band) over.set(x.r * 1000 + x.c, x.after.text); });
+  for (let i = 0; i < cells.length; i++) {
+    const x = cells[i], { g, band, restore } = where[i];
+    if (!band) continue;
+    x.find.prev = prevText(g, band.start, x.r, x.c, over);
+    if (restore || x.same) continue;
+    // A rewrite never makes a line that says exactly what another line on that day says (with the same owner, for a
+    // detail line): an undo finds its cell by its words, and the board could not tell the two apart. An add already
+    // refuses this (MSG.twinLine).
+    const ownerAfter = (r, c) => { const o = ownerCell(g, band.start, r, c); return !o ? '' : over.has(o.r * 1000 + o.c) ? over.get(o.r * 1000 + o.c) : o.text; };
+    const owned = (r, c) => (c % 2 === 0 && !x.find.owner) || key(ownerAfter(r, c)) === key(x.find.owner || '');
+    for (let r = band.start + 1; r < band.end; r++) for (const c of [x.c - (x.c % 2), x.c - (x.c % 2) + 1]) {
+      if (r === x.r && c === x.c) continue;
+      const t = over.has(r * 1000 + c) ? over.get(r * 1000 + c) : textAt(g, r, c);
+      if (t !== '' && nl(t) === nl(x.after.text) && owned(r, c))
+        return { ok: false, reason: 'refused', message: MSG.twinLine, cells: [{ tab: x.tab, r: x.r, c: x.c, a1: x.a1, expect: x.before.text }] };
+    }
   }
   const changing = cells.filter(x => !x.same);
   if (!changing.length) return { ok: false, reason: 'refused', message: MSG.nothing, cells: [] };
@@ -495,6 +546,44 @@ export function checkWritten(cells, grids) {
     if (!ok) wrong.push({ tab: x.tab, a1: x.a1, expect: x.after.text, found: now ? now.text : '' });
   }
   return { ok: !wrong.length, wrong };
+}
+// Google writes by row number, and the Sheets API has no "only if the sheet still reads like this": a row inserted or
+// deleted above a cell in the second between the locked re-check and the write lands the write one row off, and the
+// read-back of the written cells alone cannot see it. So index.ts also reads `around` each written cell (the day's two
+// columns in its week, or its supply row) and compares it with the re-check. aroundRanges: what to read, per tab.
+// a week's compared rows run through the next week's header row, so a write on the week's last row that a deleted row
+// moved onto that header is seen too
+const aroundEnd = (g, end) => end + (isWeekHeaderRow(g, end) ? 1 : 0);
+export function aroundRanges(cells) {
+  const seen = new Set(), out = [];
+  for (const x of cells || []) {
+    const A = x && x.around;
+    if (!A || !(A.r1 > A.r0) || !(A.c1 > A.c0)) continue;
+    const range = rangeA1(A.r0, A.c0, A.r1, A.c1), k = x.tab + '!' + range;
+    if (!seen.has(k)) { seen.add(k); out.push({ tab: x.tab, range }); }
+  }
+  return out;
+}
+// The cells around the written ones that read differently after the write than at the re-check (`pre`: the grids the
+// save was planned on; `post`: the read-back), leaving out the cells the save wrote and formula cells (a supply row's
+// TOTAL QTY changes with its counts). Rows either read did not cover are not compared. -> [{tab, a1}]
+export function changedAround(cells, pre, post) {
+  const wrote = new Set(), out = [], seen = new Set();
+  for (const x of cells || []) for (const k of x.writes || [x.key]) wrote.add(k);
+  for (const x of cells || []) {
+    const A = x.around, gp = pre && pre[x.tab], ga = post && post[x.tab];
+    if (!A || !gp || !ga) continue;
+    for (let r = A.r0; r < A.r1; r++) for (let c = A.c0; c < A.c1; c++) {
+      const k = x.tab + '!' + a1(r, c);
+      if (wrote.has(k) || seen.has(k)) continue;
+      seen.add(k);
+      const p = cellAt(gp, r, c), q = cellAt(ga, r, c);
+      if (!p || !q) continue;
+      if ((p.value && p.value.formulaValue != null) || (q.value && q.value.formulaValue != null)) continue;
+      if (nl(p.text) !== nl(q.text)) out.push({ tab: x.tab, a1: a1(r, c) });
+    }
+  }
+  return out;
 }
 function pairHolds(g, x) {
   const L = cellAt(g, x.r, x.c), Rt = cellAt(g, x.r, x.c + 1);
@@ -543,7 +632,8 @@ export function undoOps(edit) {
         const n = looks.find(y => y && f && y.a1 === f.a1);
         return n && Object.hasOwn(n, 'format') ? { ...f, after: n.format } : { ...f };
       });
-      return { kind: 'unadd', tab: x.tab, r: x.r, c: x.c, find: { week: x.find && x.find.week, day: x.find && x.find.day },
+      const prev = x.find && isText(x.find.prev) ? { prev: x.find.prev } : {};
+      return { kind: 'unadd', tab: x.tab, r: x.r, c: x.c, find: { week: x.find && x.find.week, day: x.find && x.find.day, ...prev },
         expect: a.text || '', text: '', number: false,
         undo: { runs: a.runs || null, formats: a.formats, formats0: b.formats, merged: !!b.merged,
           cleared: b.cleared || [], freed } };
@@ -736,8 +826,8 @@ function buildAdd(g, op) {
     kind: 'add', tab, r: slot, c: c0, a1: a1(slot, c0), range: rangeA1(slot, c0, slot + 1, c0 + 2),
     read: rangeA1(slot, c0, bottom, c0 + 2), key: writes[0], writes,
     keys: [...writes, ...(end.c == null ? [] : [k(end.L, end.c)])],      // the anchor is locked too, never written
-    count: writes.length, moved: slot !== op.r,
-    find: { week: f.week, day: d, after: f.after, afterOwner: f.afterOwner || '' },
+    count: writes.length, moved: slot !== op.r, around: { r0: band.start, r1: aroundEnd(g, band.end), c0, c1: c0 + 2 },
+    find: { week: f.week, day: d, after: f.after, afterOwner: f.afterOwner || '', prev: prevText(g, band.start, slot, c0) },
     like: { week: op.like.week, day: op.like.day, text: op.like.text, a1: lk.a1 },
     merged: !reuse, cleared: cleared.map(m => rangeA1(m.r0, m.c0, m.r1, m.c1)),
     before: { text: '', runs: null, number: null, formats: [cellAt(g, slot, c0).format, cellAt(g, slot, c1).format],
@@ -754,9 +844,14 @@ function buildUnadd(g, op) {
   const stop = (why, found = '', more = {}) => ({ conflict: { tab, r: op.r, c: op.c, a1: a1(op.r, op.c), expect: op.expect, found, why, role: 'line', ...more } });
   const bf = bandFor(g, f.week);
   if (bf.why) return stop(bf.why);
-  // the line must be the only one with these words in the day's left column: a twin could be the one taken out
-  const b = bf.band, want = nl(op.expect), hits = [];
+  // the line must be the only one with these words in the day's left column: a twin could be the one taken out. An
+  // add logged with the line above it (find.prev) counts only a line still at its row or still under that line, so a
+  // copy someone pasted elsewhere that day (its own line reworded) is never taken out, and its own line is found even
+  // beside a twin.
+  const b = bf.band, want = nl(op.expect);
+  let hits = [];
   for (let r = b.start; r < b.end; r++) { const x = cellAt(g, r, c0); if (x && x.text !== '' && nl(x.text) === want) hits.push(r); }
+  if (isText(f.prev)) hits = hits.filter(r => r === op.r || nl(prevText(g, b.start, r, c0)) === nl(f.prev));
   if (hits.length !== 1) return stop(hits.length ? 'twice' : 'changed');
   const r = hits[0], shift = r - op.r, L = cellAt(g, r, c0), Rt = cellAt(g, r, c1), len = (L.text || '').length;
   if (r === 0) return { refuse: MSG.title };
@@ -801,7 +896,7 @@ function buildUnadd(g, op) {
   return { cell: {
     kind: 'unadd', tab, r, c: c0, a1: a1(r, c0), range: rangeA1(r, c0, r + 1, c0 + 2),
     read: rangeA1(r, c0, Math.max(r + 1, ...merges.map(m => m.r1)), c0 + 2), key: writes[0], writes, keys: writes,
-    count: writes.length, moved: r !== op.r, find: { week: f.week, day: f.day },
+    count: writes.length, moved: r !== op.r, find: { week: f.week, day: f.day }, around: { r0: b.start, r1: aroundEnd(g, b.end), c0, c1: c0 + 2 },
     merged: false, cleared: merges.map(m => rangeA1(m.r0, m.c0, m.r1, m.c1)),
     before: { text: isText(v.stringValue) ? v.stringValue : L.text, runs: L.runs, number: null, formats: [L.format, Rt.format], merged: true },
     after: { text: '', runs: null, number: null, formats: [U.formats0[0] || null, U.formats0[1] || null], merged: U.merged, merges },

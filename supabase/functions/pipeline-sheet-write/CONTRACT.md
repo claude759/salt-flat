@@ -22,9 +22,12 @@ rows. A day with no empty row left under its last line is refused.
 - `supabase/pipeline-edits.sql`: editors, settings, the edit log, cell locks, and the RPCs the
   page calls.
 - Google account: a dedicated service account (`pipeline-writer`) with no roles and no domain-wide
-  delegation, added by name as an Editor on the workbook (and on the test copy). Its key is the
-  Supabase secret `PIPELINE_WRITER_KEY` (the whole JSON key). Never the bookkeeping service
-  account: that one can read every mailbox.
+  delegation. It is an Editor on the test copy by name. On the live workbook it is not listed by
+  name: it gets in through the workbook's "anyone with the link: editor" sharing. If that sharing
+  is ever tightened, share the workbook with `pipeline-writer` by name as an Editor first;
+  otherwise every save fails safely (nothing written, "The app's Google account cannot open the
+  sheet"). Its key is the Supabase secret `PIPELINE_WRITER_KEY` (the whole JSON key). Never the
+  bookkeeping service account: that one can read every mailbox.
 
 ## Request (POST, the user's Supabase access token in `Authorization: Bearer ...`)
 
@@ -147,6 +150,13 @@ rows. A day with no empty row left under its last line is refused.
    is empty (it only rewrites cells that hold something), or whose `text` is empty, except a supply
    count or PAR. Two ops on one cell, a `text` over 2,000 characters, or a save that changes
    nothing are refused too.
+   - A DISTRO PIPELINE rewrite never makes a line that says exactly what another line on that day
+     says (in the day's two columns, with the same owner for a right-column line), counting the
+     other cells of the same save as they will read after it: "That day already has a line that
+     says exactly that." The board could not tell the two apart.
+   - A supply count or PAR written into a cell whose number format is a date or time is refused
+     (a number there would show as a date, 120 as 4/29): set the cell to Automatic in the sheet.
+     A hidden row on a supply tab (by a filter or by hand) is refused with its own message.
    - The row an add writes must not be the title row, a header or hidden. Both of its cells must
      be blank: no text, no value (even one that shows as nothing), no formula, no colored words.
      The day must not already have a line with exactly that text in its left column. Merges in
@@ -170,7 +180,9 @@ rows. A day with no empty row left under its last line is refused.
    the new text the same way; when they cannot be carried, the save is refused ("add it as it is,
    then change the wording").
 7. The cells are locked (for at most 3 minutes; a save still checking 90 seconds after locking gives up) for the length of the save, so two saves on one cell cannot both run, and
-   checks 4 to 6 are run again under the lock. The second save is a conflict that names who is
+   checks 4 to 6 are run again under the lock. The save's log row is written right after locking
+   (status `failed`, "Started saving but did not finish", until the end), before the re-check, so
+   the write follows the re-check as closely as it can. The second save is a conflict that names who is
    saving. An add locks its two cells, any cells it frees, and the day's last line (`after`, only
    read), so an add and a rewrite of that line take turns. A row that moved between the two checks
    changes the locked cells, and the save stops as a conflict ("the sheet changed while saving").
@@ -184,6 +196,16 @@ rows. A day with no empty row left under its last line is refused.
    compared yet; an undo compares them. Google refuses a merge that runs into cells someone
    merged by hand since the check; then nothing is written and the reply is a conflict with no
    cells.
+   - Google writes by row number and has no "only if the sheet still reads like this". A row
+     inserted or deleted above in the second between the re-check and the write lands the write
+     one row off, and the written cells alone read back fine. So the read-back also reads the
+     cells around each written one (the day's two columns in its week, or the supply row) and
+     compares their text with the re-check, leaving out the written cells and formulas. Any
+     difference: the save is still logged as written, the reply has `checked: false` and the
+     message "Saved, but the sheet changed next to it while it was saving...", and the log's
+     message names the cells.
+   - The batchUpdate is sent once. Google's rate limit (429) is not applied and is not resent
+     after a wait (rows may move meanwhile): nothing is written, and trying again checks afresh.
 
 ## Reply
 
@@ -205,7 +227,8 @@ when an empty one was kept) and `"cleared"` (the empty merges it cleared, like `
 - `mode`: `dry` for the action `dry`; `test` when test mode is on or the target is the test copy;
   `live` only when the workbook the page reads was written. `wrote` says whether anything was sent
   to Google; `target` names the workbook it was checked against.
-- `edit`: the `pipeline_edits` row (also for a dry run). `requests`: the planned batchUpdate, only
+- `edit`: the `pipeline_edits` row (also for a dry run). A write whose log row could not be
+  finished has no `edit` (so no Undo is offered) and a message saying it cannot be undone here. `requests`: the planned batchUpdate, only
   when nothing was written. `checked`: false when the cells read back differently from what was
   sent (the reply then has a `message`). An undo's reply also has `undo_of`.
 - `found` is empty when the sheet no longer has a cell the program can point to.
@@ -240,6 +263,14 @@ before, the pair is unmerged only if the add made that merge, and a merge the ad
 back. The line is found again by its text in its day's left column, so rows that moved since are
 followed.
 
+Since 2026-11-12 every edit also logs `find.prev`: the nearest text above the written cell in its
+own column inside the week (the header row counts; blank rows are skipped; other cells of the same
+save as they read after it). An undo then takes only a cell with the edit's words that still sits
+under that same text, in the same column. So a line someone typed elsewhere that day with the same
+words is never taken for it (its own cell was retyped: a conflict), and its own cell is found even
+when a twin is on that day. Edits logged without `find.prev` are found by their words alone, as
+before (a twin is a conflict `twice`). The page never sends `prev`.
+
 Undo the newest change first, and for an add the program enforces it: the undo is refused
 (`reason` `refused`, "A newer change on that day was made from the app. Undo that one first.",
 nothing written and nothing logged) while a later edit written from the app on the same workbook,
@@ -251,7 +282,8 @@ conflicted or failed do not count.
 
 The line is then taken out only if it is exactly as the add left it:
 - the same text and colored words, and the only line with that text in its day's left column
-  (two is a conflict `twice`);
+  under the line it was added under (`find.prev`; without it, the only line with that text: two
+  is a conflict `twice`);
 - both cells' looks unchanged (someone marking it urgent or recoloring it stops the undo, so their
   change is never wiped), the right cell still blank, and the pair still merged;
 - nothing typed in the day's right column under it since that belongs to it the way the page reads
@@ -281,7 +313,7 @@ lines were added below it since, that day keeps a blank row, which the page read
 - `pipeline_edits` (select, same people as `pipeline_can_view()`) has who changed what and when,
   for "Changed in the app by ...", and the `id` to undo.
 
-## Settings (`pipeline_write_settings`, one row, changed only from Gianni's computer)
+## Settings (`pipeline_write_settings`, one row, changed by a pipeline admin on the Admin page)
 
 - `enabled` (default false): the master switch.
 - `test_mode` (default true): check and plan, never write.

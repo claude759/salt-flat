@@ -57,6 +57,8 @@ const SAY = {
   unsure: "Google did not confirm the save. Check the sheet before you try again.",
   mismatch: "Saved, but the sheet now reads differently from what was sent. Check the sheet.",
   unchecked: "Saved, but the app could not read the sheet back to check it. Check the sheet.",
+  shifted: "Saved, but the sheet changed next to it while it was saving (a row added, removed or typed in). Check the sheet that it landed in the right place, and fix it there if not: this save cannot be undone from the app.",
+  notLogged: "Saved, but the app could not record it, so it cannot be undone from here. Check the sheet.",
   notInLog: "That change is not in the app's record, so it cannot be undone here.",
   notWritten: "Only a change that was saved to the sheet can be undone.",
   undone: "That change was already undone.",
@@ -144,11 +146,12 @@ async function gget(token: string, url: string): Promise<Any> {
   }
 }
 const quote = (tab: string) => `'${tab.replace(/'/g, "''")}'`;
-// looks: also each cell's userEnteredFormat, only for a save that adds a line or takes one out (R.needsFormats), so a
-// 1a save's reads stay small
+// looks: also each cell's whole userEnteredFormat, only for a save that adds a line or takes one out (R.needsFormats),
+// so a 1a save's reads stay small; a 1a save reads only each cell's number format (a count cell formatted as a date is
+// refused)
 const gridFields = (looks: boolean) => "sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),merges," +
   "data(startRow,startColumn,rowMetadata(hiddenByUser,hiddenByFilter),rowData(values(userEnteredValue,formattedValue,textFormatRuns" +
-  (looks ? ",userEnteredFormat" : "") + "))))";
+  (looks ? ",userEnteredFormat" : ",userEnteredFormat(numberFormat)") + "))))";
 const tabsOf = (ops: Any[]) => [...new Set(ops.map((o) => o.tab))] as string[];
 
 // Step 1: the tab's text only, to find which rows to read with formats: each op's week band on DISTRO PIPELINE, an
@@ -179,14 +182,17 @@ async function readGrids(token: string, wb: string, windows: Record<string, numb
   }));
   return grids;
 }
-// after the write: just the written cells. An added line (or one taken out) reads its pair and any merge it cleared
-// (`read`), with looks and merges, so the check sees the merge and the log keeps what an undo must find there.
+// after the write: the written cells. An added line (or one taken out) reads its pair and any merge it cleared
+// (`read`), with looks and merges, so the check sees the merge and the log keeps what an undo must find there. Also
+// the cells around each one (R.aroundRanges), to see that no row moved under the write.
 async function readBack(token: string, wb: string, cells: Any[]): Promise<Record<string, Any>> {
   const looks = cells.some((x) => x.kind != null);
   const fields = `sheets(properties(sheetId,title),${looks ? "merges," : ""}data(startRow,startColumn,rowMetadata(hiddenByUser),` +
     `rowData(values(userEnteredValue,formattedValue,textFormatRuns${looks ? ",userEnteredFormat" : ""}))))`;
+  const ranges = [...cells.map((x) => `${quote(x.tab)}!${x.read ?? x.a1}`),
+    ...R.aroundRanges(cells).map((x: Any) => `${quote(x.tab)}!${x.range}`)];
   const j = await gget(token, `${SHEETS}${wb}?includeGridData=true&fields=${encodeURIComponent(fields)}&` +
-    cells.map((x) => "ranges=" + encodeURIComponent(`${quote(x.tab)}!${x.read ?? x.a1}`)).join("&"));
+    ranges.map((r) => "ranges=" + encodeURIComponent(r)).join("&"));
   const grids: Record<string, Any> = {};
   for (const s of j.sheets ?? []) grids[s.properties.title] = R.gridFromSheet(s, s.properties.title);
   return grids;
@@ -194,23 +200,22 @@ async function readBack(token: string, wb: string, cells: Any[]): Promise<Record
 // One batchUpdate (Google applies all of it or none). 'ok', 'refused' (Google said no: nothing written) or
 // 'unsure' (no clear answer: the caller reads the cells to find out), with Google's status.
 type Sent = { result: "ok" | "refused" | "unsure"; status: number };
+// Sent once: a 429 (Google's rate limit, not applied) is never sent again after a wait, because the requests name
+// rows by number and rows may move while it waits; the person is told to try again, which checks the sheet afresh.
 async function batchUpdate(token: string, wb: string, requests: Any[]): Promise<Sent> {
-  for (let attempt = 1; ; attempt++) {
-    let res: Response | null = null;
-    try {
-      res = await fetch(`${SHEETS}${wb}:batchUpdate`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ requests, includeSpreadsheetInResponse: false }),
-        signal: AbortSignal.timeout(20000),
-      });
-    } catch (_) { return { result: "unsure", status: 0 }; }
-    if (res.ok) { await res.body?.cancel(); return { result: "ok", status: res.status }; }
-    const body = await res.text().catch(() => "");
-    console.error("batchUpdate", res.status, body.slice(0, 300));
-    if (res.status === 429 && attempt < 3) { await sleep(800 * attempt); continue; }   // rate limit: not applied
-    return { result: res.status >= 500 ? "unsure" : "refused", status: res.status };
-  }
+  let res: Response | null = null;
+  try {
+    res = await fetch(`${SHEETS}${wb}:batchUpdate`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ requests, includeSpreadsheetInResponse: false }),
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch (_) { return { result: "unsure", status: 0 }; }
+  if (res.ok) { await res.body?.cancel(); return { result: "ok", status: res.status }; }
+  const body = await res.text().catch(() => "");
+  console.error("batchUpdate", res.status, body.slice(0, 300));
+  return { result: res.status >= 500 ? "unsure" : "refused", status: res.status };
 }
 
 /* ---------- Supabase ---------- */
@@ -236,10 +241,18 @@ async function logInsert(admin: Any, row: Any): Promise<number | null> {
   if (error) { console.error("log insert", error.message); return null; }
   return data.id;
 }
-async function logUpdate(admin: Any, id: number, patch: Any) {
-  const { error } = await admin.from("pipeline_edits").update(patch).eq("id", id);
-  if (error) console.error("log update", id, error.message);
+// tried twice; false when the row could not be updated
+async function logUpdate(admin: Any, id: number, patch: Any): Promise<boolean> {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const { error } = await admin.from("pipeline_edits").update(patch).eq("id", id);
+    if (!error) return true;
+    console.error("log update", id, attempt, error.message);
+    if (attempt < 2) await sleep(500);
+  }
+  return false;
 }
+// a save's log status for how it stopped (pipeline_edits.status has no 'error')
+const statusOf = (reason: string) => (reason === "refused" || reason === "conflict" ? reason : "failed");
 
 /* ---------- one save ---------- */
 
@@ -292,11 +305,15 @@ async function save(job: Job): Promise<Any> {
   if (!wb) return { ok: false, reason: "off", message: target === "test" ? SAY.noCopy : SAY.noLive };
 
   const base = { email: who.email, uid: who.id, intent: job.intent || null, action, target, undo_of: job.undoOf ?? null };
-  const stopped = async (p: Any) => {
-    await logInsert(admin, { ...base, status: p.reason, message: p.message, cells: askedCells(ops, p.cells) });
-    return { ok: false, reason: p.reason, message: p.message, cells: p.reason === "conflict" ? p.cells.map((x: Any) =>
-      ({ tab: x.tab, a1: x.a1, r: x.r, c: x.c, expect: x.expect, found: x.found ?? "", why: x.why ?? "changed",
-        ...(x.role ? { role: x.role } : {}) })) : undefined };
+  // a save that stops: its reply, and its log row (a new one, or the started row `id` updated)
+  const answer = (p: Any) => ({ ok: false, reason: p.reason, message: p.message, cells: p.reason === "conflict" ? p.cells.map((x: Any) =>
+    ({ tab: x.tab, a1: x.a1, r: x.r, c: x.c, expect: x.expect, found: x.found ?? "", why: x.why ?? "changed",
+      ...(x.role ? { role: x.role } : {}) })) : undefined });
+  const stopped = async (p: Any, id: number | null = null) => {
+    const row = { status: statusOf(p.reason), message: p.message, cells: askedCells(ops, p.cells) };
+    if (id == null) await logInsert(admin, { ...base, ...row });
+    else await logUpdate(admin, id, row);
+    return answer(p);
   };
 
   // 3-6. read the tab fresh and run every rule
@@ -311,7 +328,10 @@ async function save(job: Job): Promise<Any> {
       cells: replyCells(first.cells), requests: first.requests, ...(job.undoOf ? { undo_of: job.undoOf } : {}) };
   }
 
-  // 7. lock the cells, then check again under the lock: a save that ran in between is seen here
+  // 7. lock the cells, log that the save started, then check again under the lock: a save that ran in between is seen
+  // here. The log row comes first (so a save that dies halfway still leaves a trace) and before the re-check, so the
+  // write follows the re-check as closely as it can: Google applies it by row number, and a row inserted above in
+  // between would move it (the read-back below looks around the written cells for that).
   const keys = first.keys.map((k: string) => `${target}:${k}`), lockToken = crypto.randomUUID();
   const { data: lock, error: lockErr } = await admin.rpc("pipeline_lock_cells",
     { p_keys: keys, p_seconds: LOCK_SECONDS, p_email: who.email, p_token: lockToken });
@@ -319,16 +339,23 @@ async function save(job: Job): Promise<Any> {
   if (!lock?.ok) return await stopped({ reason: "conflict", message: SAY.locked(nameOf(lock?.email)), cells: [] });
   const lockedAt = Date.now();
   try {
-    const plan = R.plan(ops, await readGrids(token, wb, windows, looks));
-    if (!plan.ok) return await stopped(plan);
-    if (plan.keys.join("|") !== first.keys.join("|")) return await stopped({ reason: "conflict", message: SAY.moved, cells: [] });
-
-    // Google was slow enough that the lock could run out before the write lands: stop here, nothing written
-    if (Date.now() - lockedAt > WRITE_BY_MS) return await stopped({ reason: "error", message: SAY.google, cells: [] });
-    // 8. log first (so a save that dies halfway still leaves a trace), write once, read back, finish the log
     const id = await logInsert(admin, { ...base, status: "failed", message: "Started saving but did not finish. Check the sheet.",
-      cells: logCells(plan.cells) });
+      cells: logCells(first.cells) });
     if (id == null) return { ok: false, reason: "error", message: SAY.noLog };
+    let fresh: Record<string, Any>, plan: Any;
+    try {
+      fresh = await readGrids(token, wb, windows, looks);
+      plan = R.plan(ops, fresh);
+    } catch (e) {   // the reply says nothing was saved (the handler's catch); the started row says so too
+      await logUpdate(admin, id, { status: "failed", message: "Stopped while checking the sheet again: nothing was written." });
+      throw e;
+    }
+    if (!plan.ok) return await stopped(plan, id);
+    if (plan.keys.join("|") !== first.keys.join("|")) return await stopped({ reason: "conflict", message: SAY.moved, cells: [] }, id);
+    // Google was slow enough that the lock could run out before the write lands: stop here, nothing written
+    if (Date.now() - lockedAt > WRITE_BY_MS) return await stopped({ reason: "error", message: SAY.google, cells: [] }, id);
+
+    // 8. write once, read back, finish the log
     const sent = await batchUpdate(token, wb, plan.requests);
     let back: Record<string, Any> | null = null;
     try { back = await readBack(token, wb, plan.cells); } catch (e) { console.error("read back", String(e)); }
@@ -344,7 +371,8 @@ async function save(job: Job): Promise<Any> {
           await logUpdate(admin, id, { status: "conflict", message: SAY.moved });
           return { ok: false, reason: "conflict", message: SAY.moved, cells: [] };
         }
-        const message = sent.result === "unsure" ? SAY.unsure : sent.status === 403 || sent.status === 404 ? SAY.noAccess : SAY.error;
+        const message = sent.result === "unsure" ? SAY.unsure : sent.status === 403 || sent.status === 404 ? SAY.noAccess
+          : sent.status === 429 ? SAY.google : SAY.error;
         await logUpdate(admin, id, { status: "failed", message });
         return { ok: false, reason: "error", message };
       }
@@ -356,14 +384,21 @@ async function save(job: Job): Promise<Any> {
       const now = back && !wrongAt.has(`${x.tab}!${x.a1}`) ? R.readAfter(x, back) : null;
       return now ? { ...x, after: now } : x;
     });
-    const note = check.ok ? null : back ? SAY.mismatch : SAY.unchecked;
-    await logUpdate(admin, id, { status: "written", cells: logCells(cells), message: note });
+    // the cells around the written ones read as at the re-check, or a row may have moved under the write
+    const around = back ? R.changedAround(plan.cells, fresh, back) : [];
+    const note = !check.ok ? (back ? SAY.mismatch : SAY.unchecked) : around.length ? SAY.shifted : null;
+    const seen = around.length ? ` Around it: ${around.slice(0, 8).map((x: Any) => x.a1).join(", ")}.` : "";
+    const logged = await logUpdate(admin, id, { status: "written", cells: logCells(cells), message: note ? note + seen : null });
     if (job.undoOf) {
       const { error } = await admin.from("pipeline_edits").update({ undone_by: id }).eq("id", job.undoOf).is("undone_by", null);
       if (error) console.error("mark undone", job.undoOf, error.message);
     }
-    return { ok: true, mode: target === "live" ? "live" : "test", target, wrote: true, edit: id, cells: replyCells(cells),
-      checked: check.ok, ...(note ? { message: note } : {}), ...(job.undoOf ? { undo_of: job.undoOf } : {}) };
+    // no edit id (so no Undo button) for a save whose log row could not be finished, or that rows moved under: its
+    // undo could put the old words in the wrong row
+    const message = logged ? note : [SAY.notLogged, note].filter(Boolean).join(" ");
+    return { ok: true, mode: target === "live" ? "live" : "test", target, wrote: true, ...(logged && !around.length ? { edit: id } : {}),
+      cells: replyCells(cells), checked: check.ok && !around.length, ...(message ? { message } : {}),
+      ...(job.undoOf ? { undo_of: job.undoOf } : {}) };
   } finally {
     const { error } = await admin.rpc("pipeline_unlock_cells", { p_keys: keys, p_token: lockToken });
     if (error) console.error("unlock", error.message);

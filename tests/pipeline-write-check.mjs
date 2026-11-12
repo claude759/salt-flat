@@ -759,7 +759,7 @@ const conflictAdd = (ops, why, role, label, sheet) => {
     formats: [withAll4(JARF), null], merged: true });
   const logged = R.logCell({ ...p.cells[0], after: back });
   assert.deepEqual(Object.keys(logged).sort(), ['a1', 'after', 'before', 'c', 'cleared', 'find', 'kind', 'like', 'merged', 'moved', 'r', 'range', 'tab']);
-  assert.deepEqual(logged.find, { week: W9, day: 0, after: END9[0][0], afterOwner: 'TRIM -LORENZO' });
+  assert.deepEqual(logged.find, { week: W9, day: 0, after: END9[0][0], afterOwner: 'TRIM -LORENZO', prev: 'TRIM -LORENZO' }, 'with the line above it, for undo');
   assert.equal(R.readAfter(p.cells[0], {}), null);
   // a 1a cell's log entry and after-image keep their old shape
   const one1a = R.plan([op({ r: 4, c: 0, expect: 'JUSTIN DISTRO / LORENZO TRIM', text: 'LORENZO OFF', find: wk(0) })], planGrid(planSheet)).cells[0];
@@ -816,13 +816,23 @@ const conflictAdd = (ops, why, role, label, sheet) => {
   refusedUndo(sh => { sh.merges = sh.merges.filter(m => !(m.startRowIndex === 4 && m.startColumnIndex === 6)); }, 'unmerged by hand');
   refusedUndo(sh => { Object.assign(cellAtS(sh, 'I7'), { userEnteredValue: { stringValue: 'X' }, formattedValue: 'X' }); }, 'the freed cell was filled');
   refusedUndo(sh => { sh.merges.push(mergeRef('I7:J7')); }, 'the freed cell was merged');
-  refusedUndo(sh => { Object.assign(cellAtS(sh, 'G6'), { userEnteredValue: { stringValue: 'DEC DROP 1 - STAGE FOR NABIS PICKUP' }, formattedValue: 'DEC DROP 1 - STAGE FOR NABIS PICKUP' }); }, 'the line is there twice', 'twice');
+  // a twin of the line typed right under it: the undo finds its own line by the line it was added under (find.prev)
+  // and takes that one out, never the twin; an add logged before find.prev existed still refuses a twin
+  const LINE = 'DEC DROP 1 - STAGE FOR NABIS PICKUP', say = (sh, ref, t) => Object.assign(cellAtS(sh, ref), { userEnteredValue: { stringValue: t }, formattedValue: t });
+  const twinUnder = undoOn(sh => say(sh, 'G6', LINE));
+  assert.equal(twinUnder.ok, true, twinUnder.message); assert.equal(twinUnder.cells[0].a1, 'G5', 'its own line, not the twin under it');
+  const legacy = JSON.parse(JSON.stringify({ cells: added.edit.cells.map(x => ({ ...x, find: { ...x.find, prev: undefined } })) }));
+  const legacyTwin = structuredClone(S); say(legacyTwin, 'G6', LINE);
+  const lt = R.plan(R.undoOps(legacy), planGrid(legacyTwin));
+  assert.equal(lt.reason, 'conflict'); assert.equal(lt.cells[0].why, 'twice', 'logged without prev: a twin is refused');
+  // its own line reworded in the sheet and its words typed on the next row: that row is never taken for it
+  refusedUndo(sh => { say(sh, 'G5', 'DEC DROP 1 - DONE'); say(sh, 'G6', LINE); }, 'reworded, with its words typed on the next row');
   // a hidden row is refused (reason 'refused', the hidden-row message, no role), not a conflict, as CONTRACT.md says
   const hid = undoOn(sh => { sh.data[0].rowMetadata[4] = { hiddenByUser: true }; });
   assert.equal(hid.reason, 'refused'); assert.equal(hid.message, R.MSG.hidden); assert.equal(hid.cells[0].role, undefined);
   // an undo of an undo, or of a kind this program does not know, is refused before reading the sheet
   assert.match(R.checkOps(R.undoOps({ cells: [{ kind: 'unadd', tab: PLAN, r: 4, c: 6, find: { week: W9, day: 3 }, before: {}, after: {} }] })), /could not read/);
-  ok('1b: undo refused after a rewording, a recolor, a filled or freed cell, a hand unmerge, a twin, a hidden row');
+  ok('1b: undo refused after a rewording, a recolor, a filled or freed cell, a hand unmerge, a hidden row; a twin is never taken for it');
 
   // [1]/[6] the look each freed cell has right after the add is logged from the read-back, and an undo that would wipe
   // a look given to it by hand since is refused (it would otherwise write the earlier look over it and merge it away)
@@ -897,7 +907,8 @@ const conflictAdd = (ops, why, role, label, sheet) => {
   ok('1b: [2] undo refused when a right-column line typed under the added line belongs to it');
 
   // [0] an older add whose line was reworded in the sheet, and the same line copied to that day again from the app: by
-  // its words alone the newer line looks like hers, so the rules would take it out. index.ts asks the log first:
+  // its words alone the newer line looks like hers. Since find.prev the rules tell them apart; for edits logged before
+  // it, and as a second guard, index.ts asks the log first:
   // newerOnDay names the later written, not undone edits on the same workbook, tab, week and day, and the undo is
   // refused (MSG.undoNewer) until they are undone.
   const X = 'DEC DROP 1 - STAGE FOR NABIS PICKUP', Y = 'DEC DROP 2 - STAGE FOR NABIS PICKUP';
@@ -906,7 +917,11 @@ const conflictAdd = (ops, why, role, label, sheet) => {
   const C = saveOn(reworded0, [addOp(W9, 3, 5, [Y], LIKE_NABIS, X)]);
   assert.equal(C.p.cells[0].a1, 'G6');
   const alone = R.plan(R.undoOps(A.edit), planGrid(C.sheet));
-  assert.equal(alone.ok && alone.cells[0].a1, 'G6', 'the rules alone cannot tell the newer line from hers');
+  assert.equal(alone.reason, 'conflict', 'the line hers was added under (find.prev) tells the newer line from hers');
+  // logged before find.prev existed, the words alone point at the newer line: newerOnDay is what stops it then
+  const legacyA = JSON.parse(JSON.stringify({ cells: A.edit.cells.map(x => ({ ...x, find: { ...x.find, prev: undefined } })) }));
+  const legacyAlone = R.plan(R.undoOps(legacyA), planGrid(C.sheet));
+  assert.equal(legacyAlone.ok && legacyAlone.cells[0].a1, 'G6', 'without prev the rules alone cannot tell the newer line from hers');
   const logA = { id: 10, target: 'test', ...A.edit }, logC = { id: 12, target: 'test', ...C.edit };
   assert.deepEqual(R.newerOnDay(logA, [logC]), [12], 'the newer add on Thursday blocks the undo');
   assert.equal(R.MSG.undoNewer, 'A newer change on that day was made from the app. Undo that one first.');
@@ -925,11 +940,82 @@ const conflictAdd = (ops, why, role, label, sheet) => {
     at(18, [rewrite(W9, 3)], 'live'), at(19, [{ tab: SUP, a1: 'G5', find: { item: 'X', category: '', header: '25TH' } }]), { ...logA }]), []);
   assert.deepEqual(R.newerOnDay({ id: 10, target: 'test', cells: [rewrite(W9, 3)] }, [logC]), [], 'a rewording being undone is not checked this way');
   assert.deepEqual(R.newerOnDay(logA, [at(21, [rewrite(W9, 3)]), logC]), [12, 21], 'oldest first');
-  // the line must also be the only one with its words in the day's left column (typed again by hand: a twin)
+  // a twin typed again by hand further down: the undo takes out its own line (still under the line it was added
+  // under), never the twin; logged without find.prev, a twin stops the undo
   const twin = structuredClone(A.sheet); Object.assign(cellAtS(twin, 'G7'), { userEnteredValue: { stringValue: X }, formattedValue: X });
   const tw = R.plan(R.undoOps(A.edit), planGrid(twin));
-  assert.equal(tw.reason, 'conflict'); assert.equal(tw.cells[0].why, 'twice'); assert.match(tw.message, /on its day twice/);
-  ok('1b: [0] an older add is not undone while a newer change on that day is not; a twin line stops the undo');
+  assert.equal(tw.ok, true, tw.message); assert.equal(tw.cells[0].a1, 'G5', 'its own line, not the twin');
+  const twl = R.plan(R.undoOps(legacyA), planGrid(twin));
+  assert.equal(twl.reason, 'conflict'); assert.equal(twl.cells[0].why, 'twice'); assert.match(twl.message, /on its day twice/);
+  ok('1b: [0] an older add is not undone while a newer change on that day is not; a twin line is never taken for it');
+}
+/* ---------- going live (2026-11-12): twins, the line above, date-formatted counts, rows moved under the write ---------- */
+{
+  const g = planGrid(planSheet);
+  const refused = (res, msg, label) => { assert.equal(res.reason, 'refused', `${label}: ${res.message}`); assert.equal(res.message, msg, label); };
+  // a rewrite never makes a line that says exactly what another line on that day says (same owner for a detail line)
+  refused(R.plan([op({ r: 6, c: 0, expect: 'NEBULA', text: 'VOODOO', find: wk(0) })], g), R.MSG.twinLine, 'a task line made a twin');
+  refused(R.plan([op({ r: 9, c: 1, expect: '1G PREROLL- 600', text: '5PK .7G -- 600', find: wk(0, 'VOODOO') })], g), R.MSG.twinLine, 'a detail line made a twin under its strain');
+  refused(R.plan([op({ r: 6, c: 0, expect: 'NEBULA', text: 'X', find: wk(0) }), op({ r: 8, c: 0, expect: 'VOODOO', text: 'X', find: wk(0) })], g),
+    R.MSG.twinLine, 'two lines made twins in one save');
+  assert.equal(R.plan([op({ r: 7, c: 1, expect: '1G PREROLL- 600', text: '1G PREROLL- 450', find: wk(0, 'NEBULA') }),
+    op({ r: 9, c: 1, expect: '1G PREROLL- 600', text: '1G PREROLL- 450', find: wk(0, 'VOODOO') })], g).ok, true, 'the same amount under two strains');
+  assert.equal(R.plan([op({ r: 6, c: 0, expect: 'NEBULA', text: 'STAGE DEC DROP 3 FOR NABIS', find: wk(0) })], g).ok, true, 'a line that is on another week');
+  refused(R.plan([op({ r: 8, c: 0, expect: 'VOODOO', text: 'M8', find: wk(0) }), op({ r: 8, c: 1, expect: '5PK .7G -- 600', text: '1G PREROLL- 600', find: wk(0, 'VOODOO') })], g),
+    R.MSG.twinLine, 'a strain renamed in the same save: its lines are compared under the new name');
+  ok('a rewrite never makes a twin line on its day');
+
+  // a 1a undo takes only its own cell: still under the line it was under (find.prev)
+  const m8 = saveOn(planSheet, [op({ r: 8, c: 0, expect: 'VOODOO', text: 'M8', find: wk(0) })]);
+  assert.equal(m8.edit.cells[0].find.prev, 'NEBULA', 'the line above A9 is A7 (A8 is under its merge)');
+  const typed = (sheet, cells) => { const sh = structuredClone(sheet); for (const [ref, t] of Object.entries(cells)) { const [r, c] = cellRef(ref); sh.data[0].rowData[r].values[c] = { userEnteredValue: { stringValue: t }, formattedValue: t }; } return sh; };
+  const elsewhere = typed(m8.sheet, { A9: 'M8 - DONE', A16: 'M8' });
+  const ue = R.plan(R.undoOps(m8.edit), planGrid(elsewhere));
+  assert.equal(ue.reason, 'conflict', 'its own cell retyped and its words typed elsewhere: never that other line');
+  const legacy = JSON.parse(JSON.stringify({ cells: m8.edit.cells.map(x => ({ ...x, find: { ...x.find, prev: undefined } })) }));
+  assert.equal(R.plan(R.undoOps(legacy), planGrid(elsewhere)).cells[0].a1, 'A16', 'without prev the words alone would take A16');
+  const beside = R.plan(R.undoOps(m8.edit), planGrid(typed(m8.sheet, { A16: 'M8' })));
+  assert.equal(beside.ok, true, beside.message); assert.equal(beside.cells[0].a1, 'A9', 'a twin typed elsewhere: its own cell is undone');
+  assert.equal(R.plan(R.undoOps(m8.edit), planGrid(insertRows(m8.sheet, 4, 2))).cells[0].a1, 'A11', 'rows inserted above: followed');
+  const aboveChanged = R.plan(R.undoOps(m8.edit), planGrid(typed(m8.sheet, { A7: 'NEBULA - DONE' })));
+  assert.equal(aboveChanged.ok, true, aboveChanged.message); assert.equal(aboveChanged.cells[0].a1, 'A9', 'the line above reworded: its own cell, still at its row');
+  const addAbove = saveOn(addSheet, [add9(1)]), addCell = addAbove.edit.cells[0];
+  assert.equal(addCell.find.prev, 'VOODOO', 'the add on Tuesday went under VOODOO (C6:C7)');
+  const anchorChanged = typed(addAbove.sheet, { C6: 'VOODOO - DONE' });
+  assert.equal(R.plan(R.undoOps(addAbove.edit), planGrid(anchorChanged)).ok, true, 'an add whose anchor line was reworded is still undone');
+  assert.match(R.checkOps([op({ r: 8, c: 0, expect: 'VOODOO', text: 'M8', find: { ...wk(0), prev: 'NEBULA' } })]), /could not read/, 'the page never sends prev');
+  ok('a 1a undo is found by its words and the line above it');
+
+  // a count into a cell formatted as a date is refused (120 would show as 4/29); a hidden supply row says so plainly
+  const dated = sheetOf(SUP, SUP_CELLS, { cols: 13, formats: { F6: { numberFormat: { type: 'DATE', pattern: 'm/d' } }, G6: { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } } });
+  const mops = (header, text) => ({ tab: SUP, r: 5, c: header === '23RD' ? 5 : 6, expect: '', text, number: true, find: { item: 'Glob Mops', category: 'ACCESSORY', header } });
+  refused(R.plan([mops('23RD', '120')], supGrid(dated)), R.MSG.countFormat, 'a count into a date cell');
+  assert.equal(R.plan([mops('25TH', '120')], supGrid(dated)).ok, true, 'a number format is fine');
+  refused(R.plan([mops('23RD', '120')], supGrid(sheetOf(SUP, SUP_CELLS, { cols: 13, hidden: [6] }))), R.MSG.hiddenSupply, 'a hidden supply row');
+  ok('supply: date-formatted counts and hidden rows refused with their own messages');
+
+  // rows moved under the write: the cells around it read differently (a write one row off), though the written cell
+  // itself reads back as sent
+  const b10 = R.plan([op({ r: 9, c: 1, expect: '1G PREROLL- 600', text: '1G PREROLL- 450', find: wk(0, 'VOODOO') })], g);
+  assert.deepEqual(R.aroundRanges(b10.cells), [{ tab: PLAN, range: 'A4:B17' }], "Monday's two columns in its week, and the next week's header row");
+  const fine = applyRequests(planSheet, b10.requests);
+  assert.deepEqual(R.changedAround(b10.cells, g, planGrid(fine)), [], 'nothing moved');
+  const shifted = applyRequests(insertRows(planSheet, 5, 1), b10.requests);
+  assert.equal(R.checkWritten(b10.cells, planGrid(shifted)).ok, true, 'the written cell alone looks fine');
+  assert.ok(R.changedAround(b10.cells, g, planGrid(shifted)).length > 0, 'the cells around it show the move');
+  const typedNext = applyRequests(typed(planSheet, { B12: 'NEW LINE' }), b10.requests);
+  assert.deepEqual(R.changedAround(b10.cells, g, planGrid(typedNext)), [{ tab: PLAN, a1: 'B12' }], 'something typed beside it');
+  const sp = R.plan([{ tab: SUP, r: 1, c: 5, expect: '', text: '40', number: true, find: { item: 'Antidote - 3.5g - Label', category: 'LABEL', header: '23RD' } }], supGrid(supSheet));
+  assert.deepEqual(R.aroundRanges(sp.cells), [{ tab: SUP, range: 'A2:M2' }], 'the supply row, as wide as its header row');
+  const spDone = structuredClone(supSheet); spDone.data[0].rowData[1].values[5] = { userEnteredValue: { numberValue: 40 }, formattedValue: '40' };
+  spDone.data[0].rowData[1].values[2].formattedValue = '740';
+  assert.deepEqual(R.changedAround(sp.cells, supGrid(supSheet), supGrid(spDone)), [], 'TOTAL QTY (a formula) moving with the count is expected');
+  // (Wednesday: its slot E6:F6 is an empty merge the add reuses, so the batch has no mergeCells for Google to refuse
+  // when merges moved; on an empty day a row inserted under the header only makes the line land in that blank row)
+  const added = saveOn(addSheet, [add9(2)]);
+  assert.deepEqual(R.changedAround(added.p.cells, planGrid(addSheet), planGrid(added.sheet)), [], 'an add, nothing moved');
+  assert.ok(R.changedAround(added.p.cells, planGrid(addSheet), planGrid(applyRequests(insertRows(addSheet, 4, 1), added.p.requests))).length > 0, 'an add one row off');
+  ok('rows moved under a write are seen around it');
 }
 console.log(`made-up tabs: ${n} groups of checks pass`);
 
