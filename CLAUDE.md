@@ -145,7 +145,8 @@ launch. The check fails if one of the three pieces is missing.
   styled like a matching line Victoria already has, never inserts rows, and refuses a full day.
   Each kind is switched on separately (`pipeline_write_settings.kinds_on`: 'rewrite', 'add').
 - **Everything else is copied into the database by jobs**, and the page reads the copies: the
-  sheet's red cells every 5 minutes, the Batch Label Sheet hourly, the 2026 TRIM SHEETS hourly
+  sheet's red cells every 5 minutes, the Batch Label Sheet hourly (since 2026-11-11 the BATCH LABEL
+  SHEET tab of the same workbook as DISTRO PIPELINE), the 2026 TRIM SHEETS hourly
   (pounds trimmed, and the estimates for trims to come), and Distru and Nabis stock every 30
   minutes. Plan vs actual also reads the CA task tracker (labor-calculator.html) directly.
 - **Red cells, trim sheets and the batch sheet have cloud versions in this repo**
