@@ -38,6 +38,7 @@
   .ask{font-size:14px;margin-top:8px}
   .flag{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--warn-bg);color:var(--warn)}
   .row{display:flex;gap:8px;margin-top:12px}
+  .row.wrap{flex-wrap:wrap}
   button{font:inherit;font-size:15px;font-weight:600;border-radius:10px;border:1px solid var(--line2);background:transparent;color:var(--text);min-height:44px;padding:0 14px;cursor:pointer}
   button.grow{flex:1}
   button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
@@ -67,6 +68,7 @@
   tr.on td{background:var(--ok-bg)}
   .scroll{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:12px}
   td select{min-height:34px;padding:4px 6px;font-size:14px;margin:0;width:auto;max-width:130px}
+  td button.link{display:block;min-height:0;padding:2px 0;font-size:13px;white-space:nowrap}
   a{color:var(--accent)}
   .foot{color:var(--muted);font-size:13px;margin-top:20px;text-align:center}
 </style>
@@ -117,6 +119,7 @@ function lineHtml(l){
   else if(l.status==='open') body=`<div class="row"><button class="grow primary" data-do="add" data-id="${l.id}">Add receipt</button><button class="grow" data-do="cant" data-id="${l.id}">Can't locate</button></div>
     <div class="links"><button class="link" data-do="note" data-id="${l.id}">Add a note</button><button class="link" data-do="mine" data-id="${l.id}">Not mine</button></div>`;
   else if(l.status==='cant_locate') body=`<span class="chip no">Can't locate</span><div class="links"><button class="link" data-do="undo" data-id="${l.id}">Undo</button><button class="link" data-do="add" data-id="${l.id}">Found it, add receipt</button></div>`;
+  else if(l.status==='no_receipt') body=`<span class="chip ok">No receipt needed</span>`;   // Gianni booked it without one: nothing left to do
   else body=`<span class="chip ok">Receipt added</span>${l.files.length?`<p class="files">${l.files.map(f=>esc(f.name||'File')).join(', ')}</p>`:''}
     <div class="links">${l.status==='uploaded'?`<button class="link" data-do="undo" data-id="${l.id}">Undo</button>`:''}<button class="link" data-do="add" data-id="${l.id}">Add another page</button><button class="link" data-do="note" data-id="${l.id}">${l.note?'Edit note':'Add a note'}</button></div>`;
   const showNote=l.note&&(panel?.id!==l.id||panel.kind==='mine');
@@ -232,26 +235,49 @@ async function loadOverview(){
     renderOverview();
   }catch(e){app.innerHTML=`<h1>Receipts</h1><p class="sub">${esc(plain(e))}</p>`;}
 }
-const LABEL={open:'Waiting',uploaded:'Being checked',cant_locate:"Can't locate",attached:'On the bank row',closed:'Closed'};
+const LABEL={open:'Waiting',uploaded:'Being checked',cant_locate:"Can't locate",attached:'On the bank row',no_receipt:'Booking without a receipt',closed:'Closed'};
+const GIANNI='gianni@wizardtrees.com', passedOn=l=>l.status==='open'&&l.assignee_email===GIANNI&&l.cardholder!=='Gianni Lane';
 function renderOverview(){
   const {people,lines,files,urls}=all, byId=new Map(lines.map(l=>[l.id,l])), look=files.filter(f=>f.state==='review');
   const names=new Map(people.map(p=>[p.email,p.first_name]));
+  // Can't locate, or passed to Gianni: the lines where nobody has a receipt to give.
+  const stuck=lines.filter(l=>l.status==='cant_locate'||passedOn(l)), booking=lines.filter(l=>l.status==='no_receipt').length;
+  // Same rule as rr_admin_no_receipt: a line already on the bank row, or with a file that may still attach, can't be booked.
+  const canBook=l=>['open','cant_locate','uploaded'].includes(l.status)&&!files.some(x=>x.request_id===l.id&&['new','passed','approved','attached'].includes(x.state));
+  const stuckCard=l=>{const holder=(l.cardholder||'').split(' ')[0];
+    const meta=[day(l.txn_date),l.status==='cant_locate'?names.get(l.assignee_email)||'':'Passed to Gianni',holder?`${holder}'s card`:'',l.account_label||''].filter(Boolean).map(esc).join(' · ');
+    return `<section class="card"><div class="top"><span>${esc(l.merchant)}</span><span>${esc(money(l.amount_cents))}</span></div>
+    <p class="meta">${meta}</p>${l.note?`<p class="note">Their note: ${esc(l.note)}</p>`:''}
+    <div class="row"><button data-nr="${esc(l.id)}">Book without receipt</button></div></section>`;};
   const count=(e,s)=>lines.filter(l=>l.assignee_email===e&&l.status===s).length;
   const shown=people.filter(p=>lines.some(l=>l.assignee_email===p.email));
   const rows=shown.map(p=>`<tr class="pick${who===p.email?' on':''}" data-who="${esc(p.email)}"><td>${esc(p.first_name)}</td><td class="n">${count(p.email,'open')}</td><td class="n">${count(p.email,'uploaded')}</td><td class="n">${count(p.email,'cant_locate')}</td><td class="n">${count(p.email,'attached')}</td><td>${p.last_seen_at?new Date(p.last_seen_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}):(p.link_on?'Not yet':'No link')}</td></tr>`).join('');
   const list=lines.filter(l=>(who?l.assignee_email===who:true)&&l.status!=='closed').sort((a,b)=>a.assignee_email.localeCompare(b.assignee_email)||a.txn_date.localeCompare(b.txn_date));
   const options=e=>people.filter(p=>p.active).map(p=>`<option value="${esc(p.email)}"${p.email===e?' selected':''}>${esc(p.first_name)}</option>`).join('');
-  app.innerHTML=`<h1>Receipts</h1><p class="sub">${lines.filter(l=>l.status==='open').length} waiting · ${lines.filter(l=>l.status==='open'&&l.assignee_email==='gianni@wizardtrees.com'&&l.cardholder!=='Gianni Lane').length} passed to Gianni · ${lines.filter(l=>l.status==='cant_locate').length} can't locate · ${lines.filter(l=>l.status==='attached').length} on the bank row</p>
+  app.innerHTML=`<h1>Receipts</h1><p class="sub">${lines.filter(l=>l.status==='open').length} waiting · ${lines.filter(passedOn).length} passed to Gianni · ${lines.filter(l=>l.status==='cant_locate').length} can't locate · ${lines.filter(l=>l.status==='attached').length} on the bank row${booking?` · ${booking} being booked without a receipt`:''}</p>
   ${look.length?`<h2>Waiting for a look (${look.length})</h2>${look.map(f=>{const l=byId.get(f.request_id);return `<section class="card"><div class="top"><span>${esc(l.merchant)}</span><span>${money(l.amount_cents)}</span></div>
     <p class="meta">${day(l.txn_date)} · ${esc(names.get(l.assignee_email)||'')} · ${urls[f.id]?`<a href="${esc(urls[f.id])}" target="_blank" rel="noopener">Open the file</a>`:'File'}</p><p class="ask">${esc(f.reason||'')}</p>${l.note?`<p class="note">Their note: ${esc(l.note)}</p>`:''}
-    <div class="row"><button class="grow primary" data-ok="${f.id}">It's right, attach it</button><button class="grow" data-no="${f.id}">Send it back</button></div></section>`;}).join('')}`:''}
+    <div class="row wrap"><button class="grow primary" data-ok="${f.id}">It's right, attach it</button><button class="grow" data-no="${f.id}">Send it back</button>${canBook(l)?`<button class="grow" data-nr="${esc(f.request_id)}">Book without receipt</button>`:''}</div></section>`;}).join('')}`:''}
+  ${stuck.length?`<h2>Can't locate (${stuck.length})</h2>${stuck.map(stuckCard).join('')}`:''}
   <h2>People</h2><div class="scroll"><table><thead><tr><th>Person</th><th class="n">Waiting</th><th class="n">Checking</th><th class="n">Can't locate</th><th class="n">Done</th><th>Opened</th></tr></thead><tbody>${rows}</tbody></table></div>
   <h2>${who?esc(names.get(who))+"'s lines":'All lines'} (${list.length})</h2>
-  <div class="scroll"><table><thead><tr><th>Date</th><th>Merchant</th><th class="n">Amount</th><th>Card</th><th>Asked</th><th>Status</th><th>Note</th></tr></thead><tbody>${list.map(l=>`<tr><td>${day(l.txn_date)}</td><td>${esc(l.merchant)}</td><td class="n">${money(l.amount_cents)}</td><td>${esc((l.cardholder||'').split(' ')[0])}</td><td>${['open','cant_locate'].includes(l.status)?`<select data-move="${l.id}" aria-label="Asked">${options(l.assignee_email)}</select>`:esc(names.get(l.assignee_email)||'')}</td><td>${LABEL[l.status]||esc(l.status)}</td><td>${esc(l.note||'')}</td></tr>`).join('')}</tbody></table></div>`;
+  <div class="scroll"><table><thead><tr><th>Date</th><th>Merchant</th><th class="n">Amount</th><th>Card</th><th>Asked</th><th>Status</th><th>Note</th></tr></thead><tbody>${list.map(l=>`<tr><td>${day(l.txn_date)}</td><td>${esc(l.merchant)}</td><td class="n">${money(l.amount_cents)}</td><td>${esc((l.cardholder||'').split(' ')[0])}</td><td>${['open','cant_locate'].includes(l.status)?`<select data-move="${l.id}" aria-label="Asked">${options(l.assignee_email)}</select>`:esc(names.get(l.assignee_email)||'')}</td><td>${esc(LABEL[l.status]||l.status)}${['open','cant_locate'].includes(l.status)?`<button class="link" data-nr="${esc(l.id)}">Book without receipt</button>`:''}</td><td>${esc(l.note||'')}</td></tr>`).join('')}</tbody></table></div>`;
+}
+// Gianni decides no receipt is coming. The line leaves the person's list now; the Mac marks the bank row "no receipt needed".
+async function bookNoReceipt(b){
+  const l=all.lines.find(x=>x.id===b.dataset.nr);if(!l)return;
+  const first=l.assignee_email===GIANNI?'':all.people.find(p=>p.email===l.assignee_email)?.first_name||'';
+  if(!confirm(`Book ${l.merchant} ${money(l.amount_cents)} without a receipt? ${first?`It stops asking ${first} and marks`:'It comes off the list and marks'} the bank row "no receipt needed" within 15 minutes.`))return;
+  const note=prompt('Short note for the record (optional)','');if(note===null)return;
+  b.disabled=true;
+  const {error}=await sb.rpc('rr_admin_no_receipt',{p_request:l.id,p_note:note.trim()||null});
+  if(error){b.disabled=false;toast(/schema cache|does not exist/i.test(error.message||'')?"Book without receipt isn't switched on yet. It needs the 13d database update.":plain(error));}
+  else{toast('Booked without a receipt.');loadOverview();}
 }
 app.addEventListener('click',async e=>{
   if(key)return;
   const row=e.target.closest('tr[data-who]');if(row){who=who===row.dataset.who?null:row.dataset.who;renderOverview();return;}
+  const nr=e.target.closest('button[data-nr]');if(nr){bookNoReceipt(nr);return;}
   const ok=e.target.closest('[data-ok]'), no=e.target.closest('[data-no]');
   if(!ok&&!no)return;
   const reason=no?prompt('What should they send instead? They will see this.'):null;
