@@ -224,6 +224,14 @@ launch. The check fails if one of the three pieces is missing.
   yet), within 2 weeks, 4 weeks or everything planned.
 - **Batch Label Sheet THC:** labeled rows carry the COA's Total THC x 1.10; rows not labeled yet
   carry the COA value.
+- **Vapes on the Batches page** (Gianni, 2026-11-13). Excelbis tests the all-in-one vapes, but vapes
+  never get rows on the Batch Label Sheet. The Batches view lists them in a Vapes band after Finished,
+  from `pipeline_batch_labs` (the hourly lab job on Gianni's computer reads every Excelbis COA e-mail):
+  a result is a vape when the COA's Type (else its Matrix) says vape, cart, concentrate, extract or
+  distillate and its Metrc batch tag isn't on the sheet (`BAT.vapes()`). One group per lab order, the
+  newest 3 shown. The batch code is the maker's (the COA's Batch#), THC is the COA's Total THC (not the
+  x 1.10 label figure), Test is the COA's Collected day. Vapes stay out of the lab turnaround that
+  dates expected COAs and the pickup lab check.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them

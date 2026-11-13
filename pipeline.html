@@ -2513,7 +2513,31 @@ const BAT = (() => {
     const date = new Date(dayMs(from) + days * 864e5).toISOString().slice(0, 10), over = today ? daysFrom(date, today) : 0;
     return { date, from, basis, days, late: over > 0 ? over : 0 };
   }
-  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups, turnaround, expectedCoa };
+  // vapes: Excelbis tests the all-in-one vapes too, and they never get a row on the Batch Label Sheet. A lab result is a
+  // vape when its COA's Type says so (else its Matrix), the same words the COA watcher uses to leave them off the sheet.
+  const VAPE = /vape|cart|concentrate|extract|distillate/i;
+  const isVape = x => !!x && (VAPE.test(x.product_type || '') || (!x.product_type && VAPE.test(x.matrix || '')));
+  // the vape results with no sheet row, one group per lab order (the sample id before the dot: 2611EXL9561), newest
+  // order first; within an order, the lab's sample order
+  function vapes(labs, sheetRows) {
+    const onSheet = new Set((sheetRows || []).map(r => r && r.metrc_uid).filter(Boolean));
+    const m = new Map();
+    for (const x of labs || []) {
+      if (!isVape(x) || onSheet.has(x.metrc_uid)) continue;
+      const order = String(x.sample_id || '').split('.')[0] || String(x.completed || x.collected || '').slice(0, 10);
+      if (!m.has(order)) m.set(order, { order, rows: [] });
+      m.get(order).rows.push(x);
+    }
+    const day = v => (v ? String(v).slice(0, 10) : '');
+    const minOf = xs => xs.filter(Boolean).sort()[0] || '', maxOf = xs => xs.filter(Boolean).sort().pop() || '';
+    return [...m.values()].map(o => {
+      o.rows.sort((a, b) => String(a.sample_id || '').localeCompare(String(b.sample_id || ''), 'en', { numeric: true }) || String(a.metrc_uid).localeCompare(String(b.metrc_uid)));
+      const makers = [...new Set(o.rows.map(x => x.producer).filter(Boolean))];
+      return Object.assign(o, { completed: maxOf(o.rows.map(x => day(x.completed))), collected: minOf(o.rows.map(x => day(x.collected))),
+        received: minOf(o.rows.map(x => day(x.received))), producer: makers.length === 1 ? makers[0] : '', failed: o.rows.filter(x => x.result === 'Fail').length });
+    }).sort((a, b) => (b.completed || b.collected).localeCompare(a.completed || a.collected) || b.order.localeCompare(a.order));
+  }
+  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups, turnaround, expectedCoa, isVape, vapes };
 })();
 /* ===== BATCH MODEL END ===== */
 
@@ -4145,7 +4169,7 @@ const S = { weeks: [], byStart: new Map(), drops: new Map(), sidx: new Map(), we
   keep: null,   // {date, lane, key}: the item a phone tap opened its day on, shown there even when its lane is hidden
   sup: null, supAt: 0, supErr: '', sf: new Set(SF_DEFAULT),
   inv: null, invAt: 0, invErr: '', invOpen: '', invH: ['14', '28', 'all'].includes(loadPref('pipeline.inv.h', '28')) ? loadPref('pipeline.inv.h', '28') : '28',
-  bat: null, batAt: 0, batErr: '', batFin: loadPref('pipeline.batches.fin', '') === '1', labs: null, labsAt: 0, labsErr: '',
+  bat: null, batAt: 0, batErr: '', batFin: loadPref('pipeline.batches.fin', '') === '1', vpAll: loadPref('pipeline.batches.vapes', '') === '1', labs: null, labsAt: 0, labsErr: '',
   trk: null, trkAt: 0, trkErr: '', act: null, pvRun: null,
   trims: null, trimsAt: 0, trimsErr: '', trimEv: null, trimBt: null, trimSpread: 0.12,
   marks: null, marksAt: 0, marksErr: '', markMap: null, grid: null };
@@ -5555,7 +5579,8 @@ function supRowHTML(it, hasPar, sites, hasVen) {
 
 /* ---- Batches view: the Batch Label Sheet (synced hourly into pipeline_batches), read-only ---- */
 const BT_TONE = { work: ['#FFCF99', '#C46A00'], ready: ['#C9EFBE', '#2E7D32'], lab: ['#FFF1A1', '#A88700'], wait: ['#E2E5EA', '#6B7280'],
-  idle: ['#EEF0F3', '#9AA3B2'], fail: ['#F8C9C9', '#C00000'], other: ['#DCE8F7', '#1F3A93'], done: ['#E9ECF1', '#8A919E'] };
+  idle: ['#EEF0F3', '#9AA3B2'], fail: ['#F8C9C9', '#C00000'], other: ['#DCE8F7', '#1F3A93'], done: ['#E9ECF1', '#8A919E'],
+  vape: ['#E3DAF5', '#5B3FA0'] };
 const btSlug = k => 'bt-g-' + (String(k).replace(/[^A-Za-z0-9]+/g, '-') || 'none');
 const btTone = t => BT_TONE[t] || BT_TONE.other;
 function btText(r) {
@@ -5662,6 +5687,35 @@ function btRowHTML(r, g) {
     `<span class="bt-dates">${btDate(harvest, 'Harvest')}${trimmed}${btDate(r.package_date, 'Packaged')}${test}${coaOnly}${btDate(r.nabis_date, 'Nabis P/U')}</span>` +
     `${thc}<span class="bt-uidc">${uid}</span></div>`;
 }
+// a vape result inside the Vapes band (BAT.vapes): one row per batch, under a line for its lab order
+const VP_KEEP = 3;   // lab orders shown before "Show all"
+const vpText = v => { const x = v.x; return [x.strain, sLabel(PIPE.strainKey(x.strain || '')), x.prod_batch, x.metrc_uid, x.sample_uid, x.sample_id,
+  x.product_type, x.producer, x.result, x.result === 'Fail' ? 'FAILED' : '', 'VAPES'].join(' ').toUpperCase(); };
+const vpMatch = v => !S.q || S.q.toUpperCase().split(/\s+/).every(w => vpText(v).includes(w));
+function btVpHeadHTML(o) {
+  const n = o.rows.length;
+  const bits = [`${n} vape${n === 1 ? '' : 's'}`, o.producer ? `made by ${o.producer}` : '', o.failed ? `${o.failed} failed` : ''].filter(Boolean).join(' · ');
+  const tip = `Excelbis order ${o.order}` + [o.collected ? `samples collected ${md(o.collected)}` : '', o.received ? `at the lab ${md(o.received)}` : '',
+    o.completed ? `results ${md(o.completed)}` : ''].filter(Boolean).map((t, i) => (i ? ', ' : ': ') + t).join('') + '.';
+  return `<div class="bt-uphd" title="${esc(tip)}"><b>${esc(o.completed ? 'Results back ' + md(o.completed) : 'At the lab')}</b>` +
+    `${o.collected ? `<span>Collected ${esc(md(o.collected))}</span>` : ''}<em>${esc(bits)}</em></div>`;
+}
+function btVpRowHTML(x) {
+  const name = x.strain ? sLabel(PIPE.strainKey(x.strain)) : 'No name on the COA';
+  const pill = x.result === 'Fail' ? `<span class="bt-pill" style="--fill:${btTone('fail')[0]};--acc:${btTone('fail')[1]}" title="The COA says this batch failed">Failed test</span>` : '';
+  const kind = [x.product_type || 'Vape', x.batch_size].filter(Boolean).join(' · ');
+  const tip = [x.sample_id ? `Excelbis sample ${x.sample_id}` : '', x.sample_uid ? `Metrc sample ${x.sample_uid}` : '', x.producer ? `made by ${x.producer}` : '',
+    x.received ? `at the lab ${md(x.received)}` : ''].filter(Boolean).join(' · ');
+  const link = t => x.lab_url ? `<a href="${esc(x.lab_url)}" target="_blank" rel="noopener" title="Open the results on Confident LIMS (needs a Confident login)">${esc(t)}</a>` : esc(t);
+  const thcTip = [x.total_thc != null ? `Total THC ${Number(x.total_thc)}%` : '', x.total_cbd != null ? `total CBD ${Number(x.total_cbd)}%` : '',
+    x.total_canna != null ? `total cannabinoids ${Number(x.total_canna)}%` : ''].filter(Boolean).join(' · ') + ', from the COA';
+  const thc = x.total_thc != null ? `<span class="bt-thc" title="${esc(thcTip)}"><i>THC</i>${pctTxt(x.total_thc)}</span>` : '<span class="bt-thc none">–</span>';
+  const uid = `<button type="button" class="bt-uid" data-copy="${esc(x.metrc_uid)}" title="Copy the Metrc UID">${esc(x.metrc_uid.slice(0, -4))}<b>${esc(x.metrc_uid.slice(-4))}</b></button>`;
+  return `<div class="bt-row bt-vp"><span class="bt-nm"${tip ? ` title="${esc(tip)}"` : ''}><b>${esc(name)}</b><span class="bt-sub">${esc(kind)}${pill}</span></span>` +
+    `<span class="bt-code" title="The maker's batch number on the COA">${esc(x.prod_batch || '–')}</span>` +
+    `<span class="bt-dates">${btDate(null, 'Harvest')}${btDate(null, 'Trimmed')}${btDate(null, 'Packaged')}${btDate(x.collected, 'Test')}` +
+    `${btDate(x.completed, 'COA', link)}${btDate(null, 'Nabis P/U')}</span>${thc}<span class="bt-uidc">${uid}</span></div>`;
+}
 // trims the pipeline sheet plans that haven't happened yet (or are under way): one row per strain for the Batches
 // view, since a batch only reaches the Batch Label Sheet once it's trimmed. Consecutive days of one room are one trim;
 // the pounds are the trim's estimate (TRIMY) shared out by the sheet's lights, as on the Week board's trim card.
@@ -5730,6 +5784,10 @@ function renderBatches() {
   // what's still to be trimmed, from the pipeline sheet: just before Finished
   const up = upcomingTrims();
   if (up.length) { all.push({ key: 'NOT TRIMMED', label: 'Not trimmed yet', tone: 'idle', rank: 15, finished: false, upcoming: true, rows: up }); all.sort((a, b) => a.rank - b.rank); }
+  // the vape results from the Excelbis COA e-mails: vapes have no sheet rows, so they get their own band at the end
+  const vp = S.labs ? BAT.vapes(S.labs.values(), S.bat.rows) : [];
+  if (vp.length) all.push({ key: 'VAPES', label: 'Vapes', tone: 'vape', rank: 30, finished: false, vape: true, orders: vp,
+    rows: vp.flatMap(o => o.rows.map(x => ({ x, o }))) });
   const upStrains = up.filter(u => !u.roomOnly).length;
   $('bt-sentence').textContent = `${nWork} batch${nWork === 1 ? '' : 'es'} in the works` +
     (upStrains ? ` · ${upStrains} strain${upStrains === 1 ? '' : 's'} still to trim` : '') +
@@ -5740,7 +5798,7 @@ function renderBatches() {
   if (age != null && age > 3) al.push(`<div class="alert info">The batch list last synced ${Math.round(age)} hours ago. The hourly sync on Gianni's Mac may be off.</div>`);
   $('bt-alerts').innerHTML = al.join('');
 
-  const shown = all.map(g => Object.assign({}, g, { hits: g.rows.filter(g.upcoming ? upMatch : btMatch) })).filter(g => g.hits.length);
+  const shown = all.map(g => Object.assign({}, g, { hits: g.rows.filter(g.upcoming ? upMatch : g.vape ? vpMatch : btMatch) })).filter(g => g.hits.length);
   $('bt-chips').innerHTML = shown.map(g => `<button type="button" class="bt-chip" data-jump="${esc(g.key)}"><span class="bt-sw" style="--fill:${btTone(g.tone)[0]}"></span>${esc(g.label)} <b>${g.hits.length}</b></button>`).join('');
   if (!shown.length) {
     list.innerHTML = `<div class="bt-grid"><div class="bt-none">No batches match "${esc(S.q)}".</div></div>`;
@@ -5748,11 +5806,18 @@ function renderBatches() {
     const head = '<div class="bt-row hd"><span>Strain</span><span>Batch code</span><span>Harvest</span><span>Trimmed</span><span>Packaged</span><span>Test</span><span>COA</span><span>Nabis P/U</span><span style="text-align:right">THC</span><span>Metrc UID</span></div>';
     list.innerHTML = '<div class="bt-grid">' + head + shown.map(g => {
       const open = !g.finished || S.batFin || !!S.q;   // Finished folds away unless asked for or searched
-      const count = g.hits.length < g.rows.length ? `${g.hits.length} of ${g.rows.length}` : g.rows.length;
-      const toggle = g.finished && !S.q ? `<button type="button" class="btn" data-act="bt-fin">${S.batFin ? 'Hide' : 'Show'}</button>` : '';
+      // Vapes show the newest few lab orders unless asked for all of them or searched
+      const more = g.vape && !S.q && g.orders.length > VP_KEEP;
+      const keep = more && !S.vpAll ? new Set(g.orders.slice(0, VP_KEEP).map(o => o.order)) : null;
+      const rows = keep ? g.hits.filter(v => keep.has(v.o.order)) : g.hits;
+      const count = rows.length < g.hits.length ? `${rows.length} of ${g.hits.length}` : g.hits.length < g.rows.length ? `${g.hits.length} of ${g.rows.length}` : g.rows.length;
+      const toggle = g.finished && !S.q ? `<button type="button" class="btn" data-act="bt-fin">${S.batFin ? 'Hide' : 'Show'}</button>`
+        : more ? `<button type="button" class="btn" data-act="bt-vp">${S.vpAll ? `Show the newest ${VP_KEEP}` : `Show all ${g.orders.length} lab orders`}</button>` : '';
       return `<div class="bt-band" id="${btSlug(g.key)}"><b><span class="bt-sw" style="--fill:${btTone(g.tone)[0]}"></span>${esc(g.label)}</b>` +
-        `<em>${count}${g.finished && since ? ` · since ${since}` : ''}${g.upcoming ? ' · trims planned on the pipeline sheet' : ''}</em>${toggle}</div>` +
-        (open ? g.hits.map((r, i) => g.upcoming ? (i === 0 || g.hits[i - 1].run !== r.run ? btUpHeadHTML(r.run) : '') + btUpRowHTML(r) : btRowHTML(r, g)).join('') : '');
+        `<em>${count}${g.finished && since ? ` · since ${since}` : ''}${g.upcoming ? ' · trims planned on the pipeline sheet' : ''}` +
+        `${g.vape ? ' · from the Excelbis COA e-mails, not on the Batch Label Sheet' : ''}</em>${toggle}</div>` +
+        (open ? rows.map((r, i) => g.upcoming ? (i === 0 || rows[i - 1].run !== r.run ? btUpHeadHTML(r.run) : '') + btUpRowHTML(r)
+          : g.vape ? (i === 0 || rows[i - 1].o !== r.o ? btVpHeadHTML(r.o) : '') + btVpRowHTML(r.x) : btRowHTML(r, g)).join('') : '');
     }).join('') + '</div>';
   }
   const edited = meta.file_modified ? new Date(meta.file_modified) : null;
@@ -5761,7 +5826,8 @@ function renderBatches() {
     ' Click a Metrc UID to copy it.' +
     (S.labs && S.labs.size ? ' Blue dotted dates and THC are filled in from Metrc and the Excelbis COA e-mails until the sheet has them (hover for where each came from).' : '') +
     (S.trimEv ? ' Trimmed comes from the site trim sheets.' : '') +
-    (up.length ? ' Not trimmed yet lists the trims planned on the pipeline sheet, with pounds estimated from each site\'s recent trims.' : '');
+    (up.length ? ' Not trimmed yet lists the trims planned on the pipeline sheet, with pounds estimated from each site\'s recent trims.' : '') +
+    (vp.length ? ' Vapes have no rows on the sheet, so they come from the Excelbis COA e-mails: the batch code is the maker\'s, the THC is the COA\'s Total THC, and the COA date opens the results on Confident LIMS (needs a Confident login).' : '');
 }
 const todayISOOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
@@ -8334,10 +8400,10 @@ async function loadLabs(quiet) {
     const m = await sb.from('pipeline_batch_labs_meta').select('*').maybeSingle();
     if (m.error) throw m.error;
     if (m.data && (!quiet || !S.labs || S.labsMeta !== m.data.changed_at)) {
-      const r = await sb.from('pipeline_batch_labs').select('metrc_uid,sample_uid,sample_id,sent_date,collected,completed,result,total_thc,thc_label,lab_url,coa_file,source');
+      const r = await sb.from('pipeline_batch_labs').select('*');   // every column: the COA details came later (Nov 2026)
       if (r.error) throw r.error;
       S.labs = new Map((r.data || []).map(x => [x.metrc_uid, x])); S.labsMeta = m.data.changed_at; fresh = true;
-      S.labTurn = BAT.turnaround(S.labs.values());   // the usual days to results, for "COA ≈ date expected"
+      S.labTurn = BAT.turnaround([...S.labs.values()].filter(x => !BAT.isVape(x)));   // the usual days to results, for "COA ≈ date expected" (flower and pre-rolls)
     }
     S.labsAt = Date.now(); S.labsErr = '';
   } catch (e) {
@@ -8621,6 +8687,7 @@ document.addEventListener('click', e => {
       if (S.view === 'inventory') { loadInventory(false); loadTracker(false); loadBatches(true); loadTrims(false); }
       break;
     case 'bt-fin': S.batFin = !S.batFin; savePref('pipeline.batches.fin', S.batFin ? '1' : ''); render(); break;
+    case 'bt-vp': S.vpAll = !S.vpAll; savePref('pipeline.batches.vapes', S.vpAll ? '1' : ''); render(); break;
     case 'signout': signOut(); break;
     case 'vs-retry': refreshVisits(); break;
     case 'vs-reload': location.reload(); break;

@@ -532,6 +532,32 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
     assert.deepEqual([BAT.expectedCoa(null, null, t, '2026-10-21'), BAT.expectedCoa({ sent_date: '2026-10-20' }, null, null, '2026-10-21')], [null, null], 'nothing to count from');
     assert.equal(BAT.turnaround([]).sent, null);
   }
+  // the Vapes band: vape lab results with no sheet row, one group per lab order, newest order first
+  {
+    const V = (id, uid, o = {}) => Object.assign({ metrc_uid: uid, sample_id: id, product_type: 'Vape', matrix: 'Concentrates & Extracts', source: 'coa',
+      collected: '2026-11-09', received: '2026-11-10', completed: '2026-11-13', result: 'Pass', producer: 'Factory Ventures LLC' }, o);
+    const labs = [
+      V('2611EXL9561.37775', '1A4060300087B1A000000102', { strain: 'Brain Freeze' }),
+      V('2611EXL9561.37774', '1A4060300087B1A000000101', { strain: 'POTION', result: 'Fail' }),
+      V('2609EXL7843.31404', '1A4060300087B19000000507', { strain: 'TIDE', collected: '2026-09-23', received: '2026-09-24', completed: '2026-09-28' }),
+      V('2609EXL7843.31405', '1A4060300087B19000000505', { strain: 'DARK MATTER', collected: '2026-09-23', completed: '2026-09-28', producer: 'Other Co' }),
+      V('2611EXL9600.1', '1A4060300087B1A000000200', { product_type: null, matrix: 'Concentrates & Extracts' }),   // no Type: the Matrix decides
+      { metrc_uid: '1A406030005660A000006051', sample_id: '2610EXL9180.36298', product_type: 'Bulk Flower', matrix: 'Plant', completed: '2026-11-03' },
+      { metrc_uid: '1A406030005660A000005918', sample_id: '2610EXL8908.35347', product_type: 'Preroll', matrix: 'Plant', completed: '2026-10-27' },
+      V('2611EXL9561.37776', '1A4060300087B1A000000103', { strain: 'WIZARD OG' }),   // a vape Victoria did put on the sheet
+      { metrc_uid: '1A406030005660A000009999', source: 'metrc', sent_date: '2026-11-12' },   // a sample still out: no COA, no type
+      null,
+    ];
+    assert.deepEqual(labs.map(BAT.isVape), [true, true, true, true, true, false, false, true, false, false]);
+    const g = BAT.vapes(labs, [{ metrc_uid: '1A4060300087B1A000000103' }, { metrc_uid: '1A406030005660A000006051' }, {}]);
+    assert.deepEqual(g.map(o => o.order), ['2611EXL9600', '2611EXL9561', '2609EXL7843'], 'newest results first, then the newer order');
+    assert.deepEqual(g[1].rows.map(x => x.strain), ['POTION', 'Brain Freeze'], "the lab's sample order; the vape on the sheet stays with its sheet row");
+    assert.deepEqual([g[1].completed, g[1].collected, g[1].received, g[1].producer, g[1].failed], ['2026-11-13', '2026-11-09', '2026-11-10', 'Factory Ventures LLC', 1]);
+    assert.equal(g[2].producer, '', 'two makers in one order: none named');
+    assert.deepEqual(BAT.vapes([], []), []);
+    assert.deepEqual(BAT.vapes(labs.filter(x => x && !BAT.isVape(x)), []), [], 'flower and pre-roll results never make the band');
+    assert.equal(BAT.turnaround(labs.filter(x => x && !BAT.isVape(x))).nColl, 0, 'vapes stay out of the flower turnaround');
+  }
   const A = ACT.build(weeks, tasks, bat, '2026-10-16', BAT.statusKey);
   const R = A.byId.get('prerolls-2026-10-07'), line = key => R.act.lines.find(l => l.strain + '|' + l.size === key);
   assert.deepEqual([line('TIDE|5pk').counted, line('TIDE|1g').counted, line('VOODOO|5pk').counted, line('VOODOO|1g').counted], [700, null, 500, null],

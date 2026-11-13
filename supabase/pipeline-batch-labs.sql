@@ -4,7 +4,8 @@
 --   - Metrc: the lab-sample manifests to Excelbis (sample tag -> its source package = the batch's Metrc UID, and the
 --     day the sample was sent);
 --   - the Excelbis results e-mails (Confident LIMS, to gianni@): each COA PDF names "METRC Sample" and "METRC Batch",
---     with Collected / Completed dates, the pass or fail result and Total THC.
+--     with Collected / Completed dates, the pass or fail result and Total THC, and says what was tested (Type, the
+--     maker's batch number, the batch size, the producer).
 -- It sends one row per batch tag through pipeline_batch_labs_save() (token-gated; the token hash is seeded
 -- out-of-band, never committed). The page shows these only where the sheet's own cell is still blank, marked as
 -- filled in automatically. Nothing here changes the sheet or pipeline_batches.
@@ -28,6 +29,16 @@ create table if not exists public.pipeline_batch_labs (
   source      text not null,         -- 'coa' (results e-mail) or 'metrc' (sample sent, no results yet)
   seen_at     timestamptz            -- when the job first saw this result
 );
+-- What the COA says the sample is (added November 2026). Excelbis also tests the all-in-one vapes, which never get a
+-- row on the Batch Label Sheet; the Batches view lists those from here.
+alter table public.pipeline_batch_labs add column if not exists product_type text;   -- COA Type: Bulk Flower, Pre-Roll, Vape...
+alter table public.pipeline_batch_labs add column if not exists matrix       text;   -- COA Matrix: Plant, Concentrates & Extracts...
+alter table public.pipeline_batch_labs add column if not exists prod_batch   text;   -- COA Batch#: the maker's own batch number
+alter table public.pipeline_batch_labs add column if not exists batch_size   text;   -- COA batch size as printed: 500 units, 8,403 g
+alter table public.pipeline_batch_labs add column if not exists producer     text;   -- COA Producer
+alter table public.pipeline_batch_labs add column if not exists received     date;   -- COA Received: the lab took the sample in
+alter table public.pipeline_batch_labs add column if not exists total_cbd    numeric;  -- COA Total CBD, percent (null when ND or <LOQ)
+alter table public.pipeline_batch_labs add column if not exists total_canna  numeric;  -- COA Total Cannabinoids, percent
 comment on table public.pipeline_batch_labs is
   'Lab results per batch tag for the Production Pipeline Batches view, from Metrc lab manifests and the Excelbis '
   'COA e-mails. Written hourly by ~/ar-automation/pipeline-labs-sync.mjs via pipeline_batch_labs_save().';
@@ -71,15 +82,21 @@ begin
       raise exception 'every row needs a Metrc tag and a source';
     end if;
     insert into public.pipeline_batch_labs as l (metrc_uid, sample_uid, sample_id, strain, sent_date, collected, completed, result,
-           total_thc, thc_label, lab_url, coa_file, source, seen_at)
+           total_thc, thc_label, lab_url, coa_file, source, seen_at,
+           product_type, matrix, prod_batch, batch_size, producer, received, total_cbd, total_canna)
     select x->>'metrc_uid', x->>'sample_uid', x->>'sample_id', x->>'strain', (x->>'sent_date')::date, (x->>'collected')::date,
            (x->>'completed')::date, x->>'result', (x->>'total_thc')::numeric, (x->>'thc_label')::numeric, x->>'lab_url',
-           x->>'coa_file', x->>'source', coalesce((x->>'seen_at')::timestamptz, now())
+           x->>'coa_file', x->>'source', coalesce((x->>'seen_at')::timestamptz, now()),
+           x->>'product_type', x->>'matrix', x->>'prod_batch', x->>'batch_size', x->>'producer', (x->>'received')::date,
+           (x->>'total_cbd')::numeric, (x->>'total_canna')::numeric
       from jsonb_array_elements(p_rows) x
     on conflict (metrc_uid) do update set sample_uid = excluded.sample_uid, sample_id = excluded.sample_id, strain = excluded.strain,
       sent_date = excluded.sent_date, collected = excluded.collected, completed = excluded.completed, result = excluded.result,
       total_thc = excluded.total_thc, thc_label = excluded.thc_label, lab_url = excluded.lab_url, coa_file = excluded.coa_file,
-      source = excluded.source, seen_at = coalesce(l.seen_at, excluded.seen_at)
+      source = excluded.source, seen_at = coalesce(l.seen_at, excluded.seen_at),
+      product_type = excluded.product_type, matrix = excluded.matrix, prod_batch = excluded.prod_batch,
+      batch_size = excluded.batch_size, producer = excluded.producer, received = excluded.received,
+      total_cbd = excluded.total_cbd, total_canna = excluded.total_canna
       where l.source = 'metrc' or excluded.source = 'coa';   -- a sample still out never overwrites a stored COA
     get diagnostics n = row_count;
     -- COAs are kept even when the job no longer sees them (its mail search reaches back 150 days; a lost cache must not
@@ -94,7 +111,8 @@ begin
   on conflict (id) do update set synced_at = now(),
     changed_at = case when p_rows is not null then now() else m.changed_at end,
     rows = coalesce(excluded.rows, m.rows);
-  return jsonb_build_object('ok', true, 'upserted', n, 'removed', n_del);
+  -- v: which fields this function stores; the job re-sends the full list until it sees the version it needs
+  return jsonb_build_object('ok', true, 'upserted', n, 'removed', n_del, 'v', 3);
 end $$;
 revoke all on function public.pipeline_batch_labs_save(text, jsonb) from public;
 grant execute on function public.pipeline_batch_labs_save(text, jsonb) to anon, authenticated;
