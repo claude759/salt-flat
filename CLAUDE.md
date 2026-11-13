@@ -232,6 +232,14 @@ launch. The check fails if one of the three pieces is missing.
   newest 3 shown. The batch code is the maker's (the COA's Batch#), THC is the COA's Total THC (not the
   x 1.10 label figure), Test is the COA's Collected day. Vapes stay out of the lab turnaround that
   dates expected COAs and the pickup lab check.
+- **Lab results box** (top of Batches, 2026-11-13, after Gianni couldn't find new results at the bottom of
+  the page): results back in the last 2 weeks per lab order (`BAT.labNews()`; a COA date typed on the
+  sheet counts too) and samples still at the lab with their expected day. Show narrows the list to
+  those batches until "Show all batches".
+- **Test date opens the lab's order e-mail** (Gianni, 2026-11-13): the Confident "placed order" e-mails
+  are copied hourly into `pipeline_lab_orders` by the lab job (cleaned of scripts, images and links) and
+  shown in a sandboxed frame that runs and loads nothing. Matched by the COA's sample id, else by strain
+  and the day the sample went out, within 3 days (`BAT.orderFor()`).
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them
