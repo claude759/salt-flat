@@ -204,6 +204,15 @@ launch. The check fails if one of the three pieces is missing.
   who can open the page can Dismiss one from its card, for everyone (`pipeline_flag_dismissals`,
   written only by `pipeline_flag_dismiss()`); the day's task tracker card then says who dismissed it,
   with Undo. Plan vs actual still lists those days as having nothing in the tracker.
+- **Lab results before each Nabis pickup** (`pickupCoa()`). Each pickup from today on is checked
+  against the strains its drop's testing line names: their Batch Label Sheet rows of the drop's own
+  product (flower, or pre-rolls for a pre-roll drop), sampled from 5 days before the drop's first
+  testing day to 3 days after its last. A strain is back, failed, or expected on the day Excelbis's
+  usual turnaround gives (from the day the sample left, else from the planned testing day). The
+  pickup gets "COA not back" when that day is on or after the pickup, "COA tight" when it is within 2
+  days, 1 sample in 10 would be late, or a sample is past the 9-in-10 day; "Failed test" when the newest
+  result failed. Shown as a tag on the pickup (never a fill), a section in its card, and "N COA risk" in
+  the week strip. A testing line that names two drops gives no strains from a bracketed list.
 - **Jar jobs without pounds.** Since late October 2026 jar jobs read "STRAIN --- 3.5G & 1.5G
   BUDTENDER SAMPLE" with no amount. Plan vs actual compares jars counted only for strains that have
   pounds on the sheet; jars of the others are shown beside the plan, and Inventory's "coming" leaves
