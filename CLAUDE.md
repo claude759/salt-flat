@@ -250,7 +250,9 @@ launch. The check fails if one of the three pieces is missing.
   a blank step before a done one (or a blank Trim before any known later step) is passed, the next step
   is orange, planned or expected dates are dashed, a failed COA ends the track, finished batches have no
   next step. Rows with no UID, code, dates or THC are listed by name under their group.
-- **Editing batches from the app** (Gianni's decisions, 2026-11-13, being built): through the save
+- **Editing batches from the app** (Gianni's decisions, 2026-11-13; built 11/13, beta, the BATCH LABEL SHEET
+  tab still switched off on the Admin page; a pen on each batch with a Metrc UID; `?beta&dry` checks a
+  change against the live sheet without writing; save program CONTRACT.md "Release 1c"): through the save
   program only; Status, PCKG DATE, NABIS P/U DATE, TOTAL UNITS and BUDTENDER UNITS only; a save finds its
   batch by Metrc UID and column header, never a row number; never the COA watcher's columns or formula
   cells; rows without a Metrc UID are not editable at first; ships switched off; the first real save is
