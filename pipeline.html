@@ -1105,6 +1105,11 @@
   .sup-row.ed-click:hover,.sup-row.ed-click:focus-visible{background:var(--panel2);outline:none}
   .sup-row .ed-pen{display:inline-flex;margin-left:6px;color:var(--faint);vertical-align:-2px}
   .sup-row .nt.ed-by{color:var(--muted);font-weight:400}
+  /* a batch (release 1c): the pen beside the strain name, "changed in the app by" under it, the outline until the next read */
+  .bt-ed.ed-btn{padding:2px 6px;margin-left:6px;vertical-align:-2px;border-radius:6px;color:#4A5160}
+  .bt-by{display:block;font-size:12px;font-weight:600;color:#4A5160;margin-top:1px}
+  .bt-row.ed-pend{outline:2px dashed rgba(31,58,147,.55);outline-offset:-3px}
+  #ed .ed-hint a,#ed .ed-now a{color:#1F3A93;font-weight:700}
   #ed{position:fixed;z-index:45;left:16px;top:16px;width:400px;max-height:calc(100vh - 16px);display:flex;flex-direction:column;
     background:#FFFFFF;color:#111;border-radius:12px;box-shadow:0 0 0 1px #C9CED6,0 14px 36px rgba(0,0,0,.22);font-size:14px;line-height:1.4}
   #ed-back{position:fixed;inset:0;z-index:44;background:rgba(17,17,17,.35)}
@@ -1177,6 +1182,7 @@
     .ed-foot{padding:10px 16px calc(10px + env(safe-area-inset-bottom));border-radius:0}
     .ed-foot .ed-b{flex:1;min-height:48px;font-size:16px}
     .ed-btn{padding:8px 14px;font-size:14px}
+    .bt-ed.ed-btn{padding:6px 10px}
   }
   @media (prefers-reduced-motion:reduce){ #ed{transition:none} .ed-spin{animation:none} }
 </style>
@@ -2453,6 +2459,128 @@ const EDIT = ((PIPE, SUP) => {
     });
   }
 
+  /* ---------- release 1c: a batch's cells on the BATCH LABEL SHEET tab (CONTRACT.md "Release 1c") ----------
+     Five cells of a batch's row: STATUS, PCKG DATE, NABIS P/U DATE, TOTAL UNITS, BUDTENDER UNITS. The grid is the tab's
+     newest CSV export (PIPE.parseCSV), header in row 0, as the sheet shows each cell. A batch is found by its METRC UID,
+     never by its row number (Victoria inserts drops at the top), and each op names the UID and the column's header, so
+     the save program finds the cell again wherever it is now. `expect` is the cell's shown text ("11/18/26", "1,200",
+     ""). Only fields the person changed are sent, one op each. */
+  const BATCH = 'BATCH LABEL SHEET';
+  const BATCH_FIELDS = [
+    { key: 'status', header: 'STATUS', kind: 'status', label: 'Status' },
+    { key: 'pack', header: 'PCKG DATE', kind: 'date', label: 'Packaged date' },
+    { key: 'nabis', header: 'NABIS P/U DATE', kind: 'date', label: 'Nabis pickup date' },
+    { key: 'units', header: 'TOTAL UNITS', kind: 'count', label: 'Total units' },
+    { key: 'bud', header: 'BUDTENDER UNITS', kind: 'count', label: 'Budtender units' }];
+  // compared as the save program compares headers and UIDs: spaces collapsed (\s takes no-break spaces too), case ignored
+  const bkey = s => str(s).replace(/\s+/g, ' ').trim().toUpperCase();
+  const colName = c => (c >= 26 ? colName(Math.floor(c / 26) - 1) : '') + String.fromCharCode(65 + (c % 26));
+  const batchA1 = (r, c) => colName(c) + (r + 1);
+  // a batch dry run: "dry" in the query (pipeline.html?beta&dry) or in the hash (…#view=batches&dry, as typed at the end
+  // of the page's own address)
+  const batchDry = (search, hash) => new URLSearchParams(str(search).replace(/^\?/, '')).has('dry') ||
+    new URLSearchParams(str(hash).replace(/^#/, '')).has('dry');
+  // after a save, the follow-up reads of a scope run while a save waits on that scope's own tabs: a batch save on the
+  // batch tab, a plan save on DISTRO PIPELINE, a supply save on a supply tab (never the batch tab)
+  const chases = (scope, tab) => scope === 'batch' ? tab === BATCH : scope === 'plan' ? tab === PLAN : tab !== PLAN && tab !== BATCH;
+  // row 0 must name METRC UID and STATUS once each (as the program requires); each field's column, or -1 when the
+  // header is missing or there twice
+  function batchLayout(grid) {
+    const H = ((grid && grid[0]) || []).map(bkey);
+    const once = name => { const hits = []; H.forEach((h, c) => { if (h === name) hits.push(c); }); return hits.length === 1 ? hits[0] : -1; };
+    const cUid = once('METRC UID'), cSt = once('STATUS');
+    if (cUid < 0 || cSt < 0) return null;
+    const cols = {};
+    for (const f of BATCH_FIELDS) cols[f.key] = once(f.header);
+    return { cUid, cSt, cStrain: once('STRAIN'), cols };
+  }
+  const batchRows = (grid, L, uid) => { const u = bkey(uid), out = []; for (let r = 1; r < grid.length; r++) if (u && bkey(at(grid, r, L.cUid)) === u) out.push(r); return out; };
+  // the STATUS spellings the tab uses on batches (rows with a METRC UID), exactly as written: the only ones the app sends
+  function batchStatuses(grid) {
+    const L = batchLayout(grid), out = new Set();
+    if (L) for (let r = 1; r < grid.length; r++) { const t = at(grid, r, L.cSt); if (bkey(at(grid, r, L.cUid)) && t.trim()) out.add(t); }
+    return [...out].sort((p, q) => p.localeCompare(q));
+  }
+  // the day a date cell shows: "11/18/26", "11/18/2026", "2026-11-18" -> "2026-11-18"; null for anything else
+  function batchDay(t) {
+    const s = str(t).trim();
+    let m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(s), y, mo, d;
+    if (m) { y = m[3].length === 2 ? 2000 + +m[3] : +m[3]; mo = +m[1]; d = +m[2]; }
+    else if ((m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s))) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else return null;
+    const x = new Date(Date.UTC(y, mo - 1, d));
+    return x.getUTCFullYear() === y && x.getUTCMonth() === mo - 1 && x.getUTCDate() === d ? x.toISOString().slice(0, 10) : null;
+  }
+  const batchCount = t => { const s = str(t).replace(/,/g, '').trim(); return /^\d+$/.test(s) ? +s : null; };
+  const dayShown = iso => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}/${iso.slice(0, 4)}`;
+  // the days the program accepts: 2024-01-01 to 400 days after today (UTC)
+  const batchMaxDay = now => new Date(now + 400 * 864e5).toISOString().slice(0, 10);
+  // a batch's five cells as the grid shows them -> {ok, r, uid, strain, cells: {key: {c, header, text} | null}}, or
+  // {ok: false, message} when the header row is not as the program needs it, or the UID is on no row or on two
+  function batchAt(grid, uid) {
+    const L = batchLayout(grid);
+    if (!L) return fail("The BATCH LABEL SHEET tab's header row changed (it needs METRC UID and STATUS once each), so the app can't change batches. Reload the page.");
+    if (!bkey(uid)) return fail("This batch has no METRC UID, so it can only be changed in the sheet.");
+    const rows = batchRows(grid, L, uid);
+    if (rows.length > 1) return fail(`That batch's METRC UID is on ${rows.length} rows of the BATCH LABEL SHEET (rows ${rows.map(r => r + 1).join(', ')}), so the app can't tell which row you mean. Make that change in the sheet.`);
+    if (!rows.length) return fail("That batch's METRC UID isn't on the BATCH LABEL SHEET tab any more. Reload the page.");
+    const r = rows[0], cells = {};
+    for (const f of BATCH_FIELDS) { const c = L.cols[f.key]; cells[f.key] = c < 0 ? null : { c, header: f.header, text: at(grid, r, c) }; }
+    return { ok: true, r, uid: at(grid, r, L.cUid).replace(/\s+/g, ' ').trim(), strain: L.cStrain < 0 ? '' : at(grid, r, L.cStrain).trim(), cells };
+  }
+  // {uid, values: {status | pack | nabis | units | bud: what the person entered (a date as YYYY-MM-DD)}, now}: the ops for
+  // the fields whose value differs from what the sheet shows. A field left out of `values` is never sent.
+  // -> {ok: true, ops, cells, intent, summary} or {ok: false, message, field}
+  function batch(grid, { uid, values = {}, now = Date.now() } = {}) {
+    const b = batchAt(grid, uid);
+    if (!b.ok) return b;
+    const bad = (field, message) => ({ ok: false, message, field });
+    const ops = [], cells = [], parts = [];
+    let statuses = null;
+    for (const f of BATCH_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(values, f.key) || values[f.key] == null) continue;
+      const x = b.cells[f.key], v = str(values[f.key]);
+      if (!x) return bad(f.key, `The BATCH LABEL SHEET has no ${f.header} column the app can find (or has it twice), so change it in the sheet.`);
+      const before = x.text;
+      let text;
+      if (f.kind === 'status') {
+        if (nl(v) === nl(before)) continue;
+        if (!v.trim()) return bad(f.key, "Pick a status. The app cannot empty a batch's STATUS; make that change in the sheet.");
+        statuses = statuses || batchStatuses(grid);
+        if (!statuses.includes(v)) return bad(f.key, 'That status is not used on any other batch in the sheet, so the app does not add it. Pick one the sheet already uses, or type the new one in the sheet.');
+        text = v;
+      } else if (f.kind === 'date') {
+        const day = v.trim();
+        if (!day) {
+          if (!before.trim() || batchDay(before) == null) continue;   // blank, or words the date box can't show: left as is
+          return bad(f.key, `The app cannot empty a date on the BATCH LABEL SHEET (${f.label}). Make that change in the sheet.`);
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || batchDay(day) !== day || day < '2024-01-01' || day > batchMaxDay(now))
+          return bad(f.key, 'Dates must be a real day, from January 1, 2024 to about a year from now. Check the year.');
+        if (batchDay(before) === day) continue;
+        text = day;
+      } else {
+        if (!v.trim()) {
+          if (!before.trim()) continue;
+          return bad(f.key, `The app cannot empty ${f.label} on the BATCH LABEL SHEET. Make that change in the sheet.`);
+        }
+        const n = batchCount(v);
+        if (n == null) return bad(f.key, `${f.label} must be a whole number of 0 or more, like 1200.`);
+        if (batchCount(before) === n) continue;
+        text = String(n);
+      }
+      ops.push({ tab: BATCH, r: b.r, c: x.c, expect: before, text, find: { uid: b.uid, header: f.header }, number: f.kind === 'count', date: f.kind === 'date' });
+      const shown = f.kind === 'date' ? dayShown(text) : f.kind === 'count' ? (+text).toLocaleString('en-US') : text;
+      cells.push({ a1: batchA1(b.r, x.c), r: b.r, c: x.c, label: f.label, header: f.header, before, after: shown });
+      parts.push(`${f.label} ${before.trim() ? oneLine(before) : 'blank'} to ${shown}`);
+    }
+    if (!ops.length) return fail('Nothing to change: the sheet already says that.');
+    const who = `${b.strain || 'Batch'} (METRC UID ${b.uid})`;
+    return { ok: true, ops, cells, r: b.r, uid: b.uid,
+      intent: `${who}: ${parts.join('; ')}`,
+      summary: `Writes ${plural(ops.length, 'cell')} on the BATCH LABEL SHEET, row ${b.r + 1}: ${cells.map(x => `${x.after} in ${x.header}`).join(', ')}` };
+  }
+
   // the edits an item on the board offers in release 1a
   function kindsFor(it) {
     if (!it) return [];
@@ -2466,6 +2594,7 @@ const EDIT = ((PIPE, SUP) => {
 
   return { prerollAmount, jarStrain, taskText, crew, supply, apply, verify, kindsFor, crewTexts, rewriteAmount, jarSpan, a1,
     pastDay, beforeToday, listedTwice, wording, addItem, addSources, slotOf, setToday: d => { today = d || null; },
+    batch, batchAt, batchLayout, batchStatuses, batchDay, batchKey: bkey, batchA1, batchMaxDay, BATCH, BATCH_FIELDS, batchDry, chases,
     STATUSES, CREW_STATUSES: Object.keys(CREW_WORDS), MAX_OPS, ADD_MODES };
 })(PIPE, SUP);
 /* ===== EDIT MODEL END ===== */
@@ -5160,7 +5289,7 @@ function goDate(date) {
 }
 $('wk-date').addEventListener('change', e => goDate(e.target.value));
 function syncHash() {
-  const h = `#view=${S.view}${S.week ? '&week=' + S.week : ''}${S.q ? '&q=' + encodeURIComponent(S.q) : ''}${weekHashTail()}`;
+  const h = `#view=${S.view}${S.week ? '&week=' + S.week : ''}${S.q ? '&q=' + encodeURIComponent(S.q) : ''}${weekHashTail()}${edDryTail()}`;
   if (S.view === 'week' && location.hash !== h) history.replaceState(null, '', h);
 }
 // beta: the lane buttons and the month view ride in the address too, so a link opens the same view
@@ -5950,7 +6079,10 @@ function btRowHTML(r, g) {
     ? [btStep('Harvest', btDate(harvest, 'Harvest')), btStep('Trim', trimmed), btStep('Test', test), btStep('COA', coaOnly), btStep('Pack', btDate(r.package_date, 'Packaged')), btStep('Pickup', btDate(r.nabis_date, 'Nabis P/U'))]
     : [btStep('Harvest', btDate(harvest, 'Harvest')), btStep('Trim', trimmed), btStep('Roll', btDate(r.package_date, 'Packaged')), btStep('Test', test), btStep('COA', coaOnly), btStep('Pickup', btDate(r.nabis_date, 'Nabis P/U'))];
   const track = btTrackHTML(steps, { finished: g.finished || k === 'DONE', failed: k === 'FAILED TESTING' || !!failed });
-  return `<div class="bt-row"${r.metrc_uid ? ` data-uid="${esc(r.metrc_uid)}"` : ''}><span class="bt-nm" title="${esc(tip)}"><b>${esc(strain)}</b><span class="bt-sub">${esc(BAT.itemLabel(r.item))}${site}${pill}${failed}</span></span>` +
+  // editors (beta): a pen on the name opens the batch's card; "changed in the app by" under it (live read only)
+  const pen = r.metrc_uid && ED.on ? edBatPen(r.metrc_uid, `${strain} batch …${String(r.metrc_uid).slice(-4)}`) : '';
+  const by = r.metrc_uid && ED.on ? edBatByText(r.metrc_uid) : '';
+  return `<div class="bt-row"${r.metrc_uid ? ` data-uid="${esc(r.metrc_uid)}"` : ''}><span class="bt-nm" title="${esc(tip)}"><b>${esc(strain)}</b>${pen}<span class="bt-sub">${esc(BAT.itemLabel(r.item))}${site}${pill}${failed}</span>${by ? `<span class="bt-by">${esc(by)}</span>` : ''}</span>` +
     `<span class="bt-code"${codeTip ? ` title="${esc(codeTip)}"` : ''}>${esc(r.batch_code || '–')}</span>` +
     `${track}${thc}<span class="bt-uidc">${uid}</span></div>`;
 }
@@ -7016,8 +7148,9 @@ async function loadInventory(quiet) {
    nothing on its own. The editor is one card (#ed) laid over the clicked card on a laptop, a panel that slides up on
    a phone. It lives outside the board, so the board redrawing under it (the sheet is read every 30 seconds while it
    is open) never loses what the person typed, and a failed save keeps the draft. */
-const ED = { status: null, on: false, open: null, readAt: { plan: 0, supply: 0 }, drawn: { plan: false, supply: false },
-  log: [], logTop: null, logBusy: false, logDirty: false, byCell: new Map(), pending: [], tick: 0, chase: [], pt: 0 };
+const ED = { status: null, on: false, open: null, readAt: { plan: 0, supply: 0, batch: 0 }, drawn: { plan: false, supply: false, batch: false },
+  log: [], logTop: null, logBusy: false, logDirty: false, byCell: new Map(), byBatch: new Map(), pending: [], tick: 0, chase: [], pt: 0,
+  batText: null, batGrid: null, batUids: null };
 const ED_SEP = '\n§\n';
 const ED_SIZES = ['5pk', '0.7g', '1g', '1.5g'];
 const ED_ST = [['DISTRO', 'Distro'], ['TRIM', 'Trim'], ['LEAD', 'Lead'], ['ON CALL', 'On call'], ['OFF', 'Off']];
@@ -7093,12 +7226,14 @@ const edCanDay = date => edCan('plan') && !EDIT.pastDay(date);
 // a supply row whose name and category are on two rows can't be told apart by the save program
 const edSupTwin = it => { const t = edSupTab(it); return !!t && EDIT.listedTwice(t, it); };
 function edCan(scope) {
+  if (scope === 'batch') return edCanBatch();
   if (!ED.on || !ED.status || !ED.status['can_' + scope]) return false;
   return scope === 'plan' ? !!S.grid && !S.partial && ED.readAt.plan > 0 : !!S.sup && !S.sup.partial && ED.readAt.supply > 0;
 }
 // why Save can't run right now ('' = it can)
 function edBlock(o) {
   if (!sb) return ED_SAY.signedOut;
+  if (o.scope === 'batch') return edBatBlock();
   if (o.scope === 'plan' ? S.partial : !S.sup || S.sup.partial) return ED_SAY.backup;
   if (!ED.status) return ED_SAY.noStatus;
   if (!ED.status['can_' + o.scope]) return ED_SAY.noRights;
@@ -7120,6 +7255,7 @@ function edRead(scope, drawn) {
 }
 // a fresh read of the sheet, waiting for one already under way
 async function edReread(scope) {
+  if (scope === 'batch') { for (let i = 0; batLoading && i < 200; i++) await edWait(150); return loadBatches(true); }
   if (scope === 'supply') { for (let i = 0; supLoading && i < 200; i++) await edWait(150); return loadSupplies(true); }
   for (let i = 0; loading && i < 200; i++) await edWait(150);
   return load(true);
@@ -7145,12 +7281,15 @@ async function edLoadLog(force, quiet) {
     fresh = ED.log.length > 0; ED.log = []; ED.logTop = null;
   } finally { ED.logBusy = false; }
   if (!fresh) return;
-  const m = new Map();
+  const m = new Map(), mb = new Map();
   for (const row of ED.log) for (const x of row.cells || []) {
     const k = `${x.tab}|${x.r}|${x.c}`;
     if (!m.has(k)) m.set(k, { at: row.at, email: row.email, after: x.after ? x.after.text : '' });   // newest first
+    // a batch cell is keyed by its METRC UID and column (rows on the batch tab move), from the log's find
+    const kb = x.tab === ED_BAT && x.find ? edBatKey(x.find.uid, x.find.header) : '';
+    if (kb && !mb.has(kb)) mb.set(kb, { at: row.at, email: row.email, after: x.after ? x.after.text : '' });
   }
-  ED.byCell = m;
+  ED.byCell = m; ED.byBatch = mb;
   if (quiet) return;
   if (ED.open || POP || S.panel) ED.logDirty = true; else render();
 }
@@ -7167,6 +7306,202 @@ function edByText(tab, cells) {
     if (edSame(v == null ? '' : v, e.after) && (!best || e.at > best.at)) best = e;
   }
   return best ? `Changed in the app by ${edName(best.email)}, ${edWhen(best.at)}` : '';
+}
+
+/* ---- a batch on the Batch Label Sheet (release 1c, beta) ----
+   A pen on the name of each batch with a METRC UID opens a card for its STATUS, PCKG DATE, NABIS P/U DATE, TOTAL UNITS
+   and BUDTENDER UNITS. Only on rows from the live read of the tab (S.bat.live): the hourly copy's row numbers can be an
+   hour old. Rights are the plan's (the save program maps the tab to scope 'plan'). The pen shows even while the tab is
+   switched off: the card says so, and Save is refused by the program. With &dry in the address the card sends a dry
+   run, which checks everything against the sheet, writes nothing, and works while the tab is off. Each op names the
+   batch by its UID and the column by its header (EDIT.batch); "changed in the app by" is keyed the same way. */
+const ED_BAT = 'BATCH LABEL SHEET';
+let ED_DRY = EDIT.batchDry(location.search, location.hash);
+// a dry run that came in the hash stays in the hash the page writes, so a redraw or a reload keeps it
+function edDryTail() { return ED_DRY && !EDIT.batchDry(location.search, '') ? '&dry' : ''; }
+// "&dry" typed at the end of the address (in the hash) turns a dry run on without a reload. Never off: only a reload
+// without it ends a dry run, so a link that changes the hash can't turn a check into a write.
+window.addEventListener('hashchange', () => {
+  if (ED_DRY || !EDIT.batchDry('', location.hash)) return;
+  ED_DRY = true;
+  if (ED.open && ED.open.kind === 'batch') edPreview();
+});
+const edBatKey = (uid, header) => `${EDIT.batchKey(uid)}|${EDIT.batchKey(header)}`;
+// the newest live read of the tab as a grid (parsed once per new text), and how many rows carry each UID
+function edBatGrid() {
+  if (!S.batLiveText) return null;
+  if (ED.batText !== S.batLiveText) {
+    const g = PIPE.parseCSV(S.batLiveText), L = EDIT.batchLayout(g), n = new Map();
+    if (L) for (let r = 1; r < g.length; r++) { const u = EDIT.batchKey((g[r] || [])[L.cUid]); if (u) n.set(u, (n.get(u) || 0) + 1); }
+    ED.batGrid = g; ED.batUids = L ? n : null; ED.batText = S.batLiveText;
+  }
+  return ED.batGrid;
+}
+const edBatLive = () => !!(S.bat && S.bat.live) && !!edBatGrid();
+function edCanBatch() { return ED.on && !!ED.status && !!ED.status.can_plan && edBatLive(); }
+// why Save can't run right now ('' = it can). The switches are not checked here: the program refuses a save while the
+// tab is off (the card says so first), and a dry run works while it is off.
+function edBatBlock() {
+  if (!edBatLive()) return 'The Batches page is showing the hourly copy of the Batch Label Sheet, not the sheet itself, so editing is paused. Try again in a minute.';
+  if (!ED.status) return ED_SAY.noStatus;
+  if (!ED.status.can_plan) return ED_SAY.noRights;
+  return '';
+}
+// the notes above the batch card's fields: a dry run, the switches, test mode
+function edBatMode(block, s) {
+  if (ED_DRY) return `<p class="ed-note info">${esc('Dry run (dry in the address): the Dry run button checks the change against the sheet and writes nothing. It works while the tab is switched off. Open pipeline.html?beta without dry to save for real.')}</p>`;
+  if (block || !s) return '';
+  const notes = [];
+  if (!s.enabled) notes.push(['warn', 'Saving to the sheet from the app is switched off right now, so Save will be refused. Make the change in the sheet.']);
+  else if (!(s.tabs_on || []).includes(ED_BAT)) notes.push(['warn', "Saving to the BATCH LABEL SHEET tab from the app isn't switched on yet, so Save will be refused. An admin switches it on on the Admin page. To check a change without writing it, open the page as pipeline.html?beta&dry (a dry run)."]);
+  if (s.test_mode) notes.push(['info', ED_SAY.test]);
+  else if (s.target === 'test') notes.push(['info', ED_SAY.copy]);
+  return notes.map(([t, x]) => `<p class="ed-note ${t}">${esc(x)}</p>`).join('');
+}
+// the sheet and the app agree on a batch cell: the same words or number, or the same day however it is written
+const edBatSame = (a, b) => edSame(a, b) || (EDIT.batchDay(a) != null && EDIT.batchDay(a) === EDIT.batchDay(b));
+const edBatTwin = uid => !ED.batUids || (ED.batUids.get(EDIT.batchKey(uid)) || 0) !== 1;
+// "Changed in the app by Gianni, Nov 13 2:14 PM": the newest app edit of this batch's cells that the sheet still shows
+function edBatByText(uid) {
+  if (!ED.on || !ED.byBatch.size || !edBatLive()) return '';
+  const b = EDIT.batchAt(edBatGrid(), uid);
+  if (!b.ok) return '';
+  let best = null;
+  for (const f of EDIT.BATCH_FIELDS) {
+    const e = ED.byBatch.get(edBatKey(b.uid, f.header)), x = b.cells[f.key];
+    if (e && x && edBatSame(x.text, e.after) && (!best || e.at > best.at)) best = e;
+  }
+  return best ? `Changed in the app by ${edName(best.email)}, ${edWhen(best.at)}` : '';
+}
+// the pen on a batch row's name (never on a UID that is on two rows of the tab: the program could not tell them apart)
+function edBatPen(uid, what) {
+  if (!uid || !edCan('batch') || edBatTwin(uid)) return '';
+  return `<button type="button" class="ed-btn bt-ed" data-ed="batch" data-ed-uid="${esc(uid)}" aria-label="${esc('Edit ' + what)}" ` +
+    `title="Change this batch's status, dates or units in the Batch Label Sheet">${ED_PEN}</button>`;
+}
+// the batch's row in the sheet, from the newest live read (never the hourly copy's row number)
+function edBatLink(uid, a1) {
+  const g = edBatGrid(), b = g && EDIT.batchAt(g, uid);
+  const range = a1 || (b && b.ok ? 'A' + (b.r + 1) : '');
+  if (!S.wb || !range) return '';
+  return `https://docs.google.com/spreadsheets/d/${encodeURIComponent(S.wb)}/edit#gid=${BAT_GID}&range=${encodeURIComponent(range)}`;
+}
+// what each field starts as in the card: the sheet's status, its day for a date box, its count
+const edBatStart = (f, text) => f.kind === 'date' ? EDIT.batchDay(text) || '' : f.kind === 'count' ? String(text).trim() : text;
+function edPickBatch(o, uid) {
+  const g = edBatGrid(), b = g && EDIT.batchAt(g, uid);
+  if (!b || !b.ok) return false;
+  const row = S.bat && (S.bat.rows || []).find(r => EDIT.batchKey(r.metrc_uid) === EDIT.batchKey(uid));
+  o.uid = b.uid; o.r = b.r;
+  o.name = `${b.strain ? sLabel(PIPE.strainKey(b.strain)) : 'Batch'}${row && row.item ? ' · ' + BAT.itemLabel(row.item) : ''}`;
+  o.fields = EDIT.BATCH_FIELDS.map(f => Object.assign({}, f, { lock: b.cells[f.key] ? '' : `The sheet has no ${f.header} column the app can find, so change it there.` }));
+  o.fields.forEach(f => { o.draft[f.key] = b.cells[f.key] ? edBatStart(f, b.cells[f.key].text) : ''; });
+  o.statuses = EDIT.batchStatuses(g);
+  return true;
+}
+// what the card opened on: the five cells' shown text (null when the batch can't be found once)
+function edBatSnap(o) {
+  const g = edBatGrid(), b = g && EDIT.batchAt(g, o.uid);
+  return b && b.ok ? EDIT.BATCH_FIELDS.map(f => b.cells[f.key] ? b.cells[f.key].text : '').join(ED_SEP) : null;
+}
+// null while the sheet still shows what the card opened on; else what changed (each field: now, and what it was)
+function edBatConflict(o) {
+  const g = edBatGrid(), b = g && EDIT.batchAt(g, o.uid);
+  if (!b || !b.ok) return { now: [], gone: b ? b.message : "The Batch Label Sheet couldn't be read. Try again in a minute." };
+  const was = String(o.seen || '').split(ED_SEP);
+  const now = EDIT.BATCH_FIELDS.map((f, i) => ({ f, text: b.cells[f.key] ? b.cells[f.key].text : '', was: was[i] == null ? '' : was[i] }))
+    .filter(x => edNl(x.text) !== edNl(x.was));
+  if (!now.length) { o.r = b.r; return null; }
+  return { now: now.map(x => ({ label: `${x.f.label} (it said ${edOne(x.was) || 'nothing'} when you opened this)`, text: x.text })), gone: '' };
+}
+// "Edit again": the fields the person didn't touch follow the sheet as it is now; the ones they changed are kept
+function edBatRebase(o) {
+  const g = edBatGrid(), b = g && EDIT.batchAt(g, o.uid);
+  if (!b || !b.ok) return false;
+  o.r = b.r; o.statuses = EDIT.batchStatuses(g);
+  o.fields.forEach(f => { if (!o.touched.has(f.key)) o.draft[f.key] = b.cells[f.key] ? edBatStart(f, b.cells[f.key].text) : ''; });
+  return true;
+}
+function edBatBuild(o) {
+  const g = edBatGrid();
+  if (!g) return { error: "The Batch Label Sheet isn't read yet. Try again in a minute." };
+  const values = {};
+  for (const f of o.fields) if (!f.lock && o.touched.has(f.key)) values[f.key] = o.draft[f.key];
+  if (!Object.keys(values).length) return { none: true };
+  const b = EDIT.batch(g, { uid: o.uid, values });
+  if (b.ok || edNoneOf(b)) return edOut(b);
+  return { error: b.message, bad: b.field ? { [b.field]: b.message } : null };
+}
+function edBatWhere(o) {
+  const g = edBatGrid(), b = g && EDIT.batchAt(g, o.uid);
+  return `BATCH LABEL SHEET${b && b.ok ? `, row ${b.r + 1}` : ''} · METRC UID …${String(o.uid).slice(-4)}`;
+}
+function edBatFormHTML(o) {
+  const D = o.draft, g = edBatGrid(), b = g && EDIT.batchAt(g, o.uid);
+  const shown = f => (b && b.ok && b.cells[f.key] ? b.cells[f.key].text : '');
+  let h = '';
+  for (const f of o.fields) {
+    const id = 'ed-b-' + f.key, dis = f.lock ? ' disabled' : '', now = shown(f);
+    if (f.kind === 'status') {
+      const opts = (o.statuses || []).slice();
+      if (D.status && !opts.includes(D.status)) opts.unshift(D.status);
+      h += `<label class="ed-l" for="ed-status">${esc(f.label)}</label><select id="ed-status" data-f="${f.key}"${dis}>` +
+        (D.status ? '' : '<option value="" selected>Pick a status</option>') +
+        opts.map(s => `<option value="${esc(s)}"${s === D.status ? ' selected' : ''}>${esc(s)}</option>`).join('') + '</select>';
+    } else if (f.kind === 'date') {
+      h += `<label class="ed-l" for="${id}">${esc(f.label)}</label><input id="${id}" type="date" data-f="${f.key}" min="2024-01-01" ` +
+        `max="${EDIT.batchMaxDay(Date.now())}" value="${esc(D[f.key])}"${dis}>`;
+      if (now.trim() && EDIT.batchDay(now) == null) h += `<p class="ed-hint">The sheet has words here, not a date. Pick a day to put a date in their place, or leave it empty to keep them.</p>`;
+    } else {
+      h += `<label class="ed-l" for="${id}">${esc(f.label)}</label><input id="${id}" data-f="${f.key}" inputmode="numeric" autocomplete="off" value="${esc(D[f.key])}"${dis}>`;
+    }
+    h += f.lock ? `<p class="ed-hint">${esc(f.lock)}</p>` : edWas(now);
+  }
+  h += `<p class="ed-hint">Status uses only the spellings the sheet already has. Dates and units can't be emptied from the app. Everything else on the row (and THC, COA and Test date, which come from the lab) is changed in the sheet.</p>`;
+  const link = edBatLink(o.uid);
+  if (link) h += `<p class="ed-hint"><a href="${esc(link)}" target="_blank" rel="noopener">Open this row in the sheet</a></p>`;
+  return h;
+}
+// the Done card's top for a batch: saved, a dry run, or saved in the wrong row (the program's `hit`)
+function edBatDoneHTML(o, d, when) {
+  let h = '';
+  if (d.hit && d.hit.length) {
+    h += `<div class="ed-note bad"><b>Saved, but in the wrong ${d.hit.some(x => x.cols) ? (d.hit.some(x => x.rows) ? 'place' : 'column') : 'row'}</b>` +
+      'The sheet changed while it was saving. Put back what is listed here, then make your change again. This save cannot be undone from the app.</div>';
+    h += '<ul class="ed-now">' + d.hit.map(x => {
+      const who = x.layout ? 'The app cannot tell which batch' : x.uid ? `Batch ${x.uid}${x.strain ? ` (${x.strain})` : ''}` : 'A row with no METRC UID';
+      const put = x.layout || x.before == null ? `Check ${x.a1} in the sheet and fix it there.` : x.before === '' ? `It was blank before: clear ${x.a1}.` : `Put back "${x.before}" in ${x.a1}.`;
+      const link = edBatLink('', x.a1);
+      return `<li><em>${esc(who)} · ${esc(x.a1)}</em>${esc(`${x.header || 'That cell'} now says "${x.wrote}". ${put}`)}` +
+        (link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">Open ${esc(x.a1)}</a>` : '') + '</li>';
+    }).join('') + '</ul>';
+    return h;
+  }
+  if (d.mode === 'dry') return `<div class="ed-note info"><b>Dry run: nothing was written</b>Every check passed against the sheet as it is now. This is what Save would write:</div>`;
+  if (d.wrote) return `<div class="ed-note ok"><b>${d.mode === 'live' ? `Saved to the Batch Label Sheet, ${when}` : `In the test copy of the sheet, ${when}`}</b>` +
+    (d.mode === 'live' ? 'The list shows it once the page reads the sheet again, in a few seconds.' : "The Batches page reads the live sheet, so it won't change.") + '</div>';
+  return `<div class="ed-note info"><b>Test mode: nothing was written</b>This is what would have been written:</div>`;
+}
+// a saved batch cell shows in the newest read: found by its UID and header, wherever the row is now
+function edBatHolds(x) {
+  const g = edBatGrid(), f = x.find || {}, b = g && EDIT.batchAt(g, f.uid);
+  const fld = b && b.ok && EDIT.BATCH_FIELDS.find(q => q.header === EDIT.batchKey(f.header));
+  const cell = fld && b.cells[fld.key];
+  return !!cell && edBatSame(cell.text, x.after);
+}
+// Save reads the tab again first: a UID now on two rows or none, or a cell changed since the card opened, stops it here
+async function edBatReread(o) {
+  const t0 = ED.readAt.batch || 0;
+  o.busy = true; o.notice = { tone: 'info', text: `Reading the Batch Label Sheet again before ${ED_DRY ? 'checking' : 'saving'}...` }; edDraw();
+  try { await edReread('batch'); } catch (_) {}
+  o.busy = false;
+  if (ED.open !== o) return false;
+  o.notice = null;
+  if (!(ED.readAt.batch > t0)) {
+    o.notice = { tone: 'bad', text: `Couldn't read the Batch Label Sheet just now, so nothing was ${ED_DRY ? 'checked' : 'saved'}. Your change is still here: try again in a minute.` };
+    edDraw(); return false;
+  }
+  return true;
 }
 
 /* ---- inside the cards: the "changed by" line and Edit ---- */
@@ -7286,10 +7621,10 @@ function edOpenFrom(btn) {
     if (cur.phase === 'saving' || cur.phase === 'undoing' || cur.busy || (cur.phase === 'edit' && cur.dirty)) { edNudge(); return; }
     edClose();
   }
-  const d = btn.dataset, kind = d.ed, scope = kind === 'supply' ? 'supply' : 'plan';
+  const d = btn.dataset, kind = d.ed, scope = kind === 'supply' ? 'supply' : kind === 'batch' ? 'batch' : 'plan';
   if (!edCan(scope)) return;
-  const src = btn.closest('#wk-pop') || btn.closest('.wk-card, .sup-row, .ed-add') || btn, r = src.getBoundingClientRect();
-  const o = { kind, scope, tab: scope === 'plan' ? TAB : d.edTab, date: d.edDate || '', phase: 'edit', dirty: false, touched: new Set(),
+  const src = btn.closest('#wk-pop') || btn.closest('.wk-card, .sup-row, .ed-add, .bt-row') || btn, r = src.getBoundingClientRect();
+  const o = { kind, scope, tab: scope === 'plan' ? TAB : scope === 'batch' ? ED_BAT : d.edTab, date: d.edDate || '', phase: 'edit', dirty: false, touched: new Set(),
     draft: {}, rect: { left: r.left, top: r.top, width: r.width }, back: btn };
   if (!edSetup(o, d)) return;
   o.seen = edSnap(o);
@@ -7347,6 +7682,7 @@ function edSetup(o, d) {
     o.slot0 = {};   // the row each day's line was first shown going in, to say when the sheet moves it
     return true;
   }
+  if (o.kind === 'batch') return edPickBatch(o, d.edUid);
   return false;
 }
 // the lines of the picked strain (and, for pre-rolls, size) on the day
@@ -7386,6 +7722,7 @@ function edSnap(o) {
     return ls.length ? ls.map(l => l.cell ? edCell(l.cell[0], l.cell[1]) : '').join(ED_SEP) : null;
   }
   if (o.kind === 'task' || o.kind === 'crew') return edNl(edCell(o.cell[0], o.cell[1]));
+  if (o.kind === 'batch') return edBatSnap(o);
   const t = edSupTab(o), it = t && edSupItem(o, t);
   return it ? o.fields.map(f => edSupText(t, it, f.header)).join(ED_SEP) : null;
 }
@@ -7417,6 +7754,7 @@ function edConflict(o) {
     const now = edCell(o.cell[0], o.cell[1]);
     return { now: now ? [{ label: `${shortDate(o.date)} · ${EDIT.a1(o.cell[0], o.cell[1])}`, text: now }] : [], gone: now ? '' : "That line isn't in the sheet any more." };
   }
+  if (o.kind === 'batch') return edBatConflict(o);
   const t = edSupTab(o), it = t && edSupItem(o, t);
   if (!it) return { now: [], gone: `${o.name} isn't on the ${o.tab} tab under that name any more.` };
   const was = String(o.seen || '').split(ED_SEP), now = o.fields.map(f => ({ label: f.label, text: edSupText(t, it, f.header) }));
@@ -7441,6 +7779,8 @@ function edRebase(o) {
     o.lines = lines; o.draft.line = i;
   } else if (o.kind === 'add') {
     o.slot0 = {};   // built again on the sheet as it is now
+  } else if (o.kind === 'batch') {
+    if (!edBatRebase(o)) return false;
   } else {
     const t = edSupTab(o), it = t && edSupItem(o, t);
     if (!it) return false;
@@ -7498,6 +7838,7 @@ function edBuild(o) {
       });
       return Object.assign(b, { note: moved.join(' '), board: 'On the board: ' + b.reads.join('; ') });
     }
+    if (o.kind === 'batch') return edBatBuild(o);
     // supplies: each changed field is one cell; all of them go in one save, checked together
     const t = edSupTab(o), it = t && edSupItem(o, t);
     if (!it) return { error: "Couldn't find that item in the supply sheet. Reload the page and try again." };
@@ -7527,7 +7868,8 @@ const ED_NONE = { prerolls: 'Change the amount to see what will be written.', ja
   task: 'Change the wording to see what will be written.', crew: "Change someone's status to see what will be written.",
   supply: 'Change a count, the status, PAR or the notes to see what will be written.',
   'add-copy': 'Pick a line to copy to see what will be added.', 'add-jars': 'Type the strain to see what will be added.',
-  'add-crew': "Pick who's on to see what will be added." };
+  'add-crew': "Pick who's on to see what will be added.",
+  batch: 'Change the status, a date or a unit count to see what will be written.' };
 const edNone = o => ED_NONE[o.kind === 'add' ? 'add-' + o.mode : o.kind];
 
 /* ---- drawing the editor ---- */
@@ -7539,7 +7881,7 @@ function edTitle(o) {
   if (o.kind === 'add') return `Add to ${dowLong(o.date)}, ${md(o.date)}`;
   return o.name;
 }
-const edWhere = o => o.scope === 'supply' ? o.label : o.kind === 'add' ? "A new line under the day's last line in the sheet" : `${dowLong(o.date)}, ${md(o.date)}`;
+const edWhere = o => o.scope === 'supply' ? o.label : o.kind === 'batch' ? edBatWhere(o) : o.kind === 'add' ? "A new line under the day's last line in the sheet" : `${dowLong(o.date)}, ${md(o.date)}`;
 function edSeg(field, label, opts, value, extra = '') {
   return `<div class="ed-l">${esc(label)}</div><div class="ed-seg" role="group" aria-label="${esc(label)}">` + opts.map(([v, text]) => {
     const on = String(v) === String(value);
@@ -7589,6 +7931,8 @@ function edFormHTML(o) {
     h += edSeg('mode', 'What', ED_ADD.filter(([m]) => m !== 'crew' || o.mode === 'crew' || !edHasCrew(o.date)), o.mode);
     h += o.mode === 'copy' ? edAddCopyHTML(o) : o.mode === 'jars' ? edAddJarsHTML(o) : edAddCrewHTML(o);
     h += edAddDaysHTML(o);
+  } else if (o.kind === 'batch') {
+    h += edBatFormHTML(o);
   } else {
     const counts = o.fields.filter(f => f.kind === 'count');
     if (counts.length) h += `<div class="ed-l">Counts</div><div class="ed-cnts">` + counts.map(f =>
@@ -7628,11 +7972,14 @@ function edDraw() {
     foot = `<button type="button" class="ed-b" data-eda="sheet"${dis}>Use the sheet's</button><button type="button" class="ed-b pri" data-eda="again"${dis}>Edit again</button>`;
   } else if (o.phase === 'done' || o.phase === 'undoing') {
     const d = o.done, when = edClock(d.at);
-    if (d.wrote) body = `<div class="ed-note ok"><b>${d.mode === 'live' ? `In the sheet, ${when}` : `In the test copy of the sheet, ${when}`}</b>` +
+    if (o.kind === 'batch') body = edBatDoneHTML(o, d, when);
+    else if (d.wrote) body = `<div class="ed-note ok"><b>${d.mode === 'live' ? `In the sheet, ${when}` : `In the test copy of the sheet, ${when}`}</b>` +
       (d.mode === 'live' ? 'The board shows it once the page reads the sheet again, in a few seconds.' : "The board reads the live sheet, so it won't change.") + '</div>';
     else body = `<div class="ed-note info"><b>Test mode: nothing was written</b>This is what would have been written:</div>`;
     if (d.message) body += `<p class="ed-note warn">${esc(d.message)}</p>`;
-    body += edCellsHTML(d.cells, !d.wrote);
+    // a batch save that landed in the wrong row lists only the hit box: the planned cells name the same addresses with
+    // the batch's own old values, which would read as what those cells said
+    if (!(o.kind === 'batch' && d.hit)) body += edCellsHTML(d.cells, !d.wrote);
     if (o.phase === 'undoing') body += `<div class="ed-msg"><p class="ed-note info"><span class="ed-spin"></span>Undoing...</p></div>`;
     if (o.notice) body += `<div class="ed-msg"><p class="ed-note ${o.notice.tone}">${esc(o.notice.text)}</p></div>`;
     foot = (d.wrote ? (d.edit ? `<button type="button" class="ed-b" data-eda="undo"${dis}>Undo</button>` : '')
@@ -7677,15 +8024,16 @@ function edPreview() {
   const b = o.phase === 'saving' ? o.sent : edBuild(o);
   if (o.phase === 'edit') o.built = b;
   const block = edBlock(o), s = ED.status;
-  mode.innerHTML = !block && s && s.test_mode ? `<p class="ed-note info">${ED_SAY.test}</p>` : !block && s && s.target === 'test' ? `<p class="ed-note info">${ED_SAY.copy}</p>` : '';
+  mode.innerHTML = o.kind === 'batch' ? edBatMode(block, s) : !block && s && s.test_mode ? `<p class="ed-note info">${ED_SAY.test}</p>` : !block && s && s.target === 'test' ? `<p class="ed-note info">${ED_SAY.copy}</p>` : '';
   const shown = !!prev.querySelector('details[open]');   // a cell list the person opened stays open
   prev.innerHTML = b.ok ? `${b.note ? `<p class="ed-note info">${esc(b.note)}</p>` : ''}<b>${esc(b.summary)}</b>${b.board ? `<p class="ed-hint">${esc(b.board)}</p>` : ''}${edCellsHTML(b.cells, shown)}`
     : b.error ? `<p class="ed-err">${esc(b.error)}</p>` : `<p class="ed-quiet">${esc(edNone(o))}</p>`;
   $('ed').querySelectorAll('input[data-f]').forEach(i => i.classList.toggle('bad', !!(b.bad && b.bad[i.dataset.f])));
-  msg.innerHTML = o.phase === 'saving' ? `<p class="ed-note info"><span class="ed-spin"></span>${ED_SAY.saving}</p>`
+  msg.innerHTML = o.phase === 'saving' ? `<p class="ed-note info"><span class="ed-spin"></span>${o.kind === 'batch' && ED_DRY ? 'Checking the change against the sheet (nothing is written)...' : ED_SAY.saving}</p>`
     : block ? `<p class="ed-note bad">${esc(block)}</p>` : o.notice ? `<p class="ed-note ${o.notice.tone}">${esc(o.notice.text)}</p>` : '';
   save.disabled = o.phase === 'saving' || !b.ok || !!block;
   save.textContent = o.phase === 'saving' ? 'Saving...' : 'Save';
+  if (o.kind === 'batch' && ED_DRY) save.textContent = o.phase === 'saving' ? 'Checking...' : 'Dry run';
 }
 const edPreviewSoon = () => { clearTimeout(ED.pt); ED.pt = setTimeout(edPreview, 120); };
 // over the card it came from on a laptop (fields in place of the card's text); the phone's panel is placed by CSS
@@ -7699,7 +8047,7 @@ function edPlace() {
   el.style.top = Math.round(Math.max(gap, Math.min(o.rect.top, innerHeight - el.offsetHeight - gap))) + 'px';
 }
 function edFocus() {
-  const el = $('ed'), f = el.querySelector('#ed-n, #ed-to, #ed-text, #ed-src, #ed-who, .ed-cnt input:not(:disabled)') || el.querySelector('.ed-b.pri:not(:disabled)') || el.querySelector('.ed-x');
+  const el = $('ed'), f = el.querySelector('#ed-n, #ed-to, #ed-text, #ed-src, #ed-who, .ed-cnt input:not(:disabled), #ed-status:not(:disabled)') || el.querySelector('.ed-b.pri:not(:disabled)') || el.querySelector('.ed-x');
   if (!f) return;
   f.focus({ preventScroll: true });
   if (f.id === 'ed-n') f.select();
@@ -7751,21 +8099,29 @@ async function edSave() {
   o.notice = null;
   const block = edBlock(o);
   if (block) { edPreview(); return; }
+  // a batch: a draft that can't be sent stops before the read (Enter can beat the preview); then the tab is read again,
+  // so a UID on two rows or none, or a cell changed since the card opened, stops here
+  if (o.kind === 'batch') { const b0 = edBuild(o); if (!b0.ok) { o.built = b0; edPreview(); return; } }
+  if (o.kind === 'batch' && !(await edBatReread(o))) return;
   const c = edConflict(o);
   if (c) { o.phase = 'conflict'; o.conflict = c; edDraw(); return; }
   const b = edBuild(o);
   o.built = b;
-  if (!b.ok) { edPreview(); return; }
+  // the re-read drew a batch card busy (fields, Cancel and × off): draw it again so the person can fix the draft
+  if (!b.ok) { if (o.kind === 'batch') edDraw(); else edPreview(); return; }
   o.phase = 'saving'; o.sent = b; edDraw();
-  const j = await edPost({ action: 'write', intent: b.intent, ops: b.ops });
+  const j = await edPost({ action: o.kind === 'batch' && ED_DRY ? 'dry' : 'write', intent: b.intent, ops: b.ops });
   if (ED.open !== o) return;
   // the program answers with only some cells (the ones that conflict, or the ones that changed): label each by its own op
   const labelOf = (x, i) => { const k = b.ops.findIndex(op => op.tab === x.tab && op.r === x.r && op.c === x.c); return (b.cells[k >= 0 ? k : i] || {}).label || ''; };
   const cells = (j.cells || []).map((x, i) => Object.assign({}, x, { label: labelOf(x, i) }));
   if (j.ok) {
-    o.phase = 'done'; o.done = { at: new Date(), wrote: !!j.wrote, mode: j.mode, edit: j.edit, message: j.message || '', cells };
-    // only a write to the sheet this page reads can show up on the board; the test copy never will
-    if (j.wrote && j.mode === 'live') edPend(o, b.ops, j.cells || []);
+    const hit = Array.isArray(j.hit) && j.hit.length ? j.hit : null;
+    o.phase = 'done'; o.done = { at: new Date(), wrote: !!j.wrote, mode: j.mode, edit: j.edit, message: j.message || '', cells, hit };
+    // only a write to the sheet this page reads can show up on the board; the test copy never will. A batch save that
+    // landed in another row (hit) never shows in its own row: the tab is read again so the list shows what happened.
+    if (j.wrote && j.mode === 'live' && !hit) edPend(o, b.ops, j.cells || []);
+    if (hit) edReread(o.scope);
     if (j.wrote) edLoadLog(true);
   } else if (j.reason === 'conflict' && (j.cells || []).length && j.cells.every(x => !x.why || ['changed', 'item-gone', 'week-gone'].includes(x.why)) &&
       j.cells.every(x => !x.role || x.role === 'after')) {
@@ -7851,7 +8207,7 @@ function edPend(o, ops, cells) {
   edDecorate();
   ED.chase.forEach(clearTimeout);
   ED.chase = [1500, 4000, 8000, 15000, 30000, 60000, 120000].map(ms => setTimeout(() => {
-    if (ED.pending.some(p => (p.tab === TAB) === (o.scope === 'plan'))) edReread(o.scope);
+    if (ED.pending.some(p => EDIT.chases(o.scope, p.tab))) edReread(o.scope);
   }, ms));
 }
 // the week a plan op's find names by its header text, as the page last read it (null when the page doesn't show it)
@@ -7864,6 +8220,7 @@ function edDayHas(w, cols, test) {
 // an add's day as the page last read it: true only when its week is there and the day's two columns hold nothing
 function edDayEmpty(f) { const w = edWeekOf(f); return !!w && !edDayHas(w, [2 * f.day, 2 * f.day + 1], t => t !== ''); }
 function edHolds(p, x) {
+  if (p.tab === ED_BAT) return edBatHolds(x);
   if (p.tab === TAB) {
     const w = edWeekOf(x.find), c0 = 2 * (x.find || {}).day;
     // an undone add leaves a blank pair, and any blank cell reads like that: the read has caught up only once the
@@ -7891,6 +8248,10 @@ function edDecorate() {
     if (el.dataset.at.split(' ').some(k => keys.has(k))) (el.closest('.wk-bar') || el).classList.add('ed-pend');
   });
   document.querySelectorAll('[data-sup]').forEach(el => { if (rows.has(el.dataset.sup)) el.classList.add('ed-pend'); });
+  // a batch row, by its METRC UID (rows on the batch tab move)
+  const uids = new Set();
+  ED.pending.forEach(p => { if (p.tab === ED_BAT) p.cells.forEach(x => uids.add(EDIT.batchKey((x.find || {}).uid))); });
+  if (uids.size) document.querySelectorAll('#bt-list .bt-row[data-uid]').forEach(el => { if (uids.has(EDIT.batchKey(el.dataset.uid))) el.classList.add('ed-pend'); });
 }
 
 /* ---- the editor's own clicks and typing (they never reach the page's handlers, so the card under it stays) ---- */
@@ -8613,7 +8974,7 @@ function render() {
   renderStatus();
   S.renderOk = true;
   edDecorate();
-  const h = `#view=${S.view}${S.week ? '&week=' + S.week : ''}${S.q ? '&q=' + encodeURIComponent(S.q) : ''}${weekHashTail()}${S.view === 'actuals' && S.pvRun && S.pvRun !== 'none' ? '&run=' + S.pvRun : ''}`;
+  const h = `#view=${S.view}${S.week ? '&week=' + S.week : ''}${S.q ? '&q=' + encodeURIComponent(S.q) : ''}${weekHashTail()}${S.view === 'actuals' && S.pvRun && S.pvRun !== 'none' ? '&run=' + S.pvRun : ''}${edDryTail()}`;
   if (location.hash !== h) history.replaceState(null, '', h);
   if (MODEL) visitsPrewarm();   // the board has drawn: load the Delivery/Visit schedule in the background (beta)
 }
@@ -8797,7 +9158,7 @@ async function loadBatches(quiet) {
       S.batLive = { rows: BATR.fromCSV(got.text).rows, at: Date.now() };
       S.batLiveText = got.text; fresh = true;
     } else S.batLive.at = Date.now();
-    liveOk = true;
+    liveOk = true; ED.readAt.batch = Date.now();
   } catch (e) { liveErr = e.message || String(e); console.warn('batch tab not read', e); }
   batLoading = false;
   // the live rows unless the copy is newer; COA links from the copy by Metrc UID (a row with no UID never had a link
@@ -8826,6 +9187,7 @@ async function loadBatches(quiet) {
   if (S.view === 'batches' || (fresh && (S.view === 'week' || S.view === 'actuals' || S.view === 'inventory'))) render(); else renderStatus();
   if (S.view === 'batches') { loadLabs(quiet); if (!S.trimsAt && !S.trimsErr) loadTrims(true); }
   else if (S.view === 'week') loadLabs(true);   // the schedule checks each Nabis pickup's lab results
+  if (liveOk) edRead('batch', true);   // an open batch card follows the read; saves waiting to show are checked
 }
 // lab results per batch tag (pipeline_batch_labs, hourly from Metrc lab manifests + the Excelbis COA e-mails): the
 // Batches view fills its blank Test / COA / THC cells from them. Reloaded only when a run changed them.

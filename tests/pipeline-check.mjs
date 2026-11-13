@@ -1316,6 +1316,151 @@ if (realPipe) {
   }
 }
 
+// editing a batch (release 1c): the ops the Batches card sends for the BATCH LABEL SHEET, on a made-up tab read as CSV
+// (made-up UIDs and strains). Found by METRC UID and header, never by row; expect is the cell's shown text; only fields
+// that changed; dates and counts flagged; and the save program's own shape check (rules.js checkOps) accepts them.
+{
+  const R = await import('../supabase/functions/pipeline-sheet-write/rules.js');
+  const HEAD = ['STATUS', 'STRAIN', 'ITEM', 'CLASS', 'CROSS', 'HRVST DATE', 'PCKG DATE', 'PRODUCTION BATCH', 'CULT LIC', 'DISTRO LIC',
+    'TESTED BY', 'THC', 'CBD', 'TOTAL CANNA', 'METRC UID', 'COA LINK', 'TOTAL UNITS', 'BUDTENDER UNITS', 'CASES',
+    'QTY MADE IN DISTRU', 'RECIEVE DATE', 'TEST DATE', 'COA RETURN DATE', 'NABIS P/U DATE'];
+  const UID = k => '1A40000000000000000' + String(900 + k).padStart(5, '0');   // made up
+  const col = h => HEAD.indexOf(h);
+  const rowOf = cells => { const r = HEAD.map(() => ''); for (const [h, v] of Object.entries(cells)) r[col(h)] = v; return r; };
+  const ROWS = [
+    HEAD,
+    rowOf({ STATUS: 'GOAT DROP!!' }),                                                                          // a drop label: no UID
+    rowOf({ STATUS: 'PACKAGING', STRAIN: 'MADE UP KUSH', 'PCKG DATE': '11/18/26', 'METRC UID': UID(1), 'TOTAL UNITS': '1,200' }),
+    rowOf({ STATUS: 'READY FOR PICKUP', STRAIN: 'TEST BERRY', 'PCKG DATE': '11/2/26', 'METRC UID': UID(2), 'TOTAL UNITS': '400',
+      'BUDTENDER UNITS': '10', 'NABIS P/U DATE': '11/20/2026', CASES: '25' }),
+    rowOf({ STATUS: 'WAITING FOR TESTING', STRAIN: 'TWIN ONE', 'METRC UID': UID(3) }),
+    rowOf({ STATUS: 'WAITING FOR TESTING', STRAIN: 'TWIN TWO', 'METRC UID': ' ' + UID(3).toLowerCase() }),   // the same UID twice
+    rowOf({ STATUS: 'NO UID STATUS', STRAIN: 'PLACEHOLDER' }),                                                  // not a batch
+    rowOf({ STATUS: 'GRINDING FLOWER', STRAIN: 'WORDY', 'PCKG DATE': 'TBD', 'METRC UID': UID(4) }),
+  ];
+  const csv = rows => rows.map(r => r.map(v => /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v).join(',')).join('\n');
+  const g = PIPE.parseCSV(csv(ROWS));
+  const NOW = Date.UTC(2026, 10, 13, 20);
+  const B = (uid, values, grid = g) => EDIT.batch(grid, { uid, values, now: NOW });
+  const no = (res, re, why) => { assert.equal(res.ok, false, why); assert.match(res.message, re, `${why}: ${res.message}`); return res; };
+
+  assert.deepEqual(EDIT.batchStatuses(g), ['GRINDING FLOWER', 'PACKAGING', 'READY FOR PICKUP', 'WAITING FOR TESTING'],
+    'the status picker lists the spellings batches use (not a row with no METRC UID)');
+  const at2 = EDIT.batchAt(g, UID(2));
+  assert.ok(at2.ok && at2.r === 3 && at2.cells.pack.text === '11/2/26' && at2.cells.nabis.text === '11/20/2026' && at2.cells.units.c === col('TOTAL UNITS'));
+  assert.equal(EDIT.batchDay('11/18/26'), '2026-11-18'); assert.equal(EDIT.batchDay('11/20/2026'), '2026-11-20');
+  assert.equal(EDIT.batchDay('2/30/26'), null); assert.equal(EDIT.batchDay('TBD'), null);
+  assert.equal(EDIT.batchA1(2, 23), 'X3'); assert.equal(EDIT.batchA1(0, 26), 'AA1');
+  assert.equal(EDIT.batchMaxDay(NOW), '2027-12-18', '400 days after today (UTC)');
+
+  // the card's values as the sheet shows them: nothing is sent
+  no(B(UID(2), { status: 'READY FOR PICKUP', pack: '2026-11-02', nabis: '2026-11-20', units: '400', bud: '10' }), /^Nothing to change/, 'every field as the sheet has it');
+  no(B(UID(1), { units: '1200', pack: '2026-11-18', nabis: '', bud: '' }), /^Nothing to change/, '"1,200" is 1200, 11/18/26 is Nov 18, blanks stay blank');
+  no(B(UID(1), {}), /^Nothing to change/, 'no field touched');
+
+  // three fields changed, two left alone: one op each, in the card's order, found by UID and header
+  const b1 = B(UID(1), { status: 'READY FOR PICKUP', pack: '2026-11-18', nabis: '2026-11-25', units: '1,300', bud: '' });
+  assert.ok(b1.ok, b1.message);
+  const T = 'BATCH LABEL SHEET';
+  assert.deepEqual(b1.ops, [
+    { tab: T, r: 2, c: col('STATUS'), expect: 'PACKAGING', text: 'READY FOR PICKUP', find: { uid: UID(1), header: 'STATUS' }, number: false, date: false },
+    { tab: T, r: 2, c: col('NABIS P/U DATE'), expect: '', text: '2026-11-25', find: { uid: UID(1), header: 'NABIS P/U DATE' }, number: false, date: true },
+    { tab: T, r: 2, c: col('TOTAL UNITS'), expect: '1,200', text: '1300', find: { uid: UID(1), header: 'TOTAL UNITS' }, number: true, date: false },
+  ], 'status as text, the date flagged, the count flagged and written plain; expect is the shown text');
+  assert.deepEqual(b1.cells.map(x => [x.a1, x.label, x.before, x.after]),
+    [['A3', 'Status', 'PACKAGING', 'READY FOR PICKUP'], ['X3', 'Nabis pickup date', '', '11/25/2026'], ['Q3', 'Total units', '1,200', '1,300']]);
+  assert.match(b1.intent, /MADE UP KUSH \(METRC UID 1A4\d+\): Status PACKAGING to READY FOR PICKUP; Nabis pickup date blank to 11\/25\/2026; Total units 1,200 to 1,300/);
+  assert.equal(R.checkOps(b1.ops, NOW), null, 'the save program accepts the shape of every op');
+  assert.equal(R.checkOps([b1.ops[1]], NOW + 0), null);
+  const dPack = B(UID(2), { pack: '2026-11-03' });
+  assert.deepEqual([dPack.ops[0].expect, dPack.ops[0].text, dPack.ops[0].date, dPack.ops[0].number], ['11/2/26', '2026-11-03', true, false], 'a date keeps the shown text as expect');
+  const bud = B(UID(2), { bud: '0' });
+  assert.deepEqual([bud.ops[0].expect, bud.ops[0].text, bud.ops[0].number, bud.ops[0].find.header], ['10', '0', true, 'BUDTENDER UNITS'], 'zero is a count');
+  assert.equal(R.checkOps([...dPack.ops, ...bud.ops], NOW), null);
+
+  // rows inserted above the batch: the same UID and header, the new row number, the same expect
+  const moved = PIPE.parseCSV(csv([HEAD, ...Array.from({ length: 12 }, () => rowOf({ STATUS: 'DEC DROP 9' })), ...ROWS.slice(1)]));
+  const b1m = B(UID(1), { status: 'READY FOR PICKUP', nabis: '2026-11-25', units: '1300' }, moved);
+  assert.deepEqual(b1m.ops.map(o => [o.r, o.c, o.expect, o.text, o.find]), b1.ops.map(o => [o.r + 12, o.c, o.expect, o.text, o.find]), '12 rows inserted above');
+
+  // refusals, in the page before anything is sent
+  no(B(UID(3), { status: 'PACKAGING' }), /on 2 rows of the BATCH LABEL SHEET \(rows 5, 6\)/, 'a UID on two rows (case and spaces ignored, as the program does)');
+  no(B(UID(9), { status: 'PACKAGING' }), /isn't on the BATCH LABEL SHEET tab any more/, 'a UID on no row');
+  no(B('', { status: 'PACKAGING' }), /no METRC UID/, 'a row with no UID');
+  const twinHead = PIPE.parseCSV(csv([HEAD.map(h => h === 'CROSS' ? 'METRC UID' : h), ...ROWS.slice(1)]));
+  no(B(UID(1), { status: 'PACKAGING' }, twinHead), /header row changed/, 'METRC UID twice in the header row');
+  const noNabis = PIPE.parseCSV(csv([HEAD.map(h => h === 'NABIS P/U DATE' ? 'NABIS' : h), ...ROWS.slice(1)]));
+  assert.equal(EDIT.batchAt(noNabis, UID(1)).cells.nabis, null, 'a missing column is no field');
+  assert.equal(no(B(UID(1), { nabis: '2026-11-25' }, noNabis), /no NABIS P\/U DATE column/, 'its column renamed').field, 'nabis');
+  assert.equal(no(B(UID(1), { units: '' }), /cannot empty Total units/, 'emptying a count').field, 'units');
+  no(B(UID(2), { nabis: '' }), /cannot empty a date on the BATCH LABEL SHEET \(Nabis pickup date\)/, 'emptying a date');
+  no(B(UID(1), { units: '12.5' }), /whole number of 0 or more/, 'a part unit');
+  no(B(UID(1), { units: '-4' }), /whole number of 0 or more/, 'a negative count');
+  no(B(UID(1), { pack: '2206-10-02' }), /real day, from January 1, 2024/, 'the year typo');
+  no(B(UID(1), { pack: '2027-12-19' }), /real day/, 'more than 400 days out');
+  no(B(UID(1), { pack: '2023-12-31' }), /real day/, 'before 2024');
+  no(B(UID(1), { pack: '2026-02-30' }), /real day/, 'not a day');
+  assert.ok(B(UID(1), { pack: '2027-12-18' }).ok, 'the last day the program takes');
+  no(B(UID(1), { status: 'NEW STATUS' }), /not used on any other batch/, 'a status the sheet does not use');
+  no(B(UID(1), { status: 'NO UID STATUS' }), /not used on any other batch/, 'a status only a row with no UID uses');
+  no(B(UID(1), { status: '' }), /Pick a status/, 'an empty status');
+  // words in a date cell: left alone unless a day is picked, and then sent with the words as expect
+  no(B(UID(4), { pack: '' }), /^Nothing to change/, 'words in a date cell, date box left empty');
+  const wordy = B(UID(4), { pack: '2026-12-01' });
+  assert.deepEqual([wordy.ops[0].expect, wordy.ops[0].text], ['TBD', '2026-12-01']);
+  // a dry run: "dry" in the query or in the hash (typed at the end of the page's own address, which always ends in a hash)
+  assert.ok(EDIT.batchDry('?beta&dry', ''), 'pipeline.html?beta&dry');
+  assert.ok(EDIT.batchDry('?beta', '#view=batches&dry'), '&dry typed after the hash the page writes');
+  assert.ok(EDIT.batchDry('?beta&wb=x', '#dry'), 'dry alone in the hash');
+  assert.ok(!EDIT.batchDry('?beta', '#view=batches&q=dry'), 'the word dry in a search is not a dry run');
+  assert.ok(!EDIT.batchDry('?beta', '#view=batches'), 'no dry');
+  assert.ok(!EDIT.batchDry('', ''), 'nothing');
+  // both places the page rewrites its hash keep a dry run that came in the hash; the card names the exact address
+  const hashWriters = html.match(/history\.replaceState\(null, '', h\)/g) || [];
+  assert.equal(hashWriters.length, 2, 'the page rewrites its hash in two places (syncHash and render)');
+  assert.equal((html.match(/\$\{edDryTail\(\)\}`;\n\s+if \((S\.view === 'week' && )?location\.hash !== h\) history\.replaceState/g) || []).length, 2,
+    'syncHash and render both end the hash with edDryTail(), so a redraw never drops a dry run');
+  assert.ok(html.includes("let ED_DRY = EDIT.batchDry(location.search, location.hash);"), 'the dry flag reads the query and the hash');
+  assert.ok(html.includes("window.addEventListener('hashchange'") && !/ED_DRY = false/.test(html), '&dry typed in the hash turns a dry run on, and nothing turns it off without a reload');
+  assert.ok(!/add &dry to the address/.test(html) && html.includes('pipeline.html?beta&dry'), 'the tab-off note names the exact dry address');
+  // a dry run never says it is saving
+  assert.ok(html.includes("o.kind === 'batch' && ED_DRY ? 'Checking the change against the sheet (nothing is written)...' : ED_SAY.saving"), 'a dry run says Checking, not Saving');
+  assert.ok(html.includes("before ${ED_DRY ? 'checking' : 'saving'}..."), 'the re-read before a dry run says checking');
+  // a batch card whose draft fails after the busy re-read is drawn again (its fields, Cancel and × were drawn off), and a
+  // draft that can't be sent never starts the re-read
+  const saveSrc = html.slice(html.indexOf('async function edSave() {'), html.indexOf('\n}\n', html.indexOf('async function edSave() {')));
+  assert.ok(saveSrc.includes("if (!b.ok) { if (o.kind === 'batch') edDraw(); else edPreview(); return; }"), 'a batch draft refused after the re-read redraws the card');
+  assert.ok(saveSrc.indexOf("const b0 = edBuild(o); if (!b0.ok)") >= 0 && saveSrc.indexOf("const b0 = edBuild(o)") < saveSrc.indexOf('await edBatReread(o)'),
+    'a batch draft is built before the re-read, so a bad draft never draws the card busy');
+  // a hit's Done card lists only the hit box, not the planned cells (same address, the batch's own old value)
+  assert.ok(html.includes("if (!(o.kind === 'batch' && d.hit)) body += edCellsHTML(d.cells, !d.wrote);"), 'no planned-cell list under a hit');
+  // after a save, each chase re-reads only while a save waits on its own tabs: a waiting batch save never keeps a supply
+  // chase going (or the other way round); plan and supply chases behave as before when no batch save waits
+  assert.deepEqual(['DISTRO PIPELINE', 'DISTRO SUPPLY', 'ACCESSORY SUPPLY', 'BATCH LABEL SHEET'].map(t => ['plan', 'supply', 'batch'].map(sc => +EDIT.chases(sc, t))),
+    [[1, 0, 0], [0, 1, 0], [0, 1, 0], [0, 0, 1]], 'which waiting saves each chase reads for');
+  {
+    const m = html.match(/function edPend\(o, ops, cells\) \{[\s\S]*?\n\}\n/);
+    assert.ok(m, 'edPend is in the page');
+    const run = (pending, o) => {
+      const ED = { pending: pending.slice(), chase: [] }, timers = [], calls = [];
+      const env = { ED, EDIT, TAB: 'DISTRO PIPELINE', edDecorate: () => {}, edReread: sc => calls.push(sc), Date: { now: () => 0 },
+        setTimeout: (f, ms) => { timers.push(f); return timers.length; }, clearTimeout: () => {} };
+      const edPend = new Function(...Object.keys(env), `return (${m[0].replace(/^function edPend/, 'function')});`)(...Object.values(env));
+      edPend(o, [{}], [{ r: 5, c: 3, after: '10' }]);
+      ED.pending = ED.pending.filter(p => p.tab !== o.tab);   // the save shows on the first read
+      timers.forEach(f => f());
+      return calls.length;
+    };
+    const batchWaits = [{ tab: 'BATCH LABEL SHEET', until: 1e9, cells: [] }], supplyWaits = [{ tab: 'DISTRO SUPPLY', until: 1e9, cells: [] }];
+    assert.equal(run([], { scope: 'supply', tab: 'DISTRO SUPPLY' }), 0, 'a supply chase stops once its save shows');
+    assert.equal(run(batchWaits, { scope: 'supply', tab: 'DISTRO SUPPLY' }), 0, 'a waiting batch save does not keep a supply chase reading');
+    assert.equal(run(supplyWaits, { scope: 'batch', tab: 'BATCH LABEL SHEET' }), 0, 'a waiting supply save does not keep a batch chase reading');
+    assert.equal(run(supplyWaits, { scope: 'supply', tab: 'ACCESSORY SUPPLY' }), 7, 'a waiting save on the other supply tab still does (as before)');
+    assert.equal(run(batchWaits, { scope: 'plan', tab: 'DISTRO PIPELINE' }), 0, 'a plan chase never read for a batch save');
+  }
+  console.log('editing a batch: ops found by METRC UID and header, expect from the shown text, only changed fields, date and count flags, accepted by the save program; twin, missing, empty and bad values refused on the page');
+}
+
 // the plan's examples on the saved copy of the live sheet (2026-11-10), when that copy is on this computer
 {
   const gridFile = path.join(liveDir, 'grid.json');
