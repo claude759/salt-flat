@@ -558,6 +558,39 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
     assert.deepEqual(BAT.vapes(labs.filter(x => x && !BAT.isVape(x)), []), [], 'flower and pre-roll results never make the band');
     assert.equal(BAT.turnaround(labs.filter(x => x && !BAT.isVape(x))).nColl, 0, 'vapes stay out of the flower turnaround');
   }
+  // the Lab results box at the top of Batches: what came back lately (per lab order) and what is still out (per day sent)
+  {
+    const sheet = [
+      { metrc_uid: '1A406030005660A000006051', strain: 'TIDE', item: 'FLOWER', status: 'AWAITING PKG/LABELING' },
+      { metrc_uid: '1A406030005660A000005918', strain: 'BLACK MAGIC', item: '5PK', status: 'DONE', finished: true },
+      { metrc_uid: '1A406030005660A000006800', strain: 'ANTIDOTE', item: 'FLOWER', status: 'WAITING FOR COA' },
+      { metrc_uid: '1A406030005660A000006801', strain: 'NEBULA', item: 'FLOWER', status: 'WAITING FOR COA', coa_date: '2026-11-12' },   // typed in already
+      { metrc_uid: '1A406030005660A000006802', strain: 'WIZZY', item: '1G', status: 'WAITING FOR COA' },
+    ];
+    const labs = [
+      { metrc_uid: '1A4060300087B1A000000101', sample_id: '2611EXL9561.37774', strain: 'POTION', product_type: 'Vape', completed: '2026-11-13', result: 'Pass' },
+      { metrc_uid: '1A4060300087B1A000000102', sample_id: '2611EXL9561.37775', strain: 'Brain Freeze', product_type: 'Vape', completed: '2026-11-13', result: 'Fail' },
+      { metrc_uid: '1A406030005660A000006051', sample_id: '2610EXL9180.36298', product_type: 'Bulk Flower', completed: '2026-11-03', result: 'Pass' },
+      { metrc_uid: '1A406030005660A000005918', sample_id: '2610EXL8908.35347', product_type: 'Preroll', completed: '2026-10-27', result: 'Pass' },   // 17 days ago
+      { metrc_uid: '1A406030005660A000009999', sample_id: '2611EXL9700.1', product_type: 'Bulk Flower', completed: '2026-11-12', result: 'Pass' },   // not on the sheet
+      { metrc_uid: '1A406030005660A000006800', source: 'metrc', sent_date: '2026-11-12' },
+      { metrc_uid: '1A406030005660A000006801', source: 'metrc', sent_date: '2026-11-12' },
+      { metrc_uid: '1A406030005660A000006802', source: 'metrc', sent_date: '2026-11-12' },
+      null,
+    ];
+    const N = BAT.labNews(labs, sheet, '2026-11-13');
+    assert.deepEqual(N.back.map(o => [o.order, o.date, o.items.map(i => i.kind).join(','), o.passed, o.failed]),
+      [['2611EXL9561', '2026-11-13', 'vape,vape', 1, 1], ['sheet:2026-11-12', '2026-11-12', 'flower', 0, 0], ['2610EXL9180', '2026-11-03', 'flower', 1, 0]],
+      'newest first; a COA date typed on the sheet counts; older than 2 weeks and off-sheet flower left out');
+    assert.deepEqual(N.out.map(g => [g.sent, g.items.map(i => i.strain + ':' + i.kind).join(',')]), [['2026-11-12', 'ANTIDOTE:flower,WIZZY:preroll']],
+      'samples still out; one whose COA is already on the sheet is not');
+    assert.deepEqual(BAT.labNews([], sheet.filter(r => !r.coa_date), '2026-11-13'), { back: [], out: [] });
+    // a result typed on the sheet before the lab job has its COA still counts as back, on the sheet's COA date
+    const typed = BAT.labNews(labs, sheet.map(r => r.strain === 'ANTIDOTE' ? { ...r, coa_date: '2026-11-13', thc: 27.1 } : r), '2026-11-13');
+    assert.deepEqual(typed.back.map(o => [o.order, o.items.map(i => i.strain + ':' + i.result).join(',')]),
+      [['sheet:2026-11-13', 'ANTIDOTE:Pass'], ['2611EXL9561', 'POTION:Pass,Brain Freeze:Fail'], ['sheet:2026-11-12', 'NEBULA:'], ['2610EXL9180', 'TIDE:Pass']]);
+    assert.deepEqual(typed.out.map(g => g.items.map(i => i.strain).join(',')), ['WIZZY'], 'and it leaves "At the lab"');
+  }
   const A = ACT.build(weeks, tasks, bat, '2026-10-16', BAT.statusKey);
   const R = A.byId.get('prerolls-2026-10-07'), line = key => R.act.lines.find(l => l.strain + '|' + l.size === key);
   assert.deepEqual([line('TIDE|5pk').counted, line('TIDE|1g').counted, line('VOODOO|5pk').counted, line('VOODOO|1g').counted], [700, null, 500, null],

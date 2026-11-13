@@ -692,6 +692,28 @@
   .bt-d small{display:block;font-size:12px;color:var(--wk-ink2)}
   .bt-auto{color:#2F4FA2;border-bottom:1px dotted #2F4FA2;cursor:help}
   .bt-auto a{color:inherit;text-decoration:none}
+  .bt-lab{background:#FFFFFF;border:1px solid var(--wk-line);border-radius:8px;margin:0 0 12px;overflow:hidden}
+  .bt-lab-h{padding:8px 12px 6px;font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--wk-ink2)}
+  .bt-labln{display:grid;grid-template-columns:96px minmax(230px,max-content) minmax(0,1fr) auto;gap:2px 14px;align-items:baseline;width:100%;
+    text-align:left;background:none;border:0;border-top:1px solid #EEF0F3;padding:8px 12px;font:inherit;font-size:14px;color:#111;cursor:pointer}
+  .bt-labln:hover{background:#F7F8FA}
+  .bt-labln b{font-weight:700}
+  .bt-labln .what{font-weight:600}
+  .bt-labln .what em{font-style:normal;font-weight:500;color:var(--wk-ink2)}
+  .bt-labln .what em.fail{color:#B42318;font-weight:700}
+  .bt-labln .nm{color:var(--wk-ink2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bt-labln .go{color:#1F3A93;font-weight:600;white-space:nowrap}
+  .bt-row.bt-flash{animation:btFlash 2.6s ease-out}
+  .bt-only{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin:0 0 10px;padding:8px 12px;background:#FFF8D6;border:1px solid #F0D66E;border-radius:8px;font-size:14px;scroll-margin-top:calc(var(--bt-stick,0px) + 8px)}
+  .bt-only span{flex:1;min-width:0}
+  .bt-only .btn{height:30px;padding:0 12px;font-size:13px}
+  @keyframes btFlash{0%,40%{background:#FFF1A1}100%{background:transparent}}
+  @media (max-width:759px){
+    .bt-labln{grid-template-columns:minmax(0,1fr) auto}
+    .bt-labln .what,.bt-labln .nm{grid-column:1 / -1}
+    .bt-labln .nm{white-space:normal}
+    .bt-labln .go{grid-column:2;grid-row:1}
+  }
   @media (max-width:1099px){ .bt-d small{display:inline;margin-left:4px} }
   @media (max-width:1099px){
     .bt-row.hd{display:none}
@@ -1219,6 +1241,7 @@
       <input class="search" id="q4" type="search" placeholder="Find a strain, batch code or Metrc UID" autocomplete="off">
     </div>
     <div class="bt-sentence" id="bt-sentence"></div>
+    <div id="bt-lab"></div>
     <div class="bt-chips" id="bt-chips"></div>
     <div id="bt-alerts"></div>
     <div id="bt-list"></div>
@@ -2537,7 +2560,53 @@ const BAT = (() => {
         received: minOf(o.rows.map(x => day(x.received))), producer: makers.length === 1 ? makers[0] : '', failed: o.rows.filter(x => x.result === 'Fail').length });
     }).sort((a, b) => (b.completed || b.collected).localeCompare(a.completed || a.collected) || b.order.localeCompare(a.order));
   }
-  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups, turnaround, expectedCoa, isVape, vapes };
+  // the top of the Batches view: lab results back in the last `days` days, one entry per lab order (newest first), and
+  // samples still at the lab, one entry per day sent. Only batches the page shows count: a sheet row, or a vape.
+  function labNews(labs, sheetRows, today, days = 14, outDays = 30) {
+    const sheet = new Map();
+    for (const r of sheetRows || []) if (r && r.metrc_uid && !sheet.has(r.metrc_uid)) sheet.set(r.metrc_uid, r);
+    const ago = n => (today && dayMs(today) != null ? new Date(dayMs(today) - n * 864e5).toISOString().slice(0, 10) : '');
+    const from = ago(days), outFrom = ago(outDays);
+    const kindOf = (x, r) => isVape(x) ? 'vape' : /pre-?roll/i.test(x.product_type || '') || (r && r.item && itemLabel(r.item) !== 'Flower' && !/flower/i.test(x.product_type || '')) ? 'preroll' : 'flower';
+    const back = new Map(), out = new Map(), labsByUid = new Map();
+    for (const x of labs || []) if (x && x.metrc_uid) labsByUid.set(x.metrc_uid, x);
+    for (const x of labsByUid.values()) {
+      if (!x || !x.metrc_uid) continue;
+      const r = sheet.get(x.metrc_uid) || null, vape = isVape(x);
+      if (!r && !vape) continue;   // nowhere on the page to point at
+      const it = { uid: x.metrc_uid, kind: kindOf(x, r), strain: (r && r.strain) || x.strain || '', result: x.result || '' };
+      const done = x.completed ? String(x.completed).slice(0, 10) : '';
+      if (done) {
+        if (from && done < from) continue;
+        const order = String(x.sample_id || '').split('.')[0] || done;
+        if (!back.has(order)) back.set(order, { order, date: '', items: [] });
+        const o = back.get(order);
+        if (done > o.date) o.date = done;
+        o.items.push(it);
+      } else if (x.sent_date && r && !r.finished && statusKey(r.status) !== 'DONE' && !r.coa_date && !r.coa_url && r.thc == null) {
+        const sent = String(x.sent_date).slice(0, 10);
+        if (outFrom && sent < outFrom) continue;   // long gone quiet: the batch row says what happened
+        if (!out.has(sent)) out.set(sent, { sent, items: [] });
+        out.get(sent).items.push(it);
+      }
+    }
+    // results typed on the sheet (or copied there first) that the lab job has no COA for yet: back on the sheet's COA date
+    const inBack = new Set([...back.values()].flatMap(o => o.items.map(i => i.uid)));
+    for (const r of sheet.values()) {
+      const done = r.coa_date ? String(r.coa_date).slice(0, 10) : '';
+      if (!done || (from && done < from) || inBack.has(r.metrc_uid)) continue;
+      const x = labsByUid.get(r.metrc_uid);
+      if (x && x.completed) continue;
+      const k = 'sheet:' + done;
+      if (!back.has(k)) back.set(k, { order: k, date: done, items: [], sheet: true });
+      back.get(k).items.push({ uid: r.metrc_uid, kind: kindOf(x || {}, r), strain: r.strain || '',
+        result: statusKey(r.status) === 'FAILED TESTING' ? 'Fail' : r.thc != null ? 'Pass' : '' });
+    }
+    const sum = o => Object.assign(o, { failed: o.items.filter(i => i.result === 'Fail').length, passed: o.items.filter(i => i.result === 'Pass').length });
+    return { back: [...back.values()].map(sum).sort((a, b) => b.date.localeCompare(a.date) || b.order.localeCompare(a.order)),
+      out: [...out.values()].sort((a, b) => b.sent.localeCompare(a.sent)) };
+  }
+  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups, turnaround, expectedCoa, isVape, vapes, labNews };
 })();
 /* ===== BATCH MODEL END ===== */
 
@@ -5682,10 +5751,52 @@ function btRowHTML(r, g) {
   const failed = lab && lab.result === 'Fail' && !r.coa_date ? `<span class="bt-pill" style="--fill:${btTone('fail')[0]};--acc:${btTone('fail')[1]}" title="${esc(`The COA (${lab.completed ? md(lab.completed) : ''}) says the batch failed`)}">COA: failed</span>` : '';
   const uid = r.metrc_uid ? `<button type="button" class="bt-uid" data-copy="${esc(r.metrc_uid)}" title="Copy the Metrc UID">${esc(r.metrc_uid.slice(0, -4))}<b>${esc(r.metrc_uid.slice(-4))}</b></button>` : '<span class="bt-d none">No UID</span>';
   const tip = [`Sheet row ${r.sheet_row}`, r.class, r.cross_name, r.notes].filter(Boolean).join(' · ');
-  return `<div class="bt-row"><span class="bt-nm" title="${esc(tip)}"><b>${esc(strain)}</b><span class="bt-sub">${esc(BAT.itemLabel(r.item))}${site}${pill}${failed}</span></span>` +
+  return `<div class="bt-row"${r.metrc_uid ? ` data-uid="${esc(r.metrc_uid)}"` : ''}><span class="bt-nm" title="${esc(tip)}"><b>${esc(strain)}</b><span class="bt-sub">${esc(BAT.itemLabel(r.item))}${site}${pill}${failed}</span></span>` +
     `<span class="bt-code"${codeTip ? ` title="${esc(codeTip)}"` : ''}>${esc(r.batch_code || '–')}</span>` +
     `<span class="bt-dates">${btDate(harvest, 'Harvest')}${trimmed}${btDate(r.package_date, 'Packaged')}${test}${coaOnly}${btDate(r.nabis_date, 'Nabis P/U')}</span>` +
     `${thc}<span class="bt-uidc">${uid}</span></div>`;
+}
+// the top of the Batches view: what came back from the lab in the last two weeks and what is still out. A line jumps to
+// its batches (opening Finished or the older vape orders when they're folded) and flashes them.
+const LAB_KIND = { vape: ['vape', 'vapes'], flower: ['flower batch', 'flower batches'], preroll: ['pre-roll batch', 'pre-roll batches'] };
+function labWhat(items) {
+  const n = {}; items.forEach(i => { n[i.kind] = (n[i.kind] || 0) + 1; });
+  return ['vape', 'flower', 'preroll'].filter(k => n[k]).map(k => `${n[k]} ${LAB_KIND[k][n[k] === 1 ? 0 : 1]}`).join(' + ');
+}
+function labNames(items) {
+  const names = [...new Set(items.map(i => i.strain ? sLabel(PIPE.strainKey(i.strain)) : '').filter(Boolean))];
+  return names.slice(0, 5).join(', ') + (names.length > 5 ? `, +${names.length - 5} more` : '');
+}
+function btLabHTML() {
+  S.labNews = null;
+  if (!S.labs || !S.bat || S.q) return '';
+  const N = S.labNews = BAT.labNews(S.labs.values(), S.bat.rows, todayISO());
+  if (!N.back.length && !N.out.length) return '';
+  const line = (key, when, what, res, names, tip) => `<button type="button" class="bt-labln" data-act="bt-lab" data-lab="${esc(key)}" title="${esc(tip)}">` +
+    `<b>${esc(when)}</b><span class="what">${esc(what)}${res}</span><span class="nm">${esc(names)}</span><span class="go">Show ›</span></button>`;
+  const back = N.back.map(o => {
+    const res = o.failed ? ` <em class="fail">· ${o.failed} failed</em>` : o.passed === o.items.length ? ' <em>· all passed</em>' : '';
+    return line('back:' + o.order, md(o.date), `${labWhat(o.items)} back`, res, labNames(o.items), o.sheet ? `COA date ${md(o.date)} on the Batch Label Sheet; the lab's COA e-mail isn't in yet. Show these batches below.` : `Excelbis order ${o.order}: results ${md(o.date)}. Show these batches below.`);
+  });
+  const out = N.out.map(g => {
+    const e = BAT.expectedCoa({ sent_date: g.sent }, null, S.labTurn, todayISO());
+    const res = e ? (e.late ? ` <em class="fail">· ${e.late} day${e.late === 1 ? '' : 's'} past the usual results day</em>` : ` <em>· results about ${esc(md(e.date))}</em>`) : '';
+    return line('out:' + g.sent, 'At the lab', `${labWhat(g.items)} sent ${md(g.sent)}`, res, labNames(g.items), `Samples went to Excelbis ${md(g.sent)} (their Metrc lab manifest). Show these batches below.`);
+  });
+  return `<div class="bt-lab"><div class="bt-lab-h">Lab results · last 2 weeks</div>${back.join('')}${out.join('')}</div>`;
+}
+// Show narrows the list to that line's batches (in their own bands, Finished and older vape orders included) until
+// "Show all batches"; a search, or leaving the view, also ends it
+function btLabJump(key) {
+  const N = S.labNews; if (!N || !key) return;
+  const [kind, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+  const g = kind === 'back' ? N.back.find(o => o.order === id) : N.out.find(o => o.sent === id);
+  if (!g) return;
+  S.btOnly = { uids: new Set(g.items.map(i => i.uid)), label: kind === 'back' ? `${labWhat(g.items)} back ${md(g.date)}` : `${labWhat(g.items)} sent to the lab ${md(g.sent)}` };
+  render();
+  const els = [...document.querySelectorAll('#bt-list .bt-row[data-uid]')];
+  const top = $('bt-only'); if (top) top.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  els.forEach(el => { el.classList.remove('bt-flash'); void el.offsetWidth; el.classList.add('bt-flash'); });
 }
 // a vape result inside the Vapes band (BAT.vapes): one row per batch, under a line for its lab order
 const VP_KEEP = 3;   // lab orders shown before "Show all"
@@ -5711,7 +5822,7 @@ function btVpRowHTML(x) {
     x.total_canna != null ? `total cannabinoids ${Number(x.total_canna)}%` : ''].filter(Boolean).join(' · ') + ', from the COA';
   const thc = x.total_thc != null ? `<span class="bt-thc" title="${esc(thcTip)}"><i>THC</i>${pctTxt(x.total_thc)}</span>` : '<span class="bt-thc none">–</span>';
   const uid = `<button type="button" class="bt-uid" data-copy="${esc(x.metrc_uid)}" title="Copy the Metrc UID">${esc(x.metrc_uid.slice(0, -4))}<b>${esc(x.metrc_uid.slice(-4))}</b></button>`;
-  return `<div class="bt-row bt-vp"><span class="bt-nm"${tip ? ` title="${esc(tip)}"` : ''}><b>${esc(name)}</b><span class="bt-sub">${esc(kind)}${pill}</span></span>` +
+  return `<div class="bt-row bt-vp" data-uid="${esc(x.metrc_uid)}"><span class="bt-nm"${tip ? ` title="${esc(tip)}"` : ''}><b>${esc(name)}</b><span class="bt-sub">${esc(kind)}${pill}</span></span>` +
     `<span class="bt-code" title="The maker's batch number on the COA">${esc(x.prod_batch || '–')}</span>` +
     `<span class="bt-dates">${btDate(null, 'Harvest')}${btDate(null, 'Trimmed')}${btDate(null, 'Packaged')}${btDate(x.collected, 'Test')}` +
     `${btDate(x.completed, 'COA', link)}${btDate(null, 'Nabis P/U')}</span>${thc}<span class="bt-uidc">${uid}</span></div>`;
@@ -5798,20 +5909,26 @@ function renderBatches() {
   if (age != null && age > 3) al.push(`<div class="alert info">The batch list last synced ${Math.round(age)} hours ago. The hourly sync on Gianni's Mac may be off.</div>`);
   $('bt-alerts').innerHTML = al.join('');
 
-  const shown = all.map(g => Object.assign({}, g, { hits: g.rows.filter(g.upcoming ? upMatch : g.vape ? vpMatch : btMatch) })).filter(g => g.hits.length);
+  $('bt-lab').innerHTML = btLabHTML();
+  if (S.q) S.btOnly = null;
+  const only = S.btOnly ? r => S.btOnly.uids.has(r.x ? r.x.metrc_uid : r.metrc_uid) : null;
+  const shown = all.filter(g => !(only && g.upcoming)).map(g => Object.assign({}, g, { hits: g.rows.filter(g.upcoming ? upMatch : g.vape ? vpMatch : btMatch).filter(r => !only || only(r)) })).filter(g => g.hits.length);
   $('bt-chips').innerHTML = shown.map(g => `<button type="button" class="bt-chip" data-jump="${esc(g.key)}"><span class="bt-sw" style="--fill:${btTone(g.tone)[0]}"></span>${esc(g.label)} <b>${g.hits.length}</b></button>`).join('');
   if (!shown.length) {
+    if (S.btOnly) { S.btOnly = null; return renderBatches(); }   // none of them on the page any more
     list.innerHTML = `<div class="bt-grid"><div class="bt-none">No batches match "${esc(S.q)}".</div></div>`;
   } else {
     const head = '<div class="bt-row hd"><span>Strain</span><span>Batch code</span><span>Harvest</span><span>Trimmed</span><span>Packaged</span><span>Test</span><span>COA</span><span>Nabis P/U</span><span style="text-align:right">THC</span><span>Metrc UID</span></div>';
-    list.innerHTML = '<div class="bt-grid">' + head + shown.map(g => {
-      const open = !g.finished || S.batFin || !!S.q;   // Finished folds away unless asked for or searched
+    const onlyBar = S.btOnly ? `<div class="bt-only" id="bt-only"><span>Showing the ${S.btOnly.uids.size === 1 ? 'batch' : `${S.btOnly.uids.size} batches`}: <b>${esc(S.btOnly.label)}</b></span>` +
+      `<button type="button" class="btn" data-act="bt-only-clear">Show all batches</button></div>` : '';
+    list.innerHTML = onlyBar + '<div class="bt-grid">' + head + shown.map(g => {
+      const open = !g.finished || S.batFin || !!S.q || !!only;   // Finished folds away unless asked for, searched or shown from the lab box
       // Vapes show the newest few lab orders unless asked for all of them or searched
-      const more = g.vape && !S.q && g.orders.length > VP_KEEP;
+      const more = g.vape && !S.q && !only && g.orders.length > VP_KEEP;
       const keep = more && !S.vpAll ? new Set(g.orders.slice(0, VP_KEEP).map(o => o.order)) : null;
       const rows = keep ? g.hits.filter(v => keep.has(v.o.order)) : g.hits;
       const count = rows.length < g.hits.length ? `${rows.length} of ${g.hits.length}` : g.hits.length < g.rows.length ? `${g.hits.length} of ${g.rows.length}` : g.rows.length;
-      const toggle = g.finished && !S.q ? `<button type="button" class="btn" data-act="bt-fin">${S.batFin ? 'Hide' : 'Show'}</button>`
+      const toggle = g.finished && !S.q && !only ? `<button type="button" class="btn" data-act="bt-fin">${S.batFin ? 'Hide' : 'Show'}</button>`
         : more ? `<button type="button" class="btn" data-act="bt-vp">${S.vpAll ? `Show the newest ${VP_KEEP}` : `Show all ${g.orders.length} lab orders`}</button>` : '';
       return `<div class="bt-band" id="${btSlug(g.key)}"><b><span class="bt-sw" style="--fill:${btTone(g.tone)[0]}"></span>${esc(g.label)}</b>` +
         `<em>${count}${g.finished && since ? ` · since ${since}` : ''}${g.upcoming ? ' · trims planned on the pipeline sheet' : ''}` +
@@ -8195,6 +8312,7 @@ function render() {
   if (S.view !== 'week') closePanelEl();
   if (S.view !== 'visits') hideVisits();
   if (S.view === 'week') S.q = '';
+  if (S.view !== 'batches') S.btOnly = null;
   if ($('q2').value !== S.q) $('q2').value = S.q;
   if ($('q3').value !== S.q) $('q3').value = S.q;
   if ($('q4').value !== S.q) $('q4').value = S.q;
@@ -8244,9 +8362,9 @@ function renderGoHome() {
 }
 function renderStatus() {
   const dot = $('st-dot'), t = $('st-text'), sup = S.view === 'supplies';
-  if (S.wb) $('sheet-link').href = `https://docs.google.com/spreadsheets/d/${S.wb}/edit#gid=${sup ? SUP_TABS[0].gid : GID}`;
-  // the batch sheet is an .xlsx in Drive, not this workbook; the Delivery/Visit schedule is the BA app's, not this workbook
-  $('sheet-link').hidden = !S.wb || S.view === 'batches' || S.view === 'visits';
+  if (S.wb) $('sheet-link').href = `https://docs.google.com/spreadsheets/d/${S.wb}/edit#gid=${sup ? SUP_TABS[0].gid : S.view === 'batches' ? BAT_GID : GID}`;
+  // the Batch Label Sheet is a tab of this workbook (since Nov 11); the Delivery/Visit schedule is the BA app's, not this workbook
+  $('sheet-link').hidden = !S.wb || S.view === 'visits';
   if (S.view === 'batches') { renderBatchStatus(dot, t); return; }
   if (S.view === 'visits') { visitsStatus(dot, t); return; }
   if (S.view === 'admin') { $('alerts').innerHTML = ''; dot.className = 'dot' + (AD.err ? ' bad' : ''); t.textContent = AD.err ? 'Admin settings not read' : 'Admin settings'; return; }
@@ -8277,6 +8395,7 @@ function renderBatchStatus(dot, t) {
 
 /* ---- data ---- */
 const GID = '442501874', TAB = 'DISTRO PIPELINE', CACHE = 'pipeline.v1';
+const BAT_GID = '3435253';   // the BATCH LABEL SHEET tab, which the hourly job copies into pipeline_batches
 function ingest(text, at, partial) {
   const weeks = PIPE.parse(text).sort((a, b) => a.start.localeCompare(b.start));
   if (!weeks.length) throw new Error('The sheet has no week headers.');
@@ -8688,6 +8807,8 @@ document.addEventListener('click', e => {
       break;
     case 'bt-fin': S.batFin = !S.batFin; savePref('pipeline.batches.fin', S.batFin ? '1' : ''); render(); break;
     case 'bt-vp': S.vpAll = !S.vpAll; savePref('pipeline.batches.vapes', S.vpAll ? '1' : ''); render(); break;
+    case 'bt-lab': btLabJump(b.dataset.lab); break;
+    case 'bt-only-clear': S.btOnly = null; render(); break;
     case 'signout': signOut(); break;
     case 'vs-retry': refreshVisits(); break;
     case 'vs-reload': location.reload(); break;
