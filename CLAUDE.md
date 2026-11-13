@@ -149,9 +149,13 @@ launch. The check fails if one of the three pieces is missing.
   the Admin page. The save program reaches the real workbook only through its "anyone with the
   link: editor" sharing; if that sharing is ever tightened, share the workbook with the program's
   Google account (pipeline-writer) by name as an Editor first, or every save is refused.
+- **The Batch Label Sheet** (the BATCH LABEL SHEET tab of the same workbook as DISTRO PIPELINE since
+  2026-11-11) is read live by the browser every few minutes since 2026-11-13, through `BATR`, a word-for-word
+  copy of the parser in `supabase/functions/pipeline-batches-sync/job.js` (the check fails if they
+  differ: change job.js, then copy it again). Its hourly copy (`pipeline_batches`) still runs: COA links
+  come from it by Metrc UID (a CSV has no links), and it is the fallback when the tab can't be read.
 - **Everything else is copied into the database by jobs**, and the page reads the copies: the
-  sheet's red cells every 5 minutes, the Batch Label Sheet hourly (since 2026-11-11 the BATCH LABEL
-  SHEET tab of the same workbook as DISTRO PIPELINE), the 2026 TRIM SHEETS hourly
+  sheet's red cells every 5 minutes, the 2026 TRIM SHEETS hourly
   (pounds trimmed, and the estimates for trims to come), and Distru and Nabis stock every 30
   minutes. Plan vs actual also reads the CA task tracker (labor-calculator.html) directly.
 - **Red cells, trim sheets and the batch sheet have cloud versions in this repo**
@@ -240,6 +244,18 @@ launch. The check fails if one of the three pieces is missing.
   are copied hourly into `pipeline_lab_orders` by the lab job (cleaned of scripts, images and links) and
   shown in a sandboxed frame that runs and loads nothing. Matched by the COA's sample id, else by strain
   and the day the sample went out, within 3 days (`BAT.orderFor()`).
+- **Batches read as a timeline** (Gianni, 2026-11-13): each batch is one step track (`btTrackHTML`), in
+  its product's real order: flower Harvest, Trim, Test, COA, Pack, Pickup (packed after its COA); pre-rolls
+  Harvest, Trim, Roll, Test, COA, Pickup (rolled before testing); vapes Test, COA. Done steps are filled,
+  a blank step before a done one (or a blank Trim before any known later step) is passed, the next step
+  is orange, planned or expected dates are dashed, a failed COA ends the track, finished batches have no
+  next step. Rows with no UID, code, dates or THC are listed by name under their group.
+- **Editing batches from the app** (Gianni's decisions, 2026-11-13, being built): through the save
+  program only; Status, PCKG DATE, NABIS P/U DATE, TOTAL UNITS and BUDTENDER UNITS only; a save finds its
+  batch by Metrc UID and column header, never a row number; never the COA watcher's columns or formula
+  cells; rows without a Metrc UID are not editable at first; ships switched off; the first real save is
+  one value Victoria actually wants, after dry runs, with Undo. Later, Add a batch inserts a row under
+  the drop's last batch (the no-insert rule is lifted for this tab only).
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them
