@@ -2470,6 +2470,132 @@ const EDIT = ((PIPE, SUP) => {
 })(PIPE, SUP);
 /* ===== EDIT MODEL END ===== */
 
+/* ===== BATCH READER START =====
+   The Batches view reads the BATCH LABEL SHEET tab straight from the sheet (its CSV export) every few minutes, so what
+   Victoria types there shows within minutes. The hourly copy (pipeline_batches) stays: COA links come from it (a CSV has
+   no links) and it is the fallback when the tab can't be read. The parsing below is copied verbatim from
+   supabase/functions/pipeline-batches-sync/job.js, between the COPY markers (tests/pipeline-check.mjs compares them),
+   so the live read and the copy can never disagree on how a row reads. */
+const BATR = (() => {
+  const FINISHED_DAYS = 120;
+  const TABS = ['BATCH LABEL SHEET', 'WIZARD'];
+  /* ---- COPY START (job.js) ---- */
+const norm = s => String(s ?? '').toUpperCase().replace(/[^A-Z0-9/]+/g, ' ').trim();
+// column -> header words (the first row); the finished block repeats an older header, so positions come from row 1
+const COLS = {
+  status: ['STATUS'], strain: ['STRAIN', 'STRAIN NAME'], item: ['ITEM', 'PRODUCT'], class: ['CLASS'], cross_name: ['CROSS'],
+  harvest_date: ['HRVST DATE', 'HARVEST DATE'], package_date: ['PCKG DATE', 'PACKAGE DATE'], batch_code: ['PRODUCTION BATCH', 'BATCH'],
+  cult_lic: ['CULT LIC'], distro_lic: ['DISTRO LIC'], tested_by: ['TESTED BY'], thc: ['THC'], cbd: ['CBD'], total_canna: ['TOTAL CANNA'],
+  metrc_uid: ['METRC UID'], coa: ['COA LINK', 'COA'], total_units: ['TOTAL UNITS'], budtender_units: ['BUDTENDER UNITS'], cases: ['CASES'],
+  distru_qty: ['QTY MADE IN DISTRU'], received_date: ['RECIEVE DATE', 'RECEIVE DATE', 'RECEIVED DATE'], test_date: ['TEST DATE'],
+  coa_date: ['COA RETURN DATE'], nabis_date: ['NABIS P/U DATE', 'NABIS PU DATE', 'NABIS PICKUP DATE'],
+};
+const REQUIRED = ['status', 'strain', 'item', 'batch_code', 'metrc_uid', 'harvest_date', 'package_date'];
+const DATES = ['harvest_date', 'package_date', 'received_date', 'test_date', 'coa_date', 'nabis_date'];
+const NUMS = ['thc', 'cbd', 'total_canna', 'total_units', 'budtender_units', 'cases', 'distru_qty'];
+const TEXTS = ['status', 'strain', 'item', 'class', 'cross_name', 'batch_code', 'cult_lic', 'distro_lic', 'tested_by', 'metrc_uid'];
+const NOTE_LABEL = { harvest_date: 'Harvest', package_date: 'Package', received_date: 'Received', test_date: 'Test',
+  coa_date: 'COA return', nabis_date: 'Nabis P/U', total_units: 'Units', budtender_units: 'Budtender units', cases: 'Cases', distru_qty: 'Distru qty' };
+
+const iso = d => d.toISOString().slice(0, 10);
+const okYear = y => y >= 2018 && y <= 2040;
+// Excel serials 43101..51501 are 2018..2040; small numbers in a date column (box counts typed into the old
+// layout's columns) are not dates
+function toDate(v) {
+  if (typeof v === 'number') { if (v < 43101 || v > 51501) return null; return iso(new Date(Math.round((v - 25569) * 864e5))); }
+  const s = String(v ?? '').trim();
+  let m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/);
+  if (m) {
+    const y = m[3].length === 2 ? 2000 + +m[3] : +m[3];
+    if (!okYear(y) || +m[1] < 1 || +m[1] > 12 || +m[2] < 1 || +m[2] > 31) return null;
+    return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  }
+  m = s.match(/^(\d{4})-(\d\d)-(\d\d)/);
+  return m && okYear(+m[1]) ? m[0] : null;
+}
+function toNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const s = String(v ?? '').trim();
+  if (!/^-?[\d,]*\.?\d+\s*%?$/.test(s)) return null;
+  return parseFloat(s.replace(/[,%\s]/g, ''));
+}
+// potency: the sheet keeps fractions (0.3057); someone typing 30.57 means the same
+const pct = n => n == null ? null : Math.round((n <= 1 ? n * 100 : n) * 100) / 100;
+const isErr = v => typeof v === 'string' && /^#(REF|N\/A|VALUE|DIV\/0|NAME|NUM|NULL)!?/i.test(v.trim());
+const clean = v => String(v ?? '').replace(/\s+/g, ' ').trim();
+
+// the batch tab as rows (the Mac job's sheet_to_json(header: 1, raw: true, defval: '', blankrows: true)) plus each
+// cell's hyperlink
+function parseBatches(XLSX, bytes, today = iso(new Date())) {
+  const wb = XLSX.read(bytes, { type: 'array', cellDates: false });
+  const tab = TABS.find((t) => wb.Sheets[t]);
+  const ws = tab && wb.Sheets[tab];
+  if (!ws) throw new Error(`no ${TABS.join(' or ')} tab (tabs: ${wb.SheetNames.join(', ')})`);
+  const grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: true });
+  const linkAt = (r, c) => { const x = ws[XLSX.utils.encode_cell({ r, c })]; return x && x.l && x.l.Target; };
+  return parseGrid(grid, linkAt, today);
+}
+function parseGrid(grid, linkAt, today = iso(new Date())) {
+  const head = (grid[0] || []).map(norm);
+  const col = {};
+  for (const [k, names] of Object.entries(COLS)) {
+    const i = head.findIndex(h => names.includes(h));
+    if (i >= 0) col[k] = i;
+  }
+  const missing = REQUIRED.filter(k => col[k] == null);
+  if (missing.length) throw new Error(`header changed: can't find ${missing.join(', ')} in row 1`);
+
+  let divider = -1;
+  grid.forEach((r, i) => {
+    if (divider < 0 && i > 0 && !clean(r[col.status]) && r.some(c => /FINISHED|COMPLETE(D)?\s+ITEMS/i.test(String(c)))) divider = i;
+  });
+  const since = iso(new Date(Date.parse(today + 'T12:00:00Z') - FINISHED_DAYS * 864e5));
+  const rows = [];
+  let activeCount = 0, finishedAll = 0;
+  grid.forEach((r, i) => {
+    if (i === 0 || i === divider) return;
+    if (norm(r[col.status]) === 'STATUS') return;                       // the finished block's own header
+    const get = k => col[k] == null ? '' : r[col[k]];
+    if (!clean(get('strain')) && !clean(get('batch_code')) && !clean(get('metrc_uid'))) return;
+    const o = { sheet_row: i + 1, finished: divider >= 0 && i > divider };
+    const notes = [];
+    for (const k of TEXTS) { const v = get(k); o[k] = isErr(v) ? null : clean(v) || null; }
+    for (const k of DATES) {
+      const v = get(k); o[k] = toDate(v);
+      if (!o[k] && typeof v === 'string' && clean(v) && !isErr(v)) notes.push(`${NOTE_LABEL[k]}: ${clean(v)}`);
+    }
+    for (const k of NUMS) {
+      const v = get(k); o[k] = isErr(v) ? null : toNum(v);
+      if (o[k] == null && typeof v === 'string' && clean(v) && !isErr(v)) notes.push(NOTE_LABEL[k] ? `${NOTE_LABEL[k]}: ${clean(v)}` : clean(v));
+    }
+    o.thc = pct(o.thc); o.cbd = pct(o.cbd); o.total_canna = pct(o.total_canna);
+    // COA: the cell's hyperlink when it has one, else its text when that is a URL
+    const coaText = clean(get('coa')), link = col.coa == null ? null : linkAt(i, col.coa);
+    o.coa_url = link && /^https?:\/\//i.test(link) ? link : /^https?:\/\//i.test(coaText) ? coaText : null;
+    o.coa_text = coaText && !/^https?:\/\//i.test(coaText) && !isErr(coaText) ? coaText : null;
+    o.notes = notes.length ? notes.join(' · ') : null;
+    if (o.finished) {
+      finishedAll++;
+      const last = [o.package_date, o.coa_date, o.nabis_date, o.test_date, o.received_date, o.harvest_date].filter(Boolean).sort().pop();
+      if (!last || last < since) return;
+    } else activeCount++;
+    rows.push(o);
+  });
+  return { rows, divider: divider >= 0 ? divider + 1 : null, activeCount, finishedAll, since };
+}
+  /* ---- COPY END ---- */
+  // a CSV cell as the .xlsx copy sees it: "25.21%" is the fraction 0.2521, "1,200" is 1200; dates stay text (toDate reads them)
+  const cellOf = v => {
+    const t = String(v == null ? '' : v).trim();
+    if (/^-?[\d,]*\.?\d+\s*%$/.test(t)) return parseFloat(t.replace(/[,%\s]/g, '')) / 100;
+    if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$|^-?\d+(\.\d+)?$/.test(t)) return parseFloat(t.replace(/,/g, ''));
+    return v;
+  };
+  const fromCSV = (text, today) => parseGrid(PIPE.parseCSV(text).map(r => r.map(cellOf)), () => null, today);
+  return { parseGrid, fromCSV, cellOf };
+})();
+/* ===== BATCH READER END ===== */
+
 /* ===== BATCH MODEL START =====
    The Batches view reads pipeline_batches: one row per Metrc package in Victoria's Batch Label Sheet
    (tab WIZARD), copied hourly from the .xlsx by ~/ar-automation/pipeline-batches-sync.mjs. This block sorts
@@ -6059,9 +6185,11 @@ function renderBatches() {
     (upStrains ? ` · ${upStrains} strain${upStrains === 1 ? '' : 's'} still to trim` : '') +
     (fin ? ` · ${fin.rows.length} finished${since ? ' since ' + since : ''}` : '');
   const al = [];
-  if (S.batErr) al.push(`<div class="alert">${esc(S.batErr)} Showing the last copy loaded.</div>`);
+  if (S.batErr) al.push(`<div class="alert">${esc(S.batErr)} Showing the last batches loaded.</div>`);
+  (S.batNotes || []).forEach(n => al.push(`<div class="alert info">${esc(n)}</div>`));
   const age = meta.synced_at ? (Date.now() - Date.parse(meta.synced_at)) / 3600000 : null;
-  if (age != null && age > 3) al.push(`<div class="alert info">The batch list last synced ${Math.round(age)} hours ago. The hourly sync on Gianni's Mac may be off.</div>`);
+  if (!S.bat.live && age != null && age > 3) al.push(`<div class="alert info">The batch list last synced ${Math.round(age)} hours ago. The hourly sync on Gianni's Mac may be off.</div>`);
+  else if (S.bat.live && age != null && age > 6) al.push(`<div class="alert info">COA links come from the hourly copy, last made ${Math.round(age)} hours ago. The sync on Gianni's Mac may be off; everything else is read from the sheet.</div>`);
   $('bt-alerts').innerHTML = al.join('');
 
   $('bt-lab').innerHTML = btLabHTML();
@@ -6093,8 +6221,8 @@ function renderBatches() {
     }).join('') + '</div>';
   }
   const edited = meta.file_modified ? new Date(meta.file_modified) : null;
-  $('bt-foot').textContent = "From Victoria's Batch Label Sheet, copied every hour." +
-    (edited ? ` The sheet was last edited ${md(todayISOOf(edited))} at ${edited.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.` : '') +
+  $('bt-foot').textContent = (S.bat.live ? "Read from Victoria's Batch Label Sheet every few minutes (COA links from the hourly copy)." : "From Victoria's Batch Label Sheet, copied every hour.") +
+    (edited && !S.bat.live ? ` The sheet was last edited ${md(todayISOOf(edited))} at ${edited.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.` : '') +
     ' Click a Metrc UID to copy it.' +
     (S.labs && S.labs.size ? ' Blue dotted dates and THC are filled in from Metrc and the Excelbis COA e-mails until the sheet has them (hover for where each came from).' : '') +
     (S.trimEv ? ' Trimmed comes from the site trim sheets.' : '') +
@@ -6631,9 +6759,9 @@ function renderActuals() {
     (done.length ? `<h3 class="pv-sec">FINISHED</h3>${done.map(card).join('')}` : '') +
     `<div class="pv-legend"><span><i class="c"></i>Counted on the batch sheet</span><span><i class="m"></i>Made, from the task tracker</span><span><i class="p"></i>Plan</span></div>`;
   const ago = at => { if (!at) return ''; const m = Math.round((Date.now() - at) / 60000); return m < 1 ? 'just now' : m < 120 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
-  const synced = S.bat && S.bat.meta && S.bat.meta.synced_at ? Date.parse(S.bat.meta.synced_at) : 0;
+  const synced = S.bat && S.bat.live ? S.bat.live.at : S.bat && S.bat.meta && S.bat.meta.synced_at ? Date.parse(S.bat.meta.synced_at) : 0;
   $('pv-foot').innerHTML = `Plan: the DISTRO PIPELINE sheet. Made: the task tracker${S.trkAt ? ', read ' + ago(S.trkAt) : ''} (5-packs made = sticks ÷ 5). ` +
-    `Counted: the Batch Label Sheet${synced ? ', synced ' + ago(synced) : ''}; a strain counts once it is past packaging. Jar plans are in pounds on the sheet, shown here as jars (3.5 g each).`;
+    `Counted: the Batch Label Sheet${synced ? (S.bat && S.bat.live ? ', read ' : ', synced ') + ago(synced) : ''}; a strain counts once it is past packaging. Jar plans are in pounds on the sheet, shown here as jars (3.5 g each).`;
 }
 function pvDetailHTML(r) {
   const A = S.act, a = r.act, jars = r.lane === 'jars', useT = A.hasTracker && !a.noTracker;
@@ -8540,12 +8668,13 @@ function renderStatus() {
 // Batches: the time that counts is when the hourly job last copied the sheet, not when the page asked
 function renderBatchStatus(dot, t) {
   $('alerts').innerHTML = '';
-  const at = S.bat && S.bat.meta && S.bat.meta.synced_at ? Date.parse(S.bat.meta.synced_at) : 0;
+  const live = S.bat && S.bat.live;
+  const at = live ? live.at : S.bat && S.bat.meta && S.bat.meta.synced_at ? Date.parse(S.bat.meta.synced_at) : 0;
   if (S.batErr && !S.bat) { dot.className = 'dot bad'; t.textContent = S.batErr; return; }
   if (!at) { dot.className = 'dot stale'; t.textContent = 'Loading...'; return; }
-  const mins = Math.round((Date.now() - at) / 60000);
-  dot.className = 'dot' + (S.batErr ? ' bad' : mins > 90 ? ' stale' : '');
-  t.innerHTML = `From the batch label sheet <span class="when">· synced ${mins < 1 ? 'just now' : mins < 120 ? mins + ' min ago' : Math.round(mins / 60) + ' h ago'}</span>`;
+  const mins = Math.round((Date.now() - at) / 60000), ago = mins < 1 ? 'just now' : mins < 120 ? mins + ' min ago' : Math.round(mins / 60) + ' h ago';
+  dot.className = 'dot' + (S.batErr ? ' bad' : mins > (live ? 15 : 90) ? ' stale' : '');
+  t.innerHTML = live ? `From the batch label sheet <span class="when">· read ${ago}</span>` : `From the batch label sheet <span class="when">· hourly copy, synced ${ago}</span>`;
 }
 
 /* ---- data ---- */
@@ -8638,26 +8767,61 @@ const BAT_CACHE = 'pipeline.batches.v1';
 let batLoading = false;
 async function loadBatches(quiet) {
   if (batLoading) return;
-  if (!sb) { S.batErr = 'Batches come from the database: sign in on the live page to see them.'; if (S.view === 'batches') render(); return; }
+  if (!sb && !S.wb) { S.batErr = 'Batches come from the database: sign in on the live page to see them.'; if (S.view === 'batches') render(); return; }
   batLoading = true;
   if (!quiet) { S.batErr = ''; renderStatus(); }
-  let fresh = false;
-  try {
+  let fresh = false, copyErr = '', liveErr = '', copyOk = false, liveOk = false;
+  // 1. the hourly copy (signed in only): COA links, the fallback, and the copy's sync time
+  if (sb) try {
     const m = await sb.from('pipeline_batches_meta').select('*').maybeSingle();
     if (m.error) throw m.error;
     if (!m.data) throw new Error("The batch list hasn't been copied from the sheet yet. Ask Gianni.");
-    if (!quiet || !S.bat || S.bat.meta.changed_at !== m.data.changed_at) {
+    if (!quiet || !S.batCopy || S.batCopy.meta.changed_at !== m.data.changed_at) {
       const b = await sb.from('pipeline_batches').select('*').order('sheet_row');
       if (b.error) throw b.error;
-      S.bat = { rows: b.data || [], meta: m.data };
+      S.batCopy = { rows: b.data || [], meta: m.data };
       fresh = true;
-    } else S.bat.meta = m.data;
-    S.batAt = Date.now(); S.batErr = '';
-    try { localStorage.setItem(BAT_CACHE, JSON.stringify({ wb: S.wb, bat: S.bat })); } catch (_) {}
+    } else S.batCopy.meta = m.data;
+    copyOk = true;
+    try { localStorage.setItem(BAT_CACHE, JSON.stringify({ wb: S.wb, bat: S.batCopy })); } catch (_) {}
   } catch (e) {
     const msg = e.message || String(e);
-    S.batErr = /does not exist|schema cache|relation/i.test(msg) ? "The batch list isn't set up on the server yet. Ask Gianni." : "Couldn't load batches: " + msg;
-  } finally { batLoading = false; }
+    copyErr = /does not exist|schema cache|relation/i.test(msg) ? "The batch list isn't set up on the server yet. Ask Gianni." : "Couldn't load batches: " + msg;
+  }
+  // 2. the tab itself: the full export only (the gviz feed skips hidden rows, and the finished block is hidden).
+  // A failed read keeps the last good one.
+  if (S.wb) try {
+    const got = await fetchCSV(BAT_GID, 'BATCH LABEL SHEET', t => /METRC UID/i.test(t));
+    if (!got || got.partial) throw new Error("couldn't open the tab (check that the workbook is still shared by link)");
+    if (got.text !== S.batLiveText || !S.batLive) {
+      S.batLive = { rows: BATR.fromCSV(got.text).rows, at: Date.now() };
+      S.batLiveText = got.text; fresh = true;
+    } else S.batLive.at = Date.now();
+    liveOk = true;
+  } catch (e) { liveErr = e.message || String(e); console.warn('batch tab not read', e); }
+  batLoading = false;
+  // the live rows unless the copy is newer; COA links from the copy by Metrc UID (a row with no UID never had a link
+  // in the copy, and matching by row number would hand a new row the link of whichever batch sat there an hour ago)
+  const copy = S.batCopy, live = S.batLive;
+  const copyAt = copy && copy.meta && copy.meta.synced_at ? Date.parse(copy.meta.synced_at) : 0;
+  if (live && (!copyAt || live.at >= copyAt)) {
+    const byUid = new Map();
+    (copy ? copy.rows : []).forEach(r => { if (r.metrc_uid && !byUid.has(r.metrc_uid)) byUid.set(r.metrc_uid, r); });
+    const rows = live.rows.map(r => {
+      const c = !r.coa_url && r.metrc_uid ? byUid.get(r.metrc_uid) : null;
+      return c && c.coa_url ? Object.assign({}, r, { coa_url: c.coa_url, coa_text: r.coa_text || c.coa_text }) : r;
+    });
+    S.bat = { rows, meta: copy ? copy.meta : {}, live: { at: live.at } };
+  } else if (copy) S.bat = Object.assign({}, copy, { live: null });
+  // what went wrong, said about what is on screen: a red error only when the rows shown didn't come from this load
+  const shownLive = !!(S.bat && S.bat.live);
+  S.batNotes = [];
+  if (shownLive && !liveOk) S.batNotes.push(`Couldn't read the Batch Label Sheet just now (${liveErr}). Showing the read from ${md(todayISOOf(new Date(S.bat.live.at)))} at ${new Date(S.bat.live.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}.`);
+  if (!shownLive && S.bat && liveErr && S.wb) S.batNotes.push(`Couldn't read the Batch Label Sheet itself (${liveErr}), so this is the hourly copy.`);
+  if (shownLive && copyErr) S.batNotes.push(`COA links may be out of date: ${copyErr}`);
+  if (copyOk || liveOk) S.batAt = Date.now();
+  S.batErr = !S.bat ? (copyErr || (liveErr ? `Couldn't read the Batch Label Sheet: ${liveErr}` : '')) : !copyOk && !liveOk ? (copyErr || `Couldn't read the Batch Label Sheet: ${liveErr}`) : '';
+  if (S.batErr) S.batNotes = [];   // the red error already says it
   if (fresh) ingestActuals();
   if (S.view === 'batches' || (fresh && (S.view === 'week' || S.view === 'actuals' || S.view === 'inventory'))) render(); else renderStatus();
   if (S.view === 'batches') { loadLabs(quiet); if (!S.trimsAt && !S.trimsErr) loadTrims(true); }
@@ -8778,7 +8942,7 @@ function startApp() {
   } catch (_) {}
   try {
     const c = JSON.parse(localStorage.getItem(BAT_CACHE) || 'null');
-    if (c && c.wb === S.wb && c.bat) S.bat = c.bat;
+    if (c && c.wb === S.wb && c.bat) { S.batCopy = c.bat; S.bat = Object.assign({}, c.bat, { live: null }); }
   } catch (_) {}
   try {
     const c = JSON.parse(localStorage.getItem(TRK_CACHE) || 'null');

@@ -76,6 +76,26 @@ const SUP = new Function('PIPE', `/*${supSrc}; return SUP;`)(PIPE);
 const weekSrc = html.split('/* ===== WEEK MODEL START =====')[1].split('/* ===== WEEK MODEL END ===== */')[0];
 const WEEK = new Function('PIPE', `/*${weekSrc}; return WEEK;`)(PIPE);
 const batSrc = html.split('/* ===== BATCH MODEL START =====')[1].split('/* ===== BATCH MODEL END ===== */')[0];
+// the live batch reader: its parsing is job.js's, word for word, so the live read and the hourly copy read rows alike
+{
+  const jobSrc = readFileSync(new URL('../supabase/functions/pipeline-batches-sync/job.js', import.meta.url), 'utf8');
+  const want = jobSrc.slice(jobSrc.indexOf('const norm = s =>'), jobSrc.indexOf('export const SPEC')).trimEnd()
+    .replace('export const iso', 'const iso').replace('export function parseBatches', 'function parseBatches').replace('export function parseGrid', 'function parseGrid');
+  const readerSrc = html.split('/* ===== BATCH READER START =====')[1].split('/* ===== BATCH READER END ===== */')[0];
+  const have = readerSrc.split('/* ---- COPY START (job.js) ---- */\n')[1].split('  /* ---- COPY END ---- */')[0].trimEnd();
+  assert.equal(have, want, 'the page copy of parseGrid must match supabase/functions/pipeline-batches-sync/job.js (copy it again)');
+  const PIPEstub = { parseCSV: text => text.trim().split('\n').map(l => l.split(',')) };
+  const BATR = new Function('PIPE', `${readerSrc.slice(readerSrc.indexOf('const BATR'))}; return BATR;`)(PIPEstub);
+  const csv = ['STATUS,STRAIN,ITEM,HRVST DATE,PCKG DATE,PRODUCTION BATCH,THC,METRC UID,TOTAL UNITS,TEST DATE',
+    'PACKAGING,NEBULA,5PK,9/28/26,11/18/2026,N-92826-5PK,25.21%,1A406030005660A000006510,1200,',
+    ',FINISHED/COMPLETE ITEMS,,,,,,,,',
+    'DONE,TIDE,FLOWER,9/1/26,10/30/26,F1-T-9126-S,30.57%,1A406030005660A000005000,,10/20/26'].join('\n');
+  const rows = BATR.fromCSV(csv, '2026-11-13').rows;
+  assert.deepEqual(rows.map(r => [r.sheet_row, r.finished, r.status, r.harvest_date, r.package_date, r.thc, r.total_units, r.test_date]),
+    [[2, false, 'PACKAGING', '2026-09-28', '2026-11-18', 25.21, 1200, null], [4, true, 'DONE', '2026-09-01', '2026-10-30', 30.57, null, '2026-10-20']],
+    'the CSV reads like the .xlsx copy: percents, counts, both date forms, the finished divider');
+  assert.equal(BATR.cellOf('0.30%'), 0.003, 'a percent is always a fraction first');
+}
 const BAT = new Function(`/*${batSrc}; return BAT;`)();
 const actSrc = html.split('/* ===== ACTUALS MODEL START =====')[1].split('/* ===== ACTUALS MODEL END ===== */')[0];
 const ACT = new Function('PIPE', `/*${actSrc}; return ACT;`)(PIPE);
