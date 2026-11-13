@@ -137,7 +137,8 @@ launch. The check fails if one of the three pieces is missing.
 - **Editing the sheet from the page** (releases 1a and 1b, ON for Victoria's real sheet since
   2026-11-12: Gianni switched on rewrites and adds on all three tabs): an Edit
   button shows only with `?beta`, only for people listed in `pipeline_editors` (admins add them on
-  the Admin page), and only from this week on. Each save can be undone from its Done card. Every write goes through the save program in `supabase/functions/pipeline-sheet-write/`,
+  the Admin page), and only from this week on. Each save can be undone from its Done card. A + on
+  each day's header in the Week and Month views (same rules, from today on) opens Add for that day. Every write goes through the save program in `supabase/functions/pipeline-sheet-write/`,
   which checks each edit against the sheet as it is right now; `CONTRACT.md` there is the agreement
   between the page and the program. The page builds edits in its EDIT MODEL block. Add no other
   way to write to the sheet, and don't loosen what the program refuses from the page side.
