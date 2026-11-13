@@ -134,16 +134,20 @@ launch. The check fails if one of the three pieces is missing.
 - **The plan** (Week board, Strains): the DISTRO PIPELINE tab of Victoria's WIZARD TREES workbook,
   read live by the browser every few minutes. **Supplies:** the DISTRO SUPPLY and ACCESSORY SUPPLY
   tabs, read the same way. The sheet is the source of truth: to change the plan, change the sheet.
-- **Editing the sheet from the page** (release 1a, November 2026, not switched on yet): an Edit
+- **Editing the sheet from the page** (releases 1a and 1b, ON for Victoria's real sheet since
+  2026-11-12: Gianni switched on rewrites and adds on all three tabs): an Edit
   button shows only with `?beta`, only for people listed in `pipeline_editors` (admins add them on
-  the Admin page), and only from this week on. Every write goes through the save program in `supabase/functions/pipeline-sheet-write/`,
+  the Admin page), and only from this week on. Each save can be undone from its Done card. Every write goes through the save program in `supabase/functions/pipeline-sheet-write/`,
   which checks each edit against the sheet as it is right now; `CONTRACT.md` there is the agreement
   between the page and the program. The page builds edits in its EDIT MODEL block. Add no other
   way to write to the sheet, and don't loosen what the program refuses from the page side.
   Release 1b (built November 2026, beta) adds an Add row to a day's view: Copy a line, Jars, or
   Who's on. It writes one merged one-row line in the first empty row under that day's last line,
   styled like a matching line Victoria already has, never inserts rows, and refuses a full day.
-  Each kind is switched on separately (`pipeline_write_settings.kinds_on`: 'rewrite', 'add').
+  Each kind is switched on separately (`pipeline_write_settings.kinds_on`: 'rewrite', 'add'), on
+  the Admin page. The save program reaches the real workbook only through its "anyone with the
+  link: editor" sharing; if that sharing is ever tightened, share the workbook with the program's
+  Google account (pipeline-writer) by name as an Editor first, or every save is refused.
 - **Everything else is copied into the database by jobs**, and the page reads the copies: the
   sheet's red cells every 5 minutes, the Batch Label Sheet hourly (since 2026-11-11 the BATCH LABEL
   SHEET tab of the same workbook as DISTRO PIPELINE), the 2026 TRIM SHEETS hourly
