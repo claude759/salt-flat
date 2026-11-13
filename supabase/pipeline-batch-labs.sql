@@ -117,4 +117,57 @@ end $$;
 revoke all on function public.pipeline_batch_labs_save(text, jsonb) from public;
 grant execute on function public.pipeline_batch_labs_save(text, jsonb) to anon, authenticated;
 
+-- The lab's "placed order" / "edited order" e-mails (Confident LIMS, to gianni@): proof a batch's sample went to the lab.
+-- One row per e-mail. The Batches view opens it from a batch's Test date: by sample id once the COA is in, before
+-- that by strain and the day the sample was sent. html is the e-mail's body with scripts, images and handlers taken
+-- out; the page shows it in a sandboxed frame that runs nothing and loads nothing. Same job, same token as above.
+create table if not exists public.pipeline_lab_orders (
+  msg_id    text primary key,          -- the Gmail message id
+  order_id  text not null,             -- Excelbis order, e.g. 2611EXL9740 (the sample ids start with it)
+  kind      text not null,             -- 'placed' or 'edited'
+  sent_at   timestamptz not null,      -- when the e-mail was sent
+  subject   text,
+  samples   jsonb not null default '[]'::jsonb,   -- [{"id": "2611EXL9740.38868", "name": "TIDEBANGER"}, ...] as the e-mail lists them
+  tests     jsonb not null default '[]'::jsonb,   -- [{"test": "Flower Compliance Testing", "qty": 5}, ...]
+  html      text,                      -- the cleaned e-mail body
+  seen_at   timestamptz not null default now()
+);
+create index if not exists pipeline_lab_orders_order on public.pipeline_lab_orders (order_id);
+comment on table public.pipeline_lab_orders is
+  'The Excelbis order e-mails (placed / edited) for the Production Pipeline Batches view. Written hourly by '
+  '~/ar-automation/pipeline-labs-sync.mjs via pipeline_lab_orders_save().';
+alter table public.pipeline_lab_orders enable row level security;
+drop policy if exists pipeline_lab_orders_select on public.pipeline_lab_orders;
+create policy pipeline_lab_orders_select on public.pipeline_lab_orders
+  for select to authenticated using (public.pipeline_can_view());
+
+-- p_rows: the order e-mails the job read (any number; rows are only added or refreshed, never removed: the mail
+-- search reaches back 150 days and a sample's proof must outlive it).
+create or replace function public.pipeline_lab_orders_save(p_token text, p_rows jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare n int := 0;
+begin
+  if not exists (select 1 from public.pipeline_batch_labs_secret
+                 where token_hash = encode(sha256(convert_to(p_token, 'utf8')), 'hex')) then
+    raise exception 'bad token';
+  end if;
+  if p_rows is null or jsonb_typeof(p_rows) <> 'array' then raise exception 'p_rows must be a list of order e-mails'; end if;
+  if exists (select 1 from jsonb_array_elements(p_rows) x
+             where coalesce(x->>'msg_id', '') !~ '^[0-9a-f]{8,32}$' or coalesce(x->>'order_id', '') !~ '^[0-9]{4}[A-Z]{2,6}[0-9]+$'
+                or coalesce(x->>'kind', '') not in ('placed', 'edited') or x->>'sent_at' is null
+                or jsonb_typeof(coalesce(x->'samples', '[]'::jsonb)) <> 'array' or length(coalesce(x->>'html', '')) > 200000) then
+    raise exception 'every row needs a message id, an order id, placed or edited, a time, a sample list and a body under 200 KB';
+  end if;
+  insert into public.pipeline_lab_orders as o (msg_id, order_id, kind, sent_at, subject, samples, tests, html)
+  select x->>'msg_id', x->>'order_id', x->>'kind', (x->>'sent_at')::timestamptz, x->>'subject',
+         coalesce(x->'samples', '[]'::jsonb), coalesce(x->'tests', '[]'::jsonb), x->>'html'
+    from jsonb_array_elements(p_rows) x
+  on conflict (msg_id) do update set order_id = excluded.order_id, kind = excluded.kind, sent_at = excluded.sent_at,
+    subject = excluded.subject, samples = excluded.samples, tests = excluded.tests, html = excluded.html;
+  get diagnostics n = row_count;
+  return jsonb_build_object('ok', true, 'saved', n, 'v', 1);
+end $$;
+revoke all on function public.pipeline_lab_orders_save(text, jsonb) from public;
+grant execute on function public.pipeline_lab_orders_save(text, jsonb) to anon, authenticated;
+
 reset role;

@@ -704,6 +704,20 @@
   .bt-labln .nm{color:var(--wk-ink2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .bt-labln .go{color:#1F3A93;font-weight:600;white-space:nowrap}
   .bt-row.bt-flash{animation:btFlash 2.6s ease-out}
+  .bt-mailbtn{background:none;border:0;padding:0;font:inherit;color:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+  .bt-mailbtn:hover{color:#1F3A93}
+  .bt-mailback{position:fixed;inset:0;z-index:60;background:rgba(17,17,17,.45);display:flex;align-items:center;justify-content:center;padding:16px}
+  .bt-maildlg{background:#FFFFFF;color:#111;border-radius:10px;width:min(760px,100%);height:min(820px,calc(100vh - 32px));display:flex;flex-direction:column;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+  .bt-mailhd{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-bottom:1px solid var(--wk-line)}
+  .bt-mailhd>div{flex:1;min-width:0}
+  .bt-mailhd b{display:block;font-size:15px;font-weight:700}
+  .bt-mailhd span{display:block;font-size:13px;color:var(--wk-ink2);margin-top:2px}
+  .bt-mailx{background:none;border:0;font-size:18px;line-height:1;padding:4px 6px;cursor:pointer;color:var(--wk-ink2)}
+  .bt-mailnote{margin:0;padding:8px 14px;font-size:13px;background:#F7F8FA;border-bottom:1px solid var(--wk-grid)}
+  .bt-mailbody{flex:1;min-height:0;display:flex}
+  .bt-mailbody iframe{border:0;width:100%;flex:1}
+  .bt-mailft{padding:9px 14px;font-size:13px;border-top:1px solid var(--wk-line);color:var(--wk-ink2)}
+  .bt-mailft a{color:#1F3A93;font-weight:600}
   .bt-only{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin:0 0 10px;padding:8px 12px;background:#FFF8D6;border:1px solid #F0D66E;border-radius:8px;font-size:14px;scroll-margin-top:calc(var(--bt-stick,0px) + 8px)}
   .bt-only span{flex:1;min-width:0}
   .bt-only .btn{height:30px;padding:0 12px;font-size:13px}
@@ -2606,7 +2620,32 @@ const BAT = (() => {
     return { back: [...back.values()].map(sum).sort((a, b) => b.date.localeCompare(a.date) || b.order.localeCompare(a.order)),
       out: [...out.values()].sort((a, b) => b.sent.localeCompare(a.sent)) };
   }
-  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups, turnaround, expectedCoa, isVape, vapes, labNews };
+  // the lab's "placed order" e-mail a batch's sample went out on (pipeline_lab_orders). The e-mails name samples by the
+  // lab's sample id and strain, never by Metrc tag: once the COA is in, its sample id finds the e-mail exactly; before
+  // that, the strain and the day the sample went out (Metrc manifest, else the lab's collection day, else the sheet's
+  // TEST DATE), within 3 days. Returns { mail, ids, exact } or null.
+  const ORDER_ALIAS = { 'JUNGLE JUICE': 'ANTIDOTE', 'W X BM': 'VOODOO' };
+  const sKey = v => { const k = String(v || '').toUpperCase().replace(/[^A-Z0-9#]+/g, ' ').trim(); return ORDER_ALIAS[k] || k; };
+  const ptDate = t => { const d = new Date(t); return isNaN(d) ? '' : d.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }); };
+  function orderFor(lab, row, orders) {
+    const placed = (orders || []).filter(o => o && o.kind === 'placed' && Array.isArray(o.samples) && o.samples.length);
+    if (lab && lab.sample_id) {
+      const id = String(lab.sample_id), m = placed.find(o => o.samples.some(x => x && x.id === id));
+      if (m) return { mail: m, ids: [id], exact: true };
+    }
+    const day = String((lab && (lab.sent_date || lab.collected)) || (row && row.test_date) || '').slice(0, 10);
+    const strain = sKey((row && row.strain) || (lab && lab.strain));
+    if (!day || dayMs(day) == null || !strain) return null;
+    let best = null;
+    for (const o of placed) {
+      const d = daysFrom(ptDate(o.sent_at), day);
+      if (d == null || Math.abs(d) > 3) continue;
+      const ids = o.samples.filter(x => x && sKey(x.name) === strain).map(x => x.id);
+      if (ids.length && (!best || Math.abs(d) < best.d)) best = { mail: o, ids, exact: false, d: Math.abs(d) };
+    }
+    return best && { mail: best.mail, ids: best.ids, exact: false };
+  }
+  return { SITE, STATUS, statusKey, info, codeDate, decode, itemLabel, lastDate, groups, turnaround, expectedCoa, isVape, vapes, labNews, orderFor };
 })();
 /* ===== BATCH MODEL END ===== */
 
@@ -5734,11 +5773,12 @@ function btRowHTML(r, g) {
     coa = `<span class="bt-d exp" title="${esc(tip)}"><i>COA</i>≈ ${esc(md(back))}<small>if tested ${esc(md(pt.date))}</small></span>`;
   }
   const coaOnly = !r.coa_date && r.coa_url ? `<span class="bt-d"><i>COA</i><a href="${esc(r.coa_url)}" target="_blank" rel="noopener" title="${esc(r.coa_text || 'Open the COA')}">COA</a></span>` : coa;
-  let test = btDate(r.test_date, 'Test');
+  const mail = mailFor(lab, r);
+  let test = btDate(r.test_date, 'Test', t => mailBtn(mail, esc(t)));
   const hasRes = !!(lab && (lab.completed || lab.thc_label != null)) || !!r.coa_date || !!r.coa_url || r.thc != null;
-  if (!r.test_date && lab && (lab.collected || lab.sent_date)) test = btDate(lab.collected || lab.sent_date, 'Test', t => autoTag(esc(t), lab.collected
+  if (!r.test_date && lab && (lab.collected || lab.sent_date)) test = btDate(lab.collected || lab.sent_date, 'Test', t => mailBtn(mail, autoTag(esc(t), lab.collected
     ? `Not on the sheet yet. The lab collected the sample ${md(lab.collected)} (from ${fromCoa}).`
-    : `Not on the sheet yet. A sample (Metrc ${lab.sample_uid || 'tag'}) went to Excelbis on ${md(lab.sent_date)}, the day its Metrc lab manifest was made${hasRes ? '.' : '; no results yet.'}`));
+    : `Not on the sheet yet. A sample (Metrc ${lab.sample_uid || 'tag'}) went to Excelbis on ${md(lab.sent_date)}, the day its Metrc lab manifest was made${hasRes ? '.' : '; no results yet.'}`)));
   if (pt) test = btDate(pt.date, 'Test', d => `${esc(d)}${pt.tbd ? '<small>TBD</small>' : ''}`);
   const tr = batchTrim(r);
   const trimmed = tr ? `<span class="bt-d" title="${esc(`Trim sheet tab ${tr.ev.tab}${tr.ev.room ? ', room ' + tr.ev.room : ''}: ${Math.round(tr.lb * 10) / 10} lb of ${strain} (bigs + littles)`)}"><i>Trimmed</i>` +
@@ -5755,6 +5795,51 @@ function btRowHTML(r, g) {
     `<span class="bt-code"${codeTip ? ` title="${esc(codeTip)}"` : ''}>${esc(r.batch_code || '–')}</span>` +
     `<span class="bt-dates">${btDate(harvest, 'Harvest')}${trimmed}${btDate(r.package_date, 'Packaged')}${test}${coaOnly}${btDate(r.nabis_date, 'Nabis P/U')}</span>` +
     `${thc}<span class="bt-uidc">${uid}</span></div>`;
+}
+// the Test date opens the lab's order e-mail: proof the sample went out. The body is the e-mail as Confident sent it,
+// minus anything that runs or loads (the lab job cleans it), shown in a sandboxed frame whose policy allows only styles
+const mailFor = (lab, row) => (S.labOrders && S.labOrders.length ? BAT.orderFor(lab, row, S.labOrders) : null);
+const mailBtn = (m, inner) => !m ? inner : `<button type="button" class="bt-mailbtn" data-act="bt-mail" data-msg="${esc(m.mail.msg_id)}" ` +
+  `data-ids="${esc(m.ids.join(','))}"${m.exact ? ' data-exact="1"' : ''} title="Show the lab's order e-mail">${inner}</button>`;
+const MAIL_CSP = "default-src 'none'; style-src 'unsafe-inline'";
+let mailOpen = null;
+function closeMail() { if (!mailOpen) return; mailOpen.el.remove(); document.removeEventListener('keydown', mailOpen.key, true); mailOpen = null; }
+async function openMail(btn) {
+  closeMail();
+  const o = (S.labOrders || []).find(x => x.msg_id === btn.dataset.msg); if (!o) return;
+  const ids = String(btn.dataset.ids || '').split(',').filter(x => /^[0-9A-Z.]+$/.test(x)), exact = !!btn.dataset.exact;
+  const when = new Date(o.sent_at).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'America/Los_Angeles' });
+  const which = exact ? `This batch's sample is ${ids.join(', ')}, highlighted below.`
+    : `Matched by strain and the day the sample went out (${ids.length > 1 ? 'samples ' : 'sample '}${ids.join(', ')}, highlighted). The lab's sample number for this batch is certain once its COA is back.`;
+  const el = document.createElement('div');
+  el.className = 'bt-mailback';
+  el.innerHTML = `<div class="bt-maildlg" role="dialog" aria-modal="true" aria-label="${esc(o.subject || 'Lab order e-mail')}">` +
+    `<div class="bt-mailhd"><div><b>${esc(o.subject || 'Order ' + o.order_id)}</b><span>Confident LIMS (notifications@confidentlims.com) · ${esc(when)}</span></div>` +
+    `<button type="button" class="bt-mailx" aria-label="Close">✕</button></div>` +
+    `<p class="bt-mailnote">${esc(which)}</p><div class="bt-mailbody"><div class="bt-none">Loading the e-mail...</div></div>` +
+    `<div class="bt-mailft"><a href="https://app.confidentlims.com/order/${encodeURIComponent(o.order_id)}?lab=excelbis-labs" target="_blank" rel="noopener">Open order ${esc(o.order_id)} on Confident LIMS</a> (needs a Confident login)</div></div>`;
+  const key = e => { if (e.key === 'Escape') { e.stopPropagation(); closeMail(); } };
+  el.addEventListener('click', e => { if (e.target === el || e.target.closest('.bt-mailx')) closeMail(); });
+  document.addEventListener('keydown', key, true);
+  document.body.appendChild(el);
+  mailOpen = { el, key };
+  el.querySelector('.bt-mailx').focus();
+  let html = o.html;
+  if (html == null && sb) {
+    const r = await sb.from('pipeline_lab_orders').select('html').eq('msg_id', o.msg_id).maybeSingle();
+    html = r.error ? null : r.data && r.data.html;
+  }
+  if (!mailOpen || mailOpen.el !== el) return;   // closed or replaced while loading
+  const body = el.querySelector('.bt-mailbody');
+  if (!html) { body.innerHTML = `<div class="bt-none">The e-mail's text isn't saved yet. The samples on it: ${esc((o.samples || []).map(x => `${x.id} ${x.name}`).join(', '))}.</div>`; return; }
+  let h = String(html);
+  for (const id of ids) h = h.split(id).join(`<mark style="background:#FFF1A1;font-weight:700">${id}</mark>`);
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MAIL_CSP}">` +
+    `<style>body{margin:0;padding:8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}</style></head><body>${h}</body></html>`;
+  const f = document.createElement('iframe');
+  f.setAttribute('sandbox', ''); f.setAttribute('referrerpolicy', 'no-referrer'); f.title = o.subject || 'Lab order e-mail';
+  f.srcdoc = doc;
+  body.innerHTML = ''; body.appendChild(f);
 }
 // the top of the Batches view: what came back from the lab in the last two weeks and what is still out. A line jumps to
 // its batches (opening Finished or the older vape orders when they're folded) and flashes them.
@@ -5824,7 +5909,7 @@ function btVpRowHTML(x) {
   const uid = `<button type="button" class="bt-uid" data-copy="${esc(x.metrc_uid)}" title="Copy the Metrc UID">${esc(x.metrc_uid.slice(0, -4))}<b>${esc(x.metrc_uid.slice(-4))}</b></button>`;
   return `<div class="bt-row bt-vp" data-uid="${esc(x.metrc_uid)}"><span class="bt-nm"${tip ? ` title="${esc(tip)}"` : ''}><b>${esc(name)}</b><span class="bt-sub">${esc(kind)}${pill}</span></span>` +
     `<span class="bt-code" title="The maker's batch number on the COA">${esc(x.prod_batch || '–')}</span>` +
-    `<span class="bt-dates">${btDate(null, 'Harvest')}${btDate(null, 'Trimmed')}${btDate(null, 'Packaged')}${btDate(x.collected, 'Test')}` +
+    `<span class="bt-dates">${btDate(null, 'Harvest')}${btDate(null, 'Trimmed')}${btDate(null, 'Packaged')}${btDate(x.collected, 'Test', t => mailBtn(mailFor(x, null), esc(t)))}` +
     `${btDate(x.completed, 'COA', link)}${btDate(null, 'Nabis P/U')}</span>${thc}<span class="bt-uidc">${uid}</span></div>`;
 }
 // trims the pipeline sheet plans that haven't happened yet (or are under way): one row per strain for the Batches
@@ -8524,6 +8609,9 @@ async function loadLabs(quiet) {
       S.labs = new Map((r.data || []).map(x => [x.metrc_uid, x])); S.labsMeta = m.data.changed_at; fresh = true;
       S.labTurn = BAT.turnaround([...S.labs.values()].filter(x => !BAT.isVape(x)));   // the usual days to results, for "COA ≈ date expected" (flower and pre-rolls)
     }
+    // the lab's order e-mails, without their bodies (a body loads when its popup opens); missing table = no popups yet
+    const o = await sb.from('pipeline_lab_orders').select('msg_id,order_id,kind,sent_at,subject,samples,tests').order('sent_at');
+    if (!o.error) { const n = JSON.stringify(o.data || []); if (n !== S.labOrdersSig) { S.labOrders = o.data || []; S.labOrdersSig = n; fresh = true; } }
     S.labsAt = Date.now(); S.labsErr = '';
   } catch (e) {
     S.labsErr = e.message || String(e);   // the sheet's own values still show; only the filled-in ones are missing
@@ -8808,6 +8896,7 @@ document.addEventListener('click', e => {
     case 'bt-fin': S.batFin = !S.batFin; savePref('pipeline.batches.fin', S.batFin ? '1' : ''); render(); break;
     case 'bt-vp': S.vpAll = !S.vpAll; savePref('pipeline.batches.vapes', S.vpAll ? '1' : ''); render(); break;
     case 'bt-lab': btLabJump(b.dataset.lab); break;
+    case 'bt-mail': openMail(b); break;
     case 'bt-only-clear': S.btOnly = null; render(); break;
     case 'signout': signOut(); break;
     case 'vs-retry': refreshVisits(); break;

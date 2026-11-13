@@ -591,6 +591,24 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
       [['sheet:2026-11-13', 'ANTIDOTE:Pass'], ['2611EXL9561', 'POTION:Pass,Brain Freeze:Fail'], ['sheet:2026-11-12', 'NEBULA:'], ['2610EXL9180', 'TIDE:Pass']]);
     assert.deepEqual(typed.out.map(g => g.items.map(i => i.strain).join(',')), ['WIZZY'], 'and it leaves "At the lab"');
   }
+  // the Test date's order e-mail: exact by the COA's sample id, else strain and the day the sample went out (within 3 days)
+  {
+    const orders = [
+      { msg_id: 'a1', order_id: '2611EXL9740', kind: 'placed', sent_at: '2026-11-12T19:46:36Z', samples: [{ id: '2611EXL9740.38868', name: 'TIDEBANGER' }, { id: '2611EXL9740.38869', name: 'ANTIDOTE' }] },
+      { msg_id: 'a2', order_id: '2611EXL9561', kind: 'placed', sent_at: '2026-11-09T15:48:00Z', samples: [{ id: '2611EXL9561.37774', name: 'POTION' }] },
+      { msg_id: 'a3', order_id: '2611EXL9561', kind: 'edited', sent_at: '2026-11-09T18:49:00Z', samples: [] },
+      { msg_id: 'a4', order_id: '2610EXL8908', kind: 'placed', sent_at: '2026-10-21T01:30:00Z', samples: [{ id: '2610EXL8908.35347', name: 'BLACK MAGIC' }, { id: '2610EXL8908.35348', name: 'BLACK MAGIC' }] },
+    ];
+    const f = (lab, row) => { const m = BAT.orderFor(lab, row, orders); return m && [m.mail.msg_id, m.ids.join(','), m.exact]; };
+    assert.deepEqual(f({ sample_id: '2611EXL9561.37774' }, null), ['a2', '2611EXL9561.37774', true], 'the COA sample id finds the e-mail');
+    assert.deepEqual(f({ sent_date: '2026-11-12' }, { strain: 'Antidote' }), ['a1', '2611EXL9740.38869', false], 'before the COA: strain and day sent');
+    assert.deepEqual(f({ sent_date: '2026-11-12' }, { strain: 'JUNGLE JUICE' }), ['a1', '2611EXL9740.38869', false], 'Jungle Juice is Antidote');
+    assert.deepEqual(f(null, { strain: 'TIDEBANGER', test_date: '2026-11-14' }), ['a1', '2611EXL9740.38868', false], "the sheet's TEST DATE, within 3 days");
+    assert.equal(f({ sent_date: '2026-11-20' }, { strain: 'ANTIDOTE' }), null, 'more than 3 days off: no e-mail');
+    assert.equal(f({ sent_date: '2026-11-12' }, { strain: 'VOODOO' }), null, 'a strain the e-mail does not name');
+    assert.deepEqual(f({ sent_date: '2026-10-20' }, { strain: 'BLACK MAGIC' }), ['a4', '2610EXL8908.35347,2610EXL8908.35348', false], 'sent the evening before in UTC; both samples of the strain');
+    assert.equal(BAT.orderFor({ sample_id: 'X.1' }, null, []), null);
+  }
   const A = ACT.build(weeks, tasks, bat, '2026-10-16', BAT.statusKey);
   const R = A.byId.get('prerolls-2026-10-07'), line = key => R.act.lines.find(l => l.strain + '|' + l.size === key);
   assert.deepEqual([line('TIDE|5pk').counted, line('TIDE|1g').counted, line('VOODOO|5pk').counted, line('VOODOO|1g').counted], [700, null, 500, null],
