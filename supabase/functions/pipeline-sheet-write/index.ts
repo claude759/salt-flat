@@ -1,5 +1,6 @@
 // pipeline-sheet-write: the Production Pipeline page's edits to Victoria's sheet (release 1a: rewrite a cell's text or
-// a supply count; release 1b: add a one-line item under a day's last line, with the look of a named line).
+// a supply count; release 1b: add a one-line item under a day's last line, with the look of a named line; release 1c:
+// set a batch's STATUS, dates or unit counts on the BATCH LABEL SHEET tab, found by its METRC UID).
 // The page (pipeline.html) builds each edit as ops (CONTRACT.md in this folder). This function checks them against
 // the sheet as it is right now, writes them in one all-or-nothing batchUpdate with its own Google account
 // (pipeline-writer: no roles, no domain-wide delegation; its JSON key is the PIPELINE_WRITER_KEY secret), reads the
@@ -58,6 +59,17 @@ const SAY = {
   mismatch: "Saved, but the sheet now reads differently from what was sent. Check the sheet.",
   unchecked: "Saved, but the app could not read the sheet back to check it. Check the sheet.",
   shifted: "Saved, but the sheet changed next to it while it was saving (a row added, removed or typed in). Check the sheet that it landed in the right place, and fix it there if not: this save cannot be undone from the app.",
+  // release 1c: rows or columns moved under a batch write, so it landed in another batch's row or another column
+  // (R.batchHits names each cell it hit, what it is called now and what it held)
+  shiftedBatch: (hits: Any[]) => hits.some((h: Any) => h.layout)
+    ? `Saved, but the BATCH LABEL SHEET's columns changed while it was saving, so the app cannot tell where the change landed. Check ${hits.map((h: Any) => h.a1).join(", ")} and the batch's row in the sheet, and fix it there: this save cannot be undone from the app.`
+    : `Saved, but ${shiftWhat(hits)[0]} were added or removed in the BATCH LABEL SHEET while it was saving, so the change landed in the wrong ${shiftWhat(hits)[1]}: ` +
+      hits.map((h: Any) => `${h.uid ? `batch ${h.uid}${h.strain ? ` (${h.strain})` : ""}` : "a row with no METRC UID"} now has ${h.header} "${h.wrote}" in ${h.a1}; ` +
+        (h.before == null ? "the app cannot tell what it said before, so check that cell"
+          : h.before === "" ? "it was blank before. Clear it there" : `it said "${h.before}" before. Put "${h.before}" back there`)).join("; ") +
+      ". Then make your change again. This save cannot be undone from the app.",
+  shiftedCols: "Saved in the right cell, but columns were added or removed in the BATCH LABEL SHEET while it was saving. Check that batch's row in the sheet: this save cannot be undone from the app.",
+  noTab: (tab: string) => `The sheet the app saves to has no ${tab} tab, so nothing was saved. Tell Gianni.`,
   notLogged: "Saved, but the app could not record it, so it cannot be undone from here. Check the sheet.",
   notInLog: "That change is not in the app's record, so it cannot be undone here.",
   notWritten: "Only a change that was saved to the sheet can be undone.",
@@ -67,7 +79,23 @@ const SAY = {
 class GoogleFail extends Error {
   step: string;
   status: number;
-  constructor(step: string, status: number) { super(`google ${step} ${status}`); this.step = step; this.status = status; }
+  tab?: string;     // set only for a tab the workbook does not have (release 1c: BATCH LABEL SHEET on the test copy)
+  constructor(step: string, status: number, tab?: string) { super(`google ${step} ${status}`); this.step = step; this.status = status; this.tab = tab; }
+}
+// what moved under a batch write, for SAY.shiftedBatch: [what was added or removed, where the change landed]
+function shiftWhat(hits: Any[]): [string, string] {
+  const rows = hits.some((h: Any) => h.rows), cols = hits.some((h: Any) => h.cols);
+  return rows && cols ? ["rows and columns", "place"] : cols ? ["columns", "column"] : ["rows", "row"];
+}
+// Google answers 400 ("Unable to parse range") for a tab the workbook does not have; for BATCH LABEL SHEET (which an
+// older test copy may lack) that gets its own message (SAY.noTab), not "cannot open the sheet"
+function readFail(tab: string, e: unknown): unknown {
+  return R.TABS[tab]?.batch === true && e instanceof GoogleFail && e.status === 400 ? new GoogleFail("tab", 404, tab) : e;
+}
+// what the person reads when Google fails
+function googleMessage(e: GoogleFail): string {
+  return e.step === "token" ? SAY.badKey : e.step === "tab" && e.tab ? SAY.noTab(e.tab)
+    : e.status === 403 || e.status === 404 ? SAY.noAccess : SAY.google;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const nameOf = (email: unknown) => {
@@ -173,10 +201,12 @@ async function readGrids(token: string, wb: string, windows: Record<string, numb
     if (wins && !wins.length) { grids[tab] = R.gridFromSheet(null, tab); return; }   // week not in the sheet: plan() says so
     // an open end (Infinity) reads to the end of the sheet: "A640:N"
     const ranges = wins ? wins.map(([s, e]) => `${quote(tab)}!A${s + 1}:N${Number.isFinite(e) ? e : ""}`) : [quote(tab)];
-    const j = await gget(token, `${SHEETS}${wb}?includeGridData=true&fields=${encodeURIComponent(gridFields(looks))}&` +
-      ranges.map((r) => "ranges=" + encodeURIComponent(r)).join("&"));
+    const url = `${SHEETS}${wb}?includeGridData=true&fields=${encodeURIComponent(gridFields(looks))}&` +
+      ranges.map((r) => "ranges=" + encodeURIComponent(r)).join("&");
+    let j: Any;
+    try { j = await gget(token, url); } catch (e) { throw readFail(tab, e); }
     const sheet = (j.sheets ?? []).find((s: Any) => s?.properties?.title === tab);
-    if (!sheet) throw new GoogleFail("tab", 404);
+    if (!sheet) throw new GoogleFail("tab", 404, R.TABS[tab].batch === true ? tab : undefined);
     grids[tab] = R.gridFromSheet(sheet, tab);
     if (wins && wins.some(([, e]) => !Number.isFinite(e))) grids[tab].toEnd = true;
   }));
@@ -184,13 +214,12 @@ async function readGrids(token: string, wb: string, windows: Record<string, numb
 }
 // after the write: the written cells. An added line (or one taken out) reads its pair and any merge it cleared
 // (`read`), with looks and merges, so the check sees the merge and the log keeps what an undo must find there. Also
-// the cells around each one (R.aroundRanges), to see that no row moved under the write.
+// the cells around each one (R.aroundRanges), to see that no row moved under the write; a BATCH LABEL SHEET save
+// reads that tab whole (its header row and METRC UIDs say what moved), with each cell's number format (an undo of a
+// date that set it puts the old one back). R.readBackRanges and R.readBackFields say what, so the checks run the same.
 async function readBack(token: string, wb: string, cells: Any[]): Promise<Record<string, Any>> {
-  const looks = cells.some((x) => x.kind != null);
-  const fields = `sheets(properties(sheetId,title),${looks ? "merges," : ""}data(startRow,startColumn,rowMetadata(hiddenByUser),` +
-    `rowData(values(userEnteredValue,formattedValue,textFormatRuns${looks ? ",userEnteredFormat" : ""}))))`;
-  const ranges = [...cells.map((x) => `${quote(x.tab)}!${x.read ?? x.a1}`),
-    ...R.aroundRanges(cells).map((x: Any) => `${quote(x.tab)}!${x.range}`)];
+  const fields = R.readBackFields(cells);
+  const ranges = R.readBackRanges(cells).map((x: Any) => x.range == null ? quote(x.tab) : `${quote(x.tab)}!${x.range}`);
   const j = await gget(token, `${SHEETS}${wb}?includeGridData=true&fields=${encodeURIComponent(fields)}&` +
     ranges.map((r) => "ranges=" + encodeURIComponent(r)).join("&"));
   const grids: Record<string, Any> = {};
@@ -384,9 +413,14 @@ async function save(job: Job): Promise<Any> {
       const now = back && !wrongAt.has(`${x.tab}!${x.a1}`) ? R.readAfter(x, back) : null;
       return now ? { ...x, after: now } : x;
     });
-    // the cells around the written ones read as at the re-check, or a row may have moved under the write
+    // the cells around the written ones read as at the re-check, or a row may have moved under the write; on the
+    // BATCH LABEL SHEET the row's METRC UID and the column's header say which cell it landed on, and the re-check says
+    // what that cell held
     const around = back ? R.changedAround(plan.cells, fresh, back) : [];
-    const note = !check.ok ? (back ? SAY.mismatch : SAY.unchecked) : around.length ? SAY.shifted : null;
+    const hits = back ? R.batchHits(plan.cells, fresh, back) : [];
+    const colsMoved = back ? R.batchColumnsMoved(plan.cells, fresh, back) : false;
+    const note = !check.ok ? (back ? SAY.mismatch : SAY.unchecked) : hits.length ? SAY.shiftedBatch(hits)
+      : colsMoved ? SAY.shiftedCols : around.length ? SAY.shifted : null;
     const seen = around.length ? ` Around it: ${around.slice(0, 8).map((x: Any) => x.a1).join(", ")}.` : "";
     const logged = await logUpdate(admin, id, { status: "written", cells: logCells(cells), message: note ? note + seen : null });
     if (job.undoOf) {
@@ -396,8 +430,9 @@ async function save(job: Job): Promise<Any> {
     // no edit id (so no Undo button) for a save whose log row could not be finished, or that rows moved under: its
     // undo could put the old words in the wrong row
     const message = logged ? note : [SAY.notLogged, note].filter(Boolean).join(" ");
-    return { ok: true, mode: target === "live" ? "live" : "test", target, wrote: true, ...(logged && !around.length ? { edit: id } : {}),
-      cells: replyCells(cells), checked: check.ok && !around.length, ...(message ? { message } : {}),
+    const moved = around.length > 0 || hits.length > 0 || colsMoved;
+    return { ok: true, mode: target === "live" ? "live" : "test", target, wrote: true, ...(logged && !moved ? { edit: id } : {}),
+      cells: replyCells(cells), checked: check.ok && !moved, ...(message ? { message } : {}), ...(hits.length ? { hit: hits } : {}),
       ...(job.undoOf ? { undo_of: job.undoOf } : {}) };
   } finally {
     const { error } = await admin.rpc("pipeline_unlock_cells", { p_keys: keys, p_token: lockToken });
@@ -439,16 +474,22 @@ async function undo(who: Who, admin: Any, id: unknown): Promise<Any> {
 
 // only the fields the contract names; never `restore`, `undo` or the kind 'unadd', which only undo() builds. A kind
 // other than 'add' is passed on as one checkOps does not know, so the save is refused rather than read as a rewrite.
+// A BATCH LABEL SHEET cell (release 1c) keeps find {uid, header} and the `date` flag, and nothing else; another tab's
+// op keeps a `date` flag only when the page sent one (checkOps refuses it there).
 function pageOps(raw: unknown): Any[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((x: Any) => {
     const f = x?.find ?? {};
     const base = { tab: x?.tab, r: x?.r, c: x?.c, expect: x?.expect, text: x?.text, number: x?.number ?? false };
+    if (x?.kind == null && x?.tab === R.BATCH)
+      return { ...base, date: x?.date ?? false, find: { uid: f.uid, header: f.header } };
+    // a date flag sent for another tab is passed on (only when sent), so checkOps refuses it
+    const date = x?.date != null ? { date: x.date } : {};
     if (x?.kind == null)
-      return { ...base, find: { week: f.week, day: f.day, owner: f.owner, item: f.item, category: f.category, header: f.header } };
+      return { ...base, ...date, find: { week: f.week, day: f.day, owner: f.owner, item: f.item, category: f.category, header: f.header } };
     if (x.kind !== "add") return { ...base, kind: "page:" + String(x.kind).slice(0, 40), find: {} };
     const l = x?.like ?? {};
-    return { ...base, kind: "add", find: { week: f.week, day: f.day, after: f.after, afterOwner: f.afterOwner },
+    return { ...base, ...date, kind: "add", find: { week: f.week, day: f.day, after: f.after, afterOwner: f.afterOwner },
       like: { week: l?.week, day: l?.day, text: l?.text } };
   });
 }
@@ -473,8 +514,7 @@ Deno.serve(async (req) => {
   } catch (e) {
     console.error("pipeline-sheet-write", String((e as Error)?.message ?? e));
     if (e instanceof GoogleFail)
-      return reply({ ok: false, reason: "error",
-        message: e.step === "token" ? SAY.badKey : e.status === 403 || e.status === 404 ? SAY.noAccess : SAY.google });
+      return reply({ ok: false, reason: "error", message: googleMessage(e) });
     return reply({ ok: false, reason: "error", message: SAY.error });
   }
 });

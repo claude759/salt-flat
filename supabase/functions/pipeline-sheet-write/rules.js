@@ -3,8 +3,10 @@
 // tab. Release 1a: rewrite the text of a cell that already holds something, or set a supply count. Release 1b: add a
 // one-line item (a 1x2 merge across a day's two columns) in the first row under that day's last line, with the look
 // of a named line ('like'), and take it out again on undo. It only fills blank cells: it never inserts, deletes, hides
-// or unhides rows. Everything here decides from the fresh grid; from the page only the op itself is taken, and every
-// part of it is checked.
+// or unhides rows. Release 1c: set one of five cells of a batch's row on the BATCH LABEL SHEET tab (STATUS, PCKG DATE,
+// NABIS P/U DATE, TOTAL UNITS, BUDTENDER UNITS), found by the batch's METRC UID and the column's header, never by row
+// number. Everything here decides from the fresh grid; from the page only the op itself is taken, and every part of it
+// is checked.
 //
 // A grid is what the Sheets API returned for one tab, flattened: rows[r][c] = {text, value, runs, format}, where text
 // is the formattedValue (what the CSV export and the page show), value the userEnteredValue, runs the textFormatRuns
@@ -15,7 +17,19 @@ export const TABS = {
   'DISTRO PIPELINE': { scope: 'plan', plan: true },
   'DISTRO SUPPLY': { scope: 'supply', plan: false },
   'ACCESSORY SUPPLY': { scope: 'supply', plan: false },
+  // release 1c: editing it needs the 'plan' right (both editors have 'all'); a separate scope comes only when someone
+  // should edit the plan but not the batches
+  'BATCH LABEL SHEET': { scope: 'plan', plan: false, batch: true },
 };
+export const BATCH = 'BATCH LABEL SHEET';
+// the five columns the app may set on BATCH LABEL SHEET, by header: what each one holds
+export const BATCH_ROLES = { 'STATUS': 'status', 'PCKG DATE': 'date', 'NABIS P/U DATE': 'date', 'TOTAL UNITS': 'count', 'BUDTENDER UNITS': 'count' };
+// the COA watcher fills these (when blank); the app never races it
+const BATCH_LAB = new Set(['THC', 'CBD', 'TOTAL CANNA', 'COA LINK', 'TEST DATE', 'COA RETURN DATE']);
+// a date written into a cell with no number format (Automatic) gets the one Sheets gives a date typed there, the one the
+// COA watcher writes and the one most NABIS P/U DATE cells have
+export const BATCH_DATE_FORMAT = Object.freeze({ type: 'DATE', pattern: 'm/d/yyyy' });
+const FIRST_DAY = '2024-01-01', MAX_AHEAD = 400;   // a date further out is a typo (the sheet has 10/2/2206 in it)
 export const MAX_OPS = 20;
 export const MAX_TEXT = 2000;      // a trim strain list is about 150 characters; this only stops nonsense
 export const PLAN_COLS = 14;       // DISTRO PIPELINE: A to N, two columns per day
@@ -26,7 +40,7 @@ const SLIDE = 200;                 // how far an insertion is slid looking for a
 export const MSG = {
   bad: 'The app sent a change the save program could not read. Reload the page and try again.',
   tooMany: `At most ${MAX_OPS} cells can be changed in one save. Split the change into smaller saves.`,
-  tab: 'The app can only change the DISTRO PIPELINE, DISTRO SUPPLY and ACCESSORY SUPPLY tabs.',
+  tab: 'The app can only change the DISTRO PIPELINE, DISTRO SUPPLY, ACCESSORY SUPPLY and BATCH LABEL SHEET tabs.',
   cols: 'The app can only change columns A to N of DISTRO PIPELINE.',
   long: `That text is too long for one cell (more than ${MAX_TEXT} characters).`,
   empty: 'The app can only change cells that already hold something. Fill in an empty cell in the sheet.',
@@ -61,6 +75,18 @@ export const MSG = {
   likeLook: 'The app could not read the look of the line the new one copies, so nothing was saved. Reload the page and try again.',
   addColors: 'Part of this line is in a different color and the change runs across it. Add it as it is, then change the wording.',
   undoNewer: 'A newer change on that day was made from the app. Undo that one first.',
+  // release 1c: BATCH LABEL SHEET
+  batchColumn: 'From the app, only STATUS, PCKG DATE, NABIS P/U DATE, TOTAL UNITS and BUDTENDER UNITS of a batch can be changed. Change the rest in the sheet.',
+  batchLab: 'THC, CBD, TOTAL CANNA, COA LINK, TEST DATE and COA RETURN DATE are filled in from the lab\'s COA, so the app does not change them. Change them in the sheet.',
+  batchKind: 'The app sent that batch change the wrong way (a date, a number or a status in the wrong column). Reload the page and try again.',
+  batchDate: 'Dates must be a real day, from January 1, 2024 to about a year from now (YYYY-MM-DD). Check the year.',
+  batchCount: 'Units must be a whole number of 0 or more, like 1200.',
+  clearBatch: 'The app cannot empty a date or a unit count on the BATCH LABEL SHEET tab. Make that change in the sheet.',
+  statusEmpty: 'Pick a status. The app cannot empty a batch\'s STATUS; make that change in the sheet.',
+  statusNew: 'That status is not used on any other batch in the sheet, so the app does not add it. Pick one the sheet already uses, or type the new one in the sheet.',
+  hiddenBatch: 'That batch\'s row is hidden in the sheet, so the app does not change it. Show the row in the sheet, then try again.',
+  mergedBatch: 'That cell is merged with other cells in the sheet, so the app does not change it. Make that change in the sheet.',
+  dateFormat: 'That date cell is set to show something other than a date in the sheet, so a date there would read as a number. In the sheet, set the cell to Format, Number, Date (or Automatic), then try again.',
 };
 
 export const nl = s => String(s == null ? '' : s).replace(/\r\n?/g, '\n');
@@ -213,6 +239,57 @@ export function supplyLayout(g) {
   return { h, H, cCat, roles };
 }
 
+/* ---------- release 1c: BATCH LABEL SHEET ---------- */
+
+// Row 1 is the header row. It must name METRC UID and STATUS once each, or the program cannot tell rows apart (a
+// 'layout' conflict). roles: column -> 'status' | 'date' | 'count' for the five columns the app may set (BATCH_ROLES).
+export function batchLayout(g) {
+  if (!g || !g.rows[0]) return null;
+  const H = Array.from({ length: g.rows[0].length }, (_, c) => key(textAt(g, 0, c)));
+  const once = name => { const at = []; H.forEach((h, c) => { if (h === name) at.push(c); }); return at.length === 1 ? at[0] : -1; };
+  const cUid = once('METRC UID'), cSt = once('STATUS');
+  if (cUid < 0 || cSt < 0) return null;
+  const roles = {};
+  H.forEach((h, c) => { if (Object.hasOwn(BATCH_ROLES, h)) roles[c] = BATCH_ROLES[h]; });
+  return { H, cUid, cSt, cStrain: H.indexOf('STRAIN'), roles };
+}
+// a cell's number format ({type, pattern}), or null for Automatic (or when it was not read)
+const numFmt = x => (x && x.format && x.format.numberFormat && typeof x.format.numberFormat === 'object' ? x.format.numberFormat : null);
+// dates as the sheet keeps them: days since 1899-12-30. "2026-11-20" -> 46346; null for anything that is not a real day
+const DAY_MS = 86400000, EPOCH = Date.UTC(1899, 11, 30);
+export function dateSerial(t) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(t == null ? '' : t));
+  if (!m) return null;
+  const ms = Date.UTC(+m[1], +m[2] - 1, +m[3]), d = new Date(ms);
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return null;
+  return Math.round((ms - EPOCH) / DAY_MS);
+}
+// a batch date the app may write: a real day from 2024-01-01 to 400 days after today (UTC)
+export function batchDateOk(t, now = Date.now()) {
+  const n = dateSerial(t);
+  return n != null && n >= dateSerial(FIRST_DAY) && n <= Math.floor((now - EPOCH) / DAY_MS) + MAX_AHEAD;
+}
+// The text a date shows with a date pattern (m/d/yy, m/d/yyyy, mm/dd/yyyy and the like): what the reply and the log say
+// until the cell is read back. A pattern with month or day names is shown as m/d/yyyy.
+export function fmtDate(serial, pattern) {
+  const d = new Date(EPOCH + serial * DAY_MS), p = String(pattern || '');
+  const pat = /^[mdy/.\- ]+$/.test(p) && !/mmm|ddd/.test(p) ? p : BATCH_DATE_FORMAT.pattern;
+  const two = n => String(n).padStart(2, '0');
+  const parts = { yyyy: String(d.getUTCFullYear()), yy: two(d.getUTCFullYear() % 100), mm: two(d.getUTCMonth() + 1),
+    m: String(d.getUTCMonth() + 1), dd: two(d.getUTCDate()), d: String(d.getUTCDate()) };
+  return pat.replace(/yyyy|yy|mm|m|dd|d/g, t => parts[t]);
+}
+// A status the app writes must already be the STATUS of another batch (a row with a METRC UID): the app never invents
+// a spelling. Hidden rows count: they are batches too.
+function statusInUse(g, L, r0, text) {
+  const want = nl(text);
+  for (let r = 1; r < g.rows.length; r++) {
+    if (r === r0 || !g.rows[r] || !clean(textAt(g, r, L.cUid))) continue;
+    if (nl(textAt(g, r, L.cSt)) === want) return true;
+  }
+  return false;
+}
+
 /* ---------- text and its colored words ---------- */
 
 // the one stretch where two texts differ: old [p, oe) became new [p, ne)
@@ -299,8 +376,32 @@ function checkAddOp(op) {
     (x.after == null || isObj(x.after)))) return MSG.bad;
   return null;
 }
+// a BATCH LABEL SHEET op's own shape. An undo (restore, built only by undoOps) puts back exactly what was there (a blank
+// cell, a status no longer used, a blank date), so none of the value rules apply to it.
+function checkBatchOp(op, now) {
+  const f = op.find;
+  if (!isText(f.uid) || !clean(f.uid) || !isText(f.header) || !clean(f.header)) return MSG.bad;
+  if (f.prev != null || (op.number && op.date)) return MSG.bad;
+  if (op.restore) return null;
+  const role = BATCH_ROLES[key(f.header)];
+  if (!role) return BATCH_LAB.has(key(f.header)) ? MSG.batchLab : MSG.batchColumn;
+  const t = clean(op.text);
+  if (role === 'date') {
+    if (!op.date) return MSG.batchKind;
+    if (t === '') return MSG.clearBatch;
+    if (!batchDateOk(t, now)) return MSG.batchDate;
+  } else if (role === 'count') {
+    if (!op.number) return MSG.batchKind;
+    if (t === '') return MSG.clearBatch;                       // an empty TOTAL UNITS makes CASES 0
+    if (!/^\d+$/.test(t.replace(/,/g, ''))) return MSG.batchCount;
+  } else {
+    if (op.number || op.date) return MSG.batchKind;
+    if (t === '') return MSG.statusEmpty;
+  }
+  return null;
+}
 // shape, tab, column and size checks that need no sheet. Returns a message, or null when the ops are fine.
-export function checkOps(ops) {
+export function checkOps(ops, now = Date.now()) {
   if (!Array.isArray(ops) || !ops.length) return MSG.bad;
   if (ops.length > MAX_OPS) return MSG.tooMany;
   let cells = 0, adds = 0;
@@ -313,6 +414,8 @@ export function checkOps(ops) {
     if (!isText(op.expect) || !isText(op.text) || !op.find || typeof op.find !== 'object') return MSG.bad;
     if (op.text.length > MAX_TEXT || op.expect.length > 50000) return MSG.long;
     if (op.number != null && typeof op.number !== 'boolean') return MSG.bad;
+    // `date` (release 1c): only on BATCH LABEL SHEET
+    if (op.date != null && (typeof op.date !== 'boolean' || (op.date && !TABS[op.tab].batch))) return MSG.bad;
     const f = op.find;
     // an add writes two cells (the pair); this runs before the 1a empty-cell refusal below, which still holds for 1a
     if (op.kind != null) {
@@ -324,6 +427,11 @@ export function checkOps(ops) {
       continue;
     }
     cells++;
+    if (TABS[op.tab].batch) {                                       // its own rules, empty cells included
+      const no = checkBatchOp(op, now);
+      if (no) return no;
+      continue;
+    }
     if (TABS[op.tab].plan) {
       if (op.c >= PLAN_COLS) return MSG.cols;
       if (!isText(f.week) || !clean(f.week) || !Number.isInteger(f.day) || f.day < 0 || f.day > 6) return MSG.bad;
@@ -381,6 +489,78 @@ function locateSupply(g, op) {
   const r = rows[0], c = cols[0], now = textAt(g, r, c);
   if (nl(now) !== nl(op.expect)) return { why: 'changed', found: now };
   return { r, c, head: L.h, role: L.roles[c] || null, width: L.H.length };
+}
+// BATCH LABEL SHEET: the one row whose METRC UID is find.uid and the one column whose header is find.header; the cell
+// must still show `expect` (blank included). r and c from the page only say whether it moved.
+function locateBatch(g, op) {
+  const L = batchLayout(g), f = op.find;
+  if (!L) return { why: 'layout', found: '' };
+  const cols = [];
+  L.H.forEach((h, c) => { if (h && h === key(f.header)) cols.push(c); });
+  if (cols.length !== 1) return { why: 'column', found: '' };
+  const rows = [];
+  g.rows.forEach((row, r) => { if (r > 0 && row && key(textAt(g, r, L.cUid)) === key(f.uid)) rows.push(r); });
+  if (rows.length !== 1) return { why: rows.length ? 'item-twice' : 'item-gone', found: '' };
+  const r = rows[0], c = cols[0], now = textAt(g, r, c);
+  if (nl(now) !== nl(op.expect)) return { why: 'changed', found: now };
+  return { r, c, head: 0, role: L.roles[c] || null, header: L.H[c], width: L.H.length, batch: true, L };
+}
+// where a batch cell may not be written: the header row, a hidden row, a formula (CASES), any merged cell, a column
+// that is not one of the five; and a value of the wrong kind or format for its column (an undo only needs the first)
+function guardBatch(g, op, at) {
+  if (at.r === 0) return MSG.title;
+  if (g.hidden[at.r]) return MSG.hiddenBatch;
+  const x = cellAt(g, at.r, at.c);
+  if (x.value && x.value.formulaValue != null) return MSG.formula;
+  if (mergeAt(g, at.r, at.c)) return MSG.mergedBatch;
+  if (!at.role) return BATCH_LAB.has(at.header) ? MSG.batchLab : MSG.batchColumn;
+  if (op.restore) return null;
+  const nf = numFmt(x);
+  if (at.role === 'count') {
+    if (!op.number || op.date) return MSG.batchKind;
+    if (nf && /^(DATE|TIME|DATE_TIME)$/.test(nf.type)) return MSG.countFormat;
+  } else if (at.role === 'date') {
+    if (!op.date || op.number) return MSG.batchKind;
+    if (nf && nf.type !== 'DATE') return MSG.dateFormat;
+  } else {
+    if (op.number || op.date) return MSG.batchKind;
+    if (nl(op.text) !== nl(x.text) && !statusInUse(g, at.L, at.r, op.text)) return MSG.statusNew;
+  }
+  return null;
+}
+// A batch cell's write. A count and a status go as on the supply tabs (a number; plain text). A date goes as its day
+// number; a cell already formatted as a date keeps its format (only the value is sent), a cell with no format also gets
+// m/d/yyyy (fields userEnteredValue,userEnteredFormat.numberFormat), and only then. before/after also keep the cell's
+// number format, and after.setFormat says this save set it, so its undo puts back the old one (blank = Automatic).
+// The text of a date is always the date as the cell shows it, never the day number.
+function buildBatchWrite(g, op, at) {
+  const x = cellAt(g, at.r, at.c), nf = numFmt(x);
+  const shows = (n, f) => (f && f.type === 'DATE' ? fmtDate(n, f.pattern) : String(n));
+  if (op.restore) {
+    const R = op.restore, back = 'format' in R, F = back ? (R.format || null) : nf;
+    const w = buildWrite(g, op, at);
+    if (typeof R.number === 'number') w.after.text = shows(R.number, F);
+    w.same = w.after.number === w.before.number && (w.after.number != null || w.after.text === w.before.text) &&
+      fmtKey(w.after.runs) === fmtKey(w.before.runs) && fmtKey(F) === fmtKey(nf);
+    if (back) {
+      w.data.userEnteredFormat = F ? { numberFormat: copy(F) } : {};
+      w.fields += ',userEnteredFormat.numberFormat';
+    }
+    return { ...w, before: { ...w.before, format: nf }, after: { ...w.after, format: F, setFormat: false } };
+  }
+  if (op.date) {
+    const n = dateSerial(clean(op.text)), F = nf || BATCH_DATE_FORMAT, setFormat = !nf;
+    const v = x.value || {};
+    const before = { text: isText(v.stringValue) ? v.stringValue : x.text, runs: x.runs,
+      number: typeof v.numberValue === 'number' ? v.numberValue : null, format: nf };
+    const data = { userEnteredValue: { numberValue: n } };
+    if (setFormat) data.userEnteredFormat = { numberFormat: copy(BATCH_DATE_FORMAT) };
+    return { data, fields: setFormat ? 'userEnteredValue,userEnteredFormat.numberFormat' : 'userEnteredValue', before,
+      after: { text: shows(n, F), runs: null, number: n, format: copy(F), setFormat }, same: before.number === n && !setFormat };
+  }
+  const w = buildWrite(g, op, at);
+  if (w.refuse) return w;
+  return { ...w, before: { ...w.before, format: nf }, after: { ...w.after, format: nf, setFormat: false } };
 }
 
 // where a cell may not be written, whatever it holds
@@ -446,6 +626,11 @@ function buildWrite(g, op, at) {
 const conflictMessage = cs => {
   const w = cs[0].why;
   if (cs[0].role) return addConflictMessage(cs);
+  if (cs[0].tab === BATCH && w !== 'changed') {
+    if (w === 'layout' || w === 'column') return 'The BATCH LABEL SHEET tab\'s columns changed since you opened this, so nothing was saved. Reload the page.';
+    if (w === 'item-twice') return 'That batch\'s METRC UID is on the BATCH LABEL SHEET tab more than once, so the app cannot tell which row you mean. Make that change in the sheet.';
+    return 'That batch\'s METRC UID is no longer on the BATCH LABEL SHEET tab, so nothing was saved. Reload the page.';
+  }
   if (w === 'week-gone') return 'That week is no longer in the sheet under the same header, so nothing was saved. Reload the page.';
   if (w === 'week-twice') return 'Two weeks in the sheet have the same header, so the app cannot tell them apart. Make that change in the sheet.';
   if (w === 'twice') return 'That text is in the sheet more than once on that day, so the app cannot tell which one you mean. Make that change in the sheet.';
@@ -457,19 +642,25 @@ const conflictMessage = cs => {
     : `${cs.length} cells changed in the sheet since you opened this, so nothing was saved. Reload to see what the sheet says now.`;
 };
 
-// The whole check for one save. grids: {tab name: grid}. Ops with `restore` come only from undoOps().
+// The whole check for one save. grids: {tab name: grid}. Ops with `restore` come only from undoOps(). now: the clock a
+// batch date is checked against (tests pass their own).
 // -> {ok: true, cells, requests, keys} or {ok: false, reason: 'refused' | 'conflict', message, cells}
-export function plan(ops, grids) {
-  const bad = checkOps(ops);
+export function plan(ops, grids, now = Date.now()) {
+  const bad = checkOps(ops, now);
   if (bad) return { ok: false, reason: 'refused', message: bad, cells: [] };
   if (ops[0].kind != null) return planAdds(ops, grids);         // checkOps: adds (or unadds) are never mixed with 1a ops
   const cells = [], conflicts = [], seen = new Set(), where = [];
   for (const op of ops) {
-    const g = grids[op.tab], isPlan = TABS[op.tab].plan;
+    const g = grids[op.tab], isPlan = TABS[op.tab].plan, isBatch = !!TABS[op.tab].batch;
     const refuse = message => ({ ok: false, reason: 'refused', message, cells: [{ tab: op.tab, r: op.r, c: op.c, a1: a1(op.r, op.c), expect: op.expect }] });
     if (!g) return refuse(MSG.bad);
-    const at = isPlan ? locatePlan(g, op) : locateSupply(g, op);
+    const at = isPlan ? locatePlan(g, op) : isBatch ? locateBatch(g, op) : locateSupply(g, op);
     if (at.why) { conflicts.push({ tab: op.tab, r: op.r, c: op.c, a1: a1(op.r, op.c), expect: op.expect, found: at.found, why: at.why }); continue; }
+    // undo of a batch date that set the cell's number format: someone changed that format since, so putting back the
+    // old one would undo their change too
+    if (isBatch && op.restore && 'afterFormat' in op.restore && fmtKey(numFmt(cellAt(g, at.r, at.c))) !== fmtKey(op.restore.afterFormat)) {
+      conflicts.push({ tab: op.tab, r: op.r, c: op.c, a1: a1(op.r, op.c), expect: op.expect, found: textAt(g, at.r, at.c), why: 'changed' }); continue;
+    }
     // undo: someone recolored words in the cell after the edit, so putting back the old colors would undo their change too
     if (op.restore && 'afterRuns' in op.restore) {
       const x = cellAt(g, at.r, at.c), len = (x.text || '').length;
@@ -477,17 +668,19 @@ export function plan(ops, grids) {
         conflicts.push({ tab: op.tab, r: op.r, c: op.c, a1: a1(op.r, op.c), expect: op.expect, found: x.text, why: 'changed' }); continue;
       }
     }
-    const stop = guard(g, op, at, isPlan);
+    const stop = isBatch ? guardBatch(g, op, at) : guard(g, op, at, isPlan);
     if (stop) return refuse(stop);
     const k = op.tab + '!' + a1(at.r, at.c);
     if (seen.has(k)) return refuse(MSG.twice);
     seen.add(k);
-    const w = buildWrite(g, op, at);
+    const w = isBatch ? buildBatchWrite(g, op, at) : buildWrite(g, op, at);
     if (w.refuse) return refuse(w.refuse);
-    // how to find this cell again (undo). A cell in a day's right column also records the item it belongs to.
+    // how to find this cell again (undo). A cell in a day's right column also records the item it belongs to; a batch
+    // cell, its batch's METRC UID and its column's header.
     const own = isPlan && at.c % 2 ? ownerCell(g, at.band.start, at.r, at.c) : null;
     const find = isPlan
       ? { week: op.find.week, day: op.find.day, owner: own ? own.text : '' }
+      : isBatch ? { uid: clean(op.find.uid), header: clean(op.find.header) }
       : { item: op.find.item, category: op.find.category || '', header: op.find.header };
     // around: what index.ts reads again after the write to see that no row moved under it (the day's two columns in
     // its week, or the supply row); never logged
@@ -564,6 +757,24 @@ export function aroundRanges(cells) {
   }
   return out;
 }
+// What index.ts reads back after the write, kept here so the checks run the same read: each written cell (an add's
+// `read`), then the cells around them (aroundRanges), in that order. A BATCH LABEL SHEET save reads that tab whole
+// instead (range null): its header row says whether columns moved under the write, and its METRC UID column where the
+// batch it meant sits now (batchHits). -> [{tab, range}]
+export function readBackRanges(cells) {
+  const whole = [...new Set((cells || []).filter(x => x && TABS[x.tab] && TABS[x.tab].batch).map(x => x.tab))];
+  return [...(cells || []).filter(x => !whole.includes(x.tab)).map(x => ({ tab: x.tab, range: x.read || x.a1 })),
+    ...aroundRanges(cells).filter(x => !whole.includes(x.tab)), ...whole.map(tab => ({ tab, range: null }))];
+}
+// The fields that read back asks Google for. An add or its undo: each cell's whole look, and the merges. A batch save:
+// each cell's number format (readAfter logs it, and the undo of a date that set the format needs it, or the undo would
+// see the format the save set as changed by hand).
+export function readBackFields(cells) {
+  const looks = (cells || []).some(x => x && x.kind != null);
+  const nfmt = !looks && (cells || []).some(x => x && TABS[x.tab] && TABS[x.tab].batch === true);
+  return `sheets(properties(sheetId,title),${looks ? 'merges,' : ''}data(startRow,startColumn,rowMetadata(hiddenByUser),` +
+    `rowData(values(userEnteredValue,formattedValue,textFormatRuns${looks ? ',userEnteredFormat' : nfmt ? ',userEnteredFormat(numberFormat)' : ''}))))`;
+}
 // The cells around the written ones that read differently after the write than at the re-check (`pre`: the grids the
 // save was planned on; `post`: the read-back), leaving out the cells the save wrote and formula cells (a supply row's
 // TOTAL QTY changes with its counts). Rows either read did not cover are not compared. -> [{tab, a1}]
@@ -603,6 +814,9 @@ export function readAfter(x, grids) {
   const v = now.value || {};
   const after = { text: isText(v.stringValue) ? v.stringValue : now.text, runs: now.runs,
     number: typeof v.numberValue === 'number' ? v.numberValue : null };
+  // a batch cell also keeps its number format as read back (index.ts reads it for these), and whether the save set it
+  if (TABS[x.tab] && TABS[x.tab].batch && !KINDS.has(x.kind))
+    return { ...after, format: numFmt(now), setFormat: !!(x.after && x.after.setFormat) };
   if (!KINDS.has(x.kind)) return after;
   const Rt = cellAt(g, x.r, x.c + 1);
   const freed = (x.kind === 'add' && x.before && x.before.freed) || [];
@@ -639,13 +853,93 @@ export function undoOps(edit) {
           cleared: b.cleared || [], freed } };
     }
     if (x.kind != null) return { kind: 'undo-of-' + x.kind };       // not undoable: checkOps refuses it
+    // a batch date that set the cell's number format: the undo puts back the old format too (null = Automatic), only
+    // while the cell still has the format the save set
+    const fmt = TABS[x.tab] && TABS[x.tab].batch && x.after && x.after.setFormat
+      ? { format: (x.before && x.before.format) || null, afterFormat: x.after.format || null } : {};
     return {
       tab: x.tab, r: x.r, c: x.c, find: x.find, expect: (x.after && x.after.text) || '',
       text: x.before.number != null ? String(x.before.number) : (x.before.text || ''),
       number: x.before.number != null,
       restore: { text: x.before.text || '', runs: x.before.runs || null, number: x.before.number == null ? null : x.before.number,
-        afterRuns: (x.after && x.after.runs) || null },
+        afterRuns: (x.after && x.after.runs) || null, ...fmt },
     };
+  });
+}
+
+// Release 1c: rows or columns moved under a batch write. Google writes by row and column number, so a row (or column)
+// inserted or deleted in the second between the locked re-check and the write puts the value into another batch's row
+// (or another column). The read-back reads the tab whole, so it says what the written cell is now: the batch whose
+// METRC UID is on its row and the header over its column, both read again. Its value before the save comes from the
+// re-check's grid (`pre`): the row with that UID; for a row with no UID (a drop's name, a spacer), the row as far from
+// it as the batch meant moved (found by its UID), checked to read like it apart from the written cell; failing that,
+// a new blank row is blank, else the nearest one row that reads like it. The column is the one with the same header.
+// -> [{tab, a1, uid, strain, header (what the column is called now), wrote, before (null when it cannot be told),
+// rows, cols (what moved), layout (the header row no longer names METRC UID and STATUS once each: nothing can be told)}]
+// the header row without blank columns at its end, to compare the re-check's with the read-back's
+const headsOf = L => { const H = L.H.slice(); while (H.length && !H[H.length - 1]) H.pop(); return H.join('\u0001'); };
+const uidRows = (g, cUid, uid) => { const out = []; g.rows.forEach((row, r) => { if (r > 0 && row && key(textAt(g, r, cUid)) === key(uid)) out.push(r); }); return out; };
+export function batchHits(cells, pre, post) {
+  const out = [];
+  for (const x of cells || []) {
+    if (!x || x.kind != null || !TABS[x.tab] || !TABS[x.tab].batch || !x.find) continue;
+    const gp = pre && pre[x.tab], ga = post && post[x.tab], Lp = gp && batchLayout(gp);
+    if (!Lp || !ga || !ga.rows[x.r]) continue;
+    const base = { tab: x.tab, a1: x.a1, wrote: x.after.text };
+    // a read-back without the header row is taken as columns unchanged
+    const La = ga.rows[0] ? batchLayout(ga) : Lp;
+    if (!La || La.cUid === x.c) {
+      out.push({ ...base, uid: '', strain: '', header: x.find.header, before: null, rows: false, cols: true, layout: true });
+      continue;
+    }
+    const colsMoved = headsOf(Lp) !== headsOf(La);
+    // the re-check's column for a column of the read-back: the same one, or the one with its header (-1: none, or two)
+    const preCol = c => !colsMoved ? c : La.H[c] && Lp.H.filter(h => h === La.H[c]).length === 1 ? Lp.H.indexOf(La.H[c]) : -1;
+    const uid = clean(textAt(ga, x.r, La.cUid));
+    const rows = key(uid) !== key(x.find.uid), cols = (La.H[x.c] || '') !== key(x.find.header);
+    if (!rows && !cols) continue;
+    const width = Math.max(La.H.length, x.c + 1);
+    const alike = r => {
+      for (let c = 0; c < width; c++) { const q = c === x.c ? -1 : preCol(c); if (q >= 0 && nl(textAt(gp, r, q)) !== nl(textAt(ga, x.r, c))) return false; }
+      return true;
+    };
+    let pr = -1, fresh = false;
+    if (!rows) pr = x.r;
+    else if (uid) { const at = uidRows(gp, Lp.cUid, uid); if (at.length === 1) pr = at[0]; }
+    else {
+      const now = uidRows(ga, La.cUid, x.find.uid), at = now.length === 1 ? 2 * x.r - now[0] : -1;
+      let blankNow = true;
+      for (let c = 0; c < width; c++) if (c !== x.c && clean(textAt(ga, x.r, c))) blankNow = false;
+      if (at > 0 && gp.rows[at] && alike(at)) pr = at;
+      else if (at >= 0 && blankNow) fresh = true;                  // a row inserted there: it was blank
+      else {
+        const target = at > 0 ? at : x.r;
+        let best = -1, tie = false;
+        gp.rows.forEach((row, r) => {
+          if (!(r > 0 && row && !clean(textAt(gp, r, Lp.cUid)) && alike(r))) return;
+          const d = Math.abs(r - target), bd = best < 0 ? Infinity : Math.abs(best - target);
+          if (d < bd) { best = r; tie = false; } else if (d === bd) tie = true;
+        });
+        if (best >= 0 && !tie) pr = best;
+      }
+    }
+    const pc = preCol(x.c);
+    const strain = pr >= 0 ? (Lp.cStrain < 0 ? '' : clean(textAt(gp, pr, Lp.cStrain)))
+      : La.cStrain < 0 || La.cStrain === x.c ? '' : clean(textAt(ga, x.r, La.cStrain));
+    out.push({ ...base, uid, strain, header: cols ? clean(textAt(ga, 0, x.c)) || 'column ' + colName(x.c) : x.find.header,
+      before: fresh ? '' : pr >= 0 && pc >= 0 ? textAt(gp, pr, pc) : null, rows, cols });
+  }
+  return out;
+}
+// Columns moved under a batch write that still landed in its batch's cell (batchHits finds none): the header row read
+// back differs from the re-check's. The save is right, but it gets no Undo, like any save the sheet moved under.
+export function batchColumnsMoved(cells, pre, post) {
+  return (cells || []).some(x => {
+    if (!x || x.kind != null || !TABS[x.tab] || !TABS[x.tab].batch) return false;
+    const gp = pre && pre[x.tab], ga = post && post[x.tab], Lp = gp && batchLayout(gp);
+    if (!Lp || !ga || !ga.rows[0]) return false;
+    const La = batchLayout(ga);
+    return !La || headsOf(Lp) !== headsOf(La);
   });
 }
 

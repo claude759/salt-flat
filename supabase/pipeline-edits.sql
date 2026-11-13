@@ -1,14 +1,16 @@
 -- Production Pipeline page (pipeline.html): editing Victoria's sheet from the app (release 1a: rewrite a cell; release
--- 1b: add a one-line item under a day's last line, switched on separately in kinds_on).
+-- 1b: add a one-line item under a day's last line, switched on separately in kinds_on; release 1c: set a batch's
+-- STATUS, dates or unit counts on the BATCH LABEL SHEET tab, switched on separately in tabs_on).
 -- The page never writes to Google itself. It sends each edit to the Edge Function pipeline-sheet-write
 -- (supabase/functions/pipeline-sheet-write/, owned by Gianni's Claude; CONTRACT.md there is the agreement with the
 -- page). The function checks the edit against the sheet as it is right now, writes it with its own Google account,
 -- and logs it here with each cell's earlier text and colored words, so one click can undo it.
---   pipeline_editors          who may edit: scope 'plan' (DISTRO PIPELINE), 'supply' (the two supply tabs) or 'all'
+--   pipeline_editors          who may edit: scope 'plan' (DISTRO PIPELINE and BATCH LABEL SHEET), 'supply' (the two
+--                             supply tabs) or 'all'
 --   pipeline_can_edit(scope)  true when the signed-in caller is an editor for that scope
 --   pipeline_write_settings   the switches, one row; no policies, so only the save program (service role) reads it
---   pipeline_edit_status()    what the page needs to show Edit and Add: can_plan, can_supply, enabled, test_mode,
---                             target, tabs_on, kinds_on
+--   pipeline_edit_status()    what the page needs to show Edit and Add: can_plan (also the BATCH LABEL SHEET tab),
+--                             can_supply, enabled, test_mode, target, tabs_on, kinds_on
 --   pipeline_edits            the log of every save, dry run, refusal and conflict; read by pipeline_can_view() accounts
 --   pipeline_edit_locks       a short lock per cell, so two saves of one cell cannot both run (save program only)
 -- Editors and the settings row are seeded out-of-band (emails and file ids are never committed).
@@ -46,9 +48,16 @@ create table if not exists public.pipeline_write_settings (
   target        text not null default 'test' check (target in ('test', 'live')),
   test_workbook text,                                    -- id of the private test copy (target 'test')
   tabs_on       text[] not null default '{}'
-                check (tabs_on <@ array['DISTRO PIPELINE', 'DISTRO SUPPLY', 'ACCESSORY SUPPLY']::text[]),
+                check (tabs_on <@ array['DISTRO PIPELINE', 'DISTRO SUPPLY', 'ACCESSORY SUPPLY', 'BATCH LABEL SHEET']::text[]),
   updated_at    timestamptz not null default now()
 );
+-- Release 1c: BATCH LABEL SHEET may be switched on too. The check above only applies to a fresh install; this puts the
+-- same check on the table that is already there (re-run safe). tabs_on itself is not changed, so the tab stays off
+-- until an admin ticks it on the Admin page.
+alter table public.pipeline_write_settings
+  drop constraint if exists pipeline_write_settings_tabs_on_check,
+  add constraint pipeline_write_settings_tabs_on_check
+      check (tabs_on <@ array['DISTRO PIPELINE', 'DISTRO SUPPLY', 'ACCESSORY SUPPLY', 'BATCH LABEL SHEET']::text[]);
 comment on table public.pipeline_write_settings is
   'Switches for pipeline-sheet-write. Target ''live'' writes the workbook in schedule_board (state CA). '
   'No policies: only the service role reads it, so test_workbook never reaches a browser.';

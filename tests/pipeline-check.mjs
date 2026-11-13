@@ -754,7 +754,15 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.deepEqual(ADMIN.args({ test_mode: false, target: 'live', kinds_on: ['rewrite', 'add'], extra: 1 }), { p_test_mode: false, p_target: 'live', p_kinds_on: ['rewrite', 'add'] });
   // ticking a tab or a kind keeps the fixed order, with no repeats
   assert.deepEqual(ADMIN.toggled(ADMIN.TABS, ['ACCESSORY SUPPLY'], 'DISTRO PIPELINE', true), ['DISTRO PIPELINE', 'ACCESSORY SUPPLY']);
-  assert.deepEqual(ADMIN.toggled(ADMIN.TABS, ADMIN.TABS, 'DISTRO SUPPLY', false), ['DISTRO PIPELINE', 'ACCESSORY SUPPLY']);
+  assert.deepEqual(ADMIN.toggled(ADMIN.TABS, ADMIN.TABS, 'DISTRO SUPPLY', false), ['DISTRO PIPELINE', 'ACCESSORY SUPPLY', 'BATCH LABEL SHEET']);
+  assert.deepEqual(ADMIN.toggled(ADMIN.TABS, ['DISTRO PIPELINE'], 'BATCH LABEL SHEET', true), ['DISTRO PIPELINE', 'BATCH LABEL SHEET'], 'the batch tab is the fourth switch');
+  // each editor's row says which tabs their right covers, as the save program reads it (rules.js TABS[tab].scope: the
+  // plan right also covers BATCH LABEL SHEET); 'all' covers every tab
+  const W = await import(new URL('../supabase/functions/pipeline-sheet-write/rules.js', import.meta.url).href);
+  assert.deepEqual([...ADMIN.TABS].sort(), Object.keys(W.TABS).sort(), 'the Admin page switches every tab the save program knows');
+  for (const t of ADMIN.TABS) assert.ok(ADMIN.scopeHelp(W.TABS[t].scope).includes(t), `${t}: named by the ${W.TABS[t].scope} right's help`);
+  for (const t of ADMIN.TABS) for (const s of ['plan', 'supply']) if (W.TABS[t].scope !== s) assert.ok(!ADMIN.scopeHelp(s).includes(t), `${t} is not under ${s}`);
+  assert.equal(ADMIN.scopeHelp('all'), `all ${['', 'one', 'two', 'three', 'four', 'five', 'six'][ADMIN.TABS.length]} tabs`);
   assert.deepEqual(ADMIN.toggled(ADMIN.KINDS, ['add'], 'rewrite', true), ['rewrite', 'add']);
   assert.deepEqual(ADMIN.toggled(ADMIN.KINDS, null, 'add', true), ['add']);
   // real writes to the live sheet start only with saving on, test mode off and the real sheet picked: that change asks first
@@ -778,7 +786,7 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
   assert.equal(ADMIN.goesLive(liveRewrite, { test_mode: true }), false, 'test mode back on asks nothing');
   assert.equal(ADMIN.goesLive(liveRewrite, { test_workbook: '' }), false, 'clearing the test copy while live asks nothing');
   assert.equal(ADMIN.liveAsk(almost, { target: 'live' }),
-    'Saves from the app will change the real sheet the whole crew works from, right away: changing lines on the DISTRO PIPELINE, DISTRO SUPPLY and ACCESSORY SUPPLY tabs.\n\nTurn this on?');
+    'Saves from the app will change the real sheet the whole crew works from, right away: changing lines on the DISTRO PIPELINE, DISTRO SUPPLY, ACCESSORY SUPPLY and BATCH LABEL SHEET tabs.\n\nTurn this on?');
   assert.equal(ADMIN.liveAsk({ ...liveRewrite, tabs_on: ['DISTRO PIPELINE'] }, { kinds_on: ['rewrite', 'add'] }),
     'Saves from the app already change the real sheet the whole crew works from. After this they can also add new lines on the DISTRO PIPELINE tab, right away.\n\nGo ahead?');
   assert.equal(ADMIN.liveAsk({ ...liveRewrite, tabs_on: ['DISTRO PIPELINE'] }, { tabs_on: ['DISTRO PIPELINE', 'DISTRO SUPPLY'] }),

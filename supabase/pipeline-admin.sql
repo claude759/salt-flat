@@ -6,7 +6,8 @@ set role pipeline_owner;
 --   pipeline_is_admin()                true when the signed-in caller is a pipeline admin (the page shows the tab then)
 --   pipeline_admin_editors()           the editors list
 --   pipeline_admin_editor_add(...)     add an editor; someone already on the list is refused and left as they are
---   pipeline_admin_editor_set(...)     add an editor or change one (email, scope plan|supply|all, admin)
+--   pipeline_admin_editor_set(...)     add an editor or change one (email, scope plan|supply|all, admin); 'plan' also
+--                                      covers the BATCH LABEL SHEET tab
 --   pipeline_admin_editor_remove(...)  take an editor off the list (never the last admin)
 --   pipeline_admin_settings()          the switches, whether a test copy is set, and the test copy's id
 --   pipeline_admin_settings_set(...)   change the switches; an argument left out (null) stays as it is. A change that
@@ -237,7 +238,7 @@ language plpgsql security definer
 set search_path = public
 as $$
 declare
-  c_tabs  constant text[] := array['DISTRO PIPELINE', 'DISTRO SUPPLY', 'ACCESSORY SUPPLY'];
+  c_tabs  constant text[] := array['DISTRO PIPELINE', 'DISTRO SUPPLY', 'ACCESSORY SUPPLY', 'BATCH LABEL SHEET'];
   c_kinds constant text[] := array['rewrite', 'add'];
   v_me    text := coalesce(nullif(public.pipeline_jwt_email(), ''), 'unknown');
   v_old   public.pipeline_write_settings;
@@ -256,7 +257,7 @@ begin
     raise exception 'Saves go either to the test copy or to the real sheet.' using errcode = '22023';
   end if;
   if p_tabs_on is not null and exists (select 1 from unnest(p_tabs_on) t where t is null or not (t = any (c_tabs))) then
-    raise exception 'The app can change only the DISTRO PIPELINE, DISTRO SUPPLY and ACCESSORY SUPPLY tabs.'
+    raise exception 'The app can change only the DISTRO PIPELINE, DISTRO SUPPLY, ACCESSORY SUPPLY and BATCH LABEL SHEET tabs.'
       using errcode = '22023';
   end if;
   if p_kinds_on is not null and exists (select 1 from unnest(p_kinds_on) k where k is null or not (k = any (c_kinds))) then

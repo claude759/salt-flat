@@ -14,6 +14,10 @@ colored words) of a named line of the same kind, so it looks as if Victoria type
 pair, may clear an empty leftover merge in that row, and never inserts, deletes, hides or unhides
 rows. A day with no empty row left under its last line is refused.
 
+Release 1c sets five cells of a batch's row on the BATCH LABEL SHEET tab (STATUS, PCKG DATE, NABIS P/U DATE, TOTAL
+UNITS, BUDTENDER UNITS), found by the batch's METRC UID, never by row number. Blank cells may be filled. The only
+format it ever writes is a date's number format, and only into a cell that has none (see "Release 1c" below).
+
 ## The pieces
 
 - `index.ts`: the Supabase Edge Function. Sign-in check, settings, Google token, read, check,
@@ -47,7 +51,7 @@ rows. A day with no empty row left under its last line is refused.
 
 ```json
 {
-  "tab": "DISTRO PIPELINE" | "DISTRO SUPPLY" | "ACCESSORY SUPPLY",
+  "tab": "DISTRO PIPELINE" | "DISTRO SUPPLY" | "ACCESSORY SUPPLY" | "BATCH LABEL SHEET",
   "r": 649, "c": 1,
   "expect": "1G PREROLL- 600",
   "text": "1G PREROLL- 450",
@@ -79,6 +83,7 @@ rows. A day with no empty row left under its last line is refused.
   written as numbers so the sheet's TOTAL QTY sum keeps counting them; `text` is digits with an
   optional decimal and commas ("1,500"), or empty to empty the count. `false` for STATUS, NOTES and
   every DISTRO PIPELINE cell, which are written as plain text (never parsed as a date or formula).
+- BATCH LABEL SHEET cells have their own `find` and a `date` flag: see "Release 1c" below.
 
 ### Op: add a line (release 1b)
 
@@ -116,7 +121,7 @@ rows. A day with no empty row left under its last line is refused.
 ## What the program checks, in order (any failure writes nothing)
 
 1. Signed in with a confirmed @wizardtrees.com email, and `pipeline_can_edit(scope)` is true
-   (`plan` for DISTRO PIPELINE, `supply` for the two supply tabs).
+   (`plan` for DISTRO PIPELINE and BATCH LABEL SHEET, `supply` for the two supply tabs).
 2. Writing is switched on (`pipeline_write_settings.enabled`), the tab is in `tabs_on`, and for a
    `write` the kind of edit is in `kinds_on` (`rewrite` for one-cell ops, `add` for adds), unless
    the action is `dry`. In test mode (`test_mode`), `write` behaves like `dry`.
@@ -206,6 +211,134 @@ rows. A day with no empty row left under its last line is refused.
      message names the cells.
    - The batchUpdate is sent once. Google's rate limit (429) is not applied and is not resent
      after a wait (rows may move meanwhile): nothing is written, and trying again checks afresh.
+
+## Release 1c: Batch Label Sheet cells
+
+The Batches page sets five cells of a batch's row on the BATCH LABEL SHEET tab. The tab ships switched off: it is
+written only once an admin ticks it in `tabs_on` on the Admin page (a `dry` run works before that). Editing it needs
+the `plan` right (`can_plan`); there is no separate scope yet. A batch cell is a one-cell op, so it is the kind
+`rewrite` in `kinds_on`, and it may share a save with other one-cell ops (at most 20 cells).
+
+### Op: one batch cell
+
+```json
+{
+  "tab": "BATCH LABEL SHEET",
+  "r": 16, "c": 23,
+  "expect": "",
+  "text": "2026-11-20",
+  "find": { "uid": "1A4000000000000000000101", "header": "NABIS P/U DATE" },
+  "number": false,
+  "date": true
+}
+```
+
+- `find.uid`: the batch's METRC UID as the page read it; `find.header`: the column's header in row 1, one of
+  `STATUS`, `PCKG DATE`, `NABIS P/U DATE`, `TOTAL UNITS`, `BUDTENDER UNITS`. Both compared with spaces collapsed and
+  case ignored. Nothing else in `find` is passed on, and the page never sends `prev`.
+- `r`, `c`: the 0-based row and column the page read the cell at (the CSV export's grid). Information only: the cell
+  is the one at that UID's row and that header's column, wherever they are now.
+- `expect`: the cell's whole text as the page read it, which may be `""` (a blank cell can be filled). A date reads as
+  the sheet shows it ("11/18/26", "11/20/2026"), never as a day number.
+- `text`, by column:
+  - `STATUS`: the new status, written as plain text. Not empty, and exactly (spelling, case and spaces) the STATUS of
+    another row of the tab that has a METRC UID (hidden finished rows count). The app never invents a status.
+  - `PCKG DATE`, `NABIS P/U DATE`: `date: true`, `text` the day as `YYYY-MM-DD`, a real day from 2024-01-01 to 400
+    days after today (UTC). Written as the sheet's day number (days since 1899-12-30), so it sorts and filters as a
+    date. A cell already formatted as a date keeps its format (only the value is sent). A cell with no number format
+    (Automatic, like most blank NABIS P/U DATE cells) also gets `m/d/yyyy`, the format Sheets gives a date typed there
+    and the one the COA watcher writes (fields `userEnteredValue,userEnteredFormat.numberFormat`). Fill, font, borders
+    and every other part of the look are never sent.
+  - `TOTAL UNITS`, `BUDTENDER UNITS`: `number: true`, `text` a whole number of 0 or more (commas allowed, "1,200"),
+    written as a number so CASES keeps working.
+- A date or count cannot be emptied from the app, and a status cannot be blanked.
+
+### Checks on top of the ones above
+
+- The header row (row 1) must name `METRC UID` and `STATUS` once each, or nothing is written (conflict `layout`). The
+  header must be in row 1 once (else `column`). Exactly one row below it must hold the UID: none is `item-gone`, two or
+  more is `item-twice`. The cell must still hold `expect` (else `changed`, with `found`).
+- Refused (`reason` `refused`, nothing written), with these messages:
+  - another column: "From the app, only STATUS, PCKG DATE, NABIS P/U DATE, TOTAL UNITS and BUDTENDER UNITS of a batch
+    can be changed. Change the rest in the sheet." (CASES, STRAIN and the rest);
+  - the COA watcher's columns (THC, CBD, TOTAL CANNA, COA LINK, TEST DATE, COA RETURN DATE): "THC, CBD, TOTAL CANNA,
+    COA LINK, TEST DATE and COA RETURN DATE are filled in from the lab's COA, so the app does not change them. Change
+    them in the sheet.";
+  - a hidden row: "That batch's row is hidden in the sheet, so the app does not change it. Show the row in the sheet,
+    then try again." (the CSV export carries no hidden flags, so only the program can tell);
+  - a formula (the CASES formulas, a formula left in a finished row): the usual formula message;
+  - any merged cell, top-left included: "That cell is merged with other cells in the sheet, so the app does not change
+    it. Make that change in the sheet.";
+  - a count into a cell formatted as a date or time: the usual `countFormat` message;
+  - a date into a cell with a number format that is not a date (a number, text, percent): "That date cell is set to
+    show something other than a date in the sheet, so a date there would read as a number. In the sheet, set the
+    cell to Format, Number, Date (or Automatic), then try again.";
+  - a value of the wrong kind for its column (a date without `date`, a count without `number`, a flag on STATUS):
+    "The app sent that batch change the wrong way (a date, a number or a status in the wrong column). Reload the page
+    and try again.";
+  - a bad date: "Dates must be a real day, from January 1, 2024 to about a year from now (YYYY-MM-DD). Check the year.";
+  - a bad count: "Units must be a whole number of 0 or more, like 1200.";
+  - an empty date or count: "The app cannot empty a date or a unit count on the BATCH LABEL SHEET tab. Make that
+    change in the sheet.";
+  - an empty status: "Pick a status. The app cannot empty a batch's STATUS; make that change in the sheet.";
+  - a status no other batch has: "That status is not used on any other batch in the sheet, so the app does not add it.
+    Pick one the sheet already uses, or type the new one in the sheet.";
+  - `date: true` on any other tab, `date` and `number` both true, or a `find` without `uid` and `header`: the usual
+    "could not read" message. (The program passes a `date` flag on for every tab when the page sends one, so a page
+    bug that sends it for DISTRO PIPELINE or a supply tab is refused, never saved as plain text. An op without it is
+    passed on exactly as before release 1c.)
+- Conflict messages for this tab: `item-gone` "That batch's METRC UID is no longer on the BATCH LABEL SHEET tab, so
+  nothing was saved. Reload the page."; `item-twice` "That batch's METRC UID is on the BATCH LABEL SHEET tab more than
+  once, so the app cannot tell which row you mean. Make that change in the sheet."; `layout` and `column` "The BATCH
+  LABEL SHEET tab's columns changed since you opened this, so nothing was saved. Reload the page."; `changed` as on
+  the other tabs.
+- A workbook with no BATCH LABEL SHEET tab (an older test copy): `reason` `error`, "The sheet the app saves to has no
+  BATCH LABEL SHEET tab, so nothing was saved. Tell Gianni."
+
+### Reply and log
+
+- A cell's `after` is the text the cell shows (a date as the sheet shows it, never the day number). The log's `before`
+  and `after` also keep the cell's number format (`format`, null for Automatic) and `after.setFormat` (true when the
+  save gave a blank Automatic cell `m/d/yyyy`). The log's `find` is `{uid, header}`.
+- Rows or columns moved during the write: the read-back reads the whole BATCH LABEL SHEET tab again (with each cell's
+  number format). Google writes by row and column number, so a row or column inserted or deleted in the second between
+  the re-check and the write puts the value in another cell. The program reads what the written cell is now: the METRC
+  UID on its row and the header over its column. If either is no longer the batch's, the save is logged as written but
+  gets no `edit` (no Undo), `checked` is false, and the reply has `hit: [{tab, a1, uid, strain, header, wrote, before,
+  rows, cols}]`, one per cell that landed wrong:
+  - `uid`, `strain`: the batch whose row it landed on (`uid` "" for a row with no METRC UID, such as a drop's name);
+  - `header`: what that cell's column is called now (the header the page sent when only rows moved);
+  - `wrote`: what the save wrote there; `before`: what that cell held at the re-check, so a person can put it back
+    (null only when it cannot be told). For a row with no METRC UID it is the row as far from that cell as the batch
+    moved (found by its METRC UID), checked to read the same apart from the written cell; a row inserted there was
+    blank; failing both, the nearest one row that reads the same. With columns moved, the column with the same header;
+  - `rows`, `cols`: true for what moved under that cell;
+  - `layout: true` (with `before` null) when the header row read back no longer names METRC UID and STATUS once each,
+    or the write landed in the METRC UID column: nothing about where it landed can be told.
+  The message names each cell, for example: "Saved, but rows were added or removed in the BATCH LABEL SHEET while it
+  was saving, so the change landed in the wrong row: a row with no METRC UID now has STATUS "PACKAGING" in A16; it said
+  "DEC DROP 3" before. Put "DEC DROP 3" back there. Then make your change again. This save cannot be undone from the
+  app." With columns moved it says "columns were added or removed" and "the wrong column" (both: "rows and columns",
+  "the wrong place"), and names the column by its header now ("batch 1A40... (STRAIN) now has HRVST DATE "11/20/26" in
+  G16; it said "10/29/26" before."). With `layout`: "Saved, but the BATCH LABEL SHEET's columns changed while it was
+  saving, so the app cannot tell where the change landed. Check G16 and the batch's row in the sheet, and fix it there:
+  this save cannot be undone from the app."
+- Columns moved during the write, but the save still landed in its batch's cell (no `hit`): no `edit` (no Undo),
+  `checked` false, and "Saved in the right cell, but columns were added or removed in the BATCH LABEL SHEET while it
+  was saving. Check that batch's row in the sheet: this save cannot be undone from the app."
+
+### Undo of a batch cell
+
+Found again by `{uid, header}` (rows may have moved), and only while the cell still shows what the save wrote. It puts
+back the old value: the old text, the old number or day number, or a blank, whatever the value rules above say (a
+blank cell, a status no batch uses any more and a blank date are all put back). When the save gave the cell `m/d/yyyy`,
+the undo also puts back the old number format (none, Automatic), fields `userEnteredValue,textFormatRuns,
+userEnteredFormat.numberFormat`, and only while the cell still has `m/d/yyyy` (a format changed by hand since is a
+conflict, so it is never wiped). A hidden row is refused as above. For each of the five:
+- STATUS: the old status text, or blank.
+- PCKG DATE: the old day number (the cell keeps its own m/d/yy), or blank.
+- NABIS P/U DATE: the old day number, or blank; plus the format back to Automatic when the save set `m/d/yyyy`.
+- TOTAL UNITS, BUDTENDER UNITS: the old number, or blank.
 
 ## Reply
 
@@ -307,7 +440,8 @@ lines were added below it since, that day keeps a blank row, which the page read
 ## For the page
 
 - `pipeline_edit_status()` (RPC, signed in) returns `{can_plan, can_supply, enabled, test_mode,
-  target, tabs_on, kinds_on}`: show Edit only when `can_plan` / `can_supply` is true for that tab.
+  target, tabs_on, kinds_on}`: show Edit only when `can_plan` / `can_supply` is true for that tab
+  (`can_plan` for BATCH LABEL SHEET too).
   Show Add only when `kinds_on` includes `add` (an older database without `kinds_on` means rewrites
   only), only for today or a later day, and never while the page is on the backup feed.
 - `pipeline_edits` (select, same people as `pipeline_can_view()`) has who changed what and when,
@@ -319,7 +453,8 @@ lines were added below it since, that day keeps a blank row, which the page read
 - `test_mode` (default true): check and plan, never write.
 - `target`: `test` (the private copy, `test_workbook`) or `live` (the workbook the page reads, from
   `schedule_board`).
-- `tabs_on`: the tabs writing is allowed on.
+- `tabs_on`: the tabs writing is allowed on: DISTRO PIPELINE, DISTRO SUPPLY, ACCESSORY SUPPLY and BATCH LABEL SHEET
+  (release 1c; off until an admin ticks it).
 - `kinds_on` (default `{rewrite}`): the kinds of edit that may be written: `rewrite` (one-cell ops,
   release 1a) and `add` (adding a line, release 1b). Victoria approves each kind on the test copy
   before it is switched on. Until this column is applied, the program treats it as `{rewrite}`.

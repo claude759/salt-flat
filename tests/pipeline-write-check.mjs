@@ -1,10 +1,13 @@
 // Checks the rules of the program that saves Production Pipeline edits to Victoria's sheet
-// (supabase/functions/pipeline-sheet-write/rules.js): on made-up tabs laid out like DISTRO PIPELINE and DISTRO SUPPLY,
-// and, when the saved reads of the real tab are on this computer (they stay out of this public repo), on real cells.
+// (supabase/functions/pipeline-sheet-write/rules.js): on made-up tabs laid out like DISTRO PIPELINE, DISTRO SUPPLY and
+// BATCH LABEL SHEET, and, when the saved reads of the real tabs are on this computer (they stay out of this public repo:
+// the research reads of DISTRO PIPELINE and the newest hourly snapshot for BATCH LABEL SHEET), on real cells.
 // Run: node tests/pipeline-write-check.mjs [--real=<folder holding format.json and grid.json>]
 // Run this before every push that touches pipeline-sheet-write: any failure means do not push.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
+import { stripTypeScriptTypes } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import * as R from '../supabase/functions/pipeline-sheet-write/rules.js';
@@ -347,7 +350,8 @@ assert.deepEqual(R.diffStretch('DEC DROP 2', 'DEC DROP 12'), { p: 9, oe: 9, ne: 
 // sheet passed in is never changed (a changed copy is returned). updateCells with a field mask, mergeCells (MERGE_ALL
 // keeps only the top-left value; it may not touch an existing merge) and unmergeCells (it may not cut a merge in
 // two). With unmergeCopies, unmerging copies the top-left cell's format into the freed cells, the way the sheet looked
-// after M641:M649 were unmerged; an undo must come out exact either way.
+// after M641:M649 were unmerged; an undo must come out exact either way. userEnteredFormat.numberFormat (release 1c)
+// sets or clears only the number format, and a number in a cell formatted as a date shows as that date.
 function applyRequests(sheet, requests, { unmergeCopies = true } = {}) {
   const s = structuredClone(sheet), sid = s.properties.sheetId;
   const cell = (r, c) => {
@@ -366,7 +370,8 @@ function applyRequests(sheet, requests, { unmergeCopies = true } = {}) {
     if (kinds.length !== 1) throw new Error('one request per entry');
     if (kinds[0] === 'updateCells') {
       const u = req.updateCells, q = box(u.range), fields = u.fields.split(',');
-      for (const f of fields) if (!['userEnteredValue', 'userEnteredFormat', 'textFormatRuns'].includes(f)) throw new Error('field mask ' + f);
+      for (const f of fields) if (!['userEnteredValue', 'userEnteredFormat', 'textFormatRuns', 'userEnteredFormat.numberFormat'].includes(f)) throw new Error('field mask ' + f);
+      if (fields.includes('userEnteredFormat') && fields.includes('userEnteredFormat.numberFormat')) throw new Error('field mask overlaps');
       if (u.rows.length !== q.endRowIndex - q.startRowIndex) throw new Error('one row of data per row');
       each(q, (r, c) => {
         const v = u.rows[r - q.startRowIndex].values[c - q.startColumnIndex];
@@ -379,6 +384,16 @@ function applyRequests(sheet, requests, { unmergeCopies = true } = {}) {
         }
         if (fields.includes('userEnteredFormat')) { if (v.userEnteredFormat) x.userEnteredFormat = structuredClone(v.userEnteredFormat); else delete x.userEnteredFormat; }
         if (fields.includes('textFormatRuns')) { if (v.textFormatRuns) x.textFormatRuns = structuredClone(v.textFormatRuns); else delete x.textFormatRuns; }
+        if (fields.includes('userEnteredFormat.numberFormat')) {
+          const nf = v.userEnteredFormat && v.userEnteredFormat.numberFormat;
+          if (nf) x.userEnteredFormat = { ...(x.userEnteredFormat || {}), numberFormat: structuredClone(nf) };
+          else if (x.userEnteredFormat) { delete x.userEnteredFormat.numberFormat; if (!Object.keys(x.userEnteredFormat).length) delete x.userEnteredFormat; }
+        }
+        const nf = x.userEnteredFormat && x.userEnteredFormat.numberFormat, num = x.userEnteredValue && x.userEnteredValue.numberValue;
+        if (fields.includes('userEnteredValue') || fields.includes('userEnteredFormat.numberFormat')) {
+          if (typeof num === 'number' && nf && nf.type === 'DATE') x.formattedValue = showDate(num, nf.pattern);
+          else if (typeof num === 'number') x.formattedValue = String(num);
+        }
       });
     } else if (kinds[0] === 'mergeCells') {
       const q = box(req.mergeCells.range);
@@ -396,6 +411,12 @@ function applyRequests(sheet, requests, { unmergeCopies = true } = {}) {
     } else throw new Error('request ' + kinds[0]);
   }
   return s;
+}
+// how the sheet shows a day number with a date pattern (written here apart from rules.js, so the two check each other)
+function showDate(n, pattern) {
+  const d = new Date(Date.UTC(1899, 11, 30) + n * 86400000), m = d.getUTCMonth() + 1, day = d.getUTCDate(), y = d.getUTCFullYear();
+  const p2 = k => String(k).padStart(2, '0');
+  return { 'm/d/yy': `${m}/${day}/${p2(y % 100)}`, 'm/d/yyyy': `${m}/${day}/${y}`, 'mm/dd/yyyy': `${p2(m)}/${p2(day)}/${y}` }[pattern] ?? `?${pattern}`;
 }
 // everything in a tab that a save could change: values, formats, colored words, merges, hidden rows
 function tabState(sheet) {
@@ -1017,6 +1038,364 @@ const conflictAdd = (ops, why, role, label, sheet) => {
   assert.ok(R.changedAround(added.p.cells, planGrid(addSheet), planGrid(applyRequests(insertRows(addSheet, 4, 1), added.p.requests))).length > 0, 'an add one row off');
   ok('rows moved under a write are seen around it');
 }
+/* ---------- release 1c: BATCH LABEL SHEET (made-up tab: made-up UIDs and strains, no COA links) ---------- */
+const BAT = R.BATCH;
+const BAT_HEAD = ['STATUS', 'STRAIN', 'ITEM', 'CLASS', 'CROSS', 'HRVST DATE', 'PCKG DATE', 'PRODUCTION BATCH', 'CULT LIC', 'DISTRO LIC',
+  'TESTED BY', 'THC', 'CBD', 'TOTAL CANNA', 'METRC UID', 'COA LINK', 'TOTAL UNITS', 'BUDTENDER UNITS', 'CASES',
+  'QTY MADE IN DISTRU', 'RECIEVE DATE', 'TEST DATE', 'COA RETURN DATE', 'NABIS P/U DATE'];
+const UID = k => '1A40000000000000000' + String(100 + k).padStart(5, '0');   // made up; the batch in row n is UID(n - 5)
+const DATE = p => ({ numberFormat: { type: 'DATE', pattern: p } });
+const dateAt = (n, p) => ({ raw: { userEnteredValue: { numberValue: n }, formattedValue: showDate(n, p), userEnteredFormat: DATE(p) } });
+const BAT_CELLS = {
+  ...Object.fromEntries(BAT_HEAD.map((h, c) => [R.colName(c) + 1, h])),
+  A3: 'GOAT DROP!!',                                                         // a drop label: no UID
+  A4: 'WAITING FOR PRODUCT', B4: 'MOON ROCKS',                               // a placeholder: no UID
+  A5: 'DEC DROP 9',
+  // row 6: a new batch. G6 blank but already m/d/yy, X6 blank with no format, Q6 0, R6 blank, S6 the CASES formula
+  A6: 'WAITING FOR TESTING', B6: 'TEST BERRY', C6: 'FLOWER', F6: dateAt(46324, 'm/d/yyyy'), O6: UID(1), Q6: 0,
+  S6: { formula: '=SUM(Q6/16)', shows: '0' },
+  // row 7: a batch being packaged, every field filled
+  A7: 'PACKAGING', B7: 'FAKE KUSH', C7: 'FLOWER', G7: dateAt(46344, 'm/d/yy'), L7: { raw: { userEnteredValue: { numberValue: 0.2521 }, formattedValue: '25.21%', userEnteredFormat: { numberFormat: { type: 'PERCENT', pattern: '0.00%' } } } },
+  O7: UID(2), Q7: 1200, R7: 24, S7: { formula: '=SUM(Q7/16)', shows: '75' }, X7: dateAt(46346, 'm/d/yyyy'),
+  // row 8: a count cell formatted as a date, a Nabis cell formatted as a number
+  A8: 'GRINDING FLOWER', B8: 'PLAIN JANE', O8: UID(3),
+  // row 9: merged cells over Q:R and W:X
+  A9: 'WAITING FOR TESTING', B9: 'MERGED MANGO', O9: UID(4),
+  E10: 'FINISHED/COMPLETE ITEMS ',
+  A11: 'DONE', B11: 'OLD GOLD', O11: UID(6), Q11: 500,                       // hidden (the old finished block)
+  A12: 'DONE', B12: 'NEW GOLD', O12: UID(7), Q12: { formula: '=Q11+1', shows: '501' },
+  B13: 'BLANK STATUS', O13: UID(8),                                          // a batch with no STATUS yet
+};
+const BAT_FORMATS = { G6: DATE('m/d/yy'), L6: { numberFormat: { type: 'PERCENT', pattern: '0.00%' } }, Q8: DATE('m/d/yyyy'),
+  X8: { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } };
+const batSheetOf = (cells = BAT_CELLS, more = {}) => sheetOf(BAT, cells, { rows: 20, cols: 26, hidden: [11], merges: ['Q9:R9', 'W9:X9', 'E10:J10'], formats: BAT_FORMATS, ...more });
+const batSheet = batSheetOf();
+const batGrid = sheet => ({ [BAT]: R.gridFromSheet(sheet, BAT) });
+const bop = (row, header, expect, text, kind = {}) => ({ tab: BAT, r: row - 1, c: BAT_HEAD.indexOf(header), expect, text, number: false,
+  find: { uid: UID(row - 5), header }, ...kind });
+const NUM = { number: true }, DAY = { date: true };
+const planB = (ops, sheet = batSheet) => R.plan(Array.isArray(ops) ? ops : [ops], batGrid(sheet));
+const refusedB = (ops, msg, label, sheet) => {
+  const res = planB(ops, sheet);
+  assert.equal(res.reason, 'refused', `${label}: ${res.message}`); assert.equal(res.message, msg, label);
+};
+// Google's spreadsheets.get, imitated: only the ranges asked for (null = the whole tab) and only the fields asked for,
+// so a read-back that leaves out something an undo needs (a cell's number format, the header row) fails these checks
+function googleRead(sheet, ranges, fields) {
+  const want = ['userEnteredValue', 'formattedValue', 'textFormatRuns'].filter(k => fields.includes(k + ',') || fields.includes(k + ')'));
+  const fmt = fields.includes('userEnteredFormat(numberFormat)') ? 'number' : /userEnteredFormat[,)]/.test(fields) ? 'all' : null;
+  const hid = fields.includes('hiddenByUser');
+  const pick = v => {
+    const o = {};
+    for (const k of want) if (v && v[k] != null) o[k] = structuredClone(v[k]);
+    if (v && v.userEnteredFormat && fmt === 'all') o.userEnteredFormat = structuredClone(v.userEnteredFormat);
+    if (v && v.userEnteredFormat && v.userEnteredFormat.numberFormat && fmt === 'number') o.userEnteredFormat = { numberFormat: structuredClone(v.userEnteredFormat.numberFormat) };
+    return o;
+  };
+  const rows = [], meta = [];
+  for (const d of sheet.data) (d.rowData || []).forEach((row, i) => { rows[(d.startRow || 0) + i] = row; meta[(d.startRow || 0) + i] = (d.rowMetadata || [])[i]; });
+  const width = Math.max(0, ...rows.map(row => ((row && row.values) || []).length));
+  const data = ranges.map(range => {
+    const [a, b] = range == null ? [[0, 0], [rows.length - 1, width - 1]] : range.split(':').map(cellRef).concat(range.includes(':') ? [] : [cellRef(range)]);
+    const out = [];
+    for (let r = a[0]; r <= b[0]; r++) out.push({ values: (((rows[r] || {}).values) || []).slice(a[1], b[1] + 1).map(pick) });
+    return { startRow: a[0], startColumn: a[1], rowData: out,
+      rowMetadata: out.map((_, i) => (hid && meta[a[0] + i] && meta[a[0] + i].hiddenByUser ? { hiddenByUser: true } : {})) };
+  });
+  return { properties: { sheetId: sheet.properties.sheetId, title: sheet.properties.title },
+    ...(fields.includes('merges') ? { merges: structuredClone(sheet.merges || []) } : {}), data };
+}
+// the batch tab read back the way index.ts reads it after a save of `cells` (R.readBackRanges, R.readBackFields)
+const backOf = (sheet, cells) => ({ [BAT]: R.gridFromSheet(googleRead(sheet,
+  R.readBackRanges(cells).filter(x => x.tab === BAT).map(x => x.range), R.readBackFields(cells)), BAT) });
+// columns inserted or deleted the way Sheets does it: everything at or right of `at` moves, merges move with it
+function insertCols(sheet, at, n) {
+  const s = structuredClone(sheet);
+  for (const d of s.data) for (const row of d.rowData || []) { row.values ||= []; if (row.values.length >= at) row.values.splice(at, 0, ...Array.from({ length: n }, () => ({}))); }
+  for (const m of s.merges || []) { if (m.startColumnIndex >= at) { m.startColumnIndex += n; m.endColumnIndex += n; } else if (m.endColumnIndex > at) m.endColumnIndex += n; }
+  s.properties.gridProperties.columnCount += n;
+  return s;
+}
+function deleteCols(sheet, at, n) {
+  const s = structuredClone(sheet);
+  for (const d of s.data) for (const row of d.rowData || []) if (row.values) row.values.splice(at, n);
+  const move = x => (x <= at ? x : x >= at + n ? x - n : at);
+  s.merges = (s.merges || []).map(m => ({ ...m, startColumnIndex: move(m.startColumnIndex), endColumnIndex: move(m.endColumnIndex) }))
+    .filter(m => m.endColumnIndex > m.startColumnIndex && (m.endColumnIndex - m.startColumnIndex > 1 || m.endRowIndex - m.startRowIndex > 1));
+  s.properties.gridProperties.columnCount -= n;
+  return s;
+}
+// one batch save the way index.ts runs it (plan, one batchUpdate, read back what index.ts reads, check, log through JSON)
+function saveOnBatch(sheet, ops) {
+  const p = R.plan(ops, batGrid(sheet));
+  assert.equal(p.ok, true, `planned: ${p.message || ''}`);
+  const written = applyRequests(sheet, p.requests), back = backOf(written, p.cells);
+  assert.deepEqual(R.checkWritten(p.cells, back), { ok: true, wrong: [] }, 'the batch tab reads back as written');
+  const cells = p.cells.map(x => { const a = R.readAfter(x, back); return a ? { ...x, after: a } : x; });
+  return { p, sheet: written, edit: JSON.parse(JSON.stringify({ cells: cells.map(R.logCell) })) };
+}
+{
+  const g = batGrid(batSheet)[BAT], L = R.batchLayout(g);
+  assert.equal(L.cUid, 14); assert.equal(L.cSt, 0); assert.equal(L.cStrain, 1);
+  assert.deepEqual(L.roles, { 0: 'status', 6: 'date', 16: 'count', 17: 'count', 23: 'date' }, 'the five columns, found by header');
+  assert.equal(R.dateSerial('2026-10-29'), 46324, 'the day number the sheet keeps for 10/29/2026');
+  assert.equal(R.dateSerial('2026-11-20'), 46346); assert.equal(R.dateSerial('2026-02-30'), null); assert.equal(R.dateSerial('11/20/2026'), null);
+  assert.equal(R.fmtDate(46346, 'm/d/yy'), '11/20/26'); assert.equal(R.fmtDate(46346, 'm/d/yyyy'), '11/20/2026');
+  assert.equal(R.fmtDate(46301, 'mm/dd/yyyy'), '10/06/2026'); assert.equal(R.fmtDate(46346, 'mmmm d, yyyy'), '11/20/2026', 'a pattern with names falls back');
+  assert.equal(R.TABS[BAT].scope, 'plan', 'editing batches needs the plan right (no new scope in release 1c)');
+  assert.equal(R.MSG.tab, 'The app can only change the DISTRO PIPELINE, DISTRO SUPPLY, ACCESSORY SUPPLY and BATCH LABEL SHEET tabs.');
+  ok('batch tab: layout, day numbers, dates as the sheet shows them');
+
+  // STATUS: a spelling another batch already uses, written as plain text; found by UID and header
+  const st = one(planB(bop(6, 'STATUS', 'WAITING FOR TESTING', 'PACKAGING')))[0];
+  assert.equal(st.a1, 'A6'); assert.deepEqual(st.find, { uid: UID(1), header: 'STATUS' });
+  assert.deepEqual(st.request.updateCells.rows[0].values[0], { userEnteredValue: { stringValue: 'PACKAGING' } });
+  assert.equal(st.request.updateCells.fields, 'userEnteredValue');
+  assert.equal(one(planB(bop(6, 'STATUS', 'WAITING FOR TESTING', 'DONE')))[0].after.text, 'DONE', 'a status on a hidden finished batch counts');
+  assert.equal(one(planB(bop(13, 'STATUS', '', 'DONE')))[0].a1, 'A13', 'a blank STATUS may be filled');
+  // PCKG DATE: the cell is already m/d/yy, so only the value goes
+  const pk = one(planB(bop(6, 'PCKG DATE', '', '2026-11-20', DAY)))[0];
+  assert.deepEqual(pk.request.updateCells.rows[0].values[0], { userEnteredValue: { numberValue: 46346 } });
+  assert.equal(pk.request.updateCells.fields, 'userEnteredValue');
+  assert.equal(pk.after.text, '11/20/26', 'the date as the cell shows it, never the day number');
+  assert.equal(pk.after.setFormat, false);
+  // NABIS P/U DATE: a blank cell with no format gets the day number and m/d/yyyy
+  const nb = one(planB(bop(6, 'NABIS P/U DATE', '', '2026-11-20', DAY)))[0];
+  assert.deepEqual(nb.request.updateCells.rows[0].values[0], { userEnteredValue: { numberValue: 46346 }, userEnteredFormat: { numberFormat: { type: 'DATE', pattern: 'm/d/yyyy' } } });
+  assert.equal(nb.request.updateCells.fields, 'userEnteredValue,userEnteredFormat.numberFormat');
+  assert.equal(nb.after.text, '11/20/2026'); assert.equal(nb.after.setFormat, true); assert.equal(nb.before.format, null);
+  const nb2 = one(planB(bop(7, 'NABIS P/U DATE', '11/20/2026', '2026-11-24', DAY)))[0];
+  assert.equal(nb2.request.updateCells.fields, 'userEnteredValue', 'a date cell keeps its own format'); assert.equal(nb2.after.text, '11/24/2026');
+  // counts: whole numbers, written as numbers so CASES keeps working
+  const tu = one(planB(bop(6, 'TOTAL UNITS', '0', '1,200', NUM)))[0];
+  assert.deepEqual(tu.request.updateCells.rows[0].values[0], { userEnteredValue: { numberValue: 1200 } }); assert.equal(tu.a1, 'Q6');
+  assert.equal(one(planB(bop(6, 'BUDTENDER UNITS', '', '24', NUM)))[0].after.number, 24);
+  // the five in one save
+  const five = planB([bop(6, 'STATUS', 'WAITING FOR TESTING', 'PACKAGING'), bop(6, 'PCKG DATE', '', '2026-11-20', DAY),
+    bop(6, 'NABIS P/U DATE', '', '2026-11-24', DAY), bop(6, 'TOTAL UNITS', '0', '1200', NUM), bop(6, 'BUDTENDER UNITS', '', '24', NUM)]);
+  assert.equal(five.ok, true, five.message); assert.deepEqual(five.cells.map(x => x.a1), ['A6', 'G6', 'X6', 'Q6', 'R6']);
+  assert.deepEqual(R.aroundRanges(five.cells), [{ tab: BAT, range: 'A6:Z6' }], 'the batch row is read again after the write');
+  ok('batch tab: the five columns plan as the sheet would hold them typed by hand');
+
+  // found by UID after 12 rows were inserted above (a new drop at the top), and r alone never decides
+  const moved = one(planB(bop(7, 'NABIS P/U DATE', '11/20/2026', '2026-11-24', DAY), insertRows(batSheet, 1, 12)))[0];
+  assert.equal(moved.a1, 'X19'); assert.equal(moved.moved, true);
+  // conflicts: a changed cell (what it holds now), a UID gone, a UID twice, a header gone, no UID header
+  const ch = planB(bop(6, 'TOTAL UNITS', '5', '1200', NUM));
+  assert.equal(ch.reason, 'conflict'); assert.equal(ch.cells[0].why, 'changed'); assert.equal(ch.cells[0].found, '0');
+  assert.match(ch.message, /^Changed in the sheet since you opened this/);
+  const gone = planB({ ...bop(6, 'TOTAL UNITS', '0', '1200', NUM), find: { uid: UID(99), header: 'TOTAL UNITS' } });
+  assert.equal(gone.cells[0].why, 'item-gone'); assert.match(gone.message, /METRC UID is no longer on the BATCH LABEL SHEET tab/);
+  const twin = planB(bop(6, 'TOTAL UNITS', '0', '1200', NUM), batSheetOf({ ...BAT_CELLS, O15: UID(1) }));
+  assert.equal(twin.cells[0].why, 'item-twice'); assert.match(twin.message, /more than once/);
+  const noCol = planB(bop(6, 'TOTAL UNITS', '0', '1200', NUM), batSheetOf({ ...BAT_CELLS, Q1: 'UNITS' }));
+  assert.equal(noCol.cells[0].why, 'column'); assert.match(noCol.message, /BATCH LABEL SHEET tab's columns changed/);
+  const noUid = planB(bop(6, 'TOTAL UNITS', '0', '1200', NUM), batSheetOf({ ...BAT_CELLS, O1: 'METRC' }));
+  assert.equal(noUid.cells[0].why, 'layout'); assert.match(noUid.message, /columns changed/);
+  ok('batch tab: found by METRC UID after rows moved; changed, gone, twice and layout conflicts');
+
+  // refused: other columns (the COA watcher's, formulas), hidden rows, merges, wrong kinds and formats, bad values
+  refusedB(bop(6, 'THC', '', '25%'), R.MSG.batchLab, 'THC');
+  refusedB(bop(6, 'COA LINK', '', 'x'), R.MSG.batchLab, 'COA LINK');
+  refusedB(bop(6, 'TEST DATE', '', '2026-11-20', DAY), R.MSG.batchLab, 'TEST DATE');
+  refusedB(bop(6, 'COA RETURN DATE', '', '2026-11-20', DAY), R.MSG.batchLab, 'COA RETURN DATE');
+  refusedB(bop(6, 'CASES', '0', '5', NUM), R.MSG.batchColumn, 'CASES');
+  refusedB(bop(6, 'STRAIN', 'TEST BERRY', 'OTHER'), R.MSG.batchColumn, 'STRAIN');
+  refusedB(bop(12, 'TOTAL UNITS', '501', '600', NUM), R.MSG.formula, 'a formula in a finished row');
+  refusedB(bop(11, 'TOTAL UNITS', '500', '600', NUM), R.MSG.hiddenBatch, 'a hidden row');
+  refusedB(bop(9, 'NABIS P/U DATE', '', '2026-11-20', DAY), R.MSG.mergedBatch, 'under a merge');
+  refusedB(bop(9, 'TOTAL UNITS', '', '5', NUM), R.MSG.mergedBatch, 'the top-left of a merge');
+  refusedB(bop(8, 'TOTAL UNITS', '', '120', NUM), R.MSG.countFormat, 'a count into a date cell');
+  refusedB(bop(8, 'NABIS P/U DATE', '', '2026-11-20', DAY), R.MSG.dateFormat, 'a date into a number cell');
+  refusedB(bop(6, 'STATUS', 'WAITING FOR TESTING', 'SHINY NEW STATUS'), R.MSG.statusNew, 'a status never used');
+  refusedB(bop(6, 'STATUS', 'WAITING FOR TESTING', 'GOAT DROP!!'), R.MSG.statusNew, 'a drop label is not a status');
+  refusedB(bop(6, 'STATUS', 'WAITING FOR TESTING', 'WAITING FOR PRODUCT'), R.MSG.statusNew, 'used only on rows with no UID');
+  refusedB(bop(6, 'STATUS', 'WAITING FOR TESTING', 'packaging'), R.MSG.statusNew, 'a spelling the sheet does not use');
+  refusedB(bop(6, 'STATUS', 'WAITING FOR TESTING', ' '), R.MSG.statusEmpty, 'emptying STATUS');
+  refusedB(bop(7, 'TOTAL UNITS', '1200', '', NUM), R.MSG.clearBatch, 'emptying a count');
+  refusedB(bop(7, 'PCKG DATE', '11/18/26', '', DAY), R.MSG.clearBatch, 'emptying a date');
+  refusedB(bop(7, 'TOTAL UNITS', '1200', '-5', NUM), R.MSG.batchCount, 'a negative count');
+  refusedB(bop(7, 'TOTAL UNITS', '1200', '3.5', NUM), R.MSG.batchCount, 'part of a unit');
+  refusedB(bop(7, 'PCKG DATE', '11/18/26', '2206-10-02', DAY), R.MSG.batchDate, 'the year 2206');
+  refusedB(bop(7, 'PCKG DATE', '11/18/26', '2023-12-31', DAY), R.MSG.batchDate, 'before 2024');
+  refusedB(bop(7, 'PCKG DATE', '11/18/26', '2026-02-30', DAY), R.MSG.batchDate, 'not a real day');
+  refusedB(bop(7, 'PCKG DATE', '11/18/26', '11/20/2026', DAY), R.MSG.batchDate, 'not YYYY-MM-DD');
+  const soon = new Date(Date.now() + 399 * 86400000).toISOString().slice(0, 10), far = new Date(Date.now() + 402 * 86400000).toISOString().slice(0, 10);
+  assert.equal(planB(bop(7, 'NABIS P/U DATE', '11/20/2026', soon, DAY)).ok, true, '399 days ahead is fine');
+  refusedB(bop(7, 'NABIS P/U DATE', '11/20/2026', far, DAY), R.MSG.batchDate, 'over 400 days ahead');
+  refusedB(bop(7, 'PCKG DATE', '11/18/26', '2026-11-20'), R.MSG.batchKind, 'a date sent without the date flag');
+  refusedB(bop(7, 'TOTAL UNITS', '1200', '1300'), R.MSG.batchKind, 'a count sent as words');
+  refusedB(bop(7, 'TOTAL UNITS', '1200', '2026-11-20', DAY), R.MSG.batchKind, 'a date into a count');
+  refusedB(bop(7, 'STATUS', 'PACKAGING', '5', NUM), R.MSG.batchKind, 'a number into STATUS');
+  refusedB(bop(7, 'NABIS P/U DATE', '11/20/2026', '2026-11-24', { date: true, number: true }), R.MSG.bad, 'both flags');
+  refusedB({ ...bop(7, 'STATUS', 'PACKAGING', 'DONE'), find: { uid: UID(2) } }, R.MSG.bad, 'no header');
+  refusedB({ ...bop(7, 'STATUS', 'PACKAGING', 'DONE'), find: { uid: UID(2), header: 'STATUS', prev: 'X' } }, R.MSG.bad, 'prev is never sent');
+  refusedB(bop(7, 'STATUS', 'PACKAGING', 'PACKAGING'), R.MSG.nothing, 'no change');
+  // the date flag belongs to the batch tab only; adds are DISTRO PIPELINE only
+  assert.equal(R.checkOps([op({ r: 4, c: 0, expect: 'A', text: 'B', find: wk(0), date: true })]), R.MSG.bad);
+  assert.equal(R.checkOps([op({ r: 4, c: 0, expect: 'A', text: 'B', find: wk(0), date: false })]), null);
+  assert.equal(R.checkOps([{ ...bop(7, 'STATUS', 'PACKAGING', 'DONE'), kind: 'add', like: {} }]), R.MSG.addTab);
+  ok('batch tab: lab columns, formulas, hidden, merged, kinds, formats, statuses, counts and dates refused');
+
+  // undo, for each of the five, including cells that were blank before: the tab comes back exactly as it was
+  const roundTripB = (ops, label, between = s => s) => {
+    const saved = saveOnBatch(batSheet, ops), moved = between(saved.sheet);
+    const undone = saveOnBatch(moved, R.undoOps(saved.edit));
+    assert.deepEqual(tabState(undone.sheet), tabState(between(batSheet)), `${label}: the tab is exactly as before`);
+    return { saved, undone };
+  };
+  roundTripB([bop(6, 'STATUS', 'WAITING FOR TESTING', 'PACKAGING')], 'STATUS');
+  roundTripB([bop(13, 'STATUS', '', 'DONE')], 'STATUS that was blank');
+  const pkt = roundTripB([bop(6, 'PCKG DATE', '', '2026-11-20', DAY)], 'PCKG DATE that was blank (m/d/yy kept)');
+  assert.equal(pkt.saved.edit.cells[0].after.text, '11/20/26'); assert.equal(pkt.saved.edit.cells[0].after.setFormat, false);
+  assert.equal('format' in R.undoOps(pkt.saved.edit)[0].restore, false, 'a format the save did not set is left alone');
+  roundTripB([bop(7, 'PCKG DATE', '11/18/26', '2026-11-21', DAY)], 'PCKG DATE');
+  const nbt = roundTripB([bop(6, 'NABIS P/U DATE', '', '2026-11-20', DAY)], 'NABIS P/U DATE that was blank with no format');
+  const nbu = R.undoOps(nbt.saved.edit)[0];
+  assert.deepEqual(nbu.restore.format, null); assert.deepEqual(nbu.restore.afterFormat, { type: 'DATE', pattern: 'm/d/yyyy' });
+  assert.equal(nbu.expect, '11/20/2026', 'the undo expects the date as the sheet shows it');
+  assert.equal(nbt.undone.p.requests[0].updateCells.fields, 'userEnteredValue,textFormatRuns,userEnteredFormat.numberFormat');
+  assert.deepEqual(nbt.undone.p.requests[0].updateCells.rows[0].values[0], { userEnteredFormat: {} }, 'value and format both cleared');
+  roundTripB([bop(7, 'NABIS P/U DATE', '11/20/2026', '2026-11-24', DAY)], 'NABIS P/U DATE');
+  roundTripB([bop(6, 'TOTAL UNITS', '0', '1200', NUM)], 'TOTAL UNITS');
+  roundTripB([bop(6, 'BUDTENDER UNITS', '', '24', NUM)], 'BUDTENDER UNITS that was blank');
+  roundTripB([bop(7, 'BUDTENDER UNITS', '24', '30', NUM)], 'BUDTENDER UNITS');
+  // all five at once, with 3 rows inserted above between the save and the undo
+  const all5 = [bop(6, 'STATUS', 'WAITING FOR TESTING', 'PACKAGING'), bop(6, 'PCKG DATE', '', '2026-11-20', DAY),
+    bop(6, 'NABIS P/U DATE', '', '2026-11-24', DAY), bop(6, 'TOTAL UNITS', '0', '1200', NUM), bop(6, 'BUDTENDER UNITS', '', '24', NUM)];
+  const r5 = roundTripB(all5, 'all five, rows inserted before the undo', s => insertRows(s, 1, 3));
+  assert.deepEqual(r5.saved.edit.cells.map(x => x.find), all5.map(o => o.find), 'the log finds each cell by UID and header');
+  assert.ok(r5.undone.p.cells.every(x => x.moved && x.r === 8));
+  // an undo that puts back a status no other batch uses any more is still fine (it was there)
+  const lone = saveOnBatch(batSheet, [bop(7, 'STATUS', 'PACKAGING', 'DONE')]);
+  assert.equal(R.plan(R.undoOps(lone.edit), batGrid(lone.sheet)).ok, true, 'PACKAGING put back though no batch uses it now');
+  // the undo stops when the cell changed since, or its date format was changed by hand (the text alone still matches)
+  const retyped = applyRequests(nbt.saved.sheet, [{ updateCells: { range: { sheetId: 7, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 23, endColumnIndex: 24 },
+    rows: [{ values: [{ userEnteredValue: { numberValue: 46347 } }] }], fields: 'userEnteredValue' } }]);
+  assert.equal(R.plan(R.undoOps(nbt.saved.edit), batGrid(retyped)).reason, 'conflict', 'retyped in the sheet');
+  const refmt = applyRequests(nbt.saved.sheet, [{ updateCells: { range: { sheetId: 7, startRowIndex: 5, endRowIndex: 6, startColumnIndex: 23, endColumnIndex: 24 },
+    rows: [{ values: [{ userEnteredFormat: { numberFormat: { type: 'DATE', pattern: 'mm/dd/yyyy' } } }] }], fields: 'userEnteredFormat.numberFormat' } }]);
+  assert.equal(R.cellAt(batGrid(refmt)[BAT], 5, 23).text, '11/20/2026', 'the same text in another date format');
+  assert.equal(R.plan(R.undoOps(nbt.saved.edit), batGrid(refmt)).reason, 'conflict', 'its format was changed since');
+  assert.equal(R.plan(R.undoOps(nbt.saved.edit), batGrid(batSheetOf(BAT_CELLS, { hidden: [6, 11] }))).reason, 'conflict', 'not the value it wrote');
+  const hid = applyRequests(nbt.saved.sheet, []); hid.data[0].rowMetadata[5] = { hiddenByUser: true };
+  assert.equal(R.plan(R.undoOps(nbt.saved.edit), batGrid(hid)).message, R.MSG.hiddenBatch, 'a row hidden since is never changed');
+  ok('batch tab: undo of each of the five, blanks and formats included, refused when changed since');
+
+  // what index.ts reads back after a batch save, and with which fields: the batch tab whole (its header row and METRC
+  // UIDs) with each cell's number format; the other tabs exactly as before release 1c
+  const p7 = planB(bop(7, 'NABIS P/U DATE', '11/20/2026', '2026-11-24', DAY));
+  assert.deepEqual(R.readBackRanges(p7.cells), [{ tab: BAT, range: null }], 'the batch tab is read back whole');
+  assert.equal(R.readBackFields(p7.cells), 'sheets(properties(sheetId,title),data(startRow,startColumn,rowMetadata(hiddenByUser),rowData(values(userEnteredValue,formattedValue,textFormatRuns,userEnteredFormat(numberFormat)))))');
+  assert.equal(R.readBackFields([{ tab: SUP }]), 'sheets(properties(sheetId,title),data(startRow,startColumn,rowMetadata(hiddenByUser),rowData(values(userEnteredValue,formattedValue,textFormatRuns))))', 'a rewrite elsewhere: as before');
+  assert.equal(R.readBackFields([{ tab: PLAN, kind: 'add' }]), 'sheets(properties(sheetId,title),merges,data(startRow,startColumn,rowMetadata(hiddenByUser),rowData(values(userEnteredValue,formattedValue,textFormatRuns,userEnteredFormat))))', 'an add: as before');
+  assert.deepEqual(R.readBackRanges([{ tab: SUP, a1: 'B5', around: { r0: 4, r1: 5, c0: 0, c1: 4 } }, { tab: PLAN, a1: 'G7', read: 'G7:H7' }]),
+    [{ tab: SUP, range: 'B5' }, { tab: PLAN, range: 'G7:H7' }, { tab: SUP, range: 'A5:D5' }], 'other tabs: the cells, then around them, as before');
+  // a read-back without the number format logs none, so the undo of a Nabis date that set m/d/yyyy would see the
+  // format as changed by hand: this is what the round trips above depend on
+  const noFmt = { [BAT]: R.gridFromSheet(googleRead(nbt.saved.sheet, [null], R.readBackFields([{ tab: SUP }])), BAT) };
+  assert.equal(R.readAfter(nbt.saved.p.cells[0], noFmt).format, null, 'without the field the format is not seen');
+  assert.deepEqual(R.readAfter(nbt.saved.p.cells[0], backOf(nbt.saved.sheet, nbt.saved.p.cells)).format, { type: 'DATE', pattern: 'm/d/yyyy' });
+  ok('batch tab: read back whole, with number formats, as index.ts reads it');
+
+  // rows moved in the second between the locked re-check and the write: the write lands in another batch's row, and
+  // the read-back's METRC UID says whose (the cells around it differ, so there is no Undo either)
+  const hitsOf = (cells, before, after) => R.batchHits(cells, batGrid(before), backOf(after, cells));
+  const colsMoved = (cells, before, after) => R.batchColumnsMoved(cells, batGrid(before), backOf(after, cells));
+  assert.deepEqual(hitsOf(p7.cells, batSheet, applyRequests(batSheet, p7.requests)), [], 'nothing moved');
+  assert.equal(colsMoved(p7.cells, batSheet, applyRequests(batSheet, p7.requests)), false);
+  const oneUp = applyRequests(insertRows(batSheet, 4, 1), p7.requests);
+  assert.ok(R.changedAround(p7.cells, batGrid(batSheet), backOf(oneUp, p7.cells)).length > 0);
+  assert.deepEqual(hitsOf(p7.cells, batSheet, oneUp),
+    [{ tab: BAT, a1: 'X7', uid: UID(1), strain: 'TEST BERRY', header: 'NABIS P/U DATE', wrote: '11/24/2026', before: '', rows: true, cols: false }], 'TEST BERRY was hit; its cell was blank');
+  const p6 = planB(bop(6, 'TOTAL UNITS', '0', '1300', NUM));
+  const deleted = applyRequests(deleteRows(batSheet, 4, 1), p6.requests);
+  assert.deepEqual(hitsOf(p6.cells, batSheet, deleted).map(h => [h.uid, h.strain, h.before]), [[UID(2), 'FAKE KUSH', '1200']], 'a row deleted above');
+  const blankRow = hitsOf(p7.cells, batSheet, applyRequests(insertRows(batSheet, 6, 1), p7.requests));
+  assert.equal(blankRow.length, 1); assert.equal(blankRow[0].uid, ''); assert.equal(blankRow[0].before, '', 'a new blank row inserted there was blank');
+  assert.deepEqual(hitsOf(p7.cells, batSheet, applyRequests(insertRows(batSheet, 14, 2), p7.requests)), [], 'rows added below: no hit');
+  // a drop's name sits right above its first batch: a STATUS save on that batch, with a row added at the top, lands on
+  // the drop's name, and the reply must say what it was (the re-check holds it one row up)
+  const st6 = planB(bop(6, 'STATUS', 'WAITING FOR TESTING', 'PACKAGING'));
+  const overDrop = applyRequests(insertRows(batSheet, 1, 1), st6.requests);
+  assert.equal(R.cellAt(batGrid(overDrop)[BAT], 5, 0).text, 'PACKAGING', 'the drop name was overwritten');
+  const dropHit = hitsOf(st6.cells, batSheet, overDrop);
+  assert.deepEqual(dropHit, [{ tab: BAT, a1: 'A6', uid: '', strain: '', header: 'STATUS', wrote: 'PACKAGING', before: 'DEC DROP 9', rows: true, cols: false }], 'the drop name it overwrote');
+  assert.deepEqual(hitsOf(p6.cells, batSheet, applyRequests(insertRows(batSheet, 1, 1), p6.requests)).map(h => [h.a1, h.uid, h.before]), [['Q6', '', '']], 'a count on the drop-name row: it was blank');
+  assert.deepEqual(hitsOf(st6.cells, batSheet, applyRequests(deleteRows(batSheet, 2, 1), st6.requests)).map(h => [h.uid, h.strain, h.before]), [[UID(2), 'FAKE KUSH', 'PACKAGING']], 'a row deleted above a STATUS save');
+  // columns added or removed: the cell it landed in is named by its header now, with what it held; a column moved
+  // right of the written one (or between it and METRC UID) changes nothing it wrote
+  const pk6 = planB(bop(6, 'PCKG DATE', '', '2026-11-20', DAY));
+  const colIn = applyRequests(insertCols(batSheet, 1, 1), pk6.requests);
+  assert.deepEqual(hitsOf(pk6.cells, batSheet, colIn), [{ tab: BAT, a1: 'G6', uid: UID(1), strain: 'TEST BERRY', header: 'HRVST DATE', wrote: '11/20/26', before: '10/29/2026', rows: false, cols: true }], 'a column added at B: the harvest date was hit');
+  const pk7 = planB(bop(7, 'PCKG DATE', '11/18/26', '2026-11-21', DAY));
+  assert.deepEqual(hitsOf(pk7.cells, batSheet, applyRequests(deleteCols(batSheet, 1, 1), pk7.requests)).map(h => [h.uid, h.header, h.before, h.cols]),
+    [[UID(2), 'PRODUCTION BATCH', '', true]], 'column B deleted: PRODUCTION BATCH was hit');
+  const q7 = planB(bop(7, 'TOTAL UNITS', '1200', '1300', NUM));
+  assert.deepEqual(hitsOf(q7.cells, batSheet, applyRequests(deleteCols(batSheet, 1, 1), q7.requests)).map(h => [h.a1, h.uid, h.header, h.before]),
+    [['Q7', UID(2), 'BUDTENDER UNITS', '24']], 'column B deleted: BUDTENDER UNITS was hit');
+  for (const [label, sh] of [['a column added at K', insertCols(batSheet, 10, 1)], ['column K deleted', deleteCols(batSheet, 10, 1)]]) {
+    const after = applyRequests(sh, pk6.requests);
+    assert.deepEqual(hitsOf(pk6.cells, batSheet, after), [], `${label}: PCKG DATE landed in its own cell`);
+    assert.equal(colsMoved(pk6.cells, batSheet, after), true, `${label}: the save says columns moved (no Undo)`);
+    assert.deepEqual(hitsOf(st6.cells, batSheet, applyRequests(sh, st6.requests)), [], `${label}: a STATUS save is right too`);
+  }
+  // rows and columns both
+  const both = hitsOf(pk7.cells, batSheet, applyRequests(insertRows(insertCols(batSheet, 1, 1), 4, 1), pk7.requests));
+  assert.deepEqual(both.map(h => [h.uid, h.header, h.before, h.rows, h.cols]), [[UID(1), 'HRVST DATE', '10/29/2026', true, true]]);
+  // a header row that no longer names METRC UID once: nothing can be told
+  const renamed = applyRequests(batSheet, [{ updateCells: { range: { sheetId: 7, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 14, endColumnIndex: 15 },
+    rows: [{ values: [{ userEnteredValue: { stringValue: 'UID' } }] }], fields: 'userEnteredValue' } }, ...pk6.requests]);
+  assert.deepEqual(hitsOf(pk6.cells, batSheet, renamed).map(h => [h.layout, h.before]), [[true, null]]);
+  ok('batch tab: a write that rows or columns moved under names the cell it hit and what it held');
+
+  // index.ts: what the person reads, from its own source (types stripped by node)
+  const ts = readFileSync(new URL('../supabase/functions/pipeline-sheet-write/index.ts', import.meta.url), 'utf8');
+  const strip = src => { const w = process.emitWarning; process.emitWarning = () => {}; try { return stripTypeScriptTypes(src); } finally { process.emitWarning = w; } };
+  const head = strip(ts.slice(ts.indexOf('const SAY = {'), ts.indexOf('const sleep =')));
+  const I = new Function('R', `${head}\nreturn { SAY, GoogleFail, readFail, googleMessage };`)(R);
+  const dropSays = I.SAY.shiftedBatch(dropHit);
+  assert.ok(dropSays.startsWith('Saved, but rows were added or removed in the BATCH LABEL SHEET while it was saving, so the change landed in the wrong row: '), dropSays);
+  assert.ok(dropSays.includes('a row with no METRC UID now has STATUS "PACKAGING" in A6; it said "DEC DROP 9" before. Put "DEC DROP 9" back there.'), dropSays);
+  const colSays = I.SAY.shiftedBatch(hitsOf(pk6.cells, batSheet, colIn));
+  assert.ok(colSays.startsWith('Saved, but columns were added or removed in the BATCH LABEL SHEET while it was saving, so the change landed in the wrong column: '), colSays);
+  assert.ok(colSays.includes(`batch ${UID(1)} (TEST BERRY) now has HRVST DATE "11/20/26" in G6; it said "10/29/2026" before.`), colSays);
+  assert.ok(!/no METRC UID/.test(colSays), 'the right batch is named');
+  assert.ok(I.SAY.shiftedBatch(hitsOf(p7.cells, batSheet, oneUp)).includes('it was blank before. Clear it there'));
+  assert.match(I.SAY.shiftedBatch(hitsOf(pk6.cells, batSheet, renamed)), /cannot tell where the change landed. Check G6/);
+  // a workbook without the batch tab (Google: 400) gets its own message; other failures as before
+  assert.equal(I.googleMessage(I.readFail(BAT, new I.GoogleFail('read', 400))), 'The sheet the app saves to has no BATCH LABEL SHEET tab, so nothing was saved. Tell Gianni.');
+  assert.equal(I.googleMessage(I.readFail(SUP, new I.GoogleFail('read', 400))), I.SAY.google, 'a 400 on another tab: as before');
+  assert.equal(I.googleMessage(I.readFail(BAT, new I.GoogleFail('read', 403))), I.SAY.noAccess);
+  assert.equal(I.googleMessage(new I.GoogleFail('token', 400)), I.SAY.badKey);
+  // readBack asks Google for exactly R.readBackRanges and R.readBackFields, and the save says which cell rows or columns
+  // moved it to
+  const rb = ts.slice(ts.indexOf('async function readBack('), ts.indexOf('// One batchUpdate'));
+  assert.ok(rb.includes('const fields = R.readBackFields(cells);') && rb.includes('R.readBackRanges(cells).map('), 'readBack reads what the checks read');
+  assert.ok(rb.includes('x.range == null ? quote(x.tab)'), 'a whole tab is read by its name');
+  assert.ok(/R\.batchHits\(plan\.cells, fresh, back\)/.test(ts) && /R\.batchColumnsMoved\(plan\.cells, fresh, back\)/.test(ts));
+  assert.ok(/const moved = around\.length > 0 \|\| hits\.length > 0 \|\| colsMoved;/.test(ts), 'a moved save gets no Undo');
+  ok('index.ts: shifted-save messages, a missing batch tab, and the read-back it asks for');
+
+  // index.ts pageOps: a batch cell keeps find {uid, header} and the date flag, and nothing else; others are unchanged,
+  // and a date flag sent for another tab is passed on so checkOps refuses it
+  const body = strip(ts.slice(ts.indexOf('function pageOps('), ts.indexOf('\nDeno.serve(')));
+  const pageOps = new Function('R', `${body}\nreturn pageOps;`)(R);
+  const sent = { tab: BAT, r: 5, c: 23, expect: '', text: '2026-11-20', date: true, number: false, kind: null,
+    find: { uid: UID(1), header: 'NABIS P/U DATE', week: 'X', item: 'Y', prev: 'Z' }, restore: { text: 'evil' }, undo: 1 };
+  assert.deepEqual(pageOps([sent]), [{ tab: BAT, r: 5, c: 23, expect: '', text: '2026-11-20', number: false, date: true, find: { uid: UID(1), header: 'NABIS P/U DATE' } }]);
+  assert.equal(pageOps([{ ...sent, date: undefined }])[0].date, false);
+  const planOp = op({ r: 4, c: 0, expect: 'A', text: 'B', find: wk(0) });
+  assert.equal('date' in pageOps([planOp])[0], false, 'no date flag sent: none passed (other tabs as before)');
+  const planSent = pageOps([{ ...planOp, date: true }])[0];
+  assert.equal(planSent.date, true);
+  assert.equal(R.checkOps([planSent]), R.MSG.bad, 'a date flag on DISTRO PIPELINE is refused');
+  const supSent = pageOps([{ tab: SUP, r: 4, c: 6, expect: 'old note', text: '2026-11-20', number: false, date: true, find: { item: 'X', header: 'NOTES' } }])[0];
+  assert.equal(R.checkOps([supSent]), R.MSG.bad, 'a date flag on DISTRO SUPPLY is refused');
+  assert.equal(R.checkOps([pageOps([{ ...planOp, date: false }])[0]]), null, 'date: false is harmless');
+  assert.equal(pageOps([{ ...sent, kind: 'add' }])[0].kind, 'add', 'an add on the batch tab goes to checkOps, which refuses it');
+  ok('index.ts pageOps keeps a batch op\'s uid, header and date flag only, and passes on a date flag sent elsewhere');
+}
 console.log(`made-up tabs: ${n} groups of checks pass`);
 
 /* ---------- the real tab, when its saved reads are on this computer ---------- */
@@ -1199,5 +1578,74 @@ if (existsSync(gridFile)) {
   roundTrip(copyOp, 'G682 with rows inserted before the undo', s => insertRows(s, 639, 2));
   m++;
   console.log(`real tab, adding a line: ${m} groups of checks pass (copy to G682, A674 reused, K666, E743 cleared, full days, moved rows, undo)`);
+}
+/* ---------- release 1c on the real BATCH LABEL SHEET: the newest hourly snapshot, when it is on this computer ---------- */
+// (~/ar-automation/pipeline-snapshots/*.json.gz, read only; it stays out of this public repo and nothing from it is printed)
+{
+  const snapDir = path.join(os.homedir(), 'ar-automation/pipeline-snapshots');
+  const newest = existsSync(snapDir) ? readdirSync(snapDir).filter(f => f.endsWith('.json.gz')).sort().pop() : null;
+  const snap = newest ? JSON.parse(gunzipSync(readFileSync(path.join(snapDir, newest))).toString()) : null;
+  const sheet = snap && (snap.sheets || []).find(x => x && x.properties && x.properties.title === R.BATCH);
+  if (!sheet) console.log('real batch tab: snapshot not found, skipped');
+  else {
+    let m = 0;
+    const g = R.gridFromSheet(sheet, R.BATCH), L = R.batchLayout(g), t = (r, c) => R.cellAt(g, r, c).text;
+    assert.ok(L, 'the real header row names METRC UID and STATUS once each');
+    const col = h => L.H.indexOf(h), cG = col('PCKG DATE'), cX = col('NABIS P/U DATE'), cQ = col('TOTAL UNITS'), cR = col('BUDTENDER UNITS');
+    assert.deepEqual([cG, cX, cQ, cR].map(c => L.roles[c]), ['date', 'date', 'count', 'count']);
+    // active batches: visible rows above the FINISHED/COMPLETE ITEMS divider that have a METRC UID
+    const divider = g.rows.findIndex((row, r) => r > 0 && row && row.some(x => x && /FINISHED/.test(x.text)));
+    const active = [];
+    for (let r = 1; r < (divider > 0 ? divider : g.rows.length); r++) if (g.rows[r] && !g.hidden[r] && t(r, L.cUid).trim()) active.push(r);
+    assert.ok(active.length > 0, 'the snapshot has active batches');
+    const realOp = (r, c, text, kind = {}) => ({ tab: R.BATCH, r, c, expect: t(r, c), text, number: false, find: { uid: t(r, L.cUid), header: L.H[c] }, ...kind });
+    const planReal = (ops, sh = sheet) => R.plan(ops, { [R.BATCH]: R.gridFromSheet(sh, R.BATCH) });
+    // a Packaged date on the first active batch, then again after 12 rows were inserted at the top (a new drop)
+    const r0 = active[0], pk = realOp(r0, cG, '2026-11-20', { date: true }), first = planReal([pk]);
+    assert.equal(first.ok, true, first.message);
+    const shifted = planReal([pk], insertRows(sheet, 1, 12));
+    assert.equal(shifted.ok, true, shifted.message);
+    assert.equal(shifted.cells[0].r, first.cells[0].r + 12); assert.equal(shifted.cells[0].moved, true);
+    m++;
+    // each of the five on an active batch, then undone: the tab comes back exactly as it was
+    const other = active.map(r => t(r, L.cSt)).find(x => x && x !== t(r0, L.cSt));
+    const five = [realOp(r0, cG, '2026-11-20', { date: true }), realOp(r0, cX, '2026-11-24', { date: true }),
+      realOp(r0, cQ, '1200', { number: true }), realOp(r0, cR, '24', { number: true }), ...(other ? [realOp(r0, L.cSt, other)] : [])];
+    const saved = R.plan(five, { [R.BATCH]: R.gridFromSheet(sheet, R.BATCH) });
+    assert.equal(saved.ok, true, saved.message);
+    const written = applyRequests(sheet, saved.requests), back = backOf(written, saved.cells);
+    assert.deepEqual(R.checkWritten(saved.cells, back), { ok: true, wrong: [] });
+    const nabis = saved.cells.find(x => x.c === cX);
+    assert.equal(nabis.after.setFormat, !R.cellAt(g, r0, cX).format?.numberFormat, 'the Nabis cell gets m/d/yyyy only when it has no format');
+    const edit = JSON.parse(JSON.stringify({ cells: saved.cells.map(x => R.logCell({ ...x, after: R.readAfter(x, back) })) }));
+    const undone = R.plan(R.undoOps(edit), back);
+    assert.equal(undone.ok, true, undone.message);
+    assert.deepEqual(tabState(applyRequests(written, undone.requests)), tabState(sheet), 'the real tab is exactly as before');
+    m++;
+    // the lab's columns, CASES and the hidden finished rows are refused on the real tab too
+    for (const h of ['THC', 'COA LINK', 'TEST DATE', 'CASES']) assert.equal(planReal([realOp(r0, col(h), 'x')]).reason, 'refused', h);
+    const hiddenUid = g.rows.findIndex((row, r) => r > 0 && row && g.hidden[r] && t(r, L.cUid).trim() &&
+      g.rows.filter((_, k) => k > 0 && t(k, L.cUid) === t(r, L.cUid)).length === 1);
+    if (hiddenUid > 0) assert.equal(planReal([realOp(hiddenUid, cQ, '1', { number: true })]).message, R.MSG.hiddenBatch);
+    m++;
+    // a row added at the top while a STATUS save is in flight: on a batch right under a drop's name, the reply says the
+    // name it overwrote; a column added at B while a Packaged date is in flight: the reply names the column it hit
+    const pre = { [R.BATCH]: g };
+    let underDrop = 0;
+    for (const r of active) {
+      if (r < 2 || t(r - 1, L.cUid).trim() || !t(r - 1, L.cSt).trim()) continue;
+      const st = active.map(k => t(k, L.cSt)).find(x => x && x !== t(r, L.cSt));
+      const p = st && planReal([realOp(r, L.cSt, st)]);
+      if (!p || !p.ok) continue;
+      const h = R.batchHits(p.cells, pre, backOf(applyRequests(insertRows(sheet, 1, 1), p.requests), p.cells));
+      assert.equal(h.length, 1); assert.equal(h[0].uid, ''); assert.equal(h[0].before, t(r - 1, L.cSt), `row ${r + 1}: the drop name it overwrote`);
+      underDrop++;
+    }
+    const pkr = planReal([pk]);
+    const colHit = R.batchHits(pkr.cells, pre, backOf(applyRequests(insertCols(sheet, 1, 1), pkr.requests), pkr.cells));
+    assert.deepEqual(colHit.map(h => [h.uid, h.header, h.before, h.cols]), [[t(r0, L.cUid).trim(), t(0, cG - 1).trim(), t(r0, cG - 1), true]], 'a column added at B');
+    m++;
+    console.log(`real batch tab: ${m} groups of checks pass (${active.length} active batches; found again after 12 rows inserted, five fields undone exactly, lab columns and hidden rows refused, ${underDrop} drop names and a column hit told)`);
+  }
 }
 console.log('pipeline-sheet-write rules: all checks pass');
