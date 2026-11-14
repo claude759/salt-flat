@@ -273,6 +273,13 @@ launch. The check fails if one of the three pieces is missing.
   one UID can be typed on two rows. Save is checked again at the press and after each read; when it can't go ahead the
   card stays open with the typed day and the reason. The order link is the one the batch's lab sample number names; an
   order e-mail matched only by strain never overrides it, and says so when it is all there is.
+- **Batch V2** (beta, view only, Gianni 2026-11-13: "an experimental page called batch V2 ... a left/right
+  scrollable timeline showing harvests and trims"): `data-view="batches2"`, after Batches. One lane per grow room
+  (site + room), named by a strip above the lane, never a label column. Harvests from the DISTRO PIPELINE harvest
+  lines and the batch codes (merged per room and day; a code's day wins over HRVST DATE when the room's other
+  batches or a harvest line agree, else the harvest is marked amber); trims from the trim sheets (done, pounds)
+  and the plan (planned, dashed); drying links a harvest to the next trim whose tab lists its strains. Model in
+  the BATCH V2 MODEL block (`BT2`).
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them
