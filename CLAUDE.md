@@ -258,6 +258,21 @@ launch. The check fails if one of the three pieces is missing.
   cells; rows without a Metrc UID are not editable at first; ships switched off; the first real save is
   one value Victoria actually wants, after dry runs, with Undo. Later, Add a batch inserts a row under
   the drop's last batch (the no-insert rule is lifted for this tab only).
+- **Each step of a batch's track is clickable** (Gianni, 2026-11-13: "I want each column clickable"). A step is a
+  button that opens a small card under it (a bottom sheet on phones), drawn from `BSTEP.card` (the BATCH STEP MODEL
+  block) and the row's facts: Harvest (day, room, site, trim sheet pounds; the Metrc harvest report is a hook,
+  `harvestReport(row)`, that returns null until there is a real source), Trim (days, trim sheet tab, pounds, "rolled
+  from flower batch X", or why the trim isn't known), Test (when the sample went out, the lab's order e-mail, the order
+  on Confident LIMS), COA (day, result, THC, the COA link or the Confident results, the expected day), Pack/Roll and
+  Pickup. Each has "Show <day> on the Production schedule". No links inside a step: they live in its card. For an
+  editor (the pen's rules), Pack/Roll and Pickup cards have a Change date box whose Save opens the batch card on that
+  date and saves through it (same checks, dry run, Done and Undo). The batch card's top is the batch's track with
+  those two dates under their bubbles; Status and units stay below it. One card at a time: the pen and "open it"
+  close the step card (a day typed there goes into the batch card, unsaved), and a step click never opens beside a
+  batch card with a change. A step card's facts are keyed by the sheet row (`BSTEP.rowKey`), never the UID alone, since
+  one UID can be typed on two rows. Save is checked again at the press and after each read; when it can't go ahead the
+  card stays open with the typed day and the reason. The order link is the one the batch's lab sample number names; an
+  order e-mail matched only by strain never overrides it, and says so when it is all there is.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them

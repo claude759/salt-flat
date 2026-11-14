@@ -106,6 +106,8 @@ const editSrc = html.split('/* ===== EDIT MODEL START =====')[1].split('/* =====
 const EDIT = new Function('PIPE', 'SUP', 'WEEK', `/*${editSrc}; return EDIT;`)(PIPE, SUP, WEEK);
 const adminSrc = html.split('/* ===== ADMIN MODEL START =====')[1].split('/* ===== ADMIN MODEL END ===== */')[0];
 const ADMIN = new Function(`/*${adminSrc}; return ADMIN;`)();
+const bstepSrc = html.split('/* ===== BATCH STEP MODEL START =====')[1].split('/* ===== BATCH STEP MODEL END ===== */')[0];
+const BSTEP = new Function(`/*${bstepSrc}; return BSTEP;`)();
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
   realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9),
   realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10),
@@ -1459,6 +1461,156 @@ if (realPipe) {
     assert.equal(run(batchWaits, { scope: 'plan', tab: 'DISTRO PIPELINE' }), 0, 'a plan chase never read for a batch save');
   }
   console.log('editing a batch: ops found by METRC UID and header, expect from the shown text, only changed fields, date and count flags, accepted by the save program; twin, missing, empty and bad values refused on the page');
+}
+
+// the Batches view's steps are clickable (Gianni, 2026-11-13): each step's card, which steps take a new date, and the
+// Production schedule day a card links to (BATCH STEP MODEL), on made-up rows
+{
+  const T = '2026-11-13', SCHED = { first: '2026-09-07', last: '2027-01-03' };
+  // which steps can be changed from the app: Pack/Roll (PCKG DATE) and Pickup (NABIS P/U DATE), on a batch the person may edit
+  const ed = { canEdit: true, product: 'flower' };
+  assert.deepEqual(['Harvest', 'Trim', 'Test', 'COA', 'Pack', 'Roll', 'Pickup'].map(l => BSTEP.editField(l, ed)), [null, null, null, null, 'pack', 'pack', 'nabis']);
+  assert.deepEqual(['Pack', 'Pickup'].map(l => BSTEP.editField(l, { canEdit: false, product: 'flower' })), [null, null], 'no rights, no date box');
+  assert.deepEqual(['Roll', 'Pickup'].map(l => BSTEP.editField(l, { canEdit: true, product: 'preroll' })), ['pack', 'nabis']);
+  assert.deepEqual(['Test', 'COA', 'Trim'].map(l => BSTEP.editField(l, { canEdit: true, product: 'vape' })).concat(BSTEP.editField('Pack', { canEdit: true, product: 'planned' })), [null, null, null, null],
+    'vapes and planned trims have no sheet row to change');
+  assert.deepEqual(Object.values(BSTEP.FIELD).map(k => EDIT.BATCH_FIELDS.find(f => f.key === k).header), ['PCKG DATE', 'PCKG DATE', 'NABIS P/U DATE'], 'the fields are the batch card\'s own');
+  // the Production schedule day: inside the sheet's weeks, else why not
+  assert.deepEqual(BSTEP.schedTarget('2026-11-20', SCHED.first, SCHED.last, T), { date: '2026-11-20', ok: true });
+  assert.deepEqual(BSTEP.schedTarget('2026-09-07', SCHED.first, SCHED.last, T), { date: '2026-09-07', ok: true }, 'the first day counts');
+  assert.match(BSTEP.schedTarget('2026-08-01', SCHED.first, SCHED.last, T).why, /^Aug 1 is before the first week on the Production schedule \(Sep 7\)\.$/);
+  assert.match(BSTEP.schedTarget('2027-02-01', SCHED.first, SCHED.last, T).why, /^Feb 1, 2027 is after the last week/);
+  assert.equal(BSTEP.schedTarget('2026-11-20', undefined, undefined, T).ok, false, 'no weeks loaded yet');
+  assert.equal(BSTEP.schedTarget('', SCHED.first, SCHED.last, T), null, 'no day, no link');
+  assert.equal(BSTEP.orderOf('2611EXL9740.38868'), '2611EXL9740');
+  assert.equal(BSTEP.orderOf('1A406030005660A000006050'), '', 'a Metrc tag is not a lab sample');
+  const card = (label, f) => BSTEP.card(label, f, T, SCHED);
+  const lines = c => Object.fromEntries(c.lines);
+  const acts = c => c.acts.map(a => a.kind === 'sched' ? 'sched ' + a.date : a.kind === 'mail' ? 'mail ' + a.msg : a.kind === 'url' ? 'url ' + a.href : 'off');
+  const flower = { product: 'flower', strain: 'Black Light', code: 'F1-BL-101026-O', uid: '1A40X', room: 'F1', site: 'Olympic', siteTitle: 'Rio Verde', harvest: '2026-10-10', report: null,
+    trim: { start: '2026-10-13', end: '2026-10-15', tab: 'OLY F1 10-13', room: '1', lb: 14.33, from: '' }, trimWhy: null,
+    test: { date: '2026-10-28', src: 'sheet', sample: '2610EXL9180.36297', planned: null },
+    mail: { msg: 'm1', ids: ['2610EXL9180.36297'], exact: true, order: '2610EXL9180' },
+    coa: { date: '2026-11-03', src: 'sheet', url: 'https://example.invalid/coa', urlText: 'COA', labUrl: 'https://app.confidentlims.com/samples/x', result: 'Pass', thc: 25.9 },
+    pack: '2026-11-20', pickup: null, finished: false, canEdit: true };
+  // Harvest: the day, room and site, the trim sheet pounds; the Metrc report hook is empty for now and says so
+  let c = card('Harvest', flower);
+  assert.deepEqual(lines(c), { Harvested: 'Oct 10', Room: 'F1', Site: 'Olympic (Rio Verde)', 'Trim sheet': '14.3 lb (bigs + littles)' });
+  assert.ok(c.notes.some(n => /harvest report isn't linked here yet/.test(n.text)) && acts(c).join() === 'sched 2026-10-10', 'no made-up Metrc link');
+  c = card('Harvest', Object.assign({}, flower, { report: { href: 'https://example.invalid/h.pdf', text: 'Metrc harvest report (PDF)' } }));
+  assert.deepEqual(acts(c), ['url https://example.invalid/h.pdf', 'sched 2026-10-10'], 'when the hook returns a report, the card opens it');
+  assert.ok(!c.notes.some(n => /isn't linked/.test(n.text)));
+  // Trim: the days, the trim sheet tab and room, the pounds, the schedule link
+  c = card('Trim', flower);
+  assert.deepEqual(lines(c), { Trimmed: 'Oct 13–15', 'Trim sheet': 'tab OLY F1 10-13, room 1', Pounds: '14.3 lb of Black Light (bigs + littles)' });
+  assert.deepEqual(acts(c), ['sched 2026-10-13']);
+  // a pre-roll: rolled from flower batch X, with the flower's room and site
+  const pre = Object.assign({}, flower, { product: 'preroll', strain: 'Nebula', code: 'N-92826-1', room: 'F2', site: 'Olympic', fromCode: 'F2-N-92826-O', harvest: '2026-09-28',
+    trim: { start: '2026-10-01', end: '2026-10-01', tab: 'OLY F2 10-1', room: '2', lb: 30, from: 'F2-N-92826-O' }, pack: '2026-11-18', pickup: null });
+  assert.equal(lines(card('Trim', pre))['Rolled from'], 'flower batch F2-N-92826-O');
+  assert.equal(lines(card('Trim', pre)).Trimmed, 'Oct 1');
+  assert.ok(card('Harvest', pre).notes.some(n => /flower batch F2-N-92826-O's/.test(n.text)), 'the room and site are the flower batch\'s');
+  // no trim found: the card says why, never a guess
+  const why = w => card('Trim', Object.assign({}, pre, { trim: null, trimWhy: w })).notes[0].text;
+  assert.match(why({ why: 'no-flower' }), /names no room or site.*The Batch Label Sheet has none/);
+  assert.match(why({ why: 'many-flower', codes: ['F2-N-92826-O', 'F3-N-92826-S'] }), /has 2 flower batches of Nebula harvested Sep 28 \(F2-N-92826-O, F3-N-92826-S\)/);
+  assert.match(why({ why: 'flower-untrimmed', from: 'F2-N-92826-O' }), /^Rolled from flower batch F2-N-92826-O, but no trim sheet lists Nebula/);
+  assert.match(why({ why: 'loading' }), /trim sheets aren't loaded/);
+  assert.match(card('Trim', Object.assign({}, flower, { trim: null, trimWhy: { why: 'no-sheet' } })).notes[0].text, /^No trim sheet lists Black Light at Olympic, room F1 within 45 days of the harvest \(Oct 10\)/);
+  assert.deepEqual(card('Trim', Object.assign({}, flower, { trim: null, trimWhy: { why: 'no-sheet' } })).acts, [], 'no day, no schedule link');
+  // Test: when it went out and from where, the lab's order e-mail and the order on Confident LIMS
+  c = card('Test', flower);
+  assert.deepEqual(lines(c), { 'Sample collected': 'Oct 28', From: 'TEST DATE on the Batch Label Sheet', 'Lab sample': '2610EXL9180.36297' });
+  assert.deepEqual(acts(c), ['mail m1', 'url https://app.confidentlims.com/order/2610EXL9180?lab=excelbis-labs', 'sched 2026-10-28']);
+  c = card('Test', Object.assign({}, flower, { mail: null, test: { date: '2026-11-12', src: 'sent', sample: '2611EXL9740.38868' } }));
+  assert.equal(lines(c)['Sent to the lab'], 'Nov 12'); assert.match(lines(c).From, /Metrc lab manifest/);
+  assert.deepEqual(acts(c), ['url https://app.confidentlims.com/order/2611EXL9740?lab=excelbis-labs', 'sched 2026-11-12'], 'no e-mail yet: the order from the sample number');
+  c = card('Test', Object.assign({}, flower, { mail: null, test: { date: null, src: '', sample: '', planned: { date: '2026-11-19', tbd: true, drop: 'Dec drop 2' } } }));
+  assert.deepEqual(lines(c), { Planned: 'Nov 19 (TBD)' });
+  assert.match(c.notes[0].text, /^Planned on the pipeline sheet for Dec drop 2\. Nothing has gone to the lab yet\.$/);
+  assert.deepEqual(acts(c), ['sched 2026-11-19']);
+  // a TEST DATE typed ahead on the sheet is planned, as its dashed step is, never "collected"
+  c = card('Test', Object.assign({}, flower, { mail: null, test: { date: '2026-11-18', src: 'sheet', sample: '', planned: null } }));
+  assert.deepEqual(lines(c), { Planned: 'Nov 18', From: 'TEST DATE on the Batch Label Sheet (a day still to come)' }, 'a future TEST DATE is not a collected sample');
+  assert.ok(c.notes.some(n => n.text === 'Nothing has gone to the lab yet.') && !('Sample collected' in lines(c)));
+  assert.deepEqual(acts(c), ['sched 2026-11-18']);
+  // the Confident order: the batch's own sample number names it for certain; an e-mail matched only by strain never overrides it
+  const guessMail = { msg: 'm9', ids: ['2611EXL9812.40001'], exact: false, order: '2611EXL9812' };
+  c = card('Test', Object.assign({}, flower, { mail: guessMail, test: { date: '2026-11-10', src: 'sent', sample: '2611EXL9740.38868' } }));
+  assert.deepEqual(acts(c), ['mail m9', 'url https://app.confidentlims.com/order/2611EXL9740?lab=excelbis-labs', 'sched 2026-11-10'], 'the sample number wins over a strain-matched e-mail');
+  assert.equal(c.acts.find(a => a.kind === 'url').hint, 'needs a Confident login');
+  c = card('Test', Object.assign({}, flower, { mail: guessMail, test: { date: '2026-11-10', src: 'sent', sample: '' } }));
+  assert.deepEqual(acts(c), ['mail m9', 'url https://app.confidentlims.com/order/2611EXL9812?lab=excelbis-labs', 'sched 2026-11-10'], 'no sample number: the matched e-mail\'s order');
+  assert.match(c.acts.find(a => a.kind === 'url').hint, /^matched by strain/, 'a strain-matched order says so');
+  // a drawn row's key: its sheet row, so one UID typed on two rows gives two cards, and a key taken twice gets #2
+  const taken = new Set(), take = (row, uid) => { const k = BSTEP.rowKey(row, uid, x => taken.has(x)); taken.add(k); return k; };
+  assert.deepEqual([take(40, '1A40X'), take(61, '1A40X'), take(61, '1A40X'), take(7, '')], ['s:40:1A40X', 's:61:1A40X', 's:61:1A40X#2', 's:7'],
+    'two rows with one Metrc UID never share a step card');
+  assert.ok(html.includes('const btRowKey = r => BSTEP.rowKey(r.sheet_row,'), 'the page keys each row by BSTEP.rowKey');
+  // COA: the day, pass or fail, THC, the COA itself (the sheet's link first, else the lab's results)
+  c = card('COA', flower);
+  assert.deepEqual(lines(c), { Results: 'Nov 3', From: 'COA RETURN DATE on the Batch Label Sheet', Result: 'Passed', THC: "25.9% (the sheet's label figure)" });
+  assert.deepEqual(acts(c), ['url https://example.invalid/coa']);
+  c = card('COA', Object.assign({}, flower, { coa: { date: '2026-11-03', src: 'lab', url: '', labUrl: 'https://app.confidentlims.com/samples/x', result: 'Fail', thc: null, thcLabel: 27.5, totalThc: 25 } }));
+  assert.equal(c.fail, true); assert.equal(lines(c).Result, 'Failed'); assert.equal(lines(c).THC, '27.5% label (Total THC 25.0% x 1.10, from the COA)');
+  assert.deepEqual(acts(c), ['url https://app.confidentlims.com/samples/x']);
+  c = card('COA', Object.assign({}, flower, { coa: { expected: { date: '2026-11-18', late: 0, text: 'Results expected about Nov 18.' } } }));
+  assert.deepEqual([lines(c).Expected, c.notes[0].text], ['≈ Nov 18', 'Results expected about Nov 18.'], 'an expected COA says when and why');
+  assert.equal(lines(card('COA', Object.assign({}, flower, { coa: { expected: { date: '2026-11-10', late: 3, text: 'x' } } }))).Late, '3 days past the usual results day');
+  assert.equal(lines(card('COA', Object.assign({}, flower, { coa: { ifTested: { date: '2026-11-19', back: '2026-11-25', text: 'If the sample goes...' } } }))).Expected, '≈ Nov 25 if tested Nov 19');
+  assert.ok(card('COA', Object.assign({}, flower, { coa: {} })).notes.some(n => n.text === 'No results yet.'));
+  // Pack / Roll and Pickup: the day, planned or done, the schedule link, and the date box where it can be changed
+  c = card('Pack', flower);
+  assert.deepEqual(lines(c), { Packaged: 'Nov 20', State: 'Planned: a day still to come on the sheet' });
+  assert.deepEqual(acts(c), ['sched 2026-11-20']);
+  assert.deepEqual(c.edit, { field: 'pack', header: 'PCKG DATE', value: '2026-11-20' });
+  c = card('Roll', pre);
+  assert.deepEqual([lines(c).Rolled, c.edit.field], ['Nov 18', 'pack']);
+  c = card('Pickup', Object.assign({}, flower, { pickup: '2026-11-04', finished: true }));
+  assert.deepEqual(lines(c), { Pickup: 'Nov 4', State: 'Done' });
+  assert.deepEqual(c.edit, { field: 'nabis', header: 'NABIS P/U DATE', value: '2026-11-04' });
+  c = card('Pickup', flower);
+  assert.match(c.notes[0].text, /No Nabis pickup day \(NABIS P\/U DATE\)/); assert.deepEqual(c.edit, { field: 'nabis', header: 'NABIS P/U DATE', value: '' }, 'an empty pickup can be set');
+  assert.equal(card('Pack', Object.assign({}, flower, { canEdit: false })).edit, null, 'no date box without the right to edit');
+  // vapes: Test and COA from the COA e-mail, Total THC not the label figure, no date box
+  const vape = { product: 'vape', strain: 'Potion', code: 'P11526-AIO', uid: '1A40V', test: { date: '2026-11-10', src: 'vape', sample: '2611EXL9800.1' }, mail: null,
+    coa: { date: '2026-11-13', src: 'lab', labUrl: 'https://app.confidentlims.com/samples/v', result: 'Pass', totalThc: 77.5 } };
+  assert.deepEqual(lines(card('Test', vape)), { 'Sample collected': 'Nov 10', From: "the COA's Collected day", 'Lab sample': '2611EXL9800.1' });
+  assert.deepEqual(lines(card('COA', vape)), { Results: 'Nov 13', From: 'the Excelbis COA e-mail', Result: 'Passed', 'Total THC': '77.5%' }, 'vapes never get a sheet row');
+  c = card('Test', Object.assign({}, vape, { test: { date: null, src: '', sample: '2611EXL9800.1', received: '2026-11-11' } }));
+  assert.deepEqual(lines(c), { 'At the lab': 'Nov 11', 'Lab sample': '2611EXL9800.1' });
+  assert.equal(c.notes[0].text, 'The COA e-mail gives no day the sample was collected.', 'a vape with no collected day never blames the sheet');
+  assert.ok(!JSON.stringify([card('Test', vape), card('COA', vape), c]).includes('sheet'), 'no vape card mentions the sheet');
+  assert.deepEqual(acts(card('COA', vape)), ['url https://app.confidentlims.com/samples/v']);
+  assert.equal(card('COA', vape).edit, null);
+  // a trim planned on the pipeline sheet: its days, room, crew, estimate and schedule link; the later steps say they come after
+  const plan = { product: 'planned', strain: 'Kingtide', plan: { start: '2026-11-27', end: '2026-11-29', now: false, room: 'B', site: '15th (Imperial)', crew: 'Nouri', lights: '35', lb: 41.6 } };
+  c = card('Trim', plan);
+  assert.deepEqual(lines(c), { Planned: 'Nov 27–29', Room: 'B', Site: '15th (Imperial)', Crew: 'Nouri', Lights: '35', Estimate: "≈ 42 lb, from the site's recent trims" });
+  assert.deepEqual(acts(c), ['sched 2026-11-27']);
+  assert.match(card('Pack', plan).notes[0].text, /Comes after the trim/); assert.equal(card('Pack', plan).edit, null);
+  // a day outside the schedule's weeks is said, not linked
+  assert.deepEqual(BSTEP.card('Harvest', flower, T, { first: '2026-11-02', last: '2027-01-03' }).acts.map(a => a.kind + ' ' + a.text),
+    ['off Oct 10 is before the first week on the Production schedule (Nov 2).']);
+  // a date from another year carries its year
+  assert.equal(lines(card('Harvest', Object.assign({}, flower, { harvest: '2025-12-30', trim: null }))).Harvested, 'Dec 30, 2025');
+  // the page side: steps are buttons with no link inside, the Harvest hook is empty, a card's Save is the batch card's save
+  assert.ok(html.includes('data-bstep="${esc(id)}"') && html.includes(".replace(/<\\/?(?:a|button)\\b[^>]*>/g, '')"), 'a step is a button and holds no link or button');
+  assert.ok(/function harvestReport\(row\) \{ return null; \}/.test(html), 'the Metrc harvest report hook returns nothing until it has a real source');
+  assert.ok(html.includes('if (!edOpenFrom(el, preset) && BPOP === P)') && html.includes("if (preset && preset.save && o.dirty) { edStatus(); edSave(); return true; }"),
+    "a step card's Save opens the batch card on that date and saves through it (same checks, dry run, Done and Undo)");
+  // Save is checked again at the press and the card stays open with the reason; a redraw that keeps a typed date still re-checks Save
+  const fnBody = name => { const i = html.indexOf(`function ${name}(`); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i)); };
+  const save = fnBody('bpopSave');
+  assert.ok(save.indexOf('if (!bpopPreview()) return;') >= 0 && save.indexOf('if (!bpopPreview()) return;') < save.indexOf('edOpenFrom(') && !save.includes('closeBPop()'),
+    'Save never closes the card before the batch card has opened');
+  assert.ok(/\} else if \(BPOP\.edit\) bpopPreview\(\);/.test(fnBody('btPopFollow')), 'a background read turns Save off (with the reason) while a date is typed');
+  // the batch card: opening it closes any step card (one card at a time), carries a day typed in a step card, and says whether it opened
+  const open = fnBody('edOpenFrom');
+  assert.ok(open.includes('if (BPOP) closeBPop();') && open.indexOf('if (BPOP) closeBPop();') > open.indexOf('if (!edSetup(o, d)) return false;'), 'the pen closes an open step card once the batch card opens');
+  assert.ok(/preset = \{ uid: BPOP\.uid, field: BPOP\.edit\.field, value: i\.value, seen: BPOP\.seen, save: false \}/.test(open), '"open it" carries the typed day into the batch card');
+  assert.ok(!/\breturn;/.test(open), 'edOpenFrom always says whether it opened');
+  console.log('batch steps: each step\'s card on made-up flower, pre-roll, vape and planned-trim rows; Pack/Roll and Pickup take a date where the batch can be edited; schedule days inside the sheet\'s weeks');
 }
 
 // the plan's examples on the saved copy of the live sheet (2026-11-10), when that copy is on this computer
