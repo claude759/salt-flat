@@ -1706,4 +1706,130 @@ if (realPipe) {
     console.log(`adding a line on the saved live sheet: copy of I679 lands at G682, jars at G667, Mon Jan 18 is full; ${adds} more adds from today on build and read back`);
   }
 }
+// Batch V2 (beta, view only): lanes per grow room from the plan, the batch codes and the trim sheets; harvests merged per
+// room and day; a planned trim the trim sheets already have drawn once, as done; drying from the latest harvest before a trim
+{
+  const b2Src = html.split('/* ===== BATCH V2 MODEL START =====')[1].split('/* ===== BATCH V2 MODEL END ===== */')[0];
+  const BT2 = new Function('PIPE', 'BAT', 'TRIMY', `/*${b2Src}; return BT2;`)(PIPE, BAT, TRIMY);
+  const hvL = (site, room, title) => ({ type: 'harvest', title, site, room, crew: '', strains: [], notes: [] });
+  const trL = (site, room, crew, strains) => ({ type: 'trim', title: 'TRIM - ' + crew, site, room, crew, strains, notes: [] });
+  const days = {
+    '2026-08-01': [hvL('23RD', '1', 'HARVEST @ 23RD- ROOM 1')],
+    '2026-08-02': [trL('OLYMPIC', '2', 'NOURI', [])],                                   // the trim sheet says room 1
+    '2026-09-01': [hvL('', '', 'Harvest - 2 rooms / 2 facilities')],                     // no site: not on the timeline
+    '2026-09-30': [hvL('23RD', '1', 'HARVEST @ 23RD- ROOM 1')],
+    '2026-10-01': [trL('23RD', '1', 'JUSTIN', [{ strain: 'TIDE', n: 6 }])],                // 1 day after a harvest: not its drying
+    '2026-10-03': [hvL('25TH', '2', 'HARVEST @ 25TH- ROOM 2')],
+    '2026-10-05': [hvL('25TH', '2', 'HARVEST @ 25TH- ROOM 2')],
+    '2026-10-15': [trL('25TH', '2', 'JUSTIN', [{ strain: 'RIPTIDE', n: 5 }])],
+    '2026-10-16': [trL('25TH', '2', 'JUSTIN', [{ strain: 'RIPTIDE', n: 5 }])],
+    '2026-10-20': [trL('25TH', '1', 'JUSTIN', [])],                                     // past, after the site's first tab, no tab
+    '2026-11-20': [trL('IMPERIAL', 'A', 'NOURI', [{ strain: 'ZANGBANGER', n: 8 }])],
+    '2026-11-21': [trL('IMPERIAL', 'A', 'NOURI', [{ strain: 'ZANGBANGER', n: 8 }])],
+  };
+  const weeks = [{ start: '2026-07-27', days: Object.entries(days).map(([date, items]) => ({ date, items })) }];
+  const rows = [
+    { batch_code: 'F2-RT-10526-F', strain: 'Riptide', item: 'FLOWER', harvest_date: '2026-10-05', status: 'WAITING FOR TESTING' },
+    { batch_code: 'RT-10526-1', strain: 'RIPTIDE', item: '1G Preroll', harvest_date: '2026-10-05' },   // no site: the flower batch's
+    { batch_code: 'FA-Z-9126-I', strain: 'Zangbanger', item: 'FLOWER', harvest_date: '2026-09-03' },   // HRVST DATE wins over 9/1
+    { batch_code: 'F3-TB-91526-F', strain: 'Tidebanger', item: 'FLOWER', harvest_date: '' },          // the code's day
+    { batch_code: 'TB-91526-F-5PK', strain: 'Tidebanger', item: '5PK', harvest_date: '2026-09-15' },  // a site, no room
+    { batch_code: 'X-80126-1', strain: 'Nobody', item: '1G', harvest_date: '2026-08-01' },            // no site, no flower batch
+  ];
+  const tr = (file, site, room, tab, start, end, lights, strain, bigs, littles) =>
+    ({ file, tab, block: 0, line: 0, site, room, start_date: start, end_date: end, lights, strain, bigs_g: bigs, littles_g: littles, trim_g: 0 });
+  const ev = TRIMY.events([
+    tr('F', '25TH', '3', 'Sep 25-26', '2026-09-25', '2026-09-26', 20, 'Tidebanger', 30000, 8000),
+    tr('F', '25TH', '2', 'Oct 15-16', '2026-10-15', '2026-10-16', 20, 'Riptide', 30000, 8000),
+    tr('I', '15TH', 'A', 'Sep 13-14', '2026-09-13', '2026-09-14', 30, 'Zangbanger', 40000, 10000),
+    tr('O', 'OLYMPIC', '1', 'Aug 2', '2026-08-02', '2026-08-02', 40, 'Tide', 50000, 10000),
+  ]);
+  const M = BT2.build({ weeks, rows, ev, today: '2026-11-13', spread: 0.12 });
+  assert.deepEqual(M.lanes.map(l => l.key), ['23RD|1', '25TH|1', '25TH|2', '25TH|3', '15TH|A', 'OLYMPIC|1'], 'lanes: sites in order, rooms numbers first');
+  const H = id => M.harvests.find(h => h.id === 'h:' + id);
+  assert.deepEqual(H('25TH|2|2026-10-05').plan.length, 1);
+  assert.deepEqual(H('25TH|2|2026-10-05').batches.map(b => [b.code, b.from]), [['F2-RT-10526-F', ''], ['RT-10526-1', 'F2-RT-10526-F']],
+    'the plan line and the batch codes of one room and day are one harvest; a site-less pre-roll joins its flower batch');
+  assert.deepEqual(H('25TH|2|2026-10-05').strains, ['RIPTIDE']);
+  assert.equal(H('15TH|A|2026-09-03').batches[0].codeDate, '2026-09-01', 'HRVST DATE wins; the code day is kept for the card');
+  assert.deepEqual(H('25TH|3|2026-09-15').batches.map(b => [b.code, !!b.noRoom]), [['F3-TB-91526-F', false], ['TB-91526-F-5PK', true]],
+    'a code with a site but no room joins the one room of that site harvested that day');
+  assert.deepEqual(M.loose.map(z => z.kind + ' ' + z.date), ['harvest 2026-09-01', 'batch 2026-08-01'], 'what names no site stays off the timeline');
+  // trims: the plan's Oct 15-16 is the trim sheet's tab, drawn once as done; the IMPERIAL days are one planned 15th trim
+  const T = k => M.trims.filter(t => t.key === k);
+  assert.equal(T('25TH|2').length, 1, 'a planned trim the trim sheets have is drawn once');
+  assert.ok(T('25TH|2')[0].done && T('25TH|2')[0].plan.length === 1 && T('25TH|2')[0].plan[0].crew === 'JUSTIN', 'as done, with the plan on it');
+  const imp = T('15TH|A').filter(t => !t.done);
+  assert.deepEqual(imp.map(t => [t.start, t.end, t.plan[0].siteSaid.join()]), [['2026-11-20', '2026-11-21', 'IMPERIAL']], 'consecutive days are one trim; IMPERIAL is the 15th');
+  assert.ok(imp[0].est && imp[0].est.lights === 30 && Math.abs(imp[0].est.lb - 50000 / TRIMY.LB) < 0.01, "a planned trim carries the trim sheets' estimate");
+  assert.ok(T('23RD|1').length === 1 && !T('23RD|1')[0].done && !T('23RD|1')[0].missed, 'before a site has any tab, a past plan is not called missed');
+  assert.ok(M.trims.find(t => t.key === '25TH|1' && !t.done).missed, 'a past plan no tab has, after the first tab, is missed');
+  assert.ok(!M.lanes.some(l => l.key === 'OLYMPIC|2') && T('OLYMPIC|1')[0].plan[0].roomSaid === '2',
+    "a plan the trim sheets put in another room joins that room's one unclaimed tab, noting the room the sheet said");
+  // drying: the later of two harvests before a trim; not under 3 days, not over 30
+  assert.deepEqual(M.drying.map(d => [d.key, d.a, d.b, d.days]),
+    [['15TH|A', '2026-09-03', '2026-09-13', 10], ['25TH|3', '2026-09-15', '2026-09-25', 10], ['25TH|2', '2026-10-05', '2026-10-15', 10]], 'drying links');
+  assert.ok(!H('25TH|2|2026-10-03').trim && !H('23RD|1|2026-08-01').trim && !H('23RD|1|2026-09-30').trim);
+  assert.ok(M.from <= '2026-07-27' && new Date(M.from + 'T12:00:00Z').getUTCDay() === 1 && new Date(M.to + 'T12:00:00Z').getUTCDay() === 0, 'Monday to Sunday');
+  // without the trim sheets (no sign-in) every trim is the plan's, planned, with no estimate
+  const P = BT2.build({ weeks, rows, ev: null, today: '2026-11-13' });
+  assert.ok(P.trims.every(t => !t.done && !t.est && !t.missed) && P.trims.length === 5, 'plan only: 5 planned trims');
+  assert.deepEqual(P.drying.map(d => d.key), ['25TH|2'], 'plan only: drying to the planned trim');
+  console.log(`batch V2 model: ${M.lanes.length} lanes from plan + codes + trim tabs, harvests merged per room and day, a planned trim already done drawn once, ${M.drying.length} drying links`);
+  // review fixes (2026-11-13), from the live sheets:
+  // drying goes to the tab that lists the harvest's strains, not the first trim 3 days on (Olympic room 1, Jul 29: the Aug 2
+  // tab holds room 2's strains, the Aug 8-9 tab the harvest's); a harvest with no strains takes the trim nearest 9 days
+  const days2 = {
+    '2026-03-01': [hvL('25TH', '', 'HARVEST @ 25TH')],                                   // a site, no room, no strains
+    '2026-06-01': [hvL('23RD', '2', 'HARVEST @ 23RD- ROOM 2')],
+    '2026-06-04': [trL('23RD', '2', 'JUSTIN', [])],
+    '2026-06-11': [trL('23RD', '2', 'JUSTIN', [])],
+  };
+  const weeks2 = [{ start: '2026-02-23', days: Object.entries(days2).map(([date, items]) => ({ date, items })) }];
+  const rows2 = [
+    { batch_code: 'F1-BM-72926-O', strain: 'Black Magic', item: 'FLOWER', harvest_date: '2026-07-29' },
+    { batch_code: 'TB-91526-F-5PK', strain: 'Tidebanger', item: '5PK', harvest_date: '2026-09-15' },    // a site, no room, alone that day
+    { batch_code: 'F1-82426-A-F', strain: 'ANTIDOTE', item: 'FLOWER', harvest_date: '2026-08-03' },     // HRVST DATE a typo: siblings say 8/24
+    { batch_code: 'F1-ZB-82426-F-1', strain: 'ZANGBANGER', item: '1G', harvest_date: '2026-08-24' },
+    { batch_code: 'F3-N-61026-F', strain: 'Nebula', item: 'FLOWER', harvest_date: '2026-05-01' },       // only the code's day reaches a trim
+    { batch_code: 'F2-W-71026-F', strain: 'Wizzy', item: 'FLOWER', harvest_date: '2026-07-01' },        // nothing settles it: marked
+    { batch_code: 'TP-10226-1', strain: 'Tea Party', item: '1G Preroll', harvest_date: null },          // 10226 reads two ways
+    { batch_code: 'FA-TP-10226-I', strain: 'TEA PARTY', item: 'FLOWER', harvest_date: '2026-10-02' },
+    { batch_code: 'Q-11126-1', strain: 'Quasar', item: '1G Preroll', harvest_date: '' },                // no day at all
+  ];
+  const ev2 = TRIMY.events([
+    tr('O', 'OLYMPIC', '1', 'Aug 2', '2026-08-02', '2026-08-02', 20, 'Dark Matter', 30000, 8000),
+    tr('O', 'OLYMPIC', '1', 'Aug 8-9', '2026-08-08', '2026-08-09', 20, 'Black Magic', 30000, 8000),
+    tr('F', '25TH', '3', 'Sep 25-26', '2026-09-25', '2026-09-26', 20, 'Tide Banger', 30000, 8000),
+    tr('F', '25TH', '3', 'June 20', '2026-06-20', '2026-06-20', 20, 'Nebula', 30000, 8000),
+    tr('F', '25TH', '1', 'Sep 3-5', '2026-09-03', '2026-09-05', 20, 'Antidote', 30000, 8000),
+  ]);
+  const M2 = BT2.build({ weeks: weeks2, rows: rows2, ev: ev2, today: '2026-11-13' });
+  const H2 = id => M2.harvests.find(h => h.id === 'h:' + id);
+  assert.equal(BT2.sBase('BLACK LIGHT #6'), 'BLACK LIGHT'); assert.equal(BT2.sBase('M8'), 'VOODOO');
+  assert.deepEqual(M2.drying.filter(d => d.key === 'OLYMPIC|1').map(d => [d.a, d.b, d.days]), [['2026-07-29', '2026-08-08', 10]],
+    "drying skips a 4-day tab that lists none of the harvest's strains for the 10-day tab that lists them");
+  assert.deepEqual(M2.drying.filter(d => d.key === '23RD|2').map(d => [d.a, d.b]), [['2026-06-01', '2026-06-11']], 'no strains: the trim nearest 9 days');
+  // a code with a site but no room goes to the room of the site's tab that lists its strain; a plan line with none keeps its lane
+  const tb = H2('25TH|3|2026-09-15');
+  assert.ok(tb && tb.batches[0].noRoom && /Sep 25-26/.test(tb.batches[0].roomBy) && tb.trim === 't:25TH|3|2026-09-25', 'a roomless code joins the room its trim sheet tab says, and dries to it');
+  const nr = M2.lanes.find(l => l.key === '25TH|');
+  assert.ok(nr && nr.noRoom === 'sheet' && nr.harvests.length === 1, "a pipeline sheet line with a site and no room keeps a lane of its own, labelled as the sheet's");
+  const P2 = BT2.build({ weeks: [{ days: [{ date: '2026-09-25', items: [trL('25TH', '3', 'JUSTIN', [{ strain: 'TIDEBANGER', n: 6 }])] },
+    { date: '2026-10-10', items: [trL('25TH', '2', 'JUSTIN', [{ strain: 'RIPTIDE', n: 6 }])] }] }], rows: rows2.slice(1, 2), ev: null, today: '2026-11-13' });
+  assert.ok(P2.harvests.length === 1 && P2.harvests[0].key === '25TH|3' && !P2.lanes.some(l => !l.room), 'signed out: the room of the planned trim that lists the strain');
+  // HRVST DATE vs the code's day
+  const ant = M2.harvests.flatMap(h => h.batches.map(b => [h.key, h.date, b])).find(x => x[2].code === 'F1-82426-A-F');
+  assert.deepEqual([ant[0], ant[1], ant[2].hrvst, !!ant[2].conflict], ['25TH|1', '2026-08-24', '2026-08-03', false], "a batch goes on the code's day its siblings carry");
+  assert.ok(!H2('25TH|1|2026-08-03') && H2('25TH|1|2026-08-24').trim === 't:25TH|1|2026-09-03', 'one harvest, and it reaches its trim');
+  const neb = H2('25TH|3|2026-06-10');
+  assert.ok(neb && neb.batches[0].hrvst === '2026-05-01' && neb.trim === 't:25TH|3|2026-06-20', "the code's day when only it reaches a trim");
+  const wz = H2('25TH|2|2026-07-01');
+  assert.ok(wz && wz.conflict && wz.batches[0].codeDate === '2026-07-10', 'nothing settles it: HRVST DATE, marked as disagreeing');
+  // a batch with no readable day: the day of the same strain's batch with the same code digits, else listed as off the timeline
+  const tp = H2('15TH|A|2026-10-02').batches.find(b => b.code === 'TP-10226-1');
+  assert.ok(tp && tp.dateFrom === 'FA-TP-10226-I' && tp.from === 'FA-TP-10226-I', "an ambiguous code day takes its flower batch's day");
+  assert.deepEqual(M2.loose.filter(z => z.kind === 'nodate').map(z => z.b.code), ['Q-11126-1'], 'a batch with no day at all is listed, not dropped');
+  console.log(`batch V2 review fixes: drying by strain, roomless codes placed by their trim, HRVST DATE vs code day settled or marked, dateless batches kept`);
+}
 console.log('pipeline-check: all checks passed');
