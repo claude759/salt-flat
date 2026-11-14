@@ -260,8 +260,8 @@ launch. The check fails if one of the three pieces is missing.
   the drop's last batch (the no-insert rule is lifted for this tab only).
 - **Each step of a batch's track is clickable** (Gianni, 2026-11-13: "I want each column clickable"). A step is a
   button that opens a small card under it (a bottom sheet on phones), drawn from `BSTEP.card` (the BATCH STEP MODEL
-  block) and the row's facts: Harvest (day, room, site, trim sheet pounds; the Metrc harvest report is a hook,
-  `harvestReport(row)`, that returns null until there is a real source), Trim (days, trim sheet tab, pounds, "rolled
+  block) and the row's facts: Harvest (day, room, site, trim sheet pounds, and the Metrc harvest from
+  `harvestReport(row)`, below), Trim (days, trim sheet tab, pounds, "rolled
   from flower batch X", or why the trim isn't known), Test (when the sample went out, the lab's order e-mail, the order
   on Confident LIMS), COA (day, result, THC, the COA link or the Confident results, the expected day), Pack/Roll and
   Pickup. Each has "Show <day> on the Production schedule". No links inside a step: they live in its card. For an
@@ -273,6 +273,29 @@ launch. The check fails if one of the three pieces is missing.
   one UID can be typed on two rows. Save is checked again at the press and after each read; when it can't go ahead the
   card stays open with the typed day and the reason. The order link is the one the batch's lab sample number names; an
   order e-mail matched only by strain never overrides it, and says so when it is all there is.
+- **The Harvest step shows the Metrc harvest, with a printable report** (Gianni, 2026-11-13: "Harvest (pdf harvest
+  report from Metrc)"). Metrc's API has no harvest PDF, so the page draws its own from `pipeline_harvests` and
+  `pipeline_batch_harvests` (filled every 3 hours by the job on Gianni's Mac). Pure part: the HARVEST MODEL block
+  (`HARV`); page part: `harvestReport(row)`, `loadHarvests`, `bpopHvHTML`, `openHarvestPrint`. Harvest names repeat
+  across sites, so a linked name is the harvest under the batch's own site (its code's; a pre-roll's is the one flower
+  batch it was rolled from, `btFlowerOf`), else under the license the job linked, else the only harvest of that name,
+  flagged "Metrc lists this harvest under X; the batch code says Y" when sites differ; several and none at the batch's
+  site: each is shown, saying the name is used at more than one site. A blend mixes sites by design, so the batch's
+  site (and that flag) applies only to the part harvested on the batch's own day; its other parts go by the linked
+  license, else their only harvest (no flag), else every candidate. A linked name with no harvest row says "Not read
+  from Metrc yet"; a tag with no link says "No Metrc harvest is linked to this batch yet" plus the 3-hour hedge, on
+  paper too (a batch new to the sheet reaches the job in up to about 4 hours, so never "Metrc has none"). Strain:
+  Metrc's, else the sheet's (strain codes without names exist). Weights in pounds first, grams small; a finished
+  harvest's current weight is "Left at finish (moisture loss)", never "Still in harvest" (Metrc writes it off at the
+  finish). A blend lists one folded section per harvest, oldest first. Each section lists the other batches on the sheet from that harvest; a click
+  shows just that batch (the Lab results box's Show filter; it clears a typed search first). Print / Save as PDF opens a
+  one-page report over the page and the print dialog; while it is open, printing prints only the report
+  (`body.hv-printing`), on its own named page (`@page hvreport`, Letter portrait), so printing any other view keeps the
+  browser's paper and layout. The report's timeline states come from the board's own rule (`btTrackStates`). The report is built
+  from page data only: no links, images, scripts, ids beyond the batch's Metrc tag, or e-mail addresses. Egress: the
+  one-row meta at each Batches read; the links and only the harvest rows linked to the sheet's batches (`.in('name')`,
+  60 a request), again only when `pipeline_harvests_meta.changed_at` moves, a new batch's harvests weren't asked
+  for, or on Refresh (a not-quiet read more than 30 seconds after the last). Vapes have no Harvest step. Not signed in: the card says the harvest isn't read here.
 - **Batch V2** (beta, view only, Gianni 2026-11-13: "an experimental page called batch V2 ... a left/right
   scrollable timeline showing harvests and trims"): `data-view="batches2"`, after Batches. One lane per grow room
   (site + room), named by a strip above the lane, never a label column. Harvests from the DISTRO PIPELINE harvest

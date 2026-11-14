@@ -108,6 +108,8 @@ const adminSrc = html.split('/* ===== ADMIN MODEL START =====')[1].split('/* ===
 const ADMIN = new Function(`/*${adminSrc}; return ADMIN;`)();
 const bstepSrc = html.split('/* ===== BATCH STEP MODEL START =====')[1].split('/* ===== BATCH STEP MODEL END ===== */')[0];
 const BSTEP = new Function(`/*${bstepSrc}; return BSTEP;`)();
+const harvSrc = html.split('/* ===== HARVEST MODEL START =====')[1].split('/* ===== HARVEST MODEL END ===== */')[0];
+const HARV = new Function(`/*${harvSrc}; return HARV;`)();
 const args = process.argv.slice(2), realPipe = args.find(a => !a.startsWith('--')),
   realSup = (args.find(a => a.startsWith('--supply=')) || '').slice(9),
   realBat = (args.find(a => a.startsWith('--batches=')) || '').slice(10),
@@ -1493,13 +1495,19 @@ if (realPipe) {
     mail: { msg: 'm1', ids: ['2610EXL9180.36297'], exact: true, order: '2610EXL9180' },
     coa: { date: '2026-11-03', src: 'sheet', url: 'https://example.invalid/coa', urlText: 'COA', labUrl: 'https://app.confidentlims.com/samples/x', result: 'Pass', thc: 25.9 },
     pack: '2026-11-20', pickup: null, finished: false, canEdit: true };
-  // Harvest: the day, room and site, the trim sheet pounds; the Metrc report hook is empty for now and says so
+  // Harvest: the day, room and site, the trim sheet pounds; with no Metrc read (not signed in) it says so and offers no report
   let c = card('Harvest', flower);
   assert.deepEqual(lines(c), { Harvested: 'Oct 10', Room: 'F1', Site: 'Olympic (Rio Verde)', 'Trim sheet': '14.3 lb (bigs + littles)' });
-  assert.ok(c.notes.some(n => /harvest report isn't linked here yet/.test(n.text)) && acts(c).join() === 'sched 2026-10-10', 'no made-up Metrc link');
-  c = card('Harvest', Object.assign({}, flower, { report: { href: 'https://example.invalid/h.pdf', text: 'Metrc harvest report (PDF)' } }));
-  assert.deepEqual(acts(c), ['url https://example.invalid/h.pdf', 'sched 2026-10-10'], 'when the hook returns a report, the card opens it');
-  assert.ok(!c.notes.some(n => /isn't linked/.test(n.text)));
+  assert.ok(c.notes.some(n => /Metrc harvest isn't read here/.test(n.text)) && acts(c).join() === 'sched 2026-10-10' && !c.sections.length, 'no made-up Metrc data');
+  // with the Metrc harvest (HARV.report): its sections, then Print / Save as PDF before the schedule link
+  const rep1 = { state: 'ok', print: true, notes: [{ text: 'From Metrc, read Nov 13.', tone: 'quiet' }], sections: [{ name: 'F1-2513-10102026', lines: [['Plants', '88']], notes: [], alts: [], sibs: [] }] };
+  c = card('Harvest', Object.assign({}, flower, { report: rep1 }));
+  assert.deepEqual(c.acts.map(a => a.kind), ['print', 'sched'], 'the report is the Harvest step\'s click-through');
+  assert.equal(c.acts[0].text, 'Print / Save as PDF');
+  assert.deepEqual(c.sections, rep1.sections); assert.ok(c.notes.some(n => n.text === 'From Metrc, read Nov 13.'));
+  c = card('Harvest', Object.assign({}, flower, { report: { state: 'loading', notes: [{ text: 'Reading the Metrc harvest...', tone: 'quiet' }] } }));
+  assert.deepEqual(acts(c), ['sched 2026-10-10'], 'no report while the harvests are read');
+  assert.ok(c.notes.some(n => /Reading the Metrc harvest/.test(n.text)));
   // Trim: the days, the trim sheet tab and room, the pounds, the schedule link
   c = card('Trim', flower);
   assert.deepEqual(lines(c), { Trimmed: 'Oct 13–15', 'Trim sheet': 'tab OLY F1 10-13, room 1', Pounds: '14.3 lb of Black Light (bigs + littles)' });
@@ -1596,7 +1604,7 @@ if (realPipe) {
   assert.equal(lines(card('Harvest', Object.assign({}, flower, { harvest: '2025-12-30', trim: null }))).Harvested, 'Dec 30, 2025');
   // the page side: steps are buttons with no link inside, the Harvest hook is empty, a card's Save is the batch card's save
   assert.ok(html.includes('data-bstep="${esc(id)}"') && html.includes(".replace(/<\\/?(?:a|button)\\b[^>]*>/g, '')"), 'a step is a button and holds no link or button');
-  assert.ok(/function harvestReport\(row\) \{ return null; \}/.test(html), 'the Metrc harvest report hook returns nothing until it has a real source');
+  assert.ok(/function harvestReport\(row\) \{\n  if \(!sb\) return null;/.test(html) && html.includes('HARV.report({ uid: u, links: S.hv.links.get(u)'), 'the Harvest hook is the Metrc harvest, read only when signed in');
   assert.ok(html.includes('if (!edOpenFrom(el, preset) && BPOP === P)') && html.includes("if (preset && preset.save && o.dirty) { edStatus(); edSave(); return true; }"),
     "a step card's Save opens the batch card on that date and saves through it (same checks, dry run, Done and Undo)");
   // Save is checked again at the press and the card stays open with the reason; a redraw that keeps a typed date still re-checks Save
@@ -1611,6 +1619,167 @@ if (realPipe) {
   assert.ok(/preset = \{ uid: BPOP\.uid, field: BPOP\.edit\.field, value: i\.value, seen: BPOP\.seen, save: false \}/.test(open), '"open it" carries the typed day into the batch card');
   assert.ok(!/\breturn;/.test(open), 'edOpenFrom always says whether it opened');
   console.log('batch steps: each step\'s card on made-up flower, pre-roll, vape and planned-trim rows; Pack/Roll and Pickup take a date where the batch can be edited; schedule days inside the sheet\'s weeks');
+}
+
+// the Metrc harvest behind a batch (HARV): which harvest a link means when names repeat across sites, the card's
+// sections, the weights, the cases with nothing to show, and the printable report (made-up licenses and harvests)
+{
+  assert.deepEqual(HARV.SITE, BAT.SITE, "a harvest's site letter means what a batch code's does");
+  const hv = (license, site, name, x = {}) => Object.assign({ license, site, name, room: name.split('-')[0], strain_code: name.split('-')[1], strain: null,
+    start_date: HARV.nameDay(name), finished_date: null, archived_date: null, plant_count: 62, wet_weight: 51110, packaged_weight: 7013.1847, waste_weight: 0,
+    current_weight: 44096.8153, unit: 'Grams', package_count: 2, lab_state: 'NotSubmitted', harvest_type: 'WholePlant', drying_location: 'Dry Room', on_hold: false }, x);
+  const idx = (...rows) => { const m = new Map(); rows.forEach(h => { if (!m.has(h.name)) m.set(h.name, []); m.get(h.name).push(h); }); return m; };
+  const NAME = 'F2-2554-10292026';
+  const sA = hv('LIC-S', 'S', NAME, { strain: 'Antidote' }), fA = hv('LIC-F', 'F', NAME, { strain: 'Antidote', plant_count: 40 });
+  const label = s => ({ '23RD': '23rd (Slane)', '25TH': '25th (Filifera)', OLYMPIC: 'Olympic (Rio Verde)' })[s] || '';
+  const ctx = (site, x = {}) => Object.assign({ site, siteFrom: '', label, strain: 'Antidote', coveredFrom: '2026-10-20', today: '2026-11-13' }, x);
+  assert.equal(HARV.nameDay(NAME), '2026-10-29'); assert.equal(HARV.nameDay('Shake'), null);
+  // 1. the harvest under the batch code's site wins, even over the license the job linked (it can be wrong while it backfills)
+  let [e] = HARV.pick([{ name: NAME, license: 'LIC-S' }], idx(sA, fA), '25TH');
+  assert.deepEqual([e.state, e.h.license, e.by, e.mismatch], ['found', 'LIC-F', 'site', false]);
+  // 2. no site (a pre-roll code with no flower batch to go by): the linked license
+  [e] = HARV.pick([{ name: NAME, license: 'LIC-S' }], idx(sA, fA), '');
+  assert.deepEqual([e.state, e.h.license, e.by, e.mismatch], ['found', 'LIC-S', 'license', false]);
+  // 3. none at the batch's site: the linked license's, flagged
+  [e] = HARV.pick([{ name: NAME, license: 'LIC-S' }], idx(sA), '25TH');
+  assert.deepEqual([e.state, e.h.license, e.by, e.mismatch], ['found', 'LIC-S', 'license', true]);
+  let s = HARV.section(e, ctx('25TH'));
+  assert.equal(s.notes[0].text, 'Metrc lists this harvest under 23rd (Slane); the batch code says 25th (Filifera).');
+  assert.equal(s.notes[0].tone, 'warn');
+  assert.match(HARV.section(e, ctx('25TH', { siteFrom: 'F2-A-102926-F' })).notes[0].text, /the flower batch it was rolled from \(F2-A-102926-F\) says 25th/);
+  // 4. no license: the only harvest of that name, flagged when its site isn't the batch's
+  [e] = HARV.pick([{ name: NAME, license: null }], idx(sA), '25TH');
+  assert.deepEqual([e.state, e.by, e.mismatch], ['found', 'only', true]);
+  [e] = HARV.pick([{ name: NAME, license: null }], idx(sA), '23RD');
+  assert.deepEqual([e.by, e.mismatch], ['site', false]);
+  // 5. several and nothing to choose by: each is shown, saying the name is used at more than one site
+  [e] = HARV.pick([{ name: NAME, license: null }], idx(sA, fA), '');
+  assert.equal(e.state, 'many');
+  s = HARV.section(e, ctx(''));
+  assert.equal(s.sub, 'Used at more than one site');
+  assert.match(s.notes[0].text, /^Metrc has a harvest named F2-2554-10292026 at 25th \(Filifera\) and 23rd \(Slane\), and the batch code names no site\. Each is shown/);
+  assert.deepEqual(s.alts.map(a => [a.sub, Object.fromEntries(a.lines).Plants]), [['25th (Filifera) · room F2', '40'], ['23rd (Slane) · room F2', '62']]);
+  [e] = HARV.pick([{ name: NAME, license: null }], idx(sA, fA), 'OLYMPIC');
+  assert.match(HARV.section(e, ctx('OLYMPIC')).notes[0].text, /none of them Olympic \(Rio Verde\), which the batch code says\./);
+  // a found harvest's lines: pounds first, grams in small; Metrc's states in words
+  [e] = HARV.pick([{ name: NAME, license: 'LIC-S' }], idx(sA), '23RD');
+  s = HARV.section(e, ctx('23RD'));
+  assert.equal(s.sub, '23rd (Slane) · room F2');
+  assert.deepEqual(s.lines, [['Strain', 'Antidote'], ['Harvested', 'Oct 29'], ['Finished', 'Not finished in Metrc yet'],
+    ['Plants', '62'], ['Wet weight', '112.7 lb', '51,110 g'], ['Packaged (dry)', '15.5 lb', '7,013 g'], ['Waste', '0 lb', '0 g'],
+    ['Still in harvest', '97.2 lb', '44,097 g'], ['Packages', '2'], ['Lab testing', 'Not submitted'], ['On hold', 'No'], ['Drying', 'Dry Room']], 'site and room are in the section\'s sub-line');
+  assert.deepEqual(s.notes, []);
+  const held = HARV.section(HARV.pick([{ name: NAME }], idx(hv('LIC-S', 'S', NAME, { on_hold: true, finished_date: '2026-11-08', strain: null, strain_code: '2548' })), '23RD')[0], ctx('23RD', { strain: 'Bluebanger' }));
+  assert.deepEqual(Object.fromEntries(held.lines.map(l => [l[0], l.slice(1)])).Strain, ['Bluebanger', "the sheet's name; Metrc gives strain 2548"], 'a strain code with no name: the sheet\'s strain');
+  assert.equal(Object.fromEntries(held.lines).Finished, 'Nov 8');
+  // a finished harvest has nothing "still in" it: Metrc writes what is left off as moisture loss at the finish
+  assert.ok(!held.lines.some(l => l[0] === 'Still in harvest'), 'a finished harvest never says weight is still in it');
+  assert.deepEqual(held.lines.find(l => l[0] === 'Left at finish (moisture loss)'), ['Left at finish (moisture loss)', '97.2 lb', '44,097 g']);
+  assert.equal(Object.fromEntries(held.lines)['On hold'], 'Yes'); assert.ok(held.notes.some(n => n.text === 'Metrc has this harvest on hold.'));
+  // weights
+  assert.deepEqual(HARV.weight(51110, 'Grams'), { lb: '112.7 lb', g: '51,110 g' });
+  assert.deepEqual(HARV.weight(200, 'Grams'), { lb: '0.44 lb', g: '200 g' }, 'under a pound keeps two places');
+  assert.deepEqual(HARV.weight(2, 'Pounds'), { lb: '2 lb', g: '907 g' });
+  assert.deepEqual(HARV.weight(1.5, 'Kilograms'), { lb: '3.3 lb', g: '1,500 g' });
+  assert.deepEqual(HARV.weight(2400000, 'Grams'), { lb: '5,291.1 lb', g: '2,400,000 g' });
+  assert.deepEqual(HARV.weight(5, 'Each'), { lb: '5 Each', g: '' }, 'a unit it doesn\'t know is shown as Metrc gives it');
+  assert.equal(HARV.weight(null, 'Grams'), null); assert.equal(HARV.weight('', 'Grams'), null);
+  assert.deepEqual(['NotSubmitted', 'TestPassed', 'TestFailed', 'SubmittedForTesting', 'SomethingNew'].map(HARV.labState), ['Not submitted', 'Passed', 'Failed', 'Submitted for testing', 'Something new']);
+  // 6. a linked name with no harvest row yet: older ones are still being read; a newer one waits for the next read
+  [e] = HARV.pick([{ name: 'F2-2501-05062026', license: null }], idx(sA), '23RD');
+  assert.equal(e.state, 'unread');
+  s = HARV.section(e, ctx('23RD'));
+  assert.deepEqual([s.sub, s.tag, s.notes[0].text], ['', 'Not read from Metrc yet', 'Not read from Metrc yet (older harvests are still being read; check back tomorrow).']);
+  assert.deepEqual(s.lines, [['Harvested', 'May 6', 'from the harvest name']]);
+  [e] = HARV.pick([{ name: 'F2-2501-11092026', license: null }], idx(sA), '23RD');
+  assert.match(HARV.section(e, ctx('23RD')).notes[0].text, /every 3 hours/);
+  // 7. a blend: one section per source harvest, oldest first, and says it is a blend
+  const R = HARV.report({ uid: ' 1a40x ', links: [{ name: NAME, license: 'LIC-S' }, { name: 'F1-2554-07252026', license: null }], byName: idx(sA, fA), site: '23RD',
+    ctx: ctx('23RD'), read: 'Nov 13, 2026, 5:15 PM', sibs: x => x.state === 'found' ? [{ uid: '1A40Y', text: 'Antidote · 1g pre-roll · A-102926-1 · …000Y' }] : [] });
+  assert.deepEqual([R.state, R.print, R.sections.map(x => [x.name, x.state, x.sibs.length])], ['ok', true, [['F1-2554-07252026', 'unread', 0], [NAME, 'found', 1]]]);
+  assert.deepEqual(R.notes.map(n => n.text), ['A blend: Metrc lists 2 source harvests for this batch.', 'From Metrc, read Nov 13, 2026, 5:15 PM.']);
+  // 7b. a blend mixes sites by design: the batch's site (and its mismatch flag) holds only for the part harvested on the
+  // batch's own day; the other parts go by the linked license, else their only harvest (no warning), else every candidate
+  const T1 = 'F1-2424-07252026', T2 = 'FB-2424-07192026', T3 = 'F2-2424-09132026';
+  const blendIx = idx(hv('LIC-S', 'S', T1), hv('LIC-I', 'I', T2), hv('LIC-S', 'S', T3), hv('LIC-I', 'I', T3), hv('LIC-F', 'F', 'F3-2424-08012026'), hv('LIC-O', 'O', 'F3-2424-08012026'));
+  const blend = HARV.pick([{ name: T1, license: 'LIC-S' }, { name: T2, license: null }, { name: T3, license: null }, { name: 'F3-2424-08012026', license: null }], blendIx, '15TH', '2026-09-13');
+  assert.deepEqual(blend.map(x => [x.name, x.state, x.h && x.h.license, x.mismatch, x.site]),
+    [[T2, 'found', 'LIC-I', false, ''], [T1, 'found', 'LIC-S', false, ''], ['F3-2424-08012026', 'many', null, false, ''], [T3, 'found', 'LIC-I', false, '15TH']]);
+  const bctx = ctx('15TH', { label: s => ({ '23RD': '23rd (Slane)', '25TH': '25th (Filifera)', '15TH': '15th (Imperial)', OLYMPIC: 'Olympic (Rio Verde)' })[s] || '' });
+  assert.ok(blend.filter(x => x.state === 'found').every(x => !HARV.section(x, bctx).notes.some(n => n.tone === 'warn')), "a blend's parts from other sites carry no warning");
+  assert.match(HARV.section(blend[2], bctx).notes[0].text, /at 25th \(Filifera\) and Olympic \(Rio Verde\), and nothing says which one this part of the blend came from\./);
+  // the batch's own day at another site than the code says: still flagged
+  const own = HARV.pick([{ name: T1, license: 'LIC-S' }, { name: T2, license: null }], blendIx, '15TH', '2026-07-25');
+  assert.deepEqual(own.map(x => [x.name, x.mismatch]), [[T2, false], [T1, true]]);
+  // a blend with no harvest on the batch's day: no part is held to the batch's site
+  assert.ok(HARV.pick([{ name: T1, license: 'LIC-S' }, { name: T2, license: null }], blendIx, '15TH', '2026-09-28').every(x => !x.mismatch && x.site === ''));
+  // a single source harvest keeps the batch's site whatever its day
+  assert.deepEqual(HARV.pick([{ name: T1, license: 'LIC-S' }], blendIx, '15TH', '2026-09-28').map(x => [x.mismatch, x.site]), [[true, '15TH']]);
+  // the report hands the day on
+  assert.equal(HARV.report({ uid: 'X', links: [{ name: T1, license: 'LIC-S' }, { name: T2 }], byName: blendIx, site: '15TH', day: '2026-09-13', ctx: bctx })
+    .sections.flatMap(x => x.notes).filter(n => n.tone === 'warn').length, 0);
+  // an unread blend part not held to the batch's site keys on its license alone
+  assert.equal(HARV.groupKey(HARV.pick([{ name: 'Z-1-01012026' }, { name: 'Z-2-01022026' }], new Map(), '23RD', '2026-03-03')[0], '23RD'), 'n:?|Z-1-01012026');
+  // 8. no link at all (a vape from another maker, a batch the job hasn't looked up yet), and no tag: said, never guessed.
+  // "None linked yet", never "Metrc has none": a batch new to the sheet reaches the job in up to about 4 hours
+  const none = HARV.report({ uid: '1A40X', links: [], byName: idx(sA), site: '23RD', ctx: ctx('23RD') });
+  assert.deepEqual([none.state, none.print, none.sections.length, none.notes[0].text], ['none', true, 0, 'No Metrc harvest is linked to this batch yet.']);
+  assert.ok(!/Metrc names no harvest/.test(JSON.stringify(none)));
+  const nouid = HARV.report({ uid: '', links: [{ name: NAME }], byName: idx(sA), site: '23RD', ctx: ctx('23RD') });
+  assert.deepEqual([nouid.state, nouid.print], ['nouid', false]); assert.match(nouid.notes[0].text, /^No Metrc UID on the Batch Label Sheet/);
+  // the same harvest for two batches: the same key; the other site's harvest of that name is not the same harvest
+  const k = (links, site) => HARV.groupKey(HARV.pick(links, idx(sA, fA), site)[0], site);
+  assert.equal(k([{ name: NAME, license: 'LIC-S' }], '23RD'), k([{ name: NAME, license: null }], '23RD'));
+  assert.notEqual(k([{ name: NAME, license: 'LIC-S' }], '23RD'), k([{ name: NAME, license: 'LIC-S' }], '25TH'));
+  assert.equal(k([{ name: NAME, license: null }], ''), '', 'several to choose from: no siblings');
+  assert.equal(HARV.groupKey({ state: 'unread', name: 'X-1-01012026', license: '' }, '23RD'), 'n:23RD|X-1-01012026');
+  // the printable report: the batch, its steps, each harvest, the other batches, when Metrc was read; it loads and links nothing
+  const doc = HARV.printHTML({ title: 'Antidote <b>', code: 'F2-102926-A-S', kind: 'Flower', uid: '1A40X', where: '23rd (Slane), room F2', report: R,
+    steps: [{ label: 'Harvest', text: 'Oct 29', state: 'done' }, { label: 'Trim', text: '', state: 'skip' }, { label: 'COA', text: '≈ Nov 18 expected', state: 'plan' }],
+    generated: 'Nov 13, 2026, 5:20 PM', read: 'Nov 13, 2026, 5:15 PM' });
+  assert.ok(doc.includes('Antidote &lt;b&gt;') && !doc.includes('Antidote <b>'), 'the report escapes what it shows');
+  ['Metrc harvest report', 'F2-102926-A-S', 'Metrc tag 1A40X', 'Source harvests (2)', NAME, 'F1-2554-07252026', '112.7 lb', '51,110 g', 'Not read from Metrc yet',
+    'Other batches on the sheet from these harvests', 'A-102926-1', 'From Metrc, read Nov 13, 2026, 5:15 PM', 'printed Nov 13, 2026, 5:20 PM', '≈ Nov 18 expected', 'planned', 'passed']
+    .forEach(t => assert.ok(doc.includes(t), `the report shows ${t}`));
+  assert.ok(!/https?:|@|<script|<img|<link|<iframe|\bsrc=|\bhref=|url\(/i.test(doc), 'the report loads nothing, links nowhere and carries no e-mail address');
+  const docNone = HARV.printHTML({ title: 'Potion', report: none, steps: [] });
+  assert.ok(docNone.includes('Source harvest') && docNone.includes('No Metrc harvest is linked to this batch yet.') && !docNone.includes('hv-grid'));
+  assert.ok(docNone.includes('looked up in Metrc within about 3 hours'), "the printed report keeps the hedge for a batch not looked up yet");
+  assert.ok(!HARV.printHTML({ title: 'P', report: R, steps: [] }).includes('From Metrc, read Nov 13, 2026, 5:15 PM.</p>'), 'other quiet notes stay off paper');
+  // the page side: read only when signed in, only the harvests linked to the sheet's batches, again only when the job changed something
+  const fnSrc = name => { const i = html.indexOf(`function ${name}(`); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i)); };
+  const lh = fnSrc('loadHarvests');
+  assert.ok(/if \(hvLoading \|\| !sb \|\| !S\.bat\) return;/.test(lh), 'harvests are read with the signed-in client, once the batches are in');
+  assert.ok(lh.includes("H.changed !== (meta.changed_at || '')") && lh.includes(".in('name', part)") && lh.includes('S.bat.rows.forEach(r => (links.get('), 'only linked harvests, reloaded when the job changes them');
+  // a not-quiet read right after the last one (the first open's loadBatches finishing after render() started a quiet
+  // read) is not a Refresh: it must not download every link and harvest again
+  assert.ok(/forced = !quiet && Date\.now\(\) - \(S\.hvAt \|\| 0\) > HV_FORCE_MS;/.test(lh) && /moved = !H \|\| forced \|\|/.test(lh) && !/moved = [^;]*!quiet/.test(lh),
+    'only Refresh (a not-quiet read well after the last) forces the full re-read');
+  // Show from a Harvest card works while a search is typed (renderBatches drops S.btOnly while S.q is set)
+  const so = fnSrc('btShowOnly');
+  assert.ok(so.indexOf("S.q = '';") >= 0 && so.indexOf("S.q = '';") < so.indexOf('S.btOnly = {') && so.indexOf('S.btOnly = {') < so.indexOf('\n  render();'), 'Show clears the search before it narrows the list');
+  // the report's Letter portrait page is the report's own (a named page); printing any other view keeps the browser's choices
+  assert.ok(/@page hvreport\{size:letter portrait;margin:12mm\}/.test(html) && html.includes('#hv-print{page:hvreport}') && !/@page\s*\{/.test(html), 'no page size for the whole document');
+  // the printed timeline says each step as the board's track shows it (one rule: btTrackStates)
+  const tsSrc = fnSrc('btTrackStates'), psLine = html.match(/const btPrintState = [^\n]+/)[0];
+  const TS = new Function(`${tsSrc}\n}\n${psLine}\nreturn { btTrackStates, btPrintState };`)();
+  const pr = (st, opt) => { const t = TS.btTrackStates(st, opt); return t.cls.map(TS.btPrintState); };
+  const S6 = (...xs) => ['Harvest', 'Trim', 'Test', 'COA', 'Pack', 'Pickup'].map((label, i) => ({ label, state: xs[i] }));
+  assert.deepEqual(pr(S6('done', 'none', 'done', 'done', 'done', 'none'), { finished: true }), ['done', 'past', 'done', 'done', 'done', 'past'], "a finished batch's blank Pickup was passed");
+  assert.deepEqual(pr(S6('done', 'done', 'none', 'done', 'plan', 'none'), {}), ['done', 'done', 'past', 'done', 'plan', 'todo'], 'a blank Test before a done COA was passed');
+  assert.deepEqual(pr(S6('done', 'done', 'none', 'none', 'done', 'none'), {}), ['done', 'done', 'past', 'past', 'done', 'next']);
+  assert.deepEqual(pr([{ label: 'Harvest', state: 'none' }, { label: 'Trim', state: 'none' }, { label: 'Roll', state: 'plan' }, { label: 'Test', state: 'none' }], {}), ['past', 'past', 'plan', 'todo'],
+    'a pre-roll with no harvest date before a skipped Trim: Harvest was passed too');
+  assert.deepEqual(pr(S6('done', 'done', 'done', 'done', 'late', 'none'), { failed: true }), ['done', 'done', 'done', 'fail', 'plan', 'todo'], 'a failed COA: nothing after it is next');
+  const ohp = fnSrc('openHarvestPrint');
+  assert.ok(ohp.includes('btTrackStates(st, { finished: f.finished, failed: f.failed })') && ohp.includes('btPrintState(T.cls[i])'), 'the report takes its step states from the board\'s rule');
+  assert.ok(fnSrc('btTrackHTML').includes('btTrackStates(steps0, opt)'), "the board's track uses the same rule");
+  assert.ok(!/metrc_id|seen_at|last_modified/.test(html.slice(html.indexOf('const HV_COLS'), html.indexOf('let hvLoading'))), 'only the columns the card shows');
+  assert.ok(/loadLabs\(quiet\); loadHarvests\(quiet\);/.test(fnSrc('loadBatches')), 'alongside the lab results on the Batches view');
+  assert.ok(html.includes('body.hv-printing>:not(#hv-print){display:none!important}') && html.includes('<div id="hv-print" hidden'), 'printing the report prints only the report');
+  assert.ok(html.includes('data-act="hv-open"') && html.includes("case 'hv-open': openHarvestPrint(b.dataset.key); break;") && html.includes("case 'bt-hv-only': btShowOnly("), 'the card opens the report and shows the other batches');
+  assert.ok(/function btHarvSite\(r\) \{[\s\S]*?btFlowerOf\(r, harvest\)/.test(html), "a pre-roll's site is its flower batch's");
+  console.log('harvests: the harvest under the batch\'s site, else the linked license, else the only one (flagged); several shown; not read yet, no link and no tag said; weights in pounds with grams; the report loads nothing');
 }
 
 // the plan's examples on the saved copy of the live sheet (2026-11-10), when that copy is on this computer
