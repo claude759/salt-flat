@@ -135,14 +135,15 @@ const appFn = name => {
   return m[0];
 };
 check('phones and narrow windows: a range dropdown replaces the preset buttons, and Flagged only + More wrap as one piece', () => {
-  ok(/<select id="presetSel" aria-label="Date range"><\/select>/.test(markup), 'no #presetSel dropdown');
-  ok(/\$\('presetSel'\)\.addEventListener\('change', e => choosePreset\(e\.target\.value\)\)/.test(block('ts-app')), 'the dropdown is not wired to choosePreset');
+  // 2026-11-16: a typable box (input + datalist), never a <select> (Gianni's rule: every dropdown is typable)
+  ok(/<input type="text" class="pick" id="presetIn" list="presetList" data-pick="preset"[^>]*aria-label="Date range"[^>]*><span id="pselDates"><\/span><\/span><datalist id="presetList"><\/datalist>/.test(markup), 'no #presetIn box with its list');
+  ok(/for \(const id of \['deptIn', 'presetIn'\]\)/.test(appFn('wire')) && /if \(kind === 'preset'\) return \{ items: C\.PRESETS\.map\(x => \(\{ label: x\.short \|\| x\.label, labels: \[x\.short \|\| x\.label, x\.label\], value: x\.id \}\)\), cur: S\.preset, set: v => choosePreset\(v\)/.test(appFn('pickerOf')), 'the box is not wired to choosePreset');
   ok(/case 'preset': choosePreset\(d\.preset\)/.test(block('ts-app')), 'the preset buttons do not share choosePreset');
-  ok(/\$\('presetSel'\)\.value = S\.preset;/.test(appFn('renderControls')), 'renderControls does not keep the dropdown in step');
+  ok(/if \(document\.activeElement !== pin\) pin\.value = pr \? pr\.short \|\| pr\.label : '';/.test(appFn('renderControls')), 'renderControls does not keep the box in step');
   const tail = markup.match(/<div class="ctl-tail">([\s\S]*?)\n {6}<\/div>\n {4}<\/div>/);
   ok(tail && /id="flagChip"/.test(tail[1]) && /id="moreWrap"/.test(tail[1]), 'Flagged only and More are not grouped in .ctl-tail');
   ok(/@media \(max-width:919\.98px\),\(pointer:coarse\) and \(max-width:999px\),\(pointer:coarse\) and \(max-height:500px\)\{\s*#presets\{display:none\}\s*\.psel\{display:inline-flex\}/.test(src), 'dropdown breakpoint (also touch screens up to 999px wide or held sideways)');
-  ok(/<label class="psel" id="pselWrap"><span class="psel-txt" aria-hidden="true"><b id="pselLabel"><\/b><span id="pselDates"><\/span><\/span><select id="presetSel"/.test(markup), 'the dropdown face (range name over its dates) wraps the real select');
+  ok(/<label class="psel" id="pselWrap"><span class="psel-txt"><input type="text" class="pick" id="presetIn"/.test(markup), 'the face: the range\'s short name (a box to type in) over its dates');
   ok(/\.stats \.brk-sum\{display:none\}/.test(src), 'phones drop the break totals from the section lines');
 });
 check('no page-wide summary line (Gianni 2026-10-09: "this is clutter"); the section lines carry the totals', () => {
@@ -639,8 +640,8 @@ check('CSV in a view: same columns (Company and Department stay for spreadsheets
 check('page: a view hides the company chips + department select and renders the flat layout; print and CSV follow it; Everyone renders as before', () => {
   ok(/function layout\(\) \{ return C\.layoutFor\(activeView\(\), \{ manager: managerMode\(\) \}\); \}/.test(block('ts-app')), 'layout() must follow the active view, and a manager is always flat');
   const rc = appFn('renderControls');
-  ok(rc.includes("$('coChips').hidden = !lay.companyChips;") && rc.includes("$('deptSel').hidden = !lay.deptSelect;"), 'renderControls must hide the chips and department select in a view');
-  ok(!/\$\('(q|flagChip|moreWrap|presets|presetSel)'\)\.hidden/.test(block('ts-app')), 'search, Flagged only, presets and More must stay');
+  ok(rc.includes("$('coChips').hidden = !lay.companyChips;") && rc.includes("$('deptIn').hidden = !lay.deptSelect;"), 'renderControls must hide the chips and department box in a view');
+  ok(!/\$\('(q|flagChip|moreWrap|presets|presetIn)'\)\.hidden/.test(block('ts-app')), 'search, Flagged only, presets and More must stay');
   const r = appFn('render');
   ok(/if \(!lay\.companyChips\) S\.coSel = \[\];/.test(r) && /if \(!lay\.deptSelect\) S\.dept = '';/.test(r), 'a hidden control must stop filtering');
   const c = appFn('renderContent');
@@ -1277,7 +1278,7 @@ check('phone layout rules: compact header with a menu, two control rows, 40px ta
   const p = phone[1];
   ok(/body\{font-size:15px\}/.test(p), 'primary text 15px');
   ok(/\.brand-name \.bn-long\{display:none\}/.test(p) && /\.brand-name \.bn-short\{display:inline\}/.test(p), 'short title "Timesheets"');
-  ok(/#q\{[^}]*font-size:16px/.test(p) && /#deptSel\{[^}]*font-size:16px/.test(p) && /\.psel select\{[^}]*font-size:16px/.test(src), '16px fields (iPhone zooms into smaller ones)');
+  ok(/#q\{[^}]*font-size:16px/.test(p) && /#deptIn\{[^}]*font-size:16px/.test(p) && /\.psel input\{[^}]*font-size:16px/.test(src), '16px fields (iPhone zooms into smaller ones)');
   ok(/\.chip\{min-height:40px/.test(p) && /\.vtab\{min-height:46px/.test(p) && /\.pop-item\{min-height:44px/.test(p) && /\.iconbtn\{[^}]*width:40px;height:40px/.test(src), 'tap targets');
   ok(/\.freshbtn \.fr-short\{display:inline\}/.test(p), 'the sync button keeps its dot and a short time');
   const narrow = src.match(/@media \(max-width:919\.98px\),\(pointer:coarse\) and \(max-width:999px\),\(pointer:coarse\) and \(max-height:500px\)\{([\s\S]*?)\n  \}/)[1];
@@ -2072,7 +2073,7 @@ check('page: reads ts_edits with the days (paged), a missing table turns Edit of
   ok(/sb\.rpc\('ts_edit_cancel', \{ p_id: op\.id \}\)/.test(ro), 'ts_edit_cancel args');
   ok(/C\.supersede\(/.test(ro) && /await fetchEdits\(raw\.work_date, raw\.work_date\)/.test(appFn('saveDayEdits')), 'replaced edits marked at once, then the day re-read');
   if (SQL_EDITS) ok(/function public\.ts_edit_submit\(p_day_id text, p_shift_id text, p_action text,\s*p_after jsonb, p_note text\)/.test(SQL_EDITS) && /function public\.ts_edit_cancel\(p_id uuid\)/.test(SQL_EDITS), 'the RPCs in supabase/ts-edits.sql');
-  ok(/function boardRows\(\) \{ return withTaps\(withPlaces\(C\.overlayRows\(\[\.\.\.S\.rows\.values\(\)\], editIndex\(\), \{ now: Date\.now\(\), todayOf: rowToday, known: d => covered\(d, d\) \}\)\)\); \}/.test(app) && /C\.filterRows\(boardRows\(\),/.test(appFn('baseRows')), 'the board (tables, cards, totals, CSV) shows waiting changes, midnight settled with the days it has loaded');
+  ok(/function boardRows\(\) \{ return withTaps\(withPlaces\(C\.overlayRows\(\[\.\.\.S\.rows\.values\(\), \.\.\.C\.pendingBlankRows\(S\.rows, \[\.\.\.S\.edits\.values\(\)\], S\.people, S\.companies\)\], editIndex\(\), \{ now: Date\.now\(\), todayOf: rowToday, known: d => covered\(d, d\) \}\)\)\); \}/.test(app) && /C\.filterRows\(boardRows\(\),/.test(appFn('baseRows')), 'the board (tables, cards, totals, CSV) shows waiting changes, midnight settled with the days it has loaded');
   ok(/C\.editPlan\(raw0, E\.entries, \{ now: Date\.now\(\), neighbors: neighborShifts\(raw0\) \}\)/.test(appFn('saveDayEdits')) && /if \(Object\.keys\(plan\.errors\)\.length\)/.test(appFn('saveDayEdits')), 'Save checks everything first');
   ok(/if \(failed\.has\(op\.key\)\) continue;/.test(appFn('saveDayEdits')), 'a failed cancel never lets its new add through');
 });
@@ -2123,11 +2124,11 @@ check('Save never sends from a stale copy: the editor reads the day again when i
   const app = block('ts-app');
   const oe = appFn('openEditor'), sv = appFn('saveDayEdits'), rd = appFn('refreshDay');
   ok(/sb\.from\('ts_days'\)\.select\('\*'\)\.eq\('id', dayId\)/.test(rd) && /await fetchEdits\(date, date\)/.test(rd) && /if \(DEMO\) return \{ ok: true \};/.test(rd), 'one day: its row by id and its changes');
-  ok(/await Promise\.all\(\[refreshDay\(dayId\), neighborDays\(S\.rows\.get\(dayId\)\)\]\);/.test(oe) && /if \(tok !== edTok\) return;/.test(oe) && oe.indexOf('refreshDay(dayId)') < oe.indexOf('C.editorEntries(') && /E\.stamp = C\.dayStamp\(raw, editsFor\(dayId\)\);/.test(oe), 'the form is built after the read, and remembers the day it opened on');
+  ok(/await Promise\.all\(\[refreshDay\(dayId\), neighborDays\(dayRaw\(dayId\)\)\]\);/.test(oe) && /if \(tok !== edTok\) return;/.test(oe) && oe.indexOf('refreshDay(dayId)') < oe.indexOf('C.editorEntries(') && /E\.stamp = C\.dayStamp\(raw, editsFor\(dayId\)\);/.test(oe), 'the form is built after the read, and remembers the day it opened on');
   ok(/const fresh = await refreshDay\(k\);/.test(sv) && /C\.dayStamp\(raw, editsFor\(k\)\) !== E\.stamp/.test(sv) && sv.indexOf('await refreshDay(k)') < sv.indexOf('runEditOp('), 'Save reads the day again before it sends anything');
   ok(sv.includes('This day changed since you opened it. Reload it and try again.') && /E\.stale = fresh\.ok;/.test(sv) && /data-act="ed-reload">Reload this day</.test(appFn('editorBody')) && /case 'ed-reload': reloadEditor\(\); break;/.test(app), 'refused, in plain words, with a way to reload the day');
   ok(/Couldn't check this day for newer changes, so nothing was saved/.test(sv), 'a failed read sends nothing either');
-  ok(/E\.stamp = C\.dayStamp\(S\.rows\.get\(k\), editsFor\(k\)\);/.test(sv), 'what this form saved does not block its own retry');
+  ok(/E\.stamp = C\.dayStamp\(dayRaw\(k\), editsFor\(k\)\);/.test(sv), 'what this form saved does not block its own retry');
   ok(/if \(E\.loading\) return h`<p class="faint ed-load" role="status">/.test(appFn('editorBody')) && /if \(E\.busy \|\| E\.loading\) return;/.test(sv), 'while the day loads: no form, no Save');
   ok(/return done;/.test(appFn('fetchEdits')), 'fetchEdits says whether it read');
 });
@@ -2653,7 +2654,7 @@ check('review: an update or delete sends p_expect (the waiting changes the edito
 });
 check('review: managers are offered only the kinds of change the worker has sent with a person watching (adding, deleting and New York wait for a supervised run)', () => {
   const app = block('ts-app');
-  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: false, midnightEnd: false,[^}]*note: false, nyNote: false,[^}]*job: false, nyJob: false,[^}]*addJob: false, nyAddJob: false,[^}]*startAfterClockout: true, nyStartAfterClockout: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the two midnight fixes not yet (review 2026-10-25), nor notes in either region (2026-10-29), nor job changes or adds on a picked job (2026-10-30), and a start moved once the shift ended proven in CA 2026-11-09 (not yet in New York)');
+  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: true, nyMidnight: false, midnightEnd: false,[^}]*midnightDelete: false, nyMidnightDelete: false,[^}]*note: false, nyNote: false,[^}]*job: false, nyJob: false,[^}]*addJob: false, nyAddJob: false,[^}]*startAfterClockout: true, nyStartAfterClockout: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the first-day end fix proven in CA 2026-10-30 (not New York), its 11:59 PM end and whole-shift deletes not yet (2026-11-16), nor notes in either region (2026-10-29), nor job changes or adds on a picked job (2026-10-30), and a start moved once the shift ended proven in CA 2026-11-09 (not yet in New York)');
   ok(/function mayEdit\(what\) \{ const a = actor\(\); return !!\(a && a\.is_admin\) \|\| C\.fullViewer\(a\) \|\| !!EDIT_PROVEN\[what\]; \}/.test(app), 'admins and full viewers keep them all');
   const fv = { is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, mgr = { is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
   ok(C.fullViewer(fv) && !C.fullViewer(mgr), 'a full viewer (every CA company) gets add and delete; a department manager does not');
@@ -2947,15 +2948,15 @@ check('review 2026-10-25: a split shift is offered for a fix only when it is a f
   // the page: the switches, what each sign-in may send, and the carried part's words (no "fix it on the day before" when that
   // day is not offered for a fix)
   const app = block('ts-app');
-  ok(/midnight: \{ fix: mayEdit\('midnight'\), end: mayEdit\('midnightEnd'\) \}/.test(appFn('openEditor')), 'the editor knows what this sign-in may send');
+  ok(/midnight: \{ fix: mayMidnight\(raw\), end: mayEdit\('midnightEnd'\), whole: mayWhole\(raw\) \}/.test(appFn('openEditor')), 'the editor knows what this sign-in may send');
   const ch = appFn('carriedHtml');
-  ok(/const canOpen = en\.split\.forgotten && en\.split\.samePeriod && mayEdit\('midnight'\) && S\.rows\.has\(prevKey\) && canEditRow\(S\.rows\.get\(prevKey\)\);/.test(ch), 'Open <day before> only where that day can take the fix');
+  ok(/prevRow = prevKey \? S\.rows\.get\(prevKey\) \|\| null : null;/.test(ch) && /const canOpen = en\.split\.forgotten && en\.split\.samePeriod && !!prevRow && mayMidnight\(prevRow\) && canEditRow\(prevRow\);/.test(ch), 'Open <day before> only where that day can take the fix');
   const ct = appFn('carriedText');
   ok(/Fix its end on ' \+ prevDay \+ ': a new end there fixes both days at once\./.test(ct) && /Fix its end time in Gusto/.test(ct) && /Change it in Gusto\./.test(ct), 'each case says where to fix it');
   ok(/if \(en\.readonly === 'split'\) return h`[^\n]*C\.splitWhy\(en, tz\)/.test(appFn('entryHtml')), 'read-only parts say why');
   ok(/en\.split && en\.split\.fix \? h`<p class="pd-fine ed-split">/.test(appFn('entryHtml')), 'the "set its real end here" note only where it can be done');
   ok(/if \(!en \|\| en\.readonly !== 'carried' \|\| !en\.split \|\| !en\.split\.end\) return;/.test(appFn('edEndMidnight')), 'the button cannot be forced');
-  ok(/midnight: false, midnightEnd: false,[^}]*\};/.test(app), 'both off until a supervised run proves each');
+  ok(/midnight: true, nyMidnight: false, midnightEnd: false,[^}]*\};/.test(app), 'the first-day fix proven in California only (2026-10-30), the 11:59 PM end nowhere yet');
 });
 check('messages show the seconds that cause them, and an overlap is marked on the break typed here, not the one Gusto has', () => {
   const me = { email: 'm@wizardtrees.com', is_admin: true }, at = { today: '2026-10-21', now: Date.parse('2026-10-21T18:00:00Z') };
@@ -3741,9 +3742,9 @@ check('a note added here (action note): what ts_edit_submit stores, its refusals
   // the same check for a reason, which Save changes runs before it sends anything
   eq([C.reasonProblem(''), C.reasonProblem('late bus'), C.reasonProblem('see\nNote\tfrom other@wizardtrees.com: moved'), C.reasonProblem('x'.repeat(501))],
     ['', '', FORGED('reason'), 'The reason can be at most 500 characters.']);
-  const sde = src.slice(src.indexOf('async function saveDayEdits()'), src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits()')));
+  const sde = src.slice(src.indexOf('async function saveDayEdits('), src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits(')));
   ok(/const note = E\.note\.trim\(\), rp = C\.reasonProblem\(note\);\s*if \(rp && plan\.ops\.some\(o => o\.type === 'submit'\)\)/.test(sde), 'Save changes refuses such a reason before it sends');
-  ok(!/E\.note\.trim\(\)/.test(src.slice(src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits()')), src.indexOf('async function', src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits()'))))), 'and sends the reason it checked, not one typed during the refresh');
+  ok(!/E\.note\.trim\(\)/.test(src.slice(src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits(')), src.indexOf('async function', src.indexOf('E.busy = true; E.stale = false;', src.indexOf('async function saveDayEdits('))))), 'and sends the reason it checked, not one typed during the refresh');
   // the change's own words and the reason, cut to 500 without splitting an emoji
   const cu = C.cutUnits('End it at 11:59 PM: ' + '\u{1F600}'.repeat(240), C.EDIT_RULES.noteMax);
   ok(cu.length <= 500 && !/[\uD800-\uDBFF]$/.test(cu) && C.cutUnits('abc', 5) === 'abc', 'cutUnits');
@@ -3874,7 +3875,7 @@ check('page: the editor lists the day\'s notes by shift and adds one with its ow
   ok(/\$\{editorNotes\(raw, tz\)\}/.test(eb) && eb.indexOf('editorNotes(raw, tz)') < eb.indexOf('editorHistory(raw, tz)'), 'Notes in Gusto above the changes to the day');
   ok(/<span class="ed-k">Notes in Gusto<\/span>/.test(en) && /C\.dayNotes\(raw, editsFor\(raw\.id\)\)/.test(en) && /'Shift ' \+ C\.spanLabel\(g\.shift, tz\)/.test(en) && /statusPill\(n\.status\)/.test(en), 'grouped by shift on a day with more than one');
   ok(/data-act="ed-note-open"/.test(nb) && />\+ Add a note</.test(nb) && /class="linkbtn ed-nadd"/.test(nb), '+ Add a note');
-  ok(/targets\.length > 1 \|\| \(targets\.length && !picked\) \? h`<label class="ed-f"><span>Shift<\/span><select id="edNoteShift">/.test(nb), 'a shift picker only when more than one shift can take a note (or the one picked left the list)');
+  ok(/targets\.length > 1 \|\| \(targets\.length && !picked\) \? h`<label class="ed-f"><span>Shift<\/span><input type="text" class="pick" id="edNoteShift" list="edNoteShiftList" data-pick="note"/.test(nb), 'a shift picker (a typable box) only when more than one shift can take a note (or the one picked left the list)');
   ok(/<textarea id="edNoteText" rows="3" maxlength="\$\{max\}"/.test(nb) && /max = C\.EDIT_RULES\.gustoNoteMax/.test(nb) && /id="edNoteCount">\$\{E\.noteText\.length \+ ' \/ ' \+ max\}</.test(nb), 'a box of 400 characters with a counter (Enter makes a new line there)');
   ok(/<button type="button" class="btn sm primary" data-act="ed-note-save"/.test(nb) && /<button type="button" class="btn sm" data-act="ed-note-cancel"/.test(nb), 'its own Save note and Cancel, type="button"');
   ok(nb.includes('Notes are visible to the employee in Gusto.'), 'the hint');
@@ -3883,7 +3884,7 @@ check('page: the editor lists the day\'s notes by shift and adds one with its ow
   ok(/if \(E\.noteOpen && E\.noteText\.trim\(\)\) \{ E\.err = NOTE_FIRST;/.test(appFn('saveDayEdits')) && block('ts-app').includes("const NOTE_FIRST = 'Save the note first (Save note, under Notes in Gusto), or cancel it.';"), 'Save changes neither sends nor drops a typed note');
   ok(/if \(E\.err === NOTE_FIRST\) E\.err = '';/.test(appFn('edNoteClose')), 'and says so only until the note is saved or cancelled');
   ok(/\(E\.noteOpen && E\.noteText\.trim\(\) !== ''\)/.test(appFn('editorDirty')) && /if \(E\.busy \|\| E\.noteBusy \|\| E\.tapBusy\) return;/.test(appFn('requestCloseEditor')), 'a typed note counts when closing; never closes mid-save');
-  ok(/if \(t\.id === 'edNoteText'\) \{ E\.noteText = t\.value;/.test(appFn('onEditorInput')) && /if \(t\.id === 'edNoteShift'\) \{ E\.noteShift = t\.value; return; \}/.test(appFn('onEditorInput')), 'typing keeps the box in step without a re-render');
+  ok(/if \(t\.id === 'edNoteText'\) \{ E\.noteText = t\.value;/.test(appFn('onEditorInput')) && /cur: E\.noteShift, set: v => \{ E\.noteShift = v; \}/.test(appFn('pickerOf')) && /if \(!changed \|\| t\.dataset\.pick === 'note' \|\| t\.dataset\.pick === 'who'\) return;/.test(appFn('onEditorInput')), 'typing keeps the box in step without a re-render');
   for (const a of ['ed-note-open', 'ed-note-cancel', 'ed-note-save']) ok(new RegExp("case '" + a + "': ").test(app), a + ' is wired');
   ok(/resetNoteBox\(\)/.test(appFn('openEditor')) && /resetNoteBox\(\)/.test(appFn('closeEditor')), 'a fresh box for every day');
   ok(/if \(opts && opts\.note && canNoteRow\(raw\)\) \{ E\.noteOpen = true;/.test(appFn('openEditor')) && /if \(E\.noteOpen\) \{ noteFocus\(\); return; \}/.test(appFn('openEditor')), "a phone's Add a note opens the box ready to type (only where the day's Add a note is offered)");
@@ -3926,15 +3927,15 @@ check('the note box once open: stays (to copy the note, or cancel it) when no sh
   // open, and the shift that could take it is gone: the typed note stays, with Cancel; Save note is off
   const gone = String(notePage(admin, NOTE_BOX({ noteOpen: true, noteText: 'Last day', noteShift: 's1' })).noteBox(none, C.TZ));
   ok(/<textarea id="edNoteText"[^>]*>Last day<\/textarea>/.test(gone) && gone.includes("None of this day&#39;s shifts can take a note now. Copy it into Gusto, or cancel it.") && /data-act="ed-note-cancel">Cancel/.test(gone), 'the note and Cancel stay: ' + gone);
-  ok(/data-act="ed-note-save" disabled>/.test(gone) && !/<select/.test(gone), 'Save note is off, and there is no shift to pick');
+  ok(/data-act="ed-note-save" disabled>/.test(gone) && !/id="edNoteShift"/.test(gone), 'Save note is off, and there is no shift to pick');
   // open on a picked shift that left the list: "Pick the shift", never the first shift in its place (one shift left, too)
   const lost = n => String(notePage(admin, NOTE_BOX({ noteOpen: true, noteText: 'x', noteShift: 'gone' })).noteBox(n, C.TZ));
   for (const [r, opts] of [[two, 2], [edRow([s2]), 1]]) {
     const html = lost(r);
-    ok(/<select id="edNoteShift"><option value="" selected disabled>Pick the shift<\/option>/.test(html) && (html.match(/<option value="s/g) || []).length === opts && !/<option value="s[^"]*" selected/.test(html), opts + ' shift(s) left: ' + html);
+    ok(/<input type="text" class="pick" id="edNoteShift" list="edNoteShiftList" data-pick="note" value="" data-ph="Pick the shift" placeholder="Pick the shift"/.test(html) && (html.match(/<datalist id="edNoteShiftList">(.*?)<\/datalist>/)[1].match(/<option /g) || []).length === opts, opts + ' shift(s) left: ' + html);
   }
-  ok(!/<select/.test(String(notePage(admin, NOTE_BOX({ noteOpen: true, noteShift: 's2' })).noteBox(edRow([s2]), C.TZ))), 'one shift, the one picked: no picker');
-  ok(/<option value="s2" selected>/.test(String(notePage(admin, NOTE_BOX({ noteOpen: true, noteShift: 's2' })).noteBox(two, C.TZ))), 'two shifts: the one picked shows picked');
+  ok(!/id="edNoteShift"/.test(String(notePage(admin, NOTE_BOX({ noteOpen: true, noteShift: 's2' })).noteBox(edRow([s2]), C.TZ))), 'one shift, the one picked: no picker');
+  ok(/id="edNoteShift"[^>]* value="4:00 PM - 6:00 PM"/.test(String(notePage(admin, NOTE_BOX({ noteOpen: true, noteShift: 's2' })).noteBox(two, C.TZ))), 'two shifts: the one picked shows picked');
   // Save note sends only to the shift picked; with nothing picked, the day's one shift
   ok(/s = targets\.find\(x => String\(x\.id\) === E\.noteShift\) \|\| \(targets\.length === 1 && !E\.noteShift \? targets\[0\] : null\);/.test(appFn('edSaveNote')) &&
      /\(s \? '' : targets\.length \? 'Pick the shift the note is for\.' : NOTE_NO_SHIFT\)/.test(appFn('edSaveNote')), 'Save note');
@@ -4197,14 +4198,15 @@ check('demo: some people have 2-3 Gusto jobs (made-up ids), every shift on a job
   const ld = C.normRow(demo.rows.filter(x => x.employee_uuid === late.employee_uuid && x.work_date < lj.start && !x.open && x.shifts.length === 1 && C.canEditDate(x.work_date, demo.todays.CA))[0]);
   eq(C.submitEdit(demo.edits, ld, { shift_id: ld.shifts[0].id, action: 'update', after: Object.assign(C.shiftSnap(ld.shifts[0]), { job: { id: lj.id } }) },
     { email: 'demo.owner@wizardtrees.com', now: NOW, id: 'demo-edit-902', jobs: C.personJobs(late) }).error, C.jobStartsText(lj.start), 'a job added lately cannot take an earlier day');
-  ok(/C\.submitEdit\(list, raw, \{ shift_id: op\.shift_id, action: op\.action, after: op\.after, note, expect: op\.expect \}, \{ email: who\.email, now, id: 'demo-edit-' \+ \(\+\+demoSeq\), jobs: jobsFor\(raw\) \}\)/.test(appFn('runEditOp')), 'the demo page passes the person\'s jobs');
+  ok(/C\.submitEdit\(list, raw, \{ shift_id: op\.shift_id, action: op\.action, after: op\.after, note, expect: op\.expect \}, \{ email: who\.email, now, id: 'demo-edit-' \+ \(\+\+demoSeq\), jobs: jobsFor\(raw\),/.test(appFn('runEditOp')), 'the demo page passes the person\'s jobs');
 });
 // The page's own job functions, run as written with stand-ins: who is signed in and the person's jobs. proven: EDIT_PROVEN
 // as it will be after a supervised run.
 function jobPage(me, jobs, proven) {
   const app = block('ts-app'), pick = re => { const m = app.match(re); if (!m) throw new Error('not in ts-app: ' + re); return m[0]; };
   const code = [proven ? 'const EDIT_PROVEN = ' + J(proven) + ';' : pick(/const EDIT_PROVEN = \{[\s\S]*?\};/), pick(/const rowRegion = [^\n]*\n/),
-    appFn('mayEdit'), appFn('mayJob'), appFn('jobPick'), appFn('jobField'), appFn('jobTag'), 'return { EDIT_PROVEN, mayEdit, mayJob, jobPick, jobField, jobTag };'].join('\n');
+    'const E = { pickMsg: {} };', pick(/const JOB_NOT_PICKED = [^\n]*\n/), appFn('pickErrHtml'), appFn('jobItems'),
+    appFn('mayEdit'), appFn('mayJob'), appFn('jobPick'), appFn('jobField'), appFn('jobTag'), 'return { EDIT_PROVEN, mayEdit, mayJob, jobPick, jobField, jobTag, jobItems };'].join('\n');
   return new Function('C', 'h', 'actor', 'jobsFor', code)(C, C.h, () => me, () => jobs);
 }
 check('the Job pick: for a person with more than one job (loaded), on a shift that can be changed and on a new one; a job held until proven (admins and full viewers now, CA and NY apart); a later job listed but off; Job not known yet', () => {
@@ -4221,20 +4223,24 @@ check('the Job pick: for a person with more than one job (loaded), on a shift th
   eq([jobPage(mgr, PJ, caOnly).mayJob(ca), jobPage(mgr, PJ, caOnly).mayJob(ny), jobPage(mgr, PJ, Object.assign({}, caOnly, { nyJob: true })).mayJob(ny)], [true, false, true], 'once CA:job is proven, California days; New York days wait for NY:job');
   eq([String(jobPage(admin, [PJ[0]]).jobField(en, ca, 'Shift 1')), String(jobPage(admin, null).jobField(en, ca, 'Shift 1'))], ['', ''], 'one job, or jobs not loaded: no pick');
   const html = String(jobPage(admin, PJ).jobField(en, ca, 'Shift 1'));
-  ok(/<select data-ek="e1" data-ef="job" aria-label="Shift 1 job">/.test(html), 'a select the editor reads: ' + html);
-  eq([...html.matchAll(/<option value="([^"]*)"([^>]*)>([^<]*)<\/option>/g)].map(m => [m[1], m[2].trim(), m[3]]),
-    [['j-trim', 'selected', 'Trimmer'], ['j-blank', '', 'No job title'], ['j-imp', 'disabled', 'Deleaf/Harvest - Imperial (from Oct 8)'], ['j-slane', '', 'Deleaf/Harvest - Slane']], 'primary first, its own job picked, a later job off');
+  // 2026-11-16: a typable box with its list (Gianni's rule: every dropdown is typable), never a <select>
+  ok(/^<div class="ed-job"><label class="ed-f"><span>Job<\/span><input type="text" class="pick" data-ek="e1" data-ef="job" data-pick="job" list="edJob-e1" value="Trimmer"[^>]*aria-label="Shift 1 job"><\/label><datalist id="edJob-e1">/.test(html) && !/<select/.test(html), 'a typable box the editor reads: ' + html);
+  eq([...html.matchAll(/<option value="([^"]*)"><\/option>/g)].map(m => m[1]), ['Trimmer', 'No job title', 'Deleaf/Harvest - Slane'], 'primary first, its own job showing; the list shows only jobs that can be picked');
+  const its = jobPage(admin, PJ).jobItems(en, ca, PJ);
+  eq(its.map(x => [x.value, x.label, x.why]), [['j-trim', 'Trimmer', ''], ['j-blank', 'No job title', ''], ['j-imp', 'Deleaf/Harvest - Imperial (from Oct 8)', C.jobStartsText('2026-10-08')], ['j-slane', 'Deleaf/Harvest - Slane', '']], 'a later job, typed, is refused with the day it starts');
+  eq(C.pickFrom(its, 'imperial', x => x.label).item.why, C.jobStartsText('2026-10-08'), 'typed: found, and refused for its day');
+  eq([C.pickFrom(its, 'slane', x => x.label).item.value, C.pickFrom(its, 'deleaf', x => x.label).why, C.pickFrom(its, 'TRIMMER', x => x.label).item.value], ['j-slane', 'many', 'j-trim'], 'typed: contains, too many, any case');
   const unk = C.editorEntries(edRow([ED_S1]), edRow([ED_S1]), [], me, ctx)[0];
-  ok(/^<div class="ed-job"><label class="ed-f"><span>Job<\/span><select[^>]*><option value="" selected disabled>Job not known yet<\/option><option value="j-trim">/.test(String(jobPage(admin, PJ).jobField(unk, ca, 'Shift 1'))), 'a shift whose job is not known yet');
+  ok(/^<div class="ed-job"><label class="ed-f"><span>Job<\/span><input type="text" class="pick"[^>]* value="" data-ph="Job not known yet" placeholder="Job not known yet"/.test(String(jobPage(admin, PJ).jobField(unk, ca, 'Shift 1'))), 'a shift whose job is not known yet');
   const n = Object.assign(C.newEntry('n1'), { inT: '19:00', outT: '20:00' });
-  ok(/<option value="" selected>Not picked \(the day's job, else their primary one\)<\/option>/.test(String(jobPage(admin, PJ).jobField(n, ca, 'New shift'))), 'a new shift: Not picked, the browser task picks as before');
+  ok(/value="Not picked \(the day&#39;s job, else their primary one\)"/.test(String(jobPage(admin, PJ).jobField(n, ca, 'New shift'))) && /<option value="Not picked \(the day&#39;s job, else their primary one\)"><\/option><option value="Trimmer">/.test(String(jobPage(admin, PJ).jobField(n, ca, 'New shift'))), 'a new shift: Not picked, the browser task picks as before');
   // a new shift's pick is the worker's 'add-job', proven apart: CA:job alone does not offer it to a manager
   const addOk = Object.assign({}, caOnly, { addJob: true });
   eq([jobPage(mgr, PJ, caOnly).mayJob(ca, true), String(jobPage(mgr, PJ, caOnly).jobField(n, ca, 'New shift')), String(jobPage(mgr, PJ, caOnly).jobField(Object.assign({}, n, { kind: 'add' }), ca, 'Added shift'))],
     [false, '', ''], 'CA:job proven, CA:add-job not: a manager has no pick on a new shift (nor a waiting add)');
   eq([jobPage(mgr, PJ, addOk).mayJob(ca, true), jobPage(mgr, PJ, addOk).mayJob(ny, true), jobPage(mgr, PJ, Object.assign({}, addOk, { nyAddJob: true })).mayJob(ny, true), jobPage(mgr, PJ, { addJob: true }).mayJob(ca)],
     [true, false, true, false], 'once CA:add-job is proven, on California days; New York waits for NY:add-job; moving a shift still needs CA:job');
-  ok(/<select data-ek="n1" data-ef="job"/.test(String(jobPage(mgr, PJ, addOk).jobField(n, ca, 'New shift'))) && /<select/.test(String(jobPage(admin, PJ).jobField(n, ny, 'New shift'))), 'then the pick, as admins have it now');
+  ok(/<input type="text" class="pick" data-ek="n1" data-ef="job" data-pick="job"/.test(String(jobPage(mgr, PJ, addOk).jobField(n, ca, 'New shift'))) && /data-pick="job"/.test(String(jobPage(admin, PJ).jobField(n, ny, 'New shift'))), 'then the pick, as admins have it now');
   for (const [what, x] of [['read-only', { readonly: 'sent' }], ['waiting to be deleted', { del: true }], ['split at midnight', { split: { role: 'first', fix: true } }]])
     eq(String(jobPage(admin, PJ).jobField(Object.assign({}, en, x), ca, 'Shift 1')), '', 'none on a shift ' + what);
   // the header tag: where no pick says it
@@ -4242,8 +4248,9 @@ check('the Job pick: for a person with more than one job (loaded), on a shift th
     ['<span class="ed-jt">Trimmer</span>', '<span class="ed-jt">Job not known yet</span>', ''], "the shift's job, Job not known yet, or nothing on a one-job day");
   // wiring: entryHtml puts the pick under the times and the tag after the label; typing keeps everything else
   const eh = appFn('entryHtml');
-  ok(/const raw = S\.rows\.get\(E\.rowId\), jf = jobField\(en, raw, label\), pl = placeOfEntry\(en\);/.test(eh) && /const pend = h`\$\{jf \? '' : jobTag\(en, raw\)\}/.test(eh) && /<\/div>\n\s+\$\{jf\}\$\{plh\}\n/.test(eh), 'the pick under the start and end; the tag beside the label (read-only shifts too)');
-  ok(/else if \(f === 'job'\) \{ const j = \(jobsFor\(S\.rows\.get\(E\.rowId\)\) \|\| \[\]\)\.find\(x => x\.id === t\.value\); en\.job = j \? j\.id : ''; en\.jobTitle = j \? j\.title : ''; \}/.test(appFn('onEditorInput')), 'picking a job sets only the job (no re-render)');
+  ok(/const raw = dayRaw\(E\.rowId\), jf = jobField\(en, raw, label\), pl = placeOfEntry\(en\);/.test(eh) && /const pend = h`\$\{jf \? '' : jobTag\(en, raw\)\}/.test(eh) && /<\/div>\n\s+\$\{jf\}\$\{plh\}\n/.test(eh), 'the pick under the start and end; the tag beside the label (read-only shifts too)');
+  ok(/if \(kind === 'job'\) \{/.test(appFn('pickerOf')) && /set: v => \{ const it = items\.find\(x => x\.value === v\); en\.job = v; en\.jobTitle = it \? it\.title : ''; \}/.test(appFn('pickerOf'))
+    && /const changed = e\.type === 'input' \? pickInput\(t\) : pickCommit\(t\);/.test(appFn('onEditorInput')), 'picking a job sets only the job (no re-render)');
   const app = block('ts-app');
   ok(/function mayJob\(r, add\) \{ return add \? mayEdit\('addJob'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyAddJob'\)\) : mayEdit\('job'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyJob'\)\); \}/.test(app), 'mayJob');
   ok(/function jobPick\(r, add\) \{ const jobs = jobsFor\(r\); return jobs && jobs\.length > 1 && mayJob\(r, add\) \? jobs : null; \}/.test(app) && /jobPick\(raw, en\.kind !== 'shift'\)/.test(appFn('jobField')), "jobPick asks about an add for a shift that is not Gusto's yet");
@@ -5180,10 +5187,10 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
   class FD extends Date { constructor(...a) { super(...(a.length ? a : [FIXED])); } static now() { return FIXED; } }
   function tapPage(o) {
     const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
-    const code = [line(/\n  let tapIdx = new Map\(\);[^\n]*\n/), line(/\n  const minHhmm = [^\n]*\n/),
+    const code = [line(/\n  let tapIdx = new Map\(\);[^\n]*\n/), line(/\n  const minHhmm = [^\n]*\n/), appFn('mayMidnight'),
       ...['tapOfRaw', 'tapPrev', 'tapEdits', 'mayTap', 'withTaps', 'tapBtn', 'tapOffered', 'resetTap', 'tapFocus', 'openTapForm', 'tapHtml', 'tapPlanNow', 'edSaveTap'].map(appFn),
       'return { withTaps, tapBtn, openTapForm, tapHtml, edSaveTap, tapOffered, idx: () => tapIdx };'].join('\n');
-    const env = { C, h: C.h, S: o.S, E: o.E, DEMO: true, Date: FD, mayEdit: w => w !== 'midnight' || o.midnight !== false, canEditRow: () => true,
+    const env = { C, h: C.h, S: o.S, E: o.E, DEMO: true, Date: FD, mayEdit: w => w !== 'midnight' || o.midnight !== false, canEditRow: () => true, rowRegion: r => r.region || C.regionOfCompany(r.company),
       editsFor: id => o.list().filter(e => e.day_id === id), refreshDay: async () => ({ ok: true }),
       boardRow: r => C.overlayDay(r, o.list().filter(e => e.day_id === r.id), { today: TODAY }), rawNeighbors: r => nbOf(r, [...o.S.rows.values()]), neighborShifts: () => [],
       actor: () => who, rowToday: () => TODAY, NOTE_FIRST: 'Save the note first.', $: () => null,
@@ -5220,12 +5227,12 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     const done = tapEnv([ROW5, ROW6]); done.set([a, b]);
     eq(done.P.withTaps([ROW5, ROW6])[1].flags.map(f => f.code), ['midnight_split']);
     // the page: the flag on the table and the phone card (r.flags), the button under it, both gated like the first-day end fix
-    ok(/return !!prev && tap\.samePeriod && mayEdit\('midnight'\) && canEditRow\(raw\) && canEditRow\(prev\);/.test(appFn('mayTap')), 'mayTap: the first-day fix\'s rule');
+    ok(/return !!prev && tap\.samePeriod && mayMidnight\(raw\) && canEditRow\(raw\) && canEditRow\(prev\);/.test(appFn('mayTap')), 'mayTap: the first-day fix\'s rule');
     ok(/tb = tapBtn\(r, 'xs'\)/.test(appFn('flagsCell')) && /\$\{tapBtn\(r, ''\)\}/.test(appFn('detailBody')), 'desktop and phone');
     ok(/case 'tap-open': openEditor\(d\.k, el, \{ tap: true \}\); break;/.test(src) && /case 'ed-tap-open': edTapOpen\(\); break;/.test(src)
       && /case 'ed-tap-cancel': edTapClose\(\); break;/.test(src) && /case 'ed-tap-save': edSaveTap\(\); break;/.test(src), 'wired');
     ok(/const tp = !en\.del && E\.tap && String\(E\.tap\.shift\.id\) === en\.id && raw && tapOffered\(raw\) \? tapHtml\(raw\) : '';/.test(appFn('carriedHtml')), 'the editor\'s carried part offers it');
-    ok(/midnight: false, midnightEnd: false,/.test(block('ts-app')), 'EDIT_PROVEN unchanged');
+    ok(/midnight: true, nyMidnight: false, midnightEnd: false,/.test(block('ts-app')), 'EDIT_PROVEN: the first-day fix in California only');
   });
   await acheck('clock-in tap: the form opens on the end from their note, and Save sends the end then the start through the page\'s own submit path (runEditOp), in that order', async () => {
     const env = tapEnv([ROW5, ROW6]);
@@ -5277,6 +5284,482 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     eq(r4.E.tapEnd, '');
     await r4.P.edSaveTap();
     eq([r4.sent.length, r4.E.tapErr], [0, 'Enter the real end time for Mon, Oct 5.']);
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// 26. (Gianni 2026-11-16, "yes to both") the whole of a forgotten clock-out run past midnight deleted at once (A), hours added
+//     for someone with no time that day (B), and the last plain dropdowns made typable (C). Made-up people only.
+// ---------------------------------------------------------------------------------------------
+{
+  const NOW_W = Date.parse('2026-10-08T18:00:00Z'), TODAY_W = '2026-10-08';
+  const boss = { email: 'boss@wizardtrees.com', is_admin: true };
+  // the incident's shape: no clock-in at 1 PM; at 4:35 PM a 4-second shift, then a clock-in left open overnight until a 7:03 AM tap,
+  // which Gusto keeps as ONE id on two days
+  const TINY = MSH('w-t', '2026-10-06', '16:35:00', '16:35:04');
+  const RUN = MSH('w-r', '2026-10-06', '16:35:06', '23:59:59'), RUN2 = MSH('w-r', '2026-10-07', '00:00:00', '07:03:00');
+  const WN = MROW('2026-10-06', [TINY, RUN], [MFLAG('start')]), WN1 = MROW('2026-10-07', [RUN2], [MFLAG('cont')]);
+  const nbW = (raw, rows) => (rows || [WN, WN1]).filter(r => r.work_date === C.addDays(raw.work_date, -1) || r.work_date === C.addDays(raw.work_date, 1))
+    .flatMap(r => r.shifts.filter(s => !s.hours_only && s.in).map(s => ({ id: String(s.id), in: s.in, out: s.out || null, date: r.work_date, breaks: s.breaks || [] })));
+  const MID = { fix: true, end: true, whole: true };
+  const entW = (raw, mid, nb, board, edits) => C.editorEntries(raw, board || raw, edits || [], boss, { today: TODAY_W, now: NOW_W, neighbors: nb || nbW(raw), midnight: mid || MID });
+  const WHOLE_TXT = 'This deletes the whole shift from 4:35 PM Tue, Oct 6 to 7:03 AM Wed, Oct 7: 7 h 25 min on Tue, Oct 6 and 7 h 3 min on Wed, Oct 7 (14 h 28 min in all). Gusto kept it as one shift past midnight (likely a missed clock-out), so both days lose these hours.';
+  const WHOLE_ASK = 'Delete the whole shift from 4:35 PM Tue, Oct 6 to 7:03 AM Wed, Oct 7? Both days lose its 14 h 28 min.';
+  const SPLIT_DEL = 'Gusto ran this shift past midnight under one id, so deleting it would also take 12:00 AM to 7:03 AM on Wed, Oct 7. To fix a missed clock-out, give it its real end time instead (both days are fixed at once); to remove the whole shift, delete it in Gusto.';
+  // the demo twin of ts_edit_submit, on a whole delete of the incident's runaway part (o.input, o.list; c: ctx over these)
+  const subW = (row, o, c) => C.submitEdit((o && o.list) || [], row, Object.assign({ shift_id: 'w-r', action: 'delete', after: null, note: C.DELETE_WHOLE_NOTE, expect: [] }, (o && o.input) || {}),
+    Object.assign({ email: boss.email, now: NOW_W, id: 'wd1', next: WN1 }, c || {}));
+  // the server's words (and the demo twin's, with a full stop): ts_edit_submit in supabase/ts-edit-whole-shift-blank-day.sql
+  const W_MSG = {
+    flag: 'Only a shift the sync marked as a likely missed clock-out can be deleted as a whole here. Delete it in Gusto.',
+    first: "Only the first day's part of a shift Gusto ran past midnight can be deleted as a whole. Change it in Gusto.",
+    access: d => 'The rest of this shift (on ' + d + ') is not on a day you can change, so it cannot be deleted as a whole here. Delete it in Gusto.',
+    gone: d => 'Gusto does not show the rest of this shift on ' + d + '. Reload after the next sync.',
+    future: 'You cannot edit a day that has not happened yet.',
+    open: d => 'The rest of this shift (on ' + d + ') is still clocked in, so it cannot be deleted here yet.',
+    long: 'Gusto keeps this shift on more than two days under one id. Change it in Gusto.',
+    period: d => 'The rest of this shift (on ' + d + ') is in the next pay period, so it cannot be deleted as a whole here. Fix it in Gusto.',
+    busy: d => 'A change of this shift on ' + d + ' is waiting or was just sent to Gusto. Cancel it there, or reload after the next sync, then try again.',
+    waits: d => 'This shift waits to be deleted as a whole from ' + d + '. Cancel that change first, or reload after the next sync.',
+  };
+  check('whole-shift delete (A): the incident (a 4-second shift, then a clock-in left open overnight) is fixed in one Save, the real 1:00 PM shift and the runaway deleted on both days', () => {
+    const en = entW(WN);
+    eq(en.map(e => [e.id, e.readonly || null, e.split ? e.split.role : null, e.split ? e.split.whole : null]), [['w-t', null, null, null], ['w-r', null, 'first', true]]);
+    en[1].del = true; en[0].inT = '13:00'; en[0].outT = '16:35';
+    const p = C.editPlan(WN, en, {});
+    eq(p.errors, {}, 'nothing refused, so the good change goes with it');
+    eq(p.ops.map(o => [o.type, o.action, o.shift_id, o.note || null, !!o.whole]), [['submit', 'update', 'w-t', null, false], ['submit', 'delete', 'w-r', C.DELETE_WHOLE_NOTE, true]]);
+    eq([p.ops[0].after.in, p.ops[0].after.out], ['2026-10-06T13:00:00-07:00', TINY.out], 'the real shift, its end kept to the second');
+    eq(C.DELETE_WHOLE_NOTE, 'Delete the whole shift on both days', 'the words the server and the worker read');
+    eq([C.wholeText(en[1], C.TZ), C.wholeConfirmText(en[1], C.TZ)], [WHOLE_TXT, WHOLE_ASK]);
+    eq(C.wholeMinutes(en[1], C.TZ), { first: 445, carried: 423, total: 868 }, "Gusto's minutes: its 11:59:59 PM counts as midnight");
+    // meals come off each day's hours (rests are paid)
+    const RM = MSH('w-r', '2026-10-06', '16:35:06', '23:59:59', [['18:00', '18:30', 'meal'], ['20:00', '20:10', 'rest']]), RM2 = MSH('w-r', '2026-10-07', '00:00:00', '07:03:00', [['01:00', '01:30', 'meal']]);
+    const wm = MROW('2026-10-06', [RM], [MFLAG('start')]), em = entW(wm, MID, nbW(wm, [wm, MROW('2026-10-07', [RM2], [MFLAG('cont')])]))[0];
+    eq([C.wholeMinutes(em, C.TZ), em.split.unpaidMin, em.split.otherBreaks.length], [{ first: 415, carried: 393, total: 808 }, 30, 1]);
+    // without the whole delete (a sign-in it is not open to yet): the refusal of before, word for word, and nothing goes
+    const old = entW(WN, { fix: true, end: true }); old[1].del = true; old[0].inT = '13:00';
+    const po = C.editPlan(WN, old, {});
+    eq([po.ops, old[1].split.whole], [[], false]);
+    eq(po.errors[old[1].key].map(e => [e.code, e.msg]), [['split_delete', SPLIT_DEL]]);
+    eq(C.planErrorSummary(old, po.errors, C.TZ), [{ key: old[1].key, label: 'Shift 2 (4:35 PM - 11:59 PM)', msg: SPLIT_DEL }], 'named next to Save, as the editor names it');
+    for (const t of [WHOLE_TXT, WHOLE_ASK, C.describeEdit(subW(WN).edit, C.TZ)[0]]) ok(!/[–—]/.test(t), 'no en or em dash: ' + t);
+  });
+  check('whole-shift delete: offered only on the first day of a forgotten clock-out in one pay period whose 12:00 AM part has a clock-out, to a sign-in the page lets send one', () => {
+    const w = (raw, nb, mid) => { const e = entW(raw, mid, nb).find(x => x.id === 'w-r'); return e && e.split ? e.split.whole : null; };
+    eq(w(WN), true, 'the incident');
+    eq(w(MROW('2026-10-06', [TINY, RUN])), false, 'real overnight work (no midnight_split flag)');
+    const FRI = MROW('2026-10-09', [MSH('w-r', '2026-10-09', '16:35:06', '23:59:59')], [MFLAG('start')]);
+    eq(w(FRI, [{ id: 'w-r', in: '2026-10-10T00:00:00-07:00', out: '2026-10-10T07:03:00-07:00', date: '2026-10-10', breaks: [] }]), false, 'the other part in the next pay period (Fri Oct 9 into Sat Oct 10)');
+    eq(w(WN, [Object.assign({}, nbW(WN)[0], { out: '2026-10-07T23:59:59-07:00' })]), false, "a chain over more than two days ('long')");
+    eq(w(WN, [Object.assign({}, nbW(WN)[0], { out: null })]), false, 'the 12:00 AM part still clocked in');
+    eq(w(WN, null, { fix: true, end: true }), false, 'a sign-in it is not open to (mayWhole)');
+    eq(w(WN, null, { fix: false, end: false, whole: true }), true, 'whole alone (fix not open to this sign-in) still offers it');
+    // the day's flag can come from yesterday's runaway part: this shift must look forgotten itself (the server's check 4b)
+    const nbAt = (inT, outT, extra) => [{ id: 'w-r', in: '2026-10-07T' + inT + '-07:00', out: '2026-10-07T' + outT + '-07:00', date: '2026-10-07', breaks: [] }].concat(extra || []);
+    const at = t => MROW('2026-10-06', [MSH('w-r', '2026-10-06', t, '23:59:59')], [MFLAG('start')]);
+    eq(w(at('22:00:00'), nbAt('00:00:00', '06:00:00')), false, 'an 8 h overnight shift on a day flagged for another shift');
+    eq(w(at('22:00:00'), nbAt('00:00:00', '06:00:00', [{ id: 'w-n', in: '2026-10-07T06:00:10-07:00', out: '2026-10-07T14:00:00-07:00', date: '2026-10-07', breaks: [] }])), true, 'clocked back in 10 seconds after its end');
+    eq(w(at('22:00:00'), nbAt('00:00:00', '06:00:00', [{ id: 'w-n', in: '2026-10-07T06:05:01-07:00', out: '2026-10-07T14:00:00-07:00', date: '2026-10-07', breaks: [] }])), false, 'back in 5 min 1 s after');
+    eq(w(at('17:03:00'), nbAt('00:00:00', '07:03:00')), false, 'exactly 14 h');
+    eq(w(at('17:02:00'), nbAt('00:00:00', '07:03:00')), true, '14 h 1 min');
+    const c = entW(WN1)[0];
+    eq([c.readonly, c.split.role, c.split.whole], ['carried', 'carried', false], 'never from the 12:00 AM part');
+  });
+  check('whole-shift delete: Save reads the day after once more, and nothing goes when its 12:00 AM part is not what the editor showed and the question named (2026-11-16 review)', () => {
+    const en = entW(WN)[1];
+    eq([en.split.whole, C.wholeRestSame(en, WN1)], [true, true], 'as the editor showed it');
+    const later = MROW('2026-10-07', [MSH('w-r', '2026-10-07', '00:00:00', '09:15:00')], [MFLAG('cont')]);
+    const meal = MROW('2026-10-07', [MSH('w-r', '2026-10-07', '00:00:00', '07:03:00', [['01:00', '01:30', 'meal']])], [MFLAG('cont')]);
+    const other = MROW('2026-10-07', [MSH('w-x', '2026-10-07', '00:00:00', '07:03:00')], [MFLAG('cont')]);
+    eq([later, meal, other, null, WN].map(r => C.wholeRestSame(en, r)), [false, false, false, false, false], 'a later clock-out, a meal added, the part gone (another id, or no day), another day');
+    eq(C.wholeRestSame(en, MROW('2026-10-07', [MSH('w-r', '2026-10-07', '00:00:00', '07:03:40')], [MFLAG('cont')])), true, 'to the minute, as everywhere');
+    const sv = appFn('saveDayEdits');
+    ok(/const wen = wholeOp \? edEntry\(wholeOp\.key\) : null;/.test(sv) && /const nx = await readNextDay\(raw\)/.test(sv) && /!nx\.ok \|\| !C\.wholeRestSame\(wen, nx\.row\)/.test(sv)
+      && sv.indexOf('await refreshDay(k)') < sv.indexOf('readNextDay(raw)') && sv.indexOf('readNextDay(raw)') < sv.indexOf('runEditOp('), 'read after the day itself, before anything is sent');
+    ok(sv.includes("'The rest of this shift on ' + nd + ' changed since you opened this day. Reload it and try again.'") && /E\.stale = nx\.ok;/.test(sv), 'said plainly, with Reload this day');
+    const rn = appFn('readNextDay');
+    ok(/if \(DEMO\) return \{ ok: true, row: dayRaw\(id\) \};/.test(rn) && /if \(\(S\.fetched \|\| \[\]\)\.some\(f => f\.from <= d && d <= f\.to\)\) \{ const r = await refreshDay\(id\);/.test(rn)
+      && /sb\.from\('ts_days'\)\.select\('\*'\)\.eq\('id', id\)/.test(rn), 'a loaded day through refreshDay (the board gets it too), else read on its own');
+  });
+  // The page's own rule for a whole delete the worker holds (its C.setWholeHeld call), run as written
+  function wholeHeldRule(proven) {
+    const m = block('ts-app').match(/C\.setWholeHeld\((e => \{[\s\S]*?\})\);\n/);
+    if (!m) throw new Error('no C.setWholeHeld in ts-app');
+    return new Function('EDIT_PROVEN', 'dayRaw', 'rowRegion', 'return ' + m[1] + ';')(proven, () => null, r => r.region || C.regionOfCompany(r.company));
+  }
+  check('whole-shift delete: once saved it shows on both days (a copy on the day after), reads the same everywhere, and waits for the run Gianni watches', () => {
+    const r = subW(WN, { input: { note: C.DELETE_WHOLE_NOTE + ': never worked' } });
+    ok(r.ok, r.error);
+    const wd = r.edit;
+    eq(wd.before, Object.assign(C.shiftSnap(RUN), { carried: Object.assign(C.shiftSnap(RUN2), { date: '2026-10-07' }) }), 'before carries the 12:00 AM part');
+    eq([wd.action, wd.after, wd.times_status, wd.breaks_status, wd.note, C.isWholeDelete(wd)], ['delete', null, 'none', 'pending', C.DELETE_WHOLE_NOTE + ': never worked', true]);
+    const sh = C.wholeShadows([wd]);
+    eq(sh.map(x => [x.id, x.day_id, x.work_date, x.shadow_of, x.before.in, x.before.out, C.isWholeDelete(x)]), [['wd1', 'filifera:m1:2026-10-07', '2026-10-07', 'wd1', RUN2.in, RUN2.out, false]]);
+    eq([C.wholeShadows([Object.assign({}, wd, { cancelled_at: '2026-10-08T19:00:00Z' })]), C.wholeShadows([ED({ id: 'p1', action: 'delete', breaks_status: 'pending' })])], [[], []], 'none for a cancelled one or a plain delete');
+    eq(C.nextDayId(WN), WN1.id);
+    const out = C.overlayRows([WN, WN1], [wd].concat(sh), { now: NOW_W, todayOf: () => TODAY_W });
+    eq(out.map(x => x.shifts.map(s => String(s.id))), [['w-t'], []], 'both parts go from the board');
+    ok(out[1].deleted_all && out[0].edit.pending[0] === wd && out[1].edit.pending[0].id === 'wd1', 'Pending on both days');
+    const words = 'Delete the whole shift from 4:35 PM Tue, Oct 6 to 7:03 AM Wed, Oct 7 (both days)';
+    eq([C.describeEdit(wd, C.TZ), C.describeEdit(sh[0], C.TZ)], [[words], [words]], 'the same words on either day');
+    // the 12:00 AM part's day: it goes with it, and that day's editor waits on it (no "End it at 11:59 PM")
+    const ce = entW(WN1, MID, nbW(WN1), out[1], sh);
+    eq([ce[0].readonly, ce[0].del, ce[0].pendingIds, ce[0].split.end], ['carried', true, ['wd1'], true]);
+    // held until a supervised 'delete-split' run: it says so, and is never Late
+    C.setWholeHeld(() => true);
+    try {
+      eq(C.editPartLines(wd, C.TZ, NOW_W), ['Deleting it: waits for the first run of this kind Gianni watches']);
+      eq([C.editLate(wd, '2026-10-12T20:00:00Z'), C.wholeIsHeld(sh[0])], [false, true], 'never Late; its copy waits too');
+      eq(C.saveMessage([{ op: { type: 'submit' }, edit: wd }], 'at noon today'), 'Saved. Deleting a whole shift waits for the first run Gianni watches, then goes to Gusto.');
+      eq(C.saveMessage([{ op: { type: 'submit' }, edit: wd }, { op: { type: 'submit' }, edit: ED({ id: 'o1', times_status: 'pending' }) }], 'at noon today'),
+        'Saved. It goes to Gusto at noon today and shows as Pending until then. Deleting the whole shift waits for the first run Gianni watches.');
+    } finally { C.setWholeHeld(null); }
+    eq(C.wholeIsHeld(wd), false, 'without the page\'s rule: not held');
+    // the page's rule: held in California until CA:delete-split, in New York until NY:delete-split
+    const held = proven => { const f = wholeHeldRule(proven); return [wd, Object.assign({}, wd, { region: 'NY', company: 'wtny' })].map(f); };
+    eq([held({ midnightDelete: false, nyMidnightDelete: false }), held({ midnightDelete: true, nyMidnightDelete: false }), held({ midnightDelete: true, nyMidnightDelete: true })],
+      [[true, true], [false, true], [false, false]]);
+  });
+  check('whole-shift delete: Keep this shift takes back one waiting (an update of the shift as Gusto has it, never "give its real end")', () => {
+    const r = subW(WN, {}, { id: 'wd2' });
+    const board = C.overlayDay(WN, [r.edit], { today: TODAY_W });
+    const en = entW(WN, MID, nbW(WN), board, [r.edit]), run = en.find(x => x.id === 'w-r');
+    eq([run.del, run.pendingIds, run.split.whole, run.readonly || null], [true, ['wd2'], true, null]);
+    eq(C.editPlan(WN, en, {}), { ops: [], errors: {} }, 'left waiting: nothing to send');
+    run.del = false;
+    const p = C.editPlan(WN, en, {});
+    eq(p.errors, {});
+    eq(p.ops.map(o => [o.action, o.shift_id, o.after.in, o.after.out, o.expect]), [['update', 'w-r', RUN.in, RUN.out, ['wd2']]]);
+    const back = C.submitEdit(r.edits, WN, { shift_id: 'w-r', action: 'update', after: p.ops[0].after, expect: ['wd2'] }, { email: boss.email, now: NOW_W + 60000, id: 'wd3' });
+    ok(back.ok, back.error);
+    eq([back.edits.find(x => x.id === 'wd2').cancelled_by, back.edit.times_status, back.edit.breaks_status], ['superseded', 'none', 'none'], 'the waiting delete is replaced');
+  });
+  check("whole-shift delete: the demo twin of ts_edit_submit keeps the 12:00 AM part, and refuses in the server's words everything the server refuses", () => {
+    const err = (row, o, c) => subW(row, o, c).error;
+    ok(subW(WN).ok, 'the incident goes');
+    ok(C.isWholeDelete(subW(WN, { input: { note: 'delete the WHOLE shift on both days: none of it was work' } }).edit), 'the marker in any case, a reason after it');
+    eq(err(MROW('2026-10-06', [TINY, RUN])), W_MSG.flag, 'real overnight work (no midnight_split flag)');
+    eq(err(WN, { input: { shift_id: 'w-t' } }), W_MSG.first, 'a shift that does not end at 11:59:59 PM');
+    eq(err(WN1, {}, { next: MROW('2026-10-08', [MSH('w-x', '2026-10-08', '08:00', '16:00')]) }), W_MSG.first, "from the 12:00 AM part's own day");
+    eq([err(WN, {}, { next: null }), err(WN, {}, { canView: () => false })], [W_MSG.access('Wed Oct 7'), W_MSG.access('Wed Oct 7')], 'the day after not loaded, or no access to it');
+    ok(subW(WN, {}, { canView: r => r.id === WN1.id }).ok, 'access to the day after');
+    eq(err(WN, {}, { next: MROW('2026-10-07', [MSH('w-other', '2026-10-07', '00:00:00', '07:03:00')], [MFLAG('cont')]) }), W_MSG.gone('Wed Oct 7'), 'another id after midnight');
+    eq(err(WN, {}, { today: '2026-10-06' }), W_MSG.future, 'the day after has not happened yet');
+    eq(err(WN, {}, { next: MROW('2026-10-07', [MSH('w-r', '2026-10-07', '00:00:00', null)], [MFLAG('cont')]) }), W_MSG.open('Wed Oct 7'), 'still running');
+    eq(err(WN, {}, { next: MROW('2026-10-07', [MSH('w-r', '2026-10-07', '00:00:00', '23:59:59')], [MFLAG('cont')]) }), W_MSG.long, 'more than two days');
+    const F9 = MROW('2026-10-09', [MSH('w-r', '2026-10-09', '16:35:06', '23:59:59')], [MFLAG('start')]), S10 = MROW('2026-10-10', [MSH('w-r', '2026-10-10', '00:00:00', '07:03:00')], [MFLAG('cont')]);
+    eq(err(F9, {}, { next: S10, today: '2026-10-12' }), W_MSG.period('Sat Oct 10'), 'the last day of a pay period');
+    const endW = MED(WN1, RUN2, { id: 'e9', action: 'delete', after: null, note: C.END_AT_MIDNIGHT_NOTE, breaks_status: 'pending' });
+    eq([err(WN, { list: [endW] }), err(WN, { list: [Object.assign({}, endW, { breaks_status: 'applied', breaks_applied_at: '2026-10-07T13:00:00Z' })] })], [W_MSG.busy('Wed Oct 7'), W_MSG.busy('Wed Oct 7')],
+      'a change of the 12:00 AM part waiting, or sent since that day\'s last sync');
+    ok(subW(WN, { list: [Object.assign({}, endW, { breaks_status: 'applied', breaks_applied_at: '2026-10-07T11:00:00Z' })] }).ok, 'one in Gusto before that sync: the day after already shows it');
+    // the day after while one waits: no other change of that shift goes there, until it is cancelled
+    const wd = subW(WN).edit, WAIT = W_MSG.waits('Tue Oct 6');
+    const n1 = (list, input) => C.submitEdit(list, WN1, Object.assign({ shift_id: 'w-r', expect: [] }, input), { email: boss.email, now: NOW_W, id: 'wy' });
+    eq([n1([wd], { action: 'update', after: Object.assign(C.shiftSnap(RUN2), { out: '2026-10-07T06:00:00-07:00' }) }).error, n1([wd], { action: 'delete', after: null, note: C.END_AT_MIDNIGHT_NOTE }).error,
+      n1([wd], { action: 'note', after: null, note: 'Left at 6' }).error], [WAIT, WAIT, WAIT]);
+    ok(n1([Object.assign({}, wd, { cancelled_at: '2026-10-08T18:05:00Z', breaks_status: 'cancelled' })], { action: 'note', after: null, note: 'Left at 6' }).ok, 'cancelled: the day after is free again');
+    // no marker: a plain delete, as before (the page and the worker refuse it on a split part; the server keeps no carried part)
+    const plain = subW(WN, { input: { note: null } });
+    ok(plain.ok && !C.isWholeDelete(plain.edit) && !plain.edit.before.carried, 'no marker: nothing carried');
+    eq(C.sqlDay('2026-10-07'), 'Wed Oct 7', "the server's to_char 'Dy Mon FMDD'");
+    for (const m of Object.values(W_MSG).map(x => typeof x === 'function' ? x('Wed Oct 7') : x)) ok(!/[–—]/.test(m), 'no en or em dash: ' + m);
+  });
+  check("whole-shift delete on the demo's forgotten clock-out (made-up): offered to a sign-in it is open to, and the demo twin keeps the 12:00 AM part", () => {
+    const rows = demo.rows.filter(r => r.employee_name === 'Cedar Puddlejump');
+    const [mon, tue] = rows.filter(r => r.flags.some(f => f.code === 'midnight_split')).map(r => C.normRow(r));
+    const nbOf = raw => rows.filter(r => r.work_date === C.addDays(raw.work_date, -1) || r.work_date === C.addDays(raw.work_date, 1))
+      .flatMap(r => r.shifts.filter(s => !s.hours_only && s.in).map(s => ({ id: String(s.id), in: s.in, out: s.out || null, date: r.work_date, breaks: s.breaks || [] })));
+    const me = { email: 'demo.owner@wizardtrees.com', is_admin: true };
+    const en = C.editorEntries(mon, mon, [], me, { today: demo.todays.CA, now: Date.parse(NOW), neighbors: nbOf(mon), midnight: { fix: true, end: true, whole: true } });
+    eq([en[0].split.role, en[0].split.whole], ['first', true]);
+    en[0].del = true;
+    const p = C.editPlan(mon, en, {});
+    eq([p.errors, p.ops.map(o => [o.action, o.shift_id, o.note, o.whole])], [{}, [['delete', String(mon.shifts[0].id), C.DELETE_WHOLE_NOTE, true]]]);
+    const r = C.submitEdit(demo.edits, mon, { shift_id: p.ops[0].shift_id, action: 'delete', after: null, note: p.ops[0].note, expect: p.ops[0].expect }, { email: me.email, now: Date.parse(NOW), id: 'demo-edit-990', next: tue });
+    ok(r.ok, r.error);
+    eq([r.edit.before.carried.date, r.edit.before.carried.in], [tue.work_date, tue.shifts[0].in]);
+    ok(/^Delete the whole shift from .+ \(both days\)$/.test(C.describeEdit(r.edit, C.TZ)[0]), C.describeEdit(r.edit, C.TZ)[0]);
+  });
+  check('page: Delete the whole shift, its question before Save, its waiting copy on the day after, an older server, the shifts that stop Save, and who gets it (EDIT_PROVEN, 2026-11-16)', () => {
+    const app = block('ts-app');
+    const ep = new Function('return ' + app.match(/const EDIT_PROVEN = (\{[\s\S]*?\});/)[1])();
+    eq(ep, { add: true, delete: true, ny: true, midnight: true, nyMidnight: false, midnightEnd: false, midnightDelete: false, nyMidnightDelete: false, note: false, nyNote: false,
+      job: false, nyJob: false, addJob: false, nyAddJob: false, startAfterClockout: true, nyStartAfterClockout: false }, 'EDIT_PROVEN as decided');
+    ok(/function mayMidnight\(r\) \{ return mayEdit\('midnight'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnight'\)\); \}/.test(app), 'mayMidnight');
+    ok(/function mayWhole\(r\) \{ return mayEdit\('midnightDelete'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnightDelete'\)\); \}/.test(app), 'mayWhole');
+    eq((app.match(/mayEdit\('midnight'\)/g) || []).length, 1, "every gate goes through mayMidnight (the day's region)");
+    ok(/fix: mayMidnight\(prev\) \}\);/.test(appFn('tapPlanNow')), 'the clock-in tap fix too');
+    const eh = appFn('entryHtml');
+    ok(/\$\{whole \? 'Delete the whole shift' : 'Delete this shift'\}/.test(eh) && /const canDel = en\.kind !== 'shift' \|\| mayEdit\('delete'\);/.test(eh), 'the link reads Delete the whole shift; who may delete is unchanged');
+    ok(/<s>\$\{times\}<\/s> and <s>\$\{'12:00 AM - ' \+ C\.fmtTime\(en\.split\.out, tz\) \+ ' on ' \+ C\.fmtDay\(en\.split\.date\)\}<\/s> will be deleted\./.test(eh) && /<p class="pd-fine ed-whole">\$\{C\.wholeText\(en, tz\)\}<\/p>/.test(eh), 'both parts struck, with what each day loses');
+    const eb = appFn('editorBody');
+    ok(/wen && wen\.split \? h`<span class="confirm">\$\{C\.wholeConfirmText\(wen, tz\)\}<\/span><button type="button" class="btn danger" data-act="ed-whole-yes">Delete both days<\/button><button type="button" class="btn" data-act="ed-whole-no">Go back<\/button>`/.test(eb), 'the question and its buttons');
+    ok(/case 'ed-whole-yes': saveDayEdits\(\{ wholeOk: true \}\); break;/.test(app) && /case 'ed-whole-no': E\.confirm = ''; renderEditor\(\); break;/.test(app), 'wired');
+    const sv = appFn('saveDayEdits');
+    ok(/const wholeOp = plan\.ops\.find\(o => o\.whole\);\s*if \(wholeOp && !\(opts && opts\.wholeOk\)\) \{\s*E\.confirm = 'whole'; E\.wholeKey = wholeOp\.key;/.test(sv) && sv.indexOf("E.confirm = 'whole'") < sv.indexOf('await refreshDay(k)'), 'asked before anything is read again or sent');
+    ok(/if \(op\.whole && !\(res\.edit && res\.edit\.before && res\.edit\.before\.carried\)\) \{/.test(sv) && /await runEditOp\(raw, \{ type: 'cancel', key: op\.key, id: res\.edit\.id \}, ''\);/.test(sv) && /en\.err = WHOLE_OFF;/.test(sv)
+      && app.includes("const WHOLE_OFF = 'Deleting a whole shift is not switched on yet: delete it in Gusto.';"), 'a server older than the SQL file: taken back at once, and said plainly');
+    ok(/for \(const e of C\.wholeShadows\(\[\.\.\.S\.edits\.values\(\)\]\)\) put\(e\);/.test(appFn('editIndex')), "the day after gets its copy (only the board's index; S.edits keeps the real ones)");
+    ok(/if \(E\.confirm === 'close' \|\| E\.confirm === 'whole'\) \{ E\.confirm = ''; renderEditor\(\); return; \}/.test(appFn('onEditorInput')), 'typing takes the question back');
+    const ch = appFn('carriedHtml'), ct = appFn('carriedText');
+    ok(/Goes with the whole shift deleted from \$\{prevDay\} \(waiting to go to Gusto\)\./.test(ch) && /\(en\.pendingIds \|\| \[\]\)\.some\(id => C\.isWholeDelete\(S\.edits\.get\(id\)\)\)/.test(ch), 'the day after: it goes with it, no buttons');
+    ok(/const wholeOk = canOpen && mayWhole\(prevRow\) && !!\(en\.orig && en\.orig\.out\);/.test(ch) && /To remove the whole shift instead \(when none of it was work\), open ' \+ prevDay \+ ' and use Delete the whole shift\./.test(ct), 'and says where to delete it as a whole');
+    ok(/next: op\.whole \? dayRaw\(C\.nextDayId\(raw\)\) : null/.test(appFn('runEditOp')), 'demo: the day after goes with it');
+    ok(/if \(fx\.start \|\| fx\.whole\) return r;/.test(appFn('withTaps')) && /return !fx\.start && !fx\.whole;/.test(appFn('tapOffered')), 'no clock-in tap fix on a shift that goes as a whole');
+    ok(/E\.err = PLAN_ERR; E\.errList = C\.planErrorSummary\(E\.entries, plan\.errors, C\.rowTz\(raw0\)\);/.test(sv) && app.includes("const PLAN_ERR = 'Nothing was saved. Fix the shift named below, then save again.';"), 'what stops Save, named next to it (all or nothing, as before)');
+    ok(/E\.err === PLAN_ERR && E\.errList && E\.errList\.length \? h`<ul class="ed-errs">\$\{E\.errList\.map\(x => h`<li><b>\$\{x\.label\}<\/b>: \$\{x\.msg\}<\/li>`\)\}<\/ul>`/.test(eb), 'as a list in the error line');
+    ok(/box\.scrollIntoView\(\{ block: 'nearest' \}\)/.test(sv) && /const keep = box && box\.querySelector\('\[data-act="ed-undel"\]'\); if \(keep\) keep\.focus\(\);/.test(sv), "the first one brought into view; a deleted one's Keep this shift focused");
+    ok(/E\.errList = \[\]/.test(appFn('closeEditor')) && /E\.errList = \[\]/.test(appFn('openEditor')), 'a fresh list for every day');
+  });
+  // its twins: the worker's marker and kind (~/gusto-sync/ts-edit-plan.mjs), the daily list's words (ts-edit-mail.mjs), the SQL file
+  {
+    const dir = process.env.TS_GUSTO_SYNC_DIR || path.join(os.homedir(), 'gusto-sync'), where = dir.replace(os.homedir(), '~');
+    check('the worker reads the same marker and knows the new kind (where ' + where + ' has the worker)', () => {
+      const f = path.join(dir, 'ts-edit-plan.mjs');
+      if (!fs.existsSync(f)) { console.log('          (skipped: no ' + where + '/ts-edit-plan.mjs here)'); return true; }
+      const t = fs.readFileSync(f, 'utf8');
+      ok(t.includes("export const DELETE_WHOLE_NOTE = '" + C.DELETE_WHOLE_NOTE + "';"), "the worker's DELETE_WHOLE_NOTE is not the page's");
+      ok(t.includes("'delete-split'"), "the worker has no 'delete-split' write kind");
+    });
+    let mail = null;
+    try { const f = path.join(dir, 'ts-edit-mail.mjs'); mail = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { mail = null; }
+    check('a whole-shift delete reads the same way in the daily list (where ' + where + ' knows them)', () => {
+      const e = subW(WN).edit;
+      const got = mail && typeof mail.describeChange === 'function' ? (mail.describeChange(e) || [])[0] || '' : '';
+      if (!/^Delete the whole shift from /.test(got)) { console.log('          (skipped: the daily list in ' + where + ' does not read whole-shift deletes yet)'); return true; }
+      ok(/ \(both days\)$/.test(got), got);
+    });
+    check('supabase/ts-edit-whole-shift-blank-day.sql (once it is in the folder) carries the marker and the refusals the page and its demo twin say', () => {
+      const f = path.join(ROOT, 'supabase', 'ts-edit-whole-shift-blank-day.sql');
+      if (!fs.existsSync(f)) { console.log('          (skipped: supabase/ts-edit-whole-shift-blank-day.sql is not here yet)'); return true; }
+      const t = fs.readFileSync(f, 'utf8'), q = s => s.replace(/'/g, "''").replace(/\.$/, '');
+      const words = [C.DELETE_WHOLE_NOTE, 'v_whole', 'v_blank', 'v_start_only', 'No such day, or you cannot edit it', W_MSG.flag, W_MSG.first, W_MSG.long, 'You cannot edit a day that has not happened yet',
+        'The rest of this shift (on ', ') is not on a day you can change, so it cannot be deleted as a whole here. Delete it in Gusto', 'Gusto does not show the rest of this shift on ', '. Reload after the next sync',
+        ') is still clocked in, so it cannot be deleted here yet', ') is in the next pay period, so it cannot be deleted as a whole here. Fix it in Gusto',
+        ' is waiting or was just sent to Gusto. Cancel it there, or reload after the next sync, then try again', 'This shift waits to be deleted as a whole from ', '. Cancel that change first, or reload after the next sync'];
+      // the refusals as the server raises them (not only in its comments)
+      const raised = t.split('\n').filter(l => /raise exception '/.test(l)).join('\n');
+      const missing = words.filter(w => w === C.DELETE_WHOLE_NOTE || /^v_/.test(w) ? !t.includes(w) : !raised.includes(q(w)));
+      ok(!missing.length, 'not in the SQL file: ' + J(missing));
+    });
+  }
+
+  // ---------- B: hours for someone with no time that day ----------
+  const PB = { company: 'filifera', employee_uuid: 'b1', name: 'Test Alpha', department: 'Trim', job_title: 'Trimmer', active: true };
+  const ADDB = o => ED(Object.assign({ id: 'a1', day_id: 'filifera:b1:2026-10-06', employee_uuid: 'b1', shift_id: null, action: 'add', before: null, after: AFTER('13:00', '16:30'), times_status: 'pending' }, o));
+  check('hours for someone with no time that day (B): the blank day, and the board\'s row for an add that waits there', () => {
+    const b = C.blankDay(PB, '2026-10-06');
+    eq([b.id, b.company, b.region, b.employee_uuid, b.employee_name, b.department, b.work_date, b.shifts, b.flags, b.synced_at, b.blank, b.worked_min],
+      ['filifera:b1:2026-10-06', 'filifera', 'CA', 'b1', 'Test Alpha', 'Trim', '2026-10-06', [], [], null, true, 0], 'the id the sync gives that day later (company:uuid:date)');
+    eq([C.blankDay(Object.assign({}, PB, { department: null }), '2026-10-06').department, C.blankDay(PB, '2026-10-06', { department: 'Packaging' }).department,
+      C.blankDay({ company: 'wtny', employee_uuid: 'n1', name: '' }, '2026-10-06').region], [C.NO_DEPT, 'Packaging', 'NY']);
+    const rowsOf = (rows, edits, people) => C.pendingBlankRows(rows, edits, people || [PB]).map(r => [r.id, r.department, r.blank]);
+    eq(rowsOf(new Map(), [ADDB()]), [['filifera:b1:2026-10-06', 'Trim', true]]);
+    eq(rowsOf(new Map(), [ADDB(), ADDB({ id: 'a2', after: AFTER('17:00', '18:00') })]).length, 1, 'one row a day');
+    eq([rowsOf(new Map([['filifera:b1:2026-10-06', {}]]), [ADDB()]), rowsOf(new Set(['filifera:b1:2026-10-06']), [ADDB()])], [[], []], 'the sync wrote the day: its row wins (a Map or a Set of ids)');
+    eq(rowsOf(new Map(), [ADDB({ cancelled_at: '2026-10-07T16:00:00Z', times_status: 'cancelled' })]), [], 'cancelled');
+    eq(rowsOf(new Map(), [ADDB({ action: 'update', shift_id: 's1' })]), [], 'only adds');
+    eq(rowsOf(new Map(), [ADDB()], []), [], 'a person the page does not know');
+    eq(rowsOf(new Map(), [ADDB({ department: 'Packaging' })]), [['filifera:b1:2026-10-06', 'Packaging', true]], "the edit's department");
+    // (2026-11-16 review) an add applied before its company's last sync is no longer on its way: that sync wrote the day if Gusto
+    // had the shift, so with still no row Gusto has no time that day now (deleted since), and drawing it would be a ghost
+    const APPLIED = o => ADDB(Object.assign({ times_status: 'applied', times_applied_at: '2026-10-07T13:00:00Z', breaks_status: 'none' }, o));
+    const rowsAt = (edits, co) => C.pendingBlankRows(new Map(), edits, [PB], co).map(r => r.id);
+    const CO = at => [{ key: 'filifera', last_sync_at: at }, { key: 'slane', last_sync_at: '2026-10-07T20:00:00Z' }];
+    eq([rowsAt([APPLIED()]), rowsAt([APPLIED()], CO('2026-10-07T12:45:00Z')), rowsAt([APPLIED()], CO(null)), rowsAt([APPLIED()], [])].map(x => x.length), [1, 1, 1, 1],
+      'Sent until a sync of its own company runs after it (no sync time known: kept, as before)');
+    eq(rowsAt([APPLIED()], CO('2026-10-07T13:15:00Z')), [], 'a sync since, and still no day: no ghost of hours Gusto does not have');
+    eq([rowsAt([ADDB({ breaks_status: 'none' })], CO('2026-10-07T13:15:00Z')), rowsAt([APPLIED({ times_status: 'conflict' })], CO('2026-10-07T13:15:00Z')),
+      rowsAt([APPLIED({ times_status: 'failed' })], CO('2026-10-07T13:15:00Z')), rowsAt([APPLIED({ breaks_status: 'pending' })], CO('2026-10-07T13:15:00Z'))].map(x => x.length), [1, 1, 1, 1],
+      'waiting, Needs a look, or a part still to go: kept');
+    const row = C.pendingBlankRows(new Map(), [ADDB()], [PB])[0];
+    const ov = C.overlayRows([row], [ADDB()], { now: Date.parse(NOW_N), todayOf: () => '2026-10-07' })[0];
+    eq([ov.shifts.length, ov.worked_min, ov.edit.pending.map(e => e.id), ov.first_in, ov.last_out], [1, 210, ['a1'], EP('13:00'), EP('16:30')], 'the waiting add with its hours, Pending');
+    const sent = C.overlayRows([row], [ADDB({ times_status: 'applied', times_applied_at: '2026-10-07T13:00:00Z' })], { now: Date.parse(NOW_N), todayOf: () => '2026-10-07' })[0];
+    eq([sent.worked_min, sent.edit.sent], [210, true], 'Sent, until the sync writes the day');
+  });
+  check('hours for someone with no time that day: the editor sends one add, and the demo twin takes only an add on a blank day', () => {
+    const b = C.blankDay(PB, '2026-10-06');
+    const pl = C.editPlan(b, [Object.assign(C.newEntry('e1'), { inT: '13:00', outT: '16:30' })], {});
+    eq([pl.errors, pl.ops.map(o => [o.type, o.action, o.shift_id, o.after.in, o.after.out])], [{}, [['submit', 'add', null, EP('13:00'), EP('16:30')]]]);
+    const ctxB = { email: boss.email, now: Date.parse(NOW_N), today: '2026-10-07', id: 'b-1' };
+    const r = C.submitEdit([], b, { shift_id: null, action: 'add', after: pl.ops[0].after }, ctxB);
+    ok(r.ok && r.edit.day_id === b.id && r.edit.department === 'Trim' && r.edit.times_status === 'pending', r.error);
+    for (const [action, extra] of [['update', { shift_id: 'x1', after: AFTER('13:00', '16:30') }], ['delete', { shift_id: 'x1' }], ['note', { shift_id: 'x1', note: 'hi' }]])
+      eq(C.submitEdit([], b, Object.assign({ action }, extra), ctxB).error, 'No such day, or you cannot edit it.', action + ' on a blank day');
+    eq(C.submitEdit(r.edits, b, { shift_id: null, action: 'add', after: pl.ops[0].after }, Object.assign({}, ctxB, { id: 'b-2' })).error, 'This shift is already waiting to be added.', 'the same add twice');
+    eq(C.submitEdit([], b, { shift_id: null, action: 'add', after: pl.ops[0].after }, Object.assign({}, ctxB, { today: '2026-11-20' })).error, 'Only the current and previous pay periods can be edited.', 'the window, as any day');
+  });
+  check('+ Add hours lists the active people of the tab\'s region this sign-in can see, in the open view, with labels that never repeat', () => {
+    const ppl = [
+      { company: 'filifera', employee_uuid: 'p1', name: 'Test Alpha', department: 'Trim', active: true },
+      { company: 'slane', employee_uuid: 'p2', name: 'Test Bravo', department: 'Trim', active: true },
+      { company: 'filifera', employee_uuid: 'p3', name: 'Test Charlie', department: 'Trim', active: false },
+      { company: 'wtny', employee_uuid: 'p4', name: 'Test Delta', department: 'Packaging', active: true },
+      { company: 'filifera', employee_uuid: 'p5', name: 'Test Echo', department: 'Office', active: true },
+      { company: 'filifera', employee_uuid: 'p6', name: 'Test Twin', department: 'Trim', active: true },
+      { company: 'filifera', employee_uuid: 'p7', name: 'Test Twin', department: 'Office', active: true },
+      { company: 'filifera', employee_uuid: 'p8', name: 'Test Twin', department: 'Trim', active: true },
+      { company: 'filifera', employee_uuid: 'p9', name: '', department: 'Trim', active: true },
+    ];
+    const lab = (v, o) => C.addablePeople(ppl, v, Object.assign({ region: 'CA' }, o)).map(x => x.label);
+    eq(lab(null), ['No name in Gusto · Filifera', 'Test Alpha · Filifera', 'Test Bravo · Slane', 'Test Echo · Filifera', 'Test Twin · Filifera · Trim', 'Test Twin · Filifera · Office', 'Test Twin · Filifera · Trim (2)'],
+      'never someone who left; the company when more than one is listed, then the department, then a number');
+    eq([lab(null, { region: 'NY' }), lab(null, { region: 'NY', ny: true })], [[], ['Test Delta']], 'New York only when New York is open to this sign-in (one company: no company in the label)');
+    const mgr = { email: 'm@wizardtrees.com', is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
+    eq(lab(mgr), ['No name in Gusto', 'Test Alpha', 'Test Twin · Trim', 'Test Twin · Trim (2)'], 'only who this sign-in can see');
+    eq(lab({ email: 'x@wizardtrees.com', is_admin: false, active: false, grants: [{ company: '*', department: '*' }] }), [], 'a sign-in turned off: nobody');
+    const view = { id: 'v1', label: 'Test view', members: [{ company: 'filifera', employee_uuid: 'p5' }, { company: 'slane', department: 'Trim' }] };
+    eq(lab(null, { view }), ['Test Bravo · Slane', 'Test Echo · Filifera'], 'inside the open view');
+    eq(C.addablePeople(ppl.slice(0, 2), null, { region: 'CA', companyName: k => k.toUpperCase() }).map(x => x.label), ['Test Alpha · FILIFERA', 'Test Bravo · SLANE'], "the page's company names");
+    const labels = lab(null);
+    eq(new Set(labels.map(l => l.toLowerCase())).size, labels.length, 'unique in any case, so typing one picks it');
+  });
+  check('demo: a made-up person with no time on a weekday in the window is offered under + Add hours, and that day opens with one new shift that goes as an add', () => {
+    const w = C.editWindow(demo.todays.CA), have = new Set(demo.rows.map(r => r.id));
+    const list = C.addablePeople(demo.people, null, { region: 'CA' });
+    let pick = null;
+    for (const x of list) {
+      for (const d of C.eachDate(w.from, w.to)) { const dw = C.dow(d); if (dw !== 0 && dw !== 6 && !have.has(x.person.company + ':' + x.person.employee_uuid + ':' + d)) { pick = { x, d }; break; } }
+      if (pick) break;
+    }
+    ok(pick, 'one such day');
+    const blank = C.blankDay(pick.x.person, pick.d), me = { email: 'demo.owner@wizardtrees.com', is_admin: true };
+    const en = C.editorEntries(blank, blank, [], me, { today: demo.todays.CA, now: Date.parse(NOW), neighbors: [] });
+    eq(en, [], 'no shifts of its own');
+    en.push(Object.assign(C.newEntry('e1'), { inT: '13:00', outT: '16:30' }));   // the one openEditor adds ({ addShift: true })
+    const p = C.editPlan(blank, en, {});
+    eq(p.ops.map(o => [o.action, o.shift_id]), [['add', null]]);
+    const r = C.submitEdit(demo.edits, blank, { shift_id: null, action: 'add', after: p.ops[0].after }, { email: me.email, now: Date.parse(NOW), id: 'demo-edit-991' });
+    ok(r.ok, r.error);
+    ok(C.pendingBlankRows(new Map(demo.rows.map(x => [x.id, x])), r.edits, demo.people).some(x => x.id === blank.id), 'the board shows it on a row of its own');
+  });
+  check('page: + Add hours (a typable person box and a day, then the usual editor on a blank day with one new shift), blank days through dayRaw, and an older server', () => {
+    const app = block('ts-app');
+    ok(/<button type="button" class="btn sm no-print" id="addHoursBtn" data-act="add-hours" title="Add a shift for someone with no time on a day" hidden>\+ Add hours<\/button>\s*<label class="chip toggle" id="flagChip"/.test(markup), 'the button, first in .ctl-tail');
+    ok(/\$\('addHoursBtn'\)\.hidden = !mayAddHours\(\);/.test(appFn('renderControls')) && /function mayAddHours\(\) \{ return editsOn\(\) && mayEdit\('add'\) && !S\.printing && addablePeople\(\)\.length > 0; \}/.test(app), 'shown to whoever may add shifts');
+    ok(/case 'add-hours': openAddHours\(el\); break;/.test(app) && /case 'add-next': addHoursNext\(\); break;/.test(app), 'wired');
+    ok(/C\.addablePeople\(S\.people, filterViewer\(\), \{ view: activeView\(\), region: S\.region, ny: mayEdit\('ny'\),/.test(appFn('addablePeople')), "the people: the tab's region and view, this sign-in's");
+    const pb = appFn('pickBody');
+    ok(/<input type="text" class="pick" id="addWho" list="addWhoList" data-pick="who"[^>]*placeholder="Type a name"/.test(pb) && /<datalist id="addWhoList">/.test(pb), 'the person: a typable box with its list');
+    ok(/<input type="date" id="addDay" value="\$\{p\.day\}" min="\$\{w\.from\}" max="\$\{w\.to\}">/.test(pb) && /function addWindow\(\) \{ return C\.editWindow\(today\(\)\); \}/.test(app), "the day, in the editable window on the tab region's calendar");
+    ok(pb.includes('Someone who already has time that day opens their day as usual. Days from ${C.fmtDay(w.from)} to today.') && /data-act="add-next">Open this day<\/button>/.test(pb) && /role="alert"/.test(pb), 'the hint, the error line and Open this day');
+    ok(/\$\('edTitle'\)\.textContent = 'Add hours';\s*\$\('edSub'\)\.textContent = 'For someone with no time on a day';/.test(appFn('renderEditor')), 'its title');
+    const an = appFn('addHoursNext');
+    ok(an.includes("addSay('Pick the person first.')") && an.includes("addSay('Pick a day from ' + C.fmtDay(w.from) + ' to today.')") && /if \(!canEditRow\(blank\)\) \{ addSay\(noEditMsg\(blank\) \+ '\.'\); return; \}/.test(an), 'its refusals');
+    ok(/if \(S\.rows\.has\(blank\.id\)\) \{ openEditor\(blank\.id, back\); return; \}\s*E\.blank = blank;\s*openEditor\(blank\.id, back, \{ addShift: true \}\);/.test(an), 'a day with time opens as usual; a blank one with a new shift');
+    ok(/if \(p\.refused\) \{ p\.refused = false;/.test(an), 'a name just refused stops it once (the last pick stays)');
+    const po = appFn('pickerOf');
+    ok(po.includes(`'No one you can change matches "' + text + '". The last pick stays.'`) && po.includes(`'More than one person matches "' + text + '": type more of the name.'`), "the person box's refusals");
+    const oe = appFn('openEditor');
+    ok(/const added = opts && opts\.addShift && raw\.blank && mayEdit\('add'\) \? C\.newEntry\('e' \+ \(\+\+E\.seq\)\) : null;/.test(oe) && /if \(added\) \{ edFocus\(added\.key, 'in'\); return; \}/.test(oe), 'one new shift only on a day still blank, its start focused');
+    ok(/if \(!dayRaw\(dayId\) \|\| !canEditRow\(dayRaw\(dayId\)\)\)/.test(oe) && /const raw = dayRaw\(dayId\);/.test(oe), 'openEditor reads dayRaw');
+    ok(/const raw = dayRaw\(E\.rowId\);/.test(appFn('renderEditor')) && /if \(E\.pick\) \{/.test(appFn('renderEditor')), 'renderEditor (and its pick mode)');
+    ok(/const k = E\.rowId, raw0 = dayRaw\(k\);/.test(appFn('saveDayEdits')) && /const raw = dayRaw\(k\);/.test(appFn('saveDayEdits')), 'saveDayEdits');
+    ok(/const had = dayRaw\(dayId\);/.test(appFn('refreshDay')) && /if \(r\) S\.rows\.set\(r\.id, C\.normRow\(r\)\); else S\.rows\.delete\(dayId\);/.test(appFn('refreshDay')), 'refreshDay: a blank day stays, a written one wins');
+    ok(/return S\.rows\.get\(id\) \|\| \(E\.blank && E\.blank\.id === id \? E\.blank : null\) \|\| C\.pendingBlankRows\(S\.rows, \[\.\.\.S\.edits\.values\(\)\], S\.people, S\.companies\)\.find\(r => r\.id === id\) \|\| null;/.test(appFn('dayRaw')), "dayRaw: the row, the blank day, a waiting add's day");
+    for (const f of ['entryHtml', 'onEditorInput', 'edAddBreak', 'edAddMissing', 'carriedHtml']) ok(/dayRaw\(E\.rowId\)/.test(appFn(f)) && !/S\.rows\.get\(E\.rowId\)/.test(appFn(f)), f + ' reads dayRaw');
+    ok(/E\.blank = null; E\.pick = null;/.test(appFn('closeEditor')), 'closing forgets them');
+    ok(/if \(E\.pick\) \{ closeEditor\(\); return; \}/.test(appFn('requestCloseEditor')) && /if \(E\.pick\) return;/.test(appFn('saveDayEdits')), 'pick mode: nothing to discard, nothing to save');
+    ok(/r0 = dayRaw\(k\), bl = r0 && r0\.blank \? r0 : null; closeEditor\(\); if \(bl\) E\.blank = bl;/.test(appFn('edCancelChange')), 'a cancelled add leaves its blank day open');
+    ok(/: raw\.blank && op\.action === 'add' && \/No such day\/i\.test\(errText\(error\)\) \? 'Adding hours for someone with no time that day is not switched on yet: add the shift in Gusto\.'/.test(appFn('runEditOp')), 'a server without the SQL file: not switched on yet');
+  });
+
+  // ---------- C: typable pick-lists ----------
+  check('typable pick-lists: what was typed picks the one entry it names (exactly, in any case, else the one that contains it), or nothing', () => {
+    const K = [{ label: 'Paid rest', value: 'rest' }, { label: 'Unpaid meal', value: 'meal' }], L = x => x.label;
+    eq(C.pickFrom(K, 'meal', L).item.value, 'meal', 'meal: the one that contains it');
+    eq(C.pickFrom(K, 'paid', L), { ok: false, why: 'many' }, 'paid: both contain it');
+    eq(C.pickFrom(K, '  PAID REST ', L).item.value, 'rest', 'exact, in any case, spaces around');
+    eq([C.pickFrom(K, 'lunch', L), C.pickFrom(K, '   ', L), C.pickFrom(K, null, L)], [{ ok: false, why: 'none' }, { ok: false, why: 'empty' }, { ok: false, why: 'empty' }]);
+    eq(C.pickFrom(['Trim', 'Distro/Trim'], 'trim').item, 'Trim', 'one that is exactly it wins over one that contains it');
+    eq(C.pickFrom([{ id: 'week', l: ['This week', 'This week'] }, { id: 'period', l: ['This period', 'This pay period'] }], 'pay', x => x.l).item.id, 'period', 'more than one label each');
+    eq(C.pickFrom(['Café Trim', 'Bo Trim'], 'cafe').item, 'Café Trim', 'accents aside');
+    eq(C.pickFrom(['A', 'a'], 'a'), { ok: false, why: 'many' }, 'two that read the same: refused');
+  });
+  check("typable pick-lists everywhere (Gianni's rule, 2026-11-13): no <select> left; each list is a text box with its datalist that resolves typed text, refuses the rest, never saves on Enter, and stops Save once after a guess", () => {
+    ok(!/<select/i.test(src), 'a <select> is on the page');
+    const app = block('ts-app');
+    ok(/<input type="text" class="pick" id="deptIn" list="deptList" data-pick="dept" data-ph="All departments" placeholder="All departments"/.test(markup) && /<datalist id="deptList"><\/datalist>/.test(markup), 'department');
+    ok(/data-pick="preset"/.test(markup) && /<datalist id="presetList"><\/datalist>/.test(markup), 'date range');
+    const eh = appFn('entryHtml');
+    ok(/data-ef="bt" data-bi="\$\{j\}" data-pick="bt" list="\$\{'edBt-' \+ en\.key\}"/.test(eh) && /<datalist id="\$\{'edBt-' \+ en\.key\}">\$\{BREAK_KINDS\.map/.test(eh), "a break's type");
+    ok(/data-ef="job" data-pick="job" list="\$\{list\}"/.test(appFn('jobField')) && /<datalist id="\$\{list\}">/.test(appFn('jobField')), "a shift's job");
+    ok(/id="edNoteShift" list="edNoteShiftList" data-pick="note"/.test(appFn('noteBox')) && /<datalist id="edNoteShiftList">/.test(appFn('noteBox')), "a note's shift");
+    ok(/id="addWho" list="addWhoList" data-pick="who"/.test(appFn('pickBody')), 'the person under + Add hours');
+    ok(app.includes("const BREAK_KINDS = [{ label: 'Paid rest', value: 'rest' }, { label: 'Unpaid meal', value: 'meal' }];"), 'the break types');
+    const pc = appFn('pickCommit'), pi = appFn('pickInput');
+    ok(/const r = C\.pickFrom\(p\.items, text, x => x\.labels \|\| x\.label\);/.test(pc) && /if \(p\.editor && r\.item\.label !== text\) E\.pickJust = true;/.test(pc), 'typed text: C.pickFrom; a guess marks the form');
+    ok(pc.includes(`'Nothing in the list matches "' + q + '", so it stays ' + (old || 'as it was') + '.'`) && pc.includes(`'More than one matches "' + q + '": type more of it.'`), "the refusals' words");
+    ok(/const it = p\.items\.find\(x => x\.label === t\.value\);/.test(pi) && /if \(it\.why\) \{ pickRefuse\(t, p, it\.why\); return false; \}/.test(pi), 'a label from the list: used at once (a job that starts later: refused)');
+    ok(/function pickRefuse\(t, p, msg\) \{ t\.value = pickLabelOf\(p, p\.cur\);/.test(app) && /if \(p\.editor\) E\.pickJust = true;/.test(appFn('pickRefuse')), 'refused: the old choice comes back');
+    ok(/function pickFocus\(t\) \{ t\.dataset\.was = t\.value; t\.placeholder = t\.value \|\| t\.dataset\.ph \|\| t\.placeholder; t\.value = ''; \}/.test(app) && /function pickBlur\(t\) \{ if \(!t\.value\.trim\(\)\) t\.value = t\.dataset\.was \|\| '';/.test(app), 'focus empties the box (the choice as its placeholder); left empty, it comes back');
+    const wi = appFn('wire');
+    ok(/if \(e\.key === 'Enter' && e\.target\.tagName === 'INPUT'\) e\.preventDefault\(\);/.test(wi) && /if \(e\.key === 'Enter' && e\.target\.dataset && e\.target\.dataset\.pick\) onEditorInput\(\{ target: e\.target, type: 'change' \}\);/.test(wi), 'Enter in a picker resolves it, never saves');
+    ok(/box\.addEventListener\('keydown', e => \{ if \(e\.key === 'Enter'\) \{ e\.preventDefault\(\); pickCommit\(box\); \} \}\);/.test(wi) && /addEventListener\('focusin', e => \{ if \(e\.target\.dataset && e\.target\.dataset\.pick\) pickFocus\(e\.target\); \}\);/.test(wi), "the toolbar's too, and focus in the editor");
+    const sv = appFn('saveDayEdits');
+    ok(/if \(E\.pickJust\) \{ E\.pickJust = false; E\.err = PICK_CHECK;/.test(sv) && sv.indexOf('E.pickJust') < sv.indexOf('C.editPlan(') && app.includes("const PICK_CHECK = 'A box above picked from what you typed (or kept its old choice). Check it, then save again.';"), 'Save stops once after a guess');
+    ok(/E\.pickJust = false;/.test(appFn('onEditorInput')), 'typing anywhere else takes the stop away');
+    const po = appFn('pickerOf');
+    ok(/if \(kind === 'dept'\) return \{ items: \[\{ label: 'All departments', value: '' \}\]\.concat\(deptShown\.map\(d => \(\{ label: d, value: d \}\)\)\), cur: S\.dept, emptyIs: '', set: v => \{ S\.dept = v; render\(\); \}/.test(po), '#deptIn: S.dept, as the old select set it');
+    ok(/cur: S\.preset, set: v => choosePreset\(v\)/.test(po) && po.includes(`'No date range matches "' + text + '".'`) && po.includes(`'No department matches "' + text + '".'`), '#presetIn: choosePreset; refusals in a toast');
+    ok(/deptShown = depts;/.test(appFn('renderControls')) && /if \(document\.activeElement !== \$\('deptIn'\)\) \$\('deptIn'\)\.value = S\.dept;/.test(appFn('renderControls')), 'kept in step while not being typed in');
+    const K = new Function('return ' + app.match(/const BREAK_KINDS = (\[[^\n]*\]);/)[1])();
+    eq([C.pickFrom(K, 'meal', x => x.label).item.value, C.pickFrom(K, 'paid', x => x.label).why], ['meal', 'many'], '"meal" picks Unpaid meal; "paid" names both');
+    const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1];
+    ok(/\.ed-f input\.pick,\.ed-nform \.ed-f input\.pick,\.ed-job \.ed-f input\.pick\{width:100%;min-width:0\}/.test(phone), 'the boxes fit a phone');
+  });
+}
+
+// 27. the page review of section 26 (2026-11-16): the words next to Save, the department box left on All departments, the
+//     + Add hours error line under a click, and no Delete link that Save could only refuse
+{
+  check('review: next to Save, only a Gusto shift with no end is "still clocked in"; a new or added one just has no end yet', () => {
+    const nw = Object.assign(C.newEntry('e1'), { inT: '', outT: '' }), ad = Object.assign(C.newEntry('e2'), { kind: 'add', inT: '13:00', outT: '' });
+    const gs = Object.assign(C.newEntry('e3'), { kind: 'shift', inT: '16:35', outT: '' });
+    const errs = { e1: [{ msg: 'Enter a start time.' }, { msg: 'Enter an end time.' }], e2: [{ msg: 'Enter an end time.' }], e3: [{ msg: 'x' }] };
+    eq(C.planErrorSummary([gs, nw, ad], errs, C.TZ).map(x => x.label), ['Shift 1 (4:35 PM - still clocked in)', 'New shift (no start - no end)', 'Added shift (1:00 PM - no end)']);
+  });
+  check('review: a pick-list box shows what was picked once it is left (All departments, the empty box, no longer brings the old department back)', () => {
+    const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
+    const S = { dept: 'Trim' }, said = [];
+    const P = () => ({ items: [{ label: 'All departments', value: '' }, { label: 'Trim', value: 'Trim' }, { label: 'Deleaf', value: 'Deleaf' }], cur: S.dept, emptyIs: '',
+      set: v => { S.dept = v; }, say: m => { if (m) said.push(m); }, words: (why, text) => 'No department matches "' + text + '".' });
+    const code = [line(/\n  const pickLabelOf = [^\n]*\n/), ...['pickUse', 'pickInput', 'pickCommit', 'pickRefuse', 'pickSelect', 'pickFocus', 'pickBlur'].map(appFn),
+      'return { pickInput, pickCommit, pickFocus, pickBlur };'].join('\n');
+    const F = new Function('C', 'E', 'document', 'pickerOf', code)(C, {}, { activeElement: null }, P);
+    const box = v => ({ value: v, placeholder: 'All departments', dataset: { ph: 'All departments' } });
+    let t = box('Trim'); F.pickFocus(t); t.value = 'all'; F.pickCommit(t); F.pickBlur(t);
+    eq([S.dept, t.value, t.placeholder], ['', '', 'All departments'], 'typed "all", then Enter, then left');
+    S.dept = 'Trim'; t = box('Trim'); F.pickFocus(t); t.value = 'All departments'; F.pickInput(t); F.pickBlur(t);
+    eq([S.dept, t.value], ['', ''], 'picked from the list, then left');
+    S.dept = ''; t = box(''); F.pickFocus(t); t.value = 'del'; F.pickCommit(t); F.pickBlur(t);
+    eq([S.dept, t.value], ['Deleaf', 'Deleaf'], 'typed part of a department');
+    t = box('Deleaf'); F.pickFocus(t); t.value = 'zzz'; F.pickCommit(t); F.pickBlur(t);
+    eq([S.dept, t.value, said], ['Deleaf', 'Deleaf', ['No department matches "zzz".']], 'refused: the old choice stays, in the box too');
+    t = box('Deleaf'); F.pickFocus(t); F.pickBlur(t);
+    eq([S.dept, t.value], ['Deleaf', 'Deleaf'], 'left empty: the choice comes back');
+  });
+  check('review: under + Add hours, a cleared message keeps its room, so Open this day does not move under the click that cleared it', () => {
+    const as = appFn('addSay');
+    ok(/if \(E\.pick\.err\) \{ el\.textContent = E\.pick\.err; el\.hidden = false; el\.style\.visibility = ''; \}\s*else el\.style\.visibility = 'hidden';/.test(as), 'cleared: invisible, not removed');
+    ok(/<div class="inline-err" id="addErr" role="alert"\$\{p\.err \? '' : ' hidden'\}>/.test(appFn('pickBody')), 'drawn afresh with no message: no room taken');
+  });
+  check('review: the first day of a forgotten clock-out that cannot go as a whole has no Delete link (Save could only refuse it), and its note says to remove it in Gusto', () => {
+    const eh = appFn('entryHtml');
+    ok(/const splitKeep = !!\(en\.split && en\.split\.fix && !whole\);/.test(eh), 'such a part: a fix offered, no whole delete');
+    ok(/<span class="spacer"><\/span>\$\{splitKeep \? '' : h`\$\{canDel \? h`<button type="button" class="linkbtn danger" data-act="ed-del"/.test(eh), 'no link on it');
+    ok(eh.includes("${splitKeep ? ' To remove all of this shift (both days), delete it in Gusto.' : ''}</p>"), 'the note says where');
+    ok(eh.indexOf('const whole = ') < eh.indexOf('const splitKeep = '), 'after whole is known');
+    // which parts those are, in the incident: a sign-in the whole delete is not open to, or the 12:00 AM part still clocked in
+    const MID2 = { fix: true, end: false, whole: false }, me2 = { email: 'boss@wizardtrees.com', is_admin: true };
+    const RUN = MSH('w-r', '2026-10-06', '16:35:06', '23:59:59'), RUN2 = MSH('w-r', '2026-10-07', '00:00:00', '07:03:00');
+    const WN = MROW('2026-10-06', [RUN], [MFLAG('start')]);
+    const nb = o => [{ id: 'w-r', in: RUN2.in, out: o === undefined ? RUN2.out : o, date: '2026-10-07', breaks: [] }];
+    const keep = (mid, n) => { const en = C.editorEntries(WN, WN, [], me2, { today: '2026-10-08', now: Date.parse('2026-10-08T18:00:00Z'), neighbors: n, midnight: mid })[0]; return !!(en.split && en.split.fix && !en.split.whole); };
+    eq([keep(MID2, nb()), keep({ fix: true, end: false, whole: true }, nb(null)), keep({ fix: true, end: false, whole: true }, nb())], [true, true, false]);
   });
 }
 
