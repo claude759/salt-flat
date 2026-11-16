@@ -396,6 +396,49 @@ launch. The check fails if one of the three pieces is missing.
     own Test and COA facts (BSTEP.card, drawn by `b2StepHTML`, not the Batches page's `bpopHTML`). Lab results load on
     open, every 10 minutes at most on the polls (`b2Labs`), and on Refresh; signed out, only the sheet's TEST DATE and
     COA RETURN DATE are drawn.
+  - **Pack bubbles and the Sales band** (Gianni, 2026-11-16: "it doesn't look like anything for sales has been added
+    yet, we also need packaging bubbles to be added"). Pack: one orange bubble per lot and pack day ("Jars: 41 lbs";
+    "Jars: RM3: 41 lbs" when packed more than 21 days after the lot's last step, drawn as its own unit), and for
+    pre-rolls one per site and day ("Pre-rolls: 6 lbs", riding the pre-roll send that tests one of the same tags),
+    from the Batch Label Sheet's PCKG DATE and counted units (the official actual). Pounds = units x grams (jar and
+    5-pack 3.5, 1g 1, 1.5g and pouch 1.5), never the bulk weight and never Metrc's first packaging day (that is the
+    trim). Failed rows are never drawn (each lot's Jars card counts them, a row with no PCKG DATE by its HRVST DATE or
+    code day); a (UID, product) typed twice counts once. Placed as Testing places a tag
+    (`BT2.placeTag`: Metrc lineage, the sheet harvest, then, for rows older than the 120-day reader, the batch code,
+    the code's room and day, a flower batch of the same strain and day). Batch V2 re-reads the tab back to 1/1/26 for
+    Pack only (`b2PackRows`), and only while the rows shown are the live read's (else the hourly copy's 120-day rows,
+    never an older live read); harvests and Testing keep the 120-day rows. Jars packed while a send of the lot is at the
+    lab (after its Test, before its COA) stay on the lot's track but are drawn after that COA (`g.after`,
+    `BT2.evOrder`), so Test, the at-lab line and the COA keep their days; the card gives the PCKG DATE. The Lot row
+    says the trim's room when the trim sheet names it differently ("trimmed Oct 20-21 as RM2"). A PCKG DATE ahead,
+    and jars the pipeline sheet plans for a strain only one lot holds unfinished (rule 1), are dashed with the purple
+    glow; when two lots hold it, nothing is drawn and both lots' cards say so. Words never say "packaged".
+    Sales: a band under the four sites with its own strip, one row per channel and one bubble a week: "Nabis: 26 in ·
+    10 sold" (in = Nabis's pickups from us, from Metrc: a transfer, not a sale; sold = Nabis to stores), "Distru: 19
+    sold" (our distro's deliveries; its transfers to Nabis are not sales), "Bulk: 146 sold · 91 trim" (from Metrc,
+    clipped at the last day Metrc's weekly copy has read, with a grey hatch to today). N and D are the sales app's
+    Sales-by-Type numbers (the Monday e-mail; samples in, vapes out); distro deliveries that arrived before Jan 13 come
+    from Metrc's distro lines, by the day they arrived (as the sales app files Distru's; in 2026 there are none: Distru's
+    first invoices are the deliveries that left Jan 12, never counted twice). Nabis lines dated today or later are
+    scheduled: their week reads "≈N sold" with the purple glow; a week over by the page's today counts them as sold
+    (the job's today can lag: a run before midnight, a Mac asleep), never the glow. The band folds to
+    one row ("N 10 · D 19 · B 40 lbs", its legend in its own strip) when three rows would push the site tracks under
+    26px (`BT2.bandRows`); it is never hidden (a window too short grows the page). Its sticky panel (`.b2-ohb`, never
+    `.b2-oh`, so the On hand column's panels still map one to one to the sites) shows each row's channel and last 4
+    full weeks ("Nabis · 4 wks · 56 lb"; phones "N 4 wks 56") and opens that channel's 2026 by week; it is a column of
+    figures, not the removed label column. A week bubble the panel covers part of starts its words at the panel's edge
+    and takes the longest words that fit what is in view (`BT2.bandEdge`, on each draw and scroll frame), never the
+    tail of its words ("0 sold"). A week opens its card
+    (`b2WeekHTML`). Written by the flow job on Gianni's Mac into `pipeline_flow_meta.summary.sales` (no table); it
+    reads only the payload's units and samples, never index 6, and its sig leaves out the payload's time. Read through
+    `b2LoadFlow`'s meta poll (`sales_sig`; no new poll, the poll and Refresh lines are unchanged), the body again only
+    when the sig moves (or on Refresh); a block the page can't use (a newer version, a week that isn't a Monday) is not
+    read again until its sig moves (`B2.salesBad`), and the sentence says "Couldn't read the sales."; signed out, or
+    before the job writes a block, no band. The sales app's numbers
+    more than 26 hours old, or its file unread, turn the strip's note and the cards' source line amber.
+    `pipeline_flow_save` drops a sales block whose keys name money (or that holds a $). Not shown: store names, money,
+    Nabis stock in "left", or "transferred to Distru" (Distru is our distro's software). Per-lot "To Nabis" bubbles
+    are next (release 2).
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them

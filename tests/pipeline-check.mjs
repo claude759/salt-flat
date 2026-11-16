@@ -1958,7 +1958,8 @@ if (realPipe) {
 // room and day; a planned trim the trim sheets already have drawn once, as done; drying from the latest harvest before a trim
 {
   const b2Src = html.split('/* ===== BATCH V2 MODEL START =====')[1].split('/* ===== BATCH V2 MODEL END ===== */')[0];
-  const BT2 = new Function('PIPE', 'BAT', 'TRIMY', `/*${b2Src}; return BT2;`)(PIPE, BAT, TRIMY);
+  const BT2 = new Function('PIPE', 'BAT', 'TRIMY', 'ACT', `/*${b2Src}; return BT2;`)(PIPE, BAT, TRIMY, ACT);
+  assert.ok(ACT.NOT_COUNTED instanceof RegExp && ACT.NOT_COUNTED.test('PACKAGING') && !ACT.NOT_COUNTED.test('DONE'), "ACT exports NOT_COUNTED (Pack counts a row as ACT does)");
   const hvL = (site, room, title) => ({ type: 'harvest', title, site, room, crew: '', strains: [], notes: [] });
   const trL = (site, room, crew, strains) => ({ type: 'trim', title: 'TRIM - ' + crew, site, room, crew, strains, notes: [] });
   const days = {
@@ -2291,7 +2292,7 @@ if (realPipe) {
   assert.ok(/from\('pipeline_flow_meta'\)/.test(b2flow) && /F\.changed !== changed/.test(b2flow) && /from\('pipeline_flow_lots'\)/.test(b2flow) && /\.range\(/.test(b2flow),
     'Batch V2 reads pipeline_flow_lots again only when pipeline_flow_meta.changed_at moves (or Refresh)');
   assert.ok(/does not exist\|schema cache/.test(b2flow), 'before the table exists the page keeps working');
-  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column redraws a frame at a time, only a changed set');
+  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); b2BandEdge\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column (and the band\'s words by it) redraws a frame at a time, only a changed set');
   assert.ok(/B2\.oh \? B2\.oh\.w : 0/.test(b2src.slice(b2src.indexOf('function b2Go'), b2src.indexOf('function b2Go') + 600)), 'Go to date and Today allow for the column');
   assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2src), 'Batch V2 shows pounds and units only, never dollars');
   for (const re of [/b2LoadMetrc\(true\); b2LoadFlow\(true\); \}/, /b2LoadMetrc\(false\); b2LoadFlow\(false\); \}/]) assert.ok(re.test(html), 'polls and Refresh read the lots too');
@@ -2536,6 +2537,314 @@ if (realPipe) {
     assert.ok(!/#C00000|#E02424|#B42318|#F8C9C9|#DC2626|#EF4444|#B91C1C/i.test(b2css), "no red in Batch V2's styles (red on the app means red on the sheet)");
     console.log(`batch V2 testing: ${MLab.labs.groups.length} sends from ${labsL.length} lab rows (one Test and one COA each), flower on its lot's track by Metrc lineage, pre-rolls on their own, vapes off, quiet after 30 days, the give-way rule never overlaps`);
     console.log('batch V2 testing fixes: a retest is a send of its own at the lab, a COA RETURN DATE typed ahead is not back, a sheet day that cannot be the batch\'s gives way to the lab\'s, part back flags the COA, the sentence never counts a sample twice, a failed lineage read is said and tried again');
+  }
+
+  // Pack bubbles (Gianni, 2026-11-16: "we also need packaging bubbles to be added"): one per lot (jars) or site (pre-rolls)
+  // and pack day, from the Batch Label Sheet's PCKG DATE and counted units, placed as Testing places a tag (made-up rows)
+  {
+    const T0 = '2026-11-16', LTp = { n: 30, sent: 6, sent90: 7, nColl: 30, coll: 5 };
+    const ln = (n, l) => ({ name: n, license: l });
+    const lab = (uid, o) => Object.assign({ metrc_uid: uid, sample_id: '', sent_date: null, collected: null, completed: null, result: null, product_type: 'Bulk Flower' }, o);
+    let sr = 0;
+    const row = (uid, item, strain, code, pk, o) => Object.assign({ sheet_row: ++sr, metrc_uid: uid, item, strain, batch_code: code, package_date: pk, status: 'DONE',
+      total_units: null, budtender_units: null, harvest_date: null, finished: false }, o);
+    // lots (trimmed = Metrc's first packaging day): A 23rd RM3 10/7 (10/18), B 25th RM1 10/29 (11/6), C Olympic RM3 8/1
+    // (8/12), D 15th RMB 8/1 (8/12), E 23rd RM2 10/29 (11/8), F 25th RM2 10/30 (11/9)
+    const lotsP = [flowLot('23RD|3|2026-10-07', 'TideBanger', '2026-10-18', 100, 20, { metrc_harvests: ['F3-TB-10072026'] }),
+      flowLot('25TH|1|2026-10-29', 'Riptide', '2026-11-06', 100, 50, { metrc_harvests: ['F1-RT-10292026'] }),
+      flowLot('OLYMPIC|3|2026-08-01', 'Black Light', '2026-08-12', 100, 10, { metrc_harvests: ['F3-BL-08012026'] }),
+      flowLot('15TH|B|2026-08-01', 'Tide', '2026-08-12', 100, 10, { metrc_harvests: ['B-TD-08012026'] }),
+      flowLot('23RD|2|2026-10-29', 'Antidote', '2026-11-08', 100, 90, { metrc_harvests: ['F2-AN-10292026'] }),
+      flowLot('25TH|2|2026-10-30', 'Zangbanger', '2026-11-09', 100, 90, { metrc_harvests: ['F2-ZB-10302026'] })];
+    const mrowsP = [fRow('F3-TB-10072026', 'S', 'F3', '2026-10-07', 300000, 'TideBanger'), fRow('F1-RT-10292026', 'F', 'F1', '2026-10-29', 300000, 'Riptide'),
+      fRow('F3-BL-08012026', 'O', 'F3', '2026-08-01', 300000, 'Black Light'), fRow('B-TD-08012026', 'I', 'B', '2026-08-01', 300000, 'Tide'),
+      fRow('F2-AN-10292026', 'S', 'F2', '2026-10-29', 300000, 'Antidote'), fRow('F2-ZB-10302026', 'F', 'F2', '2026-10-30', 300000, 'Zangbanger'),
+      // no lot: 23rd RM2 4/1 (for the code rules), and room 2 harvested at two sites on 3/1 and 3/2
+      fRow('F2-RT-04012026', 'S', 'F2', '2026-04-01', 100000, 'Riptide'), fRow('F2-XA-03012026', 'S', 'F2', '2026-03-01', 100000, 'Riptide'),
+      fRow('F2-XB-03022026', 'F', 'F2', '2026-03-02', 100000, 'Riptide')];
+    const linksP = new Map([...['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'X1', 'X2', 'R1', 'R2'].map(u => [u, [ln('F3-TB-10072026', 'L-S')]]),
+      ...['Q1', 'Q2'].map(u => [u, [ln('F1-RT-10292026', 'L-F')]]), ['T1', [ln('F3-BL-08012026', 'L-O')]], ...['W1', 'W5'].map(u => [u, [ln('B-TD-08012026', 'L-I')]]),
+      ...['U1', 'U3', 'U5', 'U6', 'U7'].map(u => [u, [ln('F2-AN-10292026', 'L-S')]]), ...['U2', 'U4'].map(u => [u, [ln('F2-ZB-10302026', 'L-F')]])]);
+    const pr = [
+      // jars of lot A, 1,000 jars and 100 pouches on 11/2 and 11/3, the first row's code saying 25th RM1; a third on 11/6
+      row('P1', 'FLOWER', 'TideBanger', 'F1-TB-10726-F', '2026-11-02', { total_units: 600, budtender_units: 60 }),
+      row('P2', 'FLOWER', 'TideBanger', 'F3-TB-10726-S', '2026-11-03', { total_units: 400, budtender_units: 40 }),
+      row('P3', 'FLOWER', 'TideBanger', 'F3-TB-10726-S', '2026-11-06', { total_units: 1000, budtender_units: 100 }),
+      row('P4', 'FLOWER', 'TideBanger', 'F3-TB-10726-S', '2026-11-04', { total_units: 500, status: 'FAILED TESTING' }),
+      // failed before it was packed (no PCKG DATE): counted by its HRVST DATE, once though typed twice; one from 2025 is not
+      row('P5', 'FLOWER', 'TideBanger', 'F3-TB-10726-S', null, { status: 'FAILED TESTING', harvest_date: '2026-10-07' }),
+      row('P5', 'FLOWER', 'TideBanger', 'F3-TB-10726-S', null, { status: 'FAILED TESTING', harvest_date: '2026-10-07' }),
+      row('P6', 'FLOWER', 'TideBanger', 'F3-TB-12125-S', null, { status: 'FAILED TESTING', harvest_date: '2025-12-01' }),
+      // lot B: not counted yet (PACKAGING), and a PCKG DATE ahead
+      row('Q1', 'FLOWER', 'Riptide', 'F1-RT-102926-F', '2026-11-12', { total_units: 500, status: 'PACKAGING' }),
+      row('Q2', 'FLOWER', 'Riptide', 'F1-RT-102926-F', '2026-11-20', { status: 'WAITING FOR LABELS' }),
+      // pre-rolls of lot A rolled 11/10 (R1 goes to the lab 5 days later)
+      row('R1', '5PK', 'TideBanger', 'TB-10726-S-5PK', '2026-11-10', { total_units: 600 }),
+      row('R2', '1G Preroll', 'TideBanger', 'TB-10726-S-1', '2026-11-10', { total_units: 600 }),
+      // no lineage (older than the copy): the code (23rd RM2, 4/2), the code's room and day, room 2 at two sites, strain + day
+      row('S1', 'FLOWER', 'Riptide', 'F2-RT-4226-S', '2026-04-20', { total_units: 300, harvest_date: '2026-04-02' }),
+      row('S2', 'FLOWER', 'Riptide', 'F2-RT-4126-1', '2026-04-22', { total_units: 300, harvest_date: '2026-04-01' }),
+      row('S3', 'FLOWER', 'Riptide', 'F2-RT-3126-1', '2026-03-20', { total_units: 300, harvest_date: '2026-03-01' }),
+      row('S4', '1G', 'Riptide', 'RT-4226-1', '2026-04-25', { total_units: 400, harvest_date: '2026-04-02' }),
+      // lot C 30 days after its trim with nothing between; lot D 10 days after a riding COA
+      row('T1', 'FLOWER', 'Black Light', 'F3-BL-8126-O', '2026-09-11', { total_units: 1000, budtender_units: 100 }),
+      row('W1', 'FLOWER', 'Tide', 'B-TD-8126-I', '2026-09-15', { total_units: 300 }),
+      // a PCKG DATE before the harvest, and one 61 days ahead
+      row('X1', 'FLOWER', 'TideBanger', 'F3-TB-10726-S', '2026-03-20', { total_units: 100 }),
+      row('X2', 'FLOWER', 'TideBanger', 'F3-TB-10726-S', '2027-01-16', { total_units: 100 }),
+      // one tag typed on two rows
+      row('W5', 'FLOWER', 'Tide', 'B-TD-8126-I', '2026-10-20', { total_units: 200 }),
+      row('W5', 'FLOWER', 'Tide', 'B-TD-8126-I', '2026-10-20', { total_units: 200 }),
+      // unfinished rows (no PCKG DATE) for rule 1; U7 is dated in the run's window
+      row('U1', 'FLOWER', 'Antidote', 'F2-AN-102926-S', null, { status: 'WAITING FOR TESTING' }),
+      row('U2', 'FLOWER', 'Zangbanger', 'F2-ZB-103026-F', null, { status: 'WAITING FOR TESTING' }),
+      row('U3', 'FLOWER', 'Voodoo', 'F2-VD-102926-S', null, { status: 'WAITING FOR TESTING' }),
+      row('U4', 'FLOWER', 'Voodoo', 'F2-VD-103026-F', null, { status: 'WAITING FOR TESTING' }),
+      row('U5', 'FLOWER', 'Black Light', 'F2-BL-102926-S', null, { status: 'WAITING FOR TESTING' }),
+      row('U6', 'FLOWER', 'Tide', 'F2-TD-102926-S', null, { status: 'WAITING FOR TESTING' }),
+      row('U7', 'FLOWER', 'Tide', 'F2-TD-102926-S', '2026-11-21', { status: 'WAITING FOR TESTING' }),
+    ];
+    // the pipeline sheet's jar runs: Black Light 11/10-12 (ended 4 days ago), and 11/23 to 12/7
+    const jl = (strain, lbs) => ({ strain, size: '3.5g', n: null, lbs: lbs ?? null, cases: null });
+    const jarsOn = (date, lines) => ({ date, items: [{ type: 'jars', title: 'JARS', lines }] });
+    const run1 = [jl('ANTIDOTE'), jl('ZANGBANGER', 12), jl('VOODOO'), jl('TIDE')];
+    const wkP = [{ days: [jarsOn('2026-11-10', [jl('BLACK LIGHT')]), jarsOn('2026-11-12', [jl('BLACK LIGHT')]),
+      ...['2026-11-23', '2026-11-26', '2026-11-30', '2026-12-03', '2026-12-07'].map(d => jarsOn(d, run1))] }];
+    const labsP = [lab('R1', { product_type: 'Preroll', sent_date: '2026-11-15' }), lab('W1', { collected: '2026-08-30', completed: '2026-09-05', result: 'Pass' })];
+    const baseP = { weeks: wkP, rows: [], ev: null, today: T0, lots: lotsP, metrc: mrowsP, labs: labsP, links: linksP, turn: LTp };
+    const MK = BT2.build(Object.assign({ packRows: pr }, baseP)), PK = MK.packs;
+    const G = id => PK.groups.find(g => g.id === id), unit = id => MK.sites.flatMap(L => L.units).find(u => u.id === id);
+    const hA = 'h:23RD|3|2026-10-07', hB = 'h:25TH|1|2026-10-29', hD = 'h:15TH|B|2026-08-01', hE = 'h:23RD|2|2026-10-29', hF = 'h:25TH|2|2026-10-30', h4 = 'h:23RD|2|2026-04-01';
+    // B1: two jar rows of one lot 1 day apart are one group; 4 days on is another
+    const gA = G(`p:${hA}|2026-11-02`), gA2 = G(`p:${hA}|2026-11-06`);
+    assert.deepEqual([gA.rows.map(i => i.uid), gA.day, gA.dayTo, gA.units.jar, gA.units.pouch, gA.state, gA.own], [['P1', 'P2'], '2026-11-02', '2026-11-03', 1000, 100, 'done', false]);
+    assert.ok(Math.abs(gA.lb - (1000 * 3.5 + 100 * 1.5) / 453.59237) < 1e-9, 'pounds = units x grams (jars 3.5 g, pouches 1.5 g)');
+    assert.deepEqual([BT2.packBubble(gA), BT2.packBubble(gA, true), BT2.packClass(gA)], ['Jars: 8 lbs', 'Jars', 'b2-pk']);
+    assert.deepEqual([gA2.rows.map(i => i.uid), gA2.own], [['P3'], false], "a row 4 days on is a second group, still on the lot's track");
+    // B2: failed testing is never drawn, and is counted for the lot's card
+    assert.ok(!PK.groups.some(g => g.rows.some(i => ['P4', 'P5', 'P6'].includes(i.uid))) && !PK.loose.some(i => ['P5', 'P6'].includes(i.uid)), 'a FAILED TESTING row is in no group');
+    assert.equal(PK.failed.get(hA), 2, 'failed rows of the lot: P4 (packed 11/4) and P5 (no PCKG DATE, by its HRVST DATE, typed twice, counted once); P6 (2025) not');
+    // B3, B4: not counted yet, and a PCKG DATE ahead
+    const gQ1 = G(`p:${hB}|2026-11-12`), gQ2 = G(`p:${hB}|2026-11-20`);
+    assert.deepEqual([gQ1.state, gQ1.nCounted, gQ1.lb, BT2.packBubble(gQ1), BT2.packClass(gQ1)], ['pending', 0, 0, 'Jars', 'b2-pk plan'], 'PACKAGING with 500 units is not counted yet');
+    assert.deepEqual([gQ2.state, BT2.packBubble(gQ2), BT2.packClass(gQ2)], ['plan', 'Jars', 'b2-pk plan fut'], 'a PCKG DATE after today: dashed, the purple glow');
+    // B5: pre-rolls, one site and day
+    const gR = G('p:pr:23RD|2026-11-10');
+    assert.deepEqual([gR.kind, gR.site, gR.units['5pk'], gR.units['1g'], BT2.packBubble(gR), BT2.packBubble(gR, true)], ['preroll', '23RD', 600, 600, 'Pre-rolls: 6 lbs', 'PR']);
+    // B6: Metrc lineage beats the batch code
+    assert.deepEqual([gA.site, gA.how, gA.rows[0].codeSite], ['23RD', ['lineage'], '25TH'], 'lineage wins over the code (F1-TB-10726-F reads 25th)');
+    // B7: the code, the code's room and day (one site only), strain + day for a pre-roll that names no site
+    const itP = u => PK.groups.flatMap(g => g.rows).find(i => i.uid === u) || PK.loose.find(i => i.uid === u);
+    assert.deepEqual(['S1', 'S2', 'S3', 'S4'].map(u => [itP(u).hid, itP(u).site, itP(u).how, itP(u).why]),
+      [[h4, '23RD', 'code', ''], [h4, '23RD', 'room+day', ''], ['', '', '', 'unplaced'], [h4, '23RD', 'strain+day', '']]);
+    assert.deepEqual(G(`p:${h4}|2026-04-20`).how, ['code', 'room+day'], 'the card can name each rule');
+    // B8: 30 days after the trim with nothing between: a unit of its own that keeps its room; 10 days after a riding COA: rides
+    const gT = G('p:h:OLYMPIC|3|2026-08-01|2026-09-11'), gW = G(`p:${hD}|2026-09-15`), gLD = MK.labs.groups.find(g => g.hid === hD);
+    assert.deepEqual([gT.own, BT2.packBubble(gT), BT2.packBubble(gT, true), unit(gT.id).ev], [true, 'Jars: RM3: 8 lbs', 'Jars: RM3', [gT]]);
+    assert.deepEqual([gW.own, gLD.own, unit(hD).ev.map(g => g.id)], [false, false, [gLD.id, gW.id]], "on the lot's track after its COA: H, T, Test, COA, Jars");
+    // B9: pre-rolls ride the pre-roll send that tests one of their tags 5 days later; with none, a unit of their own
+    const gL = MK.labs.groups.find(g => g.kind === 'preroll' && g.items.some(i => i.uid === 'R1')), gS4 = G('p:pr:23RD|2026-04-25');
+    assert.deepEqual([gR.ride, gR.own, unit(gL.id).ev.map(g => g.id), unit(gL.id).start], [gL.id, false, [gR.id, gL.id], '2026-11-10']);
+    assert.deepEqual([gS4.own, gS4.ride, unit(gS4.id).ev], [true, '', [gS4]]);
+    // B10: a PCKG DATE before the harvest, or more than 60 days ahead: not drawn
+    assert.deepEqual(PK.loose.filter(i => i.why === 'baddate').map(i => [i.uid, i.bad.why, i.hid]), [['X1', 'before', hA], ['X2', 'ahead', hA]]);
+    // B11: a (tag, product) typed on two rows counts once
+    const gW5 = G(`p:${hD}|2026-10-20`);
+    assert.deepEqual([gW5.rows.length, gW5.dups, gW5.units.jar, gW5.nCounted, gW5.own], [1, 1, 200, 1, true]);
+    // B12: rule 1, jars the pipeline sheet plans on the one lot that holds the strain unfinished
+    const run = 'jars-2026-11-23', gU = G(`p:${hE}|plan|${run}`), gZ = G(`p:${hF}|plan|${run}`);
+    assert.deepEqual([gU.day, gU.dayTo, gU.state, gU.rows.map(i => i.uid), gU.plan.lines.map(l => l.strain), BT2.packBubble(gU), BT2.packClass(gU)],
+      ['2026-11-23', '2026-12-07', 'plan', ['U1'], ['ANTIDOTE'], 'Jars', 'b2-pk plan fut'], 'one unfinished Antidote lot: a planned Jars bubble on the run');
+    assert.deepEqual([gZ.rows.map(i => i.uid), BT2.packBubble(gZ), BT2.packBubble(gZ, true)], [['U2'], 'Jars: ≈12 lbs', 'Jars'], "a plan line's pounds");
+    assert.deepEqual(PK.ties.map(t => [t.strain, t.first, t.last, t.hids.slice().sort()]), [['VOODOO', '2026-11-23', '2026-12-07', [hE, hF].sort()]], 'two lots hold it: a tie, no bubble');
+    assert.ok(!PK.groups.some(g => g.plan && g.rows.some(i => ['U3', 'U4', 'U5', 'U6'].includes(i.uid))) && PK.groups.filter(g => g.plan).length === 2,
+      'nothing for the tie, for the run that ended 4 days ago, or for a line a dated row in the window covers');
+    // B13: the words never say "packaged" (on Batch V2 that is the trim), and every number is pounds
+    const words = PK.groups.flatMap(g => [BT2.packBubble(g), BT2.packBubble(g, true)])
+      .concat([BT2.packBubble({ kind: 'flower', own: false, nCounted: 1, lb: 0.3, plan: null }), BT2.packBubble({ kind: 'preroll', nCounted: 0, lb: 0, plan: null })]);
+    assert.ok(words.includes('Jars: <1 lbs') && words.includes('Pre-rolls'));
+    assert.ok(words.every(w => !/packag/i.test(w)), 'never "packaged"');
+    assert.ok(words.every(w => !/\d/.test(w.replace(/RM[0-9A-Z?]+/g, '').replace(/[≈<]?[\d,]+ lbs/g, ''))), 'every number is followed by " lbs"');
+    // B14: the wide rows never move what is drawn today (harvests, trims, Testing)
+    const M0p = BT2.build(baseP), lj = X => X.labs.groups.map(g => [g.id, g.hid, g.own]);
+    const evL = X => X.sites.flatMap(L => L.units.filter(u => u.h).map(u => [u.id, u.ev.filter(g => g.type === 'lab').map(g => g.id)]));
+    assert.deepEqual([M0p.harvests, M0p.trims, lj(M0p), evL(M0p)], [MK.harvests, MK.trims, lj(MK), evL(MK)], 'packRows never moves what is drawn today');
+    assert.deepEqual([M0p.packs.groups.length, M0p.packs.loose.length, M0p.packs.ties.length, M0p.packs.failed.size], [0, 0, 0, 0]);
+    // B15: Jars packed while a riding send of the lot is at the lab (after its Test, before its COA) stay on the lot's
+    // track but are drawn after that COA (BT2.evOrder), so Test, the at-lab line and the COA keep their days; Jars after
+    // the COA ride as before
+    {
+      const linksV = new Map([...linksP, ...['V1', 'V2', 'V3'].map(u => [u, [ln('F1-RT-10292026', 'L-F')]])]);
+      const rowsV = [row('V2', 'FLOWER', 'Riptide', 'F1-RT-102926-F', '2026-11-17', { status: 'WAITING FOR LABELS' }),
+        row('V3', 'FLOWER', 'Riptide', 'F1-RT-102926-F', '2026-11-25', { status: 'WAITING FOR LABELS' })];
+      const MV = BT2.build(Object.assign({}, baseP, { weeks: [], labs: [lab('V1', { sent_date: '2026-11-12' })], links: linksV, packRows: rowsV }));
+      const LV = MV.labs.groups.find(g => g.hid === hB), uV = id => MV.sites.flatMap(L => L.units).find(u => u.id === id);
+      const gV2 = MV.packs.groups.find(g => g.id === `p:${hB}|2026-11-17`), gV3 = MV.packs.groups.find(g => g.id === `p:${hB}|2026-11-25`);
+      assert.ok(LV && !LV.own && LV.sent === '2026-11-12' && LV.at > '2026-11-17' && LV.at < '2026-11-25', `the send is at the lab over the first pack day (COA ${LV && LV.at})`);
+      assert.deepEqual([gV2.own, gV2.after, BT2.packBubble(gV2), gV3.own, gV3.after, uV(hB).ev.map(g => g.id)], [false, LV.id, 'Jars', false, '', [LV.id, gV2.id, gV3.id]],
+        "Jars between the send's Test and its COA: on the lot's track, marked to go after that COA; Jars after the COA: as before");
+      // drawn: Test, COA, then those Jars (BT2.row then moves them on past the COA); without the mark, by day
+      const bx = (k, g, x) => ({ k, g, x });
+      const order = BT2.evOrder([bx('s', LV, 100), bx('p', gV2, 150), bx('c', LV, 160), bx('p', gV3, 400)]).map(b => b.k + (b.g === gV3 ? '3' : ''));
+      assert.deepEqual(order, ['s', 'c', 'p', 'p3'], 'the at-lab line (Test next to its COA) and the COA on its day are kept');
+      assert.deepEqual(BT2.evOrder([bx('s', LV, 100), bx('p', Object.assign({}, gV2, { after: '' }), 150), bx('c', LV, 160)]).map(b => b.k), ['s', 'p', 'c']);
+      assert.deepEqual(BT2.evOrder([bx('c', LV, 160), bx('p', { kind: 'flower', after: '' }, 160), bx('p', { kind: 'preroll' }, 160), bx('s', LV, 160)]).map(b => b.k + (b.k === 'p' ? b.g.kind : '')),
+        ['ppreroll', 's', 'c', 'pflower'], 'on one day: Pre-rolls, Test, COA, Jars');
+    }
+    // the page: the wide rows go to the build, the ev loop draws Pack bubbles from the model, a click opens the Pack card
+    // (before the trim fallback), Close and a redraw find the bubble, the lot's cards list its Jars and Pre-rolls
+    const fnP = name => { const i = html.indexOf(`function ${name}(`); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i)); };
+    assert.ok(/BATR\.fromCSV\(S\.batLiveText, PIPE\.addDays\('2026-01-01', BT2\.SHEET_DAYS\)\)/.test(fnP('b2PackRows')), 'Pack re-reads the tab back to 1/1/26');
+    const rb = fnP('renderBatches2');
+    // Pack rows from the live tab only while the rows shown elsewhere are its (S.bat.live); after a failed live read with
+    // a newer hourly copy shown, the copy's rows, never the older live text (and the card says older packaging isn't read)
+    const prOf = St => new Function('S', 'B2', 'BATR', 'PIPE', 'BT2', `${fnP('b2PackRows')}\n}\nreturn b2PackRows;`)(St, {}, { fromCSV: () => ({ rows: ['wide'] }) }, PIPE, BT2)();
+    assert.deepEqual([prOf({ batLiveText: 'csv', bat: { rows: ['copy'], live: { at: 1 } } }), prOf({ batLiveText: 'csv', bat: { rows: ['copy'], live: null } }), prOf({ batLiveText: '', bat: { rows: ['copy'], live: null } }), prOf({ batLiveText: 'csv', bat: null })],
+      [['wide'], ['copy'], ['copy'], []], 'Pack re-reads the live tab only while it is what the page shows');
+    assert.ok(fnP('b2PackHTML').includes("if (!S.batLiveText || !(S.bat && S.bat.live)) note(\"Older packaging"), "the card's note follows the same test");
+    assert.ok(fnP('b2PackHTML').includes(' as RM${lt.room}'), "the Lot row names the trim's room when the trim sheet names it differently");
+    assert.ok(/packRows: b2PackRows\(\)/.test(rb) && /g\.type === 'pack'/.test(rb) && /BT2\.packBubble\(g, true\)/.test(rb) && /BT2\.packClass\(it\.g\)/.test(rb), 'renderBatches2 draws the Pack bubbles');
+    assert.ok(/bs\.push\(\.\.\.BT2\.evOrder\(lb\)\)/.test(rb), "renderBatches2 draws a unit's testing and pack bubbles in BT2.evOrder's order");
+    assert.ok(/drawn after that COA/.test(fnP('b2PackHTML')), 'the Jars card says why it is drawn after the COA');
+    const bo = fnP('b2Open');
+    assert.ok(/id\.startsWith\('p:'\)/.test(bo) && bo.indexOf("startsWith('p:')") < bo.indexOf('M.trims.find') && /b2PackHTML\(pk\)/.test(bo), "the p: branch, before the trim fallback");
+    assert.ok(fnP('b2Close').includes('.b2-pk[data-b2=') && b2src.slice(b2src.indexOf('if (reopen) {'), b2src.indexOf('if (reopen) {') + 400).includes('.b2-pk[data-b2='), 'Close and a redraw name .b2-pk');
+    assert.ok(/b2PackRowHTML\(h\)/.test(fnP('b2HarvestHTML')) && /b2PackRowHTML\(h\)/.test(fnP('b2TrimHTML')), "a lot's harvest and trim cards list its Jars and Pre-rolls");
+    const pkCss = html.slice(html.indexOf('/* Batch V2 (beta'), html.indexOf('/* Batch V2 end */'));
+    assert.ok(pkCss.includes('.b2-pk.fut{box-shadow:0 0 0 1px rgba(124,58,237,.35),0 0 8px 1px rgba(124,58,237,.45)}') && /\.b2-pk:focus-visible\{/.test(pkCss) && /\.b2-pk\.b2-on\{/.test(pkCss) &&
+      /\.b2-pk\.plan\{border-style:dashed/.test(pkCss), 'Pack bubbles: dashed when not counted, the purple glow ahead, focus and selection');
+    const n = s => PK.groups.filter(g => g.state === s).length;
+    console.log(`batch V2 pack: ${PK.groups.length} Jars and Pre-rolls bubbles from ${pr.length} sheet rows (${n('done')} done, ${n('pending')} not counted, ${n('plan')} planned, ${PK.ties.length} tie), placed by lineage, sheet, code, room + day and strain + day; failed and impossible dates not drawn; Testing unchanged`);
+  }
+
+  // the Sales band (Gianni, 2026-11-16: "it doesn't look like anything for sales has been added yet"): one row per channel
+  // (Nabis, Distru, Bulk) or one folded row, one bubble a week, from the flow job's block in pipeline_flow_meta.summary.sales
+  // (made-up weeks; today a Wednesday, so the week of 11/16 is the current one and Metrc's copy has lines through 11/12)
+  {
+    const T1 = '2026-11-18';
+    const SA = { v: 1, sig: 'abc123def456', at: { app: '2026-11-18T15:01:58Z', metrc: '2026-11-13T17:00:50Z', bulk_to: '2026-11-12', n_from: '2026-01-19', d_from: '2026-01-13', err: '' },
+      weeks: [
+        { w: '2026-11-23', ns: { lb: 3.2, u: { jar: 400 }, s: 0 } },
+        { w: '2026-10-05', t: { lb: 26.4, u: 3000 } },
+        { w: '2026-10-12', n: { lb: 5, u: { jar: 300 }, s: 2 }, d: { lb: 10, u: { jar: 600 }, s: 4, m: 0, mu: 0 }, b: { lb: 100, trim: 0, site: [['23RD', 100]], buyer: [['Buyer A', 100]] } },
+        { w: '2026-10-19', n: { lb: 6 }, d: { lb: 11 }, b: { lb: 50, trim: 0.3, site: [['25TH', 50]], buyer: [] } },
+        { w: '2026-10-26', n: { lb: 7 }, d: { lb: 12 }, b: { lb: 0, trim: 84, site: [], buyer: [] }, t: { lb: 26, u: 3400 } },
+        { w: '2026-11-02', n: { lb: 8 }, d: { lb: 13 }, b: { lb: 146.2, trim: 91.2, site: [['25TH', 146.2]], buyer: [['Price Co', 146.2]] } },
+        { w: '2026-11-09', n: { lb: 11, u: { jar: 512, '5pk': 220, '1g': 340, pouch: 12 }, s: 22 }, d: { lb: 17.6, s: 140, m: 0, mu: 0 },
+          b: { lb: 42.3, trim: 0, site: [['23RD', 42.3]], buyer: [['Buyer B', 42.3]] }, t: { lb: 24.6, u: 2900 } },
+        // after Metrc's copy: its bulk and pickups are not read yet, whatever the block says
+        { w: '2026-11-16', n: { lb: 10 }, ns: { lb: 5, u: { jar: 600 }, s: 3 }, d: { lb: 3 }, b: { lb: 9, trim: 2, site: [], buyer: [] }, t: { lb: 4, u: 500 } },
+      ] };
+    const SW = BT2.salesWeeks(SA, T1), K = w => SW.find(k => k.w === w), words = (ch, k) => [0, 1, 2].map(s => BT2.salesBubble(ch, k, s));
+    assert.deepEqual(SW.map(k => k.w), ['2026-10-05', '2026-10-12', '2026-10-19', '2026-10-26', '2026-11-02', '2026-11-09', '2026-11-16', '2026-11-23'], 'weeks in order');
+    // C1: the current week holds scheduled Nabis lines: dashed, the purple glow (its other rows are not)
+    const kc = K('2026-11-16'), kf = K('2026-11-23');
+    assert.deepEqual([kc.cur, kc.fut, kc.end, kc.nabis.sched, kf.fut, kf.cur], [true, false, '2026-11-22', 5, true, false]);
+    assert.deepEqual([BT2.salesClass('nabis', kc), BT2.salesClass('all', kc), BT2.salesClass('distru', kc), BT2.salesClass('nabis', K('2026-11-09'))],
+      ['b2-wk plan fut', 'b2-wk all plan fut', 'b2-wk', 'b2-wk']);
+    // C2: the words, exactly
+    assert.deepEqual(words('nabis', K('2026-11-09')), ['Nabis: 25 in · 11 sold', 'N: 11 sold', 'N']);
+    assert.deepEqual(words('nabis', K('2026-10-05')), ['Nabis: 26 in', 'N: 26 in', 'N'], 'a week with only pickups');
+    const kIn = BT2.salesWeeks({ v: 1, at: { bulk_to: '2026-11-17' }, weeks: [{ w: '2026-11-16', n: { lb: 10 }, ns: { lb: 5 }, t: { lb: 26 } }] }, T1)[0];
+    assert.equal(BT2.salesBubble('nabis', kIn), 'Nabis: 26 in · ≈15 sold', 'sold and scheduled, about');
+    assert.deepEqual(words('nabis', kf), ['Nabis: ≈3 sold', 'N: ≈3 sold', 'N'], 'a week still to come');
+    assert.deepEqual(words('distru', K('2026-11-09')), ['Distru: 18 sold', 'D: 18 sold', 'D']);
+    assert.deepEqual(words('bulk', K('2026-11-02')), ['Bulk: 146 sold · 91 trim', 'B: 146 sold', 'B']);
+    assert.equal(BT2.salesBubble('bulk', K('2026-10-26')), 'Bulk: 84 trim', 'trim only');
+    assert.equal(BT2.salesBubble('bulk', K('2026-10-19')), 'Bulk: 50 sold', 'trim under half a pound is not said');
+    assert.deepEqual(words('all', K('2026-11-09')).slice(0, 2), ['N 11 · D 18 · B 42 lbs', '71 lbs']);
+    assert.deepEqual(words('all', kc), ['N ≈15 · D 3 lbs', '≈18 lbs', ''], 'folded, scheduled');
+    assert.equal(BT2.salesBubble('all', K('2026-11-02')), 'N 8 · D 13 · B 146 · Trim 91 lbs');
+    const kLt = BT2.salesWeeks({ v: 1, at: {}, weeks: [{ w: '2026-11-09', n: { lb: 0.3 } }] }, T1)[0];
+    assert.equal(BT2.salesBubble('nabis', kLt), 'Nabis: <1 sold', 'under half a pound');
+    const kTiny = BT2.salesWeeks({ v: 1, at: {}, weeks: [{ w: '2026-11-23', ns: { lb: 0.2 } }] }, T1)[0];
+    assert.deepEqual([BT2.salesBubble('nabis', kTiny), BT2.salesBubble('all', kTiny), BT2.salesBubble('all', kTiny, 1), BT2.salesClass('nabis', kTiny)],
+      ['Nabis: <1 sold', 'N <1 lbs', '<1 lbs', 'b2-wk plan fut'], 'scheduled, under half a pound: "<1" (never "≈<1"), still dashed purple');
+    assert.deepEqual(['nabis', 'distru', 'bulk', 'all'].map(ch => BT2.salesBubble(ch, BT2.salesWeeks({ v: 1, at: {}, weeks: [{ w: '2026-11-09', n: { lb: 0.04 } }] }, T1)[0])), ['', '', '', ''], 'under 0.05 lb: no bubble');
+    // C3: every number on a band bubble is followed by a word
+    const all = SW.concat([kIn, kLt]).flatMap(k => ['nabis', 'distru', 'bulk', 'all'].flatMap(ch => words(ch, k))).filter(Boolean);
+    assert.ok(all.length > 30 && all.every(w => !/\d/.test(w.replace(/[≈<]?[\d,]+ (in|sold|trim|lbs|·)/g, ''))), 'every number is followed by in, sold, trim, lbs or ·');
+    assert.ok(all.every(w => !/price|dollar|revenue|\$|usd|amount|cost/i.test(w)), 'pounds and units only');
+    // C4: bulk ends at the last day Metrc's copy read; a week after it has no bulk words and no pickups
+    assert.deepEqual([K('2026-11-09').bulk.to, K('2026-11-09').inTo, K('2026-11-02').bulk.to, kc.bulk.to < kc.w, kc.nabis.in, kc.nabis.inU, BT2.salesBubble('bulk', kc), BT2.salesBubble('nabis', kc)],
+      ['2026-11-12', '2026-11-12', '2026-11-08', true, null, null, '', 'Nabis: ≈15 sold']);
+    assert.deepEqual([K('2026-11-09').bulk.site, K('2026-11-02').bulk.buyer, K('2026-11-09').nabis.u.jar, K('2026-11-09').nabis.s, K('2026-11-09').distru.s], [[['23RD', 42.3]], [['Price Co', 146.2]], 512, 22, 140]);
+    // C5: three rows while the site tracks keep 26px, else one folded row; a phone always three
+    assert.deepEqual([BT2.bandRows(450, 13), BT2.bandRows(450, 14), BT2.bandRows(360, 13), BT2.bandRows(300, 13, true), BT2.bandRows(550, 13)], [3, 1, 1, 3, 3]);
+    // C6: the panel sums exactly the 4 full weeks before the current one (10/19 to 11/15 here)
+    const B4 = BT2.band4w(SW, T1);
+    assert.deepEqual([B4.from, B4.to, B4.nabis, +B4.distru.toFixed(1), +B4.bulk.toFixed(1), +B4.all.toFixed(1)], ['2026-10-19', '2026-11-15', 32, 53.6, 238.5, 324.1]);
+    // C7: a week over by the page's today has nothing scheduled left (the job's today can lag: a run before midnight, a
+    // Mac asleep): its scheduled lines count as sold, no ≈ and no purple glow
+    const kPast = BT2.salesWeeks({ v: 1, at: {}, weeks: [{ w: '2026-11-09', n: { lb: 2.3, u: { jar: 300 } }, ns: { lb: 15.4, u: { jar: 2000 }, s: 2 } }] }, T1)[0];
+    assert.deepEqual([BT2.salesClass('nabis', kPast), BT2.salesClass('all', kPast), BT2.salesBubble('nabis', kPast), BT2.salesBubble('all', kPast, 1), kPast.nabis.sched, kPast.nabis.u.jar, kPast.nabis.s, Object.keys(kPast.nabis.su).length],
+      ['b2-wk', 'b2-wk all', 'Nabis: 18 sold', '18 lbs', 0, 2300, 2, 0], 'a past week never glows');
+    // C8: a week bubble the sticky panel covers part of: its words start right of the panel and are the longest that fit
+    // what is still in view (never the tail of its words)
+    const wd = t => t.length * 7, T3 = ['Nabis: 26 in · 10 sold', 'N: 10 sold', 'N'];
+    assert.deepEqual([90, 300, 140, 160, 285, 296].map(e => BT2.bandEdge(100, 200, e, T3, wd)),
+      [null, null, { hidden: 40, text: 'Nabis: 26 in · 10 sold' }, { hidden: 60, text: 'N: 10 sold' }, { hidden: 185, text: 'N' }, { hidden: 196, text: '' }]);
+    // the page's shape check: version 1, a sig, Mondays only; anything else is no block
+    const fnS = name => { const i = html.indexOf(`function ${name}(`); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i) + 2); };
+    const b2SalesOk = new Function('BT2', `${fnS('b2SalesOk')}; return b2SalesOk;`)(BT2);
+    assert.ok(b2SalesOk(SA) && b2SalesOk(SA).weeks.length === 8);
+    assert.deepEqual([b2SalesOk(null), b2SalesOk({ ...SA, v: 2 }), b2SalesOk({ ...SA, sig: undefined }), b2SalesOk({ ...SA, weeks: [{ w: '2026-11-17' }] }), b2SalesOk({ ...SA, weeks: {} })], [null, null, null, null, null]);
+    // D1: the sig rides b2LoadFlow's meta read (the polls and Refresh are unchanged); the body is read only when it moves
+    const b2fl = fnS('b2LoadFlow');
+    assert.ok(b2fl.includes('sales_sig:summary->sales->>sig') && b2fl.includes('sales_app:summary->sales->at->>app') && b2fl.includes('sales_err:summary->sales->at->>err'), 'the meta read carries the sales sig');
+    assert.ok(b2fl.indexOf("select('sales:summary->sales')") > b2fl.indexOf('B2.sales.sig !== ss') && b2fl.indexOf('B2.sales.sig !== ss') > 0 && /b2SalesOk\(r\.data && r\.data\.sales\)/.test(b2fl), 'the body only when the sig moves');
+    assert.equal((html.match(/select\('sales:summary->sales'\)/g) || []).length, 1, 'one place reads the sales body');
+    // D1b: the body is read once per sig, a block the page refuses included: not again on each poll until the sig moves
+    // (Refresh reads it again)
+    const stub = { reads: 0, renders: 0, block: null, sig: '' };
+    stub.sb = { from: t => { let sel = ''; const api = { select(x) { sel = x; return api; }, order() { return api; }, range: () => Promise.resolve({ data: [], error: null }),
+      maybeSingle: () => t !== 'pipeline_flow_meta' ? Promise.resolve({ data: null, error: null })
+        : sel === 'sales:summary->sales' ? (stub.reads++, Promise.resolve({ data: { sales: stub.block }, error: null }))
+        : Promise.resolve({ data: { changed_at: 'c1', sales_sig: stub.sig, sales_app: '', sales_err: '' }, error: null }) }; return api; } };
+    const LF = new Function('BT2', 'stub', `let sb = stub.sb, b2FlowLoading = false; const S = { view: 'batches2' }, B2 = {}, HV_FORCE_MS = 30000, B2_FLOW_COLS = 'lot_id';
+      const render = () => { stub.renders++; };
+      ${fnS('b2SalesOk')}
+      async ${fnS('b2LoadFlow')}
+      return { B2, run: q => b2LoadFlow(q) };`)(BT2, stub);
+    stub.block = { ...SA, v: 2 }; stub.sig = 'aaa111bbb222';
+    for (let i = 0; i < 4; i++) await LF.run(true);
+    assert.deepEqual([stub.reads, LF.B2.sales, LF.B2.salesBad], [1, null, 'aaa111bbb222'], 'a refused block is read once, not on every poll');
+    stub.block = { ...SA, sig: 'ccc333ddd444' }; stub.sig = 'ccc333ddd444';
+    for (let i = 0; i < 3; i++) await LF.run(true);
+    assert.deepEqual([stub.reads, LF.B2.sales && LF.B2.sales.sig, LF.B2.salesBad], [2, 'ccc333ddd444', ''], 'a new sig: read once, then not again');
+    LF.B2.salesAt = 0; await LF.run(false);
+    assert.equal(stub.reads, 3, 'Refresh reads it again');
+    // D2: a week bubble and a panel figure open their cards, before the trim fallback
+    const bo = fnS('b2Open');
+    assert.ok(bo.indexOf("startsWith('w:')") > 0 && bo.indexOf("startsWith('k:')") > 0 && bo.indexOf("startsWith('w:')") < bo.indexOf('M.trims.find') && bo.indexOf("startsWith('k:')") < bo.indexOf('M.trims.find') &&
+      /b2WeekHTML\(wp\[0\], wk\)/.test(bo) && /b2ChanHTML\(kc\)/.test(bo), 'the w: and k: branches');
+    // D3: Close and a redraw find the week bubble and the panel figure
+    const reoS = b2src.slice(b2src.indexOf('if (reopen) {'), b2src.indexOf('if (reopen) {') + 400);
+    assert.ok(fnS('b2Close').includes('.b2-wk[data-b2=') && fnS('b2Close').includes('.b2-ohc[data-b2=') && reoS.includes('.b2-wk[data-b2=') && reoS.includes('.b2-ohc[data-b2='), 'Close and a redraw name .b2-wk and .b2-ohc');
+    // D4: the band: its own strip after the four sites (not a site strip), its panel apart from the On hand column, its
+    // rows in the room the tracks fit in
+    const rb2 = fnS('renderBatches2');
+    assert.ok(rb2.includes('class="b2-bstrip"') && rb2.includes('class="b2-ohb"') && rb2.includes("querySelectorAll('.b2-oh')[i]") && /24 \+ bandN \* RH/.test(rb2) &&
+      rb2.indexOf('class="b2-bstrip"') > rb2.indexOf('<div class="b2-lane"'), 'the band after the site lanes, with its own strip and panel');
+    assert.ok(/const SL = sb && B2\.sales && B2\.sales\.weeks\.length \? B2\.sales : null/.test(rb2) && /BT2\.bandRows\(room, tracks, phone\)/.test(rb2) && /class="b2-wkgap"/.test(rb2) &&
+      /BT2\.salesClass\(ch, k\)/.test(rb2) && /Couldn't read the sales\./.test(rb2), 'signed in only; folds by bandRows; the hatch; classes from the model; a failed read is said');
+    assert.ok(/\|\| B2\.salesBad\)\) errs\.push\("Couldn't read the sales\."\)/.test(rb2), 'a block the page refused is said too');
+    assert.ok(rb2.includes("${B2_CH1[ch]}${BT2.lbTxt(S4[ch]).length <= 3 ? '<span> 4 wks</span>' : ''}") && rb2.includes('${B2_CH[ch]}<span> · 4 wks ·</span>'), "the panel's rows say their channel (phones: N, D, B)");
+    assert.ok(/if \(OHW\) B2\.band = \{ bs: wks, px/.test(rb2) && /b2BandEdge\(\); \}/.test(rb2) && /BT2\.bandEdge\(b\.left, b\.w, edge, b\.m\.t, width\)/.test(fnS('b2BandEdge')),
+      "week bubbles under the panel: their words follow its edge (on each draw and scroll frame)");
+    // D5: the look: lavender, dashed and glowing when scheduled, the amber strip warning, focus and selection; no red
+    const skCss = html.slice(html.indexOf('/* Batch V2 (beta'), html.indexOf('/* Batch V2 end */'));
+    assert.ok(skCss.includes('.b2-wk.fut{box-shadow:0 0 0 1px rgba(124,58,237,.35),0 0 8px 1px rgba(124,58,237,.45)}') && /\.b2-wk:focus-visible/.test(skCss) && /\.b2-wk\.b2-on/.test(skCss) &&
+      /\.b2-wk\.plan\{border-style:dashed/.test(skCss) && skCss.includes('.b2-bstrip em.warn{color:#B45309}') && /\.b2-wkgap\{[^}]*pointer-events:none/.test(skCss), 'the band\'s look');
+    // D6: no money words in the model block either (the page block is checked above)
+    assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2Src), 'the Batch V2 model shows pounds and units only, never dollars');
+    // D7: the flow job reads the sales app's Sales-by-Type layout by position
+    const arr = readFileSync(new URL('../ar-reports.html', import.meta.url), 'utf8');
+    assert.ok(arr.includes('[a, ({Distru:0,Nabis:1,QuickBooks:2})[e.src]||0, b, e.d, e.u||0, e.su||0,'), "the flow job reads the Sales-by-Type layout; change it there too");
+    // D8: the server drops a sales block whose keys name money
+    const flowSql = readFileSync(new URL('../supabase/pipeline-flow.sql', import.meta.url), 'utf8');
+    assert.ok(flowSql.includes("- 'sales'") && flowSql.includes('price|dollar|revenue'), 'pipeline_flow_save drops a sales block that names money');
+    console.log(`batch V2 sales: ${SW.length} weeks, words like "${BT2.salesBubble('nabis', K('2026-11-09'))}", scheduled weeks dashed purple, bulk clipped at Metrc's copy, three rows or one folded, a 4-week panel; the sig rides the meta read; the server drops money keys`);
   }
 }
 console.log('pipeline-check: all checks passed');

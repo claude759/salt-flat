@@ -55,7 +55,9 @@ create table if not exists public.pipeline_flow_meta (
   changed_at    timestamptz,
   rows          int,
   covered_from  date,
-  summary       jsonb               -- the job's totals and cross-checks (lb only), for the page's headline and cards
+  summary       jsonb               -- the job's totals and cross-checks (lb only), for the page's headline and cards;
+                                    -- summary.sales: the Sales band's weekly pounds and units (pipeline_flow_save keeps it
+                                    -- only when no key in it names money)
 );
 alter table public.pipeline_flow_meta enable row level security;
 drop policy if exists pipeline_flow_meta_select on public.pipeline_flow_meta;
@@ -120,9 +122,13 @@ begin
      where not exists (select 1 from jsonb_array_elements(p_rows) x where x->>'lot_id' = t.lot_id);
     get diagnostics n_del = row_count;
   end if;
+  -- the sales block (pounds and units only) is dropped, never stored, if a key in it names money or a $ appears
   insert into public.pipeline_flow_meta as m (id, synced_at, changed_at, rows, covered_from, summary)
   values (1, now(), case when n_up + n_del > 0 then now() end, (select count(*) from public.pipeline_flow_lots),
-          (p_meta->>'covered_from')::date, p_meta->'summary')
+          (p_meta->>'covered_from')::date,
+          case when p_meta->'summary'->'sales' is not null
+                and (p_meta->'summary'->'sales')::text ~* '"[^"]*(price|dollar|revenue|subtotal|amount|cost|usd)[^"]*": |[$]'
+               then (p_meta->'summary') - 'sales' else p_meta->'summary' end)
   on conflict (id) do update set synced_at = now(),
     changed_at = case when n_up + n_del > 0 then now() else m.changed_at end,
     rows = excluded.rows,
