@@ -1348,6 +1348,20 @@ if (realPipe) {
   const B = (uid, values, grid = g) => EDIT.batch(grid, { uid, values, now: NOW });
   const no = (res, re, why) => { assert.equal(res.ok, false, why); assert.match(res.message, re, `${why}: ${res.message}`); return res; };
 
+  // typable Status (Gianni's rule: every dropdown is typable; only a listed value is ever used)
+  {
+    const L = ['AWAITING PKG/LABELING', 'GRINDING FLOWER', 'PACKAGING', 'WAITING FOR PRODUCT', 'WAITING FOR TESTING'];
+    const P = t => { const m = EDIT.pickFrom(L, t); return [m.value, m.n, m.exact]; };
+    assert.deepEqual(P('packaging'), ['PACKAGING', 1, true], 'exact, any case');
+    assert.deepEqual(P('  waiting   for  testing '), ['WAITING FOR TESTING', 1, true], 'exact, any spacing');
+    assert.deepEqual(P('grind'), ['GRINDING FLOWER', 1, false], 'the one entry that contains it');
+    assert.deepEqual(P('waiting'), [null, 3, false], 'three contain it (AWAITING too): nothing picked');
+    assert.deepEqual(P('pkg/lab'), ['AWAITING PKG/LABELING', 1, false]);
+    assert.deepEqual(P('done'), [null, 0, false], 'not in the list: nothing picked');
+    assert.deepEqual(P('  '), [null, 0, false]);
+    assert.ok(!/<select id="ed-status"/.test(html) && /<input id="ed-status"[^>]*list="ed-status-list"/.test(html), 'the batch Status is a typable box, not a plain select');
+    assert.ok(/if \(o\.kind === 'batch' && o\.statusTyped != null\)[\s\S]{0,200}if \(bad\) \{ edPreview\(\); return; \}/.test(html), 'a typed status that names no listed one stops the save');
+  }
   assert.deepEqual(EDIT.batchStatuses(g), ['GRINDING FLOWER', 'PACKAGING', 'READY FOR PICKUP', 'WAITING FOR TESTING'],
     'the status picker lists the spellings batches use (not a row with no METRC UID)');
   const at2 = EDIT.batchAt(g, UID(2));

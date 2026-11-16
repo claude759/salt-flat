@@ -1367,6 +1367,7 @@
   .ed-seg button:hover{border-color:#1F3A93}
   .ed-seg button.on{background:#1F3A93;border-color:#1F3A93;color:#FFFFFF}
   .ed-was,.ed-hint{margin:5px 0 0;font-size:13px;color:#4A5160}
+  .ed-hint.bad{color:#9A3412;font-weight:600}
   .ed-prev{margin-top:14px;padding:10px 12px;background:#F6F7F9;border-radius:8px;font-size:14px}
   .ed-prev>b{display:block;font-weight:700;overflow-wrap:anywhere}
   .ed-prev p{margin:0}
@@ -2743,6 +2744,16 @@ const EDIT = ((PIPE, SUP) => {
     return { cUid, cSt, cStrain: once('STRAIN'), cols };
   }
   const batchRows = (grid, L, uid) => { const u = bkey(uid), out = []; for (let r = 1; r < grid.length; r++) if (u && bkey(at(grid, r, L.cUid)) === u) out.push(r); return out; };
+  // a typed pick from a list (Gianni, 2026-11-13: every dropdown is typable): the exact entry, any case and spacing; else
+  // the ONE entry that contains the text; else nothing (n = how many contain it). Only a value from the list is ever used.
+  function pickFrom(list, typed) {
+    const k = x => str(x).toLowerCase().replace(/\s+/g, ' ').trim(), t = k(typed);
+    if (!t) return { value: null, n: 0, exact: false };
+    const exact = (list || []).find(x => k(x) === t);
+    if (exact != null) return { value: exact, n: 1, exact: true };
+    const hits = (list || []).filter(x => k(x).includes(t));
+    return hits.length === 1 ? { value: hits[0], n: 1, exact: false } : { value: null, n: hits.length, exact: false };
+  }
   // the STATUS spellings the tab uses on batches (rows with a METRC UID), exactly as written: the only ones the app sends
   function batchStatuses(grid) {
     const L = batchLayout(grid), out = new Set();
@@ -2842,7 +2853,7 @@ const EDIT = ((PIPE, SUP) => {
 
   return { prerollAmount, jarStrain, taskText, crew, supply, apply, verify, kindsFor, crewTexts, rewriteAmount, jarSpan, a1,
     pastDay, beforeToday, listedTwice, wording, addItem, addSources, slotOf, setToday: d => { today = d || null; },
-    batch, batchAt, batchLayout, batchStatuses, batchDay, batchKey: bkey, batchA1, batchMaxDay, BATCH, BATCH_FIELDS, batchDry, chases,
+    batch, batchAt, batchLayout, batchStatuses, batchDay, batchKey: bkey, batchA1, batchMaxDay, BATCH, BATCH_FIELDS, batchDry, chases, pickFrom,
     STATUSES, CREW_STATUSES: Object.keys(CREW_WORDS), MAX_OPS, ADD_MODES };
 })(PIPE, SUP);
 /* ===== EDIT MODEL END ===== */
@@ -8628,6 +8639,32 @@ function edBatBuild(o) {
   if (b.ok || edNoneOf(b)) return edOut(b);
   return { error: b.message, bad: b.field ? { [b.field]: b.message } : null };
 }
+// the Status box: what the typed text picks, and what the hint under it says
+function edBatStatusTyped(o, raw) {
+  const m = EDIT.pickFrom(o.statuses || [], raw), now = o.draft.status || '';
+  o.statusTyped = raw;
+  if (m.value != null) o.draft.status = m.value;   // otherwise the last good status stays in the draft
+  o.statusBad = !!String(raw).trim() && m.value == null;
+  o.statusHint = !String(raw).trim() ? `Type to search the statuses the sheet uses. Leaving it empty keeps ${now || 'the sheet\'s'}.`
+    : m.value != null ? (m.exact ? '' : `Picks ${m.value}.`)
+    : m.n > 1 ? `${m.n} statuses contain "${String(raw).trim()}". Keep typing, or pick one from the list.`
+    : `No status the sheet uses matches "${String(raw).trim()}". Pick one from the list; ${now || 'the status'} stays as it is.`;
+  o.touched.add('status'); o.dirty = true; o.notice = null;
+  const h = $('ed-status-hint');
+  if (h) { h.textContent = o.statusHint; h.hidden = !o.statusHint; h.classList.toggle('bad', o.statusBad); }
+  edPreviewSoon();
+}
+function edBatStatusSettle(o, input) {
+  const raw = input.value, m = EDIT.pickFrom(o.statuses || [], raw), keep = o.draft.status || '';
+  if (m.value != null) { o.draft.status = m.value; o.statusHint = ''; }
+  else if (String(raw).trim()) o.statusHint = `"${String(raw).trim()}" isn't a status the sheet uses, so it stays ${keep || 'as it is'}.`;
+  else o.statusHint = '';
+  input.value = o.draft.status || '';
+  o.statusTyped = null; o.statusBad = false;
+  const h = $('ed-status-hint');
+  if (h) { h.textContent = o.statusHint; h.hidden = !o.statusHint; h.classList.remove('bad'); }
+  edPreviewSoon();
+}
 function edBatWhere(o) {
   const g = edBatGrid(), b = g && EDIT.batchAt(g, o.uid);
   return `BATCH LABEL SHEET${b && b.ok ? `, row ${b.r + 1}` : ''} · METRC UID …${String(o.uid).slice(-4)}`;
@@ -8668,9 +8705,11 @@ function edBatFormHTML(o) {
     if (f.kind === 'status') {
       const opts = (o.statuses || []).slice();
       if (D.status && !opts.includes(D.status)) opts.unshift(D.status);
-      h += `<label class="ed-l" for="ed-status">${esc(f.label)}</label><select id="ed-status" data-f="${f.key}"${dis}>` +
-        (D.status ? '' : '<option value="" selected>Pick a status</option>') +
-        opts.map(s => `<option value="${esc(s)}"${s === D.status ? ' selected' : ''}>${esc(s)}</option>`).join('') + '</select>';
+      // typable (Gianni's rule): type to filter the sheet's own spellings; only a listed status is ever sent
+      h += `<label class="ed-l" for="ed-status">${esc(f.label)}</label><input id="ed-status" data-f="${f.key}" list="ed-status-list" ` +
+        `autocomplete="off" spellcheck="false" placeholder="type to search…" value="${esc(o.statusTyped != null ? o.statusTyped : D.status || '')}"${dis}>` +
+        `<datalist id="ed-status-list">${opts.map(s => `<option value="${esc(s)}"></option>`).join('')}</datalist>` +
+        `<p class="ed-hint${o.statusBad ? ' bad' : ''}" id="ed-status-hint"${o.statusHint ? '' : ' hidden'}>${esc(o.statusHint || '')}</p>`;
     } else if (f.kind === 'date') {
       h += `<label class="ed-l" for="${id}">${esc(f.label)}</label><input id="${id}" type="date" data-f="${f.key}" min="2024-01-01" ` +
         `max="${EDIT.batchMaxDay(Date.now())}" value="${esc(D[f.key])}"${dis}>`;
@@ -9344,6 +9383,12 @@ async function edSave() {
   if (block) { edPreview(); return; }
   // a batch: a draft that can't be sent stops before the read (Enter can beat the preview); then the tab is read again,
   // so a UID on two rows or none, or a cell changed since the card opened, stops here
+  // a status still being typed settles first (Enter can come before the box loses focus); one naming no listed status stops here
+  if (o.kind === 'batch' && o.statusTyped != null) {
+    const bad = o.statusBad, i = $('ed-status');
+    if (i) edBatStatusSettle(o, i);
+    if (bad) { edPreview(); return; }
+  }
   if (o.kind === 'batch') { const b0 = edBuild(o); if (!b0.ok) { o.built = b0; edPreview(); return; } }
   if (o.kind === 'batch' && !(await edBatReread(o))) return;
   const c = edConflict(o);
@@ -9542,12 +9587,15 @@ function edDecorate() {
   el.addEventListener('input', e => {
     const o = ED.open, f = e.target.dataset && e.target.dataset.f;
     if (!o || !f || f === 'add' || f === 'src' || o.phase !== 'edit') return;
+    if (o.kind === 'batch' && e.target.id === 'ed-status') { edBatStatusTyped(o, e.target.value); return; }
     if (f === 'note') o.draft.people[+e.target.dataset.i].note = e.target.value.toUpperCase().replace(/\s+/g, ' ').trim();
     else { o.draft[f] = e.target.value; o.touched.add(f); }
     o.dirty = true; o.notice = null; edPreviewSoon();
   });
   el.addEventListener('change', e => {
     const o = ED.open;
+    // a typed status settles on leaving the box (or picking a suggestion): the listed spelling, or the last good one back
+    if (o && o.kind === 'batch' && o.phase === 'edit' && e.target.id === 'ed-status') { edBatStatusSettle(o, e.target); return; }
     // Copy a line: the line picked; its words become the wording to start from
     if (o && o.phase === 'edit' && e.target.dataset.f === 'src') {
       const x = e.target.value === '' ? null : (o.srcs || [])[+e.target.value];

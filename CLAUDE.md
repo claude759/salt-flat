@@ -253,7 +253,9 @@ launch. The check fails if one of the three pieces is missing.
 - **Editing batches from the app** (Gianni's decisions, 2026-11-13; built 11/13, beta, the BATCH LABEL SHEET
   tab still switched off on the Admin page; a pen on each batch with a Metrc UID; `?beta&dry` checks a
   change against the live sheet without writing; save program CONTRACT.md "Release 1c"): through the save
-  program only; Status, PCKG DATE, NABIS P/U DATE, TOTAL UNITS and BUDTENDER UNITS only; a save finds its
+  program only; Status, PCKG DATE, NABIS P/U DATE, TOTAL UNITS and BUDTENDER UNITS only (Status is a type-to-search
+  box, Gianni's rule for every dropdown: `EDIT.pickFrom` takes the exact status in any case, else the one status that
+  contains the text; anything else is refused and the last good status stays); a save finds its
   batch by Metrc UID and column header, never a row number; never the COA watcher's columns or formula
   cells; rows without a Metrc UID are not editable at first; ships switched off; the first real save is
   one value Victoria actually wants, after dry runs, with Undo. Later, Add a batch inserts a row under
