@@ -297,12 +297,24 @@ launch. The check fails if one of the three pieces is missing.
   60 a request), again only when `pipeline_harvests_meta.changed_at` moves, a new batch's harvests weren't asked
   for, or on Refresh (a not-quiet read more than 30 seconds after the last). Vapes have no Harvest step. Not signed in: the card says the harvest isn't read here.
 - **Batch V2** (beta, view only, Gianni 2026-11-13: "an experimental page called batch V2 ... a left/right
-  scrollable timeline showing harvests and trims"): `data-view="batches2"`, after Batches. One lane per grow room
-  (site + room), named by a strip above the lane, never a label column. Harvests from the DISTRO PIPELINE harvest
-  lines and the batch codes (merged per room and day; a code's day wins over HRVST DATE when the room's other
-  batches or a harvest line agree, else the harvest is marked amber); trims from the trim sheets (done, pounds)
-  and the plan (planned, dashed); drying links a harvest to the next trim whose tab lists its strains. Model in
-  the BATCH V2 MODEL block (`BT2`).
+  scrollable timeline showing harvests and trims"; reshaped 2026-11-15: "all companies shown vertically without having to
+  scroll down", "remove the crap at the bottom", "Don't split them up by room, each bubble can just say H: RM1: ###lbs
+  (more info on click)"): `data-view="batches2"`, after Batches. One lane per site (23rd, 25th, 15th, Olympic, always all
+  four), named by a strip above the lane, never a label column. A lane packs its items into as few tracks as keep them
+  from overlapping (`BT2.pack`, greedy by start day, bubbles' real widths); a harvest, its dotted drying line and the trim
+  it dried for are one unit on one track. All sites fit the window on a laptop (tracks 34px down to 24px); the box scrolls
+  only sideways. Bubbles say only "H: RM1: 412 lbs" / "T: RM1: 132 lbs" / planned "T: RM1: ≈111 lbs" (`BT2.bubble`;
+  "RM?" when the room isn't known; no pounds when none are known): harvest pounds are the Metrc wet weight of every Metrc
+  harvest (one per strain) of that site, room and day (`BT2.metrc`), from the page's own read of `pipeline_harvests` for
+  the timeline's days (`b2LoadMetrc`, signed in; again only when `pipeline_harvests_meta.changed_at` moves, the days grow,
+  or Refresh), never the Batches page's linked-only `loadHarvests` read, which would show part of a room. Each Metrc
+  harvest counts once: a harvest with a room before one without, then the nearer day, the earlier, the lower room. Trim
+  pounds are the trim sheets or the estimate. Everything else (strains, crew, batches, drying days, the Metrc harvests) is in the card a click opens. Nothing
+  under the timeline; what can't be placed isn't drawn. Underneath, harvests and trims keep their rooms: harvests from the
+  DISTRO PIPELINE harvest lines and the batch codes (merged per room and day; a code's day wins over HRVST DATE when the
+  room's other batches or a harvest line agree, else the harvest is marked amber); trims from the trim sheets (done,
+  pounds) and the plan (planned, dashed); drying links a harvest to the next trim of its room whose tab lists its
+  strains. Model in the BATCH V2 MODEL block (`BT2`).
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them

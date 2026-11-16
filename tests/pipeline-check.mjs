@@ -2000,5 +2000,97 @@ if (realPipe) {
   assert.ok(tp && tp.dateFrom === 'FA-TP-10226-I' && tp.from === 'FA-TP-10226-I', "an ambiguous code day takes its flower batch's day");
   assert.deepEqual(M2.loose.filter(z => z.kind === 'nodate').map(z => z.b.code), ['Q-11126-1'], 'a batch with no day at all is listed, not dropped');
   console.log(`batch V2 review fixes: drying by strain, roomless codes placed by their trim, HRVST DATE vs code day settled or marked, dateless batches kept`);
+  // drawn one lane per site (Gianni, 2026-11-15: "Don't split them up by room"): the four sites always, in the page's order;
+  // a harvest, its drying and the trim it dried for are one unit (one track); units that overlap get different tracks
+  assert.deepEqual(M.sites.map(L => L.site), ['23RD', '25TH', '15TH', 'OLYMPIC'], 'one lane per site, in order');
+  assert.deepEqual(P2.sites.map(L => [L.site, L.units.length]), [['23RD', 0], ['25TH', 2], ['15TH', 0], ['OLYMPIC', 0]], 'every site shows, even with nothing on it');
+  const f25 = M.sites.find(L => L.site === '25TH').units;
+  const pair = f25.find(u => u.id === 'h:25TH|2|2026-10-05');
+  assert.ok(pair && pair.t && pair.t.id === 't:25TH|2|2026-10-15' && pair.start === '2026-10-05' && pair.end === '2026-10-16',
+    'a harvest and the trim it dried for are one unit, harvest day to the last trim day');
+  assert.ok(!f25.some(u => u !== pair && u.t && u.t.id === pair.t.id), 'its trim is not drawn again on its own');
+  assert.ok(f25.some(u => u.id === 'h:25TH|2|2026-10-03' && !u.t) && f25.some(u => !u.h && u.t && u.t.key === '25TH|1'), 'a harvest with no trim, and a trim no harvest leads to, are units of their own');
+  assert.equal(M.sites.reduce((a, L) => a + L.units.filter(u => u.h).length, 0), M.harvests.length, 'every harvest is in a site lane once');
+  assert.equal(M.sites.reduce((a, L) => a + L.units.filter(u => u.t).length, 0), M.trims.length, 'every trim is in a site lane once');
+  const dayU = us => us.map(u => ({ a: BT2.gap('2026-01-01', u.start), b: BT2.gap('2026-01-01', u.end) + 1 }));
+  const pk = BT2.pack(dayU(f25)), tk = id => pk.track[f25.findIndex(u => u.id === id)];
+  const room3 = f25.find(u => u.h && u.h.key === '25TH|3'), room1 = f25.find(u => !u.h && u.t.key === '25TH|1');
+  assert.ok(room3.end >= '2026-09-25' && tk(room3.id) === 0, 'the first unit takes the first track');
+  assert.equal(tk('h:25TH|2|2026-10-03'), 0, 'a unit that starts after the last one on a track ends goes on that track');
+  assert.ok(tk('h:25TH|2|2026-10-05') === 0 && tk(room1.id) === 0 && pk.n === 1, 'units one after another share one track');
+  // two rooms of one site at once: room 1 harvests Oct 1 and trims Oct 10, room 2 harvests Oct 3 and trims Oct 12-13
+  const ov = BT2.build({ weeks: [{ days: [{ date: '2026-10-01', items: [hvL('25TH', '1', 'HARVEST @ 25TH- ROOM 1')] },
+    { date: '2026-10-03', items: [hvL('25TH', '2', 'HARVEST @ 25TH- ROOM 2')] }, { date: '2026-10-10', items: [trL('25TH', '1', 'JUSTIN', [])] },
+    { date: '2026-10-12', items: [trL('25TH', '2', 'JUSTIN', [])] }, { date: '2026-10-13', items: [trL('25TH', '2', 'JUSTIN', [])] },
+    { date: '2026-10-15', items: [hvL('25TH', '3', 'HARVEST @ 25TH- ROOM 3')] }] }], rows: [], ev: null, today: '2026-11-13' });
+  const ou = ov.sites.find(L => L.site === '25TH').units, op = BT2.pack(dayU(ou));
+  assert.deepEqual(ou.map((u, i) => [u.id, u.t ? u.t.id : '', op.track[i]]),
+    [['h:25TH|1|2026-10-01', 't:25TH|1|2026-10-10', 0], ['h:25TH|2|2026-10-03', 't:25TH|2|2026-10-12', 1], ['h:25TH|3|2026-10-15', '', 0]],
+    "overlapping rooms get different tracks, each harvest with its drying and trim on one; the next free track is reused");
+  assert.equal(op.n, 2);
+  assert.deepEqual(BT2.pack([{ a: 0, b: 10 }, { a: 5, b: 8 }, { a: 10, b: 12 }, { a: 8, b: 9 }]), { track: [0, 1, 0, 1], n: 2 },
+    'greedy by start: the first track free at the start; a unit may start where another ends');
+  assert.deepEqual(BT2.pack([{ a: 0, b: 5 }, { a: 1, b: 4 }, { a: 2, b: 3 }]), { track: [0, 1, 2], n: 3 }, 'three at once: three tracks');
+  assert.deepEqual(BT2.pack([]), { track: [], n: 0 });
+  // bubble words
+  assert.equal(BT2.bubble('H', '1', 412.4), 'H: RM1: 412 lbs', 'a harvest with its Metrc wet weight');
+  assert.equal(BT2.bubble('T', '1', 132.2), 'T: RM1: 132 lbs', 'a trim on the trim sheets');
+  assert.equal(BT2.bubble('T', '1', 110.6, true), 'T: RM1: ≈111 lbs', 'a planned trim, estimated');
+  assert.equal(BT2.bubble('H', '1', null), 'H: RM1', 'no pounds known: none shown');
+  assert.equal(BT2.bubble('T', '2', 0), 'T: RM2', 'zero pounds: none shown');
+  assert.equal(BT2.bubble('H', '', null), 'H: RM?', 'a room not known');
+  assert.equal(BT2.bubble('H', 'A', 1234), 'H: RMA: 1,234 lbs', 'a lettered room; thousands');
+  assert.equal(BT2.bubble('H', '2', 756, false, true), 'H: RM2: 756', 'short: no " lbs"');
+  // a harvest's Metrc wet weight: its site, room and day (within 2 days), each Metrc harvest once, the nearer harvest's
+  const mh = (name, site, room, day, wet, unit) => ({ license: 'L-' + site, name, site, room, start_date: day, wet_weight: wet, unit: unit || 'Grams', strain: 'Tide', plant_count: 60 });
+  const h5 = { site: '25TH', room: '2', date: '2026-10-05' }, h1 = { site: '25TH', room: '2', date: '2026-10-01' };
+  const mrows = [mh('F2-1-10052026', 'F', 'F2', '2026-10-05', 45359.237), mh('F2-1-10052026', 'F', 'F2', '2026-10-05', 45359.237),
+    mh('F2-2-10062026', 'F', 'F2', '2026-10-06T00:00:00', 2, 'Pounds'), mh('F2-3-10052026', 'F', null, '2026-10-05', 1, 'Kilograms'),
+    mh('F1-4-10052026', 'F', 'F1', '2026-10-05', 9e5), mh('F2-5-10052026', 'S', 'F2', '2026-10-05', 9e5), mh('F2-6-10152026', 'F', 'F2', '2026-10-15', 9e5),
+    mh('F2-7-10032026', 'F', 'F2', '2026-10-03', 9e5), mh('F2-8-10052026', 'F', 'F2', '2026-10-05', null)];
+  const w5 = BT2.metrc(h5, mrows, [h5, h1]);
+  assert.deepEqual(w5.list.map(r => r.name), ['F2-1-10052026', 'F2-2-10062026', 'F2-3-10052026', 'F2-8-10052026'],
+    "its site, room (or none named) and day, once each; not another room, site or week; Oct 3 is nearer the Oct 1 harvest");
+  assert.ok(Math.abs(w5.lb - (100 + 2 + 1000 / 453.59237)) < 1e-6, 'wet weights added up in pounds, whatever the unit; one with none adds nothing');
+  assert.deepEqual(BT2.metrc(h1, mrows, [h5, h1]).list.map(r => r.name), ['F2-7-10032026'], 'the nearer harvest takes it');
+  assert.deepEqual(BT2.metrc(h5, [], [h5]), { list: [], lb: null }, 'none read: no pounds');
+  assert.equal(BT2.metrc({ site: '25TH', room: '', date: '2026-10-05' }, [mh('F2-1-10052026', 'F', 'F2', '2026-10-05', 1000)], []).list.length, 1, 'a harvest with no room takes any room of its site');
+  // a room harvest is one Metrc harvest per strain: the bubble adds up every one of them, so the page reads every Metrc
+  // harvest of the timeline's days (b2LoadMetrc), not only those the sheet's batches link to (loadHarvests)
+  const mRoom = [mh('F1-2424-10292026', 'F', 'F1', '2026-10-29', 100 * 453.59237), mh('F1-2697-10292026', 'F', 'F1', '2026-10-29', 150 * 453.59237),
+    mh('F1-3010-10292026', 'F', 'F1', '2026-10-29', 250 * 453.59237)];
+  const hr = { id: 'h:25TH|1|2026-10-29', site: '25TH', room: '1', date: '2026-10-29' };
+  assert.equal(Math.round(BT2.metrc(hr, mRoom, [hr]).lb), 500, "every strain's Metrc harvest of the room and day counts");
+  assert.equal(Math.round(BT2.metrc(hr, mRoom.slice(1), [hr]).lb), 400, 'one not read: the sum is short, so the page must read them all');
+  const b2src = html.slice(html.indexOf('/* ---- Batch V2 (beta'), html.indexOf('/* ---- Batch V2 end ---- */'));
+  const b2load = b2src.slice(b2src.indexOf('async function b2LoadMetrc'), b2src.indexOf('function b2Measure'));
+  assert.ok(/from\('pipeline_harvests'\)/.test(b2load) && /\.gte\('start_date', from\)/.test(b2load) && /\.lte\('start_date', to\)/.test(b2load) && /\.range\(/.test(b2load),
+    "Batch V2 reads every Metrc harvest of the timeline's days, a page of 1,000 at a time");
+  assert.ok(!/\.in\('name'/.test(b2load) && !/\bS\.hv\b|loadHarvests\(/.test(b2src), "Batch V2 never sums only the harvests the sheet's batches link to (S.hv, loadHarvests)");
+  assert.ok(/BT2\.metrc\(h, B2\.hv\.rows, M\.harvests\)/.test(b2src), 'the bubbles add up the rows of that read');
+  assert.ok(/pipeline_harvests_meta/.test(b2load) && /H\.changed !== changed/.test(b2load), 'read again only when the job changed something (or the days grew, or Refresh)');
+  assert.ok(!/\b(metrc_id|seen_at|last_modified)\b/.test(b2src.slice(b2src.indexOf('const B2_HV_COLS'), b2src.indexOf('let b2HvLoading'))), 'only the columns the card shows');
+  // each Metrc harvest counts once: a harvest with a room before one without (at any distance), then the nearer, the
+  // earlier, the lower room
+  const h23 = (room, date) => ({ id: `h:23RD|${room}|${date}`, site: '23RD', room, date });
+  const s1 = h23('1', '2026-08-03'), s3 = h23('3', '2026-08-03'), s0 = h23('', '2026-08-03');
+  const aug = [mh('F1-1-08032026', 'S', 'F1', '2026-08-03', 200 * 453.59237), mh('F3-1-08032026', 'S', 'F3', '2026-08-03', 300 * 453.59237)];
+  const all3 = [s1, s3, s0], lbOf = (h, rows, all) => { const w = BT2.metrc(h, rows, all).lb; return w == null ? null : Math.round(w); };
+  assert.deepEqual(all3.map(h => lbOf(h, aug, all3)), [200, 300, null], 'a harvest with no room beside RM1 and RM3 the same day takes neither');
+  const n1 = h23('1', '2026-08-03'), n0 = h23('', '2026-08-04'), f1aug4 = [mh('F1-1-08042026', 'S', 'F1', '2026-08-04', 100 * 453.59237)];
+  assert.deepEqual([n1, n0].map(h => lbOf(h, f1aug4, [n1, n0])), [100, null], 'a harvest with no room a day nearer still leaves it to the one with the room');
+  const e0 = h23('', '2026-08-03'), e1 = h23('1', '2026-08-05');
+  assert.deepEqual([e0, e1].map(h => lbOf(h, f1aug4, [e0, e1])), [null, 100], 'and so does one a day earlier');
+  const noRoom = [mh('X-1-08032026', 'S', null, '2026-08-03', 150 * 453.59237)];
+  assert.deepEqual(all3.map(h => lbOf(h, noRoom, all3)), [150, null, null], 'a Metrc harvest with no room: the lower room of the same day, once');
+  const sum = rows => all3.reduce((a, h) => a + (lbOf(h, rows, all3) || 0), 0);
+  assert.equal(sum([...aug, ...noRoom]), 650, 'every Metrc harvest counted exactly once across the timeline');
+  // through build(): a pre-roll code with a site and no room, no trim sheet to place it, beside RM1 and RM3 the same day
+  const tbX = BT2.build({ weeks: [], rows: [{ batch_code: 'F1-V-8326-S', strain: 'VOODOO', item: 'FLOWER', harvest_date: '2026-08-03' }, { batch_code: 'F3-SD-8326-S', strain: 'SOUR', item: 'FLOWER', harvest_date: '2026-08-03' },
+    { batch_code: 'V-8326-S-5PK', strain: 'VOODOO', item: '5PK', harvest_date: '2026-08-03' }], ev: null, today: '2026-11-13' });
+  const tbh = tbX.harvests.filter(h => h.site === '23RD' && h.date === '2026-08-03');
+  assert.deepEqual(tbh.map(h => h.room).sort(), ['', '1', '3'], 'a harvest with a site and no room beside RM1 and RM3');
+  assert.equal(tbh.reduce((a, h) => a + (lbOf(h, [...aug, ...noRoom], tbX.harvests) || 0), 0), 650, "the page's harvests count each Metrc harvest once (" + tbh.map(h => 'RM' + (h.room || '?')).join(', ') + ')');
+  console.log(`batch V2 site lanes: four sites, a harvest + drying + trim on one track, ${M.sites.reduce((a, L) => a + L.units.length, 0)} units packed greedily, bubbles say "H: RM1: 412 lbs", Metrc wet weights per room and day`);
 }
 console.log('pipeline-check: all checks passed');
