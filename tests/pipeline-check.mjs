@@ -2300,6 +2300,14 @@ if (realPipe) {
     assert.ok(/function b2FitCheck\(/.test(b2src) && (b2src.match(/b2FitCheck\(/g) || []).length >= 2, 'a safety net checks every drawn bubble\'s words against its box');
     assert.ok(/function b2LaneEdge\(/.test(b2src), 'site-lane words start at the On hand column\'s edge, never their tail');
   }
+  { // a click shows only what was clicked (Gianni, 2026-11-16): '+N small' / '+N more' open just their lots, with strains
+    const sh = b2src.slice(b2src.indexOf('function b2ShelfHTML('), b2src.indexOf('function b2TrimHTML('));
+    assert.ok(/data-b2="oh:\$\{esc\(L\.site\)\}\|\$\{c\.kind\}"/.test(b2src), 'the folded chips name which chip was clicked');
+    assert.ok(/split\('\|'\)/.test(sh) && /pick\.has\(c\.lot\)/.test(sh) && /b2StrainsLeft\(lt\)/.test(sh), 'their card lists only those lots, each with its strains');
+    const SL = new Function('BT2', b2src.slice(b2src.indexOf('function b2StrainsLeft('), b2src.indexOf('// the On hand column\'s list for one site')) + 'return b2StrainsLeft;')(BT2);
+    assert.deepEqual(SL({ row: { strains: [{ name: 'Tide', left_lb: 0.6 }, { name: 'Antidote', left_lb: 0 }, { name: 'Smoothie', left_lb: 0.3 }, { name: 'Tide', left_lb: 0.5 }, { name: 'Nebula', left_lb: 0.02 }] } }),
+      ['Tide 1.1 lb', 'Smoothie 0.3 lb'], 'strains with flower left, most first, a name typed twice added up, tenths, under 0.05 lb left out');
+  }
   assert.ok(/B2\.oh \? B2\.oh\.w : 0/.test(b2src.slice(b2src.indexOf('function b2Go'), b2src.indexOf('function b2Go') + 600)), 'Go to date and Today allow for the column');
   assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2src), 'Batch V2 shows pounds and units only, never dollars');
   for (const re of [/b2LoadMetrc\(true\); b2LoadFlow\(true\); \}/, /b2LoadMetrc\(false\); b2LoadFlow\(false\); \}/]) assert.ok(re.test(html), 'polls and Refresh read the lots too');

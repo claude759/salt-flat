@@ -756,6 +756,7 @@
   .b2-shlist{list-style:none;margin:0;padding:0}
   .b2-shl{display:grid;gap:1px;width:100%;margin:0;padding:5px 2px;border:0;border-bottom:1px solid #F0F2F5;background:none;color:#111;font:inherit;text-align:left;cursor:pointer}
   .b2-shl span{font-size:12px;color:var(--wk-ink2)}
+  .b2-shl .b2-shs{font-style:normal;font-size:12.5px;font-weight:700;color:#111}
   .b2-shl.old b{color:#8A4B00}
   .b2-shl:hover{background:#F5F8FF}
   .b2-none{padding:24px 14px;color:var(--wk-ink2)}
@@ -11918,7 +11919,8 @@ function b2Shelf(force) {
     const tot = `<div class="b2-oht"><b>${r.n ? esc(BT2.lbTxt(r.total)) + ' lb' : '0 lb'}</b>${O.phone ? '' : `<span>${r.n ? `${r.n} lot${r.n === 1 ? '' : 's'}` : 'none left'}</span>`}</div>`;
     if (O.phone) { L.el.innerHTML = tot + (r.n ? `<button type="button" class="b2-chip more" data-b2="oh:${esc(L.site)}">${r.n} lot${r.n === 1 ? '' : 's'}</button>` : ''); continue; }
     L.el.innerHTML = tot + r.chips.map(c => {
-      if (c.kind !== 'lot') return `<button type="button" class="b2-chip more" data-b2="oh:${esc(L.site)}" title="${esc(c.n + ' more lots at ' + siteName(L.site))}">${esc(BT2.chipText(c))}</button>`;
+      // '+N small' and '+N more' open only the lots they stand for (Gianni, 2026-11-16: a click shows only what was clicked)
+      if (c.kind !== 'lot') return `<button type="button" class="b2-chip more" data-b2="oh:${esc(L.site)}|${c.kind}" title="${esc(c.kind === 'small' ? `${c.n} lot${c.n === 1 ? '' : 's'} under 5 lb at ${siteName(L.site)}: their strains` : `${c.n} more lots at ${siteName(L.site)}`)}">${esc(BT2.chipText(c))}</button>`;
       const lt = c.lot, part = lt.row.confidence === 'partial';
       const tip = `${b2Where(lt)}, harvested ${b2Day(lt.date)}: ${lb1(c.lb)} lb of flower at our licenses today${c.old ? `, ${c.days} days since it was packaged` : ''}${part ? '. Partial' : ''}`;
       return `<button type="button" class="b2-chip${c.old ? ' old' : ''}${part ? ' part' : ''}" data-b2="${esc(lt.tid || lt.hid)}" title="${esc(tip)}" aria-label="${esc(tip)}">${esc(BT2.chipText(c))}</button>`;
@@ -11962,7 +11964,7 @@ function b2Anchor(id, from) {
   const seen = e => { const r = e.getBoundingClientRect(), inOh = !!e.closest('.b2-oh'); return r.width > 0 && r.right <= box.right && r.left >= box.left + (inOh ? 0 : ow) - 1; };
   const site = from && from.closest('#b2-pop') && B2.oh ? (B2.oh.lanes.find(L => L.lots.some(l => (l.tid || l.hid) === id)) || {}).site : '';
   return els.find(e => !e.closest('.b2-oh') && seen(e)) || els.find(e => e.closest('.b2-oh') && seen(e)) ||
-    (site ? $('b2-tl').querySelector(`.b2-oh [data-b2="oh:${CSS.escape(site)}"]`) : null) || els[0] || null;
+    (site ? $('b2-tl').querySelector(`.b2-oh [data-b2^="oh:${CSS.escape(site)}"]`) : null) || els[0] || null;
 }
 // below the bar, else above it, else beside it, else on the larger side with its height cut: never over the bar itself
 // (nor over the sticky top bar). Again whenever the page scrolls or the window's height changes.
@@ -12068,17 +12070,31 @@ function b2FlowHTML(L) {
     (part ? `<p class="b2-note warn">Partial: these pounds don't all add up yet.${L.note ? ' ' + esc(L.note) : ''}</p>` : L.note ? `<p class="b2-note">${esc(L.note)}</p>` : '') +
     `<p class="b2-note">Metrc harvest${(L.metrc_harvests || []).length === 1 ? '' : 's'}: ${esc((L.metrc_harvests || []).join(', ') || '-')}.</p></div>`;
 }
-// the On hand column's list for one site on its day: every lot that still had flower then, each opening its card
-function b2ShelfHTML(site) {
-  const O = B2.oh, L = O && O.lanes.find(x => x.site === site); if (!L) return '';
-  const day = O.day, now = day >= todayISO(), r = BT2.onHand(L.lots, day, { min: 0, today: todayISO() });
-  const rows = r.chips.map(c => {
-    const lt = c.lot, part = lt.row.confidence === 'partial';
+// a lot's strains that still have flower at our licenses today, most first, a name typed twice added up, tenths under 10 lb:
+// 'Tide 0.6 lb'
+function b2StrainsLeft(lt) {
+  const m = new Map();
+  for (const s of (lt && lt.row && lt.row.strains) || []) if (s && s.name && +s.left_lb >= 0.05) m.set(s.name, (m.get(s.name) || 0) + +s.left_lb);
+  return [...m].sort((a, b) => b[1] - a[1]).map(([n, lb]) => `${n} ${lb >= 10 ? Math.round(lb).toLocaleString('en-US') : (Math.round(lb * 10) / 10).toFixed(1)} lb`);
+}
+// the On hand column's list for one site on its day. id 'oh:SITE': every lot that still had flower then (phones' "N lots");
+// 'oh:SITE|small' or 'oh:SITE|more': only the lots that chip stands for, as the column draws it now (else the whole site).
+// Each lot says which strains still have flower and opens its card.
+function b2ShelfHTML(oh) {
+  const [site, part] = String(oh).split('|'), O = B2.oh, L = O && O.lanes.find(x => x.site === site); if (!L) return '';
+  const day = O.day, now = day >= todayISO(), today = todayISO(), r = BT2.onHand(L.lots, day, { min: 0, today });
+  const chip = part ? BT2.onHand(L.lots, day, { cap: L.cap, today }).chips.find(c => c.kind === part) : null;
+  const pick = chip ? new Set(chip.lots) : null, chips = pick ? r.chips.filter(c => pick.has(c.lot)) : r.chips;
+  const lb = chips.reduce((a, c) => a + c.lb, 0), n = chips.length;
+  const rows = chips.map(c => {
+    const lt = c.lot, part = lt.row.confidence === 'partial', sl = b2StrainsLeft(lt);
     return `<li><button type="button" class="b2-shl${c.old ? ' old' : ''}" data-b2="${esc(lt.tid || lt.hid)}"><b>${esc(BT2.chipText(c))}</b>` +
+      `<em class="b2-shs">${esc(sl.length ? sl.join(' · ') : 'Strains not read from Metrc yet')}</em>` +
       `<span>${esc(b2Where(lt).replace(/ @ .*$/, ''))}, harvested ${esc(b2Day(lt.date))}${c.days ? ` · packaged ${c.days} day${c.days === 1 ? '' : 's'} ago` : ''}${part ? ' · partial' : ''}</span></button></li>`;
   });
-  return `<div class="b2-poph"><b>On hand · ${esc(siteName(site))}</b><button type="button" class="b2-x" data-b2="close" aria-label="Close">&times;</button></div>` +
-    `<div class="b2-pops">Today${now ? '' : `, the lots trimmed by ${esc(b2Day(day))}`} · ${esc(BT2.lbTxt(r.total))} lb of flower at our licenses in ${r.n} lot${r.n === 1 ? '' : 's'}</div>` +
+  const head = !pick ? `On hand · ${siteName(site)}` : chip.kind === 'small' ? `${n} small lot${n === 1 ? '' : 's'} · ${siteName(site)}` : `${n} more lot${n === 1 ? '' : 's'} · ${siteName(site)}`;
+  return `<div class="b2-poph"><b>${esc(head)}</b><button type="button" class="b2-x" data-b2="close" aria-label="Close">&times;</button></div>` +
+    `<div class="b2-pops">Today${now ? '' : `, the lots trimmed by ${esc(b2Day(day))}`} · ${esc(BT2.lbTxt(lb))} lb of flower at our licenses in ${n} lot${n === 1 ? '' : 's'}${pick && chip.kind === 'small' ? ', each under 5 lb' : ''}</div>` +
     (rows.length ? `<ul class="b2-shlist">${rows.join('')}</ul>` : '<p class="b2-note">None of those lots has flower left at our licenses.</p>') +
     `<p class="b2-note">Today's amounts from Metrc, for each lot from the day it was trimmed (past amounts aren't drawn until the job has recorded them). Amber: first packaged more than 30 days ago. Nabis not counted.</p>`;
 }

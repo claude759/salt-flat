@@ -359,8 +359,9 @@ launch. The check fails if one of the three pieces is missing.
     uses those recorded weeks, for a history view later. Lots under 5 lb fold into one "+N small · X lb" chip; the
     site's total on top ("<1 lb" under half a pound, as the chips say); amber (never red) when first packaged more than
     30 days ago; chips past the lane's room become "+N more" (lanes take the window's spare height first). It is drawn
-    again on scroll (one frame at a time) only when a lane's chips change. A chip opens its lot's card; "+N" opens the
-    site's list. A redraw reopens a card by the element it was opened from (a bubble, else the chip). Phones show the total and an "N lots" button. Go to date and Today place the day a third of the way
+    again on scroll (one frame at a time) only when a lane's chips change. A chip opens its lot's card; "+N small" and "+N more" open only the
+    lots they stand for, each with the strains that still have flower (Gianni, 2026-11-16: "on click, these popups give
+    more information only about the thing that was clicked on"); phones' "N lots" opens the site's list. A redraw reopens a card by the element it was opened from (a bubble, else the chip). Phones show the total and an "N lots" button. Go to date and Today place the day a third of the way
     into what the column leaves in view.
   - **Fills the page; future bubbles glow purple** (Gianni, 2026-11-15: "I want this to vertically fill the page, also for
     any future/projected bubbles I want a purple glow/outline"). On laptops the timeline ends at the window's bottom:
