@@ -317,6 +317,50 @@ launch. The check fails if one of the three pieces is missing.
   room's other batches or a harvest line agree, else the harvest is marked amber); trims from the trim sheets (done,
   pounds) and the plan (planned, dashed); drying links a harvest to the next trim of its room whose tab lists its
   strains. Model in the BATCH V2 MODEL block (`BT2`).
+  - **Metrc lots, pounds left and the On hand column** (Gianni, 2026-11-15: each trim bubble gets a second number, how
+    much is still available in Metrc; scrolling right, bubbles that still have product collect in a column on the left;
+    data back to 1/1/26). Signed in, the page reads `pipeline_flow_lots` (one lot per site, room and Metrc harvest day,
+    written hourly by the flow job on Gianni's Mac through `pipeline_flow_save`) in `b2LoadFlow`: the one-row
+    `pipeline_flow_meta` each poll, the rows again only when its `changed_at` moves or on Refresh; without the table (or
+    signed out) the page works as before. Lots, and the Metrc harvests the page reads (2026 on), are a third harvest
+    source in `BT2.build`: each joins the sheets' harvest of the same site and room within 2 days, else is a harvest of its
+    own, so one room-day is never drawn twice; a Metrc harvest that was voided (archived) or has no wet weight is no
+    harvest, and a strain written "A / B / C" is each of its strains. A lot with no trim in its room dries to the one unclaimed trim of its site
+    3 to 30 days on that lists its strains (or, when the strains can't tell, whose plan named its room; the sheets name
+    Olympic's rooms differently from Metrc), else Metrc's first packaging day is its trim ("from Metrc"; its cards say
+    "first packaged", not "trimmed" or "days drying"; no packaging day known, no such trim). A trim with lots reads "T: RM3: 115 · 15 left" (`BT2.bubble`, measured
+    before packing): the first number stays the trim sheet's bigs + littles (Metrc's packaged flower only when no tab
+    has it), the second is flower still at our licenses, with a thin bar filled by left / packaged and an amber dot when
+    the lot is partial. **"Left" means our six licenses** (the four grows, the Filifera distro and Imperial's distro;
+    Nabis, Garden of Weeden, is not counted). **Trim is by product name only** ("Bulk Trim" / "Trim"; Sugar Leaves is flower); left is
+    flower in flower-equivalent pounds (jar and 5-pack 3.5 g, 1g 1 g, pouch and pre-roll 1.5 g, vapes 0); trim left is
+    in the card. **Stock is traced by Metrc tag lineage**, batch codes only as a fallback, never both. **Blends** follow
+    their parent packages, each weighted by what it still held when the blend was made, else split equally (the lot's
+    note says so). A package Metrc archived without finishing (voided, made again under a new tag) was never made: not
+    packaged, not written off. A harvest name Metrc wrote another way ("F3-SmoZang-010626", "A-Wizzy12202025") still
+    makes its lot (the room from its first part, the day from Metrc's start day). A lot's first packaging day is the
+    earliest packaging, first line out of a grow package, or package made from it (never a lab sample's or a sale's
+    day). No "being processed" stage. Pounds and units
+    only, never dollars. The trim's card has "Where the pounds went" (the lot's `went`: sold bulk by buyer, Nabis,
+    Distru, labs, written off, in transit, not read yet, not accounted for, still at our licenses), left by place and lab
+    stage, trim, and the job's note. **The On hand column is Gianni's own request, a column of lots, not the removed
+    label column**: a sticky panel at the left of each site's lane inside the scroll box (bubbles slide under it),
+    headed "Still on hand today". It lists that site's lots trimmed by the first day right of it (a lot's day is its
+    trim's first day, else Metrc's first packaging day) that still have flower **today** (`BT2.onHand`), oldest first,
+    as chips "RM3 10/7 · 15 lb". **Today's amounts only, never worked-out past ones** (the critique: derived history
+    would be wrong); the job records each day's numbers (data/flow/daily on Gianni's Mac) and its weekly `series`
+    uses those recorded weeks, for a history view later. Lots under 5 lb fold into one "+N small · X lb" chip; the
+    site's total on top ("<1 lb" under half a pound, as the chips say); amber (never red) when first packaged more than
+    30 days ago; chips past the lane's room become "+N more" (lanes take the window's spare height first). It is drawn
+    again on scroll (one frame at a time) only when a lane's chips change. A chip opens its lot's card; "+N" opens the
+    site's list. A redraw reopens a card by the element it was opened from (a bubble, else the chip). Phones show the total and an "N lots" button. Go to date and Today place the day a third of the way
+    into what the column leaves in view.
+  - **Fills the page; future bubbles glow purple** (Gianni, 2026-11-15: "I want this to vertically fill the page, also for
+    any future/projected bubbles I want a purple glow/outline"). On laptops the timeline ends at the window's bottom:
+    tracks grow to 40px, the spare height is shared by the lanes (the On hand column's needs first) and each lane's tracks
+    spread over it; it draws again when what sits above it changes height. A planned harvest, a trim not done yet (its
+    estimate included) and its drying line carry a purple outline and glow (#7C3AED); past plans that never happened
+    don't. Projected bubbles added later (expected lab results, projections) glow the same way.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them

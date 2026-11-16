@@ -2106,5 +2106,134 @@ if (realPipe) {
   assert.deepEqual(tbh.map(h => h.room).sort(), ['', '1', '3'], 'a harvest with a site and no room beside RM1 and RM3');
   assert.equal(tbh.reduce((a, h) => a + (lbOf(h, [...aug, ...noRoom], tbX.harvests) || 0), 0), 650, "the page's harvests count each Metrc harvest once (" + tbh.map(h => 'RM' + (h.room || '?')).join(', ') + ')');
   console.log(`batch V2 site lanes: four sites, a harvest + drying + trim on one track, ${M.sites.reduce((a, L) => a + L.units.length, 0)} units packed greedily, bubbles say "H: RM1: 412 lbs", Metrc wet weights per room and day`);
+
+  // Metrc lots (pipeline_flow_lots): pounds left on each trim and the On hand column (Gianni, 2026-11-15)
+  // the bubble's second number: flower still at our licenses; ' lbs' goes when it is there, short drops ' left'
+  assert.equal(BT2.bubble('T', '3', 114.6, false, false, 15.2), 'T: RM3: 115 · 15 left', 'a trim with pounds left');
+  assert.equal(BT2.bubble('T', '3', 114.6, false, false, 0), 'T: RM3: 115 · 0 left', 'all gone says 0 left');
+  assert.equal(BT2.bubble('T', '3', 114.6, false, false, 0.3), 'T: RM3: 115 · <1 left', 'under half a pound');
+  assert.equal(BT2.bubble('T', '3', 114.6, false, true, 15.2), 'T: RM3: 115 · 15', 'short drops " left"');
+  assert.equal(BT2.bubble('T', '3', null, false, false, 15.2), 'T: RM3 · 15 left', 'no first number known');
+  assert.equal(BT2.bubble('T', '3', 114.6, false, false, null), 'T: RM3: 115 lbs', 'no lots: as before');
+  // the On hand column counts today's amount (left_lb) of each lot from the day it was trimmed (since; a plain row: its
+  // first packaging day, else its harvest day), never a worked-out past amount (the critique, 2026-11-15)
+  const lotS = { lot_id: '23RD|3|2026-10-07', site: '23RD', room: '3', harvest_date: '2026-10-07', first_packaged: '2026-10-14', left_lb: 80,
+    series: [['2026-10-12', 115], ['2026-10-19', 100], ['2026-10-26', 80]] };
+  assert.deepEqual(['2026-10-01', '2026-10-13', '2026-10-14', '2026-10-21', '2026-12-01'].map(d => BT2.leftAt(lotS, d)), [0, 0, 80, 80, 80],
+    "leftAt: today's left from the first packaging day on, not the worked-out series");
+  assert.equal(BT2.leftAt({ row: lotS, since: '2026-10-17' }, '2026-10-16'), 0, "a lot of the timeline enters on its trim's day");
+  assert.equal(BT2.leftAt({ row: lotS, since: '2026-10-17' }, '2026-10-17'), 80);
+  assert.equal(BT2.leftAt({ harvest_date: '2026-10-07', first_packaged: null, left_lb: 3 }, '2026-10-08'), 3, 'no packaging day: from its harvest day');
+  assert.equal(BT2.leftAt({ left_lb: 3 }, '2026-10-21'), 0, 'no day at all: not on hand');
+  // the On hand chips for a day: oldest harvest first, 5 lb or more a chip, smaller folded, the total counts every lot,
+  // amber past 30 days since first packaged (counted to today), cap turns the last chip into '+N more'
+  const oh = [
+    { lot_id: '23RD|2|2026-09-01', room: '2', harvest_date: '2026-09-01', first_packaged: '2026-09-13', left_lb: 18.7 },
+    { lot_id: '23RD|3|2026-10-07', room: '3', harvest_date: '2026-10-07', first_packaged: '2026-10-18', left_lb: 114.6 },
+    { lot_id: '23RD|1|2026-07-25', room: '1', harvest_date: '2026-07-25', first_packaged: '2026-08-05', left_lb: 3.8 },
+    { lot_id: '23RD|3|2026-08-03', room: '3', harvest_date: '2026-08-03', first_packaged: '2026-08-21', left_lb: 4.99 },
+    { lot_id: '23RD|2|2026-07-03', room: '2', harvest_date: '2026-07-03', first_packaged: '2026-07-15', left_lb: 5 },
+    { lot_id: '23RD|1|2026-06-07', room: '1', harvest_date: '2026-06-07', first_packaged: '2026-06-19', left_lb: 0.02 },
+  ];
+  const r1 = BT2.onHand(oh, '2026-11-15', { today: '2026-11-15' });
+  assert.deepEqual(r1.chips.map(BT2.chipText), ['RM2 7/3 · 5 lb', 'RM2 9/1 · 19 lb', 'RM3 10/7 · 115 lb', '+2 small · 9 lb'],
+    'oldest first; exactly 5 lb is a chip, 4.99 folds; a lot with 0.02 lb is not on hand');
+  assert.equal(Math.round(r1.total * 10) / 10, 147.1, 'the total counts the small lots too');
+  assert.equal(r1.n, 5);
+  assert.deepEqual(r1.chips.filter(c => c.kind === 'lot').map(c => c.old), [true, true, false], 'amber: first packaged more than 30 days before today');
+  const r2 = BT2.onHand(oh, '2026-11-15', { cap: 2, today: '2026-11-15' });
+  assert.deepEqual(r2.chips.map(BT2.chipText), ['RM2 7/3 · 5 lb', '+4 more · 142 lb'], 'past the cap: "+N more" counts the lots it holds');
+  assert.equal(BT2.onHand(oh, '2026-11-15', { cap: 0 }).chips.length, 0, 'no room: the total only');
+  const r3 = BT2.onHand(oh, '2026-10-13', { today: '2026-11-15' });
+  assert.deepEqual(r3.chips.map(BT2.chipText), ['RM2 7/3 · 5 lb', 'RM2 9/1 · 19 lb', '+2 small · 9 lb'], 'a lot packaged after the day is not in the column yet; the others at today\'s amounts');
+  assert.notEqual(r3.sig, r1.sig, 'a different set draws again');
+  assert.equal(BT2.onHand(oh, '2026-10-12', { today: '2026-11-15' }).sig, r3.sig, 'the same set: no redraw');
+  assert.deepEqual(r3.chips.filter(c => c.kind === 'lot').map(c => c.days), [123, 63], 'days since first packaged, to today');
+  assert.deepEqual(BT2.onHand(oh.map(row => ({ row })), '2026-11-15', { today: '2026-11-15' }).chips.map(BT2.chipText), r1.chips.map(BT2.chipText), 'wrapped lots read the same');
+  // a lane whose only stock is a third of a pound says "<1 lb", as its chip does (not "0 lb" over "1 lot")
+  const tiny = BT2.onHand([{ lot_id: '23RD|1|2025-12-02', room: '1', harvest_date: '2025-12-02', first_packaged: '2025-12-15', left_lb: 0.3 }], '2026-01-05', { today: '2026-01-12' });
+  assert.deepEqual([BT2.lbTxt(tiny.total), tiny.n, tiny.chips.map(BT2.chipText)], ['<1', 1, ['+1 small · <1 lb']]);
+  assert.equal(BT2.lbTxt(0), '0');
+  assert.ok(/BT2\.lbTxt\(r\.total\)/.test(b2src.slice(b2src.indexOf('function b2Shelf('), b2src.indexOf('function b2Close'))), "the column's total uses the chips' rule");
+  // build(): lots and Metrc harvests as a third source, merged with the sheets by site + room + day (within 2 days)
+  const flowLot = (id, strain, fp, pk, left, extra) => {
+    const [site, room, harvest_date] = id.split('|');
+    return Object.assign({ lot_id: id, site, room, harvest_date, strains: [{ name: strain }], first_packaged: fp, packaged_flower_lb: pk, left_lb: left, left_trim_lb: 0, confidence: 'good', series: [] }, extra || {});
+  };
+  const L1 = flowLot('23RD|3|2026-10-08', 'TideBanger', '2026-10-18', 114.6, 15.2);                 // the sheet's 10/7 harvest, a day off
+  const L2 = flowLot('23RD|1|2026-10-07', 'Riptide', '2026-10-19', 50, 0, { confidence: 'partial' }); // no harvest, no trim: Metrc's
+  const L3 = flowLot('OLYMPIC|1|2026-10-10', 'Black Light', '2026-10-22', 130, 63.6);                // the trim sheet names room 2
+  const fRow = (name, site, room, day, g, strain) => ({ license: 'L-' + site, name, site, room, start_date: day, wet_weight: g, unit: 'Grams', strain });
+  const fRows = [fRow('F3-TB-10072026', 'S', 'F3', '2026-10-07', 300000, 'TideBanger'), fRow('F3-SmoZang-010626', 'F', null, '2026-01-06', 90000, null),
+    fRow('F2-X-12012025', 'S', 'F2', '2025-12-01', 1000, null)];
+  const evF = TRIMY.events([tr('S', '23RD', '3', 'Oct 17', '2026-10-17', '2026-10-17', 40, 'Tidebanger', 40000, 12000),
+    tr('O', 'OLYMPIC', '2', 'Oct 20', '2026-10-20', '2026-10-20', 40, 'Black Light', 50000, 10000)]);
+  const wkF = [{ days: [{ date: '2026-10-07', items: [hvL('23RD', '3', 'HARVEST @ 23RD- ROOM 3')] }] }];
+  const MF = BT2.build({ weeks: wkF, rows: [], ev: evF, today: '2026-11-15', lots: [L1, L2, L3], metrc: fRows });
+  const hk = MF.harvests.map(h => `${h.site}|${h.room}|${h.date}`);
+  assert.equal(new Set(hk).size, hk.length, 'one harvest per site, room and day');
+  assert.deepEqual(hk.sort(), ['23RD|1|2026-10-07', '23RD|3|2026-10-07', '25TH|3|2026-01-06', 'OLYMPIC|1|2026-10-10'],
+    "lots join the sheet's harvest within 2 days; a Metrc harvest's room from its name; nothing before 2026 from the Metrc read");
+  const h3 = MF.harvests.find(h => h.id === 'h:23RD|3|2026-10-07');
+  assert.deepEqual([h3.plan.length, h3.lots.map(L => L.lot_id), h3.mdays], [1, ['23RD|3|2026-10-08'], ['2026-10-07']], 'the sheet, the lot and the Metrc harvest are one');
+  const tOf = id => MF.trims.find(t => t.id === (MF.lots.find(l => l.id === id) || {}).tid);
+  const t1 = tOf('23RD|3|2026-10-08'), f1 = BT2.trimFlow(t1);
+  assert.deepEqual([t1.id, t1.done, f1.pk, f1.left, f1.partial], ['t:23RD|3|2026-10-17', true, 114.6, 15.2, false], 'the lot rides its trim');
+  assert.equal(BT2.bubble('T', t1.room, t1.lb, false, false, f1.left), 'T: RM3: 115 · 15 left', "first number: the trim sheet's bigs + littles");
+  const t2 = tOf('23RD|1|2026-10-07');
+  assert.deepEqual([t2.id, t2.done, t2.metrc, BT2.trimFlow(t2).partial], ['t:23RD|1|2026-10-19|metrc', true, true, true], "no trim: Metrc's first packaging day; partial carried");
+  const t3 = tOf('OLYMPIC|1|2026-10-10');
+  assert.deepEqual([t3.id, t3.roomMetrc], ['t:OLYMPIC|2|2026-10-20', '1'], 'no trim in its room: the unclaimed trim of its site that lists its strain');
+  assert.equal(MF.drying.find(d => d.to === t3.id).from, 'h:OLYMPIC|1|2026-10-10');
+  // lots alone (no sheet) and the same day's Metrc harvest: still one harvest
+  const ML = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-15', lots: [L1], metrc: [fRows[0]] });
+  assert.deepEqual(ML.harvests.map(h => h.id), ['h:23RD|3|2026-10-08'], 'a Metrc harvest a day before its lot joins it');
+  assert.equal(BT2.build({ weeks: wkF, rows: [], ev: evF, today: '2026-11-15' }).harvests.length, 1, 'no lots: as before');
+  // each lot of the timeline enters the column on its trim's first day
+  assert.equal(MF.lots.find(l => l.id === '23RD|3|2026-10-08').since, '2026-10-17', "a lot's day is its trim's");
+  // voided (archived) or zero-weight Metrc harvests are no harvest: no phantom "H: RM3" beside the real RM2 (23rd, 1/8/26)
+  const ph = [fRow('F2-TP-01082026', 'S', 'F2', '2026-01-08', 398700, 'Tea Party'), fRow('F3-TP-01082026', 'S', null, '2026-01-08', 0, null),
+    Object.assign(fRow('F3-ZB-01082026', 'S', null, '2026-01-08', 5000, null), { archived_date: '2026-01-13' })];
+  const MP = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-15', metrc: ph });
+  assert.deepEqual(MP.harvests.map(h => h.id), ['h:23RD|2|2026-01-08'], 'only the real harvest');
+  assert.deepEqual(BT2.metrc({ id: 'h', site: '23RD', room: '', date: '2026-01-08' }, ph, null).list.map(r => r.name), ['F2-TP-01082026', 'F3-TP-01082026'], "a voided harvest isn't listed");
+  assert.ok(/archived_date/.test(b2src.slice(b2src.indexOf('const B2_HV_COLS'), b2src.indexOf('const B2_HV_COLS') + 200)), 'the page reads archived_date');
+  // one Metrc harvest of several strains ("A / B / C") is each strain: Olympic 7/23 dries to its 8/2 tab (the sheet planned
+  // it as room 2, the tab says room 1), not to a made-up Metrc trim
+  const LO = flowLot('OLYMPIC|2|2026-07-23', 'Dark Matter / Tea Party / British Delight / Black Light / Smoothie', '2026-08-10', 0, 0, { packaged_trim_lb: 34.7 });
+  const evO = TRIMY.events([tr('O', 'OLYMPIC', '1', 'Aug 2', '2026-08-02', '2026-08-02', 40, 'Black Light', 50000, 10000)]);
+  const MO = BT2.build({ weeks: [], rows: [], ev: evO, today: '2026-11-15', lots: [LO] });
+  assert.ok(MO.harvests[0].strains.includes('BLACK LIGHT') && MO.harvests[0].strains.length === 5, 'the strains are split');
+  assert.deepEqual([MO.harvests[0].trim, MO.trims.length, MO.trims.some(t => t.metrc)], ['t:OLYMPIC|1|2026-08-02', 1, false], 'the real tab, and no second trim');
+  // when the strains can't tell, the plan's room links a cross-room tab
+  const evN = TRIMY.events([tr('O', 'OLYMPIC', '1', 'Aug 2', '2026-08-02', '2026-08-02', 40, '', 50000, 10000)]);
+  const wkO = [{ days: [{ date: '2026-08-02', items: [{ type: 'trim', site: 'OLYMPIC', room: '2', title: 'TRIM - OLYMPIC ROOM 2', strains: [] }] }] }];
+  const MN = BT2.build({ weeks: wkO, rows: [], ev: evN, today: '2026-11-15', lots: [Object.assign({}, LO, { strains: [] })] });
+  assert.equal(MN.harvests[0].trim, 't:OLYMPIC|1|2026-08-02', "the plan said room 2: the tab is that harvest's");
+  // no packaging day known: no made-up Metrc trim
+  const M0 = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-15', lots: [flowLot('23RD|1|2025-12-02', 'Tide', null, 0, 0)] });
+  assert.deepEqual([M0.harvests.length, M0.trims.length], [1, 0], 'no first packaging day: a harvest only');
+  // a Metrc-made trim is a packaging day in the cards, not a trim with "days drying"
+  const hvCard = b2src.slice(b2src.indexOf('function b2HarvestHTML'), b2src.indexOf('function b2FlowHTML'));
+  assert.ok(/t\.metrc \? b2Row\('First packaged in Metrc'/.test(hvCard), "the harvest card says when Metrc first packaged it");
+  assert.ok(/t\.metrc \? 'before Metrc first packaged it' : 'drying'/.test(b2src.slice(b2src.indexOf('function b2TrimHTML'))), "the trim card too");
+  // a redraw opens the card by the same kind of element it was opened from (a bubble before the chip of the same lot)
+  const reo = b2src.slice(b2src.indexOf('if (reopen) {'), b2src.indexOf('if (reopen) {') + 400);
+  assert.ok(/reopenChip \? chip \|\| bub : bub \|\| chip/.test(reo) && /\.b2-hv\[data-b2=/.test(reo), 'reopen prefers the bubble unless it was a chip');
+  // the page: reads the lots like the Metrc harvests (meta first, rows only when changed_at moves), the column follows the
+  // scroll a frame at a time and redraws only a changed set, Go to date allows for it, pounds only
+  const b2flow = b2src.slice(b2src.indexOf('async function b2LoadFlow'), b2src.indexOf('function b2Measure'));
+  assert.ok(/from\('pipeline_flow_meta'\)/.test(b2flow) && /F\.changed !== changed/.test(b2flow) && /from\('pipeline_flow_lots'\)/.test(b2flow) && /\.range\(/.test(b2flow),
+    'Batch V2 reads pipeline_flow_lots again only when pipeline_flow_meta.changed_at moves (or Refresh)');
+  assert.ok(/does not exist\|schema cache/.test(b2flow), 'before the table exists the page keeps working');
+  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column redraws a frame at a time, only a changed set');
+  assert.ok(/B2\.oh \? B2\.oh\.w : 0/.test(b2src.slice(b2src.indexOf('function b2Go'), b2src.indexOf('function b2Go') + 600)), 'Go to date and Today allow for the column');
+  assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2src), 'Batch V2 shows pounds and units only, never dollars');
+  for (const re of [/b2LoadMetrc\(true\); b2LoadFlow\(true\); \}/, /b2LoadMetrc\(false\); b2LoadFlow\(false\); \}/]) assert.ok(re.test(html), 'polls and Refresh read the lots too');
+  // the page fills the window down to its bottom (the spare height spread over the lanes), and future or projected bubbles
+  // (planned harvests and trims, their drying lines) carry the purple glow
+  assert.ok(/if \(spare > 0 && lanes\.length\)/.test(b2src) && /L\.pitch = Math\.min\(L\.h \/ L\.n/.test(b2src), 'Batch V2 fills the page vertically');
+  assert.ok(/' plan fut'/.test(b2src) && /fut \? ' fut' : ''/.test(b2src) && /\.b2-tm\.fut\{box-shadow|\.b2-hv\.fut,\.b2-tm\.fut\{box-shadow/.test(html) && /#7C3AED/.test(html), 'future bubbles glow purple');
+  console.log(`batch V2 Metrc lots: a third harvest source with no duplicate room-days, trims read "T: RM3: 115 · 15 left", the On hand column folds lots under 5 lb, caps with "+N more", amber after 30 days`);
 }
 console.log('pipeline-check: all checks passed');
