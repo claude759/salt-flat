@@ -2270,7 +2270,7 @@ check('only the time that moved is tinted; a break typed before a day shift star
 });
 check('after Save the row\'s Edit button gets the focus back; a reason alone keeps the editor open and says why', () => {
   const ce = appFn('closeEditor');
-  ok(/const to = b && b\.isConnected \? b : rowEditTarget\(k\);/.test(ce) && /const k = E\.rowId;/.test(ce), 'focus goes back to the day\'s new Edit button');
+  ok(/const to = b && b\.isConnected \? b : addBackTarget\(b\) \|\| rowEditTarget\(k\);/.test(ce) && /const k = E\.rowId;/.test(ce), 'focus goes back to the day\'s new Edit button (a header\'s + Add time: its redrawn one, section 28)');
   ok(/x\.dataset\.k === k && x\.getClientRects\(\)\.length/.test(appFn('rowEditTarget')) && /details\[data-k\]/.test(appFn('rowEditTarget')), 'on a phone, the card when its detail is closed');
   const sv = appFn('saveDayEdits');
   ok(sv.includes('A reason needs a change to go with it: change a time or a break, or clear the reason.') && sv.indexOf('A reason needs') < sv.indexOf("toast('Nothing changed')"), 'a reason alone is not thrown away silently');
@@ -5592,7 +5592,7 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     eq(C.submitEdit(r.edits, b, { shift_id: null, action: 'add', after: pl.ops[0].after }, Object.assign({}, ctxB, { id: 'b-2' })).error, 'This shift is already waiting to be added.', 'the same add twice');
     eq(C.submitEdit([], b, { shift_id: null, action: 'add', after: pl.ops[0].after }, Object.assign({}, ctxB, { today: '2026-11-20' })).error, 'Only the current and previous pay periods can be edited.', 'the window, as any day');
   });
-  check('+ Add hours lists the active people of the tab\'s region this sign-in can see, in the open view, with labels that never repeat', () => {
+  check('+ Add time lists the active people of the tab\'s region this sign-in can see, in the open view, with labels that never repeat', () => {
     const ppl = [
       { company: 'filifera', employee_uuid: 'p1', name: 'Test Alpha', department: 'Trim', active: true },
       { company: 'slane', employee_uuid: 'p2', name: 'Test Bravo', department: 'Trim', active: true },
@@ -5617,7 +5617,7 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     const labels = lab(null);
     eq(new Set(labels.map(l => l.toLowerCase())).size, labels.length, 'unique in any case, so typing one picks it');
   });
-  check('demo: a made-up person with no time on a weekday in the window is offered under + Add hours, and that day opens with one new shift that goes as an add', () => {
+  check('demo: a made-up person with no time on a weekday in the window is offered under + Add time, and that day opens with one new shift that goes as an add', () => {
     const w = C.editWindow(demo.todays.CA), have = new Set(demo.rows.map(r => r.id));
     const list = C.addablePeople(demo.people, null, { region: 'CA' });
     let pick = null;
@@ -5636,17 +5636,17 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     ok(r.ok, r.error);
     ok(C.pendingBlankRows(new Map(demo.rows.map(x => [x.id, x])), r.edits, demo.people).some(x => x.id === blank.id), 'the board shows it on a row of its own');
   });
-  check('page: + Add hours (a typable person box and a day, then the usual editor on a blank day with one new shift), blank days through dayRaw, and an older server', () => {
+  check('page: + Add time (a typable person box and a day, then the usual editor on a blank day with one new shift), blank days through dayRaw, and an older server', () => {
     const app = block('ts-app');
-    ok(/<button type="button" class="btn sm no-print" id="addHoursBtn" data-act="add-hours" title="Add a shift for someone with no time on a day" hidden>\+ Add hours<\/button>\s*<label class="chip toggle" id="flagChip"/.test(markup), 'the button, first in .ctl-tail');
+    ok(/<button type="button" class="btn primary no-print" id="addHoursBtn" data-act="add-hours" title="Add a shift for someone on a day" hidden>\+ Add time<\/button>/.test(markup), 'the button (2026-11-16: "+ Add time", the primary one on row 1; section 28)');
     ok(/\$\('addHoursBtn'\)\.hidden = !mayAddHours\(\);/.test(appFn('renderControls')) && /function mayAddHours\(\) \{ return editsOn\(\) && mayEdit\('add'\) && !S\.printing && addablePeople\(\)\.length > 0; \}/.test(app), 'shown to whoever may add shifts');
-    ok(/case 'add-hours': openAddHours\(el\); break;/.test(app) && /case 'add-next': addHoursNext\(\); break;/.test(app), 'wired');
+    ok(/case 'add-hours': openAddHours\(el, addOptsOf\(d\)\); break;/.test(app) && /case 'add-next': addHoursNext\(\); break;/.test(app), 'wired');
     ok(/C\.addablePeople\(S\.people, filterViewer\(\), \{ view: activeView\(\), region: S\.region, ny: mayEdit\('ny'\),/.test(appFn('addablePeople')), "the people: the tab's region and view, this sign-in's");
     const pb = appFn('pickBody');
     ok(/<input type="text" class="pick" id="addWho" list="addWhoList" data-pick="who"[^>]*placeholder="Type a name"/.test(pb) && /<datalist id="addWhoList">/.test(pb), 'the person: a typable box with its list');
     ok(/<input type="date" id="addDay" value="\$\{p\.day\}" min="\$\{w\.from\}" max="\$\{w\.to\}">/.test(pb) && /function addWindow\(\) \{ return C\.editWindow\(today\(\)\); \}/.test(app), "the day, in the editable window on the tab region's calendar");
     ok(pb.includes('Someone who already has time that day opens their day as usual. Days from ${C.fmtDay(w.from)} to today.') && /data-act="add-next">Open this day<\/button>/.test(pb) && /role="alert"/.test(pb), 'the hint, the error line and Open this day');
-    ok(/\$\('edTitle'\)\.textContent = 'Add hours';\s*\$\('edSub'\)\.textContent = 'For someone with no time on a day';/.test(appFn('renderEditor')), 'its title');
+    ok(/\$\('edTitle'\)\.textContent = 'Add time';\s*\$\('edSub'\)\.textContent = 'Pick the person and the day';/.test(appFn('renderEditor')), 'its title (2026-11-16 review: the subtitle no longer says it is only for someone with no time)');
     const an = appFn('addHoursNext');
     ok(an.includes("addSay('Pick the person first.')") && an.includes("addSay('Pick a day from ' + C.fmtDay(w.from) + ' to today.')") && /if \(!canEditRow\(blank\)\) \{ addSay\(noEditMsg\(blank\) \+ '\.'\); return; \}/.test(an), 'its refusals');
     ok(/if \(S\.rows\.has\(blank\.id\)\) \{ openEditor\(blank\.id, back\); return; \}\s*E\.blank = blank;\s*openEditor\(blank\.id, back, \{ addShift: true \}\);/.test(an), 'a day with time opens as usual; a blank one with a new shift');
@@ -5688,7 +5688,7 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     ok(/data-ef="bt" data-bi="\$\{j\}" data-pick="bt" list="\$\{'edBt-' \+ en\.key\}"/.test(eh) && /<datalist id="\$\{'edBt-' \+ en\.key\}">\$\{BREAK_KINDS\.map/.test(eh), "a break's type");
     ok(/data-ef="job" data-pick="job" list="\$\{list\}"/.test(appFn('jobField')) && /<datalist id="\$\{list\}">/.test(appFn('jobField')), "a shift's job");
     ok(/id="edNoteShift" list="edNoteShiftList" data-pick="note"/.test(appFn('noteBox')) && /<datalist id="edNoteShiftList">/.test(appFn('noteBox')), "a note's shift");
-    ok(/id="addWho" list="addWhoList" data-pick="who"/.test(appFn('pickBody')), 'the person under + Add hours');
+    ok(/id="addWho" list="addWhoList" data-pick="who"/.test(appFn('pickBody')), 'the person under + Add time');
     ok(app.includes("const BREAK_KINDS = [{ label: 'Paid rest', value: 'rest' }, { label: 'Unpaid meal', value: 'meal' }];"), 'the break types');
     const pc = appFn('pickCommit'), pi = appFn('pickInput');
     ok(/const r = C\.pickFrom\(p\.items, text, x => x\.labels \|\| x\.label\);/.test(pc) && /if \(p\.editor && r\.item\.label !== text\) E\.pickJust = true;/.test(pc), 'typed text: C.pickFrom; a guess marks the form');
@@ -5714,7 +5714,7 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
 }
 
 // 27. the page review of section 26 (2026-11-16): the words next to Save, the department box left on All departments, the
-//     + Add hours error line under a click, and no Delete link that Save could only refuse
+//     + Add time error line under a click, and no Delete link that Save could only refuse
 {
   check('review: next to Save, only a Gusto shift with no end is "still clocked in"; a new or added one just has no end yet', () => {
     const nw = Object.assign(C.newEntry('e1'), { inT: '', outT: '' }), ad = Object.assign(C.newEntry('e2'), { kind: 'add', inT: '13:00', outT: '' });
@@ -5742,7 +5742,7 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     t = box('Deleaf'); F.pickFocus(t); F.pickBlur(t);
     eq([S.dept, t.value], ['Deleaf', 'Deleaf'], 'left empty: the choice comes back');
   });
-  check('review: under + Add hours, a cleared message keeps its room, so Open this day does not move under the click that cleared it', () => {
+  check('review: under + Add time, a cleared message keeps its room, so Open this day does not move under the click that cleared it', () => {
     const as = appFn('addSay');
     ok(/if \(E\.pick\.err\) \{ el\.textContent = E\.pick\.err; el\.hidden = false; el\.style\.visibility = ''; \}\s*else el\.style\.visibility = 'hidden';/.test(as), 'cleared: invisible, not removed');
     ok(/<div class="inline-err" id="addErr" role="alert"\$\{p\.err \? '' : ' hidden'\}>/.test(appFn('pickBody')), 'drawn afresh with no message: no room taken');
@@ -5760,6 +5760,332 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     const nb = o => [{ id: 'w-r', in: RUN2.in, out: o === undefined ? RUN2.out : o, date: '2026-10-07', breaks: [] }];
     const keep = (mid, n) => { const en = C.editorEntries(WN, WN, [], me2, { today: '2026-10-08', now: Date.parse('2026-10-08T18:00:00Z'), neighbors: n, midnight: mid })[0]; return !!(en.split && en.split.fix && !en.split.whole); };
     eq([keep(MID2, nb()), keep({ fix: true, end: false, whole: true }, nb(null)), keep({ fix: true, end: false, whole: true }, nb())], [true, true, false]);
+  });
+}
+
+// 28. + Add time, easier to find (Gianni 2026-11-16: "can we make the add function more visible for her?"): the toolbar's
+//     primary button reads "+ Add time" on row 1; a day's header (By Day) and a person's (By Employee) open the same pick mode
+//     with that day or that person already in; and a slim bar says when a newer copy of the page is live. Made-up names only.
+{
+  const app = block('ts-app');
+  const H = x => x && typeof x === 'object' && 'html' in x ? x.html : String(x);
+  const T = '2026-11-16', W = C.editWindow(T);
+  const ADDP = [
+    { company: 'filifera', employee_uuid: 'p1', name: 'Test Alpha', department: 'Trim', active: true },
+    { company: 'slane', employee_uuid: 'p2', name: 'Test Alpha', department: 'Trim', active: true },   // the same person at a second company
+    { company: 'filifera', employee_uuid: 'p3', name: 'Test Charlie', department: 'Trim', active: false },
+  ];
+  const ADDL = C.addablePeople(ADDP, null, { region: 'CA' });
+  const R = (company, uuid, date) => ({ company, employee_uuid: uuid, work_date: date });
+  // the page's own header shortcut code, run with stand-ins for who may add, who is listed and which days take a change
+  // (canEditRow: by default every day; st.canEdit replaces it)
+  const addKit = st => new Function('C', 'h', 'H', 'today', 'mayAddHours', 'addablePeople', 'canEditRow', 'S',
+    'let addNow = null;\n' + ['addWindow', 'addDayOk', 'addShortcuts', 'addDayOn', 'addDayBtn', 'addPersonBtn', 'addOptsOf'].map(appFn).join('\n') +
+    '\nreturn { addDayOk, addDayBtn: d => H(addDayBtn(d)), addPersonBtn: rs => H(addPersonBtn(rs)), addOptsOf, setNow: v => { addNow = v; }, shortcuts: addShortcuts };')(
+    C, C.h, H, () => st.today, () => st.on, () => st.list, r => (st.canEdit ? st.canEdit(r) : true), { get companies() { return st.companies || []; } });
+  // openAddHours itself, with stand-ins for the panel: what it puts in the boxes and where the focus goes
+  const openKit = st => {
+    const els = {}, el = id => els[id] || (els[id] = { id, hidden: true, scrollTop: 7, focus() { st.focus = id; }, querySelector: q => q === '[data-act="add-next"]' ? el('add-next') : null });
+    const E = { pick: null, back: null };
+    const doc = { activeElement: null, body: { classList: { add() {} } } };
+    const open = new Function('C', 'E', '$', 'document', 'today', 'mayAddHours', 'addablePeople', 'hideTip', 'setPop', 'resetNoteBox', 'resetTap', 'renderEditor',
+      'let edTok = 0;\n' + ['openAddHours', 'addWindow', 'addDayOk'].map(appFn).join('\n') + '\nreturn openAddHours;')(
+      C, E, el, doc, () => st.today, () => st.on, () => st.list, () => {}, () => {}, () => {}, () => {}, () => { st.drawn = (st.drawn || 0) + 1; });
+    return { E, els, open: o => { st.focus = ''; open(null, o); return { pick: E.pick && Object.assign({}, E.pick), focus: st.focus, shown: els.editPanel ? !els.editPanel.hidden : false }; } };
+  };
+  check('+ Add time: the toolbar button reads "+ Add time" and is the page\'s primary button at the end of row 1 beside By Day / By Employee (on phones a full-width line of its own), under the same gate; the editor says Add time; "+ Add hours" is gone', () => {
+    const row1 = markup.match(/<div class="controls">\s*<div class="ctl-row">([\s\S]*?)\n {4}<\/div>/);
+    ok(row1, 'no first control row');
+    const r1 = row1[1], at = r1.indexOf('id="addHoursBtn"');
+    ok(at > r1.indexOf('aria-label="View"') && r1.indexOf('aria-label="View"') > 0, 'on row 1, after the By Day / By Employee buttons');
+    ok(/<button type="button" class="btn primary no-print" id="addHoursBtn" data-act="add-hours" title="Add a shift for someone on a day" hidden>\+ Add time<\/button>\s*$/.test(r1), 'its words, the primary class, no-print, last on the row');
+    const tail = markup.match(/<div class="ctl-tail">([\s\S]*?)\n {6}<\/div>\n {4}<\/div>/);
+    ok(tail && !/addHoursBtn/.test(tail[1]) && (markup.match(/id="addHoursBtn"/g) || []).length === 1, 'no longer beside Flagged and More, and only one of it');
+    ok(src.includes('.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}'), "the page's own primary button (its accent color)");
+    ok(src.includes('  #addHoursBtn{flex:none;margin-left:auto}'), 'laptops: it keeps its size, and sits at the right end when the row wraps');
+    const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1];
+    ok(phone.includes('#addHoursBtn{order:4;flex:1 1 100%;min-height:44px;font-size:15px}'), 'phones: a full-width line under row 1 (the range box and By Day / By Employee keep their line)');
+    ok(/\$\('addHoursBtn'\)\.hidden = !mayAddHours\(\);/.test(appFn('renderControls')) && /function mayAddHours\(\) \{ return editsOn\(\) && mayEdit\('add'\) && !S\.printing && addablePeople\(\)\.length > 0; \}/.test(app), 'the same gate (mayAddHours)');
+    ok(/\$\('edTitle'\)\.textContent = 'Add time';/.test(appFn('renderEditor')), 'the panel says Add time');
+    ok(!/Add hours/.test(src), '"Add hours" is still on the page');
+  });
+  check('C.addPick: a By Employee card\'s person as addablePeople lists them, their latest day first (a person at two companies is one card), else none', () => {
+    const lab = rs => { const it = C.addPick(ADDL, rs); return it ? it.label : null; };
+    eq(lab([R('filifera', 'p1', '2026-11-10')]), 'Test Alpha · Filifera');
+    eq([lab([R('slane', 'p2', '2026-11-09'), R('filifera', 'p1', '2026-11-12')]), lab([R('filifera', 'p1', '2026-11-09'), R('slane', 'p2', '2026-11-12')])], ['Test Alpha · Filifera', 'Test Alpha · Slane'], 'the latest day\'s company');
+    eq(lab([R('filifera', 'p1', '2026-11-09'), R('filifera', 'p3', '2026-11-12')]), 'Test Alpha · Filifera', 'the latest one not listed (left): another of theirs');
+    eq([lab([R('filifera', 'p3', '2026-11-12')]), lab([]), lab(null), C.addPick(null, [R('filifera', 'p1', T)])], [null, null, null, null], 'nobody listed: none');
+    eq(lab([{ company: 'filifera', employee_uuid: 1 }]), null, 'by company and Gusto id, as text');
+  });
+  check('+ Add time in the headers: a By Day header gets one only while adding is allowed and its day is in the window the day box takes (never a day ahead); a By Employee header only for a person addablePeople lists; never a <select>', () => {
+    const st = { today: T, on: true, list: ADDL }, k = addKit(st);
+    eq(k.addDayBtn(T), '<button type="button" class="linkbtn sadd no-print" data-act="add-hours" data-day="2026-11-16" aria-label="Add time on ' + C.fmtDay(T) + '">+ Add time</button>', 'today');
+    ok(k.addDayBtn(W.from).includes('data-day="' + W.from + '"') && k.addDayBtn('2026-11-15').includes('data-day="2026-11-15"'), 'the first day of the last pay period, and a Sunday in between');
+    eq([k.addDayBtn(C.addDays(W.from, -1)), k.addDayBtn(C.addDays(T, 1)), k.addDayBtn('2026-12-01'), k.addDayBtn('2026-13-01'), k.addDayBtn('')], ['', '', '', '', ''], 'before the window, ahead of today, not a day: none');
+    const p1 = k.addPersonBtn([R('filifera', 'p1', '2026-11-10')]);
+    eq(p1, '<button type="button" class="linkbtn sadd no-print" data-act="add-hours" data-co="filifera" data-emp="p1" aria-label="Add time for Test Alpha · Filifera">+ Add time</button>', 'a listed person');
+    ok(k.addPersonBtn([R('filifera', 'p1', '2026-11-09'), R('slane', 'p2', '2026-11-12')]).includes('data-co="slane" data-emp="p2"'), 'a two-company card: their latest day\'s company');
+    eq([k.addPersonBtn([R('filifera', 'p3', T)]), k.addPersonBtn([R('imperial', 'zz', T)])], ['', ''], 'someone who left, or someone this sign-in cannot change: none');
+    st.on = false;
+    eq([k.addDayBtn(T), k.addPersonBtn([R('filifera', 'p1', T)])], ['', ''], 'adding not allowed (mayAddHours off, printing included): none');
+    st.on = true; k.setNow({ on: false, list: [], reps: [], days: new Map() });
+    eq(k.addDayBtn(T), '', "a drawing uses renderContent's one look (addNow)");
+    k.setNow(null);
+    ok(![k.addDayBtn(T), p1].some(x => /<select/i.test(x)), 'no <select>');
+    eq([k.addOptsOf({}), k.addOptsOf({ day: '2026-11-15' }), k.addOptsOf({ co: 'filifera', emp: 'p1' })],
+      [{ day: null, who: null }, { day: '2026-11-15', who: null }, { day: null, who: { company: 'filifera', uuid: 'p1' } }], 'the click: the toolbar (neither), a day, a person');
+    ok(/case 'add-hours': openAddHours\(el, addOptsOf\(d\)\); break;/.test(app), 'all three through openAddHours (no second flow)');
+    ok(appFn('dayView').includes('${statLine(d.totals)}${addDayBtn(d.date)}</div>') && appFn('flatDayView').includes('${statLine(d.totals, { short: true })}${addDayBtn(d.date)}</div>'), 'By Day headers on laptops (Everyone and flat)');
+    ok(/<\/h3>\$\{addDayBtn\(d\.date\)\}\s*<div class="dstats">/.test(appFn('phoneDayHead')) && src.includes('.dhead .sadd + .dstats{flex-basis:100%}'), "a phone's day header: beside the date, the day's numbers under them");
+    ok(appFn('empCard').includes('${statLine(t, { days: true })}${addPersonBtn(e.rows)}</div>') && appFn('personCard').includes('<span class="pc-name">${e.name || \'No name in Gusto\'}</span>${addPersonBtn(e.rows)}<span class="pc-hrs">'), 'By Employee headers on laptops and phones (a phone card: beside the name, 2026-11-16 review)');
+    const rc = appFn('renderContent');
+    ok(/addNow = addShortcuts\(\);[^\n]*\n\s*try \{/.test(rc) && /\} finally \{ addNow = null; \}/.test(rc), 'one look at who may add per drawing, forgotten after it');
+  });
+  check('+ Add time from a header opens the same pick mode with the day or the person already in its box; focus goes to the first box still empty', () => {
+    const st = { today: T, on: true, list: ADDL }, { open } = openKit(st), k = addKit(st);
+    eq(open(k.addOptsOf({})), { pick: { label: '', day: T, err: '' }, focus: 'addWho', shown: true }, 'the toolbar: nobody yet, today');
+    eq(open(k.addOptsOf({ day: '2026-11-15' })), { pick: { label: '', day: '2026-11-15', err: '' }, focus: 'addWho', shown: true }, "a day's header: its day; the person box next");
+    eq(open({ day: C.addDays(T, 1), who: null }).pick.day, '', 'a day ahead is never put in');
+    eq(open(k.addOptsOf({ co: 'filifera', emp: 'p1' })), { pick: { label: 'Test Alpha · Filifera', day: '', err: '' }, focus: 'addDay', shown: true }, "a person's header: them, and the day box ready to pick");
+    eq(open({ day: null, who: { company: 'filifera', uuid: 'p3' } }), { pick: { label: '', day: T, err: '' }, focus: 'addWho', shown: true }, 'a person no longer listed: as the toolbar');
+    eq(open({ day: '2026-11-15', who: { company: 'slane', uuid: 'p2' } }).focus, 'add-next', 'both in: Open this day');
+    const st2 = { today: T, on: false, list: [] }, o2 = openKit(st2);
+    eq(o2.open({ day: T, who: null }), { pick: null, focus: '', shown: false }, 'adding not allowed: nothing opens');
+    ok(/if \(!mayAddHours\(\)\) return;/.test(appFn('openAddHours')), 'the same gate');
+    ok(/data-act="add-next">Open this day<\/button>/.test(appFn('pickBody')) && /if \(p\.refused\) \{ p\.refused = false;/.test(appFn('addHoursNext')), 'then Open this day, as before');
+  });
+  check('review (2026-11-16): a day header offers + Add time only when Open this day could open it for someone listed (its pay period not closed in Gusto, still in the window at the next run)', () => {
+    // the page's own canEditRow, rowPeriod and periodClosed, with a fixed clock
+    const gate = (companies, nowIso) => new Function('C', 'S', 'editsOn', 'Date', 'rowRegion', 'mayEdit', ['canEditRow', 'rowPeriod', 'periodClosed'].map(appFn).join('\n') + '\nreturn canEditRow;')(
+      C, { companies, people: ADDP }, () => true, { now: () => Date.parse(nowIso) }, r => r.region || C.regionOfCompany(r.company), () => true);
+    const P = (key, closed) => ({ key, pay_periods: [{ start: '2026-10-24', end: '2026-11-06', closed, why: closed ? 'processed' : null }, { start: '2026-11-07', end: '2026-11-20', closed: false }] });
+    const st = { today: T, on: true, list: ADDL, companies: [P('filifera', true), P('slane', true)] }, k = addKit(st);
+    st.canEdit = r => gate(st.companies, '2026-11-16T20:00:00Z')(r);
+    eq([k.addDayBtn('2026-11-01'), k.addDayBtn('2026-11-06')], ['', ''], 'Gusto processed the 10/24 to 11/6 payroll at every company listed: none on those days');
+    ok(k.addDayBtn('2026-11-07').includes('data-day="2026-11-07"') && k.addDayBtn(T).includes('data-day="' + T + '"'), 'the open period keeps them');
+    st.companies = [P('filifera', true), P('slane', false)];
+    ok(k.addDayBtn('2026-11-01').includes('data-day="2026-11-01"'), 'one company listed still open: kept (Open this day says who can be added)');
+    st.companies = [];
+    ok(k.addDayBtn('2026-11-01').includes('data-day="2026-11-01"'), 'nothing known about the periods yet: kept, as the day box');
+    // a period's last evening, after the 7 PM run: the next run (Saturday 5 AM) falls in the new period, and the window moves
+    const st2 = { today: '2026-11-20', on: true, list: ADDL, companies: [] }, k2 = addKit(st2);
+    st2.canEdit = r => gate([], '2026-11-21T04:00:00Z')(r);
+    eq([k2.addDayBtn('2026-10-30'), k2.addDayBtn('2026-11-06')], ['', ''], 'days that leave the window before the next run: none');
+    ok(k2.addDayBtn('2026-11-07').includes('data-day="2026-11-07"') && k2.addDayBtn('2026-11-20').includes('data-day="2026-11-20"'), 'days still in it at the next run: kept');
+    // one look per drawing: each day is asked once, for one person per company
+    const asked = [], st3 = { today: T, on: true, list: ADDL, canEdit: r => { asked.push(r.company + ' ' + r.work_date); return r.company === 'slane'; } }, k3 = addKit(st3);
+    const a = k3.shortcuts();
+    eq(a.reps.map(p => p.company + ' ' + p.employee_uuid), ['filifera p1', 'slane p2'], 'one person per company listed');
+    k3.setNow(a);
+    k3.addDayBtn('2026-11-15'); k3.addDayBtn('2026-11-15'); k3.addDayBtn(T);
+    eq(asked, ['filifera 2026-11-15', 'slane 2026-11-15', 'filifera 2026-11-16', 'slane 2026-11-16'], 'each day once, each company until one can');
+    ok(/a\.reps\.some\(p => canEditRow\(C\.blankDay\(p, date, \{ companies: S\.companies \}\)\)\)/.test(appFn('addDayOn')), 'the check Open this day makes (canEditRow on a blank day)');
+  });
+  check('review (2026-11-16): closing the panel opened from a header\'s + Add time gives the focus back to that header\'s button, even when the board was redrawn meanwhile', () => {
+    const btn = (data, o = {}) => ({ dataset: Object.assign({ act: 'add-hours' }, data), id: o.id || '', hidden: !!o.hidden, isConnected: o.connected !== false, shown: o.shown !== false,
+      getClientRects() { return this.shown ? [1] : []; }, focus() { st.focused = this; } });
+    const st = { focused: null, sadd: [], edit: [] };
+    const tool = btn({}, { id: 'addHoursBtn' });
+    const els = { editPanel: { hidden: false }, adminPanel: { hidden: true }, addHoursBtn: tool };
+    const E = { rowId: '', back: null };
+    const doc = { body: { classList: { remove() {} } }, querySelectorAll: q => (q === '.sadd[data-act="add-hours"]' ? st.sadd : q === '[data-act="edit-day"]' ? st.edit : []) };
+    const close = new Function('E', '$', 'document', 'resetNoteBox', 'resetTap', 'let edTok = 0;\n' + ['closeEditor', 'addBackTarget', 'rowEditTarget'].map(appFn).join('\n') + '\nreturn closeEditor;')(
+      E, id => els[id] || null, doc, () => {}, () => {});
+    const run = (back, rowId) => { st.focused = null; E.back = back; E.rowId = rowId || ''; els.editPanel.hidden = false; close(); return st.focused; };
+    const oldDay = btn({ day: '2026-11-15' }, { connected: false }), newDay = btn({ day: '2026-11-15' }), otherDay = btn({ day: '2026-11-14' });
+    st.sadd = [otherDay, newDay];
+    eq(run(oldDay), newDay, "a day's header: the redrawn one for the same day");
+    const oldWho = btn({ co: 'filifera', emp: 'p1' }, { connected: false }), newWho = btn({ co: 'filifera', emp: 'p1' }), otherWho = btn({ co: 'slane', emp: 'p1' }), hiddenWho = btn({ co: 'filifera', emp: 'p1' }, { shown: false });
+    st.sadd = [otherWho, hiddenWho, newWho];
+    eq(run(oldWho, 'filifera:p1:2026-11-15'), newWho, "a person's header (after Open this day too): the redrawn one for the same person, on screen");
+    st.sadd = [];
+    eq(run(oldDay), tool, 'none drawn now: the toolbar\'s + Add time');
+    tool.hidden = true;
+    eq(run(oldDay), null, 'and with that hidden too: nowhere (as before)');
+    tool.hidden = false;
+    eq(run(newDay), newDay, 'still on the page: itself');
+    eq(run(tool), tool, "the toolbar's: itself");
+    const edit = btn({ act: 'edit-day', k: 'filifera:p1:2026-11-15' }), oldEdit = btn({ act: 'edit-day', k: 'filifera:p1:2026-11-15' }, { connected: false });
+    st.edit = [edit];
+    eq(run(oldEdit, 'filifera:p1:2026-11-15'), edit, "a day's Edit: the day's new Edit button, as before");
+  });
+  check('review (2026-11-16): + Add time sits where nothing grows or wraps oddly: beside a phone card\'s name without growing its header, at the right of a wrapped laptop header, 20px from the view buttons, and the range line under row 1 from 920 to 1080px', () => {
+    ok(src.includes('  .pc-l1 .sadd{flex:none;min-height:0;padding:8px 0;margin:-8px 0}'), "a phone card: its tap room reaches above and below the name's line instead of growing it");
+    ok(!/\.ec-l2[^\n]*addPersonBtn/.test(appFn('personCard')), 'no longer in the stats line, where it wrapped onto a line of its own');
+    ok(src.includes('  .emp-head .stats:not(:last-child){flex-grow:1;justify-content:flex-end}') && !src.includes('.emp-head .stats + .sadd{margin-left:0}'), 'a laptop header: the stats take the room before it, so a wrapped one still sits at the right');
+    ok(src.includes('  .ctl-row > .seg:has(+ #addHoursBtn:not([hidden])){margin-right:10px}'), '20px from By Day / By Employee');
+    const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1];
+    ok(phone.includes('.ctl-row > .seg:has(+ #addHoursBtn:not([hidden])){margin-right:0}') && phone.includes('.ctl-row:has(> #addHoursBtn:not([hidden])) > #rangeLbl{order:3}'), 'not on phones, where it has a line of its own and the range line keeps its place');
+    ok(/@media \(min-width:920px\) and \(max-width:1079\.98px\)\{\s*\.ctl-row:has\(> #addHoursBtn:not\(\[hidden\]\)\) > #rangeLbl\{order:1;flex-basis:100%\}\s*\}/.test(src), 'from 920 to 1080px the range line goes under row 1, only while + Add time shows');
+  });
+  check('print and CSV export never show the + Add time buttons', () => {
+    ok(/@media print\{[\s\S]*?#top,\.controls,[^{]*\.no-print\{display:none!important\}/.test(src), 'print hides the controls and every .no-print');
+    ok(/class="linkbtn sadd no-print"/.test(appFn('addDayBtn')) && /class="linkbtn sadd no-print"/.test(appFn('addPersonBtn')), 'the header ones are no-print');
+    ok(/!S\.printing/.test(app.match(/function mayAddHours\(\) \{[^\n]*/)[0]), 'and are not drawn while printing (mayAddHours)');
+    const ex = appFn('exportCsv');
+    ok(/const rows = shownRows\(baseRows\(\)\);/.test(ex) && /C\.buildCsv\(rows, /.test(ex) && !/querySelector|innerHTML|innerText|textContent|\$\('content'\)/.test(ex), 'the CSV is built from the rows, never from the page');
+    ok(!/Add time/.test(C.buildCsv(demo.rows, { flat: false, edits: true })) && !/Add time/.test(C.buildCsv(demo.rows, { flat: true, edits: true })), 'and has no button words');
+  });
+  check('reload notice: C.reloadDecision (the first check only records; the same tag shows nothing; another one shows the bar; a failed check changes nothing) and C.reloadDue', () => {
+    const OK = (etag, lm) => ({ ok: true, etag: etag || '', lastModified: lm || '' });
+    const first = C.reloadDecision('', OK('"6afb69d8-9ad3e"', 'Mon, 16 Nov 2026 20:38:48 GMT'));
+    eq(first, { seen: 'size 9ad3e', show: false }, 'the first check only records');
+    eq(C.reloadDecision(first.seen, OK('W/"6afb69d8-9ad3e"')), { seen: 'size 9ad3e', show: false }, 'the same page (compressed: a weak ETag)');
+    eq(C.reloadDecision(first.seen, OK('"6afc0a11-9ad3e"', 'Mon, 16 Nov 2026 21:40:02 GMT')), { seen: 'size 9ad3e', show: false }, 'a push to another app: GitHub Pages re-stamps every file, this one is the same');
+    eq(C.reloadDecision(first.seen, OK('"6afc0a11-9b0f2"')), { seen: 'size 9ad3e', show: true }, 'this page changed: the bar');
+    for (const bad of [null, undefined, { ok: false, etag: '"6afc0a11-9b0f2"' }, OK('', ''), {}])
+      eq(C.reloadDecision(first.seen, bad), { seen: 'size 9ad3e', show: false }, 'failed or no header: nothing (' + J(bad) + ')');
+    eq(C.reloadDecision('', null), { seen: '', show: false }, 'a failed first check records nothing');
+    eq(C.reloadDecision('', OK('"abc-123"')), { seen: 'size 123', show: false });
+    const e1 = C.reloadDecision('', OK('"v1-xyz"'));
+    eq([e1, C.reloadDecision(e1.seen, OK('"v1-xyz"')).show, C.reloadDecision(e1.seen, OK('"v2-xyz"')).show], [{ seen: 'etag v1-xyz', show: false }, false, true], 'another ETag form: the whole ETag');
+    const m1 = C.reloadDecision('', OK('', 'Mon, 16 Nov 2026 20:38:48 GMT'));
+    eq([m1.seen, C.reloadDecision(m1.seen, OK('', 'Mon, 16 Nov 2026 20:38:48 GMT')).show, C.reloadDecision(m1.seen, OK('', 'Tue, 17 Nov 2026 01:00:00 GMT')).show],
+      ['modified Mon, 16 Nov 2026 20:38:48 GMT', false, true], 'no ETag: Last-Modified');
+    eq([C.reloadDecision(first.seen, OK('', 'Tue, 17 Nov 2026 01:00:00 GMT')).show, C.reloadDecision(m1.seen, OK('"6afc0a11-9b0f2"')).show], [false, false], 'a header of another kind than the first: no bar');
+    const now = Date.parse('2026-11-16T21:00:00Z');
+    eq([C.reloadDue(0, now, 'start'), C.reloadDue(0, now, 'tick'), C.reloadDue(now - 59000, now, 'visible'), C.reloadDue(now - 60000, now, 'visible'),
+      C.reloadDue(now - 9 * 60000, now, 'tick'), C.reloadDue(now - 10 * 60000, now, 'tick'), C.reloadDue(now - 9 * 60000, now, 'start')], [true, true, false, true, false, true, false],
+      'at once the first time; shown again: a minute after the last check; on screen: every 10 minutes');
+    eq([C.RELOAD_EVERY_MS, C.RELOAD_SHOWN_MS], [600000, 60000]);
+  });
+  await acheck('reload notice on the page: a HEAD of its own address (no query, nothing cached), never in demo, a failed check waits for the next one, it never reloads by itself; ?demo&updated shows the bar', async () => {
+    ok(markup.includes('<header id="top">\n  <span class="sr" id="updateSay" role="status"></span>\n  <div class="banner update no-print" id="updateBar" hidden><span aria-hidden="true">This page was updated. Reload to get the newest version.</span><button type="button" class="btn sm primary" data-act="page-reload">Reload</button></div>\n'),
+      'the bar, first in the header, with Reload; its words reach a screen reader through a status line that is always there (2026-11-16 review)');
+    ok(/case 'page-reload': reloadPage\(\); break;/.test(app) && /location\.reload\(\);/.test(appFn('reloadPage')), 'Reload reloads only when pressed');
+    ok(app.includes("const RL = { seen: '', loaded: '', last: 0, busy: false, shown: false, wait: false, on: false };"), 'its state starts empty');
+    for (const f of ['pageHead', 'checkUpdate', 'showUpdateBar', 'watchUpdates', 'seedTag']) ok(!/\.reload\(/.test(appFn(f)), f + ' never reloads the page');
+    const wu = appFn('watchUpdates');
+    ok(/if \(DEMO\) \{ if \(QS\.has\('updated'\)\) showUpdateBar\('start'\); return; \}\s*RL\.loaded = seedTag\(\);\s*checkUpdate\('start'\);/.test(wu), 'demo: no request; ?demo&updated shows the bar; else the copy loaded, then the first check');
+    ok(/if \(RL\.wait\) showUpdateBar\('return'\); else checkUpdate\('visible'\);/.test(wu) && /setInterval\(\(\) => \{ if \(document\.visibilityState === 'visible'\) checkUpdate\('tick'\); \}, 60000\);/.test(wu), 'when shown again, and while on screen');
+    ok(/openMissedLink\(\);\s*watchUpdates\(\);\s*\}/.test(appFn('startApp')) && /if \(RL\.on\) return;/.test(wu), 'started once, with the page');
+    // the page's own code, with a stand-in fetch, window and document
+    const rlDecl = app.match(/ {2}const RL = [^\n]*\n {2}const UPDATE_SAY = [^\n]*\n/)[0];
+    const calls = []; let reply = null;
+    const fakeFetch = async (url, init) => {
+      calls.push({ url, method: init.method, cache: init.cache, signal: init.signal });
+      const r = typeof reply === 'function' ? reply(init) : reply;
+      if (r instanceof Error) throw r;
+      const hd = r.headers || {};
+      return { ok: r.ok, status: r.status, headers: { get: n => Object.prototype.hasOwnProperty.call(hd, n.toLowerCase()) ? hd[n.toLowerCase()] : null } };
+    };
+    // o.y: how far the page is scrolled; o.inView: the bar can be seen once shown (a laptop's sticky header), else it is
+    // above the window (a phone scrolled down)
+    const kit = (demoOn, o = {}) => {
+      const bar = { hidden: true, getBoundingClientRect: () => ({ bottom: o.inView || !win.scrollY ? 55 : -20 }) }, say = { textContent: '' }, toasts = [], scrolls = [];
+      const win = { scrollY: o.y || 0, innerWidth: 375, innerHeight: 812, scrollBy(x, y) { scrolls.push(y); this.scrollY += y; } };
+      // <main>: 55px lower once the bar is in, until the page is scrolled back
+      const anchor = { getBoundingClientRect: () => ({ top: 140 - win.scrollY + (bar.hidden ? 0 : 55) }) };
+      const doc = { querySelector: q => (q === 'main' ? anchor : null) };
+      const loc = { origin: 'https://example.test', pathname: '/site/timesheets.html', search: '?demo&x=1', reload() { throw new Error('reloaded by itself'); } };
+      const k = new Function('C', 'DEMO', 'fetch', 'location', '$', 'measureHeader', 'AbortController', 'setTimeout', 'clearTimeout', 'window', 'document', 'requestAnimationFrame', 'toast',
+        rlDecl + ['pageHead', 'checkUpdate', 'showUpdateBar'].map(appFn).join('\n') +
+        '\nreturn { RL, checkUpdate, showUpdateBar };')(C, demoOn, fakeFetch, loc, id => (id === 'updateBar' ? bar : id === 'updateSay' ? say : null), () => {}, AbortController, setTimeout, clearTimeout,
+        win, doc, f => f(), m => toasts.push(m));
+      return Object.assign(k, { bar, say, toasts, scrolls, win, anchor });
+    };
+    const A = { ok: true, status: 200, headers: { etag: '"6afb69d8-9ad3e"', 'last-modified': 'Mon, 16 Nov 2026 20:38:48 GMT' } };
+    const d = kit(true); reply = A;
+    await d.checkUpdate('start'); await d.checkUpdate('visible');
+    eq([calls.length, d.RL.last, d.bar.hidden], [0, 0, true], 'demo: never asks the server');
+    const k = kit(false), back = ms => { k.RL.last -= ms; };
+    await k.checkUpdate('start');
+    eq(calls.map(c => [c.url, c.method, c.cache]), [['https://example.test/site/timesheets.html', 'HEAD', 'no-store']], 'one HEAD of its own address, without the query, nothing cached');
+    eq([k.RL.seen, k.bar.hidden], ['size 9ad3e', true], 'the first check only records');
+    await k.checkUpdate('tick'); await k.checkUpdate('visible');
+    eq(calls.length, 1, 'not again straight away');
+    back(11 * 60000); reply = new TypeError('Failed to fetch');
+    await k.checkUpdate('tick');
+    eq([calls.length, k.RL.seen, k.RL.busy, k.bar.hidden], [2, 'size 9ad3e', false, true], 'a failed check: nothing changes');
+    await k.checkUpdate('visible'); await k.checkUpdate('tick');
+    eq(calls.length, 2, 'and it waits for the next one (no loop)');
+    back(2 * 60000); reply = { ok: false, status: 503, headers: {} };
+    await k.checkUpdate('visible');
+    eq([calls.length, k.bar.hidden], [3, true], 'a server error: nothing');
+    back(2 * 60000); reply = { ok: true, status: 200, headers: { etag: 'W/"6afc0a11-9ad3e"', 'last-modified': 'Mon, 16 Nov 2026 21:40:02 GMT' } };
+    await k.checkUpdate('visible');
+    eq([calls.length, k.bar.hidden], [4, true], 'a push to another app: no bar');
+    back(2 * 60000); reply = { ok: true, status: 200, headers: { etag: '"6afc0b22-9b0f2"' } };
+    await k.checkUpdate('visible');
+    eq([calls.length, k.bar.hidden, k.RL.shown, k.RL.wait], [5, true, true, true], 'this page changed, found at the top of the page mid-session: it waits, so nothing moves under a click');
+    back(60 * 60000);
+    await k.checkUpdate('tick'); await k.checkUpdate('visible');
+    eq(calls.length, 5, 'once found, no more checks');
+    k.showUpdateBar('return');
+    eq([k.bar.hidden, k.RL.wait, k.say.textContent, k.scrolls, k.toasts], [false, false, 'This page was updated. Reload to get the newest version.', [], []], 'back in the tab: the bar, its words for a screen reader, nothing scrolled, no toast');
+    // a server that gives HEAD neither header: one GET, nothing cached, stopped once its headers are in
+    calls.length = 0;
+    const g = kit(false);
+    reply = init => init.method === 'HEAD' ? { ok: true, status: 200, headers: {} } : A;
+    await g.checkUpdate('start');
+    eq([calls.map(c => [c.method, c.cache]), g.RL.seen, calls[1].signal && calls[1].signal.aborted], [[['HEAD', 'no-store'], ['GET', 'no-store']], 'size 9ad3e', true], 'GET only when HEAD lacks both, and it never reads the page');
+    // demo with ?demo&updated: the bar, and no request
+    const wkit = has => { const bar = { hidden: true }, on = []; const w = new Function('DEMO', 'QS', 'RL', 'showUpdateBar', 'checkUpdate', 'document', 'setInterval', 'window', 'seedTag', appFn('watchUpdates') + '\nreturn watchUpdates;')(
+      true, { has: x => x === 'updated' && has }, { on: false }, why => { bar.hidden = false; on.push(why); }, () => { on.push('check'); }, { addEventListener: () => on.push('listen') }, () => on.push('timer'), { addEventListener: () => on.push('listen') }, () => on.push('seed')); w(); return [bar.hidden, on]; };
+    eq([wkit(true), wkit(false)], [[false, ['start']], [true, []]], 'demo: ?demo&updated shows the bar; nothing is asked or timed');
+  });
+  await acheck('reload notice (2026-11-16 review): a tab running a cached older copy is told at the first check, and the bar never moves what is under a finger or the mouse', async () => {
+    const OK = etag => ({ ok: true, etag, lastModified: 'Mon, 16 Nov 2026 20:38:48 GMT' });
+    eq([C.loadedTag({ transferSize: 0, decodedBodySize: 634174 }), C.loadedTag({ transferSize: 300, decodedBodySize: 634174 }), C.loadedTag({ decodedBodySize: 634174 }),
+      C.loadedTag({ transferSize: 0, decodedBodySize: 0 }), C.loadedTag(null), C.loadedTag({ transferSize: 0, decodedBodySize: 12.5 })], ['size 9ad3e', '', '', '', '', ''],
+      "the copy loaded: its size when the browser took it from its cache, else nothing (it came from the server, or the browser does not say)");
+    eq(C.reloadDecision('', OK('"6afb71d3-9b0f2"'), 'size 9ad3e'), { seen: 'size 9b0f2', show: true }, 'a cached older copy: the first check shows the bar');
+    eq(C.reloadDecision('', OK('W/"6afb71d3-9ad3e"'), 'size 9ad3e'), { seen: 'size 9ad3e', show: false }, 'the cached copy is the server\'s: nothing');
+    eq(C.reloadDecision('', { ok: true, etag: '', lastModified: 'Mon, 16 Nov 2026 20:38:48 GMT' }, 'size 9ad3e'), { seen: 'modified Mon, 16 Nov 2026 20:38:48 GMT', show: false }, 'a server with no size ETag: the first check only records, as before');
+    eq([C.reloadDecision('', null, 'size 9ad3e'), C.reloadDecision('size 9ad3e', OK('"6afb71d3-9b0f2"'), 'size 9ad3e').show], [{ seen: '', show: false }, true], 'a failed first check: the next one still compares with the copy loaded');
+    eq(C.reloadDecision('size 9b0f2', OK('"6afb71d3-9b0f2"'), 'size 9ad3e').show, false, 'once recorded, only a newer change shows it (the first check already did)');
+    // seedTag: the navigation entry, unless a Reload pressed on the bar brought back a copy of the same size
+    const seedKit = (nav, ss) => {
+      const mem = {}, sess = Object.assign({}, ss || {});
+      const ssApi = { getItem: k => (k in sess ? sess[k] : null), removeItem: k => { delete sess[k]; }, setItem: (k, v) => { sess[k] = String(v); } };
+      const perf = { getEntriesByType: t => { if (nav instanceof Error) throw nav; return t === 'navigation' && nav ? [nav] : []; } };
+      const store = { get: (k, dflt) => (k in mem ? mem[k] : dflt), set: (k, v) => { mem[k] = String(v); } };
+      const f = new Function('C', 'performance', 'sessionStorage', 'store', appFn('seedTag') + '\nreturn seedTag;')(C, perf, ssApi, store);
+      return { f, mem, sess };
+    };
+    const NAV = { transferSize: 0, decodedBodySize: 634174 };
+    let sk = seedKit(NAV);
+    eq([sk.f(), sk.mem], ['size 9ad3e', {}], 'from the cache: its size');
+    eq([seedKit({ transferSize: 812, decodedBodySize: 634174 }).f(), seedKit(null).f(), seedKit(new Error('no timing')).f()], ['', '', ''], 'from the server, no entry, or no timing: nothing');
+    sk = seedKit(NAV, { 'ts.reloadFrom': 'size 9ad3e' });
+    eq([sk.f(), sk.mem, sk.sess], ['', { sizeOff: '1' }, {}], 'a Reload that brought back the same size: this browser cannot tell, and stops using it');
+    eq(sk.f(), '', 'for good, on this browser');
+    sk = seedKit(NAV, { 'ts.reloadFrom': 'size 9b0f2' });
+    eq([sk.f(), sk.mem, sk.sess], ['size 9ad3e', {}, {}], 'a Reload that brought a new copy: kept');
+    const rp = (() => { const sess = {}, out = []; const f = new Function('RL', 'sessionStorage', 'location', appFn('reloadPage') + '\nreturn reloadPage;')(
+      { loaded: 'size 9ad3e' }, { setItem: (k, v) => { sess[k] = v; } }, { reload: () => out.push('reload') }); f(); return [sess, out]; })();
+    eq(rp, [{ 'ts.reloadFrom': 'size 9ad3e' }, ['reload']], 'Reload remembers the copy it leaves, then reloads');
+    // showUpdateBar, with the page's own code (stand-ins for the window and document)
+    const rlDecl = app.match(/ {2}const RL = [^\n]*\n {2}const UPDATE_SAY = [^\n]*\n/)[0];
+    const show = o => {
+      const bar = { hidden: true, getBoundingClientRect: () => ({ bottom: o.inView ? 55 : -20 }) }, say = { textContent: '' }, toasts = [], scrolls = [];
+      const win = { scrollY: o.y, innerWidth: 375, innerHeight: 812, scrollBy(x, y) { scrolls.push(y); this.scrollY += y; } };
+      // <main>, under the header: the bar's 55px (o.dy: another height) lower once it is in, until the page is scrolled back
+      const page = { getBoundingClientRect: () => ({ top: 140 - win.scrollY + (bar.hidden ? 0 : o.dy == null ? 55 : o.dy) }) };
+      const f = new Function('$', 'measureHeader', 'window', 'document', 'requestAnimationFrame', 'toast', rlDecl + appFn('showUpdateBar') + '\nreturn { RL, showUpdateBar };')(
+        id => (id === 'updateBar' ? bar : id === 'updateSay' ? say : null), () => {}, win, { querySelector: q => (q === 'main' ? page : null) }, cb => cb(), m => toasts.push(m));
+      f.showUpdateBar(o.why);
+      return { shown: !bar.hidden, wait: f.RL.wait, scrolls, toasts, top: page.getBoundingClientRect().top, said: say.textContent };
+    };
+    const TOAST = 'This page was updated. Scroll to the top and press Reload to get the newest version.';
+    eq(show({ why: 'tick', y: 600 }), { shown: true, wait: false, scrolls: [55], toasts: [TOAST], top: -460, said: 'This page was updated. Reload to get the newest version.' },
+      "a phone scrolled down: the view is held (the page stays where it was in the window), and a toast says the bar is at the top");
+    eq(show({ why: 'visible', y: 600, inView: true, dy: 45 }), { shown: true, wait: false, scrolls: [45], toasts: [], top: -460, said: 'This page was updated. Reload to get the newest version.' }, 'a laptop scrolled down (the bar in its sticky header): held, no toast');
+    eq([show({ why: 'tick', y: 600, inView: true, dy: 0 }).scrolls, show({ why: 'tick', y: 600, inView: true, dy: 0.125 }).scrolls], [[], []], 'nothing moved (the browser held it already), or less than a pixel: nothing scrolled');
+    eq([show({ why: 'tick', y: 0 }), show({ why: 'visible', y: 0 })].map(x => [x.shown, x.wait, x.scrolls, x.toasts, x.said]), [[false, true, [], [], ''], [false, true, [], [], '']], 'at the top mid-session: it waits');
+    eq(['start', 'return', 'scroll'].map(why => { const x = show({ why, y: 0, inView: true }); return [x.shown, x.wait, x.scrolls, x.toasts]; }), [[true, false, [], []], [true, false, [], []], [true, false, [], []]],
+      'at the top: shown at once when the page opens, on the return to the tab, or at the first scroll');
+    // watchUpdates: the return to the tab shows a waiting bar at once (else checks), the first scroll shows it too
+    const on = { vis: null, scroll: null }, did = [];
+    const RLw = { on: false, wait: false, loaded: '' }, docW = { visibilityState: 'visible', addEventListener: (t, f) => { if (t === 'visibilitychange') on.vis = f; } };
+    const winW = { scrollY: 0, addEventListener: (t, f, opt) => { if (t === 'scroll') { on.scroll = f; on.passive = opt && opt.passive; } } };
+    new Function('DEMO', 'QS', 'RL', 'showUpdateBar', 'checkUpdate', 'document', 'setInterval', 'window', 'seedTag', appFn('watchUpdates') + '\nreturn watchUpdates;')(
+      false, { has: () => false }, RLw, why => did.push('show ' + why), why => did.push('check ' + why), docW, () => {}, winW, () => 'size 9ad3e')();
+    eq([RLw.loaded, did], ['size 9ad3e', ['check start']], 'the copy loaded, then the first check');
+    on.vis(); on.scroll();
+    RLw.wait = true; on.scroll(); winW.scrollY = 40; on.scroll(); on.vis();
+    docW.visibilityState = 'hidden'; on.vis();
+    eq([did, on.passive], [['check start', 'check visible', 'show scroll', 'show return'], true], 'shown again: a check, or a waiting bar at once; a scroll (passive) shows a waiting bar once the page has moved');
   });
 }
 
