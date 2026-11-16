@@ -2292,7 +2292,14 @@ if (realPipe) {
   assert.ok(/from\('pipeline_flow_meta'\)/.test(b2flow) && /F\.changed !== changed/.test(b2flow) && /from\('pipeline_flow_lots'\)/.test(b2flow) && /\.range\(/.test(b2flow),
     'Batch V2 reads pipeline_flow_lots again only when pipeline_flow_meta.changed_at moves (or Refresh)');
   assert.ok(/does not exist\|schema cache/.test(b2flow), 'before the table exists the page keeps working');
-  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); b2BandEdge\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column (and the band\'s words by it) redraws a frame at a time, only a changed set');
+  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); b2BandEdge\(\); b2LaneEdge\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column (and the band\'s words by it) redraws a frame at a time, only a changed set');
+  { // cut words (Gianni's screenshot at 90% zoom, 2026-11-16): each bubble is measured on a hidden bubble of its own classes
+    // (below 100% on a 1x screen a 2px and a 1px border both snap to one device pixel), and a net after each draw
+    const ms = b2src.slice(b2src.indexOf('function b2Measure('), b2src.indexOf('function b2MeasureAll('));
+    assert.ok(ms.length > 0 && !/b2-hv warn/.test(ms) && /class="\$\{esc\(c\)\}"/.test(ms), 'bubbles are measured on their own classes, never one stand-in class');
+    assert.ok(/function b2FitCheck\(/.test(b2src) && (b2src.match(/b2FitCheck\(/g) || []).length >= 2, 'a safety net checks every drawn bubble\'s words against its box');
+    assert.ok(/function b2LaneEdge\(/.test(b2src), 'site-lane words start at the On hand column\'s edge, never their tail');
+  }
   assert.ok(/B2\.oh \? B2\.oh\.w : 0/.test(b2src.slice(b2src.indexOf('function b2Go'), b2src.indexOf('function b2Go') + 600)), 'Go to date and Today allow for the column');
   assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2src), 'Batch V2 shows pounds and units only, never dollars');
   for (const re of [/b2LoadMetrc\(true\); b2LoadFlow\(true\); \}/, /b2LoadMetrc\(false\); b2LoadFlow\(false\); \}/]) assert.ok(re.test(html), 'polls and Refresh read the lots too');

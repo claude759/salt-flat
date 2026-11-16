@@ -5872,10 +5872,10 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     const GAP = o.GAP != null ? o.GAP : 6, items = [];
     let prev = null;
     bs.forEach((b, i) => {
-      const x = prev ? Math.max(b.x, prev.x + prev.w + GAP) : b.x, nx = bs[i + 1], ex = b.extra || 0;
+      const x = prev ? Math.max(b.x, prev.x + prev.w + GAP) : b.x, nx = bs[i + 1], ex = b.extra || 0, wd = t => tw(t, b.cls);
       const room = nx ? nx.x - GAP - x : Infinity, moves = !!nx && !nx.fixed;
-      const text = tw(b.full) + ex > room && b.short && tw(b.short) + ex <= room ? b.short : b.full;
-      const w = Math.max(b.min || 0, moves ? tw(text) + ex : Math.min(tw(text) + ex, room));
+      const text = wd(b.full) + ex > room && b.short && wd(b.short) + ex <= room ? b.short : b.full;
+      const w = Math.max(b.min || 0, moves ? wd(text) + ex : Math.min(wd(text) + ex, room));
       prev = Object.assign({}, b, { x, w, text });
       items.push(prev);
     });
@@ -11283,7 +11283,7 @@ function b2Init() {
   sc.addEventListener('scroll', () => {
     if (B2.open && !B2.keep) b2Close();
     B2.keep = false;
-    if (B2.oh && !B2.raf) B2.raf = requestAnimationFrame(() => { B2.raf = 0; b2Shelf(); b2BandEdge(); });   // the On hand column (and the band's words by it) follow the view
+    if (B2.oh && !B2.raf) B2.raf = requestAnimationFrame(() => { B2.raf = 0; b2Shelf(); b2BandEdge(); b2LaneEdge(); });   // the On hand column (and the band's words by it) follow the view
   }, { passive: true });
   // the page itself scrolling (not the box, which closes the card; not the card) moves the card with its bar
   window.addEventListener('scroll', e => { if (B2.open && S.view === 'batches2' && e.target !== sc && e.target !== $('b2-pop')) b2Place(); }, { capture: true, passive: true });
@@ -11470,15 +11470,32 @@ function b2PackRows() {
   }
   return B2.packRows || (S.bat ? S.bat.rows : []);
 }
-// how wide a bubble is with these words: measured on a hidden bubble in the timeline itself (its font, padding and
-// border), once per words per draw
+// how wide a bubble is with these words: measured on a hidden bubble of its own kind in the timeline itself (a button with
+// the bubble's own classes: its font, padding and border, as this browser snaps them at this zoom; a 2px border and a
+// 1px one both become one device pixel below 100% on a 1x screen), rounded up, plus 1 and the class's correction from
+// b2FitCheck. f(words, cls) -> px; f.many([[words, cls], ...]) measures many in one layout; f.chrome(cls): the class's
+// padding and border (an empty bubble); f.px(words, cls): an earlier measure, without measuring (undefined if none)
 function b2Measure(sc) {
-  const m = document.createElement('span'), seen = new Map();
-  m.className = 'b2-hv warn';
-  m.style.cssText = 'visibility:hidden;width:auto;left:0;top:0;overflow:visible;display:inline-block';
-  sc.appendChild(m);
-  const f = t => { if (!seen.has(t)) { m.textContent = t; seen.set(t, Math.ceil(m.getBoundingClientRect().width) + 1); } return seen.get(t); };
-  f.done = () => m.remove();
+  const box = document.createElement('div'), px = new Map(), chrome = new Map(), fix = B2.fix || {}, key = (t, c) => c + '\n' + t;
+  box.style.cssText = 'position:absolute;visibility:hidden;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none';
+  box.setAttribute('aria-hidden', 'true');
+  sc.appendChild(box);
+  const mk = (t, c) => `<button type="button" tabindex="-1" class="${esc(c)}" style="left:0;top:0;width:auto;overflow:visible">${esc(t)}</button>`;
+  const many = pairs => {
+    const need = [], seen = new Set(), cs = [...new Set(pairs.map(p => p[1]))].filter(c => !chrome.has(c));
+    for (const [t, c] of pairs) { const k = key(t, c); if (t && !px.has(k) && !seen.has(k)) { seen.add(k); need.push([t, c]); } }
+    if (!need.length && !cs.length) return;
+    box.innerHTML = need.map(p => mk(p[0], p[1])).join('') + cs.map(c => mk('', c)).join('');
+    const els = box.children;
+    need.forEach(([t, c], i) => px.set(key(t, c), Math.ceil(els[i].getBoundingClientRect().width) + 1 + (fix[c] || 0)));
+    cs.forEach((c, i) => chrome.set(c, els[need.length + i].getBoundingClientRect().width));
+    box.innerHTML = '';
+  };
+  const f = (t, c = 'b2-hv') => { const k = key(t, c); if (!px.has(k)) many([[t, c]]); return px.get(k); };
+  f.many = many;
+  f.chrome = c => { if (!chrome.has(c)) many([['', c]]); return chrome.get(c); };
+  f.px = (t, c) => px.get(key(t, c));
+  f.done = () => box.remove();
   return f;
 }
 // the widths of many words on bubbles of one class (the band's week bubbles), measured together in one layout of a
@@ -11494,8 +11511,43 @@ function b2MeasureAll(sc, cls, texts) {
   box.remove();
   return out;
 }
+// the safety net, after every draw: each bubble meant to show all its words (the layout gave it its measured width: not
+// one cut on purpose at a trim's day) has its words (a Range) checked against its content box (its width less its class's
+// padding and border, measured on an empty bubble of that class). Any shortfall, by any fraction of a pixel (the browser
+// then swaps whole letters for "..."), is returned per class: { cls: px }
+function b2FitCheck(tl, fit, chrome) {
+  const short = {}, rg = document.createRange(), els = tl.querySelectorAll('.b2-lane > button');
+  if (els.length !== fit.length) return short;   // not the draw it was built for
+  fit.forEach((it, i) => {
+    const el = els[i];
+    if (!it.meant || el.textContent !== it.text) return;
+    rg.selectNodeContents(el);
+    const d = rg.getBoundingClientRect().width - (el.getBoundingClientRect().width - chrome(it.cls));
+    if (d > 0.01) short[it.cls] = Math.max(short[it.cls] || 0, d);
+  });
+  return short;
+}
+// the site lanes' bubbles the On hand column covers part of: like the band's (BT2.bandEdge), their words start right of
+// the column and are the first of their drawn, short and tiny words that fits what is still in view ('' when none), so a
+// bubble never shows the tail of its words ("85 l..." of "T: RM2: 132 · 85 left"); put back once it is clear of it
+function b2LaneEdge() {
+  const LB = B2.lanes; if (!LB || !B2.oh) return;
+  const edge = LB.sc.scrollLeft + B2.oh.w;
+  for (const b of LB.bs) {
+    if (!b.el) continue;
+    const e = BT2.bandEdge(b.x, b.w, edge, b.texts, t => LB.px(t, b.cls) ?? Infinity);
+    if (e) {
+      const pl = `${Math.ceil(e.hidden) + b.pad}px`;
+      if (b.el.style.paddingLeft !== pl) b.el.style.paddingLeft = pl;
+      if (b.el.textContent !== e.text) b.el.textContent = e.text;
+      b.cut = true;
+    } else if (b.cut) { b.el.style.paddingLeft = ''; b.el.textContent = b.text; b.cut = false; }
+  }
+}
 function renderBatches2() {
   b2Init();
+  // a measure's corrections (b2FitCheck) hold until the zoom or the screen changes
+  if (B2.fixDpr !== window.devicePixelRatio) { B2.fix = {}; B2.fixDpr = window.devicePixelRatio; }
   const sc = $('b2-scroll'), tl = $('b2-tl');
   const reopen = B2.open && B2.open.id, refocus = !!reopen && $('b2-pop').contains(document.activeElement);
   // where it was open: by a bubble, or by a chip of the On hand column (a redraw opens it by the same kind of element)
@@ -11549,38 +11601,47 @@ function renderBatches2() {
   const tmLb = t => { const f = BT2.trimFlow(t); return t.done && t.lb != null ? t.lb : f.pk > 0 && (t.metrc || t.packed) ? f.pk : !t.done && t.est ? t.est.lb : null; };
   const tmLeft = t => { const f = BT2.trimFlow(t); return f.pk > 0 ? f.left : null; };
   const tmText = t => BT2.bubble('T', t.room, tmLb(t), !t.done && !t.packed && !!t.est, false, tmLeft(t));
+  // a bubble's classes, for the draw and its measure alike
+  const hvCls = h => `b2-hv${h.date > today ? ' plan fut' : ''}${h.conflict ? ' warn' : ''}`;
+  const tmCls = tm => {
+    const f = BT2.trimFlow(tm), solid = tm.done || !!tm.packed, fut = !solid && tm.start > today;   // solid: a planned trim Metrc shows packaged happened
+    return `b2-tm ${solid ? 'done' : 'plan'}${fut ? ' fut' : ''}${tm.missed && !tm.packed ? ' miss' : ''}${tm.now ? ' now' : ''}${f.pk > 0 ? ' fill' : ''}${f.partial ? ' part' : ''}`;
+  };
   const lanes = M.sites.map(L => {
     const units = L.units.map(u => {
       const o = { u }, bs = [];
-      if (u.h) bs.push({ k: 'h', x: x(u.h.date) + 2, min: W - 4, full: hvText(u.h), short: BT2.bubble('H', u.h.room, hvLb(u.h), false, true) });
-      if (u.t) bs.push({ k: 't', x: x(u.t.start) + 2, min: x(PIPE.addDays(u.t.end, 1)) - x(u.t.start) - 4, fixed: true, full: tmText(u.t),
-        short: BT2.bubble('T', u.t.room, tmLb(u.t), !u.t.done && !u.t.packed && !!u.t.est, true, tmLeft(u.t)), extra: BT2.trimFlow(u.t).partial ? 8 : 0 });   // room for the partial mark
+      if (u.h) bs.push({ k: 'h', cls: hvCls(u.h), x: x(u.h.date) + 2, min: W - 4, full: hvText(u.h), short: BT2.bubble('H', u.h.room, hvLb(u.h), false, true), tiny: BT2.bubble('H', u.h.room) });
+      if (u.t) bs.push({ k: 't', cls: tmCls(u.t), x: x(u.t.start) + 2, min: x(PIPE.addDays(u.t.end, 1)) - x(u.t.start) - 4, fixed: true, full: tmText(u.t),
+        short: BT2.bubble('T', u.t.room, tmLb(u.t), !u.t.done && !u.t.packed && !!u.t.est, true, tmLeft(u.t)), tiny: BT2.bubble('T', u.t.room) });   // a partial trim's mark: its class's padding
       // its testing sends: Test on the day it went, COA on the results day (or the expected one), in day order (a second
       // send can go before the first one's results are back)
       const lb = [];
       // (and its Jars or Pre-rolls, on the PCKG DATE: BT2.packGroups)
       for (const g of u.ev) {
-        if (g.type === 'pack') lb.push({ k: 'p', g, x: x(g.day) + 2, min: W - 4, full: BT2.packBubble(g), short: BT2.packBubble(g, true) });
+        if (g.type === 'pack') lb.push({ k: 'p', g, cls: BT2.packClass(g), x: x(g.day) + 2, min: W - 4, full: BT2.packBubble(g), short: BT2.packBubble(g, true) });
         else {
-          if (g.sent) lb.push({ k: 's', g, x: x(g.sent) + 2, min: W - 4, full: BT2.labBubble('s', g), short: BT2.labBubble('s', g, true) });
-          if (g.at) lb.push({ k: 'c', g, x: x(g.at) + 2, min: W - 4, full: BT2.labBubble('c', g), short: BT2.labBubble('c', g, true) });
+          if (g.sent) lb.push({ k: 's', g, cls: BT2.labClass('s', g), x: x(g.sent) + 2, min: W - 4, full: BT2.labBubble('s', g), short: BT2.labBubble('s', g, true) });
+          if (g.at) lb.push({ k: 'c', g, cls: BT2.labClass('c', g), x: x(g.at) + 2, min: W - 4, full: BT2.labBubble('c', g), short: BT2.labBubble('c', g, true) });
         }
       }
       // on one day: Pre-rolls (rolled before testing), Test, COA, then Jars (packed after the COA); Jars packed while a
       // send is at the lab go after its COA (BT2.evOrder)
       bs.push(...BT2.evOrder(lb));
-      const R = o.R = BT2.row(bs, tw, { GAP }), bh = R.items.find(b => b.k === 'h'), bt = R.items.find(b => b.k === 't');
-      if (bh) { o.hx = bh.x; o.hw = bh.w; o.ht = bh.text; }
-      if (bt) { o.tx = bt.x; o.tw = bt.w; o.tt = bt.text; }
-      o.a = R.a; o.b = R.b;
+      o.bs = bs;
       return o;
+    });
+    tw.many(units.flatMap(o => o.bs.flatMap(b => [b.full, b.short, b.tiny].filter(Boolean).map(t => [t, b.cls]))));
+    units.forEach(o => {
+      const R = o.R = BT2.row(o.bs, tw, { GAP }), bh = R.items.find(b => b.k === 'h'), bt = R.items.find(b => b.k === 't');
+      if (bh) { o.hx = bh.x; o.hw = bh.w; o.ht = bh.text; o.hc = bh.cls; }
+      if (bt) { o.tx = bt.x; o.tw = bt.w; o.tt = bt.text; o.tc = bt.cls; }
+      o.a = R.a; o.b = R.b;
     });
     const P = BT2.pack(units.map(o => ({ a: o.a, b: o.b })));
     units.forEach((o, i) => { o.track = P.track[i]; });
     const lots = FL ? M.lots.filter(l => l.site === L.site) : [];
     return { site: L.site, units, lots, n: Math.max(FL ? 2 : 1, P.n) };   // two tracks at least, for the column's total and a chip
   });
-  tw.done();
   // the track height: every site in the window at once (laptops, 24 to 40px); a phone keeps 30px and scrolls the page.
   // Whatever height is left over goes to the lanes below, so the timeline fills the page down to the window's bottom
   // (Gianni, 2026-11-15: "I want this to vertically fill the page")
@@ -11642,6 +11703,8 @@ function renderBatches2() {
   H.push(`<div class="b2-body" style="width:${total}px">`);
   if (today >= M.from && today <= M.to) H.push(`<div class="b2-now" style="left:${x(today)}px;width:${W}px" title="Today"></div>`);
   const BH = TH - 8;
+  // every lane bubble in draw order: { it (its row item), meant (the layout gave it its measured width) }
+  const fit = [], note = it => fit.push({ it, cls: it.cls, text: it.text, meant: it.w >= tw(it.text, it.cls) });
   for (const L of lanes) {
     const t = siteTitle(L.site);
     H.push(`<div class="b2-site"><span>${siteSq(L.site)}${esc(siteName(L.site))}${t ? `<em>${esc(t)}</em>` : ''}</span></div>`);
@@ -11654,16 +11717,16 @@ function renderBatches2() {
       }
       if (h) {
         const lab = `Harvest, ${b2Where(h)}, ${dowLong(h.date)} ${b2Day(h.date)}${h.conflict ? '. HRVST DATE and the batch code disagree' : ''}`;
-        I.push(`<button type="button" class="b2-hv${h.date > today ? ' plan fut' : ''}${h.conflict ? ' warn' : ''}" data-b2="${esc(h.id)}" ` +
+        note(o.R.items.find(b => b.k === 'h'));
+        I.push(`<button type="button" class="${o.hc}" data-b2="${esc(h.id)}" ` +
           `style="left:${o.hx}px;width:${o.hw}px;top:${top}px" aria-label="${esc(lab)}: ${esc(o.ht)}" title="${esc(o.ht)}">${esc(o.ht)}</button>`);
       }
       if (tm) {
         const state = tm.done ? (tm.part ? 'counted with a later tab' : 'on the trim sheet') : tm.now ? 'trimming now' : tm.missed ? 'planned, not on the trim sheets' : 'planned on the sheet';
         const lab = `Trim, ${b2Where(tm)}, ${b2Span(tm.start, tm.end)}, ${state}`;
         const f = BT2.trimFlow(tm), fill = f.pk > 0 ? Math.max(0, Math.min(1, f.left / f.pk)) : null;
-        const solid = tm.done || !!tm.packed;   // a planned trim Metrc shows packaged happened
-        const fut = !solid && tm.start > today;   // still to come: the purple glow
-        I.push(`<button type="button" class="b2-tm ${solid ? 'done' : 'plan'}${fut ? ' fut' : ''}${tm.missed && !tm.packed ? ' miss' : ''}${tm.now ? ' now' : ''}${fill != null ? ' fill' : ''}${f.partial ? ' part' : ''}" data-b2="${esc(tm.id)}" ` +
+        note(o.R.items.find(b => b.k === 't'));
+        I.push(`<button type="button" class="${o.tc}" data-b2="${esc(tm.id)}" ` +
           `style="left:${o.tx}px;width:${o.tw}px;top:${top}px${fill != null ? `;--b2-f:${fill.toFixed(3)}` : ''}" aria-label="${esc(lab)}: ${esc(o.tt)}${fill != null ? ' lbs of flower still at our licenses' : ''}${f.partial ? '. Partial: the pounds don\'t all add up yet' : ''}" title="${esc(o.tt)}">${esc(o.tt)}</button>`);
       }
       // testing: a thin grey line from the lot to its sample (or between sends), the sample at the lab dashed ochre up to
@@ -11677,12 +11740,14 @@ function renderBatches2() {
       }
       for (const it of its) {
         if (it.k === 'p') {
+          note(it);   // its class: BT2.packClass(it.g), the one it was measured with
           I.push(`<button type="button" class="${BT2.packClass(it.g)}" data-b2="${esc(it.g.id)}" style="left:${it.x}px;width:${it.w}px;top:${top}px" ` +
             `aria-label="${esc(b2PackAria(it.g))}" title="${esc(it.full)}">${esc(it.text)}</button>`);
           continue;
         }
         if (it.k !== 's' && it.k !== 'c') continue;
-        const g = it.g, cls = BT2.labClass(it.k, g);
+        const g = it.g, cls = BT2.labClass(it.k, g);   // = it.cls, the class it was measured with
+        note(it);
         I.push(`<button type="button" class="${cls}" data-b2="${esc(g.id)}" data-b2k="${it.k}" style="left:${it.x}px;width:${it.w}px;top:${top}px" ` +
           `aria-label="${esc(b2LabAria(g, it.k))}" title="${esc(it.full)}">${esc(it.text)}</button>`);
       }
@@ -11761,10 +11826,34 @@ function renderBatches2() {
   B2.sbar = Math.max(0, sc.offsetHeight - sc.clientHeight - 2);   // the sideways scrollbar's height, for the next fit
   // the first draw guessed the scrollbar: fit again at once with the measured one (once, and only with no card to reopen)
   if (!phone && !reopen && !B2.refit && (sbar0 == null ? 12 : sbar0) !== B2.sbar) {
+    tw.done();
     B2.refit = { day: keepDay, frac: keepFrac };   // the same day at the left edge (or today, on a first draw)
     try { renderBatches2(); } finally { B2.refit = null; }
     return;
   }
+  // the net: a bubble short of its words by any fraction of a pixel corrects its class's measure, and the timeline is
+  // drawn once more with it (a card to reopen: the correction waits for the next draw)
+  const short = B2.fitTry ? {} : b2FitCheck(tl, fit, tw.chrome), shortK = Object.keys(short);
+  if (shortK.length) {
+    B2.fix = B2.fix || {};
+    shortK.forEach(k => { B2.fix[k] = (B2.fix[k] || 0) + Math.ceil(short[k]); });
+    B2.fixLog = (B2.fixLog || []).concat([{ dpr: window.devicePixelRatio, short }]);
+    if (!reopen) {
+      tw.done();
+      B2.fitTry = true; B2.refit = { day: keepDay, frac: keepFrac };
+      try { renderBatches2(); } finally { B2.fitTry = false; B2.refit = null; }
+      return;
+    }
+  }
+  // the lanes' bubbles for the On hand column's edge: their words (drawn, short, tiny), widths and left padding
+  const laneEls = tl.querySelectorAll('.b2-lane > button');
+  if (OHW && laneEls.length === fit.length) {   // (every bubble noted: a kind drawn without note() turns the edge off, never mismatches it)
+    const els = laneEls, pads = new Map();
+    const padOf = (c, el) => { if (!pads.has(c)) pads.set(c, parseFloat(getComputedStyle(el).paddingLeft) || 0); return pads.get(c); };
+    B2.lanes = { sc, px: tw.px, bs: fit.map((f, i) => { const it = f.it, el = els[i] || null;
+      return { el, x: it.x, w: it.w, cls: it.cls, text: it.text, texts: [...new Set([it.text, it.short, it.tiny].filter(Boolean))], pad: el ? padOf(it.cls, el) : 0, cut: false }; }) };
+  } else B2.lanes = null;
+  tw.done();
   // the On hand column: one panel per site lane, filled by b2Shelf for the first day right of it; chips fit the lane
   // (a total line, then 19px chips; the rest under '+N more')
   B2.oh = OHW ? { w: OHW, phone, day: '', lanes: lanes.map((L, i) => ({ site: L.site, lots: L.lots, sig: null,
@@ -11774,6 +11863,7 @@ function renderBatches2() {
   else b2Go(today, false);
   b2Shelf(true);
   if (B2.band) { const els = tl.querySelectorAll('.b2-band .b2-wk'); B2.band.bs.forEach((b, i) => { b.el = els[i] || null; b.cut = false; }); b2BandEdge(); }
+  b2LaneEdge();
   if (reopen) {
     const q = CSS.escape(reopen), bub = tl.querySelector(reopenK ? `.b2-l${reopenK}[data-b2="${q}"]` : `.b2-hv[data-b2="${q}"], .b2-tm[data-b2="${q}"], .b2-pk[data-b2="${q}"], .b2-wk[data-b2="${q}"], .b2-ohc[data-b2="${q}"]`), chip = tl.querySelector(`.b2-oh [data-b2="${q}"]`);
     const el = (reopenChip ? chip || bub : bub || chip) || tl.querySelector(`[data-b2="${q}"]`);
