@@ -1362,6 +1362,47 @@ if (realPipe) {
     assert.ok(!/<select id="ed-status"/.test(html) && /<input id="ed-status"[^>]*list="ed-status-list"/.test(html), 'the batch Status is a typable box, not a plain select');
     assert.ok(/if \(o\.kind === 'batch' && o\.statusTyped != null\)[\s\S]{0,200}if \(bad\) \{ edPreview\(\); return; \}/.test(html), 'a typed status that names no listed one stops the save');
   }
+  // the page's other pick-lists are typable too: Line to copy, Who / Add someone, and the Admin page's two scope boxes
+  {
+    assert.ok(!/<select\b/.test(html), 'no plain select is left on the page');
+    for (const id of ['ed-src', 'ed-who', 'ed-add']) assert.ok(new RegExp(`ED_PICKS = \\[[^\\]]*'${id}'`).test(html), `${id} is a typable picker`);
+    assert.ok(/<input id="ed-src" data-f="src" list="ed-src-list"/.test(html) && /<datalist id="ed-src-list">/.test(html), 'Line to copy is a text box with suggestions');
+    assert.ok(/<input id="\$\{id\}" data-f="add" list="\$\{id\}-list"/.test(html) && /edWhoPickHTML\(o, 'ed-who', more\)/.test(html) && /edWhoPickHTML\(o, 'ed-add', more\)/.test(html),
+      'Who / Add someone are text boxes with suggestions');
+    // Enter in a picker picks (or says why it can't), never saves the card; leaving the box settles it
+    assert.ok(/if \(e\.key === 'Enter' && !e\.isComposing && ED_PICKS\.includes\(e\.target\.id\)\) \{ e\.preventDefault\(\);[^\n]*edPickSettle\(o, e\.target, true\); return; \}/.test(html), 'Enter in a picker never saves');
+    const keydown = html.split("el.addEventListener('keydown', e => {")[1].split('});')[0];
+    assert.ok(keydown.indexOf('ED_PICKS') < keydown.indexOf('edSave()'), 'the picker check comes before the save on Enter');
+    assert.ok(/ED_PICKS\.includes\(e\.target\.id\)\) \{ if \(o\.pickTyped\) edPickSettle\(o, e\.target, false\); return; \}/.test(html), 'leaving a picker settles it');
+    // plain typing only hints; a suggestion picked from the list is used at once
+    assert.ok(/const typing = !!\(e && e\.inputType && e\.inputType !== 'insertReplacementText'\);/.test(html) && /if \(m\.exact && !typing\) \{ edPickUse\(/.test(html),
+      'typing a name that starts a longer one never picks the shorter one on the way');
+    // a box left by pressing a button in the card redraws after that click, so the press still lands; a Save pressed
+    // straight from a box only shows what was picked
+    assert.ok(/el\.addEventListener\('pointerdown', \(\) => \{ ED_PRESS\.down = true; \}, true\);/.test(html) && /function edDrawSoon\(\) \{ if \(ED_PRESS\.down\) ED_PRESS\.draw = true; else edDraw\(\); \}/.test(html),
+      'a picker settled by a press redraws after the click');
+    assert.ok(/async function edSave\(\) \{\s*const o = ED\.open;\s*if \(!o \|\| o\.phase !== 'edit' \|\| o\.busy\) return;\s*\/\/[^\n]*\n\s*if \(ED_PRESS\.draw\) \{ ED_PRESS\.draw = false;[^\n]*edDraw\(\); return; \}/.test(html),
+      'Save pressed straight from a picker box saves nothing unseen');
+    // the list entries are unique strings, so each suggestion names one line
+    const kSrc = html.match(/function edPickKeys\(labels\) \{[\s\S]*?\n\}/)[0];
+    const edPickKeys = new Function(`${kSrc}; return edPickKeys;`)();
+    assert.deepEqual(edPickKeys(['Mon Nov 16 · A', 'Mon Nov 16 · B', 'Mon Nov 16 · A', 'Mon Nov 16 · A']),
+      ['Mon Nov 16 · A', 'Mon Nov 16 · B', 'Mon Nov 16 · A (2)', 'Mon Nov 16 · A (3)']);
+    // the Admin scope boxes: the one scope the words name, else refused and the last good scope stays
+    assert.ok(!/<select data-ad-in/.test(html) && /data-ad-in="\$\{k\}Text" list="ad-scopes"/.test(html) && /<datalist id="ad-scopes">/.test(html), 'Admin scopes are typable');
+    const aSrc = html.match(/function adScopeOf\(k\) \{[\s\S]*?\n\}/)[0];
+    const AD = { draft: { scope: 'plan', scopeText: null } }, adScopeOf = new Function('AD', 'ADMIN', 'EDIT', `${aSrc}; return adScopeOf;`)(AD, ADMIN, EDIT);
+    const S1 = t => { AD.draft.scope = 'plan'; AD.draft.scopeText = t; const r = adScopeOf('scope'); return [r.scope || null, r.error || '', AD.draft.scope, AD.draft.scopeText]; };
+    assert.deepEqual(S1(null), ['plan', '', 'plan', null], 'nothing typed: the scope picked stays');
+    assert.deepEqual(S1('supplies'), ['supply', '', 'supply', null], 'exact, any case');
+    assert.deepEqual(S1(' plan AND '), ['all', '', 'all', null], 'the one choice that contains it');
+    const amb = S1('plan'); assert.equal(amb[0], null); assert.match(amb[1], /"plan" matches more than one choice/); assert.equal(amb[2], 'plan'); assert.equal(amb[3], null, 'the box goes back');
+    const none = S1('everything'); assert.match(none[1], /"everything" isn't one of the choices\. Pick The plan, Supplies or Plan and supplies; nothing was saved\./);
+    assert.match(S1('  ')[1], /^Pick what they can change/, 'an emptied box is refused, not saved as the old scope');
+    assert.ok(/function adminAdd\(\) \{[\s\S]{0,300}sc = adScopeOf\('scope'\)[\s\S]{0,200}if \(sc\.error\) return say/.test(html), 'Add refuses a scope box that names no choice');
+    assert.ok(/function adminSaveEditor\(em\) \{[\s\S]{0,200}const sc = adScopeOf\('editScope'\);\s*if \(sc\.error\)/.test(html), 'Save refuses a scope box that names no choice');
+    assert.ok(/AD\.draft\.editScope = ed\.scope; AD\.draft\.editScopeText = null;/.test(html), "Change starts from the person's scope, not text left from another row");
+  }
   assert.deepEqual(EDIT.batchStatuses(g), ['GRINDING FLOWER', 'PACKAGING', 'READY FOR PICKUP', 'WAITING FOR TESTING'],
     'the status picker lists the spellings batches use (not a row with no METRC UID)');
   const at2 = EDIT.batchAt(g, UID(2));

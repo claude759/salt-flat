@@ -8968,6 +8968,77 @@ function edCrewFoot(date) {
   const cells = edItems(date).filter(i => i.type === 'crew' && i.cell).map(i => i.cell);
   return edFoot(edByText(TAB, cells), edCanDay(date) && edCrewLines(date).length ? edBtn({ '': 'crew', date }, "Who's on") : '');
 }
+/* ---- typable pickers in the edit card (Gianni, 2026-11-13: every dropdown is typable) ----
+   A text box with suggestions instead of a plain select. Typing filters; EDIT.pickFrom takes the exact entry (any
+   case) or the one entry that contains the text. A box that names no entry, or several, is refused when it is left or
+   Enter is pressed, and the last good choice stays. Enter in a picker picks; it never saves the card. */
+const ED_PICKS = ['ed-src', 'ed-who', 'ed-add'];
+// list entries as unique strings (a datalist offers values only): a repeat gets " (2)", " (3)"
+function edPickKeys(labels) {
+  const seen = new Map();
+  return labels.map(l => { const n = (seen.get(l) || 0) + 1; seen.set(l, n); return n === 1 ? l : `${l} (${n})`; });
+}
+function edPickHintHTML(o, id) {
+  const t = o.pickHint && o.pickHint.id === id ? o.pickHint : null;
+  return `<p class="ed-hint${t && t.bad ? ' bad' : ''}" id="${id}-hint"${t && t.text ? '' : ' hidden'}>${esc(t ? t.text : '')}</p>`;
+}
+// Who's on: the roster names not on the line, as "Lorenzo"; picking one adds that person
+function edWhoPickHTML(o, id, more) {
+  o.whoMore = more;
+  return `<input id="${id}" data-f="add" list="${id}-list" autocomplete="off" spellcheck="false" placeholder="type a name…" ` +
+    `value="${esc(o.pickTyped && o.pickTyped.id === id ? o.pickTyped.raw : '')}">` +
+    `<datalist id="${id}-list">${more.map(n => `<option value="${esc(cap(n))}"></option>`).join('')}</datalist>` + edPickHintHTML(o, id);
+}
+function edPickList(o, id) { return id === 'ed-src' ? (o.srcKeys || []) : (o.whoMore || []).map(cap); }
+// A box left by pressing something in the card settles at the press, before its click: a redraw then would replace the
+// button pressed and lose the click, so it waits until the press is over (edPressDone). A Save pressed straight from a
+// box only shows what was picked (edSave), so nothing is saved unseen.
+const ED_PRESS = { down: false, draw: false };
+function edDrawSoon() { if (ED_PRESS.down) ED_PRESS.draw = true; else edDraw(); }
+function edPressDone() { ED_PRESS.down = false; if (ED_PRESS.draw) { ED_PRESS.draw = false; edDraw(); } }
+// what a picker's typed text names: the hint while typing. A suggestion picked from the list (an input event that is
+// not plain typing: no inputType, or insertReplacementText) is used at once; typed text waits for Enter or leaving the
+// box, so typing a name that starts another never picks the shorter one on the way.
+function edPickTyped(o, el, e) {
+  const id = el.id, raw = el.value, list = edPickList(o, id), m = EDIT.pickFrom(list, raw), t = String(raw).trim();
+  const typing = !!(e && e.inputType && e.inputType !== 'insertReplacementText');
+  o.pickTyped = { id, raw };
+  if (m.exact && !typing) { edPickUse(o, id, m.value, true); return; }
+  const what = id === 'ed-src' ? 'lines' : 'names';
+  o.pickHint = { id, bad: !!t && m.value == null, text: !t ? '' : m.value != null ? `Picks ${m.value}. Press Enter or leave the box to use it.`
+    : m.n > 1 ? `${m.n} ${what} contain "${t}". Keep typing, or pick one from the list.`
+    : `No ${what === 'lines' ? 'line' : 'name'} in the list matches "${t}". Pick one from the list.` };
+  const h = $(id + '-hint');
+  if (h) { h.textContent = o.pickHint.text; h.hidden = !o.pickHint.text; h.classList.toggle('bad', o.pickHint.bad); }
+}
+// leaving the box or pressing Enter: the one entry it names is used, or the box goes back and says why. Enter keeps the
+// cursor in the box; leaving it never pulls the cursor back.
+function edPickSettle(o, el, enter) {
+  const id = el.id, raw = el.value, t = String(raw).trim(), m = EDIT.pickFrom(edPickList(o, id), raw);
+  if (m.value != null) { edPickUse(o, id, m.value, enter); return; }
+  o.pickTyped = null;
+  o.pickHint = t ? { id, bad: true, text: m.n > 1 ? `"${t}" matches more than one, so nothing was picked${id === 'ed-src' && o.draft.src ? '; the line you picked before stays' : ''}. Pick one from the list.`
+    : `"${t}" isn't in the list, so nothing was picked${id === 'ed-src' && o.draft.src ? '; the line you picked before stays' : ''}.` } : null;
+  if (!enter) { edDrawSoon(); return; }
+  edDraw();
+  const f = $(id); if (f) f.focus();
+}
+function edPickUse(o, id, value, focus) {
+  o.pickTyped = null; o.pickHint = null; o.notice = null;
+  if (id === 'ed-src') {
+    const i = (o.srcKeys || []).indexOf(value), x = i >= 0 ? (o.srcs || [])[i] : null;
+    if (!x) return;
+    o.draft.src = { date: x.date, text: x.text }; o.draft.text = x.text;
+  } else {
+    const n = (o.whoMore || []).find(q => cap(q) === value);
+    if (!n) return;
+    o.draft.people.push({ name: n, st: 'DISTRO', note: '' });
+  }
+  o.dirty = true;
+  if (!focus) { edDrawSoon(); return; }
+  edDraw();
+  const f = $(id === 'ed-src' ? 'ed-text' : id) || $(id); if (f) f.focus();
+}
 /* ---- adding a line (release 1b): "+ Add to Thursday" under the day's cards in the day panel (laptop panel, phone Day
    view, and the month view's day header). It goes in the sheet under the day's last line, with the look of a line of
    the same kind, so in the sheet it looks as if Victoria typed it. Only from today on, only while kinds_on has 'add'. ---- */
@@ -8996,12 +9067,11 @@ function edAddCopyHTML(o) {
   const D = o.draft, list = o.srcs = EDIT.addSources(S.weeks, S.grid, o.date, edUrgent);
   if (!list.length) return `<p class="ed-hint">There's no one-line item in the weeks the sheet shows to copy. Add the line in the sheet.</p>`;
   const pick = D.src ? list.findIndex(x => x.date === D.src.date && edNl(x.text) === edNl(D.src.text)) : -1;
-  let h = `<label class="ed-l" for="ed-src">Line to copy</label><select id="ed-src" data-f="src"><option value="">Pick a line</option>`, day = '';
-  list.forEach((x, i) => {
-    if (x.label !== day) { h += (day ? '</optgroup>' : '') + `<optgroup label="${esc(x.label)}">`; day = x.label; }
-    h += `<option value="${i}"${i === pick ? ' selected' : ''}>${esc(edOne(x.text))}</option>`;
-  });
-  h += (day ? '</optgroup>' : '') + '</select>';
+  // typable (Gianni's rule): each line is "day · its words"; typing filters, and only a listed line is used
+  const keys = o.srcKeys = edPickKeys(list.map(x => `${x.label} · ${edOne(x.text)}`));
+  let h = `<label class="ed-l" for="ed-src">Line to copy</label><input id="ed-src" data-f="src" list="ed-src-list" autocomplete="off" spellcheck="false" ` +
+    `placeholder="type a day or words to search…" value="${esc(o.pickTyped && o.pickTyped.id === 'ed-src' ? o.pickTyped.raw : pick >= 0 ? keys[pick] : '')}">` +
+    `<datalist id="ed-src-list">${keys.map(k => `<option value="${esc(k)}"></option>`).join('')}</datalist>` + edPickHintHTML(o, 'ed-src');
   if (D.src) h += `<label class="ed-l" for="ed-text">Wording</label><textarea id="ed-text" data-f="text" rows="3" spellcheck="false">${esc(D.text)}</textarea>` +
     `<p class="ed-hint">Change the words if you need to. The line keeps the look of the one you copy, and is saved in capitals.</p>`;
   return h;
@@ -9023,8 +9093,7 @@ function edAddCrewHTML(o) {
     (p.st === 'ON CALL' || p.note ? `<input data-f="note" data-i="${i}" value="${esc(p.note)}" placeholder="What for (optional), for example PORTAL WORK" aria-label="${esc('Note for ' + cap(p.name))}" autocomplete="off">` : '') +
     '</div>').join('');
   const more = WEEK.ROSTER.filter(n => !D.people.some(p => p.name === n));
-  if (more.length) h += `<label class="ed-l" for="ed-who">${D.people.length ? 'Add someone' : 'Who'}</label><select id="ed-who" data-f="add"><option value="">Pick a name</option>` +
-    more.map(n => `<option value="${esc(n)}">${esc(cap(n))}</option>`).join('') + '</select>';
+  if (more.length) h += `<label class="ed-l" for="ed-who">${D.people.length ? 'Add someone' : 'Who'}</label>` + edWhoPickHTML(o, 'ed-who', more);
   return h;
 }
 // Which days: the week's days as chips, one line on each day picked. Past days, days with no empty row left under their
@@ -9377,8 +9446,7 @@ function edFormHTML(o) {
     // the roster, less whoever is on this line or the day's other Who's on lines
     const elsewhere = new Set(o.lines.filter(c => !edSameCell(c, o.cell)).flatMap(c => Object.keys(WEEK.parseCrew(edCell(c[0], c[1])).people)));
     const more = WEEK.ROSTER.filter(n => !D.people.some(p => p.name === n) && !elsewhere.has(n));
-    if (more.length) h += `<label class="ed-l" for="ed-add">Add someone</label><select id="ed-add" data-f="add"><option value="">Pick a name</option>` +
-      more.map(n => `<option value="${esc(n)}">${esc(cap(n))}</option>`).join('') + '</select>';
+    if (more.length) h += `<label class="ed-l" for="ed-add">Add someone</label>` + edWhoPickHTML(o, 'ed-add', more);
     h += (o.rebased ? edWas(o.seen) : '');
   } else if (o.kind === 'add') {
     h += edSeg('mode', 'What', ED_ADD.filter(([m]) => m !== 'crew' || o.mode === 'crew' || !edHasCrew(o.date)), o.mode);
@@ -9550,6 +9618,8 @@ async function edPost(body) {
 async function edSave() {
   const o = ED.open;
   if (!o || o.phase !== 'edit' || o.busy) return;
+  // Save pressed straight from a picker box that this press settled: show what it picked first, save on the next press
+  if (ED_PRESS.draw) { ED_PRESS.draw = false; o.notice = { tone: 'info', text: 'Picked from what you typed. Check it, then press Save.' }; edDraw(); return; }
   o.notice = null;
   const block = edBlock(o);
   if (block) { edPreview(); return; }
@@ -9725,9 +9795,9 @@ function edDecorate() {
       const f = v.dataset.edv, val = v.dataset.v;
       if (f === 'strain') { o.draft.strain = val; edPickStrain(o); o.seen = edSnap(o); edDraw(); return; }
       if (f === 'size') { o.draft.size = val; edPickStrain(o); edDraw(); return; }
-      if (f === 'line') { o.draft.line = +val; edPickCrew(o); o.seen = edSnap(o); edDraw(); return; }
-      // adding a line: what to add, and the days (several can be picked)
-      if (f === 'mode') { o.mode = val; o.notice = null; edDraw(); return; }
+      if (f === 'line') { o.draft.line = +val; o.pickTyped = o.pickHint = null; edPickCrew(o); o.seen = edSnap(o); edDraw(); return; }
+      // adding a line: what to add, and the days (several can be picked); a half-typed pick is forgotten
+      if (f === 'mode') { o.mode = val; o.notice = null; o.pickTyped = o.pickHint = null; edDraw(); return; }
       if (f === 'day') {
         const ds = o.draft.days, i = ds.indexOf(val);
         if (i >= 0) ds.splice(i, 1); else ds.push(val);
@@ -9758,6 +9828,7 @@ function edDecorate() {
   });
   el.addEventListener('input', e => {
     const o = ED.open, f = e.target.dataset && e.target.dataset.f;
+    if (o && o.phase === 'edit' && ED_PICKS.includes(e.target.id)) { edPickTyped(o, e.target, e); return; }
     if (!o || !f || f === 'add' || f === 'src' || o.phase !== 'edit') return;
     if (o.kind === 'batch' && e.target.id === 'ed-status') { edBatStatusTyped(o, e.target.value); return; }
     if (f === 'note') o.draft.people[+e.target.dataset.i].note = e.target.value.toUpperCase().replace(/\s+/g, ' ').trim();
@@ -9768,16 +9839,18 @@ function edDecorate() {
     const o = ED.open;
     // a typed status settles on leaving the box (or picking a suggestion): the listed spelling, or the last good one back
     if (o && o.kind === 'batch' && o.phase === 'edit' && e.target.id === 'ed-status') { edBatStatusSettle(o, e.target); return; }
-    // Copy a line: the line picked; its words become the wording to start from
-    if (o && o.phase === 'edit' && e.target.dataset.f === 'src') {
-      const x = e.target.value === '' ? null : (o.srcs || [])[+e.target.value];
-      o.draft.src = x ? { date: x.date, text: x.text } : null; o.draft.text = x ? x.text : '';
-      o.dirty = true; o.notice = null; edDraw(); return;
-    }
-    if (!o || e.target.dataset.f !== 'add' || !e.target.value) return;
-    o.draft.people.push({ name: e.target.value, st: 'DISTRO', note: '' }); o.dirty = true; edDraw();
+    // Copy a line, Who / Add someone: typed text settles on leaving the box (a clicked suggestion is used at once)
+    if (o && o.phase === 'edit' && ED_PICKS.includes(e.target.id)) { if (o.pickTyped) edPickSettle(o, e.target, false); return; }
   });
+  // a press in the card: a picker box it leaves redraws after the click (edDrawSoon); the click ends the press, or the
+  // release does when no click follows (a tap's click can come after its release)
+  el.addEventListener('pointerdown', () => { ED_PRESS.down = true; }, true);
+  window.addEventListener('click', () => { if (ED_PRESS.down) setTimeout(edPressDone, 0); }, true);
+  window.addEventListener('pointerup', () => { if (ED_PRESS.down) setTimeout(edPressDone, 500); }, true);
+  window.addEventListener('pointercancel', () => { if (ED_PRESS.down) setTimeout(edPressDone, 0); }, true);
   el.addEventListener('keydown', e => {
+    // Enter in a picker picks (or says why it can't); it never saves the card
+    if (e.key === 'Enter' && !e.isComposing && ED_PICKS.includes(e.target.id)) { e.preventDefault(); const o = ED.open; if (o && o.phase === 'edit') edPickSettle(o, e.target, true); return; }
     if (e.key === 'Enter' && e.target.tagName === 'INPUT' && !e.isComposing) { e.preventDefault(); if (!$('ed-save') || !$('ed-save').disabled) edSave(); }
   });
   $('ed-back').addEventListener('click', e => { e.stopPropagation(); const o = ED.open; if (o && !(o.phase === 'edit' && o.dirty)) edClose(); else edNudge(); });
@@ -9796,7 +9869,7 @@ function edDecorate() {
    sheet reload in the background never wipes what an admin is typing. */
 const AD = { admin: null, me: '', editors: null, settings: null, log: null, sync: null, syncErr: '', at: 0, seq: 0, loading: false,
   busy: '', busyWord: '', err: '', msg: null, edit: '', copyOpen: false, syncOpen: '', logAll: false, drawn: '',
-  draft: { email: '', scope: 'plan', admin: false, copy: '', editScope: 'plan', editAdmin: false, src_trims: '', src_batches: '' } };
+  draft: { email: '', scope: 'plan', scopeText: null, admin: false, copy: '', editScope: 'plan', editScopeText: null, editAdmin: false, src_trims: '', src_batches: '' } };
 const AD_SAY = {
   notSetUp: "The admin settings aren't set up on the server yet. Ask Gianni to apply them.",
   syncNotSetUp: "The cloud sync jobs aren't set up on the server yet.",
@@ -9921,21 +9994,44 @@ function adminSet(patch, after) {
     edStatus();   // the board's Edit and Add follow the new switches now, not in five minutes
   });
 }
+// what a scope box names: the typed words resolved to one listed scope (EDIT.pickFrom), else null with the reason
+function adScopeOf(k) {
+  const t = AD.draft[k + 'Text'];
+  if (t == null) return { scope: AD.draft[k] };
+  const words = ADMIN.SCOPES.map(x => x[1]), m = EDIT.pickFrom(words, t), hit = m.value != null ? ADMIN.SCOPES.find(x => x[1] === m.value) : null;
+  if (hit) { AD.draft[k] = hit[0]; AD.draft[k + 'Text'] = null; return { scope: hit[0] }; }
+  AD.draft[k + 'Text'] = null;   // the box goes back to the last good scope
+  const all = words.join(', ').replace(/, ([^,]*)$/, ' or $1'), q = String(t).trim();
+  return { error: !q ? `Pick what they can change: ${all}. Nothing was saved.`
+    : m.n > 1 ? `"${q}" matches more than one choice. Pick ${all}; nothing was saved.`
+    : `"${q}" isn't one of the choices. Pick ${all}; nothing was saved.` };
+}
+// leaving a scope box: the one scope it names is written out in full there (no redraw, so a click on Add or Save still
+// lands); a box that names none, or several, stays as typed and is refused at Add or Save
+function adScopeSettle(k, el) {
+  const t = AD.draft[k + 'Text'];
+  if (t == null) return;
+  const m = EDIT.pickFrom(ADMIN.SCOPES.map(x => x[1]), t), hit = m.value != null ? ADMIN.SCOPES.find(x => x[1] === m.value) : null;
+  if (hit) { AD.draft[k] = hit[0]; AD.draft[k + 'Text'] = null; el.value = hit[1]; }
+}
 // Add only adds. pipeline_admin_editor_add refuses someone already on the list (checked on the server, under the
 // editors lock, so a list another admin changed since this page read it is still caught) and leaves them as they are;
 // the page then shows their line as it is now and offers Change. What it says afterwards is the server's answer.
 function adminAdd() {
-  const r = ADMIN.email(AD.draft.email), scope = AD.draft.scope, admin = !!AD.draft.admin;
+  const r = ADMIN.email(AD.draft.email), sc = adScopeOf('scope'), scope = AD.draft.scope, admin = !!AD.draft.admin;
   const say = msg => { AD.msg = Object.assign({ card: 'editors' }, msg); AD.drawn = ''; renderAdmin(); };
+  if (sc.error) return say({ bad: true, text: sc.error });
   if (r.error) return say({ bad: true, text: r.error });
   if ((AD.editors || []).some(e => e.email === r.email)) return say({ exists: r.email });
   adminRun('editors', () => sb.rpc('pipeline_admin_editor_add', { p_email: r.email, p_scope: scope, p_admin: admin }), d => {
-    AD.draft.email = ''; AD.draft.scope = 'plan'; AD.draft.admin = false;
+    AD.draft.email = ''; AD.draft.scope = 'plan'; AD.draft.scopeText = null; AD.draft.admin = false;
     AD.msg = { card: 'editors', text: ADMIN.addedSay(d, r.email) };
   }, e => e && e.hint === 'editor-exists' ? { exists: r.email, late: true } : null);
 }
 function adminSaveEditor(em) {
   const e = (AD.editors || []).find(x => x.email === em); if (!e) return;
+  const sc = adScopeOf('editScope');
+  if (sc.error) { AD.msg = { card: 'editors', bad: true, text: sc.error }; AD.drawn = ''; renderAdmin(); return; }
   const scope = AD.draft.editScope, admin = !!AD.draft.editAdmin;
   const block = ADMIN.changeBlock(AD.editors, em, admin);
   if (block) { AD.msg = { card: 'editors', bad: true, text: block }; AD.drawn = ''; renderAdmin(); return; }
@@ -10082,12 +10178,14 @@ function adSwitches() {
 }
 function adEditors() {
   const eds = AD.editors || [], dis = AD.busy ? ' disabled' : '';
-  const opts = sel => ADMIN.SCOPES.map(([v, w]) => `<option value="${v}"${v === sel ? ' selected' : ''}>${esc(w)}</option>`).join('');
+  // typable (Gianni's rule): the words for each scope; only a listed one is saved (adScopeOf)
+  const scopeBox = (k, v, label) => `<input class="ad-in ad-scope" type="text" data-ad-in="${k}Text" list="ad-scopes" autocomplete="off" spellcheck="false" ` +
+    `placeholder="type to search…" aria-label="${esc(label)}" value="${esc(AD.draft[k + 'Text'] != null ? AD.draft[k + 'Text'] : ADMIN.scopeWord(v))}">`;
   const rows = eds.map(e => {
     const me = e.email === AD.me ? '<span class="ad-pill me">You</span>' : '', adm = e.admin ? '<span class="ad-pill">Admin</span>' : '';
     if (AD.edit === e.email) return `<div class="ad-ed"><div class="who"><b>${esc(e.email)}</b>${me}</div>
       <form class="ad-form in-row" data-ad-form="edit" data-email="${esc(e.email)}">
-        <label class="ad-chk">Can change <select data-ad-in="editScope">${opts(AD.draft.editScope)}</select></label>
+        <label class="ad-chk">Can change ${scopeBox('editScope', AD.draft.editScope, 'What they can change')}</label>
         <label class="ad-chk"><input type="checkbox" data-ad-in="editAdmin"${AD.draft.editAdmin ? ' checked' : ''}> Admin</label>
         <button class="btn ad-go" type="submit"${dis}>Save</button>
         <button class="btn ghost" type="button" data-ad="edit-cancel">Cancel</button>
@@ -10101,9 +10199,10 @@ function adEditors() {
     <h3>Who can change the sheet</h3>
     <p class="ad-help">Editors can change the sheet from the app while saving is on. Admins can also use this page. Admins of the whole Wizard Trees app can always use it, listed here or not.</p>
     ${rows || '<p class="ad-help">Nobody yet.</p>'}
+    <datalist id="ad-scopes">${ADMIN.SCOPES.map(([, w]) => `<option value="${esc(w)}"></option>`).join('')}</datalist>
     <form class="ad-form" data-ad-form="add">
       <input class="ad-in" type="text" data-ad-in="email" value="${esc(AD.draft.email)}" placeholder="Their Wizard Trees email" aria-label="Their Wizard Trees email" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <select data-ad-in="scope" aria-label="What they can change">${opts(AD.draft.scope)}</select>
+      ${scopeBox('scope', AD.draft.scope, 'What they can change')}
       <label class="ad-chk"><input type="checkbox" data-ad-in="admin"${AD.draft.admin ? ' checked' : ''}> Admin</label>
       <button class="btn ad-go" type="submit"${dis}>Add</button>
     </form>
@@ -10205,9 +10304,9 @@ function renderAdmin() {
       }
       case 'edit': {
         const ed = (AD.editors || []).find(x => x.email === em); if (!ed) break;
-        AD.edit = em; AD.draft.editScope = ed.scope; AD.draft.editAdmin = !!ed.admin; AD.msg = null; renderAdmin(); break;
+        AD.edit = em; AD.draft.editScope = ed.scope; AD.draft.editScopeText = null; AD.draft.editAdmin = !!ed.admin; AD.msg = null; renderAdmin(); break;
       }
-      case 'edit-cancel': AD.edit = ''; renderAdmin(); break;
+      case 'edit-cancel': AD.edit = ''; AD.draft.editScopeText = null; renderAdmin(); break;
       case 'remove': adminRemove(em); break;
       case 'copy-open': {
         AD.copyOpen = true; AD.draft.copy = ''; AD.msg = null; renderAdmin();
@@ -10234,7 +10333,7 @@ function renderAdmin() {
   const keep = e => { const k = e.target.dataset && e.target.dataset.adIn; if (k) AD.draft[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; return !!k; };
   root.addEventListener('input', keep);
   root.addEventListener('change', e => {
-    if (keep(e)) return;
+    if (keep(e)) { const k = e.target.dataset.adIn; if (k === 'scopeText' || k === 'editScopeText') adScopeSettle(k.slice(0, -4), e.target); return; }
     const t = e.target, s = AD.settings; if (!s) return;
     if (t.dataset.adTab) adminSet({ tabs_on: ADMIN.toggled(ADMIN.TABS, s.tabs_on, t.dataset.adTab, t.checked) });
     else if (t.dataset.adKind) adminSet({ kinds_on: ADMIN.toggled(ADMIN.KINDS, s.kinds_on, t.dataset.adKind, t.checked) });

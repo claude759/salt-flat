@@ -260,6 +260,13 @@ launch. The check fails if one of the three pieces is missing.
   cells; rows without a Metrc UID are not editable at first; ships switched off; the first real save is
   one value Victoria actually wants, after dry runs, with Undo. Later, Add a batch inserts a row under
   the drop's last batch (the no-insert rule is lifted for this tab only).
+- **Every pick-list on the page is typable** (Gianni's rule for everything built for him, 2026-11-13; the last plain
+  selects converted 2026-11-15): a text box with suggestions (input + datalist), never a `<select>` (the check fails on
+  one). Add's Line to copy ("day · words"), Who / Add someone, and the Admin page's scope boxes resolve what was typed
+  with `EDIT.pickFrom` (the exact entry in any case, else the one entry that contains it); anything else is refused and
+  the last good choice stays. A suggestion picked from the list is used at once; typed text waits for Enter or leaving
+  the box, so typing "Lor" never adds someone on the way to a longer name. Enter in a picker never saves the card, and
+  Save pressed straight from a picker box first shows what it picked (`ED_PRESS`), so nothing is saved unseen.
 - **Each step of a batch's track is clickable** (Gianni, 2026-11-13: "I want each column clickable"). A step is a
   button that opens a small card under it (a bottom sheet on phones), drawn from `BSTEP.card` (the BATCH STEP MODEL
   block) and the row's facts: Harvest (day, room, site, trim sheet pounds, and the Metrc harvest from
