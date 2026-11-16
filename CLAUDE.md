@@ -368,6 +368,34 @@ launch. The check fails if one of the three pieces is missing.
     spread over it; it draws again when what sits above it changes height. A planned harvest, a trim not done yet (its
     estimate included) and its drying line carry a purple outline and glow (#7C3AED); past plans that never happened
     don't. Projected bubbles added later (expected lab results, projections) glow the same way.
+  - **Testing bubbles** (Gianni, 2026-11-15: "we'll also need bubbles for when stuff is sent for testing and when we
+    receive the testing results back"): Test and COA bubbles in the board's testing yellow (COA deeper), one pair per
+    send, never one per batch (samples of one lot, or one site's pre-rolls, sent within 2 days are one send). A flower
+    send rides its lot's unit (H, T, Test, COA on one track; Metrc lineage through pipeline_batch_harvests, read with
+    the Metrc harvests in `b2LoadMetrc`, else the sheet row); a send more than 21 days after its unit's last day is a
+    unit of its own. Pre-rolls get a unit per site and send (the lineage's site; with several, the code's site when it
+    is one of them, else the site with most source harvests; no lineage: the sheet harvest's, else the code's). Vapes
+    are not on Batch V2 (the Batches page's Vapes band has them). Days are the Batches track's (`BAT.labDays`): TEST
+    DATE, else the lab's Collected, else the manifest; COA RETURN DATE, else the COA e-mail. A COA still out is dashed
+    purple on its expected day (`BAT.coaOutlook`, pickupCoa's rule), at today once past it, amber " · late" past the
+    9-in-10 day; after 30 days with nothing back it is gone, and the Test reads amber " · no COA" only while someone
+    still waits: its sheet row isn't finished or Done, or it has no row and went within the sheet reader's 120 days
+    (a tag sent before that is one the reader no longer lists: not flagged). When the rest of the send came back, the
+    flag goes on its COA instead, amber " · not all". A fail is amber " · N fail", never red. A new sample sent after a
+    tag's results (the lab job's newest manifest after its COA, or a TEST DATE typed after the COA RETURN DATE: a
+    retest) is a send of its own, at the lab, and the earlier one keeps its result. A COA RETURN DATE typed ahead is
+    not a result. A sheet TEST DATE or COA RETURN DATE before the batch's harvest, or a TEST DATE over 60 days ahead (a
+    year typed wrong), is left out for the lab's day and the card says to check the year. The sentence counts each
+    sample at the lab once ("5 samples at the lab, results about Wed Nov 18. 1 more past the usual day."), and says
+    when the Metrc lineage couldn't be read (tried again on each poll).
+    Planned sends from the pipeline sheet's testing lines are not drawn yet (only a TEST DATE typed ahead and projected
+    COAs glow purple). Words only "Test: RM1" / "COA: RM1" ("Test: Pre-rolls"; on the lot's track, short of room,
+    "Test" / "COA"); never a bare number. A testing bubble never cuts the bubble before it: it moves on (`BT2.row`).
+    Everything else is in the card a click opens (`b2LabHTML`): days and sources, the result, the lab's order e-mail,
+    the order on Confident LIMS, the day on the Production schedule, the batches on the Batches page, and each batch's
+    own Test and COA facts (BSTEP.card, drawn by `b2StepHTML`, not the Batches page's `bpopHTML`). Lab results load on
+    open, every 10 minutes at most on the polls (`b2Labs`), and on Refresh; signed out, only the sheet's TEST DATE and
+    COA RETURN DATE are drawn.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them

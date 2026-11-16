@@ -615,6 +615,30 @@ assert.equal(hl('#36 THE VOID - FINISH STICKERING GAS GIMLET').head, '#36 THE VO
       [['sheet:2026-11-13', 'ANTIDOTE:Pass'], ['2611EXL9561', 'POTION:Pass,Brain Freeze:Fail'], ['sheet:2026-11-12', 'NEBULA:'], ['2610EXL9180', 'TIDE:Pass']]);
     assert.deepEqual(typed.out.map(g => g.items.map(i => i.strain).join(',')), ['WIZZY'], 'and it leaves "At the lab"');
   }
+  // Batch V2's testing bubbles reuse the Batches page's rules: labKind is labNews' own (hoisted), labDays the track's
+  // priority, coaOutlook pickupCoa's drawing rule
+  {
+    assert.deepEqual([{ product_type: 'Vape' }, { product_type: 'Preroll' }, { product_type: 'Bulk Flower' }].map(x => BAT.labKind(x, null)), ['vape', 'preroll', 'flower']);
+    assert.equal(BAT.labKind({}, { item: '5PK' }), 'preroll', 'an untyped COA goes by the sheet item');
+    assert.equal(BAT.labKind(null, { item: 'FLOWER' }), 'flower', 'no lab row: the sheet item');
+    assert.deepEqual(BAT.labDays({ sent_date: '2026-10-27', collected: '2026-10-28', completed: '2026-11-03', result: 'Pass' }, null),
+      { sent: '2026-10-28', sentFrom: 'collected', back: '2026-11-03', backFrom: 'lab', resIn: true, result: 'Pass', retest: false });
+    assert.deepEqual(['sent', 'sentFrom', 'back', 'backFrom'].map(k => BAT.labDays({ collected: '2026-10-28', completed: '2026-11-02' }, { test_date: '2026-10-28', coa_date: '2026-11-03' })[k]),
+      ['2026-10-28', 'sheet', '2026-11-03', 'sheet'], 'the sheet first, as the Batches track');
+    assert.equal(BAT.labDays({ sent_date: '2026-11-12' }, null).sentFrom, 'sent');
+    assert.equal(BAT.labDays({ sent_date: '2026-11-12' }, null).resIn, false);
+    assert.deepEqual(['result', 'retest'].map(k => BAT.labDays({ result: 'Pass', completed: '2026-11-03' }, { status: 'FAILED TESTING' })[k]), ['Fail', true], "the sheet's fail stands (pickupCoa)");
+    assert.equal(BAT.labDays(null, { coa_url: 'x' }).resIn, true);
+    assert.equal(BAT.labDays(null, { coa_url: 'x' }).back, '', 'a link with no date: results in, no day');
+    assert.equal(BAT.labDays(null, { thc: 30.1, coa_date: '2026-10-06' }).result, 'Pass', 'a THC on the sheet is a pass');
+    const t = { n: 30, sent: 6, sent90: 7, nColl: 30, coll: 5 };
+    const out = d => BAT.coaOutlook(BAT.expectedCoa({ sent_date: '2026-11-12' }, null, t, d), t, d);
+    assert.deepEqual(out('2026-11-15'), { expected: '2026-11-18', date: '2026-11-18', p90: '2026-11-19', over: 0, stuck: false, basis: 'sent', from: '2026-11-12', days: 6 });
+    assert.deepEqual(['2026-11-19', '2026-11-20'].map(d => [out(d).date, out(d).over, out(d).stuck]), [['2026-11-19', 1, false], ['2026-11-20', 2, true]],
+      'past the expected day: at today; late only past the 9-in-10 day');
+    assert.equal(BAT.coaOutlook(BAT.expectedCoa({ collected: '2026-11-01' }, null, t, '2026-11-08'), t, '2026-11-08').stuck, true, 'no 9-in-10 day: 2 days over is late');
+    assert.equal(BAT.coaOutlook(null, t, '2026-11-08'), null);
+  }
   // the Test date's order e-mail: exact by the COA's sample id, else strain and the day the sample went out (within 3 days)
   {
     const orders = [
@@ -2276,5 +2300,242 @@ if (realPipe) {
   assert.ok(/if \(spare > 0 && lanes\.length\)/.test(b2src) && /L\.pitch = Math\.min\(L\.h \/ L\.n/.test(b2src), 'Batch V2 fills the page vertically');
   assert.ok(/' plan fut'/.test(b2src) && /fut \? ' fut' : ''/.test(b2src) && /\.b2-tm\.fut\{box-shadow|\.b2-hv\.fut,\.b2-tm\.fut\{box-shadow/.test(html) && /#7C3AED/.test(html), 'future bubbles glow purple');
   console.log(`batch V2 Metrc lots: a third harvest source with no duplicate room-days, trims read "T: RM3: 115 · 15 left", the On hand column folds lots under 5 lb, caps with "+N more", amber after 30 days`);
+
+  // testing bubbles (Gianni, 2026-11-15: "bubbles for when stuff is sent for testing and when we receive the testing
+  // results back"): one Test and one COA per send, a flower send on its lot's track, pre-rolls on their own, vapes off
+  {
+    const LT = { n: 30, sent: 6, sent90: 7, nColl: 30, coll: 5 };
+    const lab = (uid, o) => Object.assign({ metrc_uid: uid, sample_id: '', sent_date: null, collected: null, completed: null, result: null, product_type: 'Bulk Flower' }, o);
+    const LA = flowLot('25TH|1|2026-10-29', 'TideBanger', '2026-11-06', 120, 100, { metrc_harvests: ['F1-TB-10292026', 'F1-AN-10292026'] });
+    const LBt = flowLot('23RD|2|2026-10-07', 'Riptide', '2026-10-18', 100, 40, { metrc_harvests: ['F2-RT-10072026'] });
+    const LC = flowLot('15TH|A|2026-05-25', 'Tea Party', '2026-06-05', 50, 0, { metrc_harvests: ['A-TP-05252026'] });
+    const mrowsL = [fRow('F1-TB-10292026', 'F', 'F1', '2026-10-29', 90000, 'TideBanger'), fRow('F2-RT-10072026', 'S', 'F2', '2026-10-07', 90000, 'Riptide'),
+      fRow('A-TP-05252026', 'I', 'A', '2026-05-25', 90000, 'Tea Party')];   // licenses L-F, L-S, L-I
+    const ln = (n, l) => ({ name: n, license: l });
+    const links = new Map([['U1', [ln('F1-TB-10292026', 'L-F')]], ['U2', [ln('F1-AN-10292026', 'L-F')]], ['U3', [ln('F2-RT-10072026', 'L-S')]], ['U4', [ln('F2-RT-10072026', 'L-S')]],
+      ['U5', [ln('F2-RT-10072026', 'L-S')]], ['U6', [ln('F2-RT-10072026', 'L-S'), ln('F1-TB-10292026', 'L-F')]], ['U8', [ln('A-TP-05252026', 'L-I')]], ['U9', [ln('A-TP-05252026', 'L-I')]]]);
+    const labsL = [lab('U1', { sent_date: '2026-11-12' }), lab('U2', { sent_date: '2026-11-12' }),
+      lab('U3', { sent_date: '2026-10-27', collected: '2026-10-28', completed: '2026-11-02', result: 'Pass', sample_id: '2610EXL9180.1' }),
+      lab('U4', { sent_date: '2026-10-27', collected: '2026-10-28', completed: '2026-11-03', result: 'Fail', sample_id: '2610EXL9180.2' }),
+      lab('U5', { product_type: 'Preroll', collected: '2026-10-20', completed: '2026-10-26', result: 'Pass' }),
+      lab('U6', { product_type: 'Preroll', collected: '2026-10-20', completed: '2026-10-26', result: 'Pass' }),
+      lab('U7', { product_type: 'Vape', collected: '2026-11-09', completed: '2026-11-13', result: 'Pass' }),
+      lab('U8', { product_type: null, sent_date: '2026-06-10' }), lab('U9', { product_type: null, sent_date: '2026-06-22' })];
+    const rowsL = [{ metrc_uid: 'U5', batch_code: 'RT-10726-F-5PK', strain: 'Riptide', item: '5PK', harvest_date: '2026-10-07' },
+      { metrc_uid: 'U6', batch_code: 'BL-10726-F-1', strain: 'Blend', item: '1G Preroll', harvest_date: '2026-10-07' },
+      { metrc_uid: 'U8', batch_code: 'FA-TP-52526-I', strain: 'Tea Party', item: 'FLOWER', harvest_date: '2026-05-25', status: 'DONE', finished: true },
+      { metrc_uid: 'U9', batch_code: 'FA-TQ-52526-I', strain: 'Tea Party', item: 'FLOWER', harvest_date: '2026-05-25', status: 'WAITING FOR COA' },
+      { metrc_uid: 'U10', batch_code: 'F1-TB-91526-F', strain: 'Tidebanger', item: 'FLOWER', harvest_date: '2026-09-15', test_date: '2026-10-01', coa_date: '2026-10-06', thc: 30.1 }];
+    const MLab = BT2.build({ weeks: [], rows: rowsL, ev: null, today: '2026-11-15', lots: [LA, LBt, LC], metrc: mrowsL, labs: labsL, links, turn: LT });
+    const G = f => MLab.labs.groups.find(f), has = u => g => g.items.some(i => i.uid === u);
+    const unitOf = id => MLab.sites.flatMap(L => L.units).find(u => u.id === id);
+    // a flower send still out rides its lot: one Test, one COA due on the expected day (9 in 10 a day later)
+    const g1 = G(has('U1'));
+    assert.deepEqual([g1.hid, g1.own, g1.n, g1.sent, g1.sentFrom, g1.state, g1.at, g1.exp.p90], ['h:25TH|1|2026-10-29', false, 2, '2026-11-12', 'sent', 'due', '2026-11-18', '2026-11-19'],
+      "two samples of one lot sent the same day are one send, on that lot's harvest (Metrc lineage, the name at its license's site)");
+    assert.equal(unitOf('h:25TH|1|2026-10-29').end, '2026-11-18', "the lot's unit runs to its COA");
+    assert.deepEqual(unitOf('h:25TH|1|2026-10-29').ev.map(g => g.id), [g1.id]);
+    assert.deepEqual([BT2.labBubble('s', g1), BT2.labBubble('c', g1), BT2.labBubble('s', g1, true), BT2.labBubble('c', g1, true)], ['Test: RM1', 'COA: RM1', 'Test', 'COA']);
+    // results on two days: one COA, on the last; the lab's Collected day is the send, not the manifest
+    const g3 = G(has('U3'));
+    assert.deepEqual([g3.sent, g3.sentFrom, g3.at, g3.state, g3.nFail, g3.warn, g3.orders], ['2026-10-28', 'collected', '2026-11-03', 'back', 1, true, ['2610EXL9180']]);
+    assert.equal(g3.items.length, 2, 'both batches in one send');
+    assert.deepEqual([BT2.labBubble('c', g3), BT2.labBubble('c', g3, true)], ['COA: RM2 · 1 fail', 'COA · 1 fail'], 'a fail says so, in words');
+    // pre-rolls: a unit of their own, in the lane Metrc's lineage gives (the code's site among several)
+    const g5 = G(has('U5'));
+    assert.deepEqual([g5.site, g5.own, g5.kind], ['23RD', true, 'preroll'], 'lineage wins over the code (RT-10726-F-5PK reads 25th)');
+    assert.equal(g5.items[0].codeSite, '25TH', "the card can say the code's site");
+    assert.deepEqual([BT2.labBubble('s', g5), BT2.labBubble('s', g5, true), BT2.labBubble('c', g5, true)], ['Test: Pre-rolls', 'Test: PR', 'COA: PR']);
+    assert.equal(G(has('U6')).site, '25TH', "a blend of two sites: the code's site, one of them");
+    assert.deepEqual(G(has('U6')).items[0].srcs.map(s => s.hid).sort(), ['h:23RD|2|2026-10-07', 'h:25TH|1|2026-10-29'], 'its source harvests, for the card');
+    assert.ok(unitOf(g5.id) && !unitOf(g5.id).h && !unitOf(g5.id).t, 'a pre-roll send is a unit with no harvest or trim');
+    // vapes stay off Batch V2; the four lanes stay
+    assert.deepEqual(MLab.labs.loose.filter(x => x.why === 'vape').map(x => x.item.uid), ['U7']);
+    assert.ok(!G(has('U7')));
+    assert.deepEqual(MLab.sites.map(L => L.site), ['23RD', '25TH', '15TH', 'OLYMPIC']);
+    // gone quiet: sent more than 30 days ago with nothing back. Done on the sheet: a plain Test; still waiting: amber "no COA"
+    const g8 = G(has('U8')), g9 = G(has('U9'));
+    assert.deepEqual([g8.state, g8.at, g8.stale, g8.quietOk, BT2.labBubble('s', g8)], ['quiet', '', false, true, 'Test: RMA']);
+    assert.deepEqual([g9.state, g9.stale, BT2.labBubble('s', g9), BT2.labBubble('s', g9, true)], ['quiet', true, 'Test: RMA · no COA', 'Test · no COA']);
+    assert.ok([g8, g9].every(g => g.hid === 'h:15TH|A|2026-05-25' && !g.own), '6/10 and 6/22 are within 21 days of the lot: on its track');
+    const MQ = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-15', lots: [LC], metrc: mrowsL, links: new Map([['U12', [ln('A-TP-05252026', 'L-I')]]]), turn: LT,
+      labs: [lab('U12', { sent_date: '2026-06-22' })] });
+    assert.deepEqual(['state', 'stale', 'quietOk', 'hid'].map(k => MQ.labs.groups[0][k]), ['quiet', false, false, 'h:15TH|A|2026-05-25'],
+      "no sheet row (the reader leaves out batches finished more than 120 days ago): placed by lineage, never amber");
+    assert.equal(MLab.labs.first, '2026-06-10', 'the earliest send, for "read from" on older trims');
+    assert.deepEqual([MLab.labs.out.n, MLab.labs.out.late, MLab.labs.out.from, MLab.labs.out.to], [2, 0, '2026-11-18', '2026-11-18'], 'the sentence: 2 samples at the lab');
+    // signed out: the sheet's TEST DATE and COA RETURN DATE only, placed by the sheet row
+    const MS = BT2.build({ weeks: [], rows: rowsL, ev: null, today: '2026-11-15', labs: [], links: null, turn: null });
+    assert.equal(MS.labs.groups.length, 1);
+    const gs = MS.labs.groups[0];
+    assert.deepEqual([gs.sent, gs.sentFrom, gs.at, gs.backFrom, gs.state, gs.hid, gs.items[0].result], ['2026-10-01', 'sheet', '2026-10-06', 'sheet', 'back', 'h:25TH|1|2026-09-15', 'Pass']);
+    assert.equal(BT2.labBubble('c', gs), 'COA: RM1');
+    // sends of one lot: within 2 days one send; later ones ride the track until one goes more than 21 days after it
+    const LD = flowLot('23RD|1|2026-09-01', 'Tide', '2026-09-12', 100, 10, { metrc_harvests: ['F1-TD-09012026'] });
+    const vl = new Map(['V1', 'V2', 'V3', 'V4'].map(u => [u, [ln('F1-TD-09012026', 'L-S')]]));
+    const MD = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-15', lots: [LD], metrc: [fRow('F1-TD-09012026', 'S', 'F1', '2026-09-01', 90000, 'Tide')], links: vl, turn: LT,
+      labs: [lab('V1', { collected: '2026-09-15', completed: '2026-09-20', result: 'Pass' }), lab('V2', { collected: '2026-09-16', completed: '2026-09-20', result: 'Pass' }),
+        lab('V3', { collected: '2026-09-29', completed: '2026-10-04', result: 'Pass' }), lab('V4', { collected: '2026-11-02' })] });
+    assert.deepEqual(MD.labs.groups.map(g => [g.sent, g.own, g.n]), [['2026-09-15', false, 2], ['2026-09-29', false, 1], ['2026-11-02', true, 1]]);
+    assert.equal(MD.sites.flatMap(L => L.units).find(u => u.id === 'h:23RD|1|2026-09-01').end, '2026-10-04');
+    const g4 = MD.labs.groups[2], u4 = MD.sites.find(L => L.site === '23RD').units.find(u => u.id === g4.id);
+    assert.ok(u4 && !u4.h && u4.ev[0] === g4, 'a send 29 days after its lot is a unit of its own, in the same lane');
+    assert.deepEqual([BT2.labBubble('s', g4), BT2.labBubble('s', g4, true)], ['Test: RM1', 'Test: RM1'], 'which keeps its room');
+    assert.deepEqual([g4.state, g4.at, g4.exp.over, BT2.labBubble('c', g4)], ['late', '2026-11-15', 8, 'COA: RM1 · late'], 'collected basis, 8 days over: late, drawn on today');
+    // past the usual day, not yet past the 9-in-10 day: waiting, on today, not amber
+    const MW = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-15', lots: [flowLot('15TH|B|2026-10-20', 'Tide', '2026-10-30', 50, 50, { metrc_harvests: ['B-TD-10202026'] })],
+      metrc: [fRow('B-TD-10202026', 'I', 'B', '2026-10-20', 90000, 'Tide')], links: new Map([['W1', [ln('B-TD-10202026', 'L-I')]]]), turn: LT, labs: [lab('W1', { sent_date: '2026-11-08' })] });
+    assert.deepEqual(['state', 'at', 'warn'].map(k => MW.labs.groups[0][k]), ['wait', '2026-11-15', false]);
+    // no labs: nothing changes
+    const M0l = BT2.build({ weeks, rows, ev, today: '2026-11-13', spread: 0.12, labs: [], links: null });
+    const uj = X => X.sites.map(L => L.units.map(u => [u.id, u.start, u.end]));
+    assert.deepEqual(uj(M0l), uj(M), 'no lab results: the same units');
+    assert.ok(M.sites.every(L => L.units.every(u => u.ev.length === 0)) && M.labs.groups.length === 0);
+    // the give-way rule (tw: 7px a character): a bubble runs into the next one's day only as far as the next can't move
+    const tw7 = s => s.length * 7;
+    const R1 = BT2.row([{ k: 't', x: 322, min: 60, full: 'T: RM3: 115 · 15 left', short: 'T: RM3: 115 · 15', fixed: true }, { k: 's', x: 418, min: 28, full: 'Test', short: 'Test' }], tw7, { GAP: 6 });
+    assert.deepEqual(R1.items.map(b => [b.x, b.w, b.text]), [[322, 147, 'T: RM3: 115 · 15 left'], [475, 28, 'Test']], 'a trim keeps its words; the Test after it moves on, never cuts it');
+    const R2 = BT2.row([{ k: 'h', x: 100, min: 28, full: 'H: RM2: 756 lbs', short: 'H: RM2: 756' }, { k: 't', x: 190, min: 60, full: 'T: RM2', fixed: true }], tw7, { GAP: 6 });
+    assert.deepEqual(R2.items.map(b => [b.x, b.w, b.text]), [[100, 77, 'H: RM2: 756'], [190, 60, 'T: RM2']], "a harvest before its trim: short words when they fit (the harvest's rule)");
+    const R3 = BT2.row([{ k: 'h', x: 100, min: 28, full: 'H: RM2: 756 lbs', short: 'H: RM2: 756' }, { k: 't', x: 150, min: 60, full: 'T: RM2', fixed: true }], tw7, { GAP: 6 });
+    assert.deepEqual(R3.items.map(b => [b.x, b.w]), [[100, 44], [150, 60]], 'else cut where the trim starts');
+    const R4 = BT2.row([{ k: 't', x: 322, min: 92, full: 'T: RM2', fixed: true }, { k: 's', x: 354, min: 28, full: 'Test' }], tw7, { GAP: 6 });
+    assert.deepEqual(R4.items.map(b => b.x), [322, 420], 'a Test inside a trim\'s days moves past it');
+    const R5 = BT2.row([{ k: 'c', x: 10, min: 28, full: 'COA: RM1 · 1 fail', short: 'COA · 1 fail' }], tw7, { GAP: 6 });
+    assert.deepEqual([R5.items[0].w, R5.a, R5.b], [119, 10, 135], 'nothing after it: as wide as its words');
+    assert.deepEqual(BT2.row([], tw7, { GAP: 6 }), { items: [], a: 0, b: 0 });
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    for (let n = 0; n < 200; n++) {
+      let x = 0; const bs = [];
+      for (let i = 0; i < 2 + Math.floor(rnd() * 5); i++) { x += Math.floor(rnd() * 120); bs.push({ x, min: 28, full: 'x'.repeat(2 + Math.floor(rnd() * 20)), short: 'y', fixed: rnd() < 0.4 }); }
+      const R = BT2.row(bs, tw7, { GAP: 6 });
+      R.items.forEach((b, i) => { if (i) assert.ok(R.items[i - 1].x + R.items[i - 1].w + 6 <= b.x, 'never overlapping'); assert.ok(b.x >= bs[i].x, 'never before its day'); });
+    }
+    // the words: never a bare number (on Batch V2 a number means pounds)
+    const wg = o => Object.assign({ kind: 'flower', room: '1', own: false, stale: false, nFail: 0, state: 'back' }, o);
+    const words = [wg({}), wg({ stale: true }), wg({ nFail: 1 }), wg({ state: 'late' }), wg({ state: 'late', nFail: 1 }), wg({ room: '' }), wg({ own: true }), wg({ kind: 'preroll', own: true, nFail: 2 })]
+      .flatMap(g => ['s', 'c'].flatMap(k => [BT2.labBubble(k, g), BT2.labBubble(k, g, true)]));
+    assert.deepEqual(words, ['Test: RM1', 'Test', 'COA: RM1', 'COA', 'Test: RM1 · no COA', 'Test · no COA', 'COA: RM1', 'COA', 'Test: RM1', 'Test', 'COA: RM1 · 1 fail', 'COA · 1 fail',
+      'Test: RM1', 'Test', 'COA: RM1 · late', 'COA · late', 'Test: RM1', 'Test', 'COA: RM1 · 1 fail · late', 'COA · 1 fail · late', 'Test: RM?', 'Test', 'COA: RM?', 'COA',
+      'Test: RM1', 'Test: RM1', 'COA: RM1', 'COA: RM1', 'Test: Pre-rolls', 'Test: PR', 'COA: Pre-rolls · 2 fail', 'COA: PR · 2 fail']);
+    assert.ok(words.every(w => !/(^|: )\d/.test(w)), 'never a bare number');
+
+    // review fixes (2026-11-15). A retest: the lab job keeps a tag's newest manifest beside its newest COA, so a sent_date
+    // after the COA's day is a new sample at the lab: its own send, still out, and the earlier one keeps its result
+    const reL = labsL.map(x => x.metrc_uid === 'U4' ? Object.assign({}, x, { sent_date: '2026-11-10' }) : x);
+    const MR = BT2.build({ weeks: [], rows: rowsL, ev: null, today: '2026-11-15', lots: [LA, LBt, LC], metrc: mrowsL, labs: reL, links, turn: LT });
+    const gOld = MR.labs.groups.find(has('U3')), gNew = MR.labs.groups.find(g => g.items.some(i => i.uid === 'U4' && i.resend));
+    assert.deepEqual([gOld.n, gOld.nFail, gOld.state, gOld.at], [2, 1, 'back', '2026-11-03'], 'the earlier sample keeps its failed COA on its send');
+    assert.equal(gOld.items.find(i => i.uid === 'U4').resent, '2026-11-10');
+    assert.deepEqual([gNew.sent, gNew.sentFrom, gNew.state, gNew.at, gNew.nOut, gNew.hid, gNew.own, gNew.orders], ['2026-11-10', 'sent', 'due', '2026-11-16', 1, 'h:23RD|2|2026-10-07', false, []],
+      'the resend is a send of its own on the same lot, at the lab, its COA projected (not on the earlier order)');
+    assert.deepEqual(gNew.items[0].resend, { back: '2026-11-03', result: 'Fail' });
+    assert.deepEqual([MR.labs.out.n, MR.labs.out.due], [3, 3], 'the sentence counts it at the lab');
+    assert.deepEqual(MR.sites.find(L => L.site === '23RD').units.find(u => u.id === 'h:23RD|2|2026-10-07').ev.map(g => g.sent), ['2026-10-28', '2026-11-10'], 'both sends ride the lot, in order');
+    // the same, with the sheet's TEST DATE retyped to the new day (the COA RETURN DATE still the earlier one's)
+    const reRow = rowsL.concat([{ metrc_uid: 'U4', batch_code: 'F2-RT-10726-S', strain: 'Riptide', item: 'FLOWER', harvest_date: '2026-10-07', status: 'FAILED TESTING', test_date: '2026-11-10', coa_date: '2026-11-03' }]);
+    const MR2 = BT2.build({ weeks: [], rows: reRow, ev: null, today: '2026-11-15', lots: [LA, LBt, LC], metrc: mrowsL, labs: labsL, links, turn: LT });
+    const u4r = MR2.labs.items.filter(i => i.uid === 'U4');
+    assert.deepEqual(u4r.map(i => [i.sent, i.sentFrom, i.back, i.result, i.out]), [['2026-10-28', 'collected', '2026-11-03', 'Fail', false], ['2026-11-10', 'sheet', '', '', true]],
+      'a TEST DATE after the COA RETURN DATE is a new sample too');
+    // once the retest's COA is in, one sample again
+    const MR3 = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-17', lots: [LBt], metrc: mrowsL, links, turn: LT,
+      labs: [lab('U4', { sent_date: '2026-11-10', collected: '2026-11-10', completed: '2026-11-16', result: 'Pass' })] });
+    assert.deepEqual(MR3.labs.items.map(i => [i.sent, i.back, !!i.resend]), [['2026-11-10', '2026-11-16', false]]);
+    // a COA RETURN DATE typed ahead isn't a result: still at the lab, its COA still dashed purple (the Batches track: Planned)
+    const ahead = n => rowsL.concat(['U1', 'U2'].slice(0, n).map(u => ({ metrc_uid: u, batch_code: 'F1-TB-102926-F', strain: 'TideBanger', item: 'FLOWER', harvest_date: '2026-10-29', coa_date: '2026-11-19' })));
+    for (const n of [1, 2]) {
+      const MA = BT2.build({ weeks: [], rows: ahead(n), ev: null, today: '2026-11-15', lots: [LA, LBt, LC], metrc: mrowsL, labs: labsL, links, turn: LT });
+      const gA = MA.labs.groups.find(has('U1'));
+      assert.deepEqual([gA.nBack, gA.nOut, gA.state, gA.at, BT2.labClass('c', gA), MA.labs.out.n], [0, 2, 'due', '2026-11-18', 'b2-lc plan fut', 2], `${n} COA RETURN DATE typed ahead`);
+      assert.equal(gA.items.find(i => i.uid === 'U1').coaAhead, '2026-11-19', 'the card can say the sheet plans it');
+    }
+    // a sheet day that can't be the batch's (a year typed wrong): left out, the lab's day used, the timeline unchanged
+    const typo = (td, cd) => rowsL.concat([{ metrc_uid: 'U3', batch_code: 'F2-RT-10726-S', strain: 'Riptide', item: 'FLOWER', harvest_date: '2026-10-07', test_date: td, coa_date: cd }]);
+    const MY = BT2.build({ weeks: [], rows: typo('2025-10-28', '2025-11-03'), ev: null, today: '2026-11-15', lots: [LA, LBt, LC], metrc: mrowsL, labs: labsL, links, turn: LT });
+    const gY = MY.labs.groups.find(has('U3')), iY = gY.items.find(i => i.uid === 'U3');
+    assert.deepEqual([gY.hid, gY.own, gY.sent, gY.at, iY.sentFrom, iY.backFrom], ['h:23RD|2|2026-10-07', false, '2026-10-28', '2026-11-03', 'collected', 'lab'], 'a year behind: the lab\'s days');
+    assert.deepEqual(iY.bad.map(b => [b.col, b.day, b.why, b.floor]), [['test_date', '2025-10-28', 'before', '2026-10-07'], ['coa_date', '2025-11-03', 'before', '2026-10-07']]);
+    assert.deepEqual([MY.from, MY.to], [MLab.from, MLab.to], 'the timeline doesn\'t stretch back a year');
+    const MY2 = BT2.build({ weeks: [], rows: typo('2027-11-12', '2026-11-02'), ev: null, today: '2026-11-15', lots: [LA, LBt, LC], metrc: mrowsL, labs: labsL, links, turn: LT });
+    const iY2 = MY2.labs.groups.find(has('U3')).items.find(i => i.uid === 'U3');
+    assert.deepEqual([iY2.sent, iY2.plan, iY2.bad.map(b => b.why), MY2.to], ['2026-10-28', false, ['ahead'], MLab.to], 'a year ahead: not a planned send, no stretch');
+    const MY3 = BT2.build({ weeks: [], rows: [{ metrc_uid: 'U20', batch_code: 'F2-RT-10726-S', strain: 'Riptide', item: 'FLOWER', harvest_date: '2026-10-07', test_date: '2025-10-28' }],
+      ev: null, today: '2026-11-15', labs: [], links: null, turn: null });
+    assert.deepEqual([MY3.labs.groups.length, MY3.labs.loose.map(x => [x.why, x.item.hid])], [0, [['baddate', 'h:23RD|2|2026-10-07']]], "nothing else to go by: not drawn, the lot's card says why");
+    // partly back: the rest has no results after 30 days and the sheet still waits. The flag goes on the COA, never a
+    // plain COA beside a Test that says "no COA"
+    const LP = flowLot('23RD|1|2026-09-01', 'Tide', '2026-09-12', 100, 10, { metrc_harvests: ['F1-TD-09012026'] });
+    const pl = new Map(['A1', 'A2', 'A3'].map(u => [u, [ln('F1-TD-09012026', 'L-S')]]));
+    const MP = BT2.build({ weeks: [], ev: null, today: '2026-11-15', lots: [LP], metrc: [fRow('F1-TD-09012026', 'S', 'F1', '2026-09-01', 90000, 'Tide')], links: pl, turn: LT,
+      rows: [{ metrc_uid: 'A2', batch_code: 'F1-TD-9126-S', strain: 'Tide', item: 'FLOWER', harvest_date: '2026-09-01', status: 'WAITING FOR COA' }],
+      labs: [lab('A1', { collected: '2026-09-15', completed: '2026-09-21', result: 'Pass' }), lab('A2', { collected: '2026-09-15' }), lab('A3', { sent_date: '2026-09-20' })] });
+    const gP = MP.labs.groups.find(has('A1'));
+    assert.deepEqual([gP.state, gP.nBack, gP.nStale, gP.stale, gP.partBack], ['back', 1, 1, true, true]);
+    assert.deepEqual([BT2.labBubble('s', gP), BT2.labBubble('c', gP), BT2.labBubble('c', gP, true), BT2.labClass('s', gP), BT2.labClass('c', gP)],
+      ['Test: RM1', 'COA: RM1 · not all', 'COA · not all', 'b2-ls', 'b2-lc warn']);
+    assert.deepEqual([BT2.labClass('s', g9), BT2.labClass('c', g3), BT2.labClass('c', g1), BT2.labClass('s', g1)], ['b2-ls warn', 'b2-lc warn', 'b2-lc plan fut', 'b2-ls'], 'nothing back: amber on the Test');
+    // a tag with no sheet row sent within the reader's 120 days isn't "finished long ago": no results after 30 days is
+    // worth a look (amber); one sent before that stays plain (U12 above)
+    const gN = MP.labs.groups.find(has('A3'));
+    assert.deepEqual([gN.state, gN.items[0].gone, gN.stale, BT2.labBubble('s', gN)], ['quiet', false, true, 'Test: RM1 · no COA']);
+    assert.equal(MQ.labs.groups[0].items[0].gone, true);
+    assert.ok(/const FINISHED_DAYS = 120;/.test(html) && BT2.SHEET_DAYS === 120, "the 120 days are the sheet reader's");
+    // the sentence: samples on time first, then those past the usual day, never counted twice
+    const MO = BT2.build({ weeks: [], rows: [], ev: null, today: '2026-11-15', turn: LT,
+      lots: [LA, flowLot('15TH|B|2026-10-20', 'Tide', '2026-10-30', 50, 50, { metrc_harvests: ['B-TD-10202026'] })],
+      metrc: [fRow('F1-TB-10292026', 'F', 'F1', '2026-10-29', 90000, 'TideBanger'), fRow('B-TD-10202026', 'I', 'B', '2026-10-20', 90000, 'Tide')],
+      links: new Map([...['O1', 'O2', 'O3'].map(u => [u, [ln('F1-TB-10292026', 'L-F')]]), ...['O4', 'O5'].map(u => [u, [ln('B-TD-10202026', 'L-I')]])]),
+      labs: [...['O1', 'O2', 'O3'].map(u => lab(u, { sent_date: '2026-11-12' })), ...['O4', 'O5'].map(u => lab(u, { collected: '2026-11-02' }))] });
+    assert.deepEqual(['n', 'due', 'late', 'from', 'to'].map(k => MO.labs.out[k]), [5, 3, 2, '2026-11-18', '2026-11-18']);
+    const dW = d => 'Wed ' + d;
+    assert.equal(BT2.atLabText(MO.labs.out, d => d, dW), '3 samples at the lab, results about Wed 2026-11-18. 2 more past the usual day.');
+    assert.deepEqual([{ n: 2, due: 0, late: 2 }, { n: 1, due: 1, late: 0, from: 'a', to: 'a' }, { n: 3, due: 2, late: 0, from: 'a', to: 'b' }, { n: 0, due: 0, late: 0 }, { n: 2, due: 0, late: 0 }]
+      .map(o => BT2.atLabText(o, d => d, dW)), ['2 samples at the lab, past the usual day.', '1 sample at the lab, results about Wed a.', '2 samples at the lab, results about a to b. 1 more at the lab.', '', '2 samples at the lab.']);
+    // without the lineage (its read failed) the tags with no sheet row wait, and the sentence says how many
+    const ML0 = BT2.build({ weeks: [], rows: rowsL, ev: null, today: '2026-11-15', lots: [LA, LBt, LC], metrc: mrowsL, labs: labsL, links: null, turn: LT });
+    assert.deepEqual(ML0.labs.loose.filter(x => x.why === 'unplaced').map(x => x.item.uid).sort(), ['U1', 'U2', 'U3', 'U4']);
+    assert.deepEqual([ML0.labs.out.n, ML0.labs.out.due], [2, 2], 'out samples not placed still count, by their own day');
+    // the page: the lab results read on open, on the polls (every 10 minutes at most) and on Refresh; the lineage read with
+    // the Metrc harvests (never the Batches page's S.hv); the build call; the card and its actions; amber and purple, no red
+    const fnB = name => { const i = html.indexOf(`function ${name}(`); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i)); };
+    assert.ok(/fresh && \(S\.view === 'batches' \|\| S\.view === 'week' \|\| S\.view === 'batches2'\)\) render\(\)/.test(fnB('loadLabs')), 'a fresh lab read redraws Batch V2');
+    assert.equal((html.match(/b2Labs\(true\); b2LoadMetrc\(true\); b2LoadFlow\(true\); \}/g) || []).length, 3, 'boot, the 5-minute poll and coming back read the lab results');
+    assert.ok(/loadLabs\(false\); b2LoadMetrc\(false\); b2LoadFlow\(false\); \}/.test(html), 'Refresh reads them at once');
+    assert.ok(/10 \* 60 \* 1000/.test(fnB('b2Labs')) && /loadLabs\(quiet\)/.test(fnB('b2Labs')), 'the polls read the lab results every 10 minutes at most');
+    assert.ok(/if \(sb && !labsLoading && !S\.labsAt && !S\.labsErr\) loadLabs\(true\);/.test(fnB('renderBatches2')), 'the first read when Batch V2 opens');
+    assert.ok(b2load.indexOf("from('pipeline_batch_harvests')") > b2load.indexOf('if (!H || forced'), 'the lineage is read only when the Metrc harvests are');
+    // ...and again on a poll while its last read failed; the sentence says when it couldn't be read, and how many wait
+    const b2lm = fnB('b2LoadMetrc'), lmAt = b2lm.indexOf('if (!H || forced');
+    assert.ok(lmAt > 0 && (b2lm.match(/await b2ReadLinks\(\)/g) || []).length === 2 && b2lm.indexOf('await b2ReadLinks()') > lmAt && /\} else if \(!H\.links\) \{\s*\/\/[^\n]*\n\s*try \{ H\.links = await b2ReadLinks\(\);/.test(b2lm),
+      'the lineage with the harvests, and again while its last read failed');
+    assert.ok(/B2\.linksErr !== lerr/.test(b2lm) && /Couldn't read the Metrc \$\{B2\.hvErr \? 'harvests' : 'lineage'\}/.test(fnB('renderBatches2')), "a failed lineage read is said, never silent");
+    assert.ok(/cls = BT2\.labClass\(it\.k, g\)/.test(fnB('renderBatches2')) && /BT2\.atLabText\(LO, b2Day, b2DayW\)/.test(fnB('renderBatches2')), "the bubbles' classes and the sentence come from the model");
+    assert.ok(/tested \$\{b2Day\(g\.sent \|\| g\.at\)\} @ \$\{siteName\(g\.site\)\}/.test(fnB('b2LabRowHTML')) && /why === 'baddate'/.test(fnB('b2LabRowHTML')),
+      "a lot's Pre-rolls row names each send's site (a blend can go the same day from two lanes); its sheet days that don't fit are said");
+    assert.ok(!/\$\{E\.over\} day/.test(b2src) && (fnB('b2LabHTML').match(/b2Days\(E\.over\)\} past the usual day/g) || []).length === 2, '"2 days past the usual day", never "2 day"');
+    const ar = fnB('b2LabAria');
+    assert.ok(/: ''\) \+ stale;/.test(ar) && /\$\{backK\}\$\{fail\}\.\$\{stale\}/.test(ar) && /\$\{still\}\$\{stale\}/.test(ar), 'a screen reader hears what the words flag, in every state');
+    const lh = fnB('b2LabHTML');
+    assert.ok(/it\.gone \? "Not on the Batch Label Sheet the app reads/.test(lh) && lh.includes('No row on the Batch Label Sheet has this METRC UID yet') && /it\.resend\) n\(/.test(lh) && /it\.coaAhead\) n\(/.test(lh) && /it\.bad \|\| \[\]/.test(lh),
+      "the card's reasons: not on the sheet yet vs left out after 120 days, a retest, a COA RETURN DATE still to come, a sheet day that doesn't fit");
+    assert.ok(/mailFor\(b2ItLab\(it\), it\.row\)/.test(lh) && /lab = b2ItLab\(it\)/.test(fnB('b2LabFacts')), "a retest's facts are its own sample's, not the earlier COA's");
+    assert.ok(/labs: S\.labs \?/.test(b2src) && /links: B2\.hv \? B2\.hv\.links/.test(b2src) && /turn: S\.labTurn/.test(b2src), 'the build gets the lab results, the lineage and the turnaround');
+    const bo = fnB('b2Open');
+    assert.ok(/id\.startsWith\('l:'\)/.test(bo) && /b2LabHTML\(g, k \|\| 's'\)/.test(bo) && /B2\.open = \{ id, el, k \}/.test(bo), "a testing bubble opens its send's card");
+    const lc = fnB('b2LabHTML');
+    assert.ok(lc.includes('data-act="bt-mail"') && lc.includes('data-act="b2-sched"') && lc.includes('data-act="b2-only"') && /BSTEP\.card\('Test'/.test(lc) && /BSTEP\.card\('COA'/.test(lc),
+      "the card: the order e-mail, the schedule, the Batches page, and each batch's Test and COA facts");
+    assert.ok(/case 'b2-sched': b2Close\(\); btSched\(/.test(html) && /case 'b2-only': b2Close\(\); S\.view = 'batches'; btShowOnly\(/.test(html), 'the two actions, the view first');
+    assert.ok(/!e\.target\.closest\('\.bt-mailback'\)\) b2Close\(\)/.test(fnB('b2Init')), 'the order e-mail opened from the card leaves it open');
+    assert.ok(/\.b2-l\$\{reopenK\}\[data-b2=/.test(fnB('renderBatches2')) && /\.b2-l\$\{k\}\[data-b2=/.test(fnB('b2Close')), 'a redraw and Close find the same Test or COA bubble');
+    assert.ok(/function b2StepHTML\(/.test(b2src) && !/bpopHTML\(/.test(b2src), "Batch V2 draws BSTEP's cards itself (bpopHTML paints a fail red)");
+    const b2css = html.slice(html.indexOf('/* Batch V2 (beta'), html.indexOf('/* Batch V2 end */'));
+    assert.ok(b2css.includes('.b2-ls.fut,.b2-lc.fut{box-shadow') && b2css.includes('.b2-hv.fut,.b2-tm.fut{box-shadow:0 0 0 1px rgba(124,58,237,.35),0 0 8px 1px rgba(124,58,237,.45)}'), 'projected testing bubbles glow purple');
+    assert.ok(/\.b2-ls\.warn,\.b2-lc\.warn\{border:2px solid #B45309/.test(b2css), 'a fail or a late result is amber');
+    assert.ok(!/#C00000|#E02424|#B42318|#F8C9C9|#DC2626|#EF4444|#B91C1C/i.test(b2css), "no red in Batch V2's styles (red on the app means red on the sheet)");
+    console.log(`batch V2 testing: ${MLab.labs.groups.length} sends from ${labsL.length} lab rows (one Test and one COA each), flower on its lot's track by Metrc lineage, pre-rolls on their own, vapes off, quiet after 30 days, the give-way rule never overlaps`);
+    console.log('batch V2 testing fixes: a retest is a send of its own at the lab, a COA RETURN DATE typed ahead is not back, a sheet day that cannot be the batch\'s gives way to the lab\'s, part back flags the COA, the sentence never counts a sample twice, a failed lineage read is said and tried again');
+  }
 }
 console.log('pipeline-check: all checks passed');
