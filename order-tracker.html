@@ -436,6 +436,32 @@
   /* figures shown beside the open balance, never inside it: orders the supplier has priced but
      not booked, and estimates for orders with no price yet. Dashed, so they never read as balance. */
   .card.outside{border-style:dashed}
+  /* coming due by month: booked, priced but not booked, and our estimates (dashed purple, never balance) */
+  #dueSched:empty{display:none}
+  #dueSched{padding:10px 16px 0}
+  .dueSched{border:1px solid var(--line);border-radius:13px;background:var(--panel);box-shadow:var(--shadow)}
+  .dueSched>summary{cursor:pointer;list-style:none;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:10px 14px}
+  .dueSched>summary::-webkit-details-marker{display:none}
+  .dueSched>summary .chev{transition:transform .15s ease}
+  .dueSched[open]>summary .chev{transform:rotate(90deg);color:var(--accent2)}
+  .dueSched>summary b{font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:var(--muted)}
+  .dueSched>summary .dueNext{font-size:12.5px;color:var(--faint)}
+  .dueSched>summary .dueNext b{text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--text)}
+  .dueBox{overflow-x:auto;border-top:1px solid var(--line)}
+  .dueTbl{width:100%;font-size:13px}
+  .dueTbl thead th{position:static}
+  .dueTbl th[data-due],.dueTbl td[data-due]{cursor:pointer}
+  .dueTbl th[data-due]:hover,.dueTbl td[data-due]:hover{background:rgba(124,92,255,.14)}
+  .dueTbl .on{background:rgba(124,92,255,.16)}
+  .dueTbl td:first-child,.dueTbl th:first-child{padding-left:14px;white-space:nowrap}
+  .dueTbl td .cn{display:block;font-size:10.5px;color:var(--faint);font-weight:500;margin-top:1px;white-space:nowrap}
+  .dueTbl th.now{color:var(--orange)}
+  .dueTbl tr.pr td:not(:first-child){color:var(--yellow)}
+  .dueTbl tr.es td:not(:first-child){color:var(--accent2);font-style:italic}
+  .dueTbl tr.tot td{font-weight:800;background:#131722;border-bottom:0}
+  .dueTbl tr.mk td:first-child{font-weight:700}
+  .dueNote{padding:8px 14px 11px;font-size:11.5px;color:var(--faint);border-top:1px solid var(--line)}
+  .estAmt,.estDate{color:var(--accent2);font-style:italic;border-bottom:1px dashed currentColor;cursor:help}
   .card.outside.est .val{color:var(--accent2)}
   .card.go{cursor:pointer}
   .card.go:hover,.card.go.on{border-color:var(--accent)}
@@ -472,6 +498,7 @@
 
 <div class="banner" id="banner"></div>
 <div class="cards" id="cards"></div>
+<div id="dueSched"></div>
 <div class="toolbar" id="toolbar"></div>
 <div class="paywrap" id="payPanel" style="display:none"></div>
 <div class="wrap"><div class="tblbox" id="tblbox"><div class="loading">Loading order data…</div></div></div>
@@ -895,6 +922,9 @@ function ledger(m, adj, pdates){
   const evs = [];
   // what the "Priced, not in balance yet" card counts, on the row it counts it on (netted per invoice)
   const nbBy = new Map(unbookedFor(m).items.map(x => [x.r.src, x.amt]));
+  // an order with no date and nothing charged yet (a new PO) sits at its expected ship date:
+  // its PO date + the usual days to ship that kind of product (it moves no balance)
+  const lt = leadTimes(), osC = m.cols.find(c => c.orderStatus);
 
   /* a wire is ONE event, however many invoices it was split across */
   const wires = new Map();
@@ -910,7 +940,10 @@ function ledger(m, adj, pdates){
     const total = rowPrice(m, r);
     const invoiced = (dueC2 ? (money(r.c[dueC2.i])||0) : 0) + (nydC2 ? (money(r.c[nydC2.i])||0) : 0)
                    + (paidC2 ? (money(r.c[paidC2.i])||0) : 0);
-    evs.push({ kind:'order', r, key:'o'+r.src, date:r.date, amt: invoiced,
+    const st = osC ? (r.c[osC.i] || '') : '', live = !NOT_AN_ORDER.test(st) && !isDelivered(st) && !FREE_ORDER.test(r.c.join(' '));
+    const expDays = lt.by[r.type] ? lt.by[r.type].days : lt.all, expTyped = !!lt.by[r.type];
+    const expShip = r.date == null && live && Math.abs(invoiced) < 0.005 && r.orderedTs != null ? addDays(r.orderedTs, expDays) : null;
+    evs.push({ kind:'order', r, key:'o'+r.src, date: r.date ?? expShip, expShip, expDays, expTyped, amt: invoiced,
                uninv: nbBy.get(r.src) || 0, total });
     const app = (amt, note) => ({ r, src:r.src, amt, note, inv: cell(r,invC), desc: cell(r,descC) });
     for(const p of paymentsOf(m, r)){
@@ -1333,6 +1366,10 @@ function filteredRows(m){
   // the two figures beside the balance list their own orders when clicked
   if(f.only === 'unbooked'){ const s = new Set(unbookedFor(m).items.flatMap(x => x.srcs)); rows = rows.filter(r => s.has(r.src)); }
   if(f.only === 'pricing'){ const est = orderEstimatesFor(m, state.page); rows = rows.filter(r => est.has(r.src)); }
+  if(f.only && f.only.startsWith('due:')){                // a month of the Coming due table
+    const c = comingDueFor(pageMarkets()).cols.find(x => x.key === f.only.slice(4));
+    rows = rows.filter(r => c && c.srcs.has(r.src));
+  }
   if(f.q){
     const q = f.q.toLowerCase();
     rows = rows.filter(r => (r.type||'').toLowerCase().includes(q) || r.c.some(v => (v||'').toLowerCase().includes(q)));
@@ -2186,6 +2223,189 @@ function estimateBasisHtml(e){
     e.sources.map(s => `<button class="btn" data-gost="${s.state}" data-gosrc="${s.src}">${esc(s.inv || 'Source order')} · ${fmtDayY(s.ordered)} · ${s.qty.toLocaleString('en-US')} units · ${fmtUSD(s.product)} products (${unit(s.unit)}/unit) ↗</button>`).join(' ') + '</div>';
 }
 
+/* ---------- coming due, month by month ----------
+   What the supplier will ask for, and when: its Due now; its Not yet due by each invoice's due
+   date; orders it has priced but not booked; and our estimate for orders with no price yet.
+   Due now and Not yet due are the market's own figures (the Due and Not yet due cards), so the
+   booked line always adds up to the open balance. Anything dated in the past that the supplier
+   has not put in its Due counts in the current month.
+   An order with no due date gets an expected one: the ship date on the sheet (past or planned)
+   + 30 days (the supplier's due date is always 30 days after shipping), else its PO date + the
+   usual days from PO to shipping for that kind of product + 30 days. The usual days are the
+   median over both sheets' orders placed in the past year: of that kind of product when it has
+   3 orders at least, else of every order. Days are added by the calendar, not in 24-hour steps,
+   so a date never slips back a day across a clock change.
+   Nothing here is saved: estimates are worked out from the sheet at every sync, so once the
+   supplier types a price, that order's estimate is gone and the price takes its place (Priced,
+   not booked yet; then Booked once the supplier puts it in Due or Not yet due). */
+const PAY_TERMS_DAYS = 30;
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const addDays = (ts, n) => { const d = new Date(ts); d.setDate(d.getDate() + n); return d.getTime(); };
+function leadTimes(now = Date.now()){
+  const by = {}, all = [], since = startOfDay(now) - 365*DAY;
+  for(const k of ['ca','ny']){
+    const m = state.data[k], shipC = m && colFind(m, 'ship date'); if(!shipC) continue;
+    for(const r of m.rows){
+      const ship = parseSheetDate(r.c[shipC.i]);
+      if(ship == null || r.orderedTs == null || r.orderedTs < since || ship < r.orderedTs || ship - r.orderedTs > 365*DAY) continue;
+      const d = Math.round((ship - r.orderedTs) / DAY);
+      (by[r.type || 'Other'] ??= []).push(d); all.push(d);
+    }
+  }
+  const med = a => { const s = [...a].sort((x,y) => x-y), i = Math.floor(s.length/2); return s.length % 2 ? s[i] : Math.round((s[i-1]+s[i])/2); };
+  const out = { all: all.length ? med(all) : 30, by: {} };
+  for(const t in by) if(by[t].length >= 3) out.by[t] = { days: med(by[t]), n: by[t].length };
+  return out;
+}
+/* an order's due date: the supplier's, else the expected one ({ts, expected, ...}), else null */
+function dueDateOf(m, r, lt){
+  if(r.dueTs != null) return { ts: r.dueTs };
+  const shipC = colFind(m, 'ship date'), ship = shipC ? parseSheetDate(r.c[shipC.i]) : null;
+  if(ship != null) return { ts: addDays(ship, PAY_TERMS_DAYS), expected: 'shipped', ship };
+  if(r.orderedTs == null) return null;
+  const t = lt.by[r.type], days = t ? t.days : lt.all;
+  return { ts: addDays(r.orderedTs, days + PAY_TERMS_DAYS), expected: 'ordered', days, typed: !!t };
+}
+const dueColLabel = (key, thisMonth) => {
+  if(key === 'now') return { label: 'Due now', sub: 'as on the Due card' };
+  if(key === 'nodate') return { label: 'No date yet', sub: 'no PO date' };
+  if(key === 'later') { const k = thisMonth + 6; return { label: `${MONTHS[k % 12]} ${Math.floor(k / 12)} on`, sub: 'and later' }; }
+  const k = +key, label = `${MONTHS[k % 12]} ${Math.floor(k / 12)}`;
+  return { label, sub: k === thisMonth ? 'this month + past dates' : '' };
+};
+const dueKeyRank = key => key === 'now' ? -1 : key === 'later' ? 1e9 : key === 'nodate' ? 2e9 : +key;
+/* markets: e.g. ['ny'], or ['ca','eu'] for the whole California sheet. buckets: which accounts
+   (['nonvape'] leaves vapes out). Returns the columns in order and each placed order's due date. */
+function comingDueFor(markets, { now = Date.now(), buckets = ['vape','nonvape'] } = {}){
+  const today = startOfDay(now), t0 = new Date(today), thisMonth = t0.getFullYear()*12 + t0.getMonth();
+  const lt = leadTimes(now), cols = new Map(), dates = new Map(), estCache = {};
+  const col = key => { let c = cols.get(key); if(!c) cols.set(key, c = { key, booked:0, priced:0, est:0, pending:0, vape:0, nonvape:0, srcs:new Set() }); return c; };
+  const keyOf = ts => { if(ts == null) return 'nodate'; if(ts < today) return String(thisMonth);
+    const d = new Date(ts), k = d.getFullYear()*12 + d.getMonth(); return k > thisMonth + 5 ? 'later' : String(k); };
+  const inBuckets = r => buckets.includes(isVape(r.type) ? 'vape' : 'nonvape');
+  col('now'); col(String(thisMonth));
+  const now0 = col('now'), sheets = new Map();
+  for(const mk of markets){
+    const mb = marketBalances(mk);
+    for(const b of buckets){ now0.booked += mb[b].odue; now0[b] += mb[b].odue; }
+    for(const p of marketSheets(mk)){ const x = sheets.get(p.k) || { k: p.k, m: p.m, keeps: [] }; x.keeps.push(p.keep); sheets.set(p.k, x); }
+  }
+  // one pass per sheet: an invoice whose rows fall in two of the markets asked for (CA and EU on
+  // the whole California sheet) is netted once, as the whole-sheet cards net it
+  for(const { k, m, keeps } of sheets.values()){
+    {
+      const keep = r => keeps.some(f => f(r)), keepR = r => keep(r) && inBuckets(r);
+      const dueC = colFind(m, 'due'), nydC = colFind(m, 'not yet due');
+      const place = (r, kind, amt) => {
+        const dd = dueDateOf(m, r, lt); dates.set(k + ':' + r.src, dd);
+        const c = col(keyOf(dd && dd.ts)); c.srcs.add(r.src);
+        if(kind === 'pending'){ c.pending++; return; }
+        c[kind] += amt; c[isVape(r.type) ? 'vape' : 'nonvape'] += amt;
+      };
+      for(const r of m.rows){
+        if(!keepR(r)) continue;
+        if(dueC && Math.abs(money(r.c[dueC.i]) || 0) > .005) now0.srcs.add(r.src);
+        const nyd = nydC ? (money(r.c[nydC.i]) || 0) : 0;
+        if(Math.abs(nyd) > .005) place(r, 'booked', nyd);
+      }
+      // net each invoice over all its rows (vapes too), then file it by its lead row, as the
+      // Priced, not in balance figures do
+      for(const x of unbookedFor(m, keep).items) if(inBuckets(x.r)) place(x.r, 'priced', x.amt);
+      const bySrc = new Map(m.rows.map(r => [r.src, r]));
+      for(const [src, e] of (estCache[k] ??= orderEstimatesFor(m, k, now))){
+        const r = bySrc.get(src); if(!r || !keepR(r)) continue;
+        e.amount > .005 ? place(r, 'est', e.amount) : place(r, 'pending');
+      }
+    }
+  }
+  // every month from this one to the last with anything in it, so the gaps show as empty months
+  const nums = [...cols.keys()].filter(k => /^\d+$/.test(k)).map(Number);
+  for(let k = thisMonth; k <= Math.max(...nums); k++) col(String(k));
+  const out = [...cols.values()].sort((a,b) => dueKeyRank(a.key) - dueKeyRank(b.key))
+    .filter(c => c.key === 'now' || c.key === String(thisMonth) || /^\d+$/.test(c.key) || c.booked || c.priced || c.est || c.pending);
+  for(const c of out){ Object.assign(c, dueColLabel(c.key, thisMonth)); c.total = c.booked + c.priced + c.est; }
+  return { cols: out, dates, lt, thisMonth };
+}
+/* the markets the current tab shows: NY; CA without EU; EU; or the whole California sheet */
+const pageMarkets = () => state.page === 'ny' ? ['ny']
+  : state.filters.ca.mk === 'eu' ? ['eu'] : state.filters.ca.mk === 'ca' || !hasEU() ? ['ca'] : ['ca','eu'];
+/* the order's Due Date cell when the sheet has none: the expected date, marked as ours */
+function expectedDueHtml(dd, r){
+  if(!dd || !dd.expected) return '';
+  const d = new Date(dd.ts), txt = `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}`;
+  const why = dd.expected === 'shipped'
+    ? `${dd.ship <= startOfDay(Date.now()) ? 'shipped' : 'planned ship date'} ${fmtDayY(dd.ship)} on the sheet + the supplier’s 30 days`
+    : `placed ${fmtDayY(r.orderedTs)} (from the PO number) + about ${dd.days} days to ship (the usual for ${dd.typed ? r.type : 'all orders'}) + the supplier’s 30 days`;
+  return `<span class="estDate" title="No due date on the sheet yet. Expected: ${esc(why)}. The supplier’s date replaces this once they enter it.">≈ ${txt}</span>`;
+}
+/* the Amount cell of an order with no price yet */
+function estimateCellHtml(e){
+  if(!e) return '';
+  if(!(e.amount > .005)) return `<span class="faint" title="${esc((e.reason || '') + ' No estimate; awaiting the supplier’s price.')}">no price yet</span>`;
+  const unit = n => '$' + n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:4});
+  const from = e.sources.map(s => s.inv || 'an earlier order').join(', ');
+  return `<span class="estAmt" title="Our estimate: ${e.qty.toLocaleString('en-US')} units × ${unit(e.unit)} from ${esc(from)}. Products only; freight and duty extra. Not in the balance. The supplier’s price replaces it as soon as they put one on the sheet.">≈ ${fmtUSD(e.amount)}</span>`;
+}
+/* what our estimate would have said for an order that now has a price, from the orders before it */
+function estimateCheckFor(m, k, r){
+  const p = orderPriceFields(m, r);
+  if(!(p.product > .005) || r.orderedTs == null) return null;
+  const c = [...r.c];
+  for(const n of ['total including freight','total price','freight and duty','due','not yet due','paid to date','order status']){
+    const col = colFind(m, n); if(col) c[col.i] = n === 'order status' ? 'In Production' : '';
+  }
+  const e = orderEstimatesFor({ ...m, rows: m.rows.map(x => x === r ? { ...x, c } : x) }, k, r.orderedTs).get(r.src);
+  return e && e.amount > .005 ? { est: e.amount, actual: p.product } : null;
+}
+const dueMoney = v => Math.abs(v) < .005 ? '<span class="faint">$0</span>' : fmtUSD(v);
+const dueNextText = cols => {
+  const now = cols.find(c => c.key === 'now'), rest = cols.filter(c => c.key !== 'now' && Math.abs(c.total) > .005).slice(0, 2);
+  return [...(now && Math.abs(now.total) > .005 ? [now] : []), ...rest]
+    .map(c => `${esc(c.label)} <b>${c.est > .005 ? '≈ ' : ''}${fmtUSD(c.total)}</b>`).join(' · ');
+};
+const DUE_NOTE = 'Booked is Due and Not yet due as on the cards, after payments recorded here. Anything dated in the past that is not in Due counts in this month. ' +
+  'Estimates (≈) come from earlier orders of the same product and are products only; freight and duty are extra. ' +
+  'They are worked out again from the sheet at every sync: when the supplier prices an order, its price replaces the estimate, ' +
+  'first under Priced, not booked yet, then under Booked. Orders without a due date are placed by an expected one (≈ on the order’s row).';
+/* a market tab: one column per month, one line each for booked, priced and estimated */
+function dueSchedHtml(cd, active, open, scopeName){
+  const cls = c => (active === c.key ? ' on' : '');
+  const head = cd.cols.map(c => `<th class="num${c.key === 'now' ? ' now' : ''}${cls(c)}" data-due="${c.key}" title="List these orders">${esc(c.label)}${c.sub ? `<span class="hsub">${esc(c.sub)}</span>` : ''}</th>`).join('');
+  const line = (name, sub, f, rc) => `<tr class="${rc}"><td>${name}${sub ? `<span class="cn">${sub}</span>` : ''}</td>` +
+    cd.cols.map(c => `<td class="num${cls(c)}" data-due="${c.key}">${f(c)}</td>`).join('') + '</tr>';
+  return `<details class="dueSched" id="dueDet"${open ? ' open' : ''}><summary><span class="chev">▶</span><b>Coming due by month</b>` +
+    `<span class="dueNext">${esc(scopeName)} · ${dueNextText(cd.cols) || 'nothing coming due'}</span></summary>` +
+    `<div class="dueBox"><table class="dueTbl"><thead><tr><th></th>${head}</tr></thead><tbody>` +
+    line('Booked', 'Due / Not yet due', c => dueMoney(c.booked), 'bk') +
+    line('Priced, not booked yet', 'not in the open balance', c => dueMoney(c.priced), 'pr') +
+    line('Our estimate', 'no price yet · products only', c => (c.est > .005 ? '≈ ' + fmtUSD(c.est) : c.pending ? '' : dueMoney(0)) +
+      (c.pending ? `<span class="cn">+${c.pending} not estimated</span>` : ''), 'es') +
+    line('Total', '', c => (c.est > .005 ? '≈ ' : '') + dueMoney(c.total), 'tot') +
+    `</tbody></table></div><div class="dueNote">${DUE_NOTE} Click a month to list its orders.</div></details>`;
+}
+/* the Overview: one line per market, each month's total; a click opens that market's orders */
+function dueOverviewHtml(per, open, excl){
+  const keys = [...new Set(per.flatMap(p => p.cd.cols.map(c => c.key)))].sort((a,b) => dueKeyRank(a) - dueKeyRank(b));
+  const thisMonth = per[0].cd.thisMonth, cols = keys.map(k => ({ key:k, ...dueColLabel(k, thisMonth) }));
+  const sum = (key, f) => per.reduce((a,p) => { const c = p.cd.cols.find(x => x.key === key); return a + (c ? c[f] : 0); }, 0);
+  const tot = cols.map(c => ({ ...c, total: sum(c.key,'total'), est: sum(c.key,'est') }));
+  const cell = (c, mk) => !c ? `<td class="num">${dueMoney(0)}</td>`
+    : `<td class="num" data-due="${c.key}" data-gomk="${mk}" title="List these ${MARKET_LABEL[mk]} orders">${c.est > .005 ? '≈ ' : ''}${dueMoney(c.total)}` +
+      (c.est > .005 ? `<span class="cn">≈ ${fmtUSD(c.est)} est.</span>` : c.pending ? `<span class="cn">${c.pending} unpriced</span>` : '') + '</td>';
+  return `<details class="dueSched" id="dueDet" style="margin-top:12px"${open ? ' open' : ''}><summary><span class="chev">▶</span><b>Coming due by month</b>` +
+    `<span class="dueNext">${excl ? 'non-vape · ' : ''}all markets · ${dueNextText(tot) || 'nothing coming due'}</span></summary>` +
+    `<div class="dueBox"><table class="dueTbl"><thead><tr><th>Market</th>` +
+    cols.map(c => `<th class="num${c.key === 'now' ? ' now' : ''}">${esc(c.label)}${c.sub ? `<span class="hsub">${esc(c.sub)}</span>` : ''}</th>`).join('') + `</tr></thead><tbody>` +
+    per.map(p => `<tr class="mk"><td>${MARKET_LABEL[p.mk]}</td>` + cols.map(c => cell(p.cd.cols.find(x => x.key === c.key), p.mk)).join('') + '</tr>').join('') +
+    `<tr class="tot"><td>Total</td>` + tot.map(c => `<td class="num">${c.est > .005 ? '≈ ' : ''}${dueMoney(c.total)}</td>`).join('') + '</tr>' +
+    `</tbody></table></div><div class="dueNote">Each figure is booked + priced but not booked + our estimates (≈) for orders with no price yet. ${DUE_NOTE} Click a figure to list its orders.</div></details>`;
+}
+const dueOpen = () => localStorage.getItem('ot_dueOpen') !== '0';
+function bindDueDet(el){
+  const d = el.querySelector('#dueDet');
+  if(d) d.addEventListener('toggle', () => localStorage.setItem('ot_dueOpen', d.open ? '1' : '0'));
+}
+
 /* the weekly report's numbers: one place, used by the page and by the Monday email.
    range = the window for "new orders" (orders dated by their PO number); nowTs anchors
    the due-date weeks. */
@@ -2768,6 +2988,13 @@ function renderOverview(){
       return lines.join(''); })() +
     (g.overall > 0.005 ? `<div style="padding:8px 2px 0;font-size:12px;color:var(--accent2);font-weight:650">On overall balance: ${fmtUSD(g.overall)} <span class="faint" style="font-weight:500">— re-ascribed, not on an invoice</span></div>` : '') +
     (g.hasAdj ? `<div style="padding:6px 2px 0;font-size:11.5px;color:var(--faint)">✱ adjusted for app payment re-ascriptions (see the Payments panel on each state page); the supplier sheet itself is unchanged.</div>` : '');
+  const dueEl = $('#dueSched'), duePer = shown.map(mk => ({ mk, cd: comingDueFor([mk], { buckets: excl ? ['nonvape'] : ['vape','nonvape'] }) }));
+  dueEl.innerHTML = duePer.length ? dueOverviewHtml(duePer, dueOpen(), excl) : '';
+  bindDueDet(dueEl);
+  dueEl.querySelectorAll('[data-gomk]').forEach(td => td.addEventListener('click', () => {
+    const k = td.dataset.gomk, m = state.data[k === 'eu' ? 'ca' : k];
+    gotoFilter(k, { types: excl ? nonVapeTypes(m) : [], only: 'due:' + td.dataset.due, onlyMarket: k === 'ca' });
+  }));
   cardsEl.querySelectorAll('tr.st-row').forEach(tr =>
     tr.addEventListener('click', () => tr.dataset.page === 'ca' ? gotoCaMarket() : goPage(tr.dataset.page)));
   cardsEl.querySelectorAll('[data-goprod]').forEach(td => td.addEventListener('click', e => {
@@ -2909,6 +3136,7 @@ function render(){
   const navKey = state.page === 'weekly' ? 'report' : state.page === 'ca' && state.filters.ca.mk === 'eu' ? 'eu' : state.page;
   document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.key===navKey));
   $('#q').style.display = state.page==='overview' || state.page==='weekly' ? 'none' : '';
+  $('#dueSched').innerHTML = '';                        // filled by the Overview and the market tabs
   if(state.page === 'overview'){ renderOverview(); return; }
   if(state.page === 'report'){ renderReport(); return; }
   if(state.page === 'weekly'){ renderWeekly(); return; }
@@ -2987,6 +3215,16 @@ function render(){
     f.only = f.only === el.dataset.only ? null : el.dataset.only; render();
   }));
 
+  /* coming due by month for this tab's market (the whole account; the chips filter the table) */
+  const dueMk = pageMarkets(), cd = comingDueFor(dueMk);
+  const dueEl = $('#dueSched');
+  dueEl.innerHTML = dueSchedHtml(cd, f.only && f.only.startsWith('due:') ? f.only.slice(4) : null, dueOpen(),
+    dueMk.length > 1 ? 'whole California sheet' : `${MARKET_LABEL[dueMk[0]]} account`);
+  bindDueDet(dueEl);
+  dueEl.querySelectorAll('[data-due]').forEach(el => el.addEventListener('click', () => {
+    const v = 'due:' + el.dataset.due; f.only = f.only === v ? null : v; render();
+  }));
+
   /* status filter chips (counted over this tab's market: CA without EU, or EU) */
   const osCol = m.cols.find(c=>c.orderStatus);
   const mrows = f.mk === 'eu' ? m.rows.filter(r => r.eu) : f.mk === 'ca' ? m.rows.filter(r => !r.eu) : m.rows;
@@ -3011,7 +3249,8 @@ function render(){
 
   $('#toolbar').innerHTML = chips +
     `<span class="chip payChip ${state.payOpen[state.page]?'on':''}">💸 Payments <span class="n">${m.payCols.length}</span></span>` +
-    (f.only ? `<span class="chip on" data-onlyclear="1" title="Show every order again">${f.only === 'unbooked' ? 'Priced, not in balance yet' : 'Awaiting pricing'} ✕</span>` : '') +
+    (f.only ? `<span class="chip on" data-onlyclear="1" title="Show every order again">${f.only === 'unbooked' ? 'Priced, not in balance yet'
+      : f.only.startsWith('due:') ? `Coming due: ${esc((cd.cols.find(c => c.key === f.only.slice(4)) || dueColLabel(f.only.slice(4), cd.thisMonth)).label)}` : 'Awaiting pricing'} ✕</span>` : '') +
     `<span class="count">${rows.length} of ${mrows.length} orders` +
       (f.mk === 'eu' ? ' · EU orders on the CA sheet · Balance = EU orders only'
         : f.mk === 'ca' ? ' · CA orders (EU orders are on the EU tab) · Balance = CA orders only'
@@ -3137,6 +3376,7 @@ function render(){
 
   const open = state.expanded[state.page];
   const payOpen = state.ledgerPay[state.page];
+  const estMap = orderEstimatesFor(m, state.page), dueDateCol = colFind(m, 'due date');
   const restCols = Math.max(0, nCols - 4);
   let body = '';
   for(const ev of events){
@@ -3150,12 +3390,17 @@ function render(){
         let cell = esc(v);
         if(c.virtual === 'type') cell = r.type ? tyChip(r.type) : '';
         else if(c.virtual === 'ordered') cell = r.ordered ? `<span title="placed on ${r.ordered} (from the PO number)">${r.ordered}</span>` : '';
+        else if(c.virtual === 'amount' && estMap.has(r.src) && Math.abs(ev.amt) < 0.005) cell = estimateCellHtml(estMap.get(r.src));
+        else if(c.virtual === 'amount' && ev.uninv > 0.01 && Math.abs(ev.amt) < 0.005)
+          // priced by the supplier, nothing booked yet: show the price, in the Priced colour, never as balance
+          cell = `<span class="inferred" style="color:var(--yellow)" title="Priced by the supplier, not booked yet: ${fmtUSD(ev.uninv)} of this invoice (all its rows together) is not in Due, Not yet due or Paid to Date, so it is not in the open balance or the Balance column. It is listed under Priced, not booked yet in Coming due by month.">${fmtUSD(ev.uninv)}</span>`;
         else if(c.virtual === 'amount'){
           cell = ev.uninv > 0.01
             ? `<span class="inferred" title="Order total ${fmtUSD(ev.total)}. ${fmtUSD(ev.uninv)} of this invoice is priced on the sheet but not booked by the supplier (not in Due, Not yet due or Paid to Date), so it is not in the open balance yet.">${fmtUSD(ev.amt)}</span>`
             : fmtUSD(ev.amt);
         }
         else if(c.virtual === 'balance') cell = ev[balField] == null ? '' : fmtUSD(ev[balField]);
+        else if(c === dueDateCol && !v) cell = expectedDueHtml(cd.dates.get(state.page + ':' + r.src), r);
         if(c.status && v) cell = `<span class="st ${statusClass(v)}">${esc(v)}</span>`;
         if(delta && (c===paidCol || c===dueCol)){
           const sheetVal = money(v) || 0;
@@ -3169,6 +3414,10 @@ function render(){
             const dt = new Date(r.date);
             cell = `<span class="inferred" title="No ship date — placed by its delivery/due date">` +
                    `${dt.getMonth()+1}/${dt.getDate()}/${dt.getFullYear()}</span>`;
+          } else if(!v && ev.expShip != null){
+            const dt = new Date(ev.expShip);
+            cell = `<span class="estDate" title="No ship date yet. Placed by its expected ship date: placed ${esc(fmtDayY(r.orderedTs))} (from the PO number) + about ${ev.expDays} days to ship (the usual for ${esc(ev.expTyped ? r.type : 'all orders')}).">` +
+                   `\u2248 ${dt.getMonth()+1}/${dt.getDate()}/${dt.getFullYear()}</span>`;
           }
           cell = `<span class="chev">▶</span>` + cell;
         }
@@ -3262,6 +3511,9 @@ function render(){
       payOpen.has(k) ? payOpen.delete(k) : payOpen.add(k);
       render();
     }));
+  box.querySelectorAll('tr.detail [data-gosrc]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation(); gotoOrder(b.dataset.gost, parseInt(b.dataset.gosrc,10));
+  }));
   box.querySelectorAll('tr.paydetail [data-gosrc]').forEach(tr =>
     tr.addEventListener('click', e => {              // jump to the invoice this wire paid
       e.stopPropagation();
@@ -3313,10 +3565,24 @@ function detailHtml(m, r, adj){
       `<div class="fitem"><div class="fl">Due (adjusted)</div><div class="fv">${fmtUSD(sheetDue-delta)} <span class="faint">sheet ${fmtUSD(sheetDue)}</span></div></div></div>`;
   }
 
+  // an order with no price: our estimate and where it came from; a priced one: how close the
+  // estimate would have been, from the orders before it
+  const est = orderEstimatesFor(m, state.page).get(r.src);
+  let estHtml = '';
+  if(est && est.amount > .005) estHtml = `<div class="msec">Price estimate</div>${estimateBasisHtml(est)}` +
+    `<div class="nolink">Worked out again from the sheet at every sync. When the supplier puts a price on this order, the price replaces the estimate.</div>`;
+  else if(est) estHtml = `<div class="msec">No estimate yet</div><div class="nolink">${esc(est.reason || '')} The supplier’s price will show here once they enter it.</div>`;
+  else {
+    const chk = estimateCheckFor(m, state.page, r);
+    if(chk){ const pct = Math.round((chk.actual - chk.est) / chk.est * 100);
+      estHtml = `<div class="msec">Estimate check</div><div class="nolink">Before the supplier priced it, the orders before it put this order’s products at about ` +
+        `${fmtUSD(chk.est)}. The supplier’s price is ${fmtUSD(chk.actual)} (${pct === 0 ? 'the same' : `${Math.abs(pct)}% ${pct > 0 ? 'higher' : 'lower'}`}).</div>`; }
+  }
+
   return `<div class="dbox"><div class="dhead">${chips}` +
     (url ? `<a class="btn primary" href="${esc(url)}" target="_blank" rel="noopener">Invoice PDF ↗</a>`
          : `<span class="nolink">No invoice file is linked on this row in the sheet.</span>`) +
-    `</div><div class="fgrid">${fitems}</div>${payHtml}</div>`;
+    `</div><div class="fgrid">${fitems}</div>${estHtml}${payHtml}</div>`;
 }
 
 /* ---------- payments (wires) panel ---------- */
