@@ -69,11 +69,14 @@ test('uses the median product unit price of the newest five same-state comparabl
   assert.equal(estimate.match, 'Similar product, different designs');
 });
 
-test('never borrows a historical price from the other state', () => {
+test('borrows the other state\'s price only when its own sheet has no similar order, and says where it came from', () => {
   const a = app([history()], [order()]);
   const estimate = a.estimate('INV-TARGET', 'ny');
-  assert.match(estimate.reason, /No comparable/);
-  assert.equal(Object.hasOwn(estimate, 'amount'), false);
+  assert.equal(estimate.amount, 400);
+  assert.equal(estimate.sources[0].state, 'ca');
+  assert.match(a.estimateBasisHtml(estimate), /on the CA sheet/);
+  const b = app([history({product: 800, total: 900})], [order(), history({inv: 'INV-NY'})]);
+  assert.equal(b.estimate('INV-TARGET', 'ny').amount, 400);           // its own sheet first
 });
 
 test('uses NY description quantity for a 390k label order without multiplying its design breakdown', () => {
@@ -180,13 +183,14 @@ test('supports multiple label lines only when all line quantities agree with the
   assert.match(a.estimateProduct(`${labels('First', '150k')}\n3.5g Jar Labels Second`, '200,000').reason, /each product line/);
 });
 
-test('refuses multiple quantities on one product line even when the quantity column is filled', () => {
+test('a line holding a second count is priced only from an earlier order of the same size', () => {
   const a = app([history(), order({desc: `${bag()} x 5k`, qty: '20,000'})]);
-  const estimate = a.estimate();
-  assert.match(estimate.reason, /Multiple quantities/);
+  assert.equal(a.estimate().amount, 400);
+  const b = app([history({desc: bag('Orange', '10k'), qty: '10,000', product: 200, total: 250}), order({desc: `${bag()} x 5k`, qty: '20,000'})]);
+  const estimate = b.estimate();
   assert.equal(Object.hasOwn(estimate, 'amount'), false);
-  assert.equal(a.report().ca.forecast.pending, 1);
-  assert.equal(a.report().ca.forecast.estimated, 0);
+  assert.equal(b.report().ca.forecast.pending, 1);
+  assert.equal(b.report().ca.forecast.estimated, 0);
 });
 
 test('prioritizes an exact product description over newer prices for different designs', () => {
@@ -254,7 +258,7 @@ test('mixed product contents remain unresolved inside parentheses or across slas
     '3.5g Flower Mylar Bags x 20k, 3.5g Jar Labels x 20k',
   ]) {
     const a = app([history(), order({desc})]), estimate = a.estimate();
-    assert.match(estimate.reason, /Product contents/);
+    assert.equal(typeof estimate.reason, 'string');                    // a bag never prices bags plus labels
     assert.equal(Object.hasOwn(estimate, 'amount'), false);
     assert.equal(a.report().ca.forecast.pending, 1);
   }

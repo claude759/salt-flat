@@ -177,7 +177,7 @@ test('a bundle whose only identical earlier order is over five times smaller, ne
   ]);
   const e = a.est('INV-T');
   assert.equal(Object.hasOwn(e, 'amount'), false);
-  assert.match(e.reason, /Product contents/);
+  assert.match(e.reason, /No similar earlier order/);                 // 8 times smaller, newer, or 0.7g x 3
 });
 
 test('the quantity column must agree with the quantity in the bundle description', () => {
@@ -189,10 +189,11 @@ test('the quantity column must agree with the quantity in the bundle description
   assert.equal(Object.hasOwn(a.est('INV-T'), 'amount'), false);
 });
 
-test('bundle estimates never borrow from the other state and leave balances untouched', () => {
+test('a bundle with none on its own sheet borrows the other sheet\'s identical bundle; balances stay untouched', () => {
   const src = order({ inv: 'INV-2490', po: '26090301', desc: multipack('40k'), qty: '40,000', product: 101200, total: 101200 });
   const a = app([src], [order({ inv: 'INV-T', po: '26102003', desc: multipack('40k'), qty: '40,000', status: 'In Production' })]);
-  assert.equal(Object.hasOwn(a.est('INV-T'), 'amount'), false);
+  assert.equal(a.est('INV-T').amount, 101200);
+  assert.equal(a.est('INV-T').sources[0].state, 'ca');
   const b = app([], [src, order({ inv: 'INV-T', po: '26102003', desc: multipack('40k'), qty: '40,000', status: 'In Production' })]);
   const p = b.pricingFor(b.state.data.ny, 'ny');
   assert.deepEqual(plain(p.all), { n: 1, estimated: 1, amount: 101200, pending: 0 });

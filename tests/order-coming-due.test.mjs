@@ -209,3 +209,61 @@ test('cancelled, delivered and free orders with no dates keep their old place in
   assert.equal(ev('INV-Z').expShip, null);
   assert.ok(ev('INV-N').expShip > 0);
 });
+
+/* ---------- pricing from similar earlier orders ---------- */
+
+const est = (a, inv, k = 'ny') => a.orderEstimatesFor(a.state.data[k], k, now).get(a.row(inv, k).src);
+const priced = (inv, po, desc, qty, product, extra = {}) => ({ inv, po, desc, qty, product, total: product, status: 'Delivered', paid: product, ...extra });
+const open = (inv, po, desc, qty) => ({ inv, po, desc, qty, status: 'In Production' });
+
+test('an order worded differently from an earlier one is priced from it', () => {
+  const a = app([], [
+    priced('INV-1959', '26041701', 'Wizard Trees Small Rolling Tray (New Design) - 4K pcs  (Ship to NY)', '4,000', 3760),
+    open('INV-2689', '26102602', 'Wizard Trees NY - Small Rolling Tray NY x 4k (BM House / Wizzy x 2k each)', '4,000'),
+  ]);
+  const e = est(a, 'INV-2689');
+  assert.equal(e.amount, 3760);
+  assert.equal(e.similar, true);
+});
+
+test('a label is never priced from a box, nor a 14g bag from a 3.5g bag', () => {
+  const a = app([], [
+    priced('INV-1', '26080101', 'Wizard Trees - 3.5g Flower Master Case 32ct All States x 11k', '11,000', 28600),
+    open('INV-2', '26100101', 'Wizard Trees - 3.5g Flower Label - Master Case Label x 11k', '11,000'),
+    priced('INV-3', '26080201', 'Wizard Trees - 3.5g Flower Mylar Bag Orange NY x 2k', '2,000', 300),
+    open('INV-4', '26100201', 'Wizard Trees - 14.0g Mylar Bag for Flower NY x 2k', '2,000'),
+  ]);
+  assert.match(est(a, 'INV-2').reason, /No similar earlier order/);
+  assert.match(est(a, 'INV-4').reason, /No similar earlier order/);
+});
+
+test('an EU order is priced from EU orders first; a CA order from the closest description', () => {
+  const a = app([
+    priced('INV-2175', '26060201', 'Wizard Trees AIO Hardware and Packaging - 20K CA', '20,000', 73000),
+    priced('INV-2177', '26060202', 'Wizard Trees AIO Hardware and Packaging - 20K CE', '20,000', 65400),
+    open('INV-2680', '26102104', 'Wizard Trees 1.0g AlO Hardware and Packaging - Bundle (CE) x 20k', '20,000'),
+    open('INV-2660', '26102103', 'Wizard Trees 1.0g AIO Hardware and Packaging - Bundle (CA) x 20k', '20,000'),
+  ], [
+    priced('INV-2176', '26060203', 'Wizard Trees 1.0g AlO Hardware and Packaging - Bundle NY x 10k', '10,000', 36500),
+  ]);
+  assert.equal(est(a, 'INV-2680', 'ca').amount, 65400);
+  assert.equal(est(a, 'INV-2660', 'ca').amount, 73000);
+});
+
+test('counts given per design are not the order quantity; a pound bag is priced from a pound bag', () => {
+  const a = app([], [
+    priced('INV-2536', '26091701', 'Wizard Trees - Flower Mylar Bag - Pound Bag NY x 5k', '5,000', 4350),
+    open('INV-2736', '26110402', 'Wizard Trees - Flower Mylar Bag - Pound Bag - Roller NY x 1k', '1,000'),
+    open('INV-2735', '26110401', 'Wizard Trees - Flower Mylar Bag - Pound Bag NY x 3k ( Zoap / Zangria / Black Magic x 1k each)', '3,000'),
+  ]);
+  assert.equal(est(a, 'INV-2736').amount, 870);
+  assert.equal(est(a, 'INV-2735').amount, 2610);
+});
+
+test('"Seed Mylars" are mylar bags: a seeds mylar bag is priced from them', () => {
+  const a = app([], [
+    priced('INV-1679', '25122401', 'Wizard Trees EU Seed Mylars - 10K - Digital Print', '10,000', 1300),
+    open('INV-2735', '26110401', 'Wizard Trees - Seeds Mylar Bag NY x 3k ( Zoap / Zangria / Black Magic x 1k each)', '3,000'),
+  ]);
+  assert.equal(est(a, 'INV-2735').amount, 390);
+});
