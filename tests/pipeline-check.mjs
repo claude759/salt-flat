@@ -2292,19 +2292,22 @@ if (realPipe) {
   assert.ok(/from\('pipeline_flow_meta'\)/.test(b2flow) && /F\.changed !== changed/.test(b2flow) && /from\('pipeline_flow_lots'\)/.test(b2flow) && /\.range\(/.test(b2flow),
     'Batch V2 reads pipeline_flow_lots again only when pipeline_flow_meta.changed_at moves (or Refresh)');
   assert.ok(/does not exist\|schema cache/.test(b2flow), 'before the table exists the page keeps working');
-  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); b2BandEdge\(\); b2LaneEdge\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column (and the band\'s words by it) redraws a frame at a time, only a changed set');
+  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); b2LaneEdge\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column (and the words at the box\'s edges) redraws a frame at a time, only a changed set');
   { // cut words (Gianni's screenshot at 90% zoom, 2026-11-16): each bubble is measured on a hidden bubble of its own classes
     // (below 100% on a 1x screen a 2px and a 1px border both snap to one device pixel), and a net after each draw
-    const ms = b2src.slice(b2src.indexOf('function b2Measure('), b2src.indexOf('function b2MeasureAll('));
+    const ms = b2src.slice(b2src.indexOf('function b2Measure('), b2src.indexOf('const B2_BUBS'));
     assert.ok(ms.length > 0 && !/b2-hv warn/.test(ms) && /class="\$\{esc\(c\)\}"/.test(ms), 'bubbles are measured on their own classes, never one stand-in class');
+    assert.ok(!/['"`]b2-[a-z]/.test(ms), 'b2Measure hardcodes no class name');
     assert.ok(/function b2FitCheck\(/.test(b2src) && (b2src.match(/b2FitCheck\(/g) || []).length >= 2, 'a safety net checks every drawn bubble\'s words against its box');
     assert.ok(/function b2LaneEdge\(/.test(b2src), 'site-lane words start at the On hand column\'s edge, never their tail');
   }
   { // a click shows only what was clicked (Gianni, 2026-11-16): '+N small' / '+N more' open just their lots, with strains
     const sh = b2src.slice(b2src.indexOf('function b2ShelfHTML('), b2src.indexOf('function b2TrimHTML('));
-    assert.ok(/data-b2="oh:\$\{esc\(L\.site\)\}\|\$\{c\.kind\}"/.test(b2src), 'the folded chips name which chip was clicked');
-    assert.ok(/split\('\|'\)/.test(sh) && /pick\.has\(c\.lot\)/.test(sh) && /b2StrainsLeft\(lt\)/.test(sh), 'their card lists only those lots, each with its strains');
-    const SL = new Function('BT2', b2src.slice(b2src.indexOf('function b2StrainsLeft('), b2src.indexOf('// the On hand column\'s list for one site')) + 'return b2StrainsLeft;')(BT2);
+    assert.ok(/data-b2="oh:\$\{esc\(oid\)\}\|\$\{c\.kind\}"/.test(b2src), 'the folded chips name which chip was clicked');
+    const hs = b2src.slice(b2src.indexOf('function b2HubShelfHTML('), b2src.indexOf('function b2HubShelfHTML(') + 2500);
+    assert.ok(/split\('\|'\)/.test(sh) && /pick\.lots\.has\(c\.lot\)/.test(sh) && /b2StrainsLeft\(lt\)/.test(sh), 'their card lists only those lots, each with its strains');
+    assert.ok(/b2ShelfPick\(L, day, part\)/.test(hs) && /b2StrainsLeft\(lt\)/.test(hs) && /b2HubShelfHTML\(oh\.split\('\|'\)\[1\]\)/.test(b2src), 'the 25th distro\'s column does the same');
+    const SL = new Function('BT2', b2src.slice(b2src.indexOf('function b2StrainsLeft('), b2src.indexOf('// the lots a folded chip of a lane')) + 'return b2StrainsLeft;')(BT2);
     assert.deepEqual(SL({ row: { strains: [{ name: 'Tide', left_lb: 0.6 }, { name: 'Antidote', left_lb: 0 }, { name: 'Smoothie', left_lb: 0.3 }, { name: 'Tide', left_lb: 0.5 }, { name: 'Nebula', left_lb: 0.02 }] } }),
       ['Tide 1.1 lb', 'Smoothie 0.3 lb'], 'strains with flower left, most first, a name typed twice added up, tenths, under 0.05 lb left out');
   }
@@ -2833,24 +2836,31 @@ if (realPipe) {
     const bo = fnS('b2Open');
     assert.ok(bo.indexOf("startsWith('w:')") > 0 && bo.indexOf("startsWith('k:')") > 0 && bo.indexOf("startsWith('w:')") < bo.indexOf('M.trims.find') && bo.indexOf("startsWith('k:')") < bo.indexOf('M.trims.find') &&
       /b2WeekHTML\(wp\[0\], wk\)/.test(bo) && /b2ChanHTML\(kc\)/.test(bo), 'the w: and k: branches');
-    // D3: Close and a redraw find the week bubble and the panel figure
+    // D3: Close and a redraw find the week bubble and the panel figure (and the hub's In and To Nabis bubbles)
     const reoS = b2src.slice(b2src.indexOf('if (reopen) {'), b2src.indexOf('if (reopen) {') + 400);
-    assert.ok(fnS('b2Close').includes('.b2-wk[data-b2=') && fnS('b2Close').includes('.b2-ohc[data-b2=') && reoS.includes('.b2-wk[data-b2=') && reoS.includes('.b2-ohc[data-b2='), 'Close and a redraw name .b2-wk and .b2-ohc');
-    // D4: the band: its own strip after the four sites (not a site strip), its panel apart from the On hand column, its
-    // rows in the room the tracks fit in
+    assert.ok(['.b2-wk[data-b2=', '.b2-ohc[data-b2=', '.b2-in[data-b2=', '.b2-np[data-b2='].every(c => fnS('b2Close').includes(c) && reoS.includes(c)) && !/\.b2-nb\[data-b2=/.test(b2src),
+      'Close and a redraw name .b2-wk, .b2-ohc, .b2-in and .b2-np');
+    // D4: the 25th distro hub replaced the band (Gianni, 2026-11-16: "not sure I want sales by week to be it's own row"):
+    // the grows' strips carry their bulk (with the hatch), the distro's strip, its In band, its work lane and its out rows
+    // in that order, the bands' panels apart from the On hand column, the rows in the room the tracks fit in
     const rb2 = fnS('renderBatches2');
-    assert.ok(rb2.includes('class="b2-bstrip"') && rb2.includes('class="b2-ohb"') && rb2.includes("querySelectorAll('.b2-oh')[i]") && /24 \+ bandN \* RH/.test(rb2) &&
-      rb2.indexOf('class="b2-bstrip"') > rb2.indexOf('<div class="b2-lane"'), 'the band after the site lanes, with its own strip and panel');
-    assert.ok(/const SL = sb && B2\.sales && B2\.sales\.weeks\.length \? B2\.sales : null/.test(rb2) && /BT2\.bandRows\(room, tracks, phone\)/.test(rb2) && /class="b2-wkgap"/.test(rb2) &&
-      /BT2\.salesClass\(ch, k\)/.test(rb2) && /Couldn't read the sales\./.test(rb2), 'signed in only; folds by bandRows; the hatch; classes from the model; a failed read is said');
+    assert.ok(['class="b2-site hub', 'class="b2-inb"', 'class="b2-lane hub"', 'class="b2-out"', 'class="b2-ohb"', "querySelectorAll('.b2-oh')[i]"].every(c => rb2.includes(c)) &&
+      rb2.indexOf('class="b2-site hub') < rb2.indexOf('class="b2-inb"') && rb2.indexOf('class="b2-inb"') < rb2.indexOf('class="b2-lane hub"') && rb2.indexOf('class="b2-lane hub"') < rb2.indexOf('class="b2-out"') &&
+      rb2.indexOf('<div class="b2-lane" style') < rb2.indexOf('class="b2-site hub'), 'the hub after the grows: its strip, In band, work lane, out rows');
+    assert.ok(!/b2-bstrip|class="b2-band"|B2\.band\b|function b2BandEdge/.test(b2src), 'the separate Sales band is gone');
+    assert.ok(/const SL = sb && B2\.sales && B2\.sales\.weeks\.length \? B2\.sales : null/.test(rb2) && /BT2\.hubRows\(room, tracks,/.test(rb2) && /class="b2-wkgap"/.test(rb2) &&
+      /\$\{P\.join\(''\)\}\$\{hatch\}<\/div>/.test(rb2) && /BT2\.salesClass\(/.test(rb2) && /Couldn't read the sales\./.test(rb2), 'signed in only; folds by hubRows; the hatch in a grow strip; classes from the model; a failed read is said');
     assert.ok(/\|\| B2\.salesBad\)\) errs\.push\("Couldn't read the sales\."\)/.test(rb2), 'a block the page refused is said too');
-    assert.ok(rb2.includes("${B2_CH1[ch]}${BT2.lbTxt(S4[ch]).length <= 3 ? '<span> 4 wks</span>' : ''}") && rb2.includes('${B2_CH[ch]}<span> · 4 wks ·</span>'), "the panel's rows say their channel (phones: N, D, B)");
-    assert.ok(/if \(OHW\) B2\.band = \{ bs: wks, px/.test(rb2) && /b2BandEdge\(\); \}/.test(rb2) && /BT2\.bandEdge\(b\.left, b\.w, edge, b\.m\.t, width\)/.test(fnS('b2BandEdge')),
-      "week bubbles under the panel: their words follow its edge (on each draw and scroll frame)");
+    assert.ok(rb2.includes("wWords('bulk', k, 'DISTRO')") && rb2.includes('data-b2="w:bulk|${b.wk.w}|DISTRO"') && rb2.includes('${hubLab}${hubP}</div>') &&
+      /const hubP = inN \|\| !inItems\.length \? hubPills\.map\(b => \{ note\(b, !!b\.text\);/.test(rb2) &&
+      /ch !== 'all' && ok\(dB\) && B\.to >= k\.w\) r\.push\(b2Row\('Bulk', `<button type="button" class="b2-lnk" data-b2="w:bulk\|\$\{esc\(k\.w\)\}\|DISTRO">/.test(fnS('b2WeekHTML')),
+      "bulk sold out of our distros: a pill in the 25th distro's strip (noted for the net), and a Bulk row in the Distru and Stores week cards (the strip has no pill while the In bubbles ride it)");
+    assert.ok(rb2.includes('${B2_CH1[ch]}<span> 4w</span>') && rb2.includes('${B2_CH[ch]}<span> · 4 wks ·</span>'), "the panels' rows say their row (phones: In, To N, N, D, N+D)");
+    assert.ok(/BT2\.edgeWords\(/.test(fnS('b2LaneEdge')) && /b2LaneEdge\(\);\n  if \(reopen\)/.test(rb2), "every bubble's words follow the column's and the box's edges (on each draw and scroll frame)");
     // D5: the look: lavender, dashed and glowing when scheduled, the amber strip warning, focus and selection; no red
     const skCss = html.slice(html.indexOf('/* Batch V2 (beta'), html.indexOf('/* Batch V2 end */'));
     assert.ok(skCss.includes('.b2-wk.fut{box-shadow:0 0 0 1px rgba(124,58,237,.35),0 0 8px 1px rgba(124,58,237,.45)}') && /\.b2-wk:focus-visible/.test(skCss) && /\.b2-wk\.b2-on/.test(skCss) &&
-      /\.b2-wk\.plan\{border-style:dashed/.test(skCss) && skCss.includes('.b2-bstrip em.warn{color:#B45309}') && /\.b2-wkgap\{[^}]*pointer-events:none/.test(skCss), 'the band\'s look');
+      /\.b2-wk\.plan\{border-style:dashed/.test(skCss) && skCss.includes('.b2-site.hub em.warn{color:#B45309}') && /\.b2-wkgap\{[^}]*pointer-events:none/.test(skCss), 'the weeks\' look');
     // D6: no money words in the model block either (the page block is checked above)
     assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2Src), 'the Batch V2 model shows pounds and units only, never dollars');
     // D7: the flow job reads the sales app's Sales-by-Type layout by position
@@ -2860,6 +2870,292 @@ if (realPipe) {
     const flowSql = readFileSync(new URL('../supabase/pipeline-flow.sql', import.meta.url), 'utf8');
     assert.ok(flowSql.includes("- 'sales'") && flowSql.includes('price|dollar|revenue'), 'pipeline_flow_save drops a sales block that names money');
     console.log(`batch V2 sales: ${SW.length} weeks, words like "${BT2.salesBubble('nabis', K('2026-11-09'))}", scheduled weeks dashed purple, bulk clipped at Metrc's copy, three rows or one folded, a 4-week panel; the sig rides the meta read; the server drops money keys`);
+  }
+
+  // the 25th distro hub (Gianni, 2026-11-16: "25th is the only company that sell packaged product to nabis/distru so we
+  // should probably give it some prominence and make it visually clear that the product from the other companies is
+  // transferred to it then it get's packaged then it's sold to nabis -> retailers"): BT2.hub regroups build()'s units for
+  // the grows (H, drying, T) and the 25th distro (In per lot moved in, each lot's chain, pre-roll runs, To Nabis per
+  // pickup), from the flow job's went.to_distro_by and went.nabis_by and the sheet's drops (made-up lots and rows)
+  {
+    const T = '2026-11-16', LTh = { n: 30, sent: 6, sent90: 7, nColl: 30, coll: 5 }, lnH = (n, l) => ({ name: n, license: l });
+    const labH = (uid, o) => Object.assign({ metrc_uid: uid, sample_id: '', sent_date: null, collected: null, completed: null, result: null, product_type: 'Bulk Flower' }, o);
+    let srH = 0;
+    const rowH = (uid, item, strain, code, pk, o) => Object.assign({ sheet_row: ++srH, metrc_uid: uid, item, strain, batch_code: code, package_date: pk, status: 'DONE',
+      total_units: null, budtender_units: null, harvest_date: null, finished: false }, o);
+    // A 23rd RM2 10/29: moved in 11/8, 11/9, 11/10 (one In), picked up 11/10 and 11/13, a sample out, Jars 11/14. B 25th RM1 8/24: a
+    // 0.6 lb sliver moved, picked up 10/27 + 10/28, a flower send 45 days on (a unit of its own). C 15th RMA 10/2: trim only moved.
+    // D Olympic RM2 9/28: moved to Imperial's distro only. E 25th RM2 10/5: a FIL move and an unsaid one the same day, entries the
+    // page can't read. F 25th RM1 4/20: two moves 5 days apart. G 23rd RM1 9/22: no lists. P 23rd RM3 10/7: still at the grow
+    const lotsH = [
+      flowLot('23RD|2|2026-10-29', 'TideBanger', '2026-11-08', 132, 85, { metrc_harvests: ['F2-TB-10292026'], left_grow_lb: 0, left_distro_lb: 85,
+        went: { nabis: 17.1, to_distro: 85, to_distro_by: [['2026-11-08', 13.5, 0], ['2026-11-09', 14.2, 0], ['2026-11-10', 57.3, 0]],
+          nabis_by: [['2026-11-10', 12.1, { jar: 1500 }, 1, 0], ['2026-11-13', 5, {}, 1, 0]] } }),
+      flowLot('25TH|1|2026-08-24', 'Riptide', '2026-09-05', 110, 8.6, { metrc_harvests: ['F1-RT-08242026'], left_grow_lb: 0, left_distro_lb: 8.6,
+        went: { nabis: 8.2, to_distro: 0.6, to_distro_by: [['2026-09-05', 0.6, 0]], nabis_by: [['2026-10-27', 5.2, { jar: 600 }, 1, 0], ['2026-10-28', 3, {}, 1, 0]] } }),
+      flowLot('15TH|A|2026-10-02', 'Zangbanger', '2026-10-12', 80, 18.3, { metrc_harvests: ['A-ZB-10022026'], left_grow_lb: 0, left_distro_lb: 18.3,
+        went: { to_distro_by: [['2026-10-12', 0, 4.2]] } }),
+      flowLot('OLYMPIC|2|2026-09-28', 'Black Light', '2026-10-09', 138, 41.7, { metrc_harvests: ['F2-BL-09282026'], left_grow_lb: 0, left_distro_lb: 41.7,
+        went: { to_distro_by: [['2026-10-09', 68.4, 0, 'IMP']] } }),
+      flowLot('25TH|2|2026-10-05', 'Antidote', '2026-10-06', 58, 2, { metrc_harvests: ['F2-AN-10052026'], left_grow_lb: 0, left_distro_lb: 2,
+        went: { to_distro_by: [['2026-10-15', 5.6, 0, 'FIL'], ['2026-10-15', 2, 0], 'bad', ['x', 5], null, ['2026-10-16', -3]],
+          nabis_by: [['2026-10-28', 1.4, {}, 1, 0], ['2026-11-10', 2, {}, 1, 0], ['bad', 3], ['2026-11-11', 0], null] } }),
+      flowLot('25TH|1|2026-04-20', 'Tide', '2026-04-27', 113, 0, { metrc_harvests: ['F1-TD-04202026'], went: { to_distro_by: [['2026-04-27', 6, 0], ['2026-05-02', 22, 0]] } }),
+      flowLot('23RD|1|2026-09-22', 'Voodoo', '2026-10-04', 101, 18.5, { metrc_harvests: ['F1-VD-09222026'], left_grow_lb: 0, left_distro_lb: 18.5, went: {} }),
+      flowLot('23RD|3|2026-10-07', 'Tea Party', '2026-10-18', 114.6, 114.6, { metrc_harvests: ['F3-TP-10072026'], left_grow_lb: 114.6, left_distro_lb: 0, went: {} })];
+    const linksH = new Map([['FA', [lnH('F2-TB-10292026', 'L-S')]], ['FB', [lnH('F1-RT-08242026', 'L-F')]], ['PA', [lnH('F1-VD-09222026', 'L-S')]],
+      ['PB', [lnH('F1-RT-08242026', 'L-F')]], ['PC', [lnH('A-ZB-10022026', 'L-I')]], ['PD', [lnH('F2-BL-09282026', 'L-O')]], ['PF', [lnH('A-ZB-10022026', 'L-I')]],
+      ['PG', [lnH('F1-VD-09222026', 'L-S')]], ['PH', [lnH('F1-RT-08242026', 'L-F')]]]);
+    // pre-rolls of three grows rolled 10/14, 10/14 and 10/15, sent 10/21, 10/21 and 10/22 (one fails); Olympic rolled 10/18 and 15th
+    // 10/19 (not counted yet); 23rd and 25th planned 11/20 and 11/21
+    const labsH = [labH('FA', { sent_date: '2026-11-12' }), labH('FB', { sent_date: '2026-10-20', completed: '2026-10-26', result: 'Pass' }),
+      labH('PA', { product_type: 'Preroll', sent_date: '2026-10-21', completed: '2026-10-26', result: 'Pass' }),
+      labH('PB', { product_type: 'Preroll', sent_date: '2026-10-21', completed: '2026-10-27', result: 'Pass' }),
+      labH('PC', { product_type: 'Preroll', sent_date: '2026-10-22', completed: '2026-10-27', result: 'Fail' })];
+    const packH = [rowH('FA', 'FLOWER', 'TideBanger', 'F2-TB-102926-S', '2026-11-14', { total_units: 1000, budtender_units: 100 }),
+      rowH('PA', '1G Preroll', 'Voodoo', 'VD-92226-S-1', '2026-10-14', { total_units: 900 }), rowH('PB', '5PK', 'Riptide', 'RT-82426-F-5PK', '2026-10-14', { total_units: 300 }),
+      rowH('PC', '1G Preroll', 'Zangbanger', 'ZB-10226-I-1', '2026-10-15', { total_units: 450 }), rowH('PD', '1G Preroll', 'Black Light', 'BL-92826-O-1', '2026-10-18', { total_units: 600 }),
+      rowH('PF', '1G Preroll', 'Zangbanger', 'ZB-10226-I-1', '2026-10-19', { total_units: 500, status: 'PACKAGING' }),
+      rowH('PG', '1G Preroll', 'Voodoo', 'VD-92226-S-1', '2026-11-20', { status: 'WAITING FOR LABELS' }), rowH('PH', '5PK', 'Riptide', 'RT-82426-F-5PK', '2026-11-21', { status: 'WAITING FOR LABELS' })];
+    const evH = TRIMY.events([tr('I', '15TH', 'B', 'Oct 20', '2026-10-20', '2026-10-20', 30, 'Tide', 20000, 5000)]);   // a trim no harvest leads to
+    const baseH = { weeks: [], rows: [], ev: evH, today: T, labs: labsH, links: linksH, turn: LTh, packRows: packH };
+    const MH = BT2.build(Object.assign({ lots: lotsH }, baseH));
+    // the sheet's pickups (coa: pickupCoa()'s state, from the page); Metrc's copy reads through 11/14
+    const dropsH = [{ drop: 'Nov drop 2', date: '2026-11-12', coa: null }, { drop: 'Nov drop 3', date: '2026-11-15', coa: null }, { drop: 'Nov drop 4', date: '2026-11-16', coa: null },
+      { drop: 'Dec drop 1', date: '2026-11-20', coa: 'tight' }, { drop: 'Dec drop 1b', date: '2026-11-21', coa: 'late' }, { drop: 'Dec drop 2', date: '2026-12-04', coa: 'ok' },
+      { drop: 'Dec drop 3', date: '2026-12-10', coa: 'tight' }, { drop: 'Bad', date: 'soon', coa: 'late' }];
+    const optH = { lots: lotsH, drops: dropsH, reach: '2026-11-14', today: T };
+    const HB = BT2.hub(MH, optH);
+    const hA = 'h:23RD|2|2026-10-29', hB = 'h:25TH|1|2026-08-24', hE = 'h:25TH|2|2026-10-05', hF = 'h:25TH|1|2026-04-20';
+    const partIds = H => H.units.flatMap(u => u.ev.flatMap(g => g.parts ? g.parts.map(p => p.id) : [g.id]));
+    // H1: the grows hold their harvests and trims only (the same units as sites(), in HUB_ORDER: 25th's grow last, right above
+    // its distro); every send and pack is in exactly one unit of the distro, itself or as a run's part; sites() keeps its order
+    assert.deepEqual([BT2.HUB_ORDER, HB.grow.map(G => G.site), MH.sites.map(L => L.site)], [['23RD', '15TH', 'OLYMPIC', '25TH'], ['23RD', '15TH', 'OLYMPIC', '25TH'], ['23RD', '25TH', '15TH', 'OLYMPIC']]);
+    assert.ok(HB.grow.every(G => G.units.every(u => (u.h || u.t) && MH.sites.find(L => L.site === G.site).units.includes(u))), 'grow units: a harvest or a trim, the same objects');
+    assert.deepEqual([HB.grow.reduce((a, G) => a + G.units.filter(u => u.h).length, 0), HB.grow.reduce((a, G) => a + G.units.filter(u => u.t).length, 0)], [MH.harvests.length, MH.trims.length],
+      'every harvest and trim on a grow once');
+    assert.ok(HB.grow.some(G => G.units.some(u => !u.h && u.t && u.t.id === 't:15TH|B|2026-10-20')), 'a trim no harvest leads to stays on its grow');
+    assert.deepEqual(partIds(HB).sort(), [...MH.labs.groups.map(g => g.id), ...MH.packs.groups.map(g => g.id)].sort(), 'every send and pack in exactly one distro unit');
+    assert.deepEqual(HB.units.map(u => [u.id, u.kind, u.site, u.sites, u.start, u.end]), [
+      ['run:2026-10-14', 'run', null, ['23RD', '15TH', '25TH'], '2026-10-14', '2026-10-27'], ['run:2026-10-18', 'run', null, ['15TH', 'OLYMPIC'], '2026-10-18', '2026-10-19'],
+      [`l:${hB}|2026-10-20`, 'own', '25TH', ['25TH'], '2026-10-20', '2026-10-26'], [hA, 'lot', '23RD', ['23RD'], '2026-11-12', '2026-11-18'],
+      ['run:2026-11-20', 'run', null, ['23RD', '25TH'], '2026-11-20', '2026-11-21']], "a lot's chain (its send, then its Jars), runs, a send drawn apart");
+    assert.deepEqual(HB.units.find(u => u.id === hA).ev.map(g => g.id), [`l:${hA}|2026-11-12`, `p:${hA}|2026-11-14`]);
+    // the distro is always there: nothing built, nothing in it
+    const H0 = BT2.hub(BT2.build({ weeks: [], rows: [], ev: null, today: T }), { today: T });
+    assert.deepEqual([H0.grow.map(G => [G.site, G.units.length]), H0.units, H0.ins, H0.picks], [[['23RD', 0], ['15TH', 0], ['OLYMPIC', 0], ['25TH', 0]], [], [], []]);
+    // H2: the lists regroup nothing. Without went.to_distro_by and went.nabis_by (an older job, or signed out of them) the
+    // harvests, trims, sends, packs and every unit's ev are the same (the To Nabis release's rule), and so are the hub's units
+    const stripH = L => Object.assign({}, L, { went: Object.fromEntries(Object.entries(L.went || {}).filter(([k]) => k !== 'nabis_by' && k !== 'to_distro_by')) });
+    const M0h = BT2.build(Object.assign({ lots: lotsH.map(stripH) }, baseH)), H0h = BT2.hub(M0h, Object.assign({}, optH, { lots: lotsH.map(stripH) }));
+    const shapeH = X => [X.harvests.map(h => [h.id, h.trim || '']), X.trims.map(t => t.id), X.labs.groups.map(g => [g.id, g.hid, g.own]), X.packs.groups.map(g => [g.id, g.own, g.after, g.ride]),
+      X.sites.flatMap(L => L.units.map(u => [u.id, u.ev.map(g => g.id)]))];
+    assert.deepEqual(shapeH(M0h), shapeH(MH), 'the lists never move anything else');
+    assert.deepEqual(H0h.units, HB.units, "moves and pickups regroup nothing in the distro's work lane");
+    assert.deepEqual(BT2.hub(MH, Object.assign({}, optH, { lots: [] })).units, HB.units);
+    assert.deepEqual([H0h.ins.length, H0h.picks.filter(g => g.state === 'done').length], [0, 0], 'no lists: no In and no Metrc pickup');
+    // H3: pre-roll runs. Three grows' pre-rolls rolled within 2 days: one bubble with a square per grow, pounds added; their sends
+    // within 2 days: one Test and one COA (the last results day; a fail among them says so); 10/18 starts a run of its own
+    const run1 = HB.units.find(u => u.id === 'run:2026-10-14'), [rp, rs] = run1.ev, prOf = id => MH.packs.groups.find(g => g.id === id);
+    assert.deepEqual([rp.id, rp.type, rp.kind, rp.sites, rp.parts.map(p => p.id), rp.day, rp.dayTo, rp.state, rp.units['1g'], rp.units['5pk']],
+      ['p:pr|2026-10-14', 'pack', 'preroll', ['23RD', '15TH', '25TH'], ['p:pr:23RD|2026-10-14', 'p:pr:25TH|2026-10-14', 'p:pr:15TH|2026-10-15'], '2026-10-14', '2026-10-15', 'done', 1350, 300]);
+    assert.ok(Math.abs(rp.lb - (900 + 300 * 3.5 + 450) / 453.59237) < 1e-9 && Math.abs(rp.lb - rp.parts.reduce((a, p) => a + p.lb, 0)) < 1e-9, 'pounds added');
+    assert.deepEqual([BT2.runBubble(rp), BT2.runBubble(rp, 1), BT2.packClass(rp)], ['Pre-rolls: 5 lbs', 'PR', 'b2-pk']);
+    assert.deepEqual([rs.id, rs.type, rs.kind, rs.own, rs.sent, rs.at, rs.state, rs.n, rs.nFail, rs.parts.length, rs.sites],
+      ['l:pr|2026-10-21', 'lab', 'preroll', true, '2026-10-21', '2026-10-27', 'back', 3, 1, 3, ['23RD', '15TH', '25TH']]);
+    assert.deepEqual([BT2.labBubble('s', rs), BT2.labBubble('s', rs, true), BT2.labBubble('c', rs), BT2.labBubble('c', rs, true), BT2.labClass('s', rs), BT2.labClass('c', rs)],
+      ['Test: Pre-rolls', 'Test: PR', 'COA: Pre-rolls · 1 fail', 'COA: PR · 1 fail', 'b2-ls', 'b2-lc warn'], 'one send, its words and amber from its parts');
+    // a part not counted yet, or still to come: no number (every part needs its pounds), dashed; to come, the purple glow
+    const r2 = HB.units.find(u => u.id === 'run:2026-10-18').ev[0], r3 = HB.units.find(u => u.id === 'run:2026-11-20').ev[0];
+    assert.deepEqual([r2.parts.map(p => p.id), r2.state, BT2.runBubble(r2), BT2.packClass(r2), prOf('p:pr:OLYMPIC|2026-10-18').nCounted > 0],
+      [['p:pr:OLYMPIC|2026-10-18', 'p:pr:15TH|2026-10-19'], 'pending', 'Pre-rolls', 'b2-pk plan', true]);
+    assert.deepEqual([r3.id, r3.state, BT2.runBubble(r3), BT2.packClass(r3)], ['p:pr|2026-11-20', 'plan', 'Pre-rolls', 'b2-pk plan fut']);
+    // a grow whose unit also holds an earlier roll (23rd rolled 10/1 and 10/4 and sent 10/8; 15th rolled 10/4 and sent 10/8):
+    // one run, the same-day rolls one bubble with two squares, the same-day sends one Test and one COA (the 7/10 + 7/13 case)
+    {
+      const lnJ = new Map([['QA', [lnH('F1-VD-09102026', 'L-S')]], ['QB', [lnH('F1-VD-09102026', 'L-S')]], ['QC', [lnH('A-ZB-09122026', 'L-I')]]]);
+      const labJ = [labH('QA', { product_type: 'Preroll', sent_date: '2026-10-08', completed: '2026-10-14', result: 'Pass' }),
+        labH('QB', { product_type: 'Preroll', sent_date: '2026-10-08', completed: '2026-10-14', result: 'Pass' }),
+        labH('QC', { product_type: 'Preroll', sent_date: '2026-10-08', completed: '2026-10-13', result: 'Pass' })];
+      const pkJ = [rowH('QA', '1G Preroll', 'Voodoo', 'VD-91026-S-1', '2026-10-01', { total_units: 400 }), rowH('QB', '1G Preroll', 'Voodoo', 'VD-91026-S-1', '2026-10-04', { total_units: 300 }),
+        rowH('QC', '1G Preroll', 'Zangbanger', 'ZB-91226-I-1', '2026-10-04', { total_units: 200 })];
+      const lotJ = [flowLot('23RD|1|2026-09-10', 'Voodoo', '2026-09-20', 100, 10, { metrc_harvests: ['F1-VD-09102026'] }), flowLot('15TH|A|2026-09-12', 'Zangbanger', '2026-09-22', 80, 8, { metrc_harvests: ['A-ZB-09122026'] })];
+      const MJ = BT2.build({ lots: lotJ, weeks: [], rows: [], ev: null, today: T, labs: labJ, links: lnJ, turn: LTh, packRows: pkJ }), HJ = BT2.hub(MJ, { today: T });
+      const runsJ = HJ.units.filter(u => u.kind === 'run');
+      assert.ok(MJ.sites.find(L => L.site === '23RD').units.some(u => u.start === '2026-10-01' && u.ev.some(g => g.type === 'pack' && g.day === '2026-10-04')), "23rd's unit starts on its earlier roll");
+      assert.equal(runsJ.length, 1, 'one run, not two');
+      const pk4 = runsJ[0].ev.filter(g => g.type === 'pack' && g.day === '2026-10-04'), s8 = runsJ[0].ev.filter(g => g.type === 'lab');
+      assert.deepEqual([runsJ[0].id, pk4.map(g => [g.id, g.sites]), s8.map(g => [g.id, g.sites, g.parts.length])],
+        ['run:2026-10-01', [['p:pr|2026-10-04', ['23RD', '15TH']]], [['l:pr|2026-10-08', ['23RD', '15TH'], 2]]]);
+    }
+    // the run's send ranks its parts as labGroups ranks a send's samples: one still at the lab makes the COA a projection,
+    // with none out a result back wins over one gone quiet (flagged "not all" on the COA)
+    const gp = o => Object.assign({ type: 'lab', kind: 'preroll', own: true, items: [], n: 1, nBack: 0, nOut: 0, nFail: 0, nQuiet: 0, nStale: 0, sent: '2026-10-21', sentTo: '2026-10-21',
+      plan: false, back: '', backFirst: '', orders: [], strains: [], exp: null, state: 'back', at: '', quietOk: true }, o);
+    const pr2 = (a, b) => BT2.hub({ sites: [{ site: '23RD', units: [{ id: 'l:pr:23RD|x', site: '23RD', h: null, t: null, ev: [a], start: a.sent, end: a.at || a.sent }] },
+      { site: '25TH', units: [{ id: 'l:pr:25TH|x', site: '25TH', h: null, t: null, ev: [b], start: b.sent, end: b.at || b.sent }] }], lots: [] }, {}).units[0].ev[0];
+    const q1 = pr2(gp({ id: 'a', state: 'back', back: '2026-10-26', at: '2026-10-26', nBack: 1 }), gp({ id: 'b', state: 'due', at: '2026-11-18', nOut: 1 }));
+    assert.deepEqual([q1.state, q1.at, BT2.labClass('c', q1)], ['due', '2026-11-18', 'b2-lc plan fut']);
+    const q2 = pr2(gp({ id: 'a', state: 'back', back: '2026-10-26', at: '2026-10-26', nBack: 1 }), gp({ id: 'b', state: 'quiet', nQuiet: 1, nStale: 1, quietOk: false }));
+    assert.deepEqual([q2.state, q2.at, q2.partBack, BT2.labBubble('s', q2), BT2.labBubble('c', q2), BT2.labClass('c', q2)], ['back', '2026-10-26', true, 'Test: Pre-rolls', 'COA: Pre-rolls · not all', 'b2-lc warn']);
+    // H4: In. Moves of a lot within 3 days: one In on the first day, its pounds added; under 1 lb, trim only, or to Imperial's
+    // distro: none; a move that doesn't say where counts with one that says FIL; two moves 5 days apart: two
+    assert.deepEqual(HB.ins.map(g => [g.id, g.site, g.room, g.day, g.dayTo, +g.lb.toFixed(1), g.moves.length]), [
+      [`i:${hF}|2026-04-27`, '25TH', '1', '2026-04-27', '2026-04-27', 6, 1], [`i:${hF}|2026-05-02`, '25TH', '1', '2026-05-02', '2026-05-02', 22, 1],
+      [`i:${hE}|2026-10-15`, '25TH', '2', '2026-10-15', '2026-10-15', 7.6, 2], [`i:${hA}|2026-11-08`, '23RD', '2', '2026-11-08', '2026-11-10', 85, 3]]);
+    const iA = HB.ins.find(g => g.hid === hA);
+    assert.deepEqual([iA.type, iA.tid, iA.lots.map(L => L.lot_id), BT2.inClass(iA)], ['in', MH.lots.find(l => l.hid === hA).tid, ['23RD|2|2026-10-29'], 'b2-in'], "the lot's trim, its rows, cyan");
+    assert.deepEqual(BT2.lotDays(lotsH.filter(L => L.site === 'OLYMPIC')).moves, [{ d: '2026-10-09', lb: 68.4, trim: 0, to: 'IMP' }], "a move to Imperial's distro stays in the lot's days, for its card");
+    // only flower moves set an In's days and pounds: a trim-only move 3 days before never moves its day, one between two flower
+    // moves 6 days apart never joins them, one with no In near makes none; trim counts only when said FIL (in 2026 every trim
+    // move went to Imperial's distro; today's job doesn't say where): trim that doesn't say where is the In's unsaid (made-up)
+    const inP = by => BT2.inGroups({ sites: [{ site: '15TH', units: [{ id: 'h:P', site: '15TH', h: { id: 'h:P', room: 'A' }, t: null, ev: [] }] }],
+      lots: [{ hid: 'h:P', tid: '', row: { lot_id: 'P', went: { to_distro_by: by } } }] }).map(g => [g.day, g.dayTo, g.lb, +g.trim.toFixed(1), g.moves.map(m => m.d), g.unsaid.map(m => [m.d, m.trim])]);
+    assert.deepEqual(inP([['2026-11-05', 0, 20], ['2026-11-08', 30, 0]]), [['2026-11-08', '2026-11-08', 30, 0, ['2026-11-08'], [['2026-11-05', 20]]]]);
+    assert.deepEqual(inP([['2026-11-05', 0, 20, 'FIL'], ['2026-11-08', 30, 0, 'FIL']]), [['2026-11-08', '2026-11-08', 30, 20, ['2026-11-05', '2026-11-08'], []]]);
+    assert.deepEqual(inP([['2026-11-01', 10, 0], ['2026-11-04', 0, 5, 'FIL'], ['2026-11-07', 30, 0]]),
+      [['2026-11-01', '2026-11-01', 10, 5, ['2026-11-01', '2026-11-04'], []], ['2026-11-07', '2026-11-07', 30, 0, ['2026-11-07'], []]]);
+    assert.deepEqual(inP([['2026-11-01', 10, 0], ['2026-11-09', 0, 5, 'FIL'], ['2026-11-12', 0, 4]]), [['2026-11-01', '2026-11-01', 10, 0, ['2026-11-01'], []]]);
+    assert.deepEqual(inP([['2026-06-19', 29, 0], ['2026-06-22', 2, 45.8], ['2026-06-24', 0, 3]]), [['2026-06-19', '2026-06-22', 31, 0, ['2026-06-19', '2026-06-22'], [['2026-06-22', 45.8], ['2026-06-24', 3]]]],
+      "trim on a move that doesn't say where isn't the In's");
+    {
+      const inCard = b2src.slice(b2src.indexOf('function b2InHTML('), b2src.indexOf('const B2_COA ='));
+      assert.ok(inCard.includes("m.to === 'FIL' && m.trim >= 0.05 ?") && /g\.unsaid && g\.unsaid\.length\) rows\.push\(b2Row\('Trim moved'/.test(inCard) && !/Sold bulk from the grow/.test(inCard),
+        "the In card: trim on its Moves row only when said FIL, unsaid trim on its own row; went.bulk is every license's ('Sold bulk')");
+    }
+    // lotDays (the To Nabis release's): pickups merged by day over a harvest's lots, entries the page can't read dropped
+    const LE1 = { went: { nabis_by: [['2026-10-27', 8, { jar: 1000 }, 1, 0]] } }, LE2 = { went: { nabis_by: [['2026-10-27', 3, { '5pk': 400 }, 1, 0], ['2026-11-03', 1, {}, 1, 1], ['x', 5],
+      ['2026-11-04', -1], null, ['2026-11-05', 'abc'], ['2026-11-06', 0.5, null, 'z', null]] } };
+    assert.deepEqual(BT2.lotDays([LE1, LE2]).picks.map(p => [p.d, p.lb, p.u, p.m, p.sh]),
+      [['2026-10-27', 11, { jar: 1000, '5pk': 400 }, 1, 0], ['2026-11-03', 1, {}, 1, 1], ['2026-11-06', 0.5, {}, 0, 0]]);
+    assert.deepEqual(BT2.lotDays([{ went: { nabis_by: 'x', to_distro_by: [['2026-10-01', 0, 0], ['2026-10-02', 0, 2]] } }, null, {}]), { picks: [], moves: [{ d: '2026-10-02', lb: 0, trim: 2, to: '' }] });
+    // H5: To Nabis. Pickups on days in a row are one (10/27 + 10/28), 11/10 and 11/13 are two; by lot; then the sheet's pickups
+    // after Metrc's copy: within 2 days of one it has (11/15), nothing; today, on the sheet only (dashed); after today, planned
+    // (the purple glow), days in a row joined with the worst lab risk; before the copy's last day, nothing; a bad day, nothing
+    assert.deepEqual(HB.picks.map(g => [g.id, g.state, g.day, g.dayTo, g.lb == null ? null : +g.lb.toFixed(1), g.by.map(p => [p[0], +p[1].toFixed(1)]), g.drops, g.coa]), [
+      ['n:2026-10-27', 'done', '2026-10-27', '2026-10-28', 9.6, [['25TH|1|2026-08-24', 8.2], ['25TH|2|2026-10-05', 1.4]], [], null],
+      ['n:2026-11-10', 'done', '2026-11-10', '2026-11-10', 14.1, [['23RD|2|2026-10-29', 12.1], ['25TH|2|2026-10-05', 2]], [], null],
+      ['n:2026-11-13', 'done', '2026-11-13', '2026-11-13', 5, [['23RD|2|2026-10-29', 5]], [], null],
+      ['n:plan|2026-11-16', 'sheet', '2026-11-16', '2026-11-16', null, [], ['Nov drop 4'], null],
+      ['n:plan|2026-11-20', 'plan', '2026-11-20', '2026-11-21', null, [], ['Dec drop 1', 'Dec drop 1b'], 'late'],
+      ['n:plan|2026-12-04', 'plan', '2026-12-04', '2026-12-04', null, [], ['Dec drop 2'], null],
+      ['n:plan|2026-12-10', 'plan', '2026-12-10', '2026-12-10', null, [], ['Dec drop 3'], 'tight']]);
+    assert.deepEqual(HB.picks.find(g => g.id === 'n:2026-11-10').u, { jar: 1500 }, 'units added');
+    assert.deepEqual(BT2.pickGroups(lotsH, Object.assign({}, optH, { reach: '' })).filter(g => g.state !== 'done').map(g => g.id), ['n:plan|2026-11-20', 'n:plan|2026-12-04', 'n:plan|2026-12-10'],
+      "Metrc's copy not known: only what is still to come");
+    // the whole license's pickups by day (once the job sends them): a day's pounds are the whole pickup, the rest on no lot
+    const wh = BT2.pickGroups(lotsH, { whole: [['2026-11-10', 15, 2000], ['bad', 4]], today: T }).find(g => g.id === 'n:2026-11-10');
+    assert.deepEqual([wh.lb, +wh.lot.toFixed(1), +wh.notLot.toFixed(1), wh.wu], [15, 14.1, 0.9, 2000]);
+    // a pickup today and one tomorrow: today's stays on the sheet only, tomorrow's is still to come (the glow, its lab risk)
+    assert.deepEqual(BT2.pickGroups([], { today: T, reach: '2026-11-14', drops: [{ drop: 'D1', date: '2026-11-16', coa: null }, { drop: 'D2', date: '2026-11-17', coa: 'late' }] })
+      .map(g => [g.id, g.state, g.day, g.dayTo, g.coa, BT2.pickBubble(g), BT2.pickClass(g)]),
+      [['n:plan|2026-11-16', 'sheet', '2026-11-16', '2026-11-16', null, 'To Nabis', 'b2-np plan'], ['n:plan|2026-11-17', 'plan', '2026-11-17', '2026-11-17', 'late', 'To Nabis · COA not back', 'b2-np plan fut warn']],
+      "a pickup today never takes tomorrow's glow and lab check");
+    // a lot's share of a blend carries pounds and no units: the group says how much (its card's Units row says what it covers)
+    const shG = BT2.pickGroups([{ lot_id: 'X', went: { nabis_by: [['2026-11-03', 6, { jar: 300 }, 1, 0], ['2026-11-04', 2.5, {}, 1, 2.5]] } }], { today: T })[0];
+    assert.deepEqual([shG.id, shG.lb, shG.sh, shG.wu, shG.u], ['n:2026-11-03', 8.5, 2.5, null, { jar: 300 }]);
+    assert.deepEqual(HB.picks.map(g => g.sh), [0, 0, 0, 0, 0, 0, 0]);
+    {
+      const pkCard = b2src.slice(b2src.indexOf('function b2PickHTML('), b2src.indexOf('function b2RunHTML('));
+      assert.ok(/g\.sh >= 0\.05 \? `\$\{lb1\(g\.sh\)\} lb in blends has no units here`/.test(pkCard) && /if \(g\.wu != null\) rows\.push\(b2Row\('Units'/.test(pkCard) && /else if \(U\) rows\.push\(b2Row\('Units', esc\(U\) \+ \(bl \?/.test(pkCard),
+        "a pickup's Units row: the whole pickup's units, else the lots' with what blends carry");
+    }
+    // H6: the words (every number followed by a word, never "packaged", "left" only on T and the On hand column) and classes
+    assert.deepEqual([0, 1, 2, 3].map(l => BT2.inBubble({ room: '2', lb: 85.2 }, l)), ['RM2: 85 lbs in', 'RM2: 85 lbs', 'RM2', ''], 'In, after its grow\'s badge');
+    assert.equal(BT2.inBubble({ room: '', lb: 1.2 }), 'RM?: 1 lbs in');
+    const pkD = { state: 'done', lb: 43.9 }, pkP = r => ({ state: 'plan', lb: null, coa: r }), pkS = { state: 'sheet', lb: null, coa: 'late' };
+    assert.deepEqual([0, 1, 2].map(l => BT2.pickBubble(pkD, l)), ['To Nabis: 44 lbs', 'To Nabis', 'N']);
+    assert.deepEqual(['tight', 'late', 'failed', 'ok', null].map(r => BT2.pickBubble(pkP(r))), ['To Nabis · COA tight', 'To Nabis · COA not back', 'To Nabis · COA failed', 'To Nabis', 'To Nabis']);
+    assert.deepEqual([BT2.pickBubble(pkP('tight'), 1), BT2.pickBubble(pkS), BT2.pickBubble({ state: 'done', lb: 0.3 })], ['To Nabis', 'To Nabis', 'To Nabis: <1 lbs']);
+    assert.deepEqual([BT2.inClass(), BT2.pickClass(pkD), BT2.pickClass(pkS), BT2.pickClass(pkP(null)), BT2.pickClass(pkP('tight')), BT2.pickClass(pkP('ok'))],
+      ['b2-in', 'b2-np', 'b2-np plan', 'b2-np plan fut', 'b2-np plan fut warn', 'b2-np plan fut'], 'cyan; planned dashed with the purple glow; a lab risk amber');
+    // the out rows and the grow strips' bulk: Nabis sold alone, Nabis and Distru folded, a grow's own bulk (made-up weeks;
+    // Metrc's copy reads through 11/12; 11/16 holds scheduled Nabis lines)
+    const SH = BT2.salesWeeks({ v: 1, sig: 'h1', at: { bulk_to: '2026-11-12' }, weeks: [
+      { w: '2026-11-02', n: { lb: 13 }, d: { lb: 11 }, b: { lb: 40.2, trim: 3, site: [['23RD', 40.2]], tsite: [['25TH', 3]], buyer: [] } },
+      { w: '2026-11-09', n: { lb: 0.3 }, b: { lb: 8, site: [['23RD', 7], ['DISTRO', 1]], tsite: [['23RD', 12.4]] } },
+      { w: '2026-11-16', n: { lb: 10 }, ns: { lb: 7 }, d: { lb: 3 }, b: { lb: 9, site: [['25TH', 9]] } }] }, T);
+    const KH = w => SH.find(k => k.w === w), wds = (ch, k, s) => [0, 1, 2].map(n => BT2.salesBubble(ch, k, n, s));
+    const k2 = KH('2026-11-02'), k9 = KH('2026-11-09'), k16 = KH('2026-11-16');
+    assert.deepEqual([wds('sold', k2), wds('stores', k2), wds('bulk', k2, '23RD'), wds('bulk', k2, '25TH'), wds('bulk', k2, 'OLYMPIC')],
+      [['Nabis: 13 sold', 'N: 13 sold', 'N'], ['N 13 · D 11 lbs', '24 lbs', ''], ['Bulk: 40 sold', 'B: 40 sold', 'B'], ['Bulk: 3 trim', 'B: 3 trim', 'B'], ['', '', '']]);
+    assert.deepEqual([wds('sold', k9), wds('stores', k9), wds('bulk', k9, '23RD')], [['Nabis: <1 sold', 'N: <1 sold', 'N'], ['N <1 lbs', '<1 lbs', ''], ['Bulk: 7 sold · 12 trim', 'B: 7 sold', 'B']]);
+    assert.deepEqual(wds('bulk', k9, 'DISTRO'), ['Bulk: 1 sold', 'B: 1 sold', 'B'], "bulk sold out of our distros (Metrc's origin DISTRO): the 25th distro's strip");
+    assert.deepEqual([wds('sold', k16), wds('stores', k16), wds('bulk', k16, '25TH')], [['Nabis: ≈17 sold', 'N: ≈17 sold', 'N'], ['N ≈17 · D 3 lbs', '≈20 lbs', ''], ['', '', '']],
+      "scheduled: about; bulk past Metrc's copy: none");
+    assert.deepEqual([BT2.salesClass('sold', k2), BT2.salesClass('stores', k2), BT2.salesClass('bulk', k2), BT2.salesClass('sold', k16), BT2.salesClass('stores', k16), BT2.salesClass('distru', k16)],
+      ['b2-wk', 'b2-wk all', 'b2-wk b2-bk', 'b2-wk plan fut', 'b2-wk all plan fut', 'b2-wk']);
+    assert.equal(BT2.salesBubble('bulk', k2), 'Bulk: 40 sold · 3 trim', 'without a site: the whole week, as before');
+    const wH = [...HB.ins.flatMap(g => [0, 1, 2, 3].map(l => BT2.inBubble(g, l))), ...HB.picks.flatMap(g => [0, 1, 2].map(l => BT2.pickBubble(g, l))),
+      ...HB.units.flatMap(u => u.ev.filter(g => g.run && g.type === 'pack').flatMap(g => [BT2.runBubble(g), BT2.runBubble(g, 1)])),
+      ...SH.flatMap(k => [...['sold', 'stores'].flatMap(ch => wds(ch, k)), ...['23RD', '25TH'].flatMap(s => wds('bulk', k, s))])].filter(Boolean);
+    assert.ok(wH.length > 40 && wH.every(w => !/\d/.test(w.replace(/RM[0-9A-Z?]+/g, '').replace(/[≈<]?[\d,]+ (in|sold|trim|lbs|·)/g, ''))), 'every number is followed by a word: ' + wH.join(' | '));
+    assert.ok(wH.every(w => !/packag|\bleft\b|—|price|dollar|revenue|\$/i.test(w)), 'never "packaged", never "left", no em dash, pounds only');
+    // H7: the On hand column by place: what is still at each grow and at our distros adds up to what is at our licenses
+    const ohG = BT2.onHand(MH.lots, T, { key: 'left_grow_lb', today: T }), ohD = BT2.onHand(MH.lots, T, { key: 'left_distro_lb', today: T }), ohL = BT2.onHand(MH.lots, T, { today: T });
+    assert.ok(Math.abs(ohG.total + ohD.total - ohL.total) < 0.1 && Math.abs(ohL.total - 288.7) < 0.1, `grow ${ohG.total} + distro ${ohD.total} = ${ohL.total}`);
+    assert.deepEqual([ohG.chips.map(BT2.chipText), ohD.chips.map(BT2.chipText)],
+      [['RM3 10/7 · 115 lb'], ['RM1 8/24 · 9 lb', 'RM1 9/22 · 19 lb', 'RM2 9/28 · 42 lb', 'RMA 10/2 · 18 lb', 'RM2 10/29 · 85 lb', '+1 small · 2 lb']], 'the chips read as before');
+    assert.deepEqual(['left_grow_lb', 'left_distro_lb', undefined].map(k => BT2.leftAt(lotsH[7], T, k)), [114.6, 0, 114.6]);
+    // H8: the hub's rows: the In band takes the rows its words need (up to 3, else one of shorter words), the out band 3; under
+    // 26px a track, the out band folds to 2, then the In band moves into the distro's strip; 24 to 40px; a phone scrolls
+    assert.deepEqual([[522, 14, 2], [498, 14, 2], [422, 14, 2], [412, 14, 2], [522, 14, 3], [522, 14, 4], [330, 14, 2], [300, 14, 2, true], [900, 14, 0]].map(a => BT2.hubRows(...a)), [
+      { inN: 2, outN: 3, TH: 28 }, { inN: 2, outN: 3, TH: 27 }, { inN: 0, outN: 2, TH: 26 }, { inN: 0, outN: 2, TH: 26 }, { inN: 3, outN: 3, TH: 27 }, { inN: 1, outN: 3, TH: 30 },
+      { inN: 0, outN: 2, TH: 24 }, { inN: 2, outN: 3, TH: 30 }, { inN: 0, outN: 3, TH: 40 }]);
+    // the panels: the 4 full weeks before the week holding today (10/19 to 11/15): moved in, Metrc's pickups, Nabis sold, Distru
+    const P4 = BT2.hub4w(HB, SH, T);
+    assert.deepEqual([P4.from, P4.to, +P4.in.toFixed(1), +P4.pick.toFixed(1), +P4.nabis.toFixed(1), P4.distru, +P4.stores.toFixed(1)], ['2026-10-19', '2026-11-15', 85, 28.7, 13.3, 11, 24.3]);
+    // H9: words at the box's edges: under the On hand column they start right of it (never wider: when that bites, no
+    // words); across the right edge the longest words that fit what is in view; neither: null
+    const wdE = t => t.length * 7, TE = ['Nabis: 26 in · 10 sold', 'N: 10 sold', 'N'];
+    assert.deepEqual([[140, 1000], [160, 1000], [50, 250], [50, 108], [50, 105], [140, 250], [290, null]].map(([l, r]) => BT2.edgeWords(100, 200, l, r, TE, wdE, 7)), [
+      { side: 'left', hidden: 40, padL: 47, text: 'Nabis: 26 in · 10 sold' }, { side: 'left', hidden: 60, padL: 67, text: 'N: 10 sold' },
+      { side: 'right', hidden: 0, padL: null, text: 'N: 10 sold' }, { side: 'right', hidden: 0, padL: null, text: 'N' }, { side: 'right', hidden: 0, padL: null, text: '' },
+      { side: 'both', hidden: 40, padL: 47, text: 'N: 10 sold' }, { side: 'left', hidden: 190, padL: 191, text: '' }]);
+    const cl = BT2.edgeWords(100, 200, 290, null, TE, () => 1, 7);
+    assert.ok(cl.hidden > 200 - 2 * 7 && cl.text === '' && cl.padL <= 200 - 7 - 2, 'the clamp: a bubble almost all under the column keeps its width and shows no words');
+    assert.deepEqual([[90, 400], [300, 400], [null, 100], [null, null]].map(([l, r]) => BT2.edgeWords(100, 200, l, r, TE, wdE, 7)), [null, null, null, null]);
+    assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2Src), 'the hub model: pounds and units only');
+    // H10: the page. The grows draw H, drying and T; the 25th distro draws the hub's units, In and To Nabis bubbles (signed in
+    // only), its out rows; every bubble is measured on its own classes (each one's words carry cls), the net checks every
+    // drawn bubble (strips, lanes, In band, out rows), the edges follow the column, a strip's label and the box's right side
+    const fnH = name => { const i = html.indexOf(`function ${name}(`); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i) + 2); };
+    const rbH = fnH('renderBatches2'), fms = rbH.match(/forms\(\{[^}]*\}/g) || [];
+    assert.ok(fms.length >= 8 && fms.every(f => /\bcls: /.test(f)), "every bubble's words are measured with its own classes: " + fms.length);
+    assert.ok((rbH.match(/bs\.push\(/g) || []).length === (rbH.match(/bs\.push\(forms\(\{[^}]*cls: |bs\.push\(\.\.\.BT2\.evOrder\(lb\)\)/g) || []).length, 'every bs.push carries cls (or is evOrder of ones that do)');
+    assert.ok(/const B2_BUBS = '\.b2-site > button, \.b2-lane > button, \.b2-inb > button, \.b2-out > button'/.test(b2src) && /b2FitCheck\(tl, fit, tw\.chrome\)/.test(rbH) &&
+      /querySelectorAll\(B2_BUBS\)/.test(fnH('b2FitCheck')), 'the net covers the strips, lanes, In band and out rows');
+    assert.ok(/const OUT = !!\(sb && \(FL \|\| SL\)\)/.test(rbH) && /const ins = OUT \?/.test(rbH) && /const picks = OUT \?/.test(rbH) && /if \(OUT && SL\)/.test(rbH),
+      'signed out: no In bubbles, no pickups, no weeks');
+    assert.ok(/HB\.grow\.map\(/.test(rbH) && /HB\.units\.map\(/.test(rbH) && /BT2\.hub\(M, \{ lots: FL \|\| \[\], drops: OUT \? b2Drops\(\) : \[\], reach: bt, today,/.test(rbH), 'the lanes come from BT2.hub');
+    assert.ok(/class="b2-drop" data-lot=/.test(rbH) && /class="b2-arw" data-lot=/.test(rbH) && /data-lot="\$\{it\.lot\}"/.test(rbH) && /lotOn\('t'\)/.test(rbH), 'drop lines, their arrow, the In and the trim share data-lot');
+    assert.ok(/\[data-lot="\$\{CSS\.escape\(k\)\}"\]/.test(fnH('b2Init')) && /classList\.add\('b2-hl'\)/.test(fnH('b2Init')), 'hover lights a lot\'s trim, its line and its In');
+    const boH = fnH('b2Open'), trF = boH.indexOf('M.trims.find');
+    assert.ok(["startsWith('i:')", "startsWith('n:')", "startsWith('p:pr|')", "startsWith('l:pr|')", "startsWith('oh:')"].every(c => boH.indexOf(c) > 0 && boH.indexOf(c) < trF) &&
+      /b2InHTML\(ig\)/.test(boH) && /b2PickHTML\(ng\)/.test(boH) && /b2RunHTML\(rg, k \|\| 's'\)/.test(boH) && /b2BulkWeekHTML\(wk, wp\[2\]\)/.test(boH) && /oh\.split\('\|'\)\[0\] === 'HUB' \? b2HubShelfHTML\(oh\.split\('\|'\)\[1\]\)/.test(boH),
+      'the hub\'s cards open before the trim fallback');
+    assert.ok(/key: L\.key/.test(fnH('b2Shelf')) && /data-b2="oh:\$\{esc\(oid\)\}"/.test(fnH('b2Shelf')) && /b2Q\(lt\.site, true\)/.test(fnH('b2Shelf')), 'the On hand column by place, distro chips with badges');
+    assert.ok(/Nothing is transferred to a company called Distru: it is the software our 25th distro runs\./.test(fnH('b2WeekHTML')), "the Distru card says what Distru is");
+    // "In" is a move into the 25th distro only: Nabis's pickups are "To Nabis" on the week card and the 2026 table
+    assert.ok(!/b2Row\('In',/.test(fnH('b2WeekHTML')) && /b2Row\('To Nabis', ok\(N\.in\)/.test(fnH('b2WeekHTML')) && /ch === 'nabis' \? \['To Nabis', 'Sold', 'Scheduled'\]/.test(fnH('b2ChanHTML')) &&
+      /the whole pickup is the row above/.test(fnH('b2WeekHTML')), "Nabis's pickups are To Nabis; the lots' sum says when it differs from the whole");
+    // a pickup is not a sale, and the week's trim and buyers are all our licenses'
+    assert.ok(rbH.includes('which ships to Nabis and stores.') && !/sells to Nabis/.test(rbH), 'the sentence: the 25th distro ships to Nabis');
+    assert.ok(!/every grow that week|the whole week, every grow/.test(fnH('b2BulkWeekHTML')) && /all our licenses that week, the distros included/.test(fnH('b2BulkWeekHTML')), "a grow's bulk card: the week's trim is every license's");
+    // a pre-roll run's part (opened from a card's link) is ringed, reopened and closed by its run's bubble; Esc goes back to
+    // what the card was opened from (a chip too)
+    assert.ok(/B2\.partOf\.has\(id\)/.test(fnH('b2Drawn')) && /id = B2\.open && b2Drawn\(B2\.open\.id\)/.test(fnH('b2Close')) && /const bar = from \|\| \$\('b2-tl'\)/.test(fnH('b2Close')) &&
+      /CSS\.escape\(b2Drawn\(id\)\)\}"\]`\)\.forEach\(e => e\.classList\.add\('b2-on'\)\)/.test(fnH('b2Open')) && /const reopenAt = b2Drawn\(reopen\)/.test(rbH) && /const q = CSS\.escape\(reopenAt\)/.test(rbH) &&
+      rbH.indexOf('B2.partOf = new Map()') < rbH.indexOf('const reopenAt = b2Drawn(reopen)'), "a run part's card goes by its run's bubble");
+    const hcss = html.slice(html.indexOf('/* Batch V2 (beta'), html.indexOf('/* Batch V2 end */'));
+    assert.ok(/\.b2-np\{[^}]*background:var\(--wk-off,#9EEFF5\)\}/.test(hcss) && hcss.includes('.b2-np.fut{box-shadow:0 0 0 1px rgba(124,58,237,.35),0 0 8px 1px rgba(124,58,237,.45)}') &&
+      /\.b2-in:focus-visible/.test(hcss) && /\.b2-np\.b2-on/.test(hcss) && /\.b2-drop\{[^}]*pointer-events:none/.test(hcss) && /\.b2-np\.warn\{border:2px solid #B45309/.test(hcss) &&
+      /\.b2-site\.blk\{border-top:2px solid #1F3A93\}/.test(hcss) && hcss.indexOf('.b2-site.blk{') > hcss.indexOf('.b2-site.hub{'), "the hub's look: cyan, the purple glow ahead, amber at risk, the navy frame");
+    // one row that keeps its days: the first words that fit before the next one's day, else the smallest, and the next moves on
+    const shrink = new Function(`${fnH('b2ShrinkRow')}; return b2ShrinkRow;`)();
+    const twH = t => t.length * 7, bsH = [{ x: 0, cls: 'c', forms: ['ABCDEFGHIJ', 'ABCD', 'A'] }, { x: 40, cls: 'c', forms: ['ABCDEFGHIJ', 'ABCD', 'A'] }, { x: 44, cls: 'c', forms: ['XYZXYZ', 'X'], min: 20 }];
+    assert.deepEqual(shrink(bsH, twH, 4).map(b => [b.x, b.w, b.text]), [[0, 28, 'ABCD'], [40, 7, 'A'], [51, 42, 'XYZXYZ']]);
+    console.log(`batch V2 hub: grows ${HB.grow.map(G => G.site).join(', ')} then the 25th distro; ${HB.ins.length} In (moves within 3 days, 1 lb or more, Filifera only), ${HB.picks.filter(g => g.state === 'done').length} pickups and ${HB.picks.filter(g => g.state !== 'done').length} from the sheet, ${HB.units.filter(u => u.kind === 'run').length} pre-roll runs; the lists regroup nothing; words like "${BT2.inBubble(iA)}", "${BT2.pickBubble(HB.picks[1])}", "${BT2.runBubble(rp)}"`);
   }
 }
 console.log('pipeline-check: all checks passed');

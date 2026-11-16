@@ -308,8 +308,8 @@ launch. The check fails if one of the three pieces is missing.
 - **Batch V2** (beta, view only, Gianni 2026-11-13: "an experimental page called batch V2 ... a left/right
   scrollable timeline showing harvests and trims"; reshaped 2026-11-15: "all companies shown vertically without having to
   scroll down", "remove the crap at the bottom", "Don't split them up by room, each bubble can just say H: RM1: ###lbs
-  (more info on click)"): `data-view="batches2"`, after Batches. One lane per site (23rd, 25th, 15th, Olympic, always all
-  four), named by a strip above the lane, never a label column. A lane packs its items into as few tracks as keep them
+  (more info on click)"): `data-view="batches2"`, after Batches. Lanes: the four grows (23rd, 15th, Olympic, then 25th's grow),
+  always all four, then the 25th distro; each named by a strip above it, never a label column. A lane packs its items into as few tracks as keep them
   from overlapping (`BT2.pack`, greedy by start day, bubbles' real widths); a harvest, its dotted drying line and the trim
   it dried for are one unit on one track. All sites fit the window on a laptop (tracks 34px down to 24px); the box scrolls
   only sideways. Bubbles say only "H: RM1: 412 lbs" / "T: RM1: 132 lbs" / planned "T: RM1: ≈111 lbs" (`BT2.bubble`;
@@ -371,10 +371,10 @@ launch. The check fails if one of the three pieces is missing.
     don't. Projected bubbles added later (expected lab results, projections) glow the same way.
   - **Testing bubbles** (Gianni, 2026-11-15: "we'll also need bubbles for when stuff is sent for testing and when we
     receive the testing results back"): Test and COA bubbles in the board's testing yellow (COA deeper), one pair per
-    send, never one per batch (samples of one lot, or one site's pre-rolls, sent within 2 days are one send). A flower
-    send rides its lot's unit (H, T, Test, COA on one track; Metrc lineage through pipeline_batch_harvests, read with
-    the Metrc harvests in `b2LoadMetrc`, else the sheet row); a send more than 21 days after its unit's last day is a
-    unit of its own. Pre-rolls get a unit per site and send (the lineage's site; with several, the code's site when it
+    send, never one per batch (samples of one lot, or one site's pre-rolls, sent within 2 days are one send). Sends are
+    drawn in the 25th distro (samples are pulled there), on their lot's chain (Metrc lineage through
+    pipeline_batch_harvests, read with the Metrc harvests in `b2LoadMetrc`, else the sheet row); a send more than 21
+    days after its unit's last day is a unit of its own. Pre-rolls get a unit per site and send (the lineage's site; with several, the code's site when it
     is one of them, else the site with most source harvests; no lineage: the sheet harvest's, else the code's). Vapes
     are not on Batch V2 (the Batches page's Vapes band has them). Days are the Batches track's (`BAT.labDays`): TEST
     DATE, else the lab's Collected, else the manifest; COA RETURN DATE, else the COA e-mail. A COA still out is dashed
@@ -390,17 +390,18 @@ launch. The check fails if one of the three pieces is missing.
     sample at the lab once ("5 samples at the lab, results about Wed Nov 18. 1 more past the usual day."), and says
     when the Metrc lineage couldn't be read (tried again on each poll).
     Planned sends from the pipeline sheet's testing lines are not drawn yet (only a TEST DATE typed ahead and projected
-    COAs glow purple). Words only "Test: RM1" / "COA: RM1" ("Test: Pre-rolls"; on the lot's track, short of room,
+    COAs glow purple). Words only "Test: RM1" / "COA: RM1" ("Test: Pre-rolls"; on the lot's chain in the 25th distro, short of room,
     "Test" / "COA"); never a bare number. A testing bubble never cuts the bubble before it: it moves on (`BT2.row`).
     Everything else is in the card a click opens (`b2LabHTML`): days and sources, the result, the lab's order e-mail,
     the order on Confident LIMS, the day on the Production schedule, the batches on the Batches page, and each batch's
     own Test and COA facts (BSTEP.card, drawn by `b2StepHTML`, not the Batches page's `bpopHTML`). Lab results load on
     open, every 10 minutes at most on the polls (`b2Labs`), and on Refresh; signed out, only the sheet's TEST DATE and
     COA RETURN DATE are drawn.
-  - **Pack bubbles and the Sales band** (Gianni, 2026-11-16: "it doesn't look like anything for sales has been added
+  - **Pack bubbles and sales by week** (Gianni, 2026-11-16: "it doesn't look like anything for sales has been added
     yet, we also need packaging bubbles to be added"). Pack: one orange bubble per lot and pack day ("Jars: 41 lbs";
     "Jars: RM3: 41 lbs" when packed more than 21 days after the lot's last step, drawn as its own unit), and for
-    pre-rolls one per site and day ("Pre-rolls: 6 lbs", riding the pre-roll send that tests one of the same tags),
+    pre-rolls one per site and day in the model, drawn in the 25th distro as runs (the hub bullet: rolls of several
+    grows within 2 days are one bubble, "Pre-rolls: 39 lbs" with a square per grow, their sends one Test and one COA),
     from the Batch Label Sheet's PCKG DATE and counted units (the official actual). Pounds = units x grams (jar and
     5-pack 3.5, 1g 1, 1.5g and pouch 1.5), never the bulk weight and never Metrc's first packaging day (that is the
     trim). Failed rows are never drawn (each lot's Jars card counts them, a row with no PCKG DATE by its HRVST DATE or
@@ -409,37 +410,62 @@ launch. The check fails if one of the three pieces is missing.
     the code's room and day, a flower batch of the same strain and day). Batch V2 re-reads the tab back to 1/1/26 for
     Pack only (`b2PackRows`), and only while the rows shown are the live read's (else the hourly copy's 120-day rows,
     never an older live read); harvests and Testing keep the 120-day rows. Jars packed while a send of the lot is at the
-    lab (after its Test, before its COA) stay on the lot's track but are drawn after that COA (`g.after`,
+    lab (after its Test, before its COA) stay on the lot's chain but are drawn after that COA (`g.after`,
     `BT2.evOrder`), so Test, the at-lab line and the COA keep their days; the card gives the PCKG DATE. The Lot row
     says the trim's room when the trim sheet names it differently ("trimmed Oct 20-21 as RM2"). A PCKG DATE ahead,
     and jars the pipeline sheet plans for a strain only one lot holds unfinished (rule 1), are dashed with the purple
     glow; when two lots hold it, nothing is drawn and both lots' cards say so. Words never say "packaged".
-    Sales: a band under the four sites with its own strip, one row per channel and one bubble a week: "Nabis: 26 in ·
-    10 sold" (in = Nabis's pickups from us, from Metrc: a transfer, not a sale; sold = Nabis to stores), "Distru: 19
-    sold" (our distro's deliveries; its transfers to Nabis are not sales), "Bulk: 146 sold · 91 trim" (from Metrc,
-    clipped at the last day Metrc's weekly copy has read, with a grey hatch to today). N and D are the sales app's
-    Sales-by-Type numbers (the Monday e-mail; samples in, vapes out); distro deliveries that arrived before Jan 13 come
-    from Metrc's distro lines, by the day they arrived (as the sales app files Distru's; in 2026 there are none: Distru's
-    first invoices are the deliveries that left Jan 12, never counted twice). Nabis lines dated today or later are
-    scheduled: their week reads "≈N sold" with the purple glow; a week over by the page's today counts them as sold
-    (the job's today can lag: a run before midnight, a Mac asleep), never the glow. The band folds to
-    one row ("N 10 · D 19 · B 40 lbs", its legend in its own strip) when three rows would push the site tracks under
-    26px (`BT2.bandRows`); it is never hidden (a window too short grows the page). Its sticky panel (`.b2-ohb`, never
-    `.b2-oh`, so the On hand column's panels still map one to one to the sites) shows each row's channel and last 4
-    full weeks ("Nabis · 4 wks · 56 lb"; phones "N 4 wks 56") and opens that channel's 2026 by week; it is a column of
-    figures, not the removed label column. A week bubble the panel covers part of starts its words at the panel's edge
-    and takes the longest words that fit what is in view (`BT2.bandEdge`, on each draw and scroll frame), never the
-    tail of its words ("0 sold"). A week opens its card
-    (`b2WeekHTML`). Written by the flow job on Gianni's Mac into `pipeline_flow_meta.summary.sales` (no table); it
-    reads only the payload's units and samples, never index 6, and its sig leaves out the payload's time. Read through
-    `b2LoadFlow`'s meta poll (`sales_sig`; no new poll, the poll and Refresh lines are unchanged), the body again only
-    when the sig moves (or on Refresh); a block the page can't use (a newer version, a week that isn't a Monday) is not
-    read again until its sig moves (`B2.salesBad`), and the sentence says "Couldn't read the sales."; signed out, or
-    before the job writes a block, no band. The sales app's numbers
-    more than 26 hours old, or its file unread, turn the strip's note and the cards' source line amber.
+    Sales by week (Nabis to stores, Distru, each grow's bulk) come from the flow job's weekly block in
+    `pipeline_flow_meta.summary.sales` (no table; it reads only the payload's units and samples, never index 6, and its
+    sig leaves out the payload's time). N and D are the sales app's Sales-by-Type numbers (the Monday e-mail; samples
+    in, vapes out); distro deliveries that arrived before Jan 13 come from Metrc's distro lines, by the day they arrived
+    (as the sales app files Distru's; in 2026 there are none: Distru's first invoices are the deliveries that left Jan
+    12, never counted twice). Nabis lines dated today or later are scheduled: their week reads "≈17 sold" with the purple
+    glow; a week over by the page's today counts them as sold (the job's today can lag: a run before midnight, a Mac
+    asleep), never the glow. Bulk is from Metrc by origin license, clipped at the last day Metrc's weekly copy has
+    read, with a grey hatch to today. Read through `b2LoadFlow`'s meta poll (`sales_sig`; no new poll, the poll and
+    Refresh lines are unchanged), the body again only when the sig moves (or on Refresh); a block the page can't use (a
+    newer version, a week that isn't a Monday) is not read again until its sig moves (`B2.salesBad`), and the sentence
+    says "Couldn't read the sales."; signed out, or before the job writes a block, no weeks. The sales app's numbers
+    more than 26 hours old, or its file unread, turn the distro strip's note and the cards' source line amber.
     `pipeline_flow_save` drops a sales block whose keys name money (or that holds a $). Not shown: store names, money,
-    Nabis stock in "left", or "transferred to Distru" (Distru is our distro's software). Per-lot "To Nabis" bubbles
-    are next (release 2).
+    Nabis stock in "left", or "transferred to Distru" (Distru is our distro's software).
+  - **The 25th distro hub** (Gianni, 2026-11-16: "25th is the only company that sell packaged product to nabis/distru so we
+    should probably give it some prominence and make it visually clear that the product from the other companies is
+    transferred to it then it get's packaged then it's sold to nabis -> retailers"; "not sure I want sales by week to be
+    it's own row"). The 25th distro is the Filifera distro license in the 25th building: in 2026 it packed every jar,
+    5-pack and pre-roll, pulled every lab sample, and shipped every Nabis pickup and Distru delivery. Grow lanes keep only
+    H, drying and T; their strips carry their bulk sales by week ("Bulk: 40 sold", Metrc, by origin license, a hatch past
+    Metrc's copy) under a label as wide as the On hand column. Under the grows, framed in navy with 25th's grow
+    (`BT2.HUB_ORDER`; `SITE_ORDER` and `sites()` keep theirs): the distro's strip, an In band (one cyan In per lot moved
+    in, "[23rd] RM2: 85 lbs in", Metrc's move day, flower of 1 lb or more, a move between our licenses, not a sale; a cyan
+    line drops from the lot's trim onto it, behind everything; rows as needed up to 3, or in the strip itself when short
+    of height), the work lane (each lot's Test, COA and Jars with its grow's badge; pre-roll units of any grows that start,
+    roll or send within 2 days of each other are one run, joined over chains, in it rolls within 2 days one bubble with a
+    square per grow and sends within 2 days one Test and one COA), and the out rows:
+    To Nabis, one per pickup ("To Nabis: 44 lbs", Metrc, a transfer into Nabis's warehouse, days in a row joined; the
+    sheet's planned pickups after Metrc's copy dashed with the purple glow and the lab risk in amber, pickupCoa's rule;
+    days after today joined apart from today's, so today's never takes tomorrow's glow or lab check),
+    Nabis sold by week ("Nabis: 13 sold", the sales app; scheduled "≈17", glowing), Distru by week (our distro's own
+    deliveries; nothing is transferred to Distru, our distro's software). Nabis and Distru fold into one row ("N 13 · D
+    11 lbs") when three rows would push tracks under 26 px; then the In band folds into the strip (`BT2.hubRows`). To
+    Nabis and Nabis sold are never added together; In is never a sale. The In band and the out rows have panels
+    (`.b2-ohb`, never `.b2-oh`, so the On hand panels still map one to one to the lanes) with each row's last 4 full
+    weeks ("In · 4 wks · 192 lb", "To Nabis · 4 wks · 83 lb"; phones "In 4w 192"), each opening its 2026 by day or by
+    week. The On hand column splits by place: each grow's panel lists what is still at that grow (`left_grow_lb`), the
+    distro's what is at the distro by source lot (`left_distro_lb`, chips with a two-letter badge; "+N small" and
+    "+N more" open only their lots, by grow, with strains, as on the grows). Badges carry each grow's name in its strip colour, so "RM1" is never ambiguous. Hover on a trim, its line
+    or its In lights all three; a click opens only the item clicked (an In: its moves, the lot, what it sold in bulk from
+    our licenses, what the distro did with it; a pickup: by lot, units of packages wholly one lot's until the job sends
+    whole pickups, blends said apart; a run: one section per grow, a grow's own Pre-rolls or send opened from it goes by
+    the run's bubble). Only flower moves set an In's days. Imperial's distro (bought-in vapes, two trim pass-throughs) is
+    not drawn: trim on a move that doesn't say which distro is never counted in an In (in 2026 every trim move went to
+    Imperial's; the In's card says it apart). Our distros' own bulk (Metrc's origin 'DISTRO') is a pill in the 25th
+    distro's strip (none while the In bubbles ride it) and a Bulk row on its Distru and Stores week cards. "In" is only a
+    move into the 25th distro: Nabis's pickups are "To Nabis" on every card and table. Data: `went.to_distro_by`, `went.nabis_by`, the sales block and the sheet's drops; no SQL
+    change. Signed out: the work lane from the sheets only (no In band, no out rows, no lines). Words never cut: each
+    bubble is measured on its own classes, a fit check redraws once if short, and a bubble at the On hand column (or a
+    strip's label) or the box's right edge shows the longest of its words that fits what is in view.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them
