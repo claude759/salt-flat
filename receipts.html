@@ -76,6 +76,16 @@
   .qask{font-size:15px;font-weight:600;margin-top:10px}
   .said{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--bg);overflow-wrap:anywhere}
   td input[type=text]{min-height:34px;padding:4px 6px;font-size:14px;margin:0;width:120px}
+  /* a file opened from the status page shows over it; Back or Close returns to the same spot */
+  .viewer{position:fixed;inset:0;z-index:20;display:flex;flex-direction:column;background:var(--bg)}
+  .vbar{display:flex;align-items:center;gap:10px;padding:calc(8px + env(safe-area-inset-top)) 16px 8px;background:var(--card);border-bottom:1px solid var(--line)}
+  .vname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;color:var(--muted)}
+  .vbar a{font-size:14px;white-space:nowrap}
+  .vbody{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;padding:12px 16px calc(12px + env(safe-area-inset-bottom))}
+  .vbody img{display:block;max-width:100%;height:auto;margin:0 auto;border-radius:6px;background:#fff}
+  .vbody iframe{display:block;width:100%;height:100%;min-height:70vh;border:0;border-radius:6px;background:#fff}
+  body.viewing{overflow:hidden}
+  .claude{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--bg);border-left:3px solid var(--accent);overflow-wrap:anywhere}
   /* the overview's status page (Gianni only) */
   .sum{font-size:15px;color:var(--muted);margin:2px 0 14px}
   .sum b{color:var(--text);font-weight:600}
@@ -459,7 +469,7 @@ const waitingSince=l=>{const m=mailInfo(l);return m.first?T(m.first.at):T(l.crea
 function fileState(f){
   if(f.state==='attached')return [f.qbo_state==='attached'?'On the bank row and in QuickBooks':/^hold/.test(f.qbo_state||'')?'On the bank row, held from QuickBooks':'On the bank row','ok'];
   if(f.state==='withdrawn')return [f.reason?'Set aside':'They took it back','no'];
-  return ({new:['Waiting for the check','warn'],passed:['Passed the check, attaching','ok'],review:['Waiting for your look','warn'],approved:['You approved it, attaching','ok'],rejected:['Sent back','no']})[f.state]||[String(f.state||''),'no'];
+  return ({new:['Waiting for the check','warn'],passed:['Passed the check, attaching','ok'],review:['Waiting for your look','warn'],approved:['Approved, attaching','ok'],rejected:['Sent back','no']})[f.state]||[String(f.state||''),'no'];
 }
 function nowText(l){return l.status==='open'?(l.assignee_email===GIANNI?'With you':`Waiting on ${firstOf(l.assignee_email)}`):LABEL[l.status]||l.status;}
 // ── the history of one charge ──
@@ -469,8 +479,10 @@ function evText(e){
     case 'emailed':return {t:d.seed?`Emailed to ${to(d.to)} (the first request emails)`:`Emailed to ${to(d.to)} (weekly email${d.unconfirmed?', Gmail did not confirm it went':''})`};
     case 'uploaded':return {t:`${by} uploaded ${d.name?`"${d.name}"`:'a file'}`};
     case 'checked':return {t:d.state==='passed'?'The check passed it':'The check could not confirm it',x:d.reason};
-    case 'approved':return {t:by==='You'?'You approved the file':'The file was approved on the Mac'};
-    case 'rejected':return {t:by==='You'?'You sent it back':'Sent back',x:d.reason};
+    case 'approved':return {t:by==='You'?'You approved the file':d.review?'Claude checked the file and approved it':'The file was approved on the Mac',x:d.why};
+    case 'rejected':return {t:by==='You'?'You sent it back':d.review?'Claude checked the file and sent it back':'Sent back',x:d.reason};
+    case 'claude_review':return {t:'Claude checked the file and left it for you',x:d.why};
+    case 'sent_back_emailed':return {t:`Emailed ${to(d.to)} that it was sent back`};
     case 'attached':return {t:'Attached to the bank row'};
     case 'attach_failed':return {t:'Could not attach it to the bank row',x:d.reason};
     case 'quickbooks':return {t:d.state==='attached'?'Sent to QuickBooks':/^hold/.test(d.state||'')?'Held from QuickBooks':`QuickBooks: ${String(d.state||'').replace(/-/g,' ')}`};
@@ -624,7 +636,7 @@ function lookView(){
     ${l.note?`<p class="note">Their note: ${esc(l.note)}</p>`:''}<div class="row"><button data-nr="${esc(l.id)}">Book without receipt</button></div>${hist(k,l)}</section>`;};
   const lookCard=f=>{const l=ix.line.get(f.request_id), k='f:'+f.id;
     return `<section class="card" data-item="${esc(k)}"><button type="button" class="tap" data-hist="${esc(l.id)}" data-k="${esc(k)}" aria-expanded="${openHist.has(k)}"><span class="top"><span>${esc(l.merchant)}</span><span>${money(l.amount_cents)}</span></span></button>
-    <p class="meta">${[day(l.txn_date),ix.first.get(l.assignee_email)||''].filter(Boolean).map(esc).join(' · ')}</p><p class="ask">${esc(f.reason||'')}</p>${l.note?`<p class="note">Their note: ${esc(l.note)}</p>`:''}
+    <p class="meta">${[day(l.txn_date),ix.first.get(l.assignee_email)||''].filter(Boolean).map(esc).join(' · ')}</p><p class="ask">${esc(f.reason||'')}</p>${l.note?`<p class="note">Their note: ${esc(l.note)}</p>`:''}${(c=>c?`<p class="claude">Claude: ${esc(c.detail?.why||'')}</p>`:'')((ix.ev.get(l.id)||[]).filter(e=>e.action==='claude_review'&&e.detail?.file===f.id).pop())}
     <div class="row"><button type="button" data-open="${esc(f.id)}">Open the file</button></div><div class="row wrap"><button class="grow primary" data-ok="${f.id}">It's right, attach it</button><button class="grow" data-no="${f.id}">Send it back</button>${canBook(l)?`<button class="grow" data-nr="${esc(f.request_id)}">Book without receipt</button>`:''}</div>${hist(k,l)}</section>`;};
   if(!look.length&&!stuck.length)return '<div class="done"><b>Nothing needs your look</b>Uploads the check could not confirm, can\'t locate answers and charges passed to you show here.</div>';
   return `${look.length?`<h2>Waiting for a look (${look.length})</h2>${look.map(lookCard).join('')}`:''}${stuck.length?`<h2>${stuck.some(passedOn)?"Can't locate or passed to you":"Can't locate"} (${stuck.length})</h2>${stuck.map(stuckCard).join('')}`:''}`;
@@ -684,18 +696,47 @@ function toggleHist(btn){
   if(inRow)host.insertAdjacentHTML('afterend',`<tr class="hrow"><td colspan="${host.children.length}">${html}</td></tr>`);else host.insertAdjacentHTML('beforeend',html);
   openHist.add(k);btn.setAttribute('aria-expanded','true');
 }
-// A file is signed only when tapped, for 2 minutes. The tab opens inside the tap (a phone's popup blocker allows that) and is
-// pointed at the file once it is signed; if the browser blocked it, the button becomes a link to tap.
+// A file is signed only when tapped, for 2 minutes, and shown over the page (Gianni 11/17: opening it took him off the page and
+// Back didn't bring him back, signed in, to where he was). Back or Close closes it (Esc too, unless a PDF has the keyboard); the
+// page underneath never moves and can't be reached while it is open (inert). "New tab" signs the file again when tapped, for a
+// PDF a phone shows only the first page of, or a photo this browser can't show.
+let viewer=null;
+async function signFile(f){try{const {data:u,error}=await sb.storage.from(BUCKET).createSignedUrl(f.storage_path,SIGN_SECONDS);return !error&&u?u.signedUrl:null;}catch(e){return null;}}
 async function openFile(b){
   const f=all.files.find(x=>x.id===b.dataset.open);if(!f||b.disabled)return;
+  b.disabled=true;const url=await signFile(f);b.disabled=false;
+  if(!url){toast("That file couldn't be opened. Try again.");return;}
+  showFile(f,url,b);
+}
+function showFile(f,url,from){
+  const name=f.file_name||'File', type=String(f.mime||'').toLowerCase();
+  const isImg=/^image\//.test(type)||(!type&&/\.(jpe?g|png|gif|webp|heic|heif)$/i.test(name));
+  const el=document.createElement('div');el.className='viewer';el.setAttribute('role','dialog');el.setAttribute('aria-modal','true');el.setAttribute('aria-label',name);
+  el.innerHTML=`<div class="vbar"><button type="button" data-vclose>Close</button><span class="vname">${esc(name)}</span><button type="button" class="link" data-vnew>New tab</button></div><div class="vbody">${isImg?`<img alt="${esc(name)}" src="${esc(url)}">`:`<iframe title="${esc(name)}" src="${esc(url)}"></iframe>`}</div>`;
+  el.addEventListener('click',e=>{if(e.target.closest('[data-vclose]'))closeFile();else if(e.target.closest('[data-vnew]'))newTab(f,e.target.closest('[data-vnew]'));});
+  const img=el.querySelector('img');if(img)img.addEventListener('error',()=>{const p=document.createElement('p');p.className='note';p.textContent="This browser can't show this photo. Tap New tab to download it.";img.replaceWith(p);});
+  if(viewer)viewer.el.remove();   // one at a time: the Back step already there stays
+  else if(!(history.state&&history.state.rrFile)){try{history.pushState({rrFile:1},'',location.href);}catch(e){}}
+  viewer={el,from:viewer?viewer.from:from};document.body.appendChild(el);document.body.classList.add('viewing');app.inert=true;
+  el.querySelector('[data-vclose]').focus({preventScroll:true});
+}
+// The tab opens inside the tap (a phone's popup blocker allows that), then goes to a freshly signed address.
+async function newTab(f,b){
   let w=null;try{w=window.open('','_blank');}catch(e){}
-  b.disabled=true;
-  let url=null;try{const {data:u,error}=await sb.storage.from(BUCKET).createSignedUrl(f.storage_path,SIGN_SECONDS);if(!error&&u)url=u.signedUrl;}catch(e){}
-  b.disabled=false;
+  b.disabled=true;const url=await signFile(f);b.disabled=false;
   if(!url){if(w)w.close();toast("That file couldn't be opened. Try again.");return;}
   if(w){try{w.opener=null;}catch(e){}w.location.replace(url);return;}
-  const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='Tap to open (works for 2 minutes)';b.replaceWith(a);
+  const a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.textContent='Tap to open';b.replaceWith(a);
 }
+// fromBack: the Back button already left the step showFile added; otherwise step back off it so Back isn't needed twice.
+function closeFile(fromBack){
+  if(!viewer)return;
+  const v=viewer;viewer=null;v.el.remove();document.body.classList.remove('viewing');app.inert=false;
+  if(!fromBack&&history.state&&history.state.rrFile){try{history.back();}catch(e){}}
+  if(v.from&&document.contains(v.from))v.from.focus({preventScroll:true});
+}
+window.addEventListener('popstate',()=>{if(viewer)closeFile(true);});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&viewer){e.preventDefault();closeFile();}});
 // Gianni decides no receipt is coming. The line leaves the person's list now; the Mac marks the bank row "no receipt needed".
 async function bookNoReceipt(b){
   const l=all.lines.find(x=>x.id===b.dataset.nr);if(!l)return;
@@ -720,7 +761,7 @@ app.addEventListener('click',async e=>{
   const nr=e.target.closest('button[data-nr]');if(nr){bookNoReceipt(nr);return;}
   const ok=e.target.closest('[data-ok]'), no=e.target.closest('[data-no]');
   if(!ok&&!no)return;
-  const reason=no?prompt('What should they send instead? They will see this.'):null;
+  const reason=no?(prompt('What should they send instead? They will see this on their page and get it by email.')||'').trim():null;
   if(no&&!reason)return;
   const {error}=await sb.rpc('rr_admin_review',{p_file:(ok||no).dataset[ok?'ok':'no'],p_ok:!!ok,p_reason:reason});
   if(error)toast(plain(error));else loadOverview();
