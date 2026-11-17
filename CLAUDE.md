@@ -491,8 +491,16 @@ launch. The check fails if one of the three pieces is missing.
     page says how many it left out). "Worth a look": 5 lb or more still ours, trimmed over 30 days ago, amber. Find a lot
     is typable (`EDIT.pickFrom`). Grow tags are dark so a grow's colour never reads as a step's. Bulk buyers' names show
     (they are bulk buyers, not stores). No new read or poll, no SQL, no job change. Signed out: harvests, trims, sends and
-    Jars from the sheets only. Not built yet: a dark look (his pictures were dark; the app's rule is the light sheet look),
-    a strain search, fold rows, a phone layout of its own (phones scroll the same columns sideways).
+    Jars from the sheets only. Not built yet: fold rows, a phone layout of its own (phones scroll the same columns sideways).
+    **Find a lot also takes a strain** (Gianni, 2026-11-17: "Add the strain search to Find a lot"): the same typable box
+    lists the lots, then the strains (`F.strains` from `BT2.flowView`: a lot's Metrc strains, its harvest's and its trim
+    plan's, else its trim sheet tab's; "A / B" is each; a numbered cut, "Smoothie #6", is under its own name and under
+    Smoothie). A strain picked shows a strip under the toolbar (`b2fStrainSync`,
+    `B2.fstrain`): a button per lot shown that holds it, with that strain's flower still ours, "+N lots in All 2026" for
+    older ones, and Clear; the board's other lots dim until a trace lights. A strain in one lot lights that lot at once.
+    Nothing is rebuilt on a pick, and text used by leaving the box waits for the press under way (`B2.fdown`), so that
+    press still lands. The strain is kept through redraws and the scope
+    buttons, never in the address. This is Flow's Find only: the Week board's removed strain search stays removed.
     **Flow has a dark look, and opens in it** (Gianni, 2026-11-17: "Add a dark look", like his pictures): a Light | Dark
     switch at the right of Flow's toolbar, kept in the browser (`pipeline.flow.look`), never in the address. Only Flow:
     `b2fDark()` makes `render()` leave `data-light` off and set `body.b2f-dark`, so the page sits on the app's own dark

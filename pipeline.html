@@ -876,6 +876,14 @@
   .b2f-more{font-size:12.5px;color:var(--wk-ink2);margin:0 0 6px}
   .b2f-msg{font-size:12.5px;font-weight:600;color:#8A4B00;min-height:2px}
   .b2f-msg:not(:empty){margin:0 0 6px}
+  .b2f-sf{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12.5px;color:var(--wk-ink2)}
+  .b2f-sf:not(:empty){margin:0 0 6px}
+  .b2f-sf b{color:#111}
+  .b2f-sf button{border:1px solid #1F3A93;background:#EEF2FF;color:#1F3A93;border-radius:12px;padding:1px 9px;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+  .b2f-sf button.b2f-sfo{border-style:dashed;background:#FFFFFF}
+  .b2f-sf button.b2f-sfx{border-color:var(--wk-line);background:#FFFFFF;color:#333}
+  .b2f-sf button:focus-visible{outline:2px solid #1F3A93;outline-offset:1px}
+  .b2f-board.strained:not(.tracing) .b2f-n:not(.sm):not(.agg){opacity:.28}
   .b2f-scroll{overflow-x:auto;border:1px solid var(--wk-line);border-radius:10px;background:#FFFFFF}
   .b2f-board{position:relative;display:grid;grid-template-columns:repeat(7,max-content);column-gap:16px;padding:12px 10px 18px;width:max-content;min-width:100%;box-sizing:border-box}
   .b2f-links{position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:0}
@@ -990,6 +998,11 @@
   body.b2f-dark .b2-act,body.b2f-dark .b2-lnk{color:#9DB4FF}
   body.b2f-dark .b2-shl,body.b2f-dark .b2-shl .b2-shs{color:var(--text)}
   body.b2f-dark .b2-shl:hover{background:#1E222B}
+  body.b2f-dark .b2f-sf b{color:var(--text)}
+  body.b2f-dark .b2f-sf button{border-color:#7AA2FF;background:rgba(122,162,255,.14);color:#C7D7FF}
+  body.b2f-dark .b2f-sf button.b2f-sfo{background:transparent}
+  body.b2f-dark .b2f-sf button.b2f-sfx{border-color:var(--wk-rule);background:var(--panel);color:var(--text)}
+  body.b2f-dark .b2f-sf button:focus-visible{outline-color:#9DB4FF}
   /* Batch V2 end */
   /* any newer page: the same light look (render() sets data-light on pages not styled above) */
   body[data-light]{--wk-ink2:#4A5160; --wk-grid:#E3E6EB; --wk-line:#C9CED6; background:#FFFFFF; color:#111}
@@ -6629,7 +6642,32 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     if (tot.distro >= 0.05) N({ id: 'fx:distro', col: 5, group: 'here', kind: 'here', label: 'Still at the distro', num: tot.distro, total: tot.distro });
     for (const [k, label] of FLOW_ENDS) if ((ends.get(k) || 0) >= 0.05) N({ id: 'fx:' + k, col: 5, group: 'other', kind: 'other', label, num: ends.get(k), total: ends.get(k) });
     const look = rows.filter(I => I.src && I.left >= FLOW_KEEP && I.old).sort((a, b) => b.age - a.age || a.key.localeCompare(b.key)).map(I => ({ id: I.hold, key: I.key, site: I.site, room: I.room, left: I.left, age: I.age }));
-    return { nodes, links, rows, nrows: shown.length, tot, look, hidden: { n: hid.length, lb: hid.reduce((a, u) => a + leftOf(u), 0) }, later };
+    // Find's strains: each strain with the lots shown that hold it, newest first, and how many lots not shown do (more).
+    // A lot's strains are its Metrc lots' (a name written "A / B" is each), its harvest's and its trim plan's; only when
+    // none of those name one, its trim sheet tab's. A numbered cut ("SMOOTHIE #6") is listed under its own name and under
+    // its strain's. left: that strain's flower still ours in the lot (null: not known)
+    const sOf = u => {
+      const m = new Map(), put1 = (k, lb) => { if (k && PIPE.isStrain(k)) m.set(k, lb == null ? (m.has(k) ? m.get(k) : null) : (m.get(k) || 0) + lb); };
+      const put = (k, lb) => { put1(k, lb); const b = String(k || '').replace(/\s*#.*$/, '').trim(); if (b !== k) put1(b, lb); };
+      for (const r of lotsOf.get(u)) for (const x of r.strains || []) {
+        const ks = String((x && x.name) || '').split(/\s*[\/,]\s*/).map(n => PIPE.strainKey(n)).filter(Boolean);
+        ks.forEach(k => put(k, ks.length === 1 ? flowNum(x.left_lb) : null));
+      }
+      for (const k of [...((u.h && u.h.strains) || []), ...((u.h && u.h.mstrains) || [])]) put(k, null);
+      for (const r of (u.t && u.t.plan) || []) for (const x of r.strains || []) put(PIPE.strainKey(x.strain || ''), null);
+      if (!m.size && u.t && u.t.strainSet) for (const k of u.t.strainSet) put(k, null);
+      return m;
+    };
+    const sIdx = new Map();
+    for (const u of [...shown, ...us.filter(x => !info.has(x))]) {
+      const I = info.get(u); if (I && !I.src) continue;
+      for (const [k, lb] of sOf(u)) {
+        const e = sIdx.get(k) || { key: k, lots: [], more: 0 }; sIdx.set(k, e);
+        if (I) e.lots.push({ id: I.hold, unit: u.id, left: lb }); else e.more++;
+      }
+    }
+    const strains = [...sIdx.values()].sort((a, b) => a.key.localeCompare(b.key));
+    return { nodes, links, rows, nrows: shown.length, tot, look, hidden: { n: hid.length, lb: hid.reduce((a, u) => a + leftOf(u), 0) }, later, strains };
   }
   // what a click lights: the node, everything it came from and everything it went to (never its siblings). A lot's node
   // (one with a unit) follows that lot's links both ways, through its own nodes only; a shared node (a buyer, a pickup,
@@ -13729,7 +13767,7 @@ function b2BulkChanHTML(site) {
    on each link that has them, and opens its card in a panel on the right: a lot's own summary (b2fLotHTML), the
    Timeline's cards for a send, Jars, a pre-roll run and a pickup (b2Open, unchanged), a by-lot list for a shared node
    (b2fEndHTML). Sales to stores are a card of weeks no link reaches. Nothing new is read or polled, and nothing writes. */
-B2.mode = 'tl'; B2.fsel = ''; B2.fwant = ''; B2.fscope = 'recent'; B2.F = null;
+B2.mode = 'tl'; B2.fsel = ''; B2.fwant = ''; B2.fscope = 'recent'; B2.F = null; B2.fstrain = '';
 const B2F_COLS = [['Harvest', 'wet lb'], ['Trim', 'flower lb'], ['Bulk or distro', 'lb'], ['Test and COA', 'result day'], ['Pack', 'lb'], ['Out of the distro', 'lb'], ['Stores', 'by week']];
 const B2F_UNIT = { jar: 'jars', pouch: 'pouches', '1g': '1g pre-rolls', '5pk': '5-packs', '1.5g': '1.5g pre-rolls' };
 const B2F_END = {
@@ -13776,10 +13814,16 @@ function b2fInit() {
   });
   document.addEventListener('keydown', e => { if (S.view === 'batches2' && b2fOn() && e.key === 'Escape' && B2.fsel && !B2.open) b2fSelect(''); });
   const box = $('b2-flow');
-  // Find a lot: type to search (Gianni's rule for every pick-list). A suggestion picked from the list is used at once;
-  // typed text waits for Enter or leaving the box. Only a lot from the list is ever shown; anything else is refused.
+  // Find a lot: type to search (Gianni's rule for every pick-list), by lot or by strain (Gianni, 2026-11-17). A
+  // suggestion picked from the list is used at once; typed text waits for Enter or leaving the box. Only a lot or a
+  // strain from the list is ever shown; anything else is refused.
   box.addEventListener('input', e => { if (e.target.id === 'b2f-find' && (!e.inputType || e.inputType === 'insertReplacementText')) b2fFind(e.target, true); });
-  box.addEventListener('change', e => { if (e.target.id === 'b2f-find') b2fFind(e.target, false); });
+  // leaving the box by pressing something else: the press lands first (a strip or a message that appeared under the
+  // pointer would move what was pressed), then the typed text is used
+  const later = () => setTimeout(() => { B2.fdown = false; const f = B2.flater; B2.flater = null; if (f) f(); }, 0);
+  document.addEventListener('pointerdown', () => { B2.fdown = true; }, true);
+  document.addEventListener('pointerup', later, true); document.addEventListener('pointercancel', later, true);
+  box.addEventListener('change', e => { if (e.target.id !== 'b2f-find') return; const el = e.target; if (B2.fdown) B2.flater = () => b2fFind(el, false, true); else b2fFind(el, false); });
   box.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'b2f-find') { e.preventDefault(); b2fFind(e.target, false); } });
 }
 function b2fAct(el) {
@@ -13799,6 +13843,14 @@ function b2fAct(el) {
     if (id === b2fLook() || (id !== 'dark' && id !== 'light')) return;
     B2.look = id; savePref(B2F_LOOK, id);
     render();   // the item lit and its card stay as they are
+  } else if (a === 'strain') {
+    // a strain from Find: its lots are named in a strip and the other lots dim; nothing is rebuilt, so a click under
+    // way still lands. The one lot of a strain is lit at once
+    const s = id && B2.F ? B2.F.strains.find(x => x.key === id) : null;
+    B2.fstrain = s ? s.key : '';
+    b2fStrainSync();
+    b2fDraw();   // the strip changes the board's place: the links follow
+    if (s && s.lots.length === 1 && !s.more && B2.fsel !== s.lots[0].id && !el.dataset.stay) b2fAct({ dataset: { b2f: 'go', id: s.lots[0].id } });
   } else if (a === 'n') b2fSelect(id === B2.fsel ? '' : id);
   else if (a === 'go') {
     b2fSelect(id);
@@ -13806,13 +13858,38 @@ function b2fAct(el) {
     if (t && t.scrollIntoView) t.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 }
-function b2fFind(box, picked) {
+function b2fFind(box, picked, stay) {
   const F = B2.F, msg = $('b2f-msg'), t = String(box.value).trim(); if (!F || !msg) return;
   if (!t) { msg.textContent = ''; return; }
-  const list = F.rows.filter(I => I.src).map(I => [b2fName(I), I.hold]), m = EDIT.pickFrom(list.map(x => x[0]), t);
+  // a lot's name first, then a strain's (a lot is named by grow, room and day, so the two never read alike)
+  const list = F.rows.filter(I => I.src).map(I => [b2fName(I), I.hold]), sts = F.strains.map(x => [sLabel(x.key), x.key]);
+  const m = EDIT.pickFrom([...list, ...sts].map(x => x[0]), t);
   if (picked && !m.exact) return;   // still typing
-  if (m.value != null) { box.value = ''; msg.textContent = ''; b2fAct({ dataset: { b2f: 'go', id: list.find(x => x[0] === m.value)[1] } }); return; }
-  msg.textContent = m.n ? `${m.n} lots contain "${t}". Keep typing, or pick one from the list.` : `No lot in the list matches "${t}", so nothing changed.`;
+  if (m.value != null) {
+    const lot = list.find(x => x[0] === m.value);
+    box.value = ''; msg.textContent = '';
+    if (lot && stay && B2.fsel) return;   // something else was pressed on the way out: it keeps the light
+    b2fAct({ dataset: lot ? { b2f: 'go', id: lot[1] } : { b2f: 'strain', id: sts.find(x => x[0] === m.value)[1], stay: stay ? '1' : '' } });
+    return;
+  }
+  msg.textContent = m.n ? `${m.n} lots or strains contain "${t}". Keep typing, or pick one from the list.` : `No lot or strain in the list matches "${t}", so nothing changed.`;
+}
+// Find's strain (B2.fstrain, kept through redraws and Last 90 days | All 2026, never in the address): a strip that names
+// the strain's lots, each a button to its lot with the strain's flower still ours, and the board's other lots dimmed
+// until Clear. A trace lights over it. Words and pounds only
+function b2fStrainSync() {
+  const F = B2.F, el = $('b2f-strain'), board = $('b2f-board'); if (!F || !el || !board) return;
+  const s = B2.fstrain ? F.strains.find(x => x.key === B2.fstrain) : null;
+  if (!s) B2.fstrain = '';
+  const units = new Set(s ? s.lots.map(x => x.unit) : []), un = new Map(F.nodes.map(n => [n.id, n.unit])), by = new Map(F.rows.map(I => [I.hold, I]));
+  board.classList.toggle('strained', units.size > 0);
+  board.querySelectorAll('.b2f-n').forEach(n => n.classList.toggle('sm', units.has(un.get(n.dataset.id))));
+  if (!s) { el.innerHTML = ''; return; }
+  const name = esc(sLabel(s.key)), n = s.lots.length, lots = k => `${k} lot${k === 1 ? '' : 's'}`;
+  const older = s.more ? `<button type="button" class="b2f-sfo" data-b2f="scope" data-id="all">${n ? `+${lots(s.more)} in All 2026` : `Show ${s.more === 1 ? 'it' : 'them'} in All 2026`}</button>` : '';
+  el.innerHTML = `<span><b>${name}</b> ${n ? `is in ${lots(n)} here:` : `is in no lot shown here, and in ${lots(s.more)} older.`}</span>` +
+    s.lots.map(x => { const I = by.get(x.id); return `<button type="button" data-b2f="go" data-id="${esc(x.id)}">${esc(I ? b2fName(I) : x.id)}${x.left != null && x.left >= 0.05 ? ` · ${esc(BT2.lbTxt(x.left))} lb left` : ''}</button>`; }).join('') +
+    older + `<button type="button" class="b2f-sfx" data-b2f="strain" data-id="">Clear</button>`;
 }
 // one click: light the item and open its card; the same one again (or nothing) clears
 function b2fSelect(id) {
@@ -13896,14 +13973,16 @@ function b2fRender(M, HB) {
   const more = notes.length ? `<div class="b2f-more">Not shown here: ${esc(notes.join('; '))}. All 2026 has them.</div>` : '';
   box.innerHTML = `<div class="b2f-bar"><div class="wk-seg2" role="group" aria-label="Lots shown">` +
     [['recent', `Last ${BT2.FLOW_DAYS} days`], ['all', 'All 2026']].map(([k, w]) => `<button type="button" class="${B2.fscope === k ? 'on' : ''}" data-b2f="scope" data-id="${k}" aria-pressed="${B2.fscope === k}">${w}</button>`).join('') + `</div>` +
-    `<label class="b2f-findl"><span>Find a lot</span><input type="text" id="b2f-find" list="b2f-lots" placeholder="type to search…" autocomplete="off"></label><datalist id="b2f-lots">${names.map(x => `<option value="${esc(x)}"></option>`).join('')}</datalist>` +
+    `<label class="b2f-findl"><span>Find a lot</span><input type="text" id="b2f-find" list="b2f-lots" placeholder="lot or strain…" autocomplete="off"></label><datalist id="b2f-lots">${names.map(x => `<option value="${esc(x)}"></option>`).join('')}` +
+    F.strains.map(x => `<option value="${esc(sLabel(x.key))}" label="strain · ${x.lots.length ? `${x.lots.length} lot${x.lots.length === 1 ? '' : 's'}` : 'older lots only'}"></option>`).join('') + `</datalist>` +
     `<span class="b2f-hint">Laid out by step, newest harvests on top. Click anything to trace where it came from and where it went.</span>` +
     `<div class="wk-seg2 b2f-lookb" role="group" aria-label="Light or dark">` + [['light', 'Light'], ['dark', 'Dark']].map(([k, w]) => `<button type="button" class="${b2fLook() === k ? 'on' : ''}" data-b2f="look" data-id="${k}" aria-pressed="${b2fLook() === k}">${w}</button>`).join('') + `</div></div>` +
-    look + more + `<div class="b2f-msg" id="b2f-msg" role="status"></div>` +
+    look + more + `<div class="b2f-msg" id="b2f-msg" role="status"></div><div class="b2f-sf" id="b2f-strain" role="status"></div>` +
     `<div class="b2f-scroll"><div class="b2f-board" id="b2f-board"><svg class="b2f-links" id="b2f-svg" aria-hidden="true"></svg>${cols}</div></div>`;
   B2.partOf = new Map();
   for (const u of HB.units) for (const g of u.ev) for (const p of g.parts || []) B2.partOf.set(p.id, g.id);
   if (B2.fsel) b2fShow();
+  b2fStrainSync();
   b2fSync();
   if (keepX) { box.querySelector('.b2f-scroll').scrollLeft = keepX; b2fDraw(); }
   // the same first reads the Timeline asks for once signed in (then the polls)

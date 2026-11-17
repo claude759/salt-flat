@@ -3221,6 +3221,20 @@ if (realPipe) {
         'the mode, the scope and the item lit live in the address; a click changes only that part of it');
       assert.ok(/BT2\.flowView\(M, HB, \{ today, scope: B2\.fscope, wet \}\)/.test(fnH('b2fRender')) && /BT2\.flowTrace\(F, B2\.fsel\)/.test(fnH('b2fDraw')), 'the page draws the model');
       assert.ok(/EDIT\.pickFrom\(/.test(fnH('b2fFind')) && /<input type="text" id="b2f-find" list="b2f-lots"/.test(fnH('b2fRender')) && /so nothing changed/.test(fnH('b2fFind')), 'Find a lot is typable and refuses anything not in the list');
+      // Find also takes a strain (Gianni, 2026-11-17: "Add the strain search to Find a lot"): each strain with the lots shown
+      // that hold it, newest first, and how many older lots do; the page names them in a strip and dims the other lots
+      {
+        const tideA = FA.strains.find(x => x.key === 'TIDE'), tideR = FR.strains.find(x => x.key === 'TIDE');
+        assert.deepEqual(FA.strains.map(x => x.key), ['ANTIDOTE', 'BLACK LIGHT', 'RIPTIDE', 'TEA PARTY', 'TIDE', 'TIDEBANGER', 'VOODOO', 'ZANGBANGER'], 'the strains of the lots, by name');
+        assert.deepEqual([tideA.lots.map(x => x.unit), tideA.more], [['t:15TH|B|2026-10-20', 'h:25TH|1|2026-04-20'], 0], 'All 2026: both Tide lots, newest first');
+        assert.deepEqual([tideR.lots.map(x => x.unit), tideR.more], [['t:15TH|B|2026-10-20'], 1], 'Last 90 days: the lot shown, and one older said');
+        assert.ok(FA.strains.every(x => x.lots.every(l => FA.rows.some(I => I.hold === l.id && I.key === l.unit))), "a strain's lot is a row of the board, by the node Find goes to");
+        const fF = fnH('b2fFind'), fS = fnH('b2fStrainSync'), fA = fnH('b2fAct');
+        assert.ok(/F\.strains\.map\(x => \[sLabel\(x\.key\), x\.key\]\)/.test(fF) && /EDIT\.pickFrom\(\[\.\.\.list, \.\.\.sts\]/.test(fF) && /b2f: 'strain'/.test(fF), 'a strain typed resolves from the list, after the lots');
+        assert.ok(/a === 'strain'/.test(fA) && /b2fStrainSync\(\)/.test(fA) && !/render\(\)/.test(fA.slice(fA.indexOf("a === 'strain'"), fA.indexOf("a === 'n'"))), 'picking a strain rebuilds nothing');
+        assert.ok(/data-b2f="go"/.test(fS) && /data-b2f="strain" data-id=""/.test(fS) && /data-b2f="scope" data-id="all"/.test(fS) && /classList\.toggle\('sm'/.test(fS) && /b2fStrainSync\(\);\n  b2fSync\(\)/.test(fnH('b2fRender')), 'the strip: a button per lot, the older lots, Clear; drawn again with the board');
+        assert.ok(hcss.includes('.b2f-board.strained:not(.tracing) .b2f-n:not(.sm):not(.agg){opacity:.28}') && !/strain/.test(html.slice(html.indexOf('const b2fTail ='), html.indexOf('\n', html.indexOf('const b2fTail =')))), "the other lots dim until a trace lights; the strain stays out of the address");
+      }
       assert.ok(/b2Open\(n\.id, el\)/.test(fnH('b2fShow')) && /I\.rows\.map\(b2FlowHTML\)/.test(fnH('b2fLotHTML')) && /data-b2f="go"/.test(fnH('b2fEndHTML')), "the panel: the Timeline's cards, the lot's own summary, a shared node's lots");
       assert.ok(/if \(b2fOn\(\) && B2\.fsel && !B2\.open\) b2fSelect\(''\)/.test(fnH('b2fInit')), 'closing the panel drops the trace');
       assert.ok(hcss.includes('.b2f-n.fut{border:1px dashed #7C3AED;') && /\.b2f-n\.fut\{[^}]*box-shadow:0 0 0 1px rgba\(124,58,237,\.35\),0 0 8px 1px rgba\(124,58,237,\.45\)\}/.test(hcss) && hcss.includes('.b2f-p.old{border-color:#B45309;') &&
