@@ -6515,6 +6515,30 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
   const FLOW_DAYS = 90, FLOW_KEEP = 5, FLOW_OLD = 30, FLOW_AHEAD = 21;
   const FLOW_ENDS = [['labs', 'Lab samples'], ['finished', 'Written off'], ['in_transit', 'In transit'], ['moved_unread', 'Not read yet'], ['unexplained', 'Not accounted for']];
   const FLOW_COA = { failed: 'Failed test', late: 'COA not back', tight: 'COA tight' };
+  // Find's strains, one name per strain however it was written (Gianni, 2026-11-17: "Merge the messy strain names"). Only
+  // Flow's Find uses this: PIPE.strainKey and every other page keep the names as written. Two names are one strain when
+  // only their spaces differ ("FLASH BANG", "FLASHBANG"); when a number after a name is a cut written without its # and
+  // the name is known by itself ("BLACK LIGHT 27" is "BLACK LIGHT #27"; "STUDIO 54" stays a name); when a cross is written
+  // short (FLOW_ABBR: each one is on the sheets both ways with the same cut numbers); when PHENOS is added to a name known
+  // without it; or when FLOW_SAME says so. The spelling kept for a name is the one most lots use, then the longer.
+  // count: Map(name as written -> lots). -> Map(name as written -> the name kept)
+  const FLOW_ABBR = { ZB: 'ZANGBANGER', DM: 'DARK MATTER', LL: 'LIMELIGHT', NY: 'NEW YORKER', BM: 'BLACK MAGIC', SM: 'SMOOTHIE', ZANG: 'ZANGRIA', ZAN: 'ZANGRIA' };
+  const FLOW_SAME = { 'ZANG BANGERS': 'ZANGBANGER', 'SMOOTHIE ZANGRIA': 'SMOOTHIE X ZANGRIA' };
+  function strainMerge(count) {
+    const sq = t => t.replace(/\s+/g, ''), keys = [...count.keys()], PH = /(^| )PHENOS( |$)/;
+    const split = k => String(k).replace(/#(\s*#)+/g, '#').replace(/\s*#\s*/g, ' #').replace(/\s+/g, ' ').trim().split(' X ')
+      .map(p => { const i = p.indexOf(' #'); return i < 0 ? { n: p, c: '' } : { n: p.slice(0, i), c: p.slice(i) }; });
+    const join = ps => ps.map(p => p.n + p.c).join(' X ');
+    const long = k => { const ps = split(k); if (ps.length > 1) ps.forEach(p => { if (FLOW_ABBR[p.n]) p.n = FLOW_ABBR[p.n]; }); return ps.flatMap(p => FLOW_SAME[p.n] ? split(FLOW_SAME[p.n] + p.c) : [p]); };
+    const known = new Set(keys.flatMap(k => long(k).map(p => sq(p.n))));
+    const cut = ps => { ps.forEach(p => { const m = p.n.match(/^(.*\D) (\d{1,3})$/); if (m && known.has(sq(m[1]))) { p.n = m[1]; p.c = ' #' + m[2] + p.c; } }); return ps; };
+    const one = new Map(keys.map(k => [k, cut(long(k))])), plain = new Set(keys.filter(k => !PH.test(k)).map(k => sq(join(one.get(k)))));
+    for (const k of keys) if (PH.test(k)) { const ps = cut(long(String(k).replace(PH, ' ').trim())); if (ps[0].n && plain.has(sq(join(ps)))) one.set(k, ps); }
+    const use = new Map();
+    for (const [k, ps] of one) for (const p of ps) { const q = sq(p.n), m = use.get(q) || new Map(); use.set(q, m); m.set(p.n, (m.get(p.n) || 0) + (count.get(k) || 0)); }
+    const best = new Map([...use].map(([q, m]) => [q, [...m].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0]))[0][0]]));
+    return new Map([...one].map(([k, ps]) => [k, ps.map(p => best.get(sq(p.n)) + p.c).join(' X ')]));
+  }
   function flowView(M, HB, o = {}) {
     const today = o.today || '', all = o.scope === 'all', wet = typeof o.wet === 'function' ? o.wet : () => null;
     const fmd = d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
@@ -6644,11 +6668,11 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     const look = rows.filter(I => I.src && I.left >= FLOW_KEEP && I.old).sort((a, b) => b.age - a.age || a.key.localeCompare(b.key)).map(I => ({ id: I.hold, key: I.key, site: I.site, room: I.room, left: I.left, age: I.age }));
     // Find's strains: each strain with the lots shown that hold it, newest first, and how many lots not shown do (more).
     // A lot's strains are its Metrc lots' (a name written "A / B" is each), its harvest's and its trim plan's; only when
-    // none of those name one, its trim sheet tab's. A numbered cut ("SMOOTHIE #6") is listed under its own name and under
-    // its strain's. left: that strain's flower still ours in the lot (null: not known)
+    // none of those name one, its trim sheet tab's. Names are merged by strainMerge (also: the other ways it was
+    // written). A numbered cut ("SMOOTHIE #6") is listed under its own name and under its strain's. left: that strain's
+    // flower still ours in the lot (null: not known)
     const sOf = u => {
-      const m = new Map(), put1 = (k, lb) => { if (k && PIPE.isStrain(k)) m.set(k, lb == null ? (m.has(k) ? m.get(k) : null) : (m.get(k) || 0) + lb); };
-      const put = (k, lb) => { put1(k, lb); const b = String(k || '').replace(/\s*#.*$/, '').trim(); if (b !== k) put1(b, lb); };
+      const m = new Map(), put = (k, lb) => { if (k && PIPE.isStrain(k)) m.set(k, lb == null ? (m.has(k) ? m.get(k) : null) : (m.get(k) || 0) + lb); };
       for (const r of lotsOf.get(u)) for (const x of r.strains || []) {
         const ks = String((x && x.name) || '').split(/\s*[\/,]\s*/).map(n => PIPE.strainKey(n)).filter(Boolean);
         ks.forEach(k => put(k, ks.length === 1 ? flowNum(x.left_lb) : null));
@@ -6658,15 +6682,21 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
       if (!m.size && u.t && u.t.strainSet) for (const k of u.t.strainSet) put(k, null);
       return m;
     };
-    const sIdx = new Map();
-    for (const u of [...shown, ...us.filter(x => !info.has(x))]) {
-      const I = info.get(u); if (I && !I.src) continue;
-      for (const [k, lb] of sOf(u)) {
-        const e = sIdx.get(k) || { key: k, lots: [], more: 0 }; sIdx.set(k, e);
+    const sUnits = [...shown, ...us.filter(x => !info.has(x))].filter(u => !info.has(u) || info.get(u).src);
+    const sRaw = new Map(sUnits.map(u => [u, sOf(u)])), sCount = new Map(), sIdx = new Map();
+    for (const m of sRaw.values()) for (const k of m.keys()) sCount.set(k, (sCount.get(k) || 0) + 1);
+    const kept = strainMerge(sCount);
+    for (const u of sUnits) {
+      const I = info.get(u), m = new Map(), put = (k, lb) => m.set(k, lb == null ? (m.has(k) ? m.get(k) : null) : (m.get(k) || 0) + lb);
+      for (const [k, lb] of sRaw.get(u)) { const c = kept.get(k), b = c.replace(/( #[^\s#]+)+$/, ''); put(c, lb); if (b && b !== c) put(b, lb); }
+      for (const [k, lb] of m) {
+        const e = sIdx.get(k) || { key: k, lots: [], more: 0, also: [] }; sIdx.set(k, e);
         if (I) e.lots.push({ id: I.hold, unit: u.id, left: lb }); else e.more++;
       }
     }
+    for (const [k, c] of kept) if (k !== c && sIdx.has(c)) sIdx.get(c).also.push(k);
     const strains = [...sIdx.values()].sort((a, b) => a.key.localeCompare(b.key));
+    strains.forEach(e => e.also.sort());
     return { nodes, links, rows, nrows: shown.length, tot, look, hidden: { n: hid.length, lb: hid.reduce((a, u) => a + leftOf(u), 0) }, later, strains };
   }
   // what a click lights: the node, everything it came from and everything it went to (never its siblings). A lot's node
@@ -6692,7 +6722,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     labItems, labGroups, labBubble, labClass, atLabText, row, uidN, LAB_DETACH, LAB_OUT, LAB_AHEAD, SHEET_DAYS,
     placeTag, packGroups, packBubble, packClass, evOrder, PACK_G, salesWeeks, salesBubble, salesClass, bandRows, bandEdge, band4w,
     HUB_ORDER, IN_MIN, IN_JOIN, PICK_JOIN, PR_JOIN, IN_ROWS, lotDays, hub, inGroups, pickGroups, inBubble, inClass, pickBubble, pickClass, runBubble,
-    hubRows, hub4w, edgeWords, flowView, flowTrace, FLOW_DAYS, FLOW_KEEP, FLOW_OLD, FLOW_AHEAD, FLOW_ENDS };
+    hubRows, hub4w, edgeWords, flowView, flowTrace, strainMerge, FLOW_DAYS, FLOW_KEEP, FLOW_OLD, FLOW_AHEAD, FLOW_ENDS };
 })(PIPE, BAT, TRIMY, ACT);
 /* ===== BATCH V2 MODEL END ===== */
 
@@ -13862,8 +13892,14 @@ function b2fFind(box, picked, stay) {
   const F = B2.F, msg = $('b2f-msg'), t = String(box.value).trim(); if (!F || !msg) return;
   if (!t) { msg.textContent = ''; return; }
   // a lot's name first, then a strain's (a lot is named by grow, room and day, so the two never read alike)
-  const list = F.rows.filter(I => I.src).map(I => [b2fName(I), I.hold]), sts = F.strains.map(x => [sLabel(x.key), x.key]);
-  const m = EDIT.pickFrom([...list, ...sts].map(x => x[0]), t);
+  // a strain answers to every way it was written ("Kingtide" finds King Tide); only its kept name is suggested
+  const list = F.rows.filter(I => I.src).map(I => [b2fName(I), I.hold]), sts = F.strains.flatMap(x => [x.key, ...x.also].map(k => [sLabel(k), x.key]));
+  const names = [...list, ...sts].map(x => x[0]);
+  let m = EDIT.pickFrom(names, t);
+  if (m.value == null && m.n > 1) {   // several names contain it, all of them one strain's
+    const w = v => String(v).toLowerCase().replace(/\s+/g, ' ').trim(), hits = sts.filter(x => w(x[0]).includes(w(t)));
+    if (hits.length === m.n && new Set(hits.map(x => x[1])).size === 1) m = { value: hits[0][0], n: 1, exact: false };
+  }
   if (picked && !m.exact) return;   // still typing
   if (m.value != null) {
     const lot = list.find(x => x[0] === m.value);
@@ -13887,7 +13923,8 @@ function b2fStrainSync() {
   if (!s) { el.innerHTML = ''; return; }
   const name = esc(sLabel(s.key)), n = s.lots.length, lots = k => `${k} lot${k === 1 ? '' : 's'}`;
   const older = s.more ? `<button type="button" class="b2f-sfo" data-b2f="scope" data-id="all">${n ? `+${lots(s.more)} in All 2026` : `Show ${s.more === 1 ? 'it' : 'them'} in All 2026`}</button>` : '';
-  el.innerHTML = `<span><b>${name}</b> ${n ? `is in ${lots(n)} here:` : `is in no lot shown here, and in ${lots(s.more)} older.`}</span>` +
+  const also = s.also.length ? ` <small>(also written ${esc(s.also.slice(0, 4).map(k => sLabel(k)).join(', '))}${s.also.length > 4 ? ` and ${s.also.length - 4} more` : ''})</small>` : '';
+  el.innerHTML = `<span><b>${name}</b>${also} ${n ? `is in ${lots(n)} here:` : `is in no lot shown here, and in ${lots(s.more)} older.`}</span>` +
     s.lots.map(x => { const I = by.get(x.id); return `<button type="button" data-b2f="go" data-id="${esc(x.id)}">${esc(I ? b2fName(I) : x.id)}${x.left != null && x.left >= 0.05 ? ` · ${esc(BT2.lbTxt(x.left))} lb left` : ''}</button>`; }).join('') +
     older + `<button type="button" class="b2f-sfx" data-b2f="strain" data-id="">Clear</button>`;
 }

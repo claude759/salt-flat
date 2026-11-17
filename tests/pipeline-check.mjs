@@ -3230,7 +3230,22 @@ if (realPipe) {
         assert.deepEqual([tideR.lots.map(x => x.unit), tideR.more], [['t:15TH|B|2026-10-20'], 1], 'Last 90 days: the lot shown, and one older said');
         assert.ok(FA.strains.every(x => x.lots.every(l => FA.rows.some(I => I.hold === l.id && I.key === l.unit))), "a strain's lot is a row of the board, by the node Find goes to");
         const fF = fnH('b2fFind'), fS = fnH('b2fStrainSync'), fA = fnH('b2fAct');
-        assert.ok(/F\.strains\.map\(x => \[sLabel\(x\.key\), x\.key\]\)/.test(fF) && /EDIT\.pickFrom\(\[\.\.\.list, \.\.\.sts\]/.test(fF) && /b2f: 'strain'/.test(fF), 'a strain typed resolves from the list, after the lots');
+        assert.ok(/F\.strains\.flatMap\(x => \[x\.key, \.\.\.x\.also\]\.map\(k => \[sLabel\(k\), x\.key\]\)\)/.test(fF) && /const names = \[\.\.\.list, \.\.\.sts\]\.map/.test(fF) && /EDIT\.pickFrom\(names, t\)/.test(fF) && /b2f: 'strain'/.test(fF),
+          'a strain typed resolves from the list, after the lots, by any way it was written');
+        // one name per strain however it was written (Gianni, 2026-11-17: "Merge the messy strain names"): spaces, a cut's
+        // number without its #, a cross written short, PHENOS on a known name; a name that only looks like one stays
+        const mg = BT2.strainMerge(new Map([['FLASHBANG', 4], ['FLASH BANG', 1], ['FLASHBANG 19', 2], ['KING TIDE', 5], ['KINGTIDE', 5], ['KINGTIDE 23', 1], ['KING TIDE 23', 1], ['BLACK LIGHT', 19],
+          ['BLACK LIGHT 27', 3], ['BLACK LIGHT #27', 6], ['STUDIO 54', 1], ['MAGIC MIRROR 4', 4], ['MAGIC MIRROR 7', 1], ['ZANGBANGER', 29], ['ZANG BANGERS', 2], ['ZB X BM #10', 1], ['ZB X BLACK MAGIC #10', 1],
+          ['DM X ZB', 1], ['DARK MATTER X ZB', 2], ['PHENOS DM X ZB', 1], ['SMOOTHIE', 16], ['SMOOTHIE ZANGRIA #5', 1], ['SM X ZAN #5', 1], ['SMOOTHIE X ZANG #5', 1], ['SMOOTHIE 6 X ZB', 1], ['TEA TIME # #13', 1], ['TEATIME', 3],
+          ['ZOAP', 1], ['ZOAP PHENOS', 1], ['20X PHENOS', 1], ['M8', 12], ['W X BM', 1], ['TIDEBANGER X BLUEBANGER', 1], ['BLUEBANGER X TIDEBANGER', 1], ['DARK MATTER X 2424', 1]]));
+        assert.deepEqual(Object.fromEntries(mg), { FLASHBANG: 'FLASHBANG', 'FLASH BANG': 'FLASHBANG', 'FLASHBANG 19': 'FLASHBANG #19', 'KING TIDE': 'KING TIDE', KINGTIDE: 'KING TIDE', 'KINGTIDE 23': 'KING TIDE #23', 'KING TIDE 23': 'KING TIDE #23',
+          'BLACK LIGHT': 'BLACK LIGHT', 'BLACK LIGHT 27': 'BLACK LIGHT #27', 'BLACK LIGHT #27': 'BLACK LIGHT #27', 'STUDIO 54': 'STUDIO 54', 'MAGIC MIRROR 4': 'MAGIC MIRROR 4', 'MAGIC MIRROR 7': 'MAGIC MIRROR 7', ZANGBANGER: 'ZANGBANGER',
+          'ZANG BANGERS': 'ZANGBANGER', 'ZB X BM #10': 'ZANGBANGER X BLACK MAGIC #10', 'ZB X BLACK MAGIC #10': 'ZANGBANGER X BLACK MAGIC #10', 'DM X ZB': 'DARK MATTER X ZANGBANGER', 'DARK MATTER X ZB': 'DARK MATTER X ZANGBANGER',
+          'PHENOS DM X ZB': 'DARK MATTER X ZANGBANGER', SMOOTHIE: 'SMOOTHIE', 'SMOOTHIE ZANGRIA #5': 'SMOOTHIE X ZANGRIA #5', 'SM X ZAN #5': 'SMOOTHIE X ZANGRIA #5', 'SMOOTHIE X ZANG #5': 'SMOOTHIE X ZANGRIA #5',
+          'SMOOTHIE 6 X ZB': 'SMOOTHIE #6 X ZANGBANGER', 'TEA TIME # #13': 'TEATIME #13', TEATIME: 'TEATIME', ZOAP: 'ZOAP', 'ZOAP PHENOS': 'ZOAP', '20X PHENOS': '20X PHENOS', M8: 'M8', 'W X BM': 'W X BLACK MAGIC',
+          'TIDEBANGER X BLUEBANGER': 'TIDEBANGER X BLUEBANGER', 'BLUEBANGER X TIDEBANGER': 'BLUEBANGER X TIDEBANGER', 'DARK MATTER X 2424': 'DARK MATTER X 2424' }, 'the names kept');
+        assert.ok(FA.strains.every(x => Array.isArray(x.also)) && /also written/.test(fS) && !/strainMerge/.test(html.slice(html.indexOf('const PIPE = (() => {'), html.indexOf('/* ===== BATCH V2 MODEL START'))),
+          "a strain carries the other ways it was written, the strip says them, and only Batch V2's Flow merges names");
         assert.ok(/a === 'strain'/.test(fA) && /b2fStrainSync\(\)/.test(fA) && !/render\(\)/.test(fA.slice(fA.indexOf("a === 'strain'"), fA.indexOf("a === 'n'"))), 'picking a strain rebuilds nothing');
         assert.ok(/data-b2f="go"/.test(fS) && /data-b2f="strain" data-id=""/.test(fS) && /data-b2f="scope" data-id="all"/.test(fS) && /classList\.toggle\('sm'/.test(fS) && /b2fStrainSync\(\);\n  b2fSync\(\)/.test(fnH('b2fRender')), 'the strip: a button per lot, the older lots, Clear; drawn again with the board');
         assert.ok(hcss.includes('.b2f-board.strained:not(.tracing) .b2f-n:not(.sm):not(.agg){opacity:.28}') && !/strain/.test(html.slice(html.indexOf('const b2fTail ='), html.indexOf('\n', html.indexOf('const b2fTail =')))), "the other lots dim until a trace lights; the strain stays out of the address");

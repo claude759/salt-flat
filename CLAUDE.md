@@ -501,6 +501,15 @@ launch. The check fails if one of the three pieces is missing.
     Nothing is rebuilt on a pick, and text used by leaving the box waits for the press under way (`B2.fdown`), so that
     press still lands. The strain is kept through redraws and the scope
     buttons, never in the address. This is Flow's Find only: the Week board's removed strain search stays removed.
+    **One name per strain in Find** (Gianni, 2026-11-17: "Merge the messy strain names"; `BT2.strainMerge`, Flow's Find
+    only: `PIPE.strainKey` and every other page keep the names as written). Two names are one strain when only their
+    spaces differ ("Flash Bang", "Flashbang"); when a number after a name is a cut without its # and the name is known
+    by itself ("Black Light 27" is "Black Light #27"; "Studio 54", "Magic Mirror 4" stay names); when a cross is written
+    short (`FLOW_ABBR`: ZB Zangbanger, DM Dark Matter, LL Limelight, NY New Yorker, BM Black Magic, SM Smoothie, Zang or
+    Zan Zangria, each seen on the sheets both ways with the same cut numbers); when PHENOS is added to a name known
+    without it; or by `FLOW_SAME` ("Zang Bangers", "Smoothie Zangria"). The spelling most lots use is kept. Not merged,
+    not known: W, BB, Wiz OG, and a cross written the other way round. Any way a strain was written still finds it, and
+    the strip says "also written ...".
     **Flow has a dark look, and opens in it** (Gianni, 2026-11-17: "Add a dark look", like his pictures): a Light | Dark
     switch at the right of Flow's toolbar, kept in the browser (`pipeline.flow.look`), never in the address. Only Flow:
     `b2fDark()` makes `render()` leave `data-light` off and set `body.b2f-dark`, so the page sits on the app's own dark
