@@ -528,12 +528,21 @@ launch. The check fails if one of the three pieces is missing.
   the viewer list or the data into `pipeline_*` tables, never put a number in the page source, and never cache it in the
   browser. The page only draws the one row (`cogs_snapshot`); the method lives in cogs-core.mjs: each grow's own books
   (Slane = 23rd, Imperial = 15th, Filifera = 25th) plus pay not run through Gusto and Imperial's rent and utilities paid
-  outside QuickBooks; left out: royalties, Scott's pay, interest, taxes, depreciation, bought flower, packaging, testing,
-  Nabis fees and distro pay. Every day a grow's costs are shared among its flower rooms by lights (his choice); a harvest
+  outside QuickBooks; left out: royalties, Scott's pay, interest, taxes, the books' tax depreciation, bought flower,
+  packaging, testing, Nabis fees and distro pay. Every day a grow's costs are shared among its flower rooms by lights (his choice); a harvest
   carries its room's share from the day after the room's previous Metrc harvest to its own. 25th: power, water,
   cultivation pay and growing supplies count in full, shared costs at 3 rooms of 4, the distro counted as one more room
-  (his choice). Rent, power and water, security, and licenses and insurance are spread evenly at the last 12 closed
-  months' average. Trim pay is its own column (his choice), charged to the trims by pounds. Per pound = (grow + trim) /
+  (his choice). Rent, power and water, security and insurance are spread evenly at the last 12 closed months' average.
+  Licenses and permits (Gianni, same day: "annual licensing fees like dcr and dcc renewal should be divided by 12 and split
+  evenly over each harvest"): each payment counts a twelfth a month for the 12 months from its month (one in the books'
+  first year also stands for the year before), shared equally by the rooms, not by lights. The three cultivation managers
+  ("Raul/Nick/Liz their gusto and non gusto pay should be split up between each company by number of lights"): their pay
+  at every grow, Gusto (read per payroll by the job) and not (the cash book), is taken off where it was booked and shared
+  among the three grows by lights each month; the page never names them. Equipment and building work on the books (his
+  choice, "Spread over useful life"): every addition to a grow's fixed-asset accounts counts a month at a time, equipment
+  over 5 years, building work over 10 or to the end of the lease (23rd St: June 2028); packaging tools stay with the
+  distro. Trim pay is its own column (his choice), charged to the trims by pounds. Each cost line of a harvest opens the
+  accounts behind it and how the harvest's part was worked out (Gianni: "I'd like to be able to click on these rows"). Per pound = (grow + trim) /
   bigs + littles on the trim sheets. Olympic shows what Filifera paid (bought, not grown). "High" (over 1.2 times the
   grow's middle finished harvest per pound) and "Low yield" (under 0.8 times its pounds per light) are amber tags.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
