@@ -3101,7 +3101,7 @@ if (realPipe) {
     // 26px a track, the out band folds to 2, then the In band moves into the distro's strip; 24 to 40px; a phone scrolls
     assert.deepEqual([[522, 14, 2], [498, 14, 2], [422, 14, 2], [412, 14, 2], [522, 14, 3], [522, 14, 4], [330, 14, 2], [300, 14, 2, true], [900, 14, 0]].map(a => BT2.hubRows(...a)), [
       { inN: 2, outN: 3, TH: 28 }, { inN: 2, outN: 3, TH: 27 }, { inN: 0, outN: 2, TH: 26 }, { inN: 0, outN: 2, TH: 26 }, { inN: 3, outN: 3, TH: 27 }, { inN: 1, outN: 3, TH: 30 },
-      { inN: 0, outN: 2, TH: 24 }, { inN: 2, outN: 3, TH: 30 }, { inN: 0, outN: 3, TH: 40 }]);
+      { inN: 0, outN: 1, TH: 24 }, { inN: 2, outN: 3, TH: 30 }, { inN: 0, outN: 3, TH: 40 }]);
     // the panels: the 4 full weeks before the week holding today (10/19 to 11/15): moved in, Metrc's pickups, Nabis sold, Distru
     const P4 = BT2.hub4w(HB, SH, T);
     assert.deepEqual([P4.from, P4.to, +P4.in.toFixed(1), +P4.pick.toFixed(1), +P4.nabis.toFixed(1), P4.distru, +P4.stores.toFixed(1)], ['2026-10-19', '2026-11-15', 85, 28.7, 13.3, 11, 24.3]);

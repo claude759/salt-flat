@@ -448,7 +448,8 @@ launch. The check fails if one of the three pieces is missing.
     days after today joined apart from today's, so today's never takes tomorrow's glow or lab check),
     Nabis sold by week ("Nabis: 13 sold", the sales app; scheduled "≈17", glowing), Distru by week (our distro's own
     deliveries; nothing is transferred to Distru, our distro's software). Nabis and Distru fold into one row ("N 13 · D
-    11 lbs") when three rows would push tracks under 26 px; then the In band folds into the strip (`BT2.hubRows`). To
+    11 lbs") when three rows would push tracks under 26 px; then the In band folds into the strip; then, still under 24
+    px, only the To Nabis row stays (its card opens Nabis's weeks) (`BT2.hubRows`). To
     Nabis and Nabis sold are never added together; In is never a sale. The In band and the out rows have panels
     (`.b2-ohb`, never `.b2-oh`, so the On hand panels still map one to one to the lanes) with each row's last 4 full
     weeks ("In · 4 wks · 192 lb", "To Nabis · 4 wks · 83 lb"; phones "In 4w 192"), each opening its 2026 by day or by
