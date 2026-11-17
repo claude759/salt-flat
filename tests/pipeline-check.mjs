@@ -2292,7 +2292,7 @@ if (realPipe) {
   assert.ok(/from\('pipeline_flow_meta'\)/.test(b2flow) && /F\.changed !== changed/.test(b2flow) && /from\('pipeline_flow_lots'\)/.test(b2flow) && /\.range\(/.test(b2flow),
     'Batch V2 reads pipeline_flow_lots again only when pipeline_flow_meta.changed_at moves (or Refresh)');
   assert.ok(/does not exist\|schema cache/.test(b2flow), 'before the table exists the page keeps working');
-  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0; b2Shelf\(\); b2LaneEdge\(\); \}\)/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column (and the words at the box\'s edges) redraws a frame at a time, only a changed set');
+  assert.ok(/requestAnimationFrame\(\(\) => \{ B2\.raf = 0;\n\s+if \(B2\.oh \|\| B2\.edge\) \{ b2Shelf\(\); b2LaneEdge\(\); \}/.test(b2src) && /sig === L\.sig\) continue/.test(b2src), 'the column (and the words at the box\'s edges) redraws a frame at a time, only a changed set');
   { // cut words (Gianni's screenshot at 90% zoom, 2026-11-16): each bubble is measured on a hidden bubble of its own classes
     // (below 100% on a 1x screen a 2px and a 1px border both snap to one device pixel), and a net after each draw
     const ms = b2src.slice(b2src.indexOf('function b2Measure('), b2src.indexOf('const B2_BUBS'));
@@ -2860,7 +2860,7 @@ if (realPipe) {
     // D5: the look: lavender, dashed and glowing when scheduled, the amber strip warning, focus and selection; no red
     const skCss = html.slice(html.indexOf('/* Batch V2 (beta'), html.indexOf('/* Batch V2 end */'));
     assert.ok(skCss.includes('.b2-wk.fut{box-shadow:0 0 0 1px rgba(124,58,237,.35),0 0 8px 1px rgba(124,58,237,.45)}') && /\.b2-wk:focus-visible/.test(skCss) && /\.b2-wk\.b2-on/.test(skCss) &&
-      /\.b2-wk\.plan\{border-style:dashed/.test(skCss) && skCss.includes('.b2-site.hub em.warn{color:#B45309}') && /\.b2-wkgap\{[^}]*pointer-events:none/.test(skCss), 'the weeks\' look');
+      /\.b2-wk\.plan\{border-style:dashed/.test(skCss) && skCss.includes('.b2-site.hub em.warn{color:#8A4B00}') && /\.b2-wkgap\{[^}]*pointer-events:none/.test(skCss), 'the weeks\' look');
     // D6: no money words in the model block either (the page block is checked above)
     assert.ok(!/price|dollar|revenue|\$\{?\s*usd|amount_usd/i.test(b2Src), 'the Batch V2 model shows pounds and units only, never dollars');
     // D7: the flow job reads the sales app's Sales-by-Type layout by position
@@ -3217,8 +3217,8 @@ if (realPipe) {
       assert.ok(fsrc.length > 2000 && !/sb\.from\(|\.rpc\(|setInterval\(/.test(fsrc), 'Flow reads and polls nothing new');
       assert.ok(/B2\.met = new Map\([^\n]*\n[^\n]*\n\s*b2ModeBar\(\);\n\s*if \(b2fOn\(\)\) \{ b2fRender\(M, HB\); return; \}/.test(rbH), 'Flow branches right after the sentence; the Timeline below it is untouched');
       assert.ok(html.includes('<div class="b2f" id="b2-flow"></div>') && html.includes('id="b2-mode"') && !/data-view="flow"/.test(html), 'Flow is a mode of Batch V2, not a page');
-      assert.ok(/if \(p\.get\('mode'\) === 'flow'\) \{ B2\.mode = 'flow';/.test(html) && html.includes('${weekHashTail()}${b2fTail()}') && /location\.hash\.replace\(\/&\(mode=flow\|show=all\|sel=\[\^&\]\*\)\/g, ''\) \+ b2fTail\(\)/.test(fnH('b2fHash')),
-        'the mode, the scope and the item lit live in the address; a click changes only that part of it');
+      assert.ok(/B2\.fwant = p\.get\('sel'\) \|\| '';/.test(html) && !/B2\.mode = 'flow'/.test(html) && html.includes('${weekHashTail()}${b2fTail()}') && /location\.hash\.replace\(\/&\(mode=flow\|show=all\|sel=\[\^&\]\*\)\/g, ''\) \+ b2fTail\(\)/.test(fnH('b2fHash')),
+        'the item traced lives in the address (an old &mode=flow link opens the one view: nothing sets the step columns any more); a click changes only that part of it');
       assert.ok(/BT2\.flowView\(M, HB, \{ today, scope: B2\.fscope, wet \}\)/.test(fnH('b2fRender')) && /BT2\.flowTrace\(F, B2\.fsel\)/.test(fnH('b2fDraw')), 'the page draws the model');
       assert.ok(/EDIT\.pickFrom\(/.test(fnH('b2fFind')) && /<input type="text" id="b2f-find" list="b2f-lots"/.test(fnH('b2fRender')) && /so nothing changed/.test(fnH('b2fFind')), 'Find a lot is typable and refuses anything not in the list');
       // Find also takes a strain (Gianni, 2026-11-17: "Add the strain search to Find a lot"): each strain with the lots shown
@@ -3251,13 +3251,36 @@ if (realPipe) {
         assert.ok(hcss.includes('.b2f-board.strained:not(.tracing) .b2f-n:not(.sm):not(.agg){opacity:.28}') && !/strain/.test(html.slice(html.indexOf('const b2fTail ='), html.indexOf('\n', html.indexOf('const b2fTail =')))), "the other lots dim until a trace lights; the strain stays out of the address");
       }
       assert.ok(/b2Open\(n\.id, el\)/.test(fnH('b2fShow')) && /I\.rows\.map\(b2FlowHTML\)/.test(fnH('b2fLotHTML')) && /data-b2f="go"/.test(fnH('b2fEndHTML')), "the panel: the Timeline's cards, the lot's own summary, a shared node's lots");
-      assert.ok(/if \(b2fOn\(\) && B2\.fsel && !B2\.open\) b2fSelect\(''\)/.test(fnH('b2fInit')), 'closing the panel drops the trace');
+      assert.ok(/if \(B2\.fsel && !B2\.open\) \(b2fOn\(\) \? b2fSelect : b2tSelect\)\(''\)/.test(fnH('b2fInit')) && /if \(Date\.now\(\) - B2\.dragged < 80\) return;/.test(fnH('b2fInit')), 'closing the panel drops the trace; the end of a drag does not');
       assert.ok(hcss.includes('.b2f-n.fut{border:1px dashed #7C3AED;') && /\.b2f-n\.fut\{[^}]*box-shadow:0 0 0 1px rgba\(124,58,237,\.35\),0 0 8px 1px rgba\(124,58,237,\.45\)\}/.test(hcss) && hcss.includes('.b2f-p.old{border-color:#B45309;') &&
         /\.b2f-on \.b2-nav,\.b2f-on #b2-scroll\{display:none\}/.test(hcss) && /body\.b2f-open\[data-view="batches2"\] #app\{padding-right:356px\}/.test(hcss), "Flow's look: the purple glow ahead, amber for a look, the page makes room for the panel");
       assert.ok(/Known by week for the whole company, never by lot/.test(fnH('b2fStores')) && !/data-b2f="n"/.test(fnH('b2fStores')), 'sales to stores are a card of weeks, never a node');
       // the dark look (Gianni, 2026-11-17: "Add a dark look"): only in Flow, on the app's dark base; dark unless this
       // browser chose Light; kept in the browser, never in the address; the Timeline and the other pages keep theirs
-      assert.ok(/const b2fDark = \(\) => S\.view === 'batches2' && b2fOn\(\) && b2fLook\(\) === 'dark';/.test(html) && /loadPref\(B2F_LOOK, 'dark'\) === 'light' \? 'light' : 'dark'/.test(html), 'dark only in Flow, and by default');
+      assert.ok(/const b2fDark = \(\) => S\.view === 'batches2' && b2fLook\(\) === 'dark';/.test(html) && /loadPref\(B2F_LOOK, 'dark'\) === 'light' \? 'light' : 'dark'/.test(html), 'dark only on Batch V2 (the one view), and by default');
+      // One view (Gianni, 2026-11-17: "I kind of wanted the flow and timeline to be the same thing", then "Yes, build it" to the
+      // mockup): the Timeline is the view and Flow's trace runs on it; no Timeline | Flow buttons; a rail for pounds with no day;
+      // open items throb
+      {
+        const rb = fnH('renderBatches2'), fI = fnH('b2Init'), fM = fnH('b2tModel'), fD = fnH('b2tDraw'), fK = fnH('b2tMarks'), fS2 = fnH('b2tSelect'), fW = fnH('b2tShow');
+        assert.ok(html.includes('<div class="b2t-bar" id="b2t-bar"></div>') && html.includes('<div class="b2t-rail" id="b2t-rail" hidden></div>') && html.includes('<svg class="b2t-links" id="b2t-svg" aria-hidden="true"></svg>') &&
+          /<label class="b2f-findl" id="b2t-findl"><span>Find<\/span><input type="text" id="b2f-find" list="b2f-lots"/.test(html), 'the one view: Find in the top row, a bar under the sentence, the rail and the links beside the timeline');
+        assert.ok(/el\.innerHTML = b2fOn\(\) \? /.test(fnH('b2ModeBar')) && /el\.hidden = !b2fOn\(\);/.test(fnH('b2ModeBar')), 'no Timeline | Flow buttons');
+        assert.ok(/if \(b2fOn\(\)\) \{ b2fRender\(M, HB\); return; \}\n  b2tModel\(M, HB\);/.test(rb) && /BT2\.flowView\(M, HB, \{ today, scope: 'all', wet \}\)/.test(fM) && rb.indexOf('b2tModel(M, HB)') < rb.indexOf('const tw = b2Measure(sc)'),
+          "Flow's model over every 2026 lot, before the timeline is fitted (its bar has a height)");
+        assert.ok(/B2\.hold = !!reopen;/.test(rb) && /if \(B2\.fsel && !B2\.open\) b2tShow\(null\);/.test(rb) && /B2\.fnew = false; B2\.hold = false;\n  b2tDock\(\);\n  b2tSync\(\);\n/.test(rb), 'a redraw keeps the trace, its card and the room the docked card took');
+        assert.ok(/B2\.F\.nodes\.find\(n => n\.id === a\)/.test(fI) && /if \(node\) \{ b2tSelect\(/.test(fI) && !/if \(B2\.open && !B2\.keep\) b2Close\(\);/.test(fI) && /if \(B2\.fsel \|\| B2\.fstrain\) b2tSync\(\);/.test(fI),
+          'a click on a bubble the model knows traces it; scrolling along a trail keeps the card, and the links follow');
+        assert.ok(/BT2\.flowTrace\(F, B2\.fsel\)/.test(fK) && /classList\.toggle\('lit', lit\.has\(id\)\)/.test(fK) && /classList\.toggle\('sm', !!u && units\.has\(u\)\)/.test(fK) && /T\.part\[id\]/.test(fK), "the marks: the trail, the one clicked, a strain's lots, a rail line's part");
+        assert.ok(/clipPath id="b2t-c1"/.test(fD) && /e\.lb != null \? Math\.max\(1\.5, Math\.min\(16, e\.lb \/ 6\)\) : 1\.5/.test(fD) && /if \(e\.lb != null\) chips\.push/.test(fD), 'a link is thick, and carries its number, only where the data holds pounds; the links stop at the On hand column');
+        assert.ok(/n\.group === 'bulk' \|\| n\.group === 'distru' \|\| n\.group === 'other'/.test(fM) && /data-b2f="n" data-id=/.test(fM) && /!isPhone\(\) && ends\.length > 0/.test(fM), 'the rail: bulk buyers, Distru, the rest; never what is still ours (the On hand column has it)');
+        assert.ok(/n\.kind === 'lab' \|\| n\.kind === 'pack' \|\| n\.kind === 'nabis'/.test(fW) && /b2fLotHTML\(I\) : b2fEndHTML\(n\)/.test(fW) && /b2fHash\(\);/.test(fS2), "the card: the Timeline's own, a lot's summary, a rail line's lots; the item traced goes in the address");
+        assert.ok(/const waitLab = \(g, k\) => k === 'c' \? g\.state !== 'back' && g\.state !== 'planned' && !g\.plan : !g\.at && !!g\.stale && !g\.partBack;/.test(rb) && /l\.row\.went\.open_by/.test(rb) &&
+          /const waitPick = g => g\.state !== 'plan' && g\.state !== 'sheet'/.test(rb) && (rb.match(/' b2-wait'/g) || []).length === 3, "open items: a sample with no result, a move or a pickup Metrc hasn't marked received; never a plan");
+        assert.ok(/@keyframes b2-throb/.test(hcss) && /\.b2-wait:not\(\.sel\):not\(\.b2-on\)\{animation:b2-throb 2\.2s ease-in-out infinite\}/.test(hcss) && /@media \(prefers-reduced-motion:reduce\)\{ \.b2-tl :is\(\.b2-ls,\.b2-lc,\.b2-in,\.b2-np\)\.b2-wait/.test(hcss),
+          "the throb: faint, in the step's own colour, steady for people who ask for less motion");
+        assert.ok(/#view-batches2 #b2-pop\{left:auto !important;top:0 !important;right:0;bottom:0;/.test(hcss) && /body\.b2f-dark \.b2-scroll\{background:#12151B\}/.test(hcss) && /\.b2-tl\.tracing :is\(/.test(hcss), 'every card docks on the right; the timeline has its dark look; what is not on the trail dims');
+      }
       assert.ok(/const fdark = b2fDark\(\);[^\n]*\n\s*document\.body\.classList\.toggle\('b2f-dark', fdark\);\n\s*document\.body\.toggleAttribute\('data-light', !STYLED_VIEWS\.includes\(S\.view\) && !fdark\);/.test(html), "render() gives Flow the app's dark base and every other page its own look");
       assert.ok(/a === 'look'/.test(fnH('b2fAct')) && /savePref\(B2F_LOOK, id\)/.test(fnH('b2fAct')) && /data-b2f="look"/.test(fnH('b2fRender')) && !/look/.test(html.slice(html.indexOf('const b2fTail ='), html.indexOf('\n', html.indexOf('const b2fTail =')))), 'a Light | Dark switch in the Flow toolbar; the choice stays out of the address');
       const dcss = hcss.split('\n').filter(l => /^\s*body\.b2f-dark/.test(l));

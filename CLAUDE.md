@@ -467,7 +467,7 @@ launch. The check fails if one of the three pieces is missing.
     change. Signed out: the work lane from the sheets only (no In band, no out rows, no lines). Words never cut: each
     bubble is measured on its own classes, a fit check redraws once if short, and a bubble at the On hand column (or a
     strip's label) or the box's right edge shows the longest of its words that fits what is in view.
-  - **Flow, Batch V2's second mode** (beta, view only; Gianni, 2026-11-17: "I want it to be a very intuitive visualizer for
+  - **Flow, Batch V2's second mode (retired 2026-11-17: see One view below; its model, Find, strain names and dark look live on in it)** (beta, view only; Gianni, 2026-11-17: "I want it to be a very intuitive visualizer for
     the pipline of from harvest to retailer", then two pictures of stage-column tools, "I'm picturing something more like
     this", then "Yes, build it" to the mock): Timeline | Flow buttons by the title, drawn by the script (`#b2-mode`,
     `B2.mode`), not a page; the Timeline is untouched and opens first; address `&mode=flow&show=all&sel=<id>`. Columns left
@@ -518,6 +518,38 @@ launch. The check fails if one of the three pieces is missing.
     stands). Same meanings in dark: each step's colour as a tint of the light fill, came from teal, went to blue, planned
     dashed purple with the glow, amber for a warning, never red. Text is kept at 4.5:1 or better on its background;
     check a new card or pill in both looks.
+  - **One view: the Timeline with Flow's trace** (beta, view only; Gianni, 2026-11-17: "I kind of wanted the flow and
+    timeline to be the same thing", a mockup, then "Yes, build it"). Batch V2 is one view again: the Timeline, with no
+    Timeline | Flow buttons. **The step columns are retired**: nothing sets `B2.mode = 'flow'` any more (an old
+    `&mode=flow` link opens the one view), and their page code (`b2fRender`, `b2fNode`, `b2fDraw`, `b2fStores`,
+    `b2fSelect`, `b2fShow`, `b2fReveal`, `b2fSync`, the `.b2f-n` / `.b2f-col` styles) is dead, kept only until Gianni
+    confirms the one view; delete it then, do not build on it. What Flow gave the Timeline (page: `b2tModel`,
+    `b2tMarks`, `b2tDraw`, `b2tSync`, `b2tDock`, `b2tShow`, `b2tSelect`, `b2tGo`; the model is still `BT2.flowView` over
+    every 2026 lot, `BT2.flowTrace`, `BT2.strainMerge`):
+    **a click traces**: a bubble, an On hand chip or a lot in a card's list that the model knows lights the item, what
+    it came from (teal) and where it went (navy; planned dashed purple, loose ends grey), dims the rest, and draws links
+    in `#b2t-svg` (an overlay over the timeline and the rail, clipped at the On hand column) with pounds only where the
+    data holds them for that pair (1 px per 6 lb, 1.5 to 16). Onward in time a link leaves a bubble's right end; within
+    the same days it drops from one band to the next. The same click again, Esc, Close or a click elsewhere clears it;
+    the end of a drag does not, and scrolling no longer closes a card. A week's bubble or a panel's figure opens its
+    card and clears the trail. **Every card docks on the right** on laptops (`#b2-pop`, the page makes room:
+    `body.b2f-open`; `B2.hold` keeps that room through a redraw, or the fit would loop); phones keep the bottom sheet.
+    A lot's harvest, trim and move in open the lot's summary (`b2fLotHTML`), a send, Jars, a run and a pickup the
+    Timeline's own cards, a rail line its lots (`b2fEndHTML`). **The rail** (`#b2t-rail`, right of the timeline, not on
+    phones, not signed out): "Left, no day known", 2026's pounds by bulk buyer, Distru deliveries, lab samples, written
+    off, not accounted for; a line lit shows its part ("48 of 379"). Never what is still ours: the On hand column has
+    that, and its chips light with the trail. **Under the sentence** (`#b2t-bar`, one line each, scrolling sideways so
+    the timeline keeps its height): Worth a look (hidden on windows under 780px tall, where the On hand column's amber
+    chips say it), Find's message, the strain's strip (the newest 8 lots, then "+N older", which shows only those).
+    **Find** sits in the top row, by lot or strain. **The dark look is the whole view's**, on by default
+    (`b2fDark()`, Light | Dark at the right of the top row); every `.b2-*` dark rule is scoped `body.b2f-dark`, and a
+    bubble's colour is its step's `--k` as a tint. The item traced is in the address (`&sel=<id>`); a strain is not.
+    **Open items throb** (Gianni: "if tests haven't come back yet or an order transfer hasn't been marked as received
+    in METRC it could have like a faint throbbing glow"): `.b2-wait`, a slow glow in the step's own colour, steady
+    under prefers-reduced-motion, on a COA still out (and a Test with no COA that someone still waits for), and on a
+    move in or a Nabis pickup that Metrc hasn't marked received (`went.open_by` on a lot, `[[day, 'distro' | 'nabis',
+    lb]]`, from the flow job; without it nothing throbs for transfers). Never on a plan. The date header already numbers
+    every day under its month.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
