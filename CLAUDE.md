@@ -568,27 +568,27 @@ launch. The check fails if one of the three pieces is missing.
   Licenses and permits (Gianni, same day: "annual licensing fees like dcr and dcc renewal should be divided by 12 and split
   evenly over each harvest"): each payment counts a twelfth a month for the 12 months from its month (one in the books'
   first year also stands for the year before), shared equally by the rooms, not by lights. The three cultivation managers
-  ("Raul/Nick/Liz their gusto and non gusto pay should be split up between each company by number of lights"): their pay
-  at every grow, Gusto (read per payroll by the job) and not (the cash book), is taken off where it was booked and shared
-  among the three grows by lights each month; the page never names them. Equipment and building work on the books (his
-  choice, "Spread over useful life"): every addition to a grow's fixed-asset accounts counts a month at a time, equipment
-  over 5 years, building work over 10 or to the end of the lease (23rd St: June 2028); packaging tools stay with the
-  distro. Trim pay is its own column (his choice), charged to the trims by pounds. Each cost line of a harvest opens the
-  accounts behind it and how the harvest's part was worked out (Gianni: "I'd like to be able to click on these rows").
-  Corrections found while costing packaging (same day): Norma's crew bills follow where her team worked by the shift app
-  from July 2026 (harvest shifts to that grow; packaging, Portal's void pouches and Olympic's harvests to no grow);
-  25th's Intercompany Labor Income isn't netted (that crew is paid in Distro Wages, left out); brand ambassadors' Gusto
-  pay that QuickBooks booked in Filifera's undepartmented Wages is selling, left out; Nouri's cash rent is the distro's.
+  work for all three grows (Gianni: their pay is split "between each company by number of lights"): all of it is taken
+  off where it was booked and shared among the three grows by lights each month; never name anyone or anyone's pay in
+  this repo or on the page. Equipment and building work on the books (his choice, "Spread over useful life"): every
+  addition to a grow's fixed-asset accounts counts a month at a time, equipment over 5 years, building work over 10 or
+  to the end of the lease (23rd St: June 2028); packaging tools stay with the distro. Trim pay is its own column (his
+  choice), charged to the trims by pounds. Per pound = (grow + trim) / bigs + littles on the trim sheets. Olympic shows
+  what Filifera paid (bought, not grown). "High" (over 1.2 times the grow's middle finished harvest per pound) and "Low
+  yield" (under 0.8 times its pounds per light) are amber tags. Each cost line of a harvest opens the accounts behind it
+  and how the harvest's part was worked out (Gianni: "I'd like to be able to click on these rows"). Corrections found
+  while costing packaging (same day): the harvest crew's bills follow where the crew worked by the shift app from July
+  2026 (harvest shifts to that grow; packaging, Portal's void pouches and Olympic's harvests to no grow); 25th's
+  Intercompany Labor Income isn't netted (that crew is paid in Distro Wages, left out); brand ambassadors' pay booked in
+  Filifera's undepartmented Wages is selling, left out; distro staff paid through a grow company stay with the distro.
   **Packaged tab** (his answers 2026-11-17): each Batch Label Sheet batch of jars (pouches inside), 5-packs and 1g from
   August 2026 carries flower at its source harvest's flower-page cost per pound by Metrc lineage (littles cost the same
   as bigs: "Same $/lb as bigs"; Olympic at the invoice price), the standard BOM at the lot price in use (private
   `~/ar-automation/lib/pack-bom.json`) with Mallen's noted, unbilled freight as its own line ("Count it now"), the crew's
   tracker hours through the run they were packed in at each day's real shift-app wages plus employer taxes, and $399 a
-  lab sample. Distro overhead (its one-room-of-four share of 25th's shared costs, the distro departments' Gusto pay less
-  the crew already charged, distro staff paid outside Gusto, packaging equipment) is its own line per unit, spread by
-  crew hours ("Its own line per unit"). Engine `lib/cogs-pack.mjs` in the same job. No revenue or profit yet. Per pound = (grow + trim) /
-  bigs + littles on the trim sheets. Olympic shows what Filifera paid (bought, not grown). "High" (over 1.2 times the
-  grow's middle finished harvest per pound) and "Low yield" (under 0.8 times its pounds per light) are amber tags.
+  lab sample. Distro overhead (its one-room-of-four share of 25th's shared costs, the distro departments' pay less the
+  crew already charged, packaging equipment) is its own line per unit, spread by crew hours ("Its own line per unit").
+  Engine `lib/cogs-pack.mjs` in the same job. No revenue or profit yet.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them
