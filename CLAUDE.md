@@ -466,6 +466,32 @@ launch. The check fails if one of the three pieces is missing.
     change. Signed out: the work lane from the sheets only (no In band, no out rows, no lines). Words never cut: each
     bubble is measured on its own classes, a fit check redraws once if short, and a bubble at the On hand column (or a
     strip's label) or the box's right edge shows the longest of its words that fits what is in view.
+  - **Flow, Batch V2's second mode** (beta, view only; Gianni, 2026-11-17: "I want it to be a very intuitive visualizer for
+    the pipline of from harvest to retailer", then two pictures of stage-column tools, "I'm picturing something more like
+    this", then "Yes, build it" to the mock): Timeline | Flow buttons by the title, drawn by the script (`#b2-mode`,
+    `B2.mode`), not a page; the Timeline is untouched and opens first; address `&mode=flow&show=all&sel=<id>`. Columns left
+    to right: Harvest (wet lb), Trim (flower lb), Bulk or distro, Test and COA, Pack, Out of the distro, Stores. One row per
+    lot (a grow unit: a harvest with its trim), newest on top, so a lot that has only reached Trim stops there. Model:
+    `BT2.flowView` / `BT2.flowTrace` (pure, in the BATCH V2 MODEL block); page: `b2fRender`, `b2fDraw`, `b2fSelect`, classes
+    `b2f-*`. Nodes carry the Timeline's own ids (h:, the trim's, i:, l:, p:, n:), so its cards open unchanged in the panel
+    (`#b2-pop`, docked right on laptops, the bottom sheet on phones); a lot's harvest, trim and move in open the lot's own
+    summary (three figures, its steps with days, the trim card's "Where the pounds went"), a shared node its pounds by lot.
+    **A click lights the item, what it came from and where it went, never its siblings**; the same click again, Esc, Close
+    or a click elsewhere clears it. Curved links are the page's only SVG: faint hairlines at rest; lit, "came from" teal
+    (#0F766E, never amber: amber is a warning here), "went to" navy, planned dashed purple, loose ends grey. **A link is
+    thick only where the data holds pounds for that pair** (1 px per 6 lb, 1.5 to 16 px) and then carries its number; a
+    shared row lit shows its part ("14 of 44"). **Trim's number in Flow is Metrc's flower pounds** so a lot's links add up
+    to its node (bulk + into the distro + still at the grow); the trim sheet's pounds stay on the Timeline and in the card.
+    A lot's Nabis pounds leave its Jars node only when it had Jars packed by the pickup's day, else its In node. Pre-rolls
+    are rolled, then tested: a run sits in Pack with its lab state as a tag only when it needs a look, joined to its lots
+    by hairlines (no pounds per lot). **Sales to stores are a card of weeks no link reaches** (known by week for the whole
+    company, never by lot). More out than came in is said in words, never drawn. Default "Last 90 days": lots harvested in
+    the last 90 days and plans up to 21 days ahead, plus any lot still holding 5 lb or more; "All 2026" has the rest (the
+    page says how many it left out). "Worth a look": 5 lb or more still ours, trimmed over 30 days ago, amber. Find a lot
+    is typable (`EDIT.pickFrom`). Grow tags are dark so a grow's colour never reads as a step's. Bulk buyers' names show
+    (they are bulk buyers, not stores). No new read or poll, no SQL, no job change. Signed out: harvests, trims, sends and
+    Jars from the sheets only. Not built yet: a dark look (his pictures were dark; the app's rule is the light sheet look),
+    a strain search, fold rows, a phone layout of its own (phones scroll the same columns sideways).
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them

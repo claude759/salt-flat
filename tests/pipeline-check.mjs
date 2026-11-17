@@ -3155,6 +3155,79 @@ if (realPipe) {
     const shrink = new Function(`${fnH('b2ShrinkRow')}; return b2ShrinkRow;`)();
     const twH = t => t.length * 7, bsH = [{ x: 0, cls: 'c', forms: ['ABCDEFGHIJ', 'ABCD', 'A'] }, { x: 40, cls: 'c', forms: ['ABCDEFGHIJ', 'ABCD', 'A'] }, { x: 44, cls: 'c', forms: ['XYZXYZ', 'X'], min: 20 }];
     assert.deepEqual(shrink(bsH, twH, 4).map(b => [b.x, b.w, b.text]), [[0, 28, 'ABCD'], [40, 7, 'A'], [51, 42, 'XYZXYZ']]);
+    // H11: Flow (Gianni, 2026-11-17: "a very intuitive visualizer for the pipeline of from harvest to retailer", stage
+    // columns where a click traces a chain). The Timeline's own units by step, one row per lot, newest on top; pounds on a
+    // link only where the data holds them for that pair; nothing reaches stores. Lot A here also sold 47 lb in bulk, sent
+    // 9.5 lb out by Distru and 0.4 lb to labs, and Metrc counts 1.2 lb more out than came in.
+    {
+      const lotsB = lotsH.map(L => L.lot_id === '23RD|2|2026-10-29' ? Object.assign({}, L, { went: Object.assign({}, L.went, { bulk: { 'Buyer X': 47 }, distru: 9.5, labs: 0.4, unexplained: -1.2 }) }) : L);
+      const MB = BT2.build(Object.assign({ lots: lotsB }, baseH)), HBb = BT2.hub(MB, Object.assign({}, optH, { lots: lotsB }));
+      const FA = BT2.flowView(MB, HBb, { today: T, scope: 'all', wet: () => 700 }), FR = BT2.flowView(MB, HBb, { today: T, scope: 'recent', wet: () => 700 });
+      const ids = FA.nodes.map(n => n.id), nA = id => FA.nodes.find(n => n.id === id), out = id => FA.links.filter(e => e.a === id).map(e => [e.b, e.lb, e.kind]);
+      const tA = 't:23RD|2|2026-11-08|metrc', iA = `i:${hA}|2026-11-08`, lA = `l:${hA}|2026-11-12`, pA = `p:${hA}|2026-11-14`, hG = 'h:23RD|1|2026-09-22', hD = 'h:OLYMPIC|2|2026-09-28', hC = 'h:15TH|A|2026-10-02';
+      assert.equal(new Set(ids).size, ids.length, 'every Flow node has its own id');
+      assert.ok(FA.links.every(e => ids.includes(e.a) && ids.includes(e.b) && FA.nodes.find(n => n.id === e.a).col < FA.nodes.find(n => n.id === e.b).col), 'every link joins two nodes and runs left to right');
+      // rows: newest harvest on top; All 2026 has every grow unit; the default leaves out a finished lot older than 90 days
+      // and a pickup planned more than 21 days ahead, never a lot that still holds 5 lb or more
+      assert.deepEqual(FA.rows.map(I => I.key), [hA, 't:15TH|B|2026-10-20', 'h:23RD|3|2026-10-07', hE, hC, hD, hG, hB, hF]);
+      assert.deepEqual([FA.nrows, FR.nrows, FR.rows.some(I => I.key === hF), FR.rows.filter(I => I.left >= BT2.FLOW_KEEP).length, FA.rows.filter(I => I.left >= BT2.FLOW_KEEP).length], [9, 8, false, 6, 6]);
+      assert.deepEqual([ids.includes('n:plan|2026-12-10'), FR.nodes.some(n => n.id === 'n:plan|2026-12-10'), FR.nodes.some(n => n.id === 'n:plan|2026-12-04')], [true, false, true]);
+      assert.deepEqual([BT2.FLOW_DAYS, BT2.FLOW_KEEP, BT2.FLOW_OLD, BT2.FLOW_AHEAD], [90, 5, 30, 21]);
+      // lot A's row: one node a step, on the same row; the Timeline's own ids (so its cards open as they are)
+      assert.deepEqual([hA, tA, iA, lA, pA].map(id => { const n = nA(id); return [n.col, n.row, n.kind, n.label, typeof n.num === 'number' ? +n.num.toFixed(1) : n.num, n.pill || '', !!n.fut, n.unit]; }),
+        [[0, 0, 'harvest', 'RM2 10/29', 700, '', false, hA], [1, 0, 'trim', 'RM2 11/8', 132, '', false, hA], [2, 0, 'in', 'RM2 11/8-10', 85, '85 left', false, hA],
+          [3, 0, 'lab', 'RM2 at lab', '≈11/18', '', true, hA], [4, 0, 'pack', 'Jars RM2 11/14', 8, '', false, hA]]);
+      // its links add up to its nodes: bulk + into the distro = flower (47 + 85 = 132); a pickup before its Jars day leaves
+      // the In node, never Jars packed after it; the 1.2 lb over is said, never drawn or absorbed
+      assert.deepEqual(out(hA), [[tA, null, 'dot']]);
+      assert.deepEqual(out(tA), [['fb:Buyer X', 47, 'lb'], [iA, 85, 'lb']]);
+      assert.equal(out(tA).reduce((a, e) => a + e[1], 0), nA(tA).num);
+      assert.deepEqual(out(iA), [[lA, null, 'hair'], ['fx:distru', 9.5, 'lb'], ['fx:distro', 85, 'lb'], ['fx:labs', 0.4, 'lb'], ['n:2026-11-13', 5, 'lb'], ['n:2026-11-10', 12.1, 'lb']]);
+      assert.deepEqual([out(lA), out(pA)], [[[pA, null, 'hair']], []]);
+      assert.deepEqual([FA.rows[0].over, ids.includes('fx:unexplained'), FA.rows[0].hold, FA.rows[0].packDay], [1.2, false, iA, '2026-11-14']);
+      // shared nodes: what the lots shown add up to; a lot with flower still at its grow holds it on its Trim node
+      assert.deepEqual(['fb:Buyer X', 'fx:grow', 'fx:distru', 'fx:distro', 'fx:labs'].map(id => [nA(id).col, nA(id).group, +nA(id).num.toFixed(1)]),
+        [[2, 'bulk', 47], [2, 'grow', 114.6], [5, 'distru', 9.5], [5, 'here', 174.1], [5, 'other', 0.4]]);
+      assert.deepEqual([nA('t:23RD|3|2026-10-18|metrc').pill, FA.rows[2].hold, out('t:23RD|3|2026-10-18|metrc')], ['115 left', 't:23RD|3|2026-10-18|metrc', [['fx:grow', 114.6, 'lb']]]);
+      // pickups: done ones by lot, newest on top; the sheet's planned ones glow, with the lab check in amber words
+      assert.deepEqual(FA.nodes.filter(n => n.kind === 'nabis').map(n => [n.id, typeof n.num === 'number' ? +n.num.toFixed(1) : n.num, !!n.fut, n.warn || '']), [
+        ['n:plan|2026-12-10', 'plan', true, 'COA tight'], ['n:plan|2026-12-04', 'plan', true, ''], ['n:plan|2026-11-20', 'plan', true, 'COA not back'], ['n:plan|2026-11-16', 'on sheet', false, ''],
+        ['n:2026-11-13', 5, false, ''], ['n:2026-11-10', 14.1, false, ''], ['n:2026-10-27', 9.6, false, '']]);
+      // a pre-roll run: its own lab result as a tag only when it needs a look (a fail), hairlines from each lot the lineage
+      // names, never pounds
+      const run = nA('p:pr|2026-10-14');
+      assert.deepEqual([run.col, run.group, run.label, run.warn, run.pill, run.units, nA('p:pr|2026-11-20').num, nA('p:pr|2026-11-20').fut], [4, 'pre', 'Pre-rolls 10/14-15', '1 fail', '', [hG, hB, hC], 'plan', true]);
+      assert.ok(FA.links.filter(e => e.b === 'p:pr|2026-10-14').length === 3 && FA.links.filter(e => e.b.startsWith('p:pr|')).every(e => e.lb === null && e.kind === 'hair'), 'a run is joined to its lots, with no pounds');
+      // Worth a look: 5 lb or more still ours, trimmed over 30 days ago, oldest first
+      assert.deepEqual(FA.look.map(x => [x.key, x.age]), [[hB, 72], [hG, 43], [hD, 38], [hC, 35]]);
+      // the trace: a lot's node lights its own chain both ways, never another lot's nodes; its In does not light the bulk
+      // buyer (those pounds never came in); a shared node lights every lot that reached it and nothing after it
+      const tr = id => BT2.flowTrace(FA, id), unitOk = t => t.lit.every(id => { const n = nA(id); return !n.unit || n.unit === hA; });
+      assert.deepEqual(tr(tA).lit.slice().sort(), [hA, tA, iA, lA, pA, 'fb:Buyer X', 'fx:distru', 'fx:distro', 'fx:labs', 'n:2026-11-13', 'n:2026-11-10'].sort());
+      assert.ok(unitOk(tr(tA)) && unitOk(tr(iA)) && unitOk(tr(hA)) && !tr(iA).lit.includes('fb:Buyer X') && tr(iA).lit.includes(tA) && tr(iA).lit.includes(hA), "a lot's trace stays on its lot");
+      assert.deepEqual([tr(iA).part['n:2026-11-10'], tr('n:2026-11-10').part['n:2026-11-10'], tr(iA).part['fx:distro'], +tr('fx:distro').part['fx:distro'].toFixed(1)], [12.1, 14.1, 85, 174.1]);
+      assert.deepEqual([tr('fx:distro').down.length, tr('fb:Buyer X').lit, tr('n:2026-11-10').lit.includes(iA), tr('n:2026-11-10').lit.includes(`i:${hE}|2026-10-15`), tr('nope')], [0, ['fb:Buyer X', tA, hA], true, true, { lit: [], up: [], down: [], part: {} }]);
+      assert.ok(tr('p:pr|2026-10-14').lit.includes(`h:25TH|1|2026-08-24`) && tr('p:pr|2026-10-14').down.length === 0 && !tr(pA).lit.includes('fx:distro'), 'a run lights the lots it was rolled from; Jars light their pickups, not the stock');
+      // signed out (no Metrc lots): harvests, trims, sends and Jars from the sheets; no In, bulk, pickups or stock
+      const M0f = BT2.build(baseH), F0 = BT2.flowView(M0f, BT2.hub(M0f, { today: T }), { today: T, scope: 'all' });
+      assert.ok(F0.nodes.length > 0 && F0.tot.fl === 0 && !F0.nodes.some(n => ['in', 'bulk', 'here', 'distru', 'other', 'nabis'].includes(n.kind)), 'signed out: no moves, bulk, pickups or stock');
+      // the page: Flow is a mode of Batch V2 (no page, no new read, no plain dropdown); it branches before the Timeline is
+      // drawn; the panel reuses the Timeline's cards and the trim card's "Where the pounds went"
+      const fsrc = html.slice(html.indexOf('/* Flow (beta, view only'), html.indexOf('/* ---- Batch V2 end ---- */'));
+      assert.ok(fsrc.length > 2000 && !/sb\.from\(|\.rpc\(|setInterval\(/.test(fsrc), 'Flow reads and polls nothing new');
+      assert.ok(/B2\.met = new Map\([^\n]*\n[^\n]*\n\s*b2ModeBar\(\);\n\s*if \(b2fOn\(\)\) \{ b2fRender\(M, HB\); return; \}/.test(rbH), 'Flow branches right after the sentence; the Timeline below it is untouched');
+      assert.ok(html.includes('<div class="b2f" id="b2-flow"></div>') && html.includes('id="b2-mode"') && !/data-view="flow"/.test(html), 'Flow is a mode of Batch V2, not a page');
+      assert.ok(/if \(p\.get\('mode'\) === 'flow'\) \{ B2\.mode = 'flow';/.test(html) && html.includes('${weekHashTail()}${b2fTail()}') && /location\.hash\.replace\(\/&\(mode=flow\|show=all\|sel=\[\^&\]\*\)\/g, ''\) \+ b2fTail\(\)/.test(fnH('b2fHash')),
+        'the mode, the scope and the item lit live in the address; a click changes only that part of it');
+      assert.ok(/BT2\.flowView\(M, HB, \{ today, scope: B2\.fscope, wet \}\)/.test(fnH('b2fRender')) && /BT2\.flowTrace\(F, B2\.fsel\)/.test(fnH('b2fDraw')), 'the page draws the model');
+      assert.ok(/EDIT\.pickFrom\(/.test(fnH('b2fFind')) && /<input type="text" id="b2f-find" list="b2f-lots"/.test(fnH('b2fRender')) && /so nothing changed/.test(fnH('b2fFind')), 'Find a lot is typable and refuses anything not in the list');
+      assert.ok(/b2Open\(n\.id, el\)/.test(fnH('b2fShow')) && /I\.rows\.map\(b2FlowHTML\)/.test(fnH('b2fLotHTML')) && /data-b2f="go"/.test(fnH('b2fEndHTML')), "the panel: the Timeline's cards, the lot's own summary, a shared node's lots");
+      assert.ok(/if \(b2fOn\(\) && B2\.fsel && !B2\.open\) b2fSelect\(''\)/.test(fnH('b2fInit')), 'closing the panel drops the trace');
+      assert.ok(hcss.includes('.b2f-n.fut{border:1px dashed #7C3AED;') && /\.b2f-n\.fut\{[^}]*box-shadow:0 0 0 1px rgba\(124,58,237,\.35\),0 0 8px 1px rgba\(124,58,237,\.45\)\}/.test(hcss) && hcss.includes('.b2f-p.old{border-color:#B45309;') &&
+        /\.b2f-on \.b2-nav,\.b2f-on #b2-scroll\{display:none\}/.test(hcss) && /body\.b2f-open\[data-view="batches2"\] #app\{padding-right:356px\}/.test(hcss), "Flow's look: the purple glow ahead, amber for a look, the page makes room for the panel");
+      assert.ok(/Known by week for the whole company, never by lot/.test(fnH('b2fStores')) && !/data-b2f="n"/.test(fnH('b2fStores')), 'sales to stores are a card of weeks, never a node');
+      console.log(`batch V2 Flow: ${FA.nrows} lots by step (${FR.nrows} in the last ${BT2.FLOW_DAYS} days), ${FA.nodes.length} rows and ${FA.links.length} links; lot A reads ${out(tA).map(e => e[1]).join(' + ')} = ${nA(tA).num} lb; a click lights ${tr(tA).lit.length} of them`);
+    }
     console.log(`batch V2 hub: grows ${HB.grow.map(G => G.site).join(', ')} then the 25th distro; ${HB.ins.length} In (moves within 3 days, 1 lb or more, Filifera only), ${HB.picks.filter(g => g.state === 'done').length} pickups and ${HB.picks.filter(g => g.state !== 'done').length} from the sheet, ${HB.units.filter(u => u.kind === 'run').length} pre-roll runs; the lists regroup nothing; words like "${BT2.inBubble(iA)}", "${BT2.pickBubble(HB.picks[1])}", "${BT2.runBubble(rp)}"`);
   }
 }
