@@ -422,7 +422,7 @@ launch. The check fails if one of the three pieces is missing.
     (as the sales app files Distru's; in 2026 there are none: Distru's first invoices are the deliveries that left Jan
     12, never counted twice). Nabis lines dated today or later are scheduled: their week reads "≈17 sold" with the purple
     glow; a week over by the page's today counts them as sold (the job's today can lag: a run before midnight, a Mac
-    asleep), never the glow. Bulk is from Metrc by origin license, clipped at the last day Metrc's weekly copy has
+    asleep), never the glow. Bulk is from Metrc by origin license, clipped at the last day the Mac's Metrc copy (weekday mornings) has
     read, with a grey hatch to today. Read through `b2LoadFlow`'s meta poll (`sales_sig`; no new poll, the poll and
     Refresh lines are unchanged), the body again only when the sig moves (or on Refresh); a block the page can't use (a
     newer version, a week that isn't a Monday) is not read again until its sig moves (`B2.salesBad`), and the sentence
@@ -548,8 +548,16 @@ launch. The check fails if one of the three pieces is missing.
     in METRC it could have like a faint throbbing glow"): `.b2-wait`, a slow glow in the step's own colour, steady
     under prefers-reduced-motion, on a COA still out (and a Test with no COA that someone still waits for), and on a
     move in or a Nabis pickup that Metrc hasn't marked received (`went.open_by` on a lot, `[[day, 'distro' | 'nabis',
-    lb]]`, from the flow job; without it nothing throbs for transfers). Never on a plan. The date header already numbers
-    every day under its month.
+    lb]]`, from the flow job on Gianni's Mac, live since 2026-11-17: each transfer its Metrc copy shows unreceived is
+    asked about again, and counts as open only on a check under 6 hours old). Never on a plan.
+    **The date header** numbers every day under its month, with the weekday's letter over each number (M T W Th F Sa
+    Su; Gianni, 2026-11-17), in the same 42px. **The guide** (`#b2-guide`, `b2GuideDraw`, `b2DaysOf`; Gianni: "sort of
+    vertical line that highlights when hover over a bubble"): hover or focus on a bubble (else the one traced) draws a
+    band down the timeline over its real day or days and rings those dates in the header; a bubble its words pushed
+    along its row still marks its real day. It never covers the On hand column.
+    **No summary sentence** (Gianni, 2026-11-17: "this stuff is just clutter please remove"): the line under the title
+    (`#b2-sentence`) says only what couldn't be read, and is not there otherwise. Do not bring the counts back; the
+    older bullets' "the sentence says ..." now mean that line. `BT2.atLabText` is no longer drawn.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until

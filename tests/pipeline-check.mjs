@@ -2529,7 +2529,7 @@ if (realPipe) {
     assert.ok(lmAt > 0 && (b2lm.match(/await b2ReadLinks\(\)/g) || []).length === 2 && b2lm.indexOf('await b2ReadLinks()') > lmAt && /\} else if \(!H\.links\) \{\s*\/\/[^\n]*\n\s*try \{ H\.links = await b2ReadLinks\(\);/.test(b2lm),
       'the lineage with the harvests, and again while its last read failed');
     assert.ok(/B2\.linksErr !== lerr/.test(b2lm) && /Couldn't read the Metrc \$\{B2\.hvErr \? 'harvests' : 'lineage'\}/.test(fnB('renderBatches2')), "a failed lineage read is said, never silent");
-    assert.ok(/cls = BT2\.labClass\(it\.k, g\)/.test(fnB('renderBatches2')) && /BT2\.atLabText\(LO, b2Day, b2DayW\)/.test(fnB('renderBatches2')), "the bubbles' classes and the sentence come from the model");
+    assert.ok(/cls = BT2\.labClass\(it\.k, g\)/.test(fnB('renderBatches2')) && !/atLabText/.test(fnB('renderBatches2')), "the bubbles' classes and the sentence come from the model");
     assert.ok(/tested \$\{b2Day\(g\.sent \|\| g\.at\)\} @ \$\{siteName\(g\.site\)\}/.test(fnB('b2LabRowHTML')) && /why === 'baddate'/.test(fnB('b2LabRowHTML')),
       "a lot's Pre-rolls row names each send's site (a blend can go the same day from two lanes); its sheet days that don't fit are said");
     assert.ok(!/\$\{E\.over\} day/.test(b2src) && (fnB('b2LabHTML').match(/b2Days\(E\.over\)\} past the usual day/g) || []).length === 2, '"2 days past the usual day", never "2 day"');
@@ -3140,7 +3140,8 @@ if (realPipe) {
     assert.ok(!/b2Row\('In',/.test(fnH('b2WeekHTML')) && /b2Row\('To Nabis', ok\(N\.in\)/.test(fnH('b2WeekHTML')) && /ch === 'nabis' \? \['To Nabis', 'Sold', 'Scheduled'\]/.test(fnH('b2ChanHTML')) &&
       /the whole pickup is the row above/.test(fnH('b2WeekHTML')), "Nabis's pickups are To Nabis; the lots' sum says when it differs from the whole");
     // a pickup is not a sale, and the week's trim and buyers are all our licenses'
-    assert.ok(rbH.includes('which ships to Nabis and stores.') && !/sells to Nabis/.test(rbH), 'the sentence: the 25th distro ships to Nabis');
+    assert.ok(/\$\('b2-sentence'\)\.textContent = errs\.join\(' '\);/.test(rbH) && !/which ships to Nabis and stores/.test(rbH) && !/sells to Nabis/.test(rbH) && html.includes('.b2-sentence:empty{display:none}'),
+      "no summary sentence (Gianni, 2026-11-17: \"this stuff is just clutter please remove\"): the line says only what couldn't be read");
     assert.ok(!/every grow that week|the whole week, every grow/.test(fnH('b2BulkWeekHTML')) && /all our licenses that week, the distros included/.test(fnH('b2BulkWeekHTML')), "a grow's bulk card: the week's trim is every license's");
     // a pre-roll run's part (opened from a card's link) is ringed, reopened and closed by its run's bubble; Esc goes back to
     // what the card was opened from (a chip too)
@@ -3280,6 +3281,14 @@ if (realPipe) {
         assert.ok(/@keyframes b2-throb/.test(hcss) && /\.b2-wait:not\(\.sel\):not\(\.b2-on\)\{animation:b2-throb 2\.2s ease-in-out infinite\}/.test(hcss) && /@media \(prefers-reduced-motion:reduce\)\{ \.b2-tl :is\(\.b2-ls,\.b2-lc,\.b2-in,\.b2-np\)\.b2-wait/.test(hcss),
           "the throb: faint, in the step's own colour, steady for people who ask for less motion");
         assert.ok(/#view-batches2 #b2-pop\{left:auto !important;top:0 !important;right:0;bottom:0;/.test(hcss) && /body\.b2f-dark \.b2-scroll\{background:#12151B\}/.test(hcss) && /\.b2-tl\.tracing :is\(/.test(hcss), 'every card docks on the right; the timeline has its dark look; what is not on the trail dims');
+        // the date header says each day's weekday; hover marks a bubble's real days (Gianni, 2026-11-17: "a M/T/W/TH above each
+        // date number and sort of vertical line that highlights when hover over a bubble")
+        const fG = fnH('b2GuideDraw'), fDy = fnH('b2DaysOf');
+        assert.ok(/const B2_DOW = \['M', 'T', 'W', 'Th', 'F', 'Sa', 'Su'\];/.test(html) && /<i>\$\{B2_DOW\[i % 7\]\}<\/i>\$\{\+d\.slice\(8\)\}<\/div>/.test(rb) && /\.b2-head\{[^}]*height:42px/.test(hcss) && /\.b2-mo\{[^}]*height:16px/.test(hcss) && /\.b2-d\{[^}]*top:16px;height:25px/.test(hcss),
+          "each day's weekday letter over its number, in the header's same 42px");
+        assert.ok(/H\.push\('<div class="b2-guide" id="b2-guide" hidden><\/div>'\);/.test(rb) && /closest\('\.b2-body \[data-b2\]'\)/.test(fI) && /tl\.addEventListener\('mouseleave', \(\) => b2Guide\(null\)\);/.test(fI) &&
+          /g\.style\.clipPath = `inset\(0 0 0 /.test(fG) && /classList\.add\('hov'\)/.test(fG) && /B2\.gel \|\| \(B2\.fsel \? /.test(fG), "the guide: a band down the timeline and a ring on the dates, for the bubble under the pointer, else the one traced; never over the On hand column");
+        assert.ok(/id\.startsWith\('w:'\)/.test(fDy) && /g\.type === 'pack' \? g\.day : k === 'c' \? g\.at \|\| g\.sent : g\.sent \|\| g\.at/.test(fDy) && /\[t\.start, t\.end \|\| t\.start\]/.test(fDy), "a bubble's days are its real ones (a week's seven, a trim's span, a send's Test or COA day)");
       }
       assert.ok(/const fdark = b2fDark\(\);[^\n]*\n\s*document\.body\.classList\.toggle\('b2f-dark', fdark\);\n\s*document\.body\.toggleAttribute\('data-light', !STYLED_VIEWS\.includes\(S\.view\) && !fdark\);/.test(html), "render() gives Flow the app's dark base and every other page its own look");
       assert.ok(/a === 'look'/.test(fnH('b2fAct')) && /savePref\(B2F_LOOK, id\)/.test(fnH('b2fAct')) && /data-b2f="look"/.test(fnH('b2fRender')) && !/look/.test(html.slice(html.indexOf('const b2fTail ='), html.indexOf('\n', html.indexOf('const b2fTail =')))), 'a Light | Dark switch in the Flow toolbar; the choice stays out of the address');
