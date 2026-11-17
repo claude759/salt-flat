@@ -493,6 +493,14 @@ launch. The check fails if one of the three pieces is missing.
     (they are bulk buyers, not stores). No new read or poll, no SQL, no job change. Signed out: harvests, trims, sends and
     Jars from the sheets only. Not built yet: a dark look (his pictures were dark; the app's rule is the light sheet look),
     a strain search, fold rows, a phone layout of its own (phones scroll the same columns sideways).
+    **Flow has a dark look, and opens in it** (Gianni, 2026-11-17: "Add a dark look", like his pictures): a Light | Dark
+    switch at the right of Flow's toolbar, kept in the browser (`pipeline.flow.look`), never in the address. Only Flow:
+    `b2fDark()` makes `render()` leave `data-light` off and set `body.b2f-dark`, so the page sits on the app's own dark
+    base (as Strains and Supplies do) and every dark rule is scoped `body.b2f-dark ...` at the end of the Batch V2
+    styles. The Timeline, the other pages and cards opened outside Flow stay light ("the board reads like the sheet"
+    stands). Same meanings in dark: each step's colour as a tint of the light fill, came from teal, went to blue, planned
+    dashed purple with the glow, amber for a warning, never red. Text is kept at 4.5:1 or better on its background;
+    check a new card or pill in both looks.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
