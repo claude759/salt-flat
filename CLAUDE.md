@@ -493,6 +493,24 @@ launch. The check fails if one of the three pieces is missing.
     (they are bulk buyers, not stores). No new read or poll, no SQL, no job change. Signed out: harvests, trims, sends and
     Jars from the sheets only. Not built yet: a dark look (his pictures were dark; the app's rule is the light sheet look),
     a strain search, fold rows, a phone layout of its own (phones scroll the same columns sideways).
+- **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
+  ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
+  the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
+  `cogs_can_view()` says yes: only the accounts in `cogs_viewers` (Gianni and Victoria, his choice) see the tab or can read
+  the numbers. **The one page that shows dollars**; "Labor shows person-hours, never dollars" stands everywhere else.
+  Its SQL (`supabase/cogs.sql`) and its job (`~/ar-automation/cogs-sync.mjs` with `lib/cogs-core.mjs`, 20 minutes after
+  each financials update) are Gianni's: applied from his computer, owned by postgres, never by the deploy job. Never move
+  the viewer list or the data into `pipeline_*` tables, never put a number in the page source, and never cache it in the
+  browser. The page only draws the one row (`cogs_snapshot`); the method lives in cogs-core.mjs: each grow's own books
+  (Slane = 23rd, Imperial = 15th, Filifera = 25th) plus pay not run through Gusto and Imperial's rent and utilities paid
+  outside QuickBooks; left out: royalties, Scott's pay, interest, taxes, depreciation, bought flower, packaging, testing,
+  Nabis fees and distro pay. Every day a grow's costs are shared among its flower rooms by lights (his choice); a harvest
+  carries its room's share from the day after the room's previous Metrc harvest to its own. 25th: power, water,
+  cultivation pay and growing supplies count in full, shared costs at 3 rooms of 4, the distro counted as one more room
+  (his choice). Rent, power and water, security, and licenses and insurance are spread evenly at the last 12 closed
+  months' average. Trim pay is its own column (his choice), charged to the trims by pounds. Per pound = (grow + trim) /
+  bigs + littles on the trim sheets. Olympic shows what Filifera paid (bought, not grown). "High" (over 1.2 times the
+  grow's middle finished harvest per pound) and "Low yield" (under 0.8 times its pounds per light) are amber tags.
 - **Strain names:** Jungle Juice is Antidote. M8, Voodoo and Medusa stay separate, except on the
   trim sheets, where M8 and Medusa mean Voodoo.
 - **The app and the sheet stay interchangeable during the move** (Gianni, 2026-11-10: "I want them
