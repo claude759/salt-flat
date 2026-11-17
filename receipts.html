@@ -71,6 +71,11 @@
   td button.link{display:block;min-height:0;padding:2px 0;font-size:13px;white-space:nowrap}
   a{color:var(--accent)}
   .foot{color:var(--muted);font-size:13px;margin-top:20px;text-align:center}
+  .qcard{border-color:var(--accent)}
+  .qtag{font-size:12px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--accent);margin-bottom:6px}
+  .qask{font-size:15px;font-weight:600;margin-top:10px}
+  .said{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--bg);overflow-wrap:anywhere}
+  td input[type=text]{min-height:34px;padding:4px 6px;font-size:14px;margin:0;width:120px}
 </style>
 </head>
 <body>
@@ -90,16 +95,23 @@ const money=c=>'$'+(Number(c)/100).toLocaleString('en-US',{minimumFractionDigits
 const day=d=>new Date(d+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'});
 let toastT; function toast(m){toastEl.textContent=m;toastEl.style.display='block';clearTimeout(toastT);toastT=setTimeout(()=>{toastEl.style.display='none';},5000);}
 const plain=e=>{const m=String(e?.message||e||'');return /fetch|network|load failed/i.test(m)?'No connection. Try again.':m||'Something went wrong. Try again.';};
+// Pick lists are typable boxes, never plain selects (Gianni's rule for everything built for him): the exact entry in any case,
+// else the one entry that contains what was typed; anything else is refused and the last good choice stays. A suggestion picked
+// from the list is used at once; typed text waits for Enter or leaving the box.
+function pickFrom(list,text,labelsOf){const t=String(text||'').trim().toLowerCase();if(!t)return null;const ls=x=>labelsOf(x).filter(Boolean).map(v=>String(v).toLowerCase());
+  const exact=list.filter(x=>ls(x).includes(t));if(exact.length===1)return exact[0];const part=list.filter(x=>ls(x).some(v=>v.includes(t)));return part.length===1?part[0]:null;}
+const picked=e=>e.inputType===undefined||e.inputType==='insertReplacementText';
 
 // ── a person's list ─────────────────────────────────────────────────────────
-let sb, data, hash, panel=null, busy=null, pickFor=null;
+let sb, data, hash, panel=null, busy=null, pickFor=null, asks=[];
+const drafts={}, editing={};   // questions from Gianni: what is typed in each answer box, and which answered ones are open to change
 async function sha256hex(s){const d=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return [...new Uint8Array(d)].map(b=>b.toString(16).padStart(2,'0')).join('');}
 const uuid=()=>crypto.randomUUID?crypto.randomUUID():'10000000-1000-4000-8000-100000000000'.replace(/[018]/g,c=>(c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16));
 async function rpc(fn,args){const {data:d,error}=await sb.rpc(fn,{p_key:key,...args});if(error)throw error;return d;}
 async function startPerson(){
   sb=supabase.createClient(SUPA.url,SUPA.anon,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
   hash=await sha256hex(key);
-  try{data=await rpc('rr_my_list');render();}
+  try{data=await rpc('rr_my_list');try{asks=await rpc('rr_my_asks')||[];}catch(e){asks=[];}render();}
   catch(e){const m=plain(e);app.innerHTML=`<h1>Receipts</h1><p class="sub">${esc(/not active/.test(m)?"This link isn't active. Ask Gianni for a new one.":m)}</p>`;}
 }
 const isTodo=l=>l.status==='open';
@@ -109,8 +121,9 @@ function lineHtml(l){
   if(busy?.id===l.id) body=`<p class="busy">${esc(busy.text)}</p>`;
   else if(panel?.id===l.id&&panel.kind==='cant') body=`<label>Anything that would help? (optional)<textarea id="pnote" maxlength="500">${esc(panel.note??l.note)}</textarea></label>
     <div class="row"><button class="grow primary" data-do="cant-yes" data-id="${l.id}">Mark can't locate</button><button data-do="close">Cancel</button></div>`;
-  else if(panel?.id===l.id&&panel.kind==='mine'){const holder=data.people.find(p=>p.name===(l.cardholder||'').split(' ')[0]), to=panel.to??holder?.email??'', on=v=>v===to?' selected':'';
-    body=`<label>Who has this one?<select id="pto">${holder?'':`<option value=""${on('')}>Choose</option>`}${data.people.map(p=>`<option value="${esc(p.email)}"${on(p.email)}>${esc(p.name)}</option>`).join('')}<option value="${SOMEONE}"${on(SOMEONE)}>Someone else</option><option value="${IDK}"${on(IDK)}>I don't know</option></select></label>
+  else if(panel?.id===l.id&&panel.kind==='mine'){const holder=data.people.find(p=>p.name===(l.cardholder||'').split(' ')[0]);if(panel.to===undefined)panel.to=holder?.email??'';const to=panel.to;
+    body=`<label>Who has this one?<input type="text" id="pto" list="pto-list" autocomplete="off" placeholder="Type a name" value="${esc(panel.toText??mineLabel(to))}" /></label>
+    <datalist id="pto-list">${mineChoices().map(c=>`<option value="${esc(c.label)}"></option>`).join('')}</datalist>
     <label id="pwhobox"${to===SOMEONE?'':' hidden'}>Who is it?<input type="text" id="pwho" maxlength="80" autocomplete="off" value="${esc(panel.who)}" /></label>
     <label><span id="pnotelabel">${noteLabel(to)}</span><textarea id="pnote" maxlength="500">${esc(panel.note)}</textarea></label>
     <div class="row"><button class="grow primary" data-do="mine-yes" data-id="${l.id}">Move it</button><button data-do="close">Cancel</button></div>`;}
@@ -127,14 +140,43 @@ function lineHtml(l){
     <p class="meta">${day(l.date)} · ${esc(l.account||'')}${whose}</p>
     ${l.prompt&&l.status==='open'?`<p class="ask">${esc(l.prompt)}</p>`:''}
     ${l.flag?`<p class="flag">Needs another try: ${esc(l.flag)}</p>`:''}
-    ${showNote?`<p class="note">Note: ${esc(l.note)}</p>`:''}${body}</section>`;
+    ${showNote?`<p class="note">Note: ${esc(l.note)}</p>`:''}${asks.some(a=>a.line_id===l.id&&askTodo(a))?'<p class="note">Gianni also asked what this was for (see his question above).</p>':''}${body}</section>`;
 }
+// ── questions from Gianni (what a charge was for) ──
+const askTodo=a=>a.status==='open'||editing[a.id];
+const askLive=a=>['open','answered','unsure','relaying'].includes(a.status);
+function askHtml(a){
+  const whose=a.cardholder&&a.cardholder!==data.name?` · ${esc(a.cardholder)}'s card`:'';
+  const title=`${esc(a.merchant)}${a.more_rows>0?` and ${a.more_rows} more`:''}`;
+  const meta=[a.date?day(a.date):'',esc(a.account||'')].filter(Boolean).join(' · ')+whose;
+  let body='';
+  if(busy?.id===a.id) body=`<p class="busy">${esc(busy.text)}</p>`;
+  else if(panel?.id===a.id&&panel.kind==='aidk') body=`<label>Who might know? (optional)<input type="text" id="awho" list="awho-list" autocomplete="off" placeholder="Type a name" value="${esc(panel.whoText??panel.who??'')}" /></label>
+    <datalist id="awho-list">${data.people.map(p=>`<option value="${esc(p.name)}"></option>`).join('')}</datalist>
+    <label>Anything that would help? (optional)<textarea id="anote" maxlength="500">${esc(panel.note??'')}</textarea></label>
+    <div class="row"><button class="grow primary" data-do="ask-idk-yes" data-id="${a.id}">Send</button><button data-do="close">Cancel</button></div>`;
+  else if(askTodo(a)) body=`<label>Your answer<textarea id="aans-${a.id}" data-ans="${a.id}" maxlength="500" placeholder="A few words is plenty">${esc(drafts[a.id]??'')}</textarea></label>
+    <div class="row"><button class="grow primary" data-do="ask-send" data-id="${a.id}">Send</button><button class="grow" data-do="ask-idk" data-id="${a.id}">I don't know</button></div>
+    ${editing[a.id]?`<div class="links"><button class="link" data-do="ask-keep" data-id="${a.id}">Keep my answer</button></div>`:''}`;
+  else if(a.status==='answered') body=`<span class="chip ok">Answered</span><p class="said">${esc(a.answer)}</p><div class="links"><button class="link" data-do="ask-change" data-id="${a.id}">Change</button></div>`;
+  else if(a.status==='unsure') body=`<span class="chip no">You don't know</span>${a.who_might?`<p class="note">You said ${esc(a.who_might)} might know.</p>`:''}${a.answer?`<p class="said">${esc(a.answer)}</p>`:''}<div class="links"><button class="link" data-do="ask-change" data-id="${a.id}">Change</button></div>`;
+  else if(a.status==='withdrawn') body=`<span class="chip no">No longer needed</span>`;
+  else body=`<span class="chip ok">Gianni has your answer. Thanks.</span>${a.answer?`<p class="said">${esc(a.answer)}</p>`:''}`;
+  return `<section class="card qcard"><p class="qtag">Question from Gianni</p><div class="top"><span>${title}</span><span>${a.amount_cents?money(a.amount_cents):''}</span></div>
+    <p class="meta">${meta}</p>${a.what?`<p class="ask">What it was: ${esc(a.what)}</p>`:''}<p class="qask">${esc(a.prompt||'What was this for?')}</p>
+    ${a.note?`<p class="note">Gianni says: "${esc(a.note)}"</p>`:''}${body}</section>`;
+}
+function setAsk(a){asks=asks.map(x=>x.id===a.id?a:x);delete drafts[a.id];delete editing[a.id];if(panel?.id===a.id)panel=null;busy=null;render();}
+async function actAsk(id,text,fn,done){const was=panel;busy={id,text};if(panel?.id===id)panel=null;render();try{setAsk(await fn());if(done)toast(done);}catch(e){busy=null;panel=panel||was;render();toast(plain(e));}}
 function render(){
   const todo=data.lines.filter(isTodo), done=data.lines.filter(l=>!isTodo(l)), n=todo.length;
-  const head=n?`${n} ${n===1?'charge needs':'charges need'} a receipt. A photo, PDF or screenshot is fine.`:done.length?'Nothing left to do.':'Nothing on your list.';
+  const qs=asks.filter(askLive), qdone=asks.filter(a=>!askLive(a)), qn=asks.filter(askTodo).length;
+  const parts=[qn?`Gianni has ${qn===1?'a question':`${qn} questions`} for you.`:'',n?`${n} ${n===1?'charge needs':'charges need'} a receipt. A photo, PDF or screenshot is fine.`:''].filter(Boolean);
+  const head=parts.length?parts.join(' '):done.length||qdone.length||qs.length?'Nothing left to do.':'Nothing on your list.';
   app.innerHTML=`<h1>Hi ${esc(data.name)}</h1><p class="sub">${head}</p>
-    ${n?todo.map(lineHtml).join(''):`<div class="done"><b>All set</b>Thanks, ${esc(data.name)}.</div>`}
-    ${done.length?`<h2>Done (${done.length})</h2>${done.map(lineHtml).join('')}`:''}
+    ${qs.length?`<h2>Questions from Gianni (${qs.length})</h2>${qs.map(askHtml).join('')}${n||done.length?'<h2>Receipts</h2>':''}`:''}
+    ${n?todo.map(lineHtml).join(''):qs.length?'':`<div class="done"><b>All set</b>Thanks, ${esc(data.name)}.</div>`}
+    ${done.length||qdone.length?`<h2>Done (${done.length+qdone.length})</h2>${qdone.map(askHtml).join('')}${done.map(lineHtml).join('')}`:''}
     <p class="foot">Questions? Reply to Gianni's email.</p>`;
 }
 function setLine(l){data.lines=data.lines.map(x=>x.id===l.id?l:x);if(panel?.id===l.id)panel=null;busy=null;render();}
@@ -180,8 +222,21 @@ app.addEventListener('click',e=>{
   else if(what==='cant-yes'){const v=val();act(id,'Saving...',()=>rpc('rr_cant_locate',{p_request:id,p_note:v}));}
   else if(what==='note-yes'){const v=val();act(id,'Saving...',()=>rpc('rr_set_note',{p_request:id,p_note:v}));}
   else if(what==='undo')act(id,'Undoing...',()=>rpc('rr_undo',{p_request:id}));
+  else if(what==='ask-send'){const t=(drafts[id]??'').trim();if(t.length<2){toast('Write a few words first.');document.getElementById('aans-'+id)?.focus();return;}actAsk(id,'Sending...',()=>rpc('rr_answer_ask',{p_ask:id,p_text:t}),'Sent to Gianni. Thanks!');}
+  else if(what==='ask-idk'){panel={id,kind:'aidk'};render();}
+  else if(what==='ask-change'){const a=asks.find(x=>x.id===id);editing[id]=true;drafts[id]=a&&a.status==='answered'?a.answer:'';render();document.getElementById('aans-'+id)?.focus();}
+  else if(what==='ask-keep'){delete editing[id];delete drafts[id];render();}
+  else if(what==='ask-idk-yes'){
+    const box=document.getElementById('awho'), typed=(box?.value||'').trim();
+    if(typed&&typed!==(panel.who||'')){const p=pickFrom(data.people,typed,x=>[x.name,x.email]);if(!p){toast('Pick a name from the list, or leave it blank and say who in the note.');return;}panel.who=p.name;panel.whoText=undefined;box.value=p.name;toast(`Picked ${p.name}. Tap Send again.`);return;}
+    const note=(document.getElementById('anote')?.value||'').trim(), who=typed?panel.who:null;   // read before actAsk closes the panel
+    actAsk(id,'Sending...',()=>rpc('rr_ask_unsure',{p_ask:id,p_who:who,p_note:note||null}),'Sent to Gianni. Thanks!');
+  }
   else if(what==='mine-yes'){
-    const to=document.getElementById('pto').value, named=document.getElementById('pwho').value.trim(), unsure=to===SOMEONE||to===IDK, v=val(), was=panel;
+    // Move pressed straight from the name box: what it picks is shown first, so nothing moves unseen
+    const box=document.getElementById('pto'), typed=(box?.value||'').trim();
+    if(typed!==mineLabel(panel.to)){const c=pickFrom(mineChoices(),typed,x=>x.alts);if(!c){toast('Pick someone from the list.');box.value=mineLabel(panel.to);panel.toText=undefined;return;}applyMine(c.v,box);toast(`Picked ${c.label}. Tap Move it again.`);return;}
+    const to=panel.to, named=document.getElementById('pwho').value.trim(), unsure=to===SOMEONE||to===IDK, v=val(), was=panel;
     if(!to){toast('Choose who has it.');return;}
     if(to===SOMEONE&&!named){toast('Type who has it.');document.getElementById('pwho').focus();return;}
     busy={id,text:'Moving...'};panel=null;render();   // only this line's panel can be open: its Move button was just tapped
@@ -189,19 +244,43 @@ app.addEventListener('click',e=>{
       .then(r=>{data.lines=data.lines.filter(l=>l.id!==id);busy=null;render();toast(unsure?'Sent to Gianni to sort out.':`Moved to ${r.moved_to}.`);}).catch(err=>{busy=null;panel=panel||was;render();toast(plain(err));});
   }
 });
-app.addEventListener('change',e=>{
-  if(e.target.id!=='pto')return;
-  const to=e.target.value;
-  if(panel)panel.to=to;
-  document.getElementById('pwhobox').hidden=to!==SOMEONE;
-  document.getElementById('pnotelabel').textContent=noteLabel(to);
-  if(to===SOMEONE)document.getElementById('pwho').focus();
+// "Not mine": the people on the list, Someone else, or I don't know
+const mineChoices=()=>[...data.people.map(p=>({v:p.email,label:p.name,alts:[p.name,p.email]})),{v:SOMEONE,label:'Someone else',alts:['Someone else']},{v:IDK,label:"I don't know",alts:["I don't know",'dont know','not sure']}];
+const mineLabel=v=>v?(mineChoices().find(c=>c.v===v)?.label||''):'';
+function applyMine(v,box){
+  if(panel)panel.to=v;if(panel)panel.toText=undefined;if(box)box.value=mineLabel(v);
+  document.getElementById('pwhobox').hidden=v!==SOMEONE;
+  document.getElementById('pnotelabel').textContent=noteLabel(v);
+  if(v===SOMEONE)document.getElementById('pwho').focus();
+}
+function resolveMine(box){
+  const typed=box.value.trim();if(typed===mineLabel(panel?.to))return;
+  const c=pickFrom(mineChoices(),typed,x=>x.alts);
+  if(c)applyMine(c.v,box);else{if(typed)toast('Pick someone from the list.');box.value=mineLabel(panel?.to);if(panel)panel.toText=undefined;}
+}
+// "Who might know?": a name from the list, or blank
+function resolveAwho(box){
+  const typed=box.value.trim();if(!panel)return;
+  if(!typed){panel.who='';panel.whoText=undefined;return;}
+  if(typed===(panel.who||''))return;
+  const p=pickFrom(data.people,typed,x=>[x.name,x.email]);
+  if(p){panel.who=p.name;panel.whoText=undefined;box.value=p.name;}
+  else{toast('Pick a name from the list, or leave it blank and say who in the note.');box.value=panel.who||'';panel.whoText=undefined;}
+}
+app.addEventListener('change',e=>{if(!key)return;if(e.target.id==='pto')resolveMine(e.target);else if(e.target.id==='awho')resolveAwho(e.target);});
+app.addEventListener('keydown',e=>{
+  if(!key||e.key!=='Enter')return;
+  if(e.target.id==='pto'){e.preventDefault();resolveMine(e.target);}
+  else if(e.target.id==='awho'){e.preventDefault();resolveAwho(e.target);}
 });
 // A list re-draw (an upload finishing on another charge) rebuilds an open panel, so it keeps what was chosen and typed.
 app.addEventListener('input',e=>{
+  if(e.target.dataset.ans){drafts[e.target.dataset.ans]=e.target.value;return;}
   if(!panel)return;
   if(e.target.id==='pwho')panel.who=e.target.value;
-  else if(e.target.id==='pnote')panel.note=e.target.value;
+  else if(e.target.id==='pnote'||e.target.id==='anote')panel.note=e.target.value;
+  else if(e.target.id==='awho'){panel.whoText=e.target.value;if(picked(e))resolveAwho(e.target);}
+  else if(e.target.id==='pto'){panel.toText=e.target.value;if(picked(e))resolveMine(e.target);}
 });
 
 // ── Gianni's overview ───────────────────────────────────────────────────────
@@ -253,7 +332,7 @@ function renderOverview(){
   const shown=people.filter(p=>lines.some(l=>l.assignee_email===p.email));
   const rows=shown.map(p=>`<tr class="pick${who===p.email?' on':''}" data-who="${esc(p.email)}"><td>${esc(p.first_name)}</td><td class="n">${count(p.email,'open')}</td><td class="n">${count(p.email,'uploaded')}</td><td class="n">${count(p.email,'cant_locate')}</td><td class="n">${count(p.email,'attached')}</td><td>${p.last_seen_at?new Date(p.last_seen_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}):(p.link_on?'Not yet':'No link')}</td></tr>`).join('');
   const list=lines.filter(l=>(who?l.assignee_email===who:true)&&l.status!=='closed').sort((a,b)=>a.assignee_email.localeCompare(b.assignee_email)||a.txn_date.localeCompare(b.txn_date));
-  const options=e=>people.filter(p=>p.active).map(p=>`<option value="${esc(p.email)}"${p.email===e?' selected':''}>${esc(p.first_name)}</option>`).join('');
+  const dl=`<datalist id="dl-people">${people.filter(p=>p.active).map(p=>`<option value="${esc(p.first_name)}"></option>`).join('')}</datalist>`;
   app.innerHTML=`<h1>Receipts</h1><p class="sub">${lines.filter(l=>l.status==='open').length} waiting · ${lines.filter(passedOn).length} passed to Gianni · ${lines.filter(l=>l.status==='cant_locate').length} can't locate · ${lines.filter(l=>l.status==='attached').length} on the bank row${booking?` · ${booking} being booked without a receipt`:''}</p>
   ${look.length?`<h2>Waiting for a look (${look.length})</h2>${look.map(f=>{const l=byId.get(f.request_id);return `<section class="card"><div class="top"><span>${esc(l.merchant)}</span><span>${money(l.amount_cents)}</span></div>
     <p class="meta">${day(l.txn_date)} · ${esc(names.get(l.assignee_email)||'')} · ${urls[f.id]?`<a href="${esc(urls[f.id])}" target="_blank" rel="noopener">Open the file</a>`:'File'}</p><p class="ask">${esc(f.reason||'')}</p>${l.note?`<p class="note">Their note: ${esc(l.note)}</p>`:''}
@@ -261,7 +340,7 @@ function renderOverview(){
   ${stuck.length?`<h2>Can't locate (${stuck.length})</h2>${stuck.map(stuckCard).join('')}`:''}
   <h2>People</h2><div class="scroll"><table><thead><tr><th>Person</th><th class="n">Waiting</th><th class="n">Checking</th><th class="n">Can't locate</th><th class="n">Done</th><th>Opened</th></tr></thead><tbody>${rows}</tbody></table></div>
   <h2>${who?esc(names.get(who))+"'s lines":'All lines'} (${list.length})</h2>
-  <div class="scroll"><table><thead><tr><th>Date</th><th>Merchant</th><th class="n">Amount</th><th>Card</th><th>Asked</th><th>Status</th><th>Note</th></tr></thead><tbody>${list.map(l=>`<tr><td>${day(l.txn_date)}</td><td>${esc(l.merchant)}</td><td class="n">${money(l.amount_cents)}</td><td>${esc((l.cardholder||'').split(' ')[0])}</td><td>${['open','cant_locate'].includes(l.status)?`<select data-move="${l.id}" aria-label="Asked">${options(l.assignee_email)}</select>`:esc(names.get(l.assignee_email)||'')}</td><td>${esc(LABEL[l.status]||l.status)}${['open','cant_locate'].includes(l.status)?`<button class="link" data-nr="${esc(l.id)}">Book without receipt</button>`:''}</td><td>${esc(l.note||'')}</td></tr>`).join('')}</tbody></table></div>`;
+  <div class="scroll"><table><thead><tr><th>Date</th><th>Merchant</th><th class="n">Amount</th><th>Card</th><th>Asked</th><th>Status</th><th>Note</th></tr></thead><tbody>${list.map(l=>`<tr><td>${day(l.txn_date)}</td><td>${esc(l.merchant)}</td><td class="n">${money(l.amount_cents)}</td><td>${esc((l.cardholder||'').split(' ')[0])}</td><td>${['open','cant_locate'].includes(l.status)?`<input type="text" data-move="${l.id}" list="dl-people" autocomplete="off" aria-label="Asked" value="${esc(names.get(l.assignee_email)||'')}" />`:esc(names.get(l.assignee_email)||'')}</td><td>${esc(LABEL[l.status]||l.status)}${['open','cant_locate'].includes(l.status)?`<button class="link" data-nr="${esc(l.id)}">Book without receipt</button>`:''}</td><td>${esc(l.note||'')}</td></tr>`).join('')}</tbody></table></div>${dl}`;
 }
 // Gianni decides no receipt is coming. The line leaves the person's list now; the Mac marks the bank row "no receipt needed".
 async function bookNoReceipt(b){
@@ -285,11 +364,22 @@ app.addEventListener('click',async e=>{
   const {error}=await sb.rpc('rr_admin_review',{p_file:(ok||no).dataset[ok?'ok':'no'],p_ok:!!ok,p_reason:reason});
   if(error)toast(plain(error));else loadOverview();
 });
-app.addEventListener('change',async e=>{
-  const s=e.target.closest('select[data-move]');if(!s||key)return;
-  const {error}=await sb.rpc('rr_admin_assign',{p_request:s.dataset.move,p_to:s.value});
-  if(error){toast(plain(error));}else{const l=all.lines.find(x=>x.id===s.dataset.move);if(l)l.assignee_email=s.value;toast('Moved.');renderOverview();}
-});
+// The Asked column: a typable name box. A pick from the suggestions moves the line at once; typed text on Enter or leaving the box.
+async function moveLine(box){
+  const l=all.lines.find(x=>x.id===box.dataset.move);if(!l||box.dataset.busy)return;
+  const now=all.people.find(p=>p.email===l.assignee_email), typed=box.value.trim();
+  if(now&&typed===now.first_name)return;
+  const p=pickFrom(all.people.filter(x=>x.active),typed,x=>[x.first_name,x.email]);
+  if(!p){if(typed)toast('Pick someone from the list.');box.value=now?.first_name||'';return;}
+  if(p.email===l.assignee_email){box.value=p.first_name;return;}
+  box.dataset.busy='1';box.value=p.first_name;
+  const {error}=await sb.rpc('rr_admin_assign',{p_request:l.id,p_to:p.email});
+  delete box.dataset.busy;
+  if(error){toast(plain(error));box.value=now?.first_name||'';}else{l.assignee_email=p.email;toast(`Moved to ${p.first_name}.`);renderOverview();}
+}
+app.addEventListener('change',e=>{const b=e.target.closest('input[data-move]');if(b&&!key)moveLine(b);});
+app.addEventListener('input',e=>{const b=e.target.closest('input[data-move]');if(b&&!key&&picked(e))moveLine(b);});
+app.addEventListener('keydown',e=>{const b=e.target.closest('input[data-move]');if(b&&!key&&e.key==='Enter'){e.preventDefault();moveLine(b);}});
 (key?startPerson():startOverview()).catch(e=>{app.innerHTML=`<h1>Receipts</h1><p class="sub">${esc(plain(e))}</p>`;});
 </script>
 </body>
