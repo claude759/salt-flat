@@ -3245,4 +3245,39 @@ if (realPipe) {
     console.log(`batch V2 hub: grows ${HB.grow.map(G => G.site).join(', ')} then the 25th distro; ${HB.ins.length} In (moves within 3 days, 1 lb or more, Filifera only), ${HB.picks.filter(g => g.state === 'done').length} pickups and ${HB.picks.filter(g => g.state !== 'done').length} from the sheet, ${HB.units.filter(u => u.kind === 'run').length} pre-roll runs; the lists regroup nothing; words like "${BT2.inBubble(iA)}", "${BT2.pickBubble(HB.picks[1])}", "${BT2.runBubble(rp)}"`);
   }
 }
+// On hand page (beta; Gianni, 2026-11-18: "how much packaged product is on hand (for distu or Nabis) at any given time especially at
+// future dates", "the amount per unit type and strain type", then of four mockups the weeks-across table: "I like this one the most")
+{
+  const ohSrc = html.split('/* ===== ON HAND MODEL START =====')[1].split('/* ===== ON HAND MODEL END ===== */')[0];
+  const OH = new Function('PIPE', '/*' + ohSrc + '; return OH;')(PIPE);
+  const rows = [
+    { src: 'distru', strain: 'Smoothie', kind: 'jar', qty: 1000, testing: false },
+    { src: 'distru', strain: 'Smoothie', kind: 'jar', qty: 500, testing: true, lab_state: 'PENDING' },
+    { src: 'distru', strain: 'Smoothie', kind: 'jar', qty: 200, testing: true, lab_state: 'PASSED' },
+    { src: 'nabis', strain: 'Smoothie', kind: 'jar', qty: 300, held: 100, incoming: 20, weeks_on_hand: 4 },
+    { src: 'nabis', strain: 'Tide', kind: 'jar', qty: 50, held: 0, weeks_on_hand: 0 },
+    { src: 'distru', strain: 'Tide', kind: 'bulk', qty: 999, unit: 'g' }, { src: 'nabis', strain: 'Tide', kind: 'vape', qty: 5 }];
+  const M = OH.project({ rows, today: '2026-11-18', weeks: 2, picks: ['2026-11-24'], dz: { jar: 500 },
+    adds: [{ day: '2026-11-23', key: 'TIDE', kind: '5pk', qty: 600 }, { day: '2026-11-18', key: 'TIDE', kind: 'jar', qty: 9 }] });
+  const sj = M.get('SMOOTHIE', 'jar'), tj = M.get('TIDE', 'jar'), t5 = M.get('TIDE', '5pk');
+  assert.deepEqual([M.n, M.kinds.map(k => k[0]), M.strains, M.rows.length], [15, ['jar', '5pk'], ['SMOOTHIE', 'TIDE'], 3], 'a row per strain and unit type that is packaged (no bulk, no vapes), the strain with most on hand first');
+  assert.deepEqual(sj.days[0], { dz: 1700, ts: 500, nb: 400 }, "today is the stock copy: all Distru holds, the part still in testing (a passed result counts as ready), and Nabis's available plus on orders");
+  assert.deepEqual([sj.sell, sj.known, tj.sell, tj.known], [100, true, 100, false], "Nabis's pace is its own weeks on hand; a product with none uses the middle pace of its unit type");
+  assert.deepEqual(sj.days[1], { dz: 1600, ts: 500, nb: 400 }, 'the next working day: what was in transit arrives at Nabis, Nabis sells a fifth of a week, Distru delivers a fifth of its weekly pace from what is ready');
+  assert.deepEqual([sj.days[3], sj.days[4]], [sj.days[2], sj.days[2]], 'nothing sells on a weekend');
+  assert.deepEqual([sj.days[5].ts, sj.ev.map(e => [e.day, e.what, e.qty])], [0, [['2026-11-19', 'in', 20], ['2026-11-23', 'lab', 500]]], 'stock in testing can ship after the usual days to a result');
+  assert.deepEqual(sj.days[7], { dz: 1200, ts: 0, nb: 320 }, 'a week ahead; a pickup moves nothing to a product Nabis already has 3 weeks of');
+  assert.deepEqual([tj.out, tj.days[0].nb, Math.round(tj.days[5].nb), tj.ev.length], ['2026-11-23', 50, 0, 0], 'the day Nabis runs out of a product is marked; an add dated today or before is not counted again');
+  assert.deepEqual([t5.days[4].dz, t5.days[5], t5.days[10].ts], [0, { dz: 600, ts: 600, nb: 0 }, 0], 'planned packing lands on its day; pre-rolls are tested after they are rolled');
+  const M2 = OH.project({ rows: [{ src: 'distru', strain: 'A', kind: 'jar', qty: 400 }, { src: 'nabis', strain: 'A', kind: 'jar', qty: 30, weeks_on_hand: 1 }], today: '2026-11-18', weeks: 1, picks: ['2026-11-19'] }).get('A', 'jar');
+  assert.deepEqual([M2.ev.map(e => [e.day, e.what, e.qty]), M2.days[1]], [[['2026-11-19', 'pick', 60]], { dz: 340, ts: 0, nb: 84 }], "a planned pickup tops Nabis up to 3 weeks of the product's sales from what our distro has ready");
+  assert.equal(OH.project({ rows: [], today: '2026-11-18' }).rows.length, 0, 'no stock: no rows');
+  const fnH = name => { const i = html.indexOf('function ' + name + '('); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i) + 2); };
+  const fI = fnH('ohInput'), fO = fnH('renderOnHand');
+  assert.match(html, /<button[^>]*data-view="onhand"[^>]*data-beta/, 'the On hand tab keeps data-beta until its owner says it is ready');
+  assert.ok(/STYLED_VIEWS = \[[^\]]*'onhand'/.test(html) && /onhand: \(\) => renderOnHand\(\)/.test(html) && /if \(S\.view === 'onhand' && sb\) \{ if \(!S\.invAt && !S\.invErr\) loadInventory\(true\);/.test(html), 'the page is wired: its look, its render, its reads');
+  assert.ok(/testing\.has\(kind \+ '\|' \+ l\.strain\) && first <= PIPE\.addDays\(today, 7\)/.test(fI) && /e\.kind === 'pickup' && e\.date > today/.test(fI) && /k\.w < mon && k\.d && k\.d\.u\)\.slice\(-3\)/.test(fI) && /est: l\.lbs == null/.test(fI),
+    "the projection's inputs: planned packing not already in testing at Distru (≈ when the sheet has no count), the sheet's pickups still to come, Distru's last 3 full weeks");
+  assert.ok(/OH\.project\(I\)/.test(fO) && /if \(!S\.inv \|\| !M\.rows\.length\)/.test(fO) && /data-oh="row"/.test(fO) && /tabindex="0"/.test(fO) && !/<select/.test(fO) && !/price|dollar|revenue|\$\{?\s*usd/i.test(fO + fI), 'the table: nothing without the stock counts, rows open by click or key, no plain select, units only');
+}
 console.log('pipeline-check: all checks passed');

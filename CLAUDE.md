@@ -447,6 +447,27 @@ launch. The check fails if one of the three pieces is missing.
     A change of the lots shown opens on today again (or on the item picked). Not on the Canvas, and so not shown anywhere
     in Batch V2 since the Timeline went: sales to stores by week as rows (the week cards still have them) and the On hand
     column (what is still ours is the docked column's Still here rows and each lot's card).
+- **On hand page** (beta, view only; Gianni, 2026-11-18: "I wand some way to see how much packaged product is on hand (for
+  distu or Nabis) at any given time especially at future dates", then "we'll probably want to know the amount per unit type
+  and strain type"; he turned down a line chart and a strain-by-type board with a day picker, and of four further mockups
+  picked the weeks-across table: "I like this one the most"). `data-view="onhand"`, after Inventory, on the app's dark
+  base. One table: a row per strain and unit type (3.5g jars, Pouches, 5-packs, 1g and 1.5g pre-rolls; no bulk, no vapes),
+  a column for today and each of the next 6 weeks; a cell reads "1,131 + 366 N": units at our distro (Distru) plus units
+  at Nabis, amber "Nabis out" from the day Nabis runs out. Buttons narrow it to one unit type; a row opens what changes
+  it. Today is the stock copy (`pipeline_inventory`, the Inventory page's own read; Nabis = available plus on orders).
+  Ahead is `OH.project()` (the ON HAND MODEL block, pure), a day at a time: stock in testing at Distru ships after its
+  result (passed counts as ready; the rest after about 5 days); packing planned on the sheets lands the first day the
+  sheet has the line, skipped when Distru already holds that product in testing (the Inventory page's rule), jars ready
+  at once, pre-rolls tested after they are rolled; a jar line with no pounds on the sheet is estimated at what a counted
+  jar line usually came to, its pouches too (marked ≈); what is in transit to Nabis arrives the next day; each Nabis
+  pickup still to come on the sheet tops Nabis up to 3 weeks of that product's Nabis sales from what our distro has
+  ready (`OH.COVER`); each working day Nabis sells a fifth of the product's weekly pace (its own weeks on hand; the
+  middle pace of its unit type when it has none) and Distru's own deliveries take a fifth of the unit type's weekly
+  pace over the last 3 full weeks of the sales block, shared by what each strain has ready. **These rules are Claude's
+  assumptions, said on the page's note; Gianni has seen the mockup's numbers but not confirmed the rules (the 3 weeks
+  above all): ask before leaning on them.** Page: `ohInput` (the inputs, from `S.inv`, `S.act`, `S.drops`,
+  `B2.sales`), `renderOnHand`. No past days: the stock copy keeps only today's counts (a daily saved count would be a
+  new table, applied from Gianni's computer if it reaches outside `pipeline_*`). Units only, never dollars.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
