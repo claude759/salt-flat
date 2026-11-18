@@ -3218,8 +3218,8 @@ if (realPipe) {
       assert.ok(fsrc.length > 2000 && !/sb\.from\(|\.rpc\(|setInterval\(/.test(fsrc), 'Flow reads and polls nothing new');
       assert.ok(/B2\.met = new Map\([^\n]*\n[^\n]*\n\s*b2ModeBar\(\);\n\s*if \(b2fOn\(\)\) \{ b2fRender\(M, HB\); return; \}/.test(rbH), 'Flow branches right after the sentence; the Timeline below it is untouched');
       assert.ok(html.includes('<div class="b2f" id="b2-flow"></div>') && html.includes('id="b2-mode"') && !/data-view="flow"/.test(html), 'Flow is a mode of Batch V2, not a page');
-      assert.ok(/B2\.fwant = p\.get\('sel'\) \|\| '';/.test(html) && !/B2\.mode = 'flow'/.test(html) && html.includes('${weekHashTail()}${b2fTail()}') && /location\.hash\.replace\(\/&\(mode=flow\|show=all\|sel=\[\^&\]\*\)\/g, ''\) \+ b2fTail\(\)/.test(fnH('b2fHash')),
-        'the item traced lives in the address (an old &mode=flow link opens the one view: nothing sets the step columns any more); a click changes only that part of it');
+      assert.ok(/B2\.fwant = p\.get\('sel'\) \|\| '';/.test(html) && !/B2\.mode = 'flow'/.test(html) && html.includes('${weekHashTail()}${b2fTail()}') && /location\.hash\.replace\(\/&\(mode=flow\|mode=tl\|show=all\|sel=\[\^&\]\*\)\/g, ''\) \+ b2fTail\(\)/.test(fnH('b2fHash')) && /if \(p\.get\('mode'\) === 'tl'\) B2\.mode = 'tl';/.test(html) && /if \(p\.get\('show'\) === 'all'\) B2\.fscope = 'all';/.test(html),
+        'the view (Stages, else &mode=tl), All 2026 and the item traced live in the address (an old &mode=flow link opens Stages: nothing sets the old step columns any more); a click changes only that part of it');
       assert.ok(/BT2\.flowView\(M, HB, \{ today, scope: B2\.fscope, wet \}\)/.test(fnH('b2fRender')) && /BT2\.flowTrace\(F, B2\.fsel\)/.test(fnH('b2fDraw')), 'the page draws the model');
       assert.ok(/EDIT\.pickFrom\(/.test(fnH('b2fFind')) && /<input type="text" id="b2f-find" list="b2f-lots"/.test(fnH('b2fRender')) && /so nothing changed/.test(fnH('b2fFind')), 'Find a lot is typable and refuses anything not in the list');
       // Find also takes a strain (Gianni, 2026-11-17: "Add the strain search to Find a lot"): each strain with the lots shown
@@ -3266,8 +3266,34 @@ if (realPipe) {
         const rb = fnH('renderBatches2'), fI = fnH('b2Init'), fM = fnH('b2tModel'), fD = fnH('b2tDraw'), fK = fnH('b2tMarks'), fS2 = fnH('b2tSelect'), fW = fnH('b2tShow');
         assert.ok(html.includes('<div class="b2t-bar" id="b2t-bar"></div>') && html.includes('<div class="b2t-rail" id="b2t-rail" hidden></div>') && html.includes('<svg class="b2t-links" id="b2t-svg" aria-hidden="true"></svg>') &&
           /<label class="b2f-findl" id="b2t-findl"><span>Find<\/span><input type="text" id="b2f-find" list="b2f-lots"/.test(html), 'the one view: Find in the top row, a bar under the sentence, the rail and the links beside the timeline');
-        assert.ok(/el\.innerHTML = b2fOn\(\) \? /.test(fnH('b2ModeBar')) && /el\.hidden = !b2fOn\(\);/.test(fnH('b2ModeBar')), 'no Timeline | Flow buttons');
-        assert.ok(/if \(b2fOn\(\)\) \{ b2fRender\(M, HB\); return; \}\n  b2tModel\(M, HB\);/.test(rb) && /BT2\.flowView\(M, HB, \{ today, scope: 'all', wet \}\)/.test(fM) && rb.indexOf('b2tModel(M, HB)') < rb.indexOf('const tw = b2Measure(sc)'),
+        assert.ok(/\[\['st', 'Stages'\], \['tl', 'Timeline'\]\]/.test(fnH('b2ModeBar')) && /sec\.classList\.toggle\('b2s-on', b2sOn\(\)\);/.test(fnH('b2ModeBar')) && /B2\.mode = 'st';/.test(html), 'two views, Stages first: the Stages | Timeline buttons');
+        // Stages (Gianni, 2026-11-17: a picture of a production-chain tool, "a bit more like this", then "Yes, build it"): every
+        // lot by step, a row per packaged product (strain and unit type), lines out of each product to where it went
+        {
+          const K = 'h:23RD|2|2026-10-29', G = 'p:h:23RD|2|2026-10-29|2026-11-14', J = `s:p|${K}|${G}|TIDEBANGER|jar`, Po = `s:p|${K}|${G}|TIDEBANGER|pouch`;
+          const outs = new Map([['FA', { jar: { nabis: [['2026-10-27', 10], ['2026-11-13', 300]], distru: 200, left: 400 }, pouch: { nabis: [['2026-11-13', 50]], distru: 0, left: 50 } }]]);
+          const V0 = BT2.stageView(FA, HBb, { today: T }), V = BT2.stageView(FA, HBb, { today: T, outs });
+          assert.deepEqual(V.lots.map(L => L.key), ['h:23RD|2|2026-10-29', 't:15TH|B|2026-10-20', 'h:23RD|3|2026-10-07', 'h:25TH|2|2026-10-05', 'h:15TH|A|2026-10-02', 'h:OLYMPIC|2|2026-09-28', 'h:23RD|1|2026-09-22', 'h:25TH|1|2026-08-24', 'h:25TH|1|2026-04-20'], 'a block per lot, newest first');
+          const L = V.lots[0];
+          assert.deepEqual([L.h.id, L.h.lb, L.t.id, L.lab.state, L.lab.wait, L.groups.map(g => [g.id, g.pre, g.fut, g.items.map(i => [i.id, i.t, i.n])])],
+            [`s:h|${K}`, 700, `s:t|${K}`, 'due', true, [[G, false, false, [[J, 'jar', 1000], [Po, 'pouch', 100]]]]], 'its harvest, trim and test, then a row for each strain and unit type (pouches ride their jars\' row)');
+          const outOf = (W, id) => W.links.filter(l => l.a === id).map(l => [l.b, l.n, l.u]);
+          assert.deepEqual([outOf(V, `s:h|${K}`), outOf(V, `s:l|${K}`)], [[[`s:t|${K}`, 0, '']], [[J, 0, ''], [Po, 0, '']]], 'harvest to trim, and the test to its jars');
+          assert.deepEqual([outOf(V, J), outOf(V, Po)], [[['n:2026-10-27', 10, 'u'], ['n:2026-11-13', 300, 'u'], ['s:dz', 200, 'u'], ['s:hereP', 400, 'u']], [['n:2026-11-13', 50, 'u'], ['s:hereP', 50, 'u']]], 'lines out of each product: its pickups by day, Distru, what is still here');
+          assert.deepEqual([outOf(V0, J), V0.end.dz, V0.end.hereP, V0.picks.map(x => x.id)], [[], 0, 0, ['n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16']], "without the job's products: the rows, no lines out, only the pickups still planned");
+          assert.deepEqual([V.picks.map(x => x.id), V.end.dz, V.end.hereP, V.buyers], [['n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16', 'n:2026-11-13', 'n:2026-10-27'], 200, 450, [['Buyer X', 47]]], 'the last column: the pickups something rode on and the planned ones (3 weeks), Distru, still here, bulk buyers');
+          assert.ok(outOf(V, `s:t|${K}`).some(l => l[0] === 's:fb|Buyer X' && l[1] === 47 && l[2] === 'lb') && outOf(V, `s:t|${K}`).some(l => l[0] === 's:hereF' && l[2] === 'lb'), 'bulk and loose flower leave from the trim, in pounds');
+          const tr = BT2.stageTrace(V, J), tp = BT2.stageTrace(V, 'n:2026-11-13');
+          assert.deepEqual([[...tr.up].sort(), [...tr.dn].sort()], [[`s:h|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), ['n:2026-10-27', 'n:2026-11-13', 's:dz', 's:hereP'].sort()], 'a product lit: all it came from, all it went to');
+          assert.deepEqual([[...tp.up].sort(), tp.dn.size], [[J, Po, `s:h|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), 0], 'a pickup lit: every product on it, back to the harvest');
+          const fR = fnH('b2sRender'), fDr = fnH('b2sDraw'), fC = fnH('b2sCardHTML'), fFt = fnH('b2sFit');
+          assert.ok(html.includes('<div class="b2s" id="b2-stage"></div>') && /BT2\.stageView\(F, HB, \{ outs, today \}\)/.test(fR) && /r\.went\.products/.test(fR) && /BT2\.stageTrace\(V, id\)/.test(fDr) && /B2\.sstick \? sc\.scrollTop : 0/.test(fDr), 'the page draws the model; the last column stays in view and its links follow');
+          assert.ok(/Math\.max\(0\.85, Math\.min\(1, /.test(fFt) && /B2\.sstick = !isPhone\(\) && B2S_HEAD \+ B2\.sout <= sc\.clientHeight;/.test(fFt), 'five columns share the width (a little narrower before it scrolls); the last column is pinned only when it fits');
+          assert.ok(/data-b2s="\$\{esc\(n\.id\)\}"/.test(fR) && /b2sSelect\(n\.dataset\.b2s === B2\.ssel \? '' : n\.dataset\.b2s/.test(fnH('b2sInit')) && /Date\.now\(\) - \(B2\.dragged \|\| 0\) < 80/.test(fnH('b2sInit')), 'a click traces, the same click clears, the end of a drag is neither');
+          assert.ok(/class="b2-lnk" data-b2="/.test(fC) && /I\.rows\.map\(b2FlowHTML\)/.test(fC) && /Metrc's packages account for/.test(fC), "the card: figures, came from, went to, and the Timeline's own cards one press away");
+          assert.ok(/body\.b2f-dark \.b2s\{--s-bg:/.test(hcss) && /\.b2s-cv\.tr \.b2s-lk path\.up\{stroke:var\(--s-up\)/.test(hcss) && /\.b2s-on \.b2-nav,\.b2s-on #b2t-wrap\{display:none\}/.test(hcss), 'one set of rules for both looks; came from in gold, went to in blue; the Timeline hides while Stages shows');
+        }
+        assert.ok(/if \(b2sOn\(\)\) \{\n    b2sRender\(M, HB\);/.test(rb) && rb.indexOf('if (b2sOn()) {') < rb.indexOf('b2tModel(M, HB)') && /BT2\.flowView\(M, HB, \{ today, scope: 'all', wet \}\)/.test(fM) && rb.indexOf('b2tModel(M, HB)') < rb.indexOf('const tw = b2Measure(sc)'),
           "Flow's model over every 2026 lot, before the timeline is fitted (its bar has a height)");
         assert.ok(/B2\.hold = !!reopen;/.test(rb) && /if \(B2\.fsel && !B2\.open\) b2tShow\(null\);/.test(rb) && /B2\.fnew = false; B2\.hold = false;\n  b2tDock\(\);\n  b2tSync\(\);\n/.test(rb), 'a redraw keeps the trace, its card and the room the docked card took');
         assert.ok(/B2\.F\.nodes\.find\(n => n\.id === a\)/.test(fI) && /if \(node\) \{ b2tSelect\(/.test(fI) && !/if \(B2\.open && !B2\.keep\) b2Close\(\);/.test(fI) && /if \(B2\.fsel \|\| B2\.fstrain\) b2tSync\(\);/.test(fI),

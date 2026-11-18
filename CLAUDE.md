@@ -558,6 +558,34 @@ launch. The check fails if one of the three pieces is missing.
     **No summary sentence** (Gianni, 2026-11-17: "this stuff is just clutter please remove"): the line under the title
     (`#b2-sentence`) says only what couldn't be read, and is not there otherwise. Do not bring the counts back; the
     older bullets' "the sentence says ..." now mean that line. `BT2.atLabText` is no longer drawn.
+  - **Stages: Batch V2's first view** (beta, view only; Gianni, 2026-11-17, after the one view: "there is still
+    something I don't love ... product moving between phases isn't very distinctive", mockups of a free canvas, then a
+    picture of a production-chain tool, "a bit more like this", then "Yes, build it"). Batch V2 has two views, the
+    buttons by the title: **Stages** (opens first) and **Timeline** (the one view above, unchanged; `&mode=tl`).
+    `B2.mode` is 'st' or 'tl'; the old step columns (`b2fRender` and friends) are still dead code to delete, not this.
+    Stages is every lot by step in five columns: Harvest (wet lb), Trim (flower lb), Test and COA (the result and its
+    day), **Packaged (a row for each strain and unit type**: 3.5g jars, pouches, 5-packs, 1g and 1.5g pre-rolls, under a
+    small heading per packing day; pouches ride their jars' row of the Batch Label Sheet; jars follow the test,
+    pre-rolls come straight from the trim), and Where it went (Nabis pickups by day, Distru deliveries, Packaged and
+    Loose flower still here, bulk buyers). One block per lot, newest first; "Last 90 days" or "All 2026" (`B2.fscope`,
+    `&show=all`). Model: `BT2.stageView(F, HB, { outs, today })` over `BT2.flowView`'s lots, and `BT2.stageTrace`
+    (pure); page: `b2sRender`, `b2sFit`, `b2sDraw`, `b2sSelect`, `b2sShow`, `b2sCardHTML`, `b2sGo`, classes `b2s-*`.
+    **A click lights what the item came from in gold and where it went in blue** (his picture's colours; here gold is
+    not a warning), fades the rest, and opens its card docked on the right; hover previews the trail; the same click,
+    Esc, Close or a click elsewhere clears it; the end of a drag does not. Links are thin curves, faint at rest. **The
+    board drags in any direction**; its five columns share the width (down to 85% of their size, then it scrolls
+    sideways) and its box ends at the window's bottom. **The last column stays in view** while the board scrolls up
+    and down, when it fits the window (`B2.sstick`); its links are redrawn as it moves. Planned pickups shown: today to
+    21 days on; other pickups only when something shown rode on them. **Where each packaged product went is the flow
+    job's `went.products`** on each lot (Gianni's Mac, hourly, since 2026-11-17): keyed by the batch's Metrc tag (the
+    Batch Label Sheet's METRC UID, the batch's own bulk package), then by unit type, `{ nabis: [[day, units]], distru,
+    left }`, counted from the packages made from that tag (a blend's units split equally among its parents). Units,
+    never dollars; store names never shown. The sheet's count and Metrc's can differ a little (the card says both).
+    Without `went.products` (signed out, or before the job's first run) the products are listed with no lines out.
+    Cards (`b2sCardHTML`): three figures, came from, went to, and buttons that open the Timeline's own cards (harvest,
+    trim, lab, Jars, pickup) in the same docked panel. Find (lot or strain) and Light | Dark work in both views; one
+    set of rules for both looks (the `.b2s` box's `--s-*` variables). The item picked is in the address
+    (`&sel=<id>`). No time axis here: days are words on the rows; the Timeline has the days.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
