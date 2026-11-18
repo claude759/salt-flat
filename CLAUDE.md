@@ -595,15 +595,27 @@ launch. The check fails if one of the three pieces is missing.
     not bring them back. The Timeline stays until Gianni says otherwise. The Canvas is the
     Stages rows, each on its own day (30px a day): a lot's harvest, trim, Test and COA along one row (a test is two rows,
     the day the sample went out and the day its result came or is expected, when both are known: `BT2.canvasLab`), a
-    stack of product rows (a strain and a unit type) under a heading at each packing day, each grow's lots in its own
-    strip (23rd, 15th, Olympic, 25th), packed as high as they fit. A row sits on its real day and moves right only where
+    stack of product rows (a strain and a unit type) under a heading at each packing day. **Two sections, not a strip per
+    facility** (Gianni, 2026-11-18: "doesn't this get transferred to 25th first before being packaged?", then "instead
+    of having rows dedicated to specific facilities there's one row for the harvest/trim grow section and one for the
+    distro", then "Yes, build it" to the mockup): **Grows** on top, every facility together (Olympic too; the harvest's
+    square is its grow's colour, the strip's label is the key), holding only each lot's harvest and trim; under it the
+    **25th distro**, framed in blue down to the pickups' row, holding each lot's move in ("23rd RM2 · in · 85 lb", the
+    model's `L.inn`, kind 'i': one per lot, its first move day to its last, flowView's pounds), then its Test, COA and
+    product stacks, because every lot is tested, packed and shipped from there. The line from a trim down into its move
+    is the one link with its own colour at rest (`path.mv`, `--s-mv`). In the model the test and the products hang off
+    the move, not the trim; bulk buyers and flower left at the grow leave from the trim, flower left at the distro from
+    the move. A move in or a pickup Metrc hasn't marked received throbs (`waitIn`, `waitPick`, the flow job's
+    `went.open_by`). A lot with no move read starts its distro row at its test (which then names the lot). Rows are
+    packed as high as they fit in their section. A row sits on its real day and moves right only where
     the one before it is still in the way; hover (or the pick) draws a band over its real day or days and rings those
     dates. **Three things stay put while it is dragged**: the dates on top (month, weekday letter, day; a month's name
     stays in view while any of its days is), the Nabis pickups on their days in the 25th distro's row at the window's
     bottom, and what has no day (Distru deliveries, Packaged and Loose flower still here, bulk buyers) in a column docked
     at the right, with a little map of the whole canvas under it (a press jumps there). It drags in any direction; Today
     puts today's line three fifths across. Model: `BT2.stageView` (the Stages model, unchanged), laid out by the pure
-    `BT2.canvasLay(V, { w, today, top })` from the rows' measured widths. Page: `b2cBody`, `b2cFit`, `b2cLinks`,
+    `BT2.canvasLay(V, { w, today, top })` from the rows' measured widths (its `sites` are the two sections, 'GROW' and
+    'HUB'; each position carries its `band`). Page: `b2cBody`, `b2cFit`, `b2cLinks`,
     `b2cGuide`, `b2cMini`, `b2cToday`, `b2cSee`, `b2cWords`, classes `b2c-*`; it is drawn in the Stages box
     (`#b2-stage`; `b2sOn()` means the Canvas), so the click, the gold and blue trail, the card (`b2sCardHTML`), Find,
     the strain's dimming, Light | Dark and `&sel=` are the Stages view's own code. Links are thin curves, faint at rest;

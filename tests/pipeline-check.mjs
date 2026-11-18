@@ -3282,12 +3282,16 @@ if (realPipe) {
           assert.deepEqual([outOf(V, J), outOf(V, Po)], [[['n:2026-10-27', 10, 'u'], ['n:2026-11-13', 300, 'u'], ['s:dz', 200, 'u'], ['s:hereP', 400, 'u']], [['n:2026-11-13', 50, 'u'], ['s:hereP', 50, 'u']]], 'lines out of each product: its pickups by day, Distru, what is still here');
           assert.deepEqual([outOf(V0, J), V0.end.dz, V0.end.hereP, V0.picks.map(x => x.id)], [[], 0, 0, ['n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16']], "without the job's products: the rows, no lines out, only the pickups still planned");
           assert.deepEqual([V.picks.map(x => x.id), V.end.dz, V.end.hereP, V.buyers], [['n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16', 'n:2026-11-13', 'n:2026-10-27'], 200, 450, [['Buyer X', 47]]], 'the last column: the pickups something rode on and the planned ones (3 weeks), Distru, still here, bulk buyers');
-          assert.ok(outOf(V, `s:t|${K}`).some(l => l[0] === 's:fb|Buyer X' && l[1] === 47 && l[2] === 'lb') && outOf(V, `s:t|${K}`).some(l => l[0] === 's:hereF' && l[2] === 'lb'), 'bulk and loose flower leave from the trim, in pounds');
+          // the move into the 25th distro (Gianni, 2026-11-18: "doesn't this get transferred to 25th first before being packaged?")
+          assert.deepEqual([L.inn.id, L.inn.d, L.inn.d1, L.inn.lb, L.inn.gid, L.inn.wait], [`s:i|${K}`, '2026-11-08', '2026-11-10', 85, `i:${K}|2026-11-08`, false], 'a lot has one move into the 25th distro: its first day to its last, the pounds moved, the Timeline\'s own card');
+          assert.deepEqual([outOf(V, `s:t|${K}`), outOf(V, `s:i|${K}`)], [[['s:fb|Buyer X', 47, 'lb'], [`s:i|${K}`, 85, 'lb']], [['s:hereF', 85, 'lb'], [`s:l|${K}`, 0, '']]], 'bulk leaves from the trim; the rest moves into the distro, where the loose flower sits and the test follows');
+          { const W2 = BT2.stageView(FA, HBb, { today: T, outs, waitIn: g => g.day === '2026-11-08', waitPick: g => g.id === 'n:2026-11-13' });
+            assert.deepEqual([W2.lots[0].inn.wait, W2.nodes.filter(n => n.wait && n.kind !== 'l').map(n => n.id)], [true, [`s:i|${K}`, 'n:2026-11-13']], "a move in or a pickup Metrc hasn't marked received is flagged"); }
           const tr = BT2.stageTrace(V, J), tp = BT2.stageTrace(V, 'n:2026-11-13');
-          assert.deepEqual([[...tr.up].sort(), [...tr.dn].sort()], [[`s:h|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), ['n:2026-10-27', 'n:2026-11-13', 's:dz', 's:hereP'].sort()], 'a product lit: all it came from, all it went to');
-          assert.deepEqual([[...tp.up].sort(), tp.dn.size], [[J, Po, `s:h|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), 0], 'a pickup lit: every product on it, back to the harvest');
+          assert.deepEqual([[...tr.up].sort(), [...tr.dn].sort()], [[`s:h|${K}`, `s:i|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), ['n:2026-10-27', 'n:2026-11-13', 's:dz', 's:hereP'].sort()], 'a product lit: all it came from (the move into the distro too), all it went to');
+          assert.deepEqual([[...tp.up].sort(), tp.dn.size], [[J, Po, `s:h|${K}`, `s:i|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), 0], 'a pickup lit: every product on it, back to the harvest');
           const fR = fnH('b2sRender'), fDr = fnH('b2sDraw'), fC = fnH('b2sCardHTML'), fFt = fnH('b2sFit');
-          assert.ok(html.includes('<div class="b2s" id="b2-stage"></div>') && /BT2\.stageView\(F, HB, \{ outs, today \}\)/.test(fR) && /r\.went\.products/.test(fR) && /BT2\.stageTrace\(V, id\)/.test(fDr) && /b2cBody\(V, outs, keep, jump\);\n\}/.test(fR), 'the page draws the model, through the Canvas');
+          assert.ok(html.includes('<div class="b2s" id="b2-stage"></div>') && /BT2\.stageView\(F, HB, \{ outs, today, waitIn, waitPick \}\)/.test(fR) && /r\.went\.products/.test(fR) && /BT2\.stageTrace\(V, id\)/.test(fDr) && /b2cBody\(V, outs, keep, jump\);\n\}/.test(fR), 'the page draws the model, through the Canvas');
           assert.ok(/b2cFit\(\)/.test(fFt) && !/B2S_HEAD|B2S_RH|b2s-heads|b2s-out|B2\.sstick|B2\.spos/.test(html), "the step columns' own code is gone with the Stages button");
           assert.ok(/data-b2s="\$\{esc\(n\.id\)\}"/.test(fnH('b2cBody')) && /b2sSelect\(n\.dataset\.b2s === B2\.ssel \? '' : n\.dataset\.b2s/.test(fnH('b2sInit')) && /Date\.now\(\) - \(B2\.dragged \|\| 0\) < 80/.test(fnH('b2sInit')), 'a click traces, the same click clears, the end of a drag is neither');
           assert.ok(/class="b2-lnk" data-b2="/.test(fC) && /I\.rows\.map\(b2FlowHTML\)/.test(fC) && /Metrc's packages account for/.test(fC), "the card: figures, came from, went to, and the Timeline's own cards one press away");
@@ -3296,16 +3300,19 @@ if (realPipe) {
           // of free floating space where the user can scroll in any direction", then "Yes, build it"): the Stages rows, each on its day
           {
             const w = new Map(V.nodes.map(n => [n.id, n.kind === 'l' ? [50, 110] : 120])), C = BT2.canvasLay(V, { w, today: T, top: 46 }), X = d => BT2.gap(C.d0, d) * 30, at = id => C.pos.get(id);
-            assert.deepEqual([C.d0, C.px, C.W === C.days * 30, C.sites.map(s => s.site)], ['2026-04-13', 30, true, ['23RD', '15TH', 'OLYMPIC', '25TH']], 'the days start on a Monday before the first lot, 30px each; the sites one under the other, the 25th last');
-            assert.deepEqual([at(`s:h|${K}`).x, at(`s:t|${K}`).x, at(`s:h|${K}`).y === at(`s:t|${K}`).y], [X('2026-10-29'), X('2026-11-08'), true], "a lot's harvest and trim sit on their days, on one row");
+            assert.deepEqual([C.d0, C.px, C.W === C.days * 30, C.sites.map(s => s.site)], ['2026-04-13', 30, true, ['GROW', 'HUB']], 'the days start on a Monday before the first lot, 30px each; two sections: the Grows, then the 25th distro');
+            const gh = at(`s:h|${K}`), gt = at(`s:t|${K}`), inn = at(`s:i|${K}`);
+            assert.deepEqual([gh.x, gt.x, gh.y === gt.y, gh.band, gt.band], [X('2026-10-29'), X('2026-11-08'), true, 'GROW', 'GROW'], "a lot's harvest and trim sit on their days, on one row of the Grows section");
+            assert.deepEqual([inn.x, inn.band, inn.y > gt.y, inn.y >= C.sites[1].top], [X('2026-11-08'), 'HUB', true, true], "its move in starts its row in the 25th distro's section, on the day it moved");
             assert.deepEqual([BT2.canvasLab({ sent: '2026-11-12', at: '2026-11-18' }), BT2.canvasLab({ sent: '2026-11-12' }), BT2.canvasLab({ back: '2026-11-18' })], [['2026-11-12', '2026-11-18'], ['2026-11-12'], ['2026-11-18']], 'a test is two rows (sent, result) when both days are known');
             const lab = at(`s:l|${K}`);
-            assert.deepEqual([lab.d, lab.x, lab.d2, lab.x2], ['2026-11-12', at(`s:t|${K}`).x + 120 + 16, '2026-11-18', X('2026-11-18')], 'the Test row gives way to the trim before it and keeps its real day; the COA row sits on the expected day');
+            assert.deepEqual([lab.d, lab.x, lab.d2, lab.x2, lab.y === inn.y, lab.band], ['2026-11-12', inn.x + 120 + 16, '2026-11-18', X('2026-11-18'), true, 'HUB'], 'the Test row follows the move in, gives way to it and keeps its real day; the COA row sits on the expected day');
             assert.deepEqual([at(J).d, at(J).x, at(Po).x, at(Po).y - at(J).y, at(J).w], ['2026-11-14', lab.x2 + 110 + 24, at(J).x, 31, 232], 'the products stack under their packing day, after the COA');
             assert.deepEqual(C.heads, [{ id: G, lot: K, x: at(J).x, y: at(J).y - 17 }], 'a heading over each stack');
             assert.deepEqual(C.picks.map(p => [p.id, p.x]), [['n:2026-10-27', X('2026-10-27')], ['n:2026-11-13', X('2026-11-13')], ['n:plan|2026-11-16', X('2026-11-13') + 132], ['n:plan|2026-11-20', X('2026-11-13') + 264], ['n:plan|2026-12-04', X('2026-12-04')]], 'the pickups in one row, each on its day, never one over another');
-            const lotY = k => C.lots.find(l => l.key === k).y;
-            assert.ok(lotY('h:23RD|1|2026-09-22') === lotY(K) && lotY('h:23RD|3|2026-10-07') > lotY(K) && C.lots.every(a => C.lots.every(b => a === b || a.site !== b.site || a.y !== b.y || a.x1 + 34 <= b.x0 || b.x1 + 34 <= a.x0)), 'in a site each lot sits as high as it fits; two on one row never touch');
+            const lotY = k => C.lots.find(l => l.key === k && l.band === 'GROW').y;
+            assert.ok(lotY('h:23RD|1|2026-09-22') === lotY(K) && lotY('h:OLYMPIC|2|2026-09-28') > lotY(K) && C.lots.every(a => C.lots.every(b => a === b || a.band !== b.band || a.y !== b.y || a.x1 + 34 <= b.x0 || b.x1 + 34 <= a.x0)), 'every facility shares the Grows section (Olympic too); a row sits as high as it fits and two on one line never touch');
+            assert.ok(C.lots.filter(l => l.key === K).map(l => l.band).join() === 'GROW,HUB' && !C.lots.some(l => l.key === 'h:15TH|A|2026-10-02' && l.band === 'HUB'), 'a lot is a row in each section; one that never moved in has none in the distro');
             assert.ok(!at('s:h|t:15TH|B|2026-10-20') && at('s:t|t:15TH|B|2026-10-20').x === X('2026-10-20'), 'a lot with no harvest read starts at its trim');
             assert.equal(BT2.canvasLay({ lots: [], picks: [] }, {}).pos.size, 0, 'nothing to show: an empty canvas');
             const fB = fnH('b2cBody'), fL = fnH('b2cLinks'), fG = fnH('b2cGuide');
@@ -3315,6 +3322,7 @@ if (realPipe) {
             assert.ok(/el\.dataset\.part === '1' \? p\.d2 : p\.d/.test(fG) && / b2cGuide\(n\);/.test(fnH('b2sInit')), "hover marks an item's real day or days");
             assert.ok(/data-b2f="ctoday"/.test(fB) && /a === 'ctoday'/.test(fnH('b2fAct')) && !/<select/.test(fB), 'a Today button; no plain select');
             assert.ok(/\.b2c-wrap\{/.test(hcss) && !/b2f-dark \.b2c-/.test(hcss), "both looks share the Canvas's rules through the .b2s box's variables");
+            assert.ok(/pa\.band === 'GROW' && pb\.band === 'HUB'/.test(fL) && /\.b2s-lk path\.mv\{stroke:var\(--s-mv\)/.test(hcss) && /class="b2c-reg hub"/.test(fB) && /every lot is tested, packed and shipped from here/.test(fB) && /Grows <small>harvest and trim<\/small>/.test(fB) && /btn\(L\.inn, \{ wait: L\.inn\.wait \}\)/.test(fB), 'two strips, Grows and the 25th distro; the move between them is its own line; an open move throbs');
           }
         }
         assert.ok(/if \(b2sOn\(\)\) \{\n    b2sRender\(M, HB\);/.test(rb) && rb.indexOf('if (b2sOn()) {') < rb.indexOf('b2tModel(M, HB)') && /BT2\.flowView\(M, HB, \{ today, scope: 'all', wet \}\)/.test(fM) && rb.indexOf('b2tModel(M, HB)') < rb.indexOf('const tw = b2Measure(sc)'),
