@@ -4341,7 +4341,9 @@ function scDrill(dateStr, col){
     const dateLabel=g=>{ if(g.dates.length===1) return fmtDt(g.dates[0]);
       const ds=g.dates.slice().sort((a,b)=>a-b); return `${fmtDt(ds[0])} – ${fmtDt(ds[ds.length-1])}`; };
     // Michigan: each store's address, from its Distru company page (mi-companies.csv; Victoria, 2026-11-18)
-    const addr=g=>(custInfo(g.c)||{}).address||'—';
+    // a processor's address (no store location in Distru) says so: "… (processor's address)"
+    const addr=g=>{ const i=custInfo(g.c)||{}; if(!i.address) return '—';
+      return i.note?`${i.address} (${i.note.replace(/'s address[\s\S]*$/,'').toLowerCase()}'s address)`:i.address; };
     return {title:`LW Customers — week of ${wkLabel}`, sub:`${list.length} distinct customers · ${rng(lwStart,lwEnd)}`,
       columns:[{l:'Customer'},...(MI_ON?[{l:'Address'}]:[]),{l:'Order / Inv #'},{l:'Date'},{l:'Billed',num:true,money:true}],
       rows:list.map(g=>[g.c, ...(MI_ON?[addr(g)]:[]), refLabel(g), dateLabel(g), g.amt]), totalLabel:`${list.length} customers`, total:list.reduce((s,g)=>s+g.amt,0)};
@@ -7494,9 +7496,12 @@ function buildCustDir(){
     const dba=(r['Name']||'').trim(); if(!dba || isOwnEntity(dba)) return;
     const key=tierNorm(dba); if(!key) return;
     const legal=realVal(r['Legal Business Name']), address=realVal(r['Address']), license=realVal(r['License']);
+    // Michigan's file only: a store whose Distru page lists no store location carries its processor's address and a
+    // note saying so (Gianni, 2026-11-18: "having the processor address is probably better than nothing")
+    const note=address?realVal(r['Address Note']):'';
     const cur=dir[key];
-    if(!cur) dir[key]={dba,legal,address,license,region:'',_d:0};
-    else { if(!cur.legal&&legal)cur.legal=legal; if(!cur.address&&address)cur.address=address; if(!cur.license&&license)cur.license=license; }
+    if(!cur) dir[key]={dba,legal,address,license,region:'',_d:0,...(note?{note}:{})};
+    else { if(!cur.legal&&legal)cur.legal=legal; if(!cur.address&&address){ cur.address=address; if(note) cur.note=note; } if(!cur.license&&license)cur.license=license; }
   });
   scan(FILES.nabis_detail && FILES.nabis_detail.data, 'Delivery Date');   // richest source (has Region/POC)
   scan(FILES.nabis_brand  && FILES.nabis_brand.data,  'Delivery Date');   // fallback / fill blanks
@@ -7516,12 +7521,12 @@ function custLegalIndex(){
   return CUST_BY_LEGAL;
 }
 function custInfo(name){ const k=tierNorm(name); return CUST_DIR[k]||custLegalIndex()[k]||{}; }
-function custDirToWire(dir){ const o={}; for(const k in dir){ const v=dir[k]; o[k]=[v.dba||'',v.legal||'',v.address||'',v.license||'',v.region||'']; } return o; }
+function custDirToWire(dir){ const o={}; for(const k in dir){ const v=dir[k]; o[k]=[v.dba||'',v.legal||'',v.address||'',v.license||'',v.region||'',...(v.note?[v.note]:[])]; } return o; }
 // realVal on the way IN as well as the way out: the live payload was published before the
 // placeholder rule existed, so a stale "—" would otherwise sit in the Corporate name column
 // until the next full pipeline run rebuilt the directory.
 function custDirFromWire(o){ const d={}; if(o) for(const k in o){ const a=o[k]||[];
-  d[k]={dba:realVal(a[0]),legal:realVal(a[1]),address:realVal(a[2]),license:realVal(a[3]),region:realVal(a[4]),_d:0}; } return d; }
+  d[k]={dba:realVal(a[0]),legal:realVal(a[1]),address:realVal(a[2]),license:realVal(a[3]),region:realVal(a[4]),_d:0,...(realVal(a[5])?{note:realVal(a[5])}:{})}; } return d; }
 
 // ── Who has been selling this account ───────────────────────────────────────
 // Distru and Nabis both stamp every order with the rep who sold it (Distru "Sales Rep" / "Owner",
@@ -8064,7 +8069,8 @@ const caAddrFor=(name,info)=>cleanAddr((info||custInfo(name)||{}).address)||clea
 const isCoopLabel=name=>/^pacafi\s*[—–-]/i.test(String(name||''));
 function caAddrInfo(name,info){
   const own=caAddrFor(name,info);
-  if(!isCoopLabel(name)) return {address:own, note:''};
+  if(!isCoopLabel(name)){ const i=info||custInfo(name)||{};   // a directory note (Michigan's processor addresses) goes with its own address only
+    return {address:own, note:(i.note&&own&&own===cleanAddr(i.address))?i.note:''}; }
   if(own) return {address:own, note:'Pacafi Cooperative member store: our orders are billed to the co-op and delivered to its Modesto warehouse'};
   const label=String(name).replace(/^pacafi\s*[—–-]\s*/i,'').trim();
   const coop=cleanAddr((custInfo('Pacafi Cooperative')||{}).address);
