@@ -484,7 +484,9 @@ launch. The check fails if one of the three pieces is missing.
   benefits, hours and Gusto department) and from the payroll app's paydays (the old workbooks before it) through the cash
   book. Gusto departments make the groups (they tie to QuickBooks to the dollar): Cultivation / Cultivation Hourly / Salary
   are crew (the three managers apart), Trim are trimmers, Owner, Distro, Sales and BA are left out, no department is crew
-  (25th: shared at 3 of 4, like its pay outside Gusto). Each payday counts evenly over the days it paid for (Gusto's pay
+  (25th: shared at 3 of 4, like its pay outside Gusto) unless Gianni has placed the person (2026-11-18: the job's private
+  list in `~/ar-automation/lib/cogs-managers.mjs`, never named here; one at 15th is cultivator payroll, one at 25th is
+  distro, out of flower and counted in full in packaged distro overhead). Each payday counts evenly over the days it paid for (Gusto's pay
   period; the app's hourly crew and salaried people the two weeks ending 5 days before payday), never the check date.
   This also moved 15th St's trimmers' Gusto pay, booked in Imperial's general Wages since February 2026, out of grow crew
   pay into trim. Trim (Gianni, same day: "they get paid about $100/lb not including taxes"): the piece rate, $100 a pound
