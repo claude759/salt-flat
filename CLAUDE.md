@@ -466,7 +466,7 @@ launch. The check fails if one of the three pieces is missing.
   evenly over each harvest"): each payment counts a twelfth a month for the 12 months from its month (one in the books'
   first year also stands for the year before), shared equally by the rooms, not by lights. The three cultivation managers
   work for all three grows (Gianni: their pay is split "between each company by number of lights"): all of it is shared
-  among the three grows by lights, day by day; never name anyone or anyone's pay in this repo or on the page. Equipment and building work on the books (his choice, "Spread over useful life"): every
+  among the three grows by lights, day by day; never name anyone or anyone's pay in this repo (code, commits, notes); the page names people only from the private snapshot (below). Equipment and building work on the books (his choice, "Spread over useful life"): every
   addition to a grow's fixed-asset accounts counts a month at a time, equipment over 5 years, building work over 10 or
   to the end of the lease (23rd St: June 2028); packaging tools stay with the distro. Trim pay is its own column (his
   choice), charged to the trims by pounds (by payday, below). Per pound = (grow + trim) / bigs + littles on the trim sheets. Olympic shows
@@ -480,7 +480,7 @@ launch. The check fails if one of the three pieces is missing.
   **Pay by payday** (Gianni, 2026-11-18: "It might be better to pull the data from Gusto and the payroll app?", "the
   non-gusto trim pay from the payroll app should be down here"): QuickBooks' wage and payroll-tax accounts are Gusto's
   journal entries, so from each company's first Gusto payroll they are left out and pay is read from every processed Gusto
-  payroll (`lib/cogs-pay.mjs`, private cache `data/cogs/pay-gusto.json`: per employee id only gross, employer taxes,
+  payroll (`lib/cogs-pay.mjs`, private cache `data/cogs/pay-gusto.json`: per employee id only name, gross, employer taxes,
   benefits, hours and Gusto department) and from the payroll app's paydays (the old workbooks before it) through the cash
   book. Gusto departments make the groups (they tie to QuickBooks to the dollar): Cultivation / Cultivation Hourly / Salary
   are crew (the three managers apart), Trim are trimmers, Owner, Distro, Sales and BA are left out, no department is crew
@@ -497,7 +497,12 @@ launch. The check fails if one of the three pieces is missing.
   sentence and one plain table: pay by payday (paid, the days, through Gusto, outside Gusto, this harvest; managers: all
   three grows, this grow's share), trim by pay period (trim pay of all grows, pounds trimmed then, this trim), bills
   booked in the month by account and month of the cycle, spread-evenly costs by the 12 months' total (bills month by month
-  on a click), licenses by payment, equipment by purchase. People counts and hours, never names.
+  on a click), licenses by payment, equipment by purchase. **Cultivator payroll** (the line's name since 2026-11-18,
+  Gianni: "grow crew pay, should be Cultivator payroll"; wages plus the employer's payroll taxes, Social Security, Medicare
+  and unemployment, which Gusto charges on each person's first $7,000 of the year) and **Cultivation managers** open By
+  person (Gianni, same day: "On click, I want these to show names"), each person's hours, wages, employer taxes and part of
+  the harvest, or By payday. The names are in the `cogs_snapshot` row only, which only `cogs_viewers` can read; they never
+  go in this repo, a commit or the page source.
   **Packaged tab** (his answers 2026-11-17): each Batch Label Sheet batch of jars (pouches inside), 5-packs and 1g from
   August 2026 carries flower at its source harvest's flower-page cost per pound by Metrc lineage (littles cost the same
   as bigs: "Same $/lb as bigs"; Olympic at the invoice price), the standard BOM at the lot price in use (private
