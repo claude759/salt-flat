@@ -536,7 +536,10 @@ launch. The check fails if one of the three pieces is missing.
   and unemployment, which Gusto charges on each person's first $7,000 of the year) and **Cultivation managers** open By
   person (Gianni, same day: "On click, I want these to show names"), each person's hours, wages, employer taxes and part of
   the harvest, or By payday. The names are in the `cogs_snapshot` row only, which only `cogs_viewers` can read; they never
-  go in this repo, a commit or the page source.
+  go in this repo, a commit or the page source. Under Cultivator payroll, Cultivation managers and Trim crew pay, a grey
+  line shows the employer payroll taxes inside each and their cost a pound (Gianni, same day: "I'd like it to show that
+  cost/lb number"; `cgTaxIn`). Only the taxes the payrolls actually charged count, on all three lines ("only the taxes we
+  actually paid through gusto", "handle the same way as trim"): pay outside Gusto carries none, and none is added for it.
   **Packaging sub-page** (was the Packaged tab; his answers 2026-11-17): each Batch Label Sheet batch of jars (pouches inside), 5-packs and 1g from
   August 2026 carries flower at its source harvest's flower-page cost per pound by Metrc lineage (littles cost the same
   as bigs: "Same $/lb as bigs"; Olympic at the invoice price), the standard BOM at the lot price in use (private
