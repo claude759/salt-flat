@@ -305,300 +305,111 @@ launch. The check fails if one of the three pieces is missing.
   one-row meta at each Batches read; the links and only the harvest rows linked to the sheet's batches (`.in('name')`,
   60 a request), again only when `pipeline_harvests_meta.changed_at` moves, a new batch's harvests weren't asked
   for, or on Refresh (a not-quiet read more than 30 seconds after the last). Vapes have no Harvest step. Not signed in: the card says the harvest isn't read here.
-- **Batch V2** (beta, view only, Gianni 2026-11-13: "an experimental page called batch V2 ... a left/right
-  scrollable timeline showing harvests and trims"; reshaped 2026-11-15: "all companies shown vertically without having to
-  scroll down", "remove the crap at the bottom", "Don't split them up by room, each bubble can just say H: RM1: ###lbs
-  (more info on click)"): `data-view="batches2"`, after Batches. Lanes: the four grows (23rd, 15th, Olympic, then 25th's grow),
-  always all four, then the 25th distro; each named by a strip above it, never a label column. A lane packs its items into as few tracks as keep them
-  from overlapping (`BT2.pack`, greedy by start day, bubbles' real widths); a harvest, its dotted drying line and the trim
-  it dried for are one unit on one track. All sites fit the window on a laptop (tracks 34px down to 24px); the box scrolls
-  only sideways. Bubbles say only "H: RM1: 412 lbs" / "T: RM1: 132 lbs" / planned "T: RM1: ≈111 lbs" (`BT2.bubble`;
-  "RM?" when the room isn't known; no pounds when none are known): harvest pounds are the Metrc wet weight of every Metrc
-  harvest (one per strain) of that site, room and day (`BT2.metrc`), from the page's own read of `pipeline_harvests` for
-  the timeline's days (`b2LoadMetrc`, signed in; again only when `pipeline_harvests_meta.changed_at` moves, the days grow,
-  or Refresh), never the Batches page's linked-only `loadHarvests` read, which would show part of a room. Each Metrc
-  harvest counts once: a harvest with a room before one without, then the nearer day, the earlier, the lower room. Trim
-  pounds are the trim sheets or the estimate. Everything else (strains, crew, batches, drying days, the Metrc harvests) is in the card a click opens. Nothing
-  under the timeline; what can't be placed isn't drawn. Underneath, harvests and trims keep their rooms: harvests from the
-  DISTRO PIPELINE harvest lines and the batch codes (merged per room and day; a code's day wins over HRVST DATE when the
-  room's other batches or a harvest line agree, else the harvest is marked amber); trims from the trim sheets (done,
-  pounds) and the plan (planned, dashed); drying links a harvest to the next trim of its room whose tab lists its
-  strains. Model in the BATCH V2 MODEL block (`BT2`).
-  - **Metrc lots, pounds left and the On hand column** (Gianni, 2026-11-15: each trim bubble gets a second number, how
-    much is still available in Metrc; scrolling right, bubbles that still have product collect in a column on the left;
-    data back to 1/1/26). Signed in, the page reads `pipeline_flow_lots` (one lot per site, room and Metrc harvest day,
-    written hourly by the flow job on Gianni's Mac through `pipeline_flow_save`) in `b2LoadFlow`: the one-row
+- **Batch V2** (beta, view only; Gianni 2026-11-13: "an experimental page called batch V2"): `data-view="batches2"`,
+  after Batches. Since 2026-11-18 it is **the Canvas only** (below). **The Timeline was removed 2026-11-18** (Gianni:
+  "drop the Timeline too", then "Yes, delete it" to deleting its code): its lanes and bubbles, the On hand column, the
+  hub's In band and out rows, sales by week as bubbles, the rail, the trace overlay and Go to date are gone, and so are
+  Flow's step columns (retired 2026-11-17) and the Stages columns (dropped the same day). Do not bring any of them back
+  unasked. What follows is what still holds for the model, the reads and the cards the Canvas shares.
+  - **The model** is the BATCH V2 MODEL block (`BT2`; pure, tested in the check). Harvests come from the DISTRO PIPELINE
+    harvest lines and the batch codes (merged per room and day; a code's day wins over HRVST DATE when the room's other
+    batches or a harvest line agree, else the harvest is marked amber); trims from the trim sheets (done, pounds) and the
+    plan (planned); drying links a harvest to the next trim of its room whose tab lists its strains. Harvest pounds are
+    the Metrc wet weight of every Metrc harvest (one per strain) of that site, room and day (`BT2.metrc`), from the
+    page's own read of `pipeline_harvests` (`b2LoadMetrc`, signed in; again only when `pipeline_harvests_meta.changed_at`
+    moves, the days grow, or Refresh), never the Batches page's linked-only `loadHarvests` read. Each Metrc harvest
+    counts once: one with a room before one without, then the nearer day, the earlier, the lower room. Trim estimates are
+    the board's. Pounds and units only, never dollars.
+  - **Metrc lots** (Gianni, 2026-11-15): signed in, `b2LoadFlow` reads `pipeline_flow_lots` (one lot per site, room and
+    Metrc harvest day, written hourly by the flow job on Gianni's Mac through `pipeline_flow_save`): the one-row
     `pipeline_flow_meta` each poll, the rows again only when its `changed_at` moves or on Refresh; without the table (or
-    signed out) the page works as before. Lots, and the Metrc harvests the page reads (2026 on), are a third harvest
-    source in `BT2.build`: each joins the sheets' harvest of the same site and room within 2 days, else is a harvest of its
-    own, so one room-day is never drawn twice; a Metrc harvest that was voided (archived) or has no wet weight is no
-    harvest, and a strain written "A / B / C" is each of its strains. A lot with no trim in its room dries to the one unclaimed trim of its site
-    3 to 30 days on that lists its strains (or, when the strains can't tell, whose plan named its room; the sheets name
-    Olympic's rooms differently from Metrc), else Metrc's first packaging day is its trim ("from Metrc"; its cards say
-    "first packaged", not "trimmed" or "days drying"; no packaging day known, no such trim). A trim with lots reads "T: RM3: 115 · 15 left" (`BT2.bubble`, measured
-    before packing): the first number stays the trim sheet's bigs + littles (Metrc's packaged flower only when no tab
-    has it), the second is flower still at our licenses, with a thin bar filled by left / packaged and an amber dot when
-    the lot is partial. **"Left" means our six licenses** (the four grows, the Filifera distro and Imperial's distro;
-    Nabis, Garden of Weeden, is not counted). **Trim is by product name only** ("Bulk Trim" / "Trim"; Sugar Leaves is flower); left is
-    flower in flower-equivalent pounds (jar and 5-pack 3.5 g, 1g 1 g, pouch and pre-roll 1.5 g, vapes 0); trim left is
-    in the card. **Stock is traced by Metrc tag lineage**, batch codes only as a fallback, never both. **Blends** follow
-    their parent packages, each weighted by what it still held when the blend was made, else split equally (the lot's
-    note says so). A package Metrc archived without finishing (voided, made again under a new tag) was never made: not
-    packaged, not written off. A harvest name Metrc wrote another way ("F3-SmoZang-010626", "A-Wizzy12202025") still
-    makes its lot (the room from its first part, the day from Metrc's start day). A lot's first packaging day is the
-    earliest packaging, first line out of a grow package, or package made from it (never a lab sample's or a sale's
-    day). No "being processed" stage. Pounds and units
-    only, never dollars. The trim's card has "Where the pounds went" (the lot's `went`: sold bulk by buyer, Nabis,
-    Distru, labs, written off, in transit, not read yet, not accounted for, still at our licenses), left by place and lab
-    stage, trim, and the job's note. **The On hand column is Gianni's own request, a column of lots, not the removed
-    label column**: a sticky panel at the left of each site's lane inside the scroll box (bubbles slide under it),
-    headed "Still on hand today". It lists that site's lots trimmed by the first day right of it (a lot's day is its
-    trim's first day, else Metrc's first packaging day) that still have flower **today** (`BT2.onHand`), oldest first,
-    as chips "RM3 10/7 · 15 lb". **Today's amounts only, never worked-out past ones** (the critique: derived history
-    would be wrong); the job records each day's numbers (data/flow/daily on Gianni's Mac) and its weekly `series`
-    uses those recorded weeks, for a history view later. Lots under 5 lb fold into one "+N small · X lb" chip; the
-    site's total on top ("<1 lb" under half a pound, as the chips say); amber (never red) when first packaged more than
-    30 days ago; chips past the lane's room become "+N more" (lanes take the window's spare height first). It is drawn
-    again on scroll (one frame at a time) only when a lane's chips change. A chip opens its lot's card; "+N small" and "+N more" open only the
-    lots they stand for, each with the strains that still have flower (Gianni, 2026-11-16: "on click, these popups give
-    more information only about the thing that was clicked on"); phones' "N lots" opens the site's list. A redraw reopens a card by the element it was opened from (a bubble, else the chip). Phones show the total and an "N lots" button. Go to date and Today place the day a third of the way
-    into what the column leaves in view.
-  - **Fills the page; future bubbles glow purple** (Gianni, 2026-11-15: "I want this to vertically fill the page, also for
-    any future/projected bubbles I want a purple glow/outline"). On laptops the timeline ends at the window's bottom:
-    tracks grow to 40px, the spare height is shared by the lanes (the On hand column's needs first) and each lane's tracks
-    spread over it; it draws again when what sits above it changes height. A planned harvest, a trim not done yet (its
-    estimate included) and its drying line carry a purple outline and glow (#7C3AED); past plans that never happened
-    don't. Projected bubbles added later (expected lab results, projections) glow the same way.
-  - **Testing bubbles** (Gianni, 2026-11-15: "we'll also need bubbles for when stuff is sent for testing and when we
-    receive the testing results back"): Test and COA bubbles in the board's testing yellow (COA deeper), one pair per
-    send, never one per batch (samples of one lot, or one site's pre-rolls, sent within 2 days are one send). Sends are
-    drawn in the 25th distro (samples are pulled there), on their lot's chain (Metrc lineage through
-    pipeline_batch_harvests, read with the Metrc harvests in `b2LoadMetrc`, else the sheet row); a send more than 21
-    days after its unit's last day is a unit of its own. Pre-rolls get a unit per site and send (the lineage's site; with several, the code's site when it
-    is one of them, else the site with most source harvests; no lineage: the sheet harvest's, else the code's). Vapes
-    are not on Batch V2 (the Batches page's Vapes band has them). Days are the Batches track's (`BAT.labDays`): TEST
-    DATE, else the lab's Collected, else the manifest; COA RETURN DATE, else the COA e-mail. A COA still out is dashed
-    purple on its expected day (`BAT.coaOutlook`, pickupCoa's rule), at today once past it, amber " · late" past the
-    9-in-10 day; after 30 days with nothing back it is gone, and the Test reads amber " · no COA" only while someone
-    still waits: its sheet row isn't finished or Done, or it has no row and went within the sheet reader's 120 days
-    (a tag sent before that is one the reader no longer lists: not flagged). When the rest of the send came back, the
-    flag goes on its COA instead, amber " · not all". A fail is amber " · N fail", never red. A new sample sent after a
-    tag's results (the lab job's newest manifest after its COA, or a TEST DATE typed after the COA RETURN DATE: a
-    retest) is a send of its own, at the lab, and the earlier one keeps its result. A COA RETURN DATE typed ahead is
-    not a result. A sheet TEST DATE or COA RETURN DATE before the batch's harvest, or a TEST DATE over 60 days ahead (a
-    year typed wrong), is left out for the lab's day and the card says to check the year. The sentence counts each
-    sample at the lab once ("5 samples at the lab, results about Wed Nov 18. 1 more past the usual day."), and says
-    when the Metrc lineage couldn't be read (tried again on each poll).
-    Planned sends from the pipeline sheet's testing lines are not drawn yet (only a TEST DATE typed ahead and projected
-    COAs glow purple). Words only "Test: RM1" / "COA: RM1" ("Test: Pre-rolls"; on the lot's chain in the 25th distro, short of room,
-    "Test" / "COA"); never a bare number. A testing bubble never cuts the bubble before it: it moves on (`BT2.row`).
-    Everything else is in the card a click opens (`b2LabHTML`): days and sources, the result, the lab's order e-mail,
-    the order on Confident LIMS, the day on the Production schedule, the batches on the Batches page, and each batch's
-    own Test and COA facts (BSTEP.card, drawn by `b2StepHTML`, not the Batches page's `bpopHTML`). Lab results load on
-    open, every 10 minutes at most on the polls (`b2Labs`), and on Refresh; signed out, only the sheet's TEST DATE and
-    COA RETURN DATE are drawn.
-  - **Pack bubbles and sales by week** (Gianni, 2026-11-16: "it doesn't look like anything for sales has been added
-    yet, we also need packaging bubbles to be added"). Pack: one orange bubble per lot and pack day ("Jars: 41 lbs";
-    "Jars: RM3: 41 lbs" when packed more than 21 days after the lot's last step, drawn as its own unit), and for
-    pre-rolls one per site and day in the model, drawn in the 25th distro as runs (the hub bullet: rolls of several
-    grows within 2 days are one bubble, "Pre-rolls: 39 lbs" with a square per grow, their sends one Test and one COA),
-    from the Batch Label Sheet's PCKG DATE and counted units (the official actual). Pounds = units x grams (jar and
-    5-pack 3.5, 1g 1, 1.5g and pouch 1.5), never the bulk weight and never Metrc's first packaging day (that is the
-    trim). Failed rows are never drawn (each lot's Jars card counts them, a row with no PCKG DATE by its HRVST DATE or
-    code day); a (UID, product) typed twice counts once. Placed as Testing places a tag
-    (`BT2.placeTag`: Metrc lineage, the sheet harvest, then, for rows older than the 120-day reader, the batch code,
-    the code's room and day, a flower batch of the same strain and day). Batch V2 re-reads the tab back to 1/1/26 for
-    Pack only (`b2PackRows`), and only while the rows shown are the live read's (else the hourly copy's 120-day rows,
-    never an older live read); harvests and Testing keep the 120-day rows. Jars packed while a send of the lot is at the
-    lab (after its Test, before its COA) stay on the lot's chain but are drawn after that COA (`g.after`,
-    `BT2.evOrder`), so Test, the at-lab line and the COA keep their days; the card gives the PCKG DATE. The Lot row
-    says the trim's room when the trim sheet names it differently ("trimmed Oct 20-21 as RM2"). A PCKG DATE ahead,
-    and jars the pipeline sheet plans for a strain only one lot holds unfinished (rule 1), are dashed with the purple
-    glow; when two lots hold it, nothing is drawn and both lots' cards say so. Words never say "packaged".
-    Sales by week (Nabis to stores, Distru, each grow's bulk) come from the flow job's weekly block in
-    `pipeline_flow_meta.summary.sales` (no table; it reads only the payload's units and samples, never index 6, and its
-    sig leaves out the payload's time). N and D are the sales app's Sales-by-Type numbers (the Monday e-mail; samples
-    in, vapes out); distro deliveries that arrived before Jan 13 come from Metrc's distro lines, by the day they arrived
-    (as the sales app files Distru's; in 2026 there are none: Distru's first invoices are the deliveries that left Jan
-    12, never counted twice). Nabis lines dated today or later are scheduled: their week reads "≈17 sold" with the purple
-    glow; a week over by the page's today counts them as sold (the job's today can lag: a run before midnight, a Mac
-    asleep), never the glow. Bulk is from Metrc by origin license, clipped at the last day the Mac's Metrc copy (weekday mornings) has
-    read, with a grey hatch to today. Read through `b2LoadFlow`'s meta poll (`sales_sig`; no new poll, the poll and
-    Refresh lines are unchanged), the body again only when the sig moves (or on Refresh); a block the page can't use (a
-    newer version, a week that isn't a Monday) is not read again until its sig moves (`B2.salesBad`), and the sentence
-    says "Couldn't read the sales."; signed out, or before the job writes a block, no weeks. The sales app's numbers
-    more than 26 hours old, or its file unread, turn the distro strip's note and the cards' source line amber.
-    `pipeline_flow_save` drops a sales block whose keys name money (or that holds a $). Not shown: store names, money,
-    Nabis stock in "left", or "transferred to Distru" (Distru is our distro's software).
-  - **The 25th distro hub** (Gianni, 2026-11-16: "25th is the only company that sell packaged product to nabis/distru so we
-    should probably give it some prominence and make it visually clear that the product from the other companies is
-    transferred to it then it get's packaged then it's sold to nabis -> retailers"; "not sure I want sales by week to be
-    it's own row"). The 25th distro is the Filifera distro license in the 25th building: in 2026 it packed every jar,
-    5-pack and pre-roll, pulled every lab sample, and shipped every Nabis pickup and Distru delivery. Grow lanes keep only
-    H, drying and T; their strips carry their bulk sales by week ("Bulk: 40 sold", Metrc, by origin license, a hatch past
-    Metrc's copy) under a label as wide as the On hand column. Under the grows, framed in navy with 25th's grow
-    (`BT2.HUB_ORDER`; `SITE_ORDER` and `sites()` keep theirs): the distro's strip, an In band (one cyan In per lot moved
-    in, "[23rd] RM2: 85 lbs in", Metrc's move day, flower of 1 lb or more, a move between our licenses, not a sale; a cyan
-    line drops from the lot's trim onto it, behind everything; rows as needed up to 3, or in the strip itself when short
-    of height), the work lane (each lot's Test, COA and Jars with its grow's badge; pre-roll units of any grows that start,
-    roll or send within 2 days of each other are one run, joined over chains, in it rolls within 2 days one bubble with a
-    square per grow and sends within 2 days one Test and one COA), and the out rows:
-    To Nabis, one per pickup ("To Nabis: 44 lbs", Metrc, a transfer into Nabis's warehouse, days in a row joined; the
-    sheet's planned pickups after Metrc's copy dashed with the purple glow and the lab risk in amber, pickupCoa's rule;
-    days after today joined apart from today's, so today's never takes tomorrow's glow or lab check),
-    Nabis sold by week ("Nabis: 13 sold", the sales app; scheduled "≈17", glowing), Distru by week (our distro's own
-    deliveries; nothing is transferred to Distru, our distro's software). Nabis and Distru fold into one row ("N 13 · D
-    11 lbs") when three rows would push tracks under 26 px; then the In band folds into the strip; then, still under 24
-    px, only the To Nabis row stays (its card opens Nabis's weeks) (`BT2.hubRows`). To
-    Nabis and Nabis sold are never added together; In is never a sale. The In band and the out rows have panels
-    (`.b2-ohb`, never `.b2-oh`, so the On hand panels still map one to one to the lanes) with each row's last 4 full
-    weeks ("In · 4 wks · 192 lb", "To Nabis · 4 wks · 83 lb"; phones "In 4w 192"), each opening its 2026 by day or by
-    week. The On hand column splits by place: each grow's panel lists what is still at that grow (`left_grow_lb`), the
-    distro's what is at the distro by source lot (`left_distro_lb`, chips with a two-letter badge; "+N small" and
-    "+N more" open only their lots, by grow, with strains, as on the grows). Badges carry each grow's name in its strip colour, so "RM1" is never ambiguous. Hover on a trim, its line
-    or its In lights all three; a click opens only the item clicked (an In: its moves, the lot, what it sold in bulk from
-    our licenses, what the distro did with it; a pickup: by lot, units of packages wholly one lot's until the job sends
-    whole pickups, blends said apart; a run: one section per grow, a grow's own Pre-rolls or send opened from it goes by
-    the run's bubble). Only flower moves set an In's days. Imperial's distro (bought-in vapes, two trim pass-throughs) is
-    not drawn: trim on a move that doesn't say which distro is never counted in an In (in 2026 every trim move went to
-    Imperial's; the In's card says it apart). Our distros' own bulk (Metrc's origin 'DISTRO') is a pill in the 25th
-    distro's strip (none while the In bubbles ride it) and a Bulk row on its Distru and Stores week cards. "In" is only a
-    move into the 25th distro: Nabis's pickups are "To Nabis" on every card and table. Data: `went.to_distro_by`, `went.nabis_by`, the sales block and the sheet's drops; no SQL
-    change. Signed out: the work lane from the sheets only (no In band, no out rows, no lines). Words never cut: each
-    bubble is measured on its own classes, a fit check redraws once if short, and a bubble at the On hand column (or a
-    strip's label) or the box's right edge shows the longest of its words that fits what is in view.
-  - **Flow, Batch V2's second mode (retired 2026-11-17: see One view below; its model, Find, strain names and dark look live on in it)** (beta, view only; Gianni, 2026-11-17: "I want it to be a very intuitive visualizer for
-    the pipline of from harvest to retailer", then two pictures of stage-column tools, "I'm picturing something more like
-    this", then "Yes, build it" to the mock): Timeline | Flow buttons by the title, drawn by the script (`#b2-mode`,
-    `B2.mode`), not a page; the Timeline is untouched and opens first; address `&mode=flow&show=all&sel=<id>`. Columns left
-    to right: Harvest (wet lb), Trim (flower lb), Bulk or distro, Test and COA, Pack, Out of the distro, Stores. One row per
-    lot (a grow unit: a harvest with its trim), newest on top, so a lot that has only reached Trim stops there. Model:
-    `BT2.flowView` / `BT2.flowTrace` (pure, in the BATCH V2 MODEL block); page: `b2fRender`, `b2fDraw`, `b2fSelect`, classes
-    `b2f-*`. Nodes carry the Timeline's own ids (h:, the trim's, i:, l:, p:, n:), so its cards open unchanged in the panel
-    (`#b2-pop`, docked right on laptops, the bottom sheet on phones); a lot's harvest, trim and move in open the lot's own
-    summary (three figures, its steps with days, the trim card's "Where the pounds went"), a shared node its pounds by lot.
-    **A click lights the item, what it came from and where it went, never its siblings**; the same click again, Esc, Close
-    or a click elsewhere clears it. Curved links are the page's only SVG: faint hairlines at rest; lit, "came from" teal
-    (#0F766E, never amber: amber is a warning here), "went to" navy, planned dashed purple, loose ends grey. **A link is
-    thick only where the data holds pounds for that pair** (1 px per 6 lb, 1.5 to 16 px) and then carries its number; a
-    shared row lit shows its part ("14 of 44"). **Trim's number in Flow is Metrc's flower pounds** so a lot's links add up
-    to its node (bulk + into the distro + still at the grow); the trim sheet's pounds stay on the Timeline and in the card.
-    A lot's Nabis pounds leave its Jars node only when it had Jars packed by the pickup's day, else its In node. Pre-rolls
-    are rolled, then tested: a run sits in Pack with its lab state as a tag only when it needs a look, joined to its lots
-    by hairlines (no pounds per lot). **Sales to stores are a card of weeks no link reaches** (known by week for the whole
-    company, never by lot). More out than came in is said in words, never drawn. Default "Last 90 days": lots harvested in
-    the last 90 days and plans up to 21 days ahead, plus any lot still holding 5 lb or more; "All 2026" has the rest (the
-    page says how many it left out). "Worth a look": 5 lb or more still ours, trimmed over 30 days ago, amber. Find a lot
-    is typable (`EDIT.pickFrom`). Grow tags are dark so a grow's colour never reads as a step's. Bulk buyers' names show
-    (they are bulk buyers, not stores). No new read or poll, no SQL, no job change. Signed out: harvests, trims, sends and
-    Jars from the sheets only. Not built yet: fold rows, a phone layout of its own (phones scroll the same columns sideways).
-    **Find a lot also takes a strain** (Gianni, 2026-11-17: "Add the strain search to Find a lot"): the same typable box
-    lists the lots, then the strains (`F.strains` from `BT2.flowView`: a lot's Metrc strains, its harvest's and its trim
-    plan's, else its trim sheet tab's; "A / B" is each; a numbered cut, "Smoothie #6", is under its own name and under
-    Smoothie). A strain picked shows a strip under the toolbar (`b2fStrainSync`,
-    `B2.fstrain`): a button per lot shown that holds it, with that strain's flower still ours, "+N lots in All 2026" for
-    older ones, and Clear; the board's other lots dim until a trace lights. A strain in one lot lights that lot at once.
-    Nothing is rebuilt on a pick, and text used by leaving the box waits for the press under way (`B2.fdown`), so that
-    press still lands. The strain is kept through redraws and the scope
-    buttons, never in the address. This is Flow's Find only: the Week board's removed strain search stays removed.
-    **One name per strain in Find** (Gianni, 2026-11-17: "Merge the messy strain names"; `BT2.strainMerge`, Flow's Find
-    only: `PIPE.strainKey` and every other page keep the names as written). Two names are one strain when only their
-    spaces differ ("Flash Bang", "Flashbang"); when a number after a name is a cut without its # and the name is known
-    by itself ("Black Light 27" is "Black Light #27"; "Studio 54", "Magic Mirror 4" stay names); when a cross is written
-    short (`FLOW_ABBR`: ZB Zangbanger, DM Dark Matter, LL Limelight, NY New Yorker, BM Black Magic, SM Smoothie, Zang or
-    Zan Zangria, each seen on the sheets both ways with the same cut numbers); when PHENOS is added to a name known
-    without it; or by `FLOW_SAME` ("Zang Bangers", "Smoothie Zangria"). The spelling most lots use is kept. Not merged,
-    not known: W, BB, Wiz OG, and a cross written the other way round. Any way a strain was written still finds it, and
-    the strip says "also written ...".
-    **Flow has a dark look, and opens in it** (Gianni, 2026-11-17: "Add a dark look", like his pictures): a Light | Dark
-    switch at the right of Flow's toolbar, kept in the browser (`pipeline.flow.look`), never in the address. Only Flow:
-    `b2fDark()` makes `render()` leave `data-light` off and set `body.b2f-dark`, so the page sits on the app's own dark
-    base (as Strains and Supplies do) and every dark rule is scoped `body.b2f-dark ...` at the end of the Batch V2
-    styles. The Timeline, the other pages and cards opened outside Flow stay light ("the board reads like the sheet"
-    stands). Same meanings in dark: each step's colour as a tint of the light fill, came from teal, went to blue, planned
-    dashed purple with the glow, amber for a warning, never red. Text is kept at 4.5:1 or better on its background;
-    check a new card or pill in both looks.
-  - **One view: the Timeline with Flow's trace** (beta, view only; Gianni, 2026-11-17: "I kind of wanted the flow and
-    timeline to be the same thing", a mockup, then "Yes, build it"). Batch V2 is one view again: the Timeline, with no
-    Timeline | Flow buttons. **The step columns are retired**: nothing sets `B2.mode = 'flow'` any more (an old
-    `&mode=flow` link opens the one view), and their page code (`b2fRender`, `b2fNode`, `b2fDraw`, `b2fStores`,
-    `b2fSelect`, `b2fShow`, `b2fReveal`, `b2fSync`, the `.b2f-n` / `.b2f-col` styles) is dead, kept only until Gianni
-    confirms the one view; delete it then, do not build on it. What Flow gave the Timeline (page: `b2tModel`,
-    `b2tMarks`, `b2tDraw`, `b2tSync`, `b2tDock`, `b2tShow`, `b2tSelect`, `b2tGo`; the model is still `BT2.flowView` over
-    every 2026 lot, `BT2.flowTrace`, `BT2.strainMerge`):
-    **a click traces**: a bubble, an On hand chip or a lot in a card's list that the model knows lights the item, what
-    it came from (teal) and where it went (navy; planned dashed purple, loose ends grey), dims the rest, and draws links
-    in `#b2t-svg` (an overlay over the timeline and the rail, clipped at the On hand column) with pounds only where the
-    data holds them for that pair (1 px per 6 lb, 1.5 to 16). Onward in time a link leaves a bubble's right end; within
-    the same days it drops from one band to the next. The same click again, Esc, Close or a click elsewhere clears it;
-    the end of a drag does not, and scrolling no longer closes a card. A week's bubble or a panel's figure opens its
-    card and clears the trail. **Every card docks on the right** on laptops (`#b2-pop`, the page makes room:
-    `body.b2f-open`; `B2.hold` keeps that room through a redraw, or the fit would loop); phones keep the bottom sheet.
-    A lot's harvest, trim and move in open the lot's summary (`b2fLotHTML`), a send, Jars, a run and a pickup the
-    Timeline's own cards, a rail line its lots (`b2fEndHTML`). **The rail** (`#b2t-rail`, right of the timeline, not on
-    phones, not signed out): "Left, no day known", 2026's pounds by bulk buyer, Distru deliveries, lab samples, written
-    off, not accounted for; a line lit shows its part ("48 of 379"). Never what is still ours: the On hand column has
-    that, and its chips light with the trail. **Under the sentence** (`#b2t-bar`, one line each, scrolling sideways so
-    the timeline keeps its height): Worth a look (hidden on windows under 780px tall, where the On hand column's amber
-    chips say it), Find's message, the strain's strip (the newest 8 lots, then "+N older", which shows only those).
-    **Find** sits in the top row, by lot or strain. **The dark look is the whole view's**, on by default
-    (`b2fDark()`, Light | Dark at the right of the top row); every `.b2-*` dark rule is scoped `body.b2f-dark`, and a
-    bubble's colour is its step's `--k` as a tint. The item traced is in the address (`&sel=<id>`); a strain is not.
-    **Open items throb** (Gianni: "if tests haven't come back yet or an order transfer hasn't been marked as received
-    in METRC it could have like a faint throbbing glow"): `.b2-wait`, a slow glow in the step's own colour, steady
-    under prefers-reduced-motion, on a COA still out (and a Test with no COA that someone still waits for), and on a
-    move in or a Nabis pickup that Metrc hasn't marked received (`went.open_by` on a lot, `[[day, 'distro' | 'nabis',
-    lb]]`, from the flow job on Gianni's Mac, live since 2026-11-17: each transfer its Metrc copy shows unreceived is
-    asked about again, and counts as open only on a check under 6 hours old). Never on a plan.
-    **The date header** numbers every day under its month, with the weekday's letter over each number (M T W Th F Sa
-    Su; Gianni, 2026-11-17), in the same 42px. **The guide** (`#b2-guide`, `b2GuideDraw`, `b2DaysOf`; Gianni: "sort of
-    vertical line that highlights when hover over a bubble"): hover or focus on a bubble (else the one traced) draws a
-    band down the timeline over its real day or days and rings those dates in the header; a bubble its words pushed
-    along its row still marks its real day. It never covers the On hand column.
-    **No summary sentence** (Gianni, 2026-11-17: "this stuff is just clutter please remove"): the line under the title
-    (`#b2-sentence`) says only what couldn't be read, and is not there otherwise. Do not bring the counts back; the
-    older bullets' "the sentence says ..." now mean that line. `BT2.atLabText` is no longer drawn.
-  - **Stages (its button and step columns were dropped 2026-11-18, Gianni: "Yes, drop Stages"; its model, rows, trail
-    and card live on in the Canvas, below; what this bullet says of five columns and a pinned last column is history)** (beta, view only; Gianni, 2026-11-17, after the one view: "there is still
-    something I don't love ... product moving between phases isn't very distinctive", mockups of a free canvas, then a
-    picture of a production-chain tool, "a bit more like this", then "Yes, build it"). Batch V2 has two views, the
-    buttons by the title: **Stages** (opens first) and **Timeline** (the one view above, unchanged; `&mode=tl`).
-    `B2.mode` is 'st' or 'tl'; the old step columns (`b2fRender` and friends) are still dead code to delete, not this.
-    Stages is every lot by step in five columns: Harvest (wet lb), Trim (flower lb), Test and COA (the result and its
-    day), **Packaged (a row for each strain and unit type**: 3.5g jars, pouches, 5-packs, 1g and 1.5g pre-rolls, under a
-    small heading per packing day; pouches ride their jars' row of the Batch Label Sheet; jars follow the test,
-    pre-rolls come straight from the trim), and Where it went (Nabis pickups by day, Distru deliveries, Packaged and
-    Loose flower still here, bulk buyers). One block per lot, newest first; "Last 90 days" or "All 2026" (`B2.fscope`,
-    `&show=all`). Model: `BT2.stageView(F, HB, { outs, today })` over `BT2.flowView`'s lots, and `BT2.stageTrace`
-    (pure); page: `b2sRender`, `b2sFit`, `b2sDraw`, `b2sSelect`, `b2sShow`, `b2sCardHTML`, `b2sGo`, classes `b2s-*`.
-    **A click lights what the item came from in gold and where it went in blue** (his picture's colours; here gold is
-    not a warning), fades the rest, and opens its card docked on the right; hover previews the trail; the same click,
-    Esc, Close or a click elsewhere clears it; the end of a drag does not. Links are thin curves, faint at rest. **The
-    board drags in any direction**; its five columns share the width (down to 85% of their size, then it scrolls
-    sideways) and its box ends at the window's bottom. **The last column stays in view** while the board scrolls up
-    and down, when it fits the window (`B2.sstick`); its links are redrawn as it moves. Planned pickups shown: today to
-    21 days on; other pickups only when something shown rode on them. **Where each packaged product went is the flow
-    job's `went.products`** on each lot (Gianni's Mac, hourly, since 2026-11-17): keyed by the batch's Metrc tag (the
-    Batch Label Sheet's METRC UID, the batch's own bulk package), then by unit type, `{ nabis: [[day, units]], distru,
-    left }`, counted from the packages made from that tag (a blend's units split equally among its parents). Units,
-    never dollars; store names never shown. The sheet's count and Metrc's can differ a little (the card says both).
-    Without `went.products` (signed out, or before the job's first run) the products are listed with no lines out.
-    Cards (`b2sCardHTML`): three figures, came from, went to, and buttons that open the Timeline's own cards (harvest,
-    trim, lab, Jars, pickup) in the same docked panel. Find (lot or strain) and Light | Dark work in both views; one
-    set of rules for both looks (the `.b2s` box's `--s-*` variables). The item picked is in the address
-    (`&sel=<id>`). No time axis here: days are words on the rows; the Timeline has the days.
-  - **Canvas: Batch V2's first view** (beta, view only; Gianni, 2026-11-18, of the Stages view: "I think you
+    signed out) the page works as before. Lots and the Metrc harvests (2026 on) are a third harvest source in
+    `BT2.build`: each joins the sheets' harvest of the same site and room within 2 days, else is a harvest of its own; a
+    voided (archived) or weightless Metrc harvest is no harvest; "A / B / C" is each strain. A lot with no trim in its
+    room dries to the one unclaimed trim of its site 3 to 30 days on that lists its strains (else whose plan named its
+    room), else Metrc's first packaging day is its trim ("first packaged", never "trimmed"). **"Left" means our six
+    licenses** (the four grows, the Filifera distro, Imperial's distro; Nabis is not counted). **Trim is by product name
+    only** ("Bulk Trim" / "Trim"; Sugar Leaves is flower); left is flower in flower-equivalent pounds (jar and 5-pack
+    3.5 g, 1g 1 g, pouch and pre-roll 1.5 g, vapes 0). Stock is traced by Metrc tag lineage, batch codes only as a
+    fallback, never both. Blends follow their parents, each weighted by what it held when the blend was made, else split
+    equally. A package Metrc archived without finishing was never made. A harvest name Metrc wrote another way still
+    makes its lot. A lot's first packaging day is its earliest packaging (never a lab sample's or a sale's day). The trim
+    card has "Where the pounds went" (`went`: sold bulk by buyer, Nabis, Distru, labs, written off, in transit, not read
+    yet, not accounted for, still at our licenses). Today's amounts only, never worked-out past ones; the job records
+    each day's numbers for a history view later.
+  - **Testing** (Gianni, 2026-11-15; `BT2.labGroups`): one send per lot (samples of one lot, or one site's pre-rolls,
+    sent within 2 days), placed by Metrc lineage (`pipeline_batch_harvests`, read with the Metrc harvests), else the
+    sheet row; a send more than 21 days after its lot's last day is a unit of its own. Days are the Batches track's
+    (`BAT.labDays`): TEST DATE, else the lab's Collected, else the manifest; COA RETURN DATE, else the COA e-mail. A COA
+    still out is expected on `BAT.coaOutlook`'s day (pickupCoa's rule), late past the 9-in-10 day, gone after 30 days;
+    "no COA" only while someone still waits; "not all" when the rest came back; a fail is amber, never red. A retest is a
+    send of its own; a COA RETURN DATE typed ahead is not a result; a sheet date before the harvest, or a TEST DATE over 60
+    days ahead, is left out and the card says to check the year. Vapes are not on Batch V2 (the Batches page's Vapes band
+    has them). Lab results load on open, every 10 minutes at most on the polls (`b2Labs`), and on Refresh; signed out,
+    only the sheet's dates. The lab card (`b2LabHTML`) has each batch's Test and COA facts (`BSTEP.card`, `b2StepHTML`).
+  - **Pack** (Gianni, 2026-11-16; `BT2.packGroups`): from the Batch Label Sheet's PCKG DATE and counted units (the
+    official actual), re-read back to 1/1/26 for Pack only (`b2PackRows`, only while the rows shown are the live read's).
+    Pounds = units x grams (jar and 5-pack 3.5, 1g 1, 1.5g and pouch 1.5), never the bulk weight. Failed rows are never
+    drawn (the Jars card counts them); a (UID, product) typed twice counts once. Placed as Testing places a tag
+    (`BT2.placeTag`). A PCKG DATE ahead, and jars the sheet plans for a strain only one lot holds unfinished, are planned;
+    when two lots hold it, nothing is drawn and both lots' cards say so. Words never say "packaged".
+  - **Sales by week** (Gianni, 2026-11-16) now live only in the week and channel cards (a pickup card's "What Nabis sold
+    to stores", the Distru and bulk cards): the flow job's weekly block in `pipeline_flow_meta.summary.sales` (no table;
+    only the payload's units and samples), read through `b2LoadFlow`'s meta poll (`sales_sig`), the body again only when
+    the sig moves; a block the page can't use is not read again until its sig moves (`B2.salesBad`) and the line under
+    the title says "Couldn't read the sales.". N and D are the sales app's Sales-by-Type numbers (samples in, vapes out);
+    Nabis lines dated today or later are scheduled; bulk is from Metrc by origin license, clipped at the Mac's Metrc copy
+    (weekday mornings). The sales app's numbers more than 26 hours old turn the cards' source line amber.
+    `pipeline_flow_save` drops a sales block whose keys name money. Never shown: store names, money, Nabis stock in
+    "left", or "transferred to Distru" (Distru is our distro's software).
+  - **The 25th distro** (Gianni, 2026-11-16; `BT2.hub`): the Filifera distro license in the 25th building; in 2026 it
+    packed every jar, 5-pack and pre-roll, pulled every lab sample, and shipped every Nabis pickup and Distru delivery.
+    "In" is only a move into the 25th distro (Metrc's move day, flower of 1 lb or more, a move between our licenses, never
+    a sale; only flower moves set its days); Imperial's distro is not counted, and trim on a move that doesn't say which
+    distro never counts in an In. To Nabis is one per pickup (Metrc, a transfer into Nabis's warehouse, days in a row
+    joined; the sheet's planned pickups after Metrc's copy are planned, with pickupCoa's lab risk; days after today joined
+    apart from today's). To Nabis and Nabis sold are never added together. Pre-roll units of grows that start, roll or
+    send within 2 days of each other are one run. Data: `went.to_distro_by`, `went.nabis_by`, the sales block and the
+    sheet's drops.
+  - **Find** (Gianni, 2026-11-17) sits in the top row and is typable (`EDIT.pickFrom`), by lot or by strain (`F.strains`
+    from `BT2.flowView`: a lot's Metrc strains, its harvest's and its trim plan's, else its trim tab's; "A / B" is each;
+    "Smoothie #6" is under its own name and under Smoothie). A strain picked shows a strip under the title (`b2fStrainSync`,
+    `B2.fstrain`): a button per lot that holds it, with that strain's flower still ours, "+N lots in All 2026", and
+    Clear; the Canvas's other lots dim. A strain in one lot goes to it at once. Text used by leaving the box waits for the
+    press under way (`B2.fdown`). The strain is never in the address. **One name per strain in Find** (`BT2.strainMerge`,
+    Find only: `PIPE.strainKey` and every other page keep the names as written): spaces ("Flash Bang", "Flashbang"), a cut
+    without its # when the name is known alone ("Black Light 27"), crosses written short (`FLOW_ABBR`: ZB Zangbanger, DM
+    Dark Matter, LL Limelight, NY New Yorker, BM Black Magic, SM Smoothie, Zang or Zan Zangria), PHENOS, and `FLOW_SAME`.
+    Not merged: W, BB, Wiz OG, a cross written the other way round. The Week board's removed strain search stays removed.
+  - **The dark look** (Gianni, 2026-11-17: "Add a dark look"): Light | Dark at the right of the top row, dark by default,
+    kept in the browser (`pipeline.flow.look`), never in the address. `b2fDark()` makes `render()` leave `data-light` off
+    and set `body.b2f-dark`; every dark rule is scoped `body.b2f-dark ...`. Same meanings in both looks: purple for what is
+    planned, amber for a warning, never red. Text at 4.5:1 or better; check a new card or row in both looks.
+  - **Cards, the address, the line under the title.** Every card docks on the right on laptops (`#b2-pop`; the page
+    makes room, `body.b2f-open`; `B2.hold` keeps that room through a redraw), a bottom sheet on phones; a click opens only
+    the item clicked. A card's links (`data-b2`) open the harvest, trim, move ('i:'), lab, Jars, pickup ('n:'), run and
+    week ('w:', 'k:') cards through `b2Open`. The item picked is in the address (`&sel=<id>`), and All 2026 (`&show=all`);
+    old `&mode=` links open the Canvas. **No summary sentence** (Gianni, 2026-11-17: "this stuff is just clutter please
+    remove"): the line under the title (`#b2-sentence`) says only what couldn't be read. **Open items throb** (Gianni: "a
+    faint throbbing glow"): a COA still out, and a move in or a Nabis pickup Metrc hasn't marked received (`went.open_by`
+    on a lot, `[[day, 'distro' | 'nabis', lb]]`, from the flow job, live since 2026-11-17; open only on a check under 6
+    hours old). Never on a plan.
+  - **The Stages model** (Gianni, 2026-11-17: a picture of a production-chain tool, "a bit more like this"):
+    `BT2.stageView(F, HB, { outs, today, waitIn, waitPick })` over `BT2.flowView`'s lots and `BT2.stageTrace` give the
+    Canvas its rows: a lot's harvest, trim, move in, test, and **a row for each packaged product** (a strain and a unit
+    type: 3.5g jars, pouches, 5-packs, 1g and 1.5g pre-rolls; pouches ride their jars' row; jars follow the test,
+    pre-rolls come straight from the trim), and where it went (Nabis pickups by day, Distru deliveries, Packaged and Loose
+    flower still here, bulk buyers). **A click lights what the item came from in gold and where it went in blue** (gold
+    is not a warning here). **Where each packaged product went is the flow job's `went.products`** (Gianni's Mac, hourly,
+    since 2026-11-17): keyed by the batch's Metrc tag (the Batch Label Sheet's METRC UID), then by unit type, `{ nabis:
+    [[day, units]], distru, left }`, counted from the packages made from that tag (a blend's units split equally). Units,
+    never dollars; store names never shown. The card (`b2sCardHTML`) has three figures, came from, went to, and the other
+    cards one press away. Planned pickups shown: today to 21 days on. Default "Last 90 days", or "All 2026" (`B2.fscope`).
+  - **Canvas: Batch V2's one view** (beta, view only; Gianni, 2026-11-18, of the Stages view: "I think you
     misunderstood. I wanted view like this but combined with the timeline view in a sort of free floating space where the
-    user can scroll in any direction", then "Yes, build it" to the mockup). **The Canvas is Batch V2's one view: no
-    view buttons** (`B2.mode` stays 'cv'). The Stages button and its step columns were dropped the same day (Gianni:
-    "Yes, drop Stages"), then the Timeline's button ("drop the Timeline too"); old `&mode=tl`, `&mode=st` and
-    `&mode=flow` links open the Canvas. Do not bring either back. The Timeline's drawing code (what renderBatches2
-    does after its Canvas branch: the lanes, the On hand column, the hub rows, the rail, `b2t*`) and the old step
-    columns (`b2fRender` and friends) no longer run: dead code, kept only because deleting it and its checks is a
-    large cleanup Gianni has not asked for; do not build on it. Still live and shared with the Canvas: the model
-    (`BT2.build`, `hub`, `flowView`, `stageView`), the reads (`b2LoadMetrc`, `b2LoadFlow`), Find, Light | Dark and
-    every card (`b2Open`: harvest, trim, move, lab, Jars, pickup). The older Batch V2 bullets above describe the
-    Timeline and are history except for those parts. The Canvas is the
+    user can scroll in any direction", then "Yes, build it" to the mockup). No view buttons (`B2.mode` stays 'cv'); the
+    Stages and Timeline buttons were dropped the same day and their code deleted ("Yes, delete it"); old `&mode=tl`,
+    `&mode=st` and `&mode=flow` links open the Canvas. The Canvas is the
     Stages rows, each on its own day (30px a day): a lot's harvest, trim, Test and COA along one row (a test is two rows,
     the day the sample went out and the day its result came or is expected, when both are known: `BT2.canvasLab`), a
     stack of product rows (a strain and a unit type) under a heading at each packing day. **Two sections, not a strip per
@@ -634,8 +445,8 @@ launch. The check fails if one of the three pieces is missing.
     docked column are drawn again. One set of rules for both looks (the `.b2s` box's `--s-*` variables; no
     `body.b2f-dark .b2c-` rules). Phones: the box scrolls natively, the column sits under it and its links are not drawn.
     A change of the lots shown opens on today again (or on the item picked). Not on the Canvas, and so not shown anywhere
-    in Batch V2 since the Timeline went: sales to stores by week and the On hand column (what is still ours is the
-    docked column's Still here rows and each lot's card).
+    in Batch V2 since the Timeline went: sales to stores by week as rows (the week cards still have them) and the On hand
+    column (what is still ours is the docked column's Still here rows and each lot's card).
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
