@@ -487,12 +487,15 @@ launch. The check fails if one of the three pieces is missing.
   (25th: shared at 3 of 4, like its pay outside Gusto). Each payday counts evenly over the days it paid for (Gusto's pay
   period; the app's hourly crew and salaried people the two weeks ending 5 days before payday), never the check date.
   This also moved 15th St's trimmers' Gusto pay, booked in Imperial's general Wages since February 2026, out of grow crew
-  pay into trim. Trim: the trimmers move between the grows and the app's trim bills reuse old names, so each payday's
-  trim pay (every company's Trim department in Gusto plus the cash book's trim pay outside Gusto) is shared by every trim,
-  at all grows, done in the days it paid for, by pounds (a payday with no trim in its days looks a week either side,
-  twice). Trim days after the newest payday whose trim bills are in the payroll app count at the pay a pound of the trims
-  done in the six weeks before ("part estimated"), and Gusto trim pay for those days waits for that payday. Trim pay
-  before the 2026 trim sheets begin (2025) has no trim to land on and is reported, not charged. **The click-open boxes**
+  pay into trim. Trim (Gianni, same day: "they get paid about $100/lb not including taxes"): the piece rate, $100 a pound
+  of bigs and littles (the app's August trim bills, when every grow had one, came to $96 to $98 a pound net), plus the
+  employer's taxes on the trimmers' Gusto checks, each Gusto payroll's shared by every trim, at all grows, done in the days
+  it paid for, by pounds (a payroll with no trim in its days looks a week either side, twice, never before the trim sheets
+  begin); taxes for trim days after the newest Gusto trim payroll take the six weeks before's taxes a pound ("taxes
+  estimated"). The payroll app's trim bills are not the cost: they reuse old names ("Filifera Trim 11/6"), so a bill can't
+  say which grow it paid for, and since September 23rd St's trims have no trim bill in the app at all. A first try that
+  pooled the bills by payday came to $67 to $88 a pound from September and $127 to $172 before August (the workbooks'
+  trim figures hold Filifera crew rows), so do not go back to it. **The click-open boxes**
   (Gianni, same day: "all of these more-info bubbles are very messy"): each cost line opens one box, its amount, one
   sentence and one plain table: pay by payday (paid, the days, through Gusto, outside Gusto, this harvest; managers: all
   three grows, this grow's share), trim by pay period (trim pay of all grows, pounds trimmed then, this trim), bills
