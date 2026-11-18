@@ -621,8 +621,8 @@ launch. The check fails if one of the three pieces is missing.
   each financials update) are Gianni's: applied from his computer, owned by postgres, never by the deploy job. Never move
   the viewer list or the data into `pipeline_*` tables, never put a number in the page source, and never cache it in the
   browser. The page only draws the one row (`cogs_snapshot`); the method lives in cogs-core.mjs: each grow's own books
-  (Slane = 23rd, Imperial = 15th, Filifera = 25th) plus pay not run through Gusto and Imperial's rent and utilities paid
-  outside QuickBooks; left out: royalties, Scott's pay, interest, taxes, the books' tax depreciation, bought flower,
+  (Slane = 23rd, Imperial = 15th, Filifera = 25th) plus Imperial's rent and utilities paid outside QuickBooks, with pay
+  read from the payrolls themselves (below); left out: royalties, Scott's pay, interest, taxes, the books' tax depreciation, bought flower,
   packaging, testing, Nabis fees and distro pay. Every day a grow's costs are shared among its flower rooms by lights (his choice); a harvest
   carries its room's share from the day after the room's previous Metrc harvest to its own. 25th: power, water,
   cultivation pay and growing supplies count in full, shared costs at 3 rooms of 4, the distro counted as one more room
@@ -630,12 +630,11 @@ launch. The check fails if one of the three pieces is missing.
   Licenses and permits (Gianni, same day: "annual licensing fees like dcr and dcc renewal should be divided by 12 and split
   evenly over each harvest"): each payment counts a twelfth a month for the 12 months from its month (one in the books'
   first year also stands for the year before), shared equally by the rooms, not by lights. The three cultivation managers
-  work for all three grows (Gianni: their pay is split "between each company by number of lights"): all of it is taken
-  off where it was booked and shared among the three grows by lights each month; never name anyone or anyone's pay in
-  this repo or on the page. Equipment and building work on the books (his choice, "Spread over useful life"): every
+  work for all three grows (Gianni: their pay is split "between each company by number of lights"): all of it is shared
+  among the three grows by lights, day by day; never name anyone or anyone's pay in this repo or on the page. Equipment and building work on the books (his choice, "Spread over useful life"): every
   addition to a grow's fixed-asset accounts counts a month at a time, equipment over 5 years, building work over 10 or
   to the end of the lease (23rd St: June 2028); packaging tools stay with the distro. Trim pay is its own column (his
-  choice), charged to the trims by pounds. Per pound = (grow + trim) / bigs + littles on the trim sheets. Olympic shows
+  choice), charged to the trims by pounds (by payday, below). Per pound = (grow + trim) / bigs + littles on the trim sheets. Olympic shows
   what Filifera paid (bought, not grown). "High" (over 1.2 times the grow's middle finished harvest per pound) and "Low
   yield" (under 0.8 times its pounds per light) are amber tags. Each cost line of a harvest opens the accounts behind it
   and how the harvest's part was worked out (Gianni: "I'd like to be able to click on these rows"). Corrections found
@@ -643,6 +642,27 @@ launch. The check fails if one of the three pieces is missing.
   2026 (harvest shifts to that grow; packaging, Portal's void pouches and Olympic's harvests to no grow); 25th's
   Intercompany Labor Income isn't netted (that crew is paid in Distro Wages, left out); brand ambassadors' pay booked in
   Filifera's undepartmented Wages is selling, left out; distro staff paid through a grow company stay with the distro.
+  **Pay by payday** (Gianni, 2026-11-18: "It might be better to pull the data from Gusto and the payroll app?", "the
+  non-gusto trim pay from the payroll app should be down here"): QuickBooks' wage and payroll-tax accounts are Gusto's
+  journal entries, so from each company's first Gusto payroll they are left out and pay is read from every processed Gusto
+  payroll (`lib/cogs-pay.mjs`, private cache `data/cogs/pay-gusto.json`: per employee id only gross, employer taxes,
+  benefits, hours and Gusto department) and from the payroll app's paydays (the old workbooks before it) through the cash
+  book. Gusto departments make the groups (they tie to QuickBooks to the dollar): Cultivation / Cultivation Hourly / Salary
+  are crew (the three managers apart), Trim are trimmers, Owner, Distro, Sales and BA are left out, no department is crew
+  (25th: shared at 3 of 4, like its pay outside Gusto). Each payday counts evenly over the days it paid for (Gusto's pay
+  period; the app's hourly crew and salaried people the two weeks ending 5 days before payday), never the check date.
+  This also moved 15th St's trimmers' Gusto pay, booked in Imperial's general Wages since February 2026, out of grow crew
+  pay into trim. Trim: the trimmers move between the grows and the app's trim bills reuse old names, so each payday's
+  trim pay (every company's Trim department in Gusto plus the cash book's trim pay outside Gusto) is shared by every trim,
+  at all grows, done in the days it paid for, by pounds (a payday with no trim in its days looks a week either side,
+  twice). Trim days after the newest payday whose trim bills are in the payroll app count at the pay a pound of the trims
+  done in the six weeks before ("part estimated"), and Gusto trim pay for those days waits for that payday. Trim pay
+  before the 2026 trim sheets begin (2025) has no trim to land on and is reported, not charged. **The click-open boxes**
+  (Gianni, same day: "all of these more-info bubbles are very messy"): each cost line opens one box, its amount, one
+  sentence and one plain table: pay by payday (paid, the days, through Gusto, outside Gusto, this harvest; managers: all
+  three grows, this grow's share), trim by pay period (trim pay of all grows, pounds trimmed then, this trim), bills
+  booked in the month by account and month of the cycle, spread-evenly costs by the 12 months' total (bills month by month
+  on a click), licenses by payment, equipment by purchase. People counts and hours, never names.
   **Packaged tab** (his answers 2026-11-17): each Batch Label Sheet batch of jars (pouches inside), 5-packs and 1g from
   August 2026 carries flower at its source harvest's flower-page cost per pound by Metrc lineage (littles cost the same
   as bigs: "Same $/lb as bigs"; Olympic at the invoice price), the standard BOM at the lot price in use (private
