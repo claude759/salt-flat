@@ -558,7 +558,7 @@ launch. The check fails if one of the three pieces is missing.
     **No summary sentence** (Gianni, 2026-11-17: "this stuff is just clutter please remove"): the line under the title
     (`#b2-sentence`) says only what couldn't be read, and is not there otherwise. Do not bring the counts back; the
     older bullets' "the sentence says ..." now mean that line. `BT2.atLabText` is no longer drawn.
-  - **Stages: Batch V2's first view** (beta, view only; Gianni, 2026-11-17, after the one view: "there is still
+  - **Stages: Batch V2's second view since the Canvas (below)** (beta, view only; Gianni, 2026-11-17, after the one view: "there is still
     something I don't love ... product moving between phases isn't very distinctive", mockups of a free canvas, then a
     picture of a production-chain tool, "a bit more like this", then "Yes, build it"). Batch V2 has two views, the
     buttons by the title: **Stages** (opens first) and **Timeline** (the one view above, unchanged; `&mode=tl`).
@@ -586,6 +586,30 @@ launch. The check fails if one of the three pieces is missing.
     trim, lab, Jars, pickup) in the same docked panel. Find (lot or strain) and Light | Dark work in both views; one
     set of rules for both looks (the `.b2s` box's `--s-*` variables). The item picked is in the address
     (`&sel=<id>`). No time axis here: days are words on the rows; the Timeline has the days.
+  - **Canvas: Batch V2's first view** (beta, view only; Gianni, 2026-11-18, of the Stages view: "I think you
+    misunderstood. I wanted view like this but combined with the timeline view in a sort of free floating space where the
+    user can scroll in any direction", then "Yes, build it" to the mockup). Three buttons by the title: **Canvas** (opens
+    first, no mode in the address), **Stages** (`&mode=st`) and **Timeline** (`&mode=tl`); `B2.mode` is 'cv', 'st' or
+    'tl'. Gianni has not yet said whether Stages and the Timeline stay: do not remove them unasked. The Canvas is the
+    Stages rows, each on its own day (30px a day): a lot's harvest, trim, Test and COA along one row (a test is two rows,
+    the day the sample went out and the day its result came or is expected, when both are known: `BT2.canvasLab`), a
+    stack of product rows (a strain and a unit type) under a heading at each packing day, each grow's lots in its own
+    strip (23rd, 15th, Olympic, 25th), packed as high as they fit. A row sits on its real day and moves right only where
+    the one before it is still in the way; hover (or the pick) draws a band over its real day or days and rings those
+    dates. **Three things stay put while it is dragged**: the dates on top (month, weekday letter, day; a month's name
+    stays in view while any of its days is), the Nabis pickups on their days in the 25th distro's row at the window's
+    bottom, and what has no day (Distru deliveries, Packaged and Loose flower still here, bulk buyers) in a column docked
+    at the right, with a little map of the whole canvas under it (a press jumps there). It drags in any direction; Today
+    puts today's line three fifths across. Model: `BT2.stageView` (the Stages model, unchanged), laid out by the pure
+    `BT2.canvasLay(V, { w, today, top })` from the rows' measured widths. Page: `b2cBody`, `b2cFit`, `b2cLinks`,
+    `b2cGuide`, `b2cMini`, `b2cToday`, `b2cSee`, `b2cWords`, classes `b2c-*`; it is drawn in the Stages box
+    (`#b2-stage`, `b2sOn()` is true for both), so the click, the gold and blue trail, the card (`b2sCardHTML`), Find,
+    the strain's dimming, Light | Dark and `&sel=` are the Stages view's own code. Links are thin curves, faint at rest;
+    those into the docked column are drawn only when lit; on a scroll only the links into the pickups' row and the
+    docked column are drawn again. One set of rules for both looks (the `.b2s` box's `--s-*` variables; no
+    `body.b2f-dark .b2c-` rules). Phones: the box scrolls natively, the column sits under it and its links are not drawn.
+    A change of the lots shown opens on today again (or on the item picked). Not on the Canvas yet: sales to stores by
+    week, the On hand column, moves into the distro (the Timeline has them).
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until

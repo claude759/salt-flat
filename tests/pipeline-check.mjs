@@ -3218,8 +3218,8 @@ if (realPipe) {
       assert.ok(fsrc.length > 2000 && !/sb\.from\(|\.rpc\(|setInterval\(/.test(fsrc), 'Flow reads and polls nothing new');
       assert.ok(/B2\.met = new Map\([^\n]*\n[^\n]*\n\s*b2ModeBar\(\);\n\s*if \(b2fOn\(\)\) \{ b2fRender\(M, HB\); return; \}/.test(rbH), 'Flow branches right after the sentence; the Timeline below it is untouched');
       assert.ok(html.includes('<div class="b2f" id="b2-flow"></div>') && html.includes('id="b2-mode"') && !/data-view="flow"/.test(html), 'Flow is a mode of Batch V2, not a page');
-      assert.ok(/B2\.fwant = p\.get\('sel'\) \|\| '';/.test(html) && !/B2\.mode = 'flow'/.test(html) && html.includes('${weekHashTail()}${b2fTail()}') && /location\.hash\.replace\(\/&\(mode=flow\|mode=tl\|show=all\|sel=\[\^&\]\*\)\/g, ''\) \+ b2fTail\(\)/.test(fnH('b2fHash')) && /if \(p\.get\('mode'\) === 'tl'\) B2\.mode = 'tl';/.test(html) && /if \(p\.get\('show'\) === 'all'\) B2\.fscope = 'all';/.test(html),
-        'the view (Stages, else &mode=tl), All 2026 and the item traced live in the address (an old &mode=flow link opens Stages: nothing sets the old step columns any more); a click changes only that part of it');
+      assert.ok(/B2\.fwant = p\.get\('sel'\) \|\| '';/.test(html) && !/B2\.mode = 'flow'/.test(html) && html.includes('${weekHashTail()}${b2fTail()}') && /location\.hash\.replace\(\/&\(mode=flow\|mode=tl\|mode=st\|show=all\|sel=\[\^&\]\*\)\/g, ''\) \+ b2fTail\(\)/.test(fnH('b2fHash')) && /else if \(p\.get\('mode'\) === 'st'\) B2\.mode = 'st';/.test(html) && /B2\.mode === 'st' \? '&mode=st' : ''/.test(html) && /if \(p\.get\('mode'\) === 'tl'\) B2\.mode = 'tl';/.test(html) && /if \(p\.get\('show'\) === 'all'\) B2\.fscope = 'all';/.test(html),
+        'the view (the Canvas, else &mode=st or &mode=tl), All 2026 and the item traced live in the address (an old &mode=flow link opens the Canvas: nothing sets the old step columns any more); a click changes only that part of it');
       assert.ok(/BT2\.flowView\(M, HB, \{ today, scope: B2\.fscope, wet \}\)/.test(fnH('b2fRender')) && /BT2\.flowTrace\(F, B2\.fsel\)/.test(fnH('b2fDraw')), 'the page draws the model');
       assert.ok(/EDIT\.pickFrom\(/.test(fnH('b2fFind')) && /<input type="text" id="b2f-find" list="b2f-lots"/.test(fnH('b2fRender')) && /so nothing changed/.test(fnH('b2fFind')), 'Find a lot is typable and refuses anything not in the list');
       // Find also takes a strain (Gianni, 2026-11-17: "Add the strain search to Find a lot"): each strain with the lots shown
@@ -3266,7 +3266,7 @@ if (realPipe) {
         const rb = fnH('renderBatches2'), fI = fnH('b2Init'), fM = fnH('b2tModel'), fD = fnH('b2tDraw'), fK = fnH('b2tMarks'), fS2 = fnH('b2tSelect'), fW = fnH('b2tShow');
         assert.ok(html.includes('<div class="b2t-bar" id="b2t-bar"></div>') && html.includes('<div class="b2t-rail" id="b2t-rail" hidden></div>') && html.includes('<svg class="b2t-links" id="b2t-svg" aria-hidden="true"></svg>') &&
           /<label class="b2f-findl" id="b2t-findl"><span>Find<\/span><input type="text" id="b2f-find" list="b2f-lots"/.test(html), 'the one view: Find in the top row, a bar under the sentence, the rail and the links beside the timeline');
-        assert.ok(/\[\['st', 'Stages'\], \['tl', 'Timeline'\]\]/.test(fnH('b2ModeBar')) && /sec\.classList\.toggle\('b2s-on', b2sOn\(\)\);/.test(fnH('b2ModeBar')) && /B2\.mode = 'st';/.test(html), 'two views, Stages first: the Stages | Timeline buttons');
+        assert.ok(/\[\['cv', 'Canvas'\], \['st', 'Stages'\], \['tl', 'Timeline'\]\]/.test(fnH('b2ModeBar')) && /sec\.classList\.toggle\('b2s-on', b2sOn\(\)\);/.test(fnH('b2ModeBar')) && /B2\.mode = 'cv';/.test(html), 'three views, the Canvas first: the Canvas | Stages | Timeline buttons');
         // Stages (Gianni, 2026-11-17: a picture of a production-chain tool, "a bit more like this", then "Yes, build it"): every
         // lot by step, a row per packaged product (strain and unit type), lines out of each product to where it went
         {
@@ -3292,6 +3292,30 @@ if (realPipe) {
           assert.ok(/data-b2s="\$\{esc\(n\.id\)\}"/.test(fR) && /b2sSelect\(n\.dataset\.b2s === B2\.ssel \? '' : n\.dataset\.b2s/.test(fnH('b2sInit')) && /Date\.now\(\) - \(B2\.dragged \|\| 0\) < 80/.test(fnH('b2sInit')), 'a click traces, the same click clears, the end of a drag is neither');
           assert.ok(/class="b2-lnk" data-b2="/.test(fC) && /I\.rows\.map\(b2FlowHTML\)/.test(fC) && /Metrc's packages account for/.test(fC), "the card: figures, came from, went to, and the Timeline's own cards one press away");
           assert.ok(/body\.b2f-dark \.b2s\{--s-bg:/.test(hcss) && /\.b2s-cv\.tr \.b2s-lk path\.up\{stroke:var\(--s-up\)/.test(hcss) && /\.b2s-on \.b2-nav,\.b2s-on #b2t-wrap\{display:none\}/.test(hcss), 'one set of rules for both looks; came from in gold, went to in blue; the Timeline hides while Stages shows');
+          // Canvas (Gianni, 2026-11-18, of the Stages view: "I wanted view like this but combined with the timeline view in a sort
+          // of free floating space where the user can scroll in any direction", then "Yes, build it"): the Stages rows, each on its day
+          {
+            const w = new Map(V.nodes.map(n => [n.id, n.kind === 'l' ? [50, 110] : 120])), C = BT2.canvasLay(V, { w, today: T, top: 46 }), X = d => BT2.gap(C.d0, d) * 30, at = id => C.pos.get(id);
+            assert.deepEqual([C.d0, C.px, C.W === C.days * 30, C.sites.map(s => s.site)], ['2026-04-13', 30, true, ['23RD', '15TH', 'OLYMPIC', '25TH']], 'the days start on a Monday before the first lot, 30px each; the sites one under the other, the 25th last');
+            assert.deepEqual([at(`s:h|${K}`).x, at(`s:t|${K}`).x, at(`s:h|${K}`).y === at(`s:t|${K}`).y], [X('2026-10-29'), X('2026-11-08'), true], "a lot's harvest and trim sit on their days, on one row");
+            assert.deepEqual([BT2.canvasLab({ sent: '2026-11-12', at: '2026-11-18' }), BT2.canvasLab({ sent: '2026-11-12' }), BT2.canvasLab({ back: '2026-11-18' })], [['2026-11-12', '2026-11-18'], ['2026-11-12'], ['2026-11-18']], 'a test is two rows (sent, result) when both days are known');
+            const lab = at(`s:l|${K}`);
+            assert.deepEqual([lab.d, lab.x, lab.d2, lab.x2], ['2026-11-12', at(`s:t|${K}`).x + 120 + 16, '2026-11-18', X('2026-11-18')], 'the Test row gives way to the trim before it and keeps its real day; the COA row sits on the expected day');
+            assert.deepEqual([at(J).d, at(J).x, at(Po).x, at(Po).y - at(J).y, at(J).w], ['2026-11-14', lab.x2 + 110 + 24, at(J).x, 31, 232], 'the products stack under their packing day, after the COA');
+            assert.deepEqual(C.heads, [{ id: G, lot: K, x: at(J).x, y: at(J).y - 17 }], 'a heading over each stack');
+            assert.deepEqual(C.picks.map(p => [p.id, p.x]), [['n:2026-10-27', X('2026-10-27')], ['n:2026-11-13', X('2026-11-13')], ['n:plan|2026-11-16', X('2026-11-13') + 132], ['n:plan|2026-11-20', X('2026-11-13') + 264], ['n:plan|2026-12-04', X('2026-12-04')]], 'the pickups in one row, each on its day, never one over another');
+            const lotY = k => C.lots.find(l => l.key === k).y;
+            assert.ok(lotY('h:23RD|1|2026-09-22') === lotY(K) && lotY('h:23RD|3|2026-10-07') > lotY(K) && C.lots.every(a => C.lots.every(b => a === b || a.site !== b.site || a.y !== b.y || a.x1 + 34 <= b.x0 || b.x1 + 34 <= a.x0)), 'in a site each lot sits as high as it fits; two on one row never touch');
+            assert.ok(!at('s:h|t:15TH|B|2026-10-20') && at('s:t|t:15TH|B|2026-10-20').x === X('2026-10-20'), 'a lot with no harvest read starts at its trim');
+            assert.equal(BT2.canvasLay({ lots: [], picks: [] }, {}).pos.size, 0, 'nothing to show: an empty canvas');
+            const fB = fnH('b2cBody'), fL = fnH('b2cLinks'), fG = fnH('b2cGuide');
+            assert.ok(/const b2sOn = \(\) => B2\.mode === 'st' \|\| B2\.mode === 'cv';/.test(html) && /if \(b2cOn\(\)\) \{ b2cBody\(V, outs, keep, jump\); return; \}/.test(fR) && /BT2\.canvasLay\(V, \{ w, today, top: B2C_HEAD \}\)/.test(fB), "the Canvas is drawn in the Stages box from the Stages model, laid out by canvasLay with the rows' measured widths");
+            assert.ok(/class="b2c-foot"/.test(fB) && /class="b2c-end"/.test(fB) && /class="b2c-head"/.test(fB) && /\.b2c-head\{position:sticky;top:0;/.test(hcss) && /\.b2c-foot\{position:sticky;bottom:0;/.test(hcss), "the dates stay on top, the pickups' row at the bottom, what has no day in a docked column");
+            assert.ok(/if \(cls === 'e'\) return;/.test(fL) && /if \(moved && !lv\) return;/.test(fL) && /b2cLinks\(true\); b2cMini\(\);/.test(fB), 'links into the docked column are drawn only when lit; on a scroll only the links into the rows that ride the window are drawn again');
+            assert.ok(/el\.dataset\.part === '1' \? p\.d2 : p\.d/.test(fG) && /if \(b2cOn\(\)\) b2cGuide\(n\);/.test(fnH('b2sInit')), "hover marks an item's real day or days");
+            assert.ok(/data-b2f="ctoday"/.test(fB) && /a === 'ctoday'/.test(fnH('b2fAct')) && !/<select/.test(fB), 'a Today button; no plain select');
+            assert.ok(/\.b2c-wrap\{/.test(hcss) && !/b2f-dark \.b2c-/.test(hcss), "both looks share the Canvas's rules through the .b2s box's variables");
+          }
         }
         assert.ok(/if \(b2sOn\(\)\) \{\n    b2sRender\(M, HB\);/.test(rb) && rb.indexOf('if (b2sOn()) {') < rb.indexOf('b2tModel(M, HB)') && /BT2\.flowView\(M, HB, \{ today, scope: 'all', wet \}\)/.test(fM) && rb.indexOf('b2tModel(M, HB)') < rb.indexOf('const tw = b2Measure(sc)'),
           "Flow's model over every 2026 lot, before the timeline is fitted (its bar has a height)");
