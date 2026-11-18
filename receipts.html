@@ -86,6 +86,12 @@
   .vbody iframe{display:block;width:100%;height:100%;min-height:70vh;border:0;border-radius:6px;background:#fff}
   body.viewing{overflow:hidden}
   .claude{font-size:14px;margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--bg);border-left:3px solid var(--accent);overflow-wrap:anywhere}
+  /* the box for a send-back reason or a book-without note (an in-page dialog, never a browser popup) */
+  dialog.ask{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--text);padding:18px;width:min(520px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto}
+  dialog.ask::backdrop{background:rgba(0,0,0,.5)}
+  dialog.ask h3{margin:0 0 6px;font-size:18px;font-weight:600}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .chips button{min-height:34px;padding:0 11px;font-size:13px;font-weight:500;border-radius:999px}
   /* the overview's status page (Gianni only) */
   .sum{font-size:15px;color:var(--muted);margin:2px 0 14px}
   .sum b{color:var(--text);font-weight:600}
@@ -742,12 +748,27 @@ function closeFile(fromBack){
 }
 window.addEventListener('popstate',()=>{if(viewer)closeFile(true);});
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&viewer){e.preventDefault();closeFile();}});
+// A box on the page for a few words (Gianni 11/17: "when i click send it back there should be an option for me to explain why").
+// A native modal dialog: Esc or Cancel resolves null, the page behind can't be reached, chips fill the text to edit.
+function askText({title,body,label,required=false,chips=[],okText}){
+  return new Promise(res=>{
+    const d=document.createElement('dialog');d.className='ask';
+    d.innerHTML=`<form><h3>${esc(title)}</h3>${body?`<p class="note">${esc(body)}</p>`:''}<label for="ask-t">${esc(label)}</label>${chips.length?`<div class="chips">${chips.map((c,i)=>`<button type="button" data-chip="${i}">${esc(c[0])}</button>`).join('')}</div>`:''}<textarea id="ask-t" maxlength="300"></textarea><p class="flag" data-err hidden>Say why first, so they know what to send.</p><div class="row"><button type="button" data-x>Cancel</button><button type="submit" class="grow primary">${esc(okText)}</button></div></form>`;
+    const t=d.querySelector('textarea');let over=false;
+    const done=v=>{if(over)return;over=true;try{d.close();}catch(e){}d.remove();res(v);};
+    const err=d.querySelector('[data-err]');t.addEventListener('input',()=>{err.hidden=true;});
+    d.addEventListener('click',e=>{const c=e.target.closest('[data-chip]');if(c){t.value=chips[+c.dataset.chip][1];err.hidden=true;t.focus();return;}if(e.target.closest('[data-x]'))done(null);});
+    d.addEventListener('cancel',e=>{e.preventDefault();done(null);});
+    d.querySelector('form').addEventListener('submit',e=>{e.preventDefault();const v=t.value.replace(/\s+/g,' ').trim();if(required&&!v){d.querySelector('[data-err]').hidden=false;t.focus();return;}done(v);});
+    document.body.appendChild(d);d.showModal();t.focus();
+  });
+}
 // Gianni decides no receipt is coming. The line leaves the person's list now; the Mac marks the bank row "no receipt needed".
 async function bookNoReceipt(b){
   const l=all.lines.find(x=>x.id===b.dataset.nr);if(!l)return;
   const first=l.assignee_email===GIANNI?'':all.people.find(p=>p.email===l.assignee_email)?.first_name||'';
-  if(!confirm(`Book ${l.merchant} ${money(l.amount_cents)} without a receipt? ${first?`It stops asking ${first} and marks`:'It comes off the list and marks'} the bank row "no receipt needed" within 15 minutes.`))return;
-  const note=prompt('Short note for the record (optional)','');if(note===null)return;
+  const note=await askText({title:`Book ${l.merchant} ${money(l.amount_cents)} without a receipt?`,body:`${first?`It stops asking ${first} and marks`:'It comes off the list and marks'} the bank row "no receipt needed" within 15 minutes.`,label:'Note for the record (optional)',okText:'Book it without a receipt'});
+  if(note===null)return;
   b.disabled=true;
   const {error}=await sb.rpc('rr_admin_no_receipt',{p_request:l.id,p_note:note.trim()||null});
   if(error){b.disabled=false;toast(/schema cache|does not exist/i.test(error.message||'')?"Book without receipt isn't switched on yet. It needs the 13d database update.":plain(error));}
@@ -766,10 +787,20 @@ app.addEventListener('click',async e=>{
   const nr=e.target.closest('button[data-nr]');if(nr){bookNoReceipt(nr);return;}
   const ok=e.target.closest('[data-ok]'), no=e.target.closest('[data-no]');
   if(!ok&&!no)return;
-  const reason=no?(prompt('What should they send instead? They will see this on their page and get it by email.')||'').trim():null;
-  if(no&&!reason)return;
   // one charge's files together: each one approved, or each sent back with the same reason (the last one reopens the charge)
-  const btn=ok||no, ids=btn.dataset[ok?'ok':'no'].split(',').filter(Boolean);btn.disabled=true;
+  const btn=ok||no, ids=btn.dataset[ok?'ok':'no'].split(',').filter(Boolean);
+  let reason=null;
+  if(no){
+    const l=ix.line.get(all.files.find(f=>f.id===ids[0])?.request_id||'');if(!l)return;
+    const who=ix.first.get(l.assignee_email)||'They', what=`${l.merchant}, ${money(l.amount_cents)} on ${day(l.txn_date)}`;
+    reason=await askText({title:ids.length>1?'Send them back':'Send it back',body:`${who} sees this on their list and in Thursday's email.`,label:'Why? What should they send instead?',required:true,okText:'Send back',
+      chips:[["Not a receipt",`This isn't a receipt or invoice. Please add the receipt or invoice for ${what}.`],
+             ["Doesn't show what was bought",`This shows the payment but not what was bought. Please add the itemized receipt or invoice for ${what}.`],
+             ["Wrong charge",`This is for a different purchase. Please add the receipt for ${what}.`],
+             ["Can't read it",`I can't read this one. Please add a clearer photo or a PDF.`]]});
+    if(!reason)return;
+  }
+  btn.disabled=true;
   let err=null;for(const id of ids){const {error}=await sb.rpc('rr_admin_review',{p_file:id,p_ok:!!ok,p_reason:reason});if(error){err=error;break;}}
   if(err){btn.disabled=false;toast(plain(err));}loadOverview();
 });
