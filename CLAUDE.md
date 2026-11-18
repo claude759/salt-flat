@@ -589,10 +589,16 @@ launch. The check fails if one of the three pieces is missing.
     (`&sel=<id>`). No time axis here: days are words on the rows; the Timeline has the days.
   - **Canvas: Batch V2's first view** (beta, view only; Gianni, 2026-11-18, of the Stages view: "I think you
     misunderstood. I wanted view like this but combined with the timeline view in a sort of free floating space where the
-    user can scroll in any direction", then "Yes, build it" to the mockup). Two buttons by the title: **Canvas** (opens
-    first, no mode in the address) and **Timeline** (`&mode=tl`); `B2.mode` is 'cv' or 'tl'. The Stages button and its
-    step columns were dropped the same day (Gianni: "Yes, drop Stages"; an old `&mode=st` link opens the Canvas): do
-    not bring them back. The Timeline stays until Gianni says otherwise. The Canvas is the
+    user can scroll in any direction", then "Yes, build it" to the mockup). **The Canvas is Batch V2's one view: no
+    view buttons** (`B2.mode` stays 'cv'). The Stages button and its step columns were dropped the same day (Gianni:
+    "Yes, drop Stages"), then the Timeline's button ("drop the Timeline too"); old `&mode=tl`, `&mode=st` and
+    `&mode=flow` links open the Canvas. Do not bring either back. The Timeline's drawing code (what renderBatches2
+    does after its Canvas branch: the lanes, the On hand column, the hub rows, the rail, `b2t*`) and the old step
+    columns (`b2fRender` and friends) no longer run: dead code, kept only because deleting it and its checks is a
+    large cleanup Gianni has not asked for; do not build on it. Still live and shared with the Canvas: the model
+    (`BT2.build`, `hub`, `flowView`, `stageView`), the reads (`b2LoadMetrc`, `b2LoadFlow`), Find, Light | Dark and
+    every card (`b2Open`: harvest, trim, move, lab, Jars, pickup). The older Batch V2 bullets above describe the
+    Timeline and are history except for those parts. The Canvas is the
     Stages rows, each on its own day (30px a day): a lot's harvest, trim, Test and COA along one row (a test is two rows,
     the day the sample went out and the day its result came or is expected, when both are known: `BT2.canvasLab`), a
     stack of product rows (a strain and a unit type) under a heading at each packing day. **Two sections, not a strip per
@@ -622,8 +628,9 @@ launch. The check fails if one of the three pieces is missing.
     those into the docked column are drawn only when lit; on a scroll only the links into the pickups' row and the
     docked column are drawn again. One set of rules for both looks (the `.b2s` box's `--s-*` variables; no
     `body.b2f-dark .b2c-` rules). Phones: the box scrolls natively, the column sits under it and its links are not drawn.
-    A change of the lots shown opens on today again (or on the item picked). Not on the Canvas yet: sales to stores by
-    week, the On hand column, moves into the distro (the Timeline has them).
+    A change of the lots shown opens on today again (or on the item picked). Not on the Canvas, and so not shown anywhere
+    in Batch V2 since the Timeline went: sales to stores by week and the On hand column (what is still ours is the
+    docked column's Still here rows and each lot's card).
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
