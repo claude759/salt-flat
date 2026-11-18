@@ -612,7 +612,12 @@ launch. The check fails if one of the three pieces is missing.
     is the one link with its own colour at rest (`path.mv`, `--s-mv`). In the model the test and the products hang off
     the move, not the trim; bulk buyers and flower left at the grow leave from the trim, flower left at the distro from
     the move. A move in or a pickup Metrc hasn't marked received throbs (`waitIn`, `waitPick`, the flow job's
-    `went.open_by`). A lot with no move read starts its distro row at its test (which then names the lot). Rows are
+    `went.open_by`). A lot with no move read starts its distro row at its test (which then names the lot). **A trim row has two lines**
+    (Gianni, 2026-11-18: "on each trim I want the number of lbs trim (to the second decimal) and under it the what
+    remains in METRC from that trim"): its pounds to two decimals (the trim sheet's bigs + littles; Metrc's flower when
+    no tab has the trim; "≈" an estimate while it is planned), and under them "85.00 left in Metrc", the flower Metrc
+    still shows at our licenses from that lot (`L.t.sheet`, `L.t.left`; the flow job sends packaged and left flower
+    to the hundredth of a pound since 2026-11-18); a planned trim, or a lot with no Metrc lot read, has no second line. Rows are
     packed as high as they fit in their section. A row sits on its real day and moves right only where
     the one before it is still in the way; hover (or the pick) draws a band over its real day or days and rings those
     dates. **Three things stay put while it is dragged**: the dates on top (month, weekday letter, day; a month's name
