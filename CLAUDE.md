@@ -558,7 +558,8 @@ launch. The check fails if one of the three pieces is missing.
     **No summary sentence** (Gianni, 2026-11-17: "this stuff is just clutter please remove"): the line under the title
     (`#b2-sentence`) says only what couldn't be read, and is not there otherwise. Do not bring the counts back; the
     older bullets' "the sentence says ..." now mean that line. `BT2.atLabText` is no longer drawn.
-  - **Stages: Batch V2's second view since the Canvas (below)** (beta, view only; Gianni, 2026-11-17, after the one view: "there is still
+  - **Stages (its button and step columns were dropped 2026-11-18, Gianni: "Yes, drop Stages"; its model, rows, trail
+    and card live on in the Canvas, below; what this bullet says of five columns and a pinned last column is history)** (beta, view only; Gianni, 2026-11-17, after the one view: "there is still
     something I don't love ... product moving between phases isn't very distinctive", mockups of a free canvas, then a
     picture of a production-chain tool, "a bit more like this", then "Yes, build it"). Batch V2 has two views, the
     buttons by the title: **Stages** (opens first) and **Timeline** (the one view above, unchanged; `&mode=tl`).
@@ -588,9 +589,10 @@ launch. The check fails if one of the three pieces is missing.
     (`&sel=<id>`). No time axis here: days are words on the rows; the Timeline has the days.
   - **Canvas: Batch V2's first view** (beta, view only; Gianni, 2026-11-18, of the Stages view: "I think you
     misunderstood. I wanted view like this but combined with the timeline view in a sort of free floating space where the
-    user can scroll in any direction", then "Yes, build it" to the mockup). Three buttons by the title: **Canvas** (opens
-    first, no mode in the address), **Stages** (`&mode=st`) and **Timeline** (`&mode=tl`); `B2.mode` is 'cv', 'st' or
-    'tl'. Gianni has not yet said whether Stages and the Timeline stay: do not remove them unasked. The Canvas is the
+    user can scroll in any direction", then "Yes, build it" to the mockup). Two buttons by the title: **Canvas** (opens
+    first, no mode in the address) and **Timeline** (`&mode=tl`); `B2.mode` is 'cv' or 'tl'. The Stages button and its
+    step columns were dropped the same day (Gianni: "Yes, drop Stages"; an old `&mode=st` link opens the Canvas): do
+    not bring them back. The Timeline stays until Gianni says otherwise. The Canvas is the
     Stages rows, each on its own day (30px a day): a lot's harvest, trim, Test and COA along one row (a test is two rows,
     the day the sample went out and the day its result came or is expected, when both are known: `BT2.canvasLab`), a
     stack of product rows (a strain and a unit type) under a heading at each packing day, each grow's lots in its own
@@ -603,7 +605,7 @@ launch. The check fails if one of the three pieces is missing.
     puts today's line three fifths across. Model: `BT2.stageView` (the Stages model, unchanged), laid out by the pure
     `BT2.canvasLay(V, { w, today, top })` from the rows' measured widths. Page: `b2cBody`, `b2cFit`, `b2cLinks`,
     `b2cGuide`, `b2cMini`, `b2cToday`, `b2cSee`, `b2cWords`, classes `b2c-*`; it is drawn in the Stages box
-    (`#b2-stage`, `b2sOn()` is true for both), so the click, the gold and blue trail, the card (`b2sCardHTML`), Find,
+    (`#b2-stage`; `b2sOn()` means the Canvas), so the click, the gold and blue trail, the card (`b2sCardHTML`), Find,
     the strain's dimming, Light | Dark and `&sel=` are the Stages view's own code. Links are thin curves, faint at rest;
     those into the docked column are drawn only when lit; on a scroll only the links into the pickups' row and the
     docked column are drawn again. One set of rules for both looks (the `.b2s` box's `--s-*` variables; no
