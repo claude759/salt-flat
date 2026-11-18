@@ -428,7 +428,11 @@ launch. The check fails if one of the three pieces is missing.
     remains in METRC from that trim"): its pounds to two decimals (the trim sheet's bigs + littles; Metrc's flower when
     no tab has the trim; "≈" an estimate while it is planned), and under them "85.00 left in Metrc", the flower Metrc
     still shows at our licenses from that lot (`L.t.sheet`, `L.t.left`; the flow job sends packaged and left flower
-    to the hundredth of a pound since 2026-11-18); a planned trim, or a lot with no Metrc lot read, has no second line. Rows are
+    to the hundredth of a pound since 2026-11-18); a planned trim, or a lot with no Metrc lot read, has no second line. **Each bulk sale is its own row** (Gianni,
+    2026-11-18: "I want bulk transfers to be their own bubbles in the cultivation section"): "Bulk · buyer · 7 lb + 1 trim" on
+    its day, after the lot's trim in Grows (a sale from the 25th distro sits on the lot's distro row), from the flow job's
+    `went.bulk_by` (`[[day, buyer, flower lb, trim lb, 'grow' | 'distro']]`, since 2026-11-18; a lot without it links the
+    trim straight to its buyers); its link on to the docked buyer is the flower only (`L.bulk`, kind 'b'). Rows are
     packed as high as they fit in their section. A row sits on its real day and moves right only where
     the one before it is still in the way; hover (or the pick) draws a band over its real day or days and rings those
     dates. **Three things stay put while it is dragged**: the dates on top (month, weekday letter, day; a month's name
@@ -451,9 +455,11 @@ launch. The check fails if one of the three pieces is missing.
   distu or Nabis) at any given time especially at future dates", then "we'll probably want to know the amount per unit type
   and strain type"; he turned down a line chart and a strain-by-type board with a day picker, and of four further mockups
   picked the weeks-across table: "I like this one the most"). `data-view="onhand"`, after Inventory, on the app's dark
-  base. One table: a row per strain and unit type (3.5g jars, Pouches, 5-packs, 1g and 1.5g pre-rolls; no bulk, no vapes),
+  base. One table: a row per unit type (3.5g jars, Pouches, 5-packs, 1g and 1.5g pre-rolls; no bulk, no vapes), summed over
+  its strains; a click opens that type's strains with stock, most first (Gianni, same day: "I want this to just be the unit
+  types available in Distru/Nabis but when clicked, it shows the available strains"),
   a column for today and each of the next 6 weeks; a cell reads "1,131 + 366 N": units at our distro (Distru) plus units
-  at Nabis, amber "Nabis out" from the day Nabis runs out. Buttons narrow it to one unit type; a row opens what changes
+  at Nabis, amber "Nabis out" from the day Nabis runs out (a type's row says how many strains are out). A strain's row opens what changes
   it. Today is the stock copy (`pipeline_inventory`, the Inventory page's own read; Nabis = available plus on orders).
   Ahead is `OH.project()` (the ON HAND MODEL block, pure), a day at a time: stock in testing at Distru ships after its
   result (passed counts as ready; the rest after about 5 days); packing planned on the sheets lands the first day the
@@ -471,7 +477,9 @@ launch. The check fails if one of the three pieces is missing.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
-  `cogs_can_view()` says yes: only the accounts in `cogs_viewers` (Gianni and Victoria, his choice) see the tab or can read
+  `cogs_can_view()` says yes. **Two sub-pages, Flower and Packaging** (Gianni, 2026-11-18: "I want cogs to have two sub pages
+  Flower and Packaging"): a Flower | Packaging switch by the title; Flower has the grow buttons (All grows, the grows,
+  Olympic), Packaging is the packaged units (`CG.fac` 'PACK'). Only the accounts in `cogs_viewers` (Gianni and Victoria, his choice) see the tab or can read
   the numbers. **The one page that shows dollars**; "Labor shows person-hours, never dollars" stands everywhere else.
   Its SQL (`supabase/cogs.sql`) and its job (`~/ar-automation/cogs-sync.mjs` with `lib/cogs-core.mjs`, 20 minutes after
   each financials update) are Gianni's: applied from his computer, owned by postgres, never by the deploy job. Never move
@@ -529,7 +537,7 @@ launch. The check fails if one of the three pieces is missing.
   person (Gianni, same day: "On click, I want these to show names"), each person's hours, wages, employer taxes and part of
   the harvest, or By payday. The names are in the `cogs_snapshot` row only, which only `cogs_viewers` can read; they never
   go in this repo, a commit or the page source.
-  **Packaged tab** (his answers 2026-11-17): each Batch Label Sheet batch of jars (pouches inside), 5-packs and 1g from
+  **Packaging sub-page** (was the Packaged tab; his answers 2026-11-17): each Batch Label Sheet batch of jars (pouches inside), 5-packs and 1g from
   August 2026 carries flower at its source harvest's flower-page cost per pound by Metrc lineage (littles cost the same
   as bigs: "Same $/lb as bigs"; Olympic at the invoice price), the standard BOM at the lot price in use (private
   `~/ar-automation/lib/pack-bom.json`) with Mallen's noted, unbilled freight as its own line ("Count it now"), the crew's

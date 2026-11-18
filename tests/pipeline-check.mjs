@@ -3220,7 +3220,17 @@ if (realPipe) {
             assert.ok(/el\.dataset\.part === '1' \? p\.d2 : p\.d/.test(fG) && / b2cGuide\(n\);/.test(fnH('b2sInit')), "hover marks an item's real day or days");
             assert.ok(/data-b2f="ctoday"/.test(fB) && /a === 'ctoday'/.test(fnH('b2fAct')) && !/<select/.test(fB), 'a Today button; no plain select');
             assert.ok(/\.b2c-wrap\{/.test(hcss) && !/b2f-dark \.b2c-/.test(hcss), "both looks share the Canvas's rules through the .b2s box's variables");
-            assert.ok(/pa\.band === 'GROW' && pb\.band === 'HUB'/.test(fL) && /\.b2s-lk path\.mv\{stroke:var\(--s-mv\)/.test(hcss) && /class="b2c-reg hub"/.test(fB) && /every lot is tested, packed and shipped from here/.test(fB) && /Grows <small>harvest and trim<\/small>/.test(fB) && /btn\(L\.inn, \{ wait: L\.inn\.wait \}\)/.test(fB), 'two strips, Grows and the 25th distro; the move between them is its own line; an open move throbs');
+            assert.ok(/pa\.band === 'GROW' && pb\.band === 'HUB'/.test(fL) && /\.b2s-lk path\.mv\{stroke:var\(--s-mv\)/.test(hcss) && /class="b2c-reg hub"/.test(fB) && /every lot is tested, packed and shipped from here/.test(fB) && /Grows <small>harvest, trim and bulk sales<\/small>/.test(fB) && /btn\(L\.inn, \{ wait: L\.inn\.wait \}\)/.test(fB), 'two strips, Grows and the 25th distro; the move between them is its own line; an open move throbs');
+            // bulk sales (Gianni, 2026-11-18: "I want bulk transfers to be their own bubbles in the cultivation section")
+            {
+              const bL = { key: 'k', site: '23RD', h: { id: 'h', d: '2026-10-01' }, t: { id: 't', d: '2026-10-03' }, inn: { id: 'i', d: '2026-10-10' }, lab: null, groups: [],
+                bulk: [{ id: 'b1', d: '2026-10-05', from: 'grow' }, { id: 'b2', d: '2026-10-05', from: 'grow' }, { id: 'b3', d: '2026-10-12', from: 'distro' }] };
+              const bY = BT2.canvasLay({ lots: [bL], picks: [] }, { w: new Map([['h', 100], ['t', 90], ['b1', 120], ['b2', 120], ['i', 110], ['b3', 120]]) }), q = id => bY.pos.get(id);
+              assert.ok(q('b1').band === 'GROW' && q('b2').band === 'GROW' && q('b1').y === q('t').y && q('b1').x >= q('t').x + 90 && q('b2').x >= q('b1').x + 120, "a grow's bulk sales sit on its row after the trim, one bubble each");
+              assert.ok(q('b3').band === 'HUB' && q('b3').y === q('i').y && q('b3').x > q('i').x, "a sale from the 25th distro sits on the lot's distro row");
+              const fS = BT2.stageView.toString();
+              assert.ok(/went\.bulk_by/.test(fS) && /sell\('grow', src\)/.test(fS) && /sell\('distro', L\.inn \? L\.inn\.id : growSrc\)/.test(fS) && /btn\(b, \{ tip: md\(b\.d\) \}\)/.test(fB), 'each sale from went.bulk_by is its own row, linked from the trim (or the move) and on to its buyer');
+            }
           }
         }
       }
@@ -3278,6 +3288,6 @@ if (realPipe) {
   assert.ok(/STYLED_VIEWS = \[[^\]]*'onhand'/.test(html) && /onhand: \(\) => renderOnHand\(\)/.test(html) && /if \(S\.view === 'onhand' && sb\) \{ if \(!S\.invAt && !S\.invErr\) loadInventory\(true\);/.test(html), 'the page is wired: its look, its render, its reads');
   assert.ok(/testing\.has\(kind \+ '\|' \+ l\.strain\) && first <= PIPE\.addDays\(today, 7\)/.test(fI) && /e\.kind === 'pickup' && e\.date > today/.test(fI) && /k\.w < mon && k\.d && k\.d\.u\)\.slice\(-3\)/.test(fI) && /est: l\.lbs == null/.test(fI),
     "the projection's inputs: planned packing not already in testing at Distru (≈ when the sheet has no count), the sheet's pickups still to come, Distru's last 3 full weeks");
-  assert.ok(/OH\.project\(I\)/.test(fO) && /if \(!S\.inv \|\| !M\.rows\.length\)/.test(fO) && /data-oh="row"/.test(fO) && /tabindex="0"/.test(fO) && !/<select/.test(fO) && !/price|dollar|revenue|\$\{?\s*usd/i.test(fO + fI), 'the table: nothing without the stock counts, rows open by click or key, no plain select, units only');
+  assert.ok(/OH\.project\(I\)/.test(fO) && /if \(!S\.inv \|\| !M\.rows\.length\)/.test(fO) && /data-oh="row"/.test(fO) && /data-oh="kind"/.test(fO) && /if \(on\) for \(const r of K\.rs\)/.test(fO) && /tabindex="0"/.test(fO) && !/<select/.test(fO) && !/price|dollar|revenue|\$\{?\s*usd/i.test(fO + fI), 'the table: nothing without the stock counts, rows open by click or key, no plain select, units only');
 }
 console.log('pipeline-check: all checks passed');
