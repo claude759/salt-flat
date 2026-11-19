@@ -230,8 +230,9 @@ launch. The check fails if one of the three pieces is missing.
   carry the COA value.
 - **The COA watcher sets one status** (Victoria, 2026-11-19: "usually when they come back i update the status to"
   AWAITING PKG/LABELING): when a COA passes, the watcher on Gianni's computer changes that batch's STATUS on the Batch
-  Label Sheet from exactly WAITING FOR COA to AWAITING PKG/LABELING, in the write that fills its numbers. Once per
-  COA, no other status, and a failed COA changes nothing. A status typed back by hand stays.
+  Label Sheet from exactly WAITING FOR COA to AWAITING PKG/LABELING, in the write that fills its numbers. A COA that
+  failed sets FAILED TESTING the same way (Gianni, same day: "Yes, add that"; the status only, no numbers). Once per COA,
+  no other status; a COA with no Pass or Fail changes nothing. A status typed back by hand stays.
 - **Vapes on the Batches page** (Gianni, 2026-11-13). Excelbis tests the all-in-one vapes, but vapes
   never get rows on the Batch Label Sheet. The Batches view lists them in a Vapes band after Finished,
   from `pipeline_batch_labs` (the hourly lab job on Gianni's computer reads every Excelbis COA e-mail):
