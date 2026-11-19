@@ -430,13 +430,14 @@ launch. The check fails if one of the three pieces is missing.
     still shows at our licenses from that lot (`L.t.sheet`, `L.t.left`; the flow job sends packaged and left flower
     to the hundredth of a pound since 2026-11-18); a planned trim, or a lot with no Metrc lot read, has no second line. **Each bulk sale is its own row** (Gianni,
     2026-11-18: "I want bulk transfers to be their own bubbles in the cultivation section"): "Bulk sold Nov 9 · buyer · 7 lb + 1 trim",
-    always on its real day (never pushed right: Gianni, 2026-11-19, of a Nov 9 sale drawn past today's line, "when did it
-    happen? has it even happened?"), on the lot's row in Grows where that is free, else on the first free line under it (a
-    sale from the 25th distro sits the same way with the lot's distro rows), from the flow job's
+    on its real day like every row (Gianni, 2026-11-19, of a Nov 9 sale drawn past today's line: "when did it happen? has it
+    even happened?"), with the lot's rows in Grows (a sale from the 25th distro: with its distro rows), from the flow job's
     `went.bulk_by` (`[[day, buyer, flower lb, trim lb, 'grow' | 'distro']]`, since 2026-11-18; a lot without it links the
     trim straight to its buyers); its link on to the docked buyer is the flower only (`L.bulk`, kind 'b'). Rows are
-    packed as high as they fit in their section. A row sits on its real day and moves right only where
-    the one before it is still in the way; hover (or the pick) draws a band over its real day or days and rings those
+    packed as high as they fit in their section. **Every row sits on its real day and never moves right** (Gianni, 2026-11-19: "check for
+    other misaligned bubbles. The goal is readablity here"; before, tests sat up to 3 days late and product stacks up to
+    10): where an earlier row of the lot is in the way it drops to the first free line under it (`canvasLay`'s `unit`);
+    a test and its COA stay on one line, and close pickups go on a second line of their row (`pickRows`); hover (or the pick) draws a band over its real day or days and rings those
     dates. **Three things stay put while it is dragged**: the dates on top (month, weekday letter, day; a month's name
     stays in view while any of its days is), the Nabis pickups on their days in the 25th distro's row at the window's
     bottom, and what has no day (Distru deliveries, Packaged and Loose flower still here, bulk buyers) in a column docked
