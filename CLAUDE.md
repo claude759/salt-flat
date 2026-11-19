@@ -265,6 +265,14 @@ launch. The check fails if one of the three pieces is missing.
   cells; rows without a Metrc UID are not editable at first; ships switched off; the first real save is
   one value Victoria actually wants, after dry runs, with Undo. Later, Add a batch inserts a row under
   the drop's last batch (the no-insert rule is lifted for this tab only).
+- **Who's on takes anyone, and Out** (Victoria, 2026-11-19: "i just need to add me, scott and britt out for wednesday
+  12/2 ... ideally i can just edit in here"; Gianni: "Yes, build it"). The Who's on forms (Edit under Who's on, and Add)
+  offer the crew first (`WEEK.ROSTER`), then everyone else the sheet's lines name (`WEEK.PEOPLE`: Vic shown as Victoria,
+  Scott, Britt and the rest of `KNOWN`), and Out (the sheet's OOO) and WFH are statuses of their own. The crew is added as
+  Distro, anyone else as Out. Three or more people sharing a status in a mixed line are written grouped, the way she
+  groups them: "LORENZO DISTRO / VIC/SCOTT/BRITT OOO" (two stay "JUSTIN OFF / NOURI OFF / LORENZO OOO"). It writes the
+  blue Who's on line; in the sheet she has mostly put managers' days out in the day's header, "(VIC OOO)", which the app
+  reads the same way and does not edit.
 - **Every pick-list on the page is typable** (Gianni's rule for everything built for him, 2026-11-13; the last plain
   selects converted 2026-11-15): a text box with suggestions (input + datalist), never a `<select>` (the check fails on
   one). Add's Line to copy ("day · words"), Who / Add someone, and the Admin page's scope boxes resolve what was typed

@@ -1151,6 +1151,18 @@ if (realPipe) {
     '"JUSTIN & LORENZO TRIM" would not read as Who\'s on, so each person gets a status');
   assert.equal(okR(crewT('2026-11-08', [2, 12], [{ name: 'JUSTIN', st: 'OFF' }, { name: 'NOURI', st: 'OFF' }, { name: 'LORENZO', st: 'OOO' }]), 'Sunday').ops[0].text, 'JUSTIN OFF / NOURI OFF / LORENZO OOO');
   assert.equal(okR(crewT('2026-11-02', [3, 0], [{ name: 'NOURI', st: 'On call', note: 'distro work' }]), 'on call').ops[0].text, 'NOURI ON CALL FOR DISTRO WORK');
+  // anyone the sheet's lines name can go on the line, out or working from home (Victoria, 2026-11-19: "i just need to add me,
+  // scott and britt out for wednesday 12/2")
+  assert.equal(okR(crewT('2026-11-02', [2, 0], [{ name: 'LORENZO', st: 'DISTRO' }, { name: 'VIC', st: 'OOO' }, { name: 'SCOTT', st: 'OOO' }, { name: 'BRITT', st: 'OOO' }]), 'three managers out').ops[0].text,
+    'LORENZO DISTRO / VIC/SCOTT/BRITT OOO', 'three sharing a status are grouped the way she groups them, and the line reads back');
+  assert.equal(okR(crewT('2026-11-02', [2, 0], [{ name: 'LORENZO', st: 'DISTRO' }, { name: 'VIC', st: 'OOO' }, { name: 'SCOTT', st: 'OOO' }]), 'two out').ops[0].text, 'LORENZO DISTRO / VIC OOO / SCOTT OOO');
+  assert.equal(okR(crewT('2026-11-02', [2, 0], [{ name: 'JUSTIN', st: 'DISTRO' }, { name: 'VIC', st: 'WFH' }]), 'working from home').ops[0].text, 'JUSTIN DISTRO / VIC WFH');
+  assert.deepEqual(crew('LORENZO DISTRO / VIC/SCOTT/BRITT OOO'), ['BRITT OOO, LORENZO DISTRO, SCOTT OOO, VIC OOO', '', false]);
+  assert.deepEqual([WEEK.PEOPLE.slice(0, 4), WEEK.PEOPLE.includes('VIC') && WEEK.PEOPLE.includes('SCOTT') && WEEK.PEOPLE.includes('BRITT'), new Set(WEEK.PEOPLE).size === WEEK.PEOPLE.length],
+    [WEEK.ROSTER, true, true], 'the pickers offer the crew first, then everyone else the sheet names, each once');
+  { const fU = html.slice(html.indexOf('function edPickUse('), html.indexOf('function edPickUse(') + 900);
+    assert.ok(/const ED_ST = \[[^\n]*\['OOO', 'Out'\], \['WFH', 'WFH'\]\];/.test(html) && /WEEK\.ROSTER\.includes\(n\) \? 'DISTRO' : 'OOO'/.test(fU) && (html.match(/WEEK\.PEOPLE\.filter\(n => !D\.people\.some/g) || []).length === 2 && /const edWho = n => n === 'VIC' \? 'Victoria' : n === 'CC' \? 'CC' : cap\(n\);/.test(html),
+      "Who's on forms: Out and WFH are picks, anyone the sheet names can be added (the crew as Distro, others as Out), and VIC is shown as Victoria"); }
   assert.equal(okR(crewT('2026-11-02', [2, 0], [{ name: 'DREA', st: 'LEAD' }, { name: 'JUSTIN', st: 'OFF' }]), 'lead').ops[0].text, 'DREA DISTRO LEAD / JUSTIN OFF');
   no(crewT('2026-11-02', [2, 0], [{ name: 'LORENZO', st: 'TRIM' }]), /couldn't read that line back/, '"LORENZO TRIM" alone reads as a task, not Who\'s on');
   no(crewT('2026-11-02', [2, 0], [{ name: 'LORENZO', st: 'NAPPING' }]), /Pick a status/, 'an unknown status');
