@@ -6780,15 +6780,25 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     // harvest and trim in the Grows section, every facility together; its move in, test, COA and a stack of product rows
     // under each packing day in the 25th distro's. Each row sits on its day, pushed right only where the one before it
     // is still in the way
-    const unit = (L, band, parts, groups, fall) => {
-      const first = (parts.find(p => p.d) || {}).d || (groups[0] || {}).day || fall || '';
-      if (!first || (!parts.length && !groups.length)) return;
+    const unit = (L, band, parts, groups, fall, subs = []) => {
+      const first = (parts.find(p => p.d) || {}).d || (groups[0] || {}).day || (subs[0] || {}).d || fall || '';
+      if (!first || (!parts.length && !groups.length && !subs.length)) return;
       let x = -1e9;
       for (const p of parts) { p.x = Math.max(X(p.d || first), x + CV_GAP); x = p.x + p.w; }
       const le = x, gs = [];
       for (const G of groups) { const gx = Math.max(X(G.day), x + CV_GAP + 8); gs.push({ G, x: gx }); x = gx + gw; }
-      const x0 = parts.length ? parts[0].x : gs[0].x;
-      lots.push({ key: L.key, site: L.site, band, x0, x1: x, parts, gs, rects: [...(parts.length ? [[x0, le, 0, Math.max(30, ...parts.map(p => (hh.get(p.id) || 28) + 2))]] : []), ...gs.map(g => [g.x, g.x + gw, -22, Math.max(30, g.G.items.length * rh)])] });
+      const rects = [...(parts.length ? [[parts[0].x, le, 0, Math.max(30, ...parts.map(p => (hh.get(p.id) || 28) + 2))]] : []), ...gs.map(g => [g.x, g.x + gw, -22, Math.max(30, g.G.items.length * rh)])];
+      // a bulk sale never leaves its day (Gianni, 2026-11-19, of a Nov 9 sale pushed past today's line: "when did it
+      // happen? has it even happened?"): it sits on the lot's row where that is free, else on the first free line under it
+      const mainH = rects.length ? Math.max(...rects.map(r => r[3])) : 0;
+      for (const p of subs) {
+        p.x = X(p.d); p.sub = true;
+        const free = dy => !rects.some(r => p.x < r[1] + CV_GAP && r[0] < p.x + p.w + CV_GAP && dy < r[3] + 2 && r[2] < dy + 30 + 2);
+        let dy = 0; if (!free(0)) { dy = mainH + 4; while (!free(dy)) dy += 32; }
+        p.dy = dy; rects.push([p.x, p.x + p.w, dy, dy + 30]); x = Math.max(x, p.x + p.w);
+      }
+      const x0 = Math.min(...(parts.length ? [parts[0].x] : []), ...gs.map(g => g.x), ...subs.map(p => p.x));
+      lots.push({ key: L.key, site: L.site, band, x0, x1: x, parts: [...parts, ...subs], gs, rects });
     };
     for (const L of V.lots) {
       const g = [], d = [];
@@ -6796,11 +6806,11 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
       if (L.t) g.push({ id: L.t.id, d: L.t.d || '', w: wid(L.t.id) });
       if (L.inn) d.push({ id: L.inn.id, d: L.inn.d || '', w: wid(L.inn.id) });
       if (L.lab) canvasLab(L.lab).forEach((dd, i) => d.push({ id: L.lab.id, d: dd, w: wid(L.lab.id, i), coa: i === 1 }));
-      // bulk sales: a grow's after its trim, the 25th distro's in day order among the distro's rows
-      for (const b of L.bulk || []) { const p = { id: b.id, d: b.d, w: wid(b.id) };
-        if (b.from === 'distro') { const i = d.findIndex(q => q.d && q.d > b.d); if (i < 0) d.push(p); else d.splice(i, 0, p); } else g.push(p); }
-      unit(L, 'GROW', g, []);
-      unit(L, 'HUB', d, L.groups, (L.t && L.t.d) || (L.h && !L.h.none && L.h.d) || '');
+      // bulk sales: a grow's with its harvest and trim, the 25th distro's with the distro's rows, each on its own day
+      const sg = [], sd = [];
+      for (const b of L.bulk || []) (b.from === 'distro' ? sd : sg).push({ id: b.id, d: b.d, w: wid(b.id) });
+      unit(L, 'GROW', g, [], '', sg);
+      unit(L, 'HUB', d, L.groups, (L.t && L.t.d) || (L.h && !L.h.none && L.h.d) || '', sd);
     }
     // the two sections one under the other; in each, a row as high as it fits
     const hit = (A, ay, B, by) => A.some(a => B.some(b => a[0] < b[1] + 34 && b[0] < a[1] + 34 && ay + a[2] < by + b[3] + 14 && by + b[2] < ay + a[3] + 14));
@@ -6813,7 +6823,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
       sites.push({ site: band, top: y, h: bot + pad }); y += bot + pad;
     }
     for (const l of lots) {
-      for (const p of l.parts) { const e = pos.get(p.id); if (e && p.coa) { e.x2 = p.x; e.w2 = p.w; e.d2 = p.d; } else pos.set(p.id, { x: p.x, y: l.y, w: p.w, h: hh.get(p.id) || 28, d: p.d, band: l.band }); }
+      for (const p of l.parts) { const e = pos.get(p.id); if (e && p.coa) { e.x2 = p.x; e.w2 = p.w; e.d2 = p.d; } else pos.set(p.id, { x: p.x, y: l.y + (p.dy || 0), w: p.w, h: hh.get(p.id) || 28, d: p.d, band: l.band }); }
       for (const g of l.gs) { heads.push({ id: g.G.id, lot: l.key, x: g.x, y: l.y - 17 }); g.G.items.forEach((n, i) => pos.set(n.id, { x: g.x, y: l.y + i * rh, w: gw, d: g.G.day, band: l.band })); }
     }
     // the pickups: one row, each on its day
@@ -13389,7 +13399,7 @@ function b2sWords(n, L) {
   if (n.kind === 'p') return [`${sLabel(n.strain)} · ${B2S_UNIT[n.t][0]}`, n.n ? fmtN(Math.round(n.n)) : 'plan'];
   if (n.kind === 'i') return [n.d ? `moved in ${b2Span(n.d, n.d1)}` : 'moved in', n.lb != null ? `${BT2.lbTxt(n.lb)} lb` : ''];
   if (n.kind === 'pick') return [b2Span(n.d, n.d1), n.fut ? 'plan' : `${BT2.lbTxt(n.lb)} lb`];
-  if (n.kind === 'b') return [`Bulk · ${n.who}`, b2sBulkLb(n)];
+  if (n.kind === 'b') return [`Bulk sold ${md(n.d)} · ${n.who}`, b2sBulkLb(n)];
   const E = B2.V.end;
   if (n.end === 'dz') return ['Distru deliveries', E.dz ? `${fmtN(Math.round(E.dz))} u` : ''];
   if (n.end === 'hereP') return ['Packaged', E.hereP ? `${fmtN(Math.round(E.hereP))} u` : ''];
@@ -13496,9 +13506,9 @@ function b2sCardHTML(n) {
       `<div class="b2-acts">${lnk(n.id, 'Open the pickup card')}</div>`;
   } else if (n.kind === 'b') {
     const same = (L.bulk || []).filter(b => b.id !== n.id);
-    k = 'Sold in bulk'; title = `${n.who} · ${md(n.d)}`;
-    tiles = [['Flower', n.fl >= 0.05 ? `${BT2.lbTxt(n.fl)} lb` : '-'], ['Trim', n.tr >= 0.05 ? `${BT2.lbTxt(n.tr)} lb` : '-'], ['Lot', b2sLot(L)]];
-    body = `<p class="b2-note">Sold by the pound to ${esc(n.who)} from ${n.from === 'distro' ? 'the 25th distro' : `the grow (${esc(b2fBadge(L.site))})`} on ${esc(md(n.d))}, by Metrc's transfer. A bulk buyer, not a store.</p>` +
+    k = 'Sold in bulk'; title = `${n.who} · sold ${md(n.d)}`;
+    tiles = [['Shipped', md(n.d)], ['Flower', n.fl >= 0.05 ? `${BT2.lbTxt(n.fl)} lb` : '-'], [n.tr >= 0.05 ? 'Trim' : 'Lot', n.tr >= 0.05 ? `${BT2.lbTxt(n.tr)} lb` : b2sLot(L)]];
+    body = `<p class="b2-note">Already shipped: it left ${n.from === 'distro' ? 'the 25th distro' : `the grow (${esc(b2fBadge(L.site))})`} for ${esc(n.who)} on ${esc(md(n.d))}, on a Metrc transfer manifest. Sold by the pound to a bulk buyer, not a store.</p>` +
       (same.length ? `<div class="b2-sec"><h4>This lot's other bulk sales</h4>${tbl(same.map(b => [`${esc(md(b.d))} <small>· ${esc(b.who)}</small>`, esc(b2sBulkLb(b))]))}</div>` : '') +
       `<div class="b2-acts">${L.I.unit.t ? lnk(L.I.unit.t.id, 'Open the trim card') : L.I.unit.h ? lnk(L.I.unit.h.id, 'Open the harvest card') : ''}</div>`;
   } else if (n.kind === 'end') {
@@ -13544,12 +13554,12 @@ function b2cWords(n, L, part) {
     return [who + (n.state === 'planned' ? 'Test planned' : res || 'Test · no result'), more];
   }
   if (n.kind === 'pick') return ['To Nabis', n.fut ? 'plan' : `${BT2.lbTxt(n.lb)} lb`];
-  if (n.kind === 'b') return [`Bulk · ${n.who}`, b2sBulkLb(n)];
+  if (n.kind === 'b') return [`Bulk sold ${md(n.d)} · ${n.who}`, b2sBulkLb(n)];
   return b2sWords(n, L);
 }
 function b2cBody(V, outs, keep, jump) {
   const box = $('b2-stage'), today = todayISO(), lotOf = new Map(V.lots.map(L => [L.key, L])), was = B2.clay;
-  const btn = (n, o = {}) => { const L = lotOf.get(n.lot), [t, v] = b2cWords(n, L, o.part), [t0, v0] = b2sWords(n, L), tip = `${L && n.kind !== 'h' ? b2sLot(L) + ' · ' : ''}${n.kind === 'pick' ? 'To Nabis ' : n.kind === 't' ? 'trim ' : n.kind === 'l' ? 'test: ' : n.kind === 'b' ? md(n.d) + ' ' : ''}${t0}${v0 ? ' · ' + v0 : ''}`;
+  const btn = (n, o = {}) => { const L = lotOf.get(n.lot), [t, v] = b2cWords(n, L, o.part), [t0, v0] = b2sWords(n, L), tip = `${L && n.kind !== 'h' ? b2sLot(L) + ' · ' : ''}${n.kind === 'pick' ? 'To Nabis ' : n.kind === 't' ? 'trim ' : n.kind === 'l' ? 'test: ' : ''}${t0}${v0 ? ' · ' + v0 : ''}`;
     const row = `<i></i><span>${esc(t)}</span><b>${esc(v)}</b>`;
     return `<button type="button" class="b2s-n${n.lot ? ' lotn' : ''}${n.kind === 'p' ? ' prod' : ''}${o.sub ? ' two' : ''}${o.fut ? ' fut' : ''}${o.wait ? ' wait' : ''}" data-b2s="${esc(n.id)}"${n.lot ? ` data-lot="${esc(n.lot)}"` : ''}${o.part != null ? ` data-part="${o.part}"` : ''} style="--c:${b2sDot(n, L)}" aria-pressed="false" title="${esc(tip)}${o.tip ? ' · ' + esc(o.tip) : ''}">${o.sub ? `<em>${row}</em><u>${esc(o.sub)}</u>` : row}</button>`; };
   // the rows, unplaced: their widths are measured, then BT2.canvasLay says where each sits
@@ -13559,7 +13569,7 @@ function b2cBody(V, outs, keep, jump) {
     // a trim's second line: the flower Metrc still shows at our licenses from it (not for a trim still planned)
     if (L.t) H.push(btn(L.t, { fut: L.t.fut, sub: L.t.left != null && !L.t.fut ? `${b2cLb2(L.t.left)} left in Metrc` : '', tip: L.t.sheet != null ? 'pounds from the trim sheet (bigs + littles)' : L.t.approx ? 'estimated pounds' : L.t.lb != null ? "Metrc's flower pounds (no trim sheet tab has this trim)" : '' }));
     if (L.inn) H.push(btn(L.inn, { wait: L.inn.wait }));
-    for (const b of L.bulk || []) H.push(btn(b, { tip: md(b.d) }));
+    for (const b of L.bulk || []) H.push(btn(b));
     if (L.lab) { const two = BT2.canvasLab(L.lab).length === 2, out = L.lab.state !== 'back';
       if (two) { H.push(btn(L.lab, { part: 0, fut: L.lab.fut })); H.push(btn(L.lab, { part: 1, fut: out, wait: L.lab.wait })); } else H.push(btn(L.lab, { part: 0, fut: L.lab.fut, wait: L.lab.wait })); }
     for (const G of L.groups) { ghW.set(L.key + '|' + G.id, `<b>${G.pre ? 'Pre-rolls' : 'Jars'}</b> · ${G.fut ? 'planned' : esc(md(G.day))}${G.lb >= 0.05 ? ` · ${esc(BT2.lbTxt(G.lb))} lb` : ''}${L.inn || L.lab ? '' : ` · ${esc(b2sLot(L))}`}`); for (const n of G.items) H.push(btn(n, { fut: n.fut })); }

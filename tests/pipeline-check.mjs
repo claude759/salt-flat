@@ -3226,10 +3226,13 @@ if (realPipe) {
               const bL = { key: 'k', site: '23RD', h: { id: 'h', d: '2026-10-01' }, t: { id: 't', d: '2026-10-03' }, inn: { id: 'i', d: '2026-10-10' }, lab: null, groups: [],
                 bulk: [{ id: 'b1', d: '2026-10-05', from: 'grow' }, { id: 'b2', d: '2026-10-05', from: 'grow' }, { id: 'b3', d: '2026-10-12', from: 'distro' }] };
               const bY = BT2.canvasLay({ lots: [bL], picks: [] }, { w: new Map([['h', 100], ['t', 90], ['b1', 120], ['b2', 120], ['i', 110], ['b3', 120]]) }), q = id => bY.pos.get(id);
-              assert.ok(q('b1').band === 'GROW' && q('b2').band === 'GROW' && q('b1').y === q('t').y && q('b1').x >= q('t').x + 90 && q('b2').x >= q('b1').x + 120, "a grow's bulk sales sit on its row after the trim, one bubble each");
-              assert.ok(q('b3').band === 'HUB' && q('b3').y === q('i').y && q('b3').x > q('i').x, "a sale from the 25th distro sits on the lot's distro row");
+              const bX = d => BT2.gap(bY.d0, d) * bY.px;
+              assert.ok(q('b1').band === 'GROW' && q('b2').band === 'GROW' && q('b1').x === bX('2026-10-05') && q('b2').x === bX('2026-10-05') && q('b1').y > q('t').y && q('b2').y > q('b1').y, "a grow's bulk sales never leave their day: where the trim is in the way they sit on the lines under it, one bubble each");
+              assert.ok(q('b3').band === 'HUB' && q('b3').x === bX('2026-10-12') && q('b3').y > q('i').y, "a sale from the 25th distro sits on its day with the lot's distro rows");
+              const bF = BT2.canvasLay({ lots: [Object.assign({}, bL, { inn: null, bulk: [{ id: 'b9', d: '2026-10-20', from: 'grow' }] })], picks: [] }, { w: new Map([['h', 100], ['t', 90], ['b9', 120]]) });
+              assert.ok(bF.pos.get('b9').y === bF.pos.get('t').y && bF.pos.get('b9').x === BT2.gap(bF.d0, '2026-10-20') * bF.px, "a sale clear of the trim sits on the lot's own row, on its day");
               const fS = BT2.stageView.toString();
-              assert.ok(/went\.bulk_by/.test(fS) && /sell\('grow', src\)/.test(fS) && /sell\('distro', L\.inn \? L\.inn\.id : growSrc\)/.test(fS) && /btn\(b, \{ tip: md\(b\.d\) \}\)/.test(fB), 'each sale from went.bulk_by is its own row, linked from the trim (or the move) and on to its buyer');
+              assert.ok(/went\.bulk_by/.test(fS) && /sell\('grow', src\)/.test(fS) && /sell\('distro', L\.inn \? L\.inn\.id : growSrc\)/.test(fS) && /btn\(b\)/.test(fB) && /Bulk sold \$\{md\(n\.d\)\}/.test(fnH('b2cWords')), 'each sale from went.bulk_by is its own row, linked from the trim (or the move) and on to its buyer');
             }
           }
         }

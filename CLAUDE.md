@@ -429,8 +429,10 @@ launch. The check fails if one of the three pieces is missing.
     no tab has the trim; "≈" an estimate while it is planned), and under them "85.00 left in Metrc", the flower Metrc
     still shows at our licenses from that lot (`L.t.sheet`, `L.t.left`; the flow job sends packaged and left flower
     to the hundredth of a pound since 2026-11-18); a planned trim, or a lot with no Metrc lot read, has no second line. **Each bulk sale is its own row** (Gianni,
-    2026-11-18: "I want bulk transfers to be their own bubbles in the cultivation section"): "Bulk · buyer · 7 lb + 1 trim" on
-    its day, after the lot's trim in Grows (a sale from the 25th distro sits on the lot's distro row), from the flow job's
+    2026-11-18: "I want bulk transfers to be their own bubbles in the cultivation section"): "Bulk sold Nov 9 · buyer · 7 lb + 1 trim",
+    always on its real day (never pushed right: Gianni, 2026-11-19, of a Nov 9 sale drawn past today's line, "when did it
+    happen? has it even happened?"), on the lot's row in Grows where that is free, else on the first free line under it (a
+    sale from the 25th distro sits the same way with the lot's distro rows), from the flow job's
     `went.bulk_by` (`[[day, buyer, flower lb, trim lb, 'grow' | 'distro']]`, since 2026-11-18; a lot without it links the
     trim straight to its buyers); its link on to the docked buyer is the flower only (`L.bulk`, kind 'b'). Rows are
     packed as high as they fit in their section. A row sits on its real day and moves right only where
