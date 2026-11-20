@@ -201,13 +201,16 @@ begin
               || count(*) filter (where p.proname like '%job%')
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'ts\_%'$q$, '1/1/2/0/0');
   -- (A6 in ts-ca-timesheets-verify.sql runs this query and expects the list without ts_pay_periods_sync, so it fails
-  -- once ts-pay-periods.sql is applied, before and after this file; this check passes when that is the one difference)
+  -- once ts-pay-periods.sql is applied, before and after this file; this check passes when that is the one difference,
+  -- besides the two RPCs of ts-flag-dismissals.sql when that is applied)
   perform pg_temp.ts_v('A3b what ts-ca-timesheets-verify.sql A6 sees: its own list, plus ts_pay_periods_sync when ts-pay-periods.sql is applied', null, null,
     $q$select string_agg(p.proname, ',' order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('authenticated', p.oid, 'EXECUTE')
           and p.proname not in ('ts_admin_save_view', 'ts_admin_delete_view', 'ts_admin_set_user_views', 'ts_my_view_ids',
                                 'ts_edit_submit', 'ts_edit_cancel', 'ts_edits_pending', 'ts_edit_mark', 'ts_edit_clear', 'ts_edits_to_recheck')$q$,
-    pg_temp.ts_v_lit('ts_admin_delete_user,ts_admin_list,ts_admin_save_user,ts_is_admin,ts_me,ts_my_email,ts_my_grant_keys,'
+    pg_temp.ts_v_lit('ts_admin_delete_user,ts_admin_list,ts_admin_save_user,'
+                  || case when to_regprocedure('public.ts_flag_dismiss(text,text,text,text)') is not null then 'ts_flag_dismiss,ts_flag_undismiss,' else '' end
+                  || 'ts_is_admin,ts_me,ts_my_email,ts_my_grant_keys,'
                   || case when to_regprocedure('public.ts_pay_periods_sync(text,jsonb)') is not null then 'ts_pay_periods_sync,' else '' end
                   || 'ts_sync'));
   perform pg_temp.ts_v('A4 all four are security definer with search_path=public', null, null,

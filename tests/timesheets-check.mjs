@@ -2082,7 +2082,7 @@ check('page: an Edit button at the row end (desktop) and in a card\'s detail (ph
   ok(/\$\{editCell\(r\)\}<\/tr>/.test(appFn('dayRowOf')) && /\$\{editCell\(r\)\}<\/tr>/.test(appFn('empRow')), 'the last cell of a day row');
   ok(/data-act="edit-day" data-k="\$\{r\.id\}"/.test(appFn('editCell')) && /canEditRow\(r\)/.test(appFn('editCell')), 'only inside the window');
   ok(/edTd\(\)/.test(appFn('groupRow')) && /edTd\(\)/.test(appFn('empCard')), 'group and total rows keep the column count');
-  ok(/canEditRow\(r\) \? h`<div class="pd-act">\$\{tapBtn\(r, ''\)\}\$\{moveBtns\(r, 'pmove'\)\}<button type="button" class="btn" data-act="edit-day"/.test(appFn('detailBody')) && /histList\(r\)/.test(appFn('detailBody')), 'phone: in the detail, with the history');
+  ok(/canEditRow\(r\) \? h`<div class="pd-act">\$\{tapBtn\(r, ''\)\}\$\{mv \|\| ok \? h`<div class="pd-place">\$\{mv\}\$\{ok\}<\/div>` : ''\}<button type="button" class="btn" data-act="edit-day"/.test(appFn('detailBody')) && /mv = canEditRow\(r\) \? moveBtns\(r, 'pmove'\) : ''/.test(appFn('detailBody')) && /histList\(r\)/.test(appFn('detailBody')), 'phone: in the detail, with the history');
   const eb = appFn('editorBody');
   ok(/C\.editTimingText\(tz\)/.test(eb) && /Times are \$\{C\.regionDef\(raw\.region\)\.tzName\}/.test(eb), 'the editor says when changes reach Gusto, and the time zone');
   ok(/data-act="ed-add-shift"/.test(eb) && /id="edNote"/.test(eb) && /id="edPreview"/.test(eb) && /editorHistory\(raw, tz\)/.test(eb), 'add a shift, reason, preview, history');
@@ -4520,7 +4520,7 @@ check('page: the tag under each job (By Day, By Employee, phone cards, the edito
   eq(P.placeParts(raw).map(x => x && x.look.tag), ['At Slane', 'Near Imperial'], 'a look per shift in the row\'s order');
   eq([placePage({ rows, idx, jobPick: () => null }).placeMoves(raw), placePage({ rows, idx, canEdit: () => false }).placeMoves(raw)], [[], []], 'no Job pick (a manager before EDIT_PROVEN.job), or a day that cannot change: no button, the flag stays');
   ok(/function placeMoves\(r\) \{[\s\S]*?!canEditRow\(raw\) \|\| !jobPick\(raw, false\)\) return \[\];\s*return looks\.filter\(C\.placeMovable\);/.test(appFn('placeMoves')), 'placeMoves: canEditRow and the Job pick (mayJob: admins and full viewers until EDIT_PROVEN.job)');
-  ok(/C\.placeLooks\(raw, board \|\| raw, editsFor\(raw\.id\), jobsFor\(raw\), \{ today: rowToday\(raw\), now: Date\.now\(\), neighbors: rawNeighbors\(raw\), who: actor\(\), open: placeDayOpen\(raw\) \}\)/.test(appFn('placeLooksFor')), 'the editor\'s own rules');
+  ok(/C\.placeLooks\(raw, board \|\| raw, editsFor\(raw\.id\), jobsFor\(raw\), \{ today: rowToday\(raw\), now: Date\.now\(\), neighbors: rawNeighbors\(raw\), who: actor\(\), open: placeDayOpen\(raw\), dismissals: dismissalsFor\(raw\.id\) \}\)/.test(appFn('placeLooksFor')), 'the editor\'s own rules');
   ok(/C\.canEditForRun\(raw\.work_date, C\.rowTz\(raw\), Date\.now\(\)\) && !periodClosed\(raw\) && !C\.leftDay\(raw, S\.people\)/.test(appFn('placeDayOpen')), 'a day open by the editor\'s day rules, whoever looks: the window, a pay period not processed, someone still on the roster');
   const wp = appFn('withPlaces');
   ok(/C\.placeFlag\(looks, C\.rowTz\(r\), r\.shifts\.filter\(s => !s\.hours_only\)\.length > 1\)/.test(wp) && /flags: \(r\.flags \|\| \[\]\)\.concat\(\[f\]\)/.test(wp) && /placeIdx = idx;/.test(wp), 'withPlaces adds the flag to the board\'s copy of the day');
@@ -4562,7 +4562,7 @@ function placeRunPage(o) {
   const env = { C, S: o.S, placeIdx: o.idx, DEMO: true, canEditRow: () => true, noEditMsg: () => 'That day cannot change.', editsFor: () => [],
     refreshDay: async k => { if (o.refresh) o.refresh(k); return { ok: true }; }, boardRow: r => r, jobPick: () => CJOBS, actor: () => o.me,
     rowToday: () => '2026-10-07', rawNeighbors: () => [], neighborShifts: () => [],
-    placeLooksFor: (raw, board) => C.placeLooks(raw, board, [], CJOBS, { today: '2026-10-07', now: NOW_N, neighbors: [], who: o.me, open: true }),
+    placeLooksFor: (raw, board) => C.placeLooks(raw, board, [], CJOBS, { today: '2026-10-07', now: NOW_N, neighbors: [], who: o.me, open: true, dismissals: o.dismissals || [] }),
     runEditOp: async (raw, op, note) => {
       const s = raw.shifts.find(y => String(y.id) === String(op.shift_id));
       o.sent.push({ day: raw.id, from: s && s.job ? s.job.id : null, to: op.after.job.id, note });
@@ -4846,6 +4846,409 @@ check('demo (2026-11-03): the made-up crew has shifts at Union Pacific, the pack
     console.log('          (' + n + ' in/out reads compared)');
   });
 }
+
+// ---------------------------------------------------------------------------------------------
+// 20b. a Job vs place warning marked as checked (Gianni 2026-11-20: "we should probably have an option to officially dismiss
+//      a job vs place warning in case it was actually correct"): ts_flag_dismissals, C.placeDismissed, the flag, the Move
+//      button and Move all leaving a checked shift, Job is right and its Undo, the page before the SQL is applied, the demo
+//      twin. Made-up people, jobs, sites and days only.
+// ---------------------------------------------------------------------------------------------
+// a check as the server stores it: the shift's job title and its place as Postgres writes the jsonb (C.placeText)
+const DZ = (o, place) => Object.assign({ id: 'd1', day_id: 'filifera:e1:2026-10-06', company: 'filifera', employee_uuid: 'e1', work_date: '2026-10-06', shift_id: 's1',
+  code: 'job_place', job: 'Distro Packager', place: C.placeText(place || PL('Slane', 'named')), reason: null, dismissed_by: 'lead@wizardtrees.com',
+  dismissed_at: '2026-10-07T17:15:00Z', undone_by: null, undone_at: null }, o || {});
+check('C.placeDismissed: a check holds only on its day, shift and code, while the job and place Gusto has (the ts_days row) are the ones it was made on, and not undone', () => {
+  const raw = edRow([PS('Distro Packager', PL('Slane', 'named'))]);
+  eq(C.placeText(PL('Slane', 'named')), '{"at": "in", "how": "named", "site": "Slane"}', 'the place as Postgres writes the jsonb');
+  eq(C.placeText(PL('Imperial', 'near', 'in', 'Olympic')), '{"at": "in", "how": "near", "site": "Imperial", "other": "Olympic"}', 'keys shortest first');
+  eq(C.placeText(PL(null, 'elsewhere')), '{"at": "in", "how": "elsewhere", "site": null}');
+  const d = DZ();
+  eq(C.placeDismissed(raw, raw.shifts[0], [d]), d, 'it holds');
+  eq(C.placeDismissed(raw, 's1', [d]), d, 'by the shift id too');
+  eq(C.placeDismissed(raw, raw.shifts[0], [DZ({ place: { site: 'Slane', how: 'named', at: 'in' } })]).id, 'd1', 'a place stored as an object reads the same');
+  eq(C.placeDismissed(raw, raw.shifts[0], [DZ({ place: '{"site":"Slane","at":"in","how":"named"}' })]).id, 'd1', 'and as JSON in another order');
+  eq(C.placeDismissed(raw, raw.shifts[0], [DZ({ job: ' Distro Packager ' })]).id, 'd1', 'spaces around the title read the same');
+  // the job Gusto has changed since (the board's flag comes back if the new job still does not fit)
+  eq(C.placeDismissed(edRow([PS('Deleaf/Harvest', PL('Slane', 'named'))]), 's1', [d]), null, 'job changed');
+  eq(C.placeDismissed(edRow([PS('Distro Packager', PL('Imperial', 'near'))]), 's1', [d]), null, 'place changed (site)');
+  eq(C.placeDismissed(edRow([PS('Distro Packager', PL('Slane', 'named', 'out'))]), 's1', [d]), null, 'place changed (clocked out there only)');
+  eq(C.placeDismissed(edRow([PS('Distro Packager', PL('Slane', 'named', 'in', 'Imperial'))]), 's1', [d]), null, 'place changed (out at another site)');
+  eq(C.placeDismissed(edRow([PS('Distro Packager', null)]), 's1', [d]), null, 'no place any more');
+  eq(C.placeDismissed(raw, 's1', [DZ({ undone_at: '2026-10-07T18:00:00Z', undone_by: 'lead@wizardtrees.com' })]), null, 'undone');
+  eq(C.placeDismissed(raw, 's1', [DZ({ shift_id: 's2' })]), null, 'another shift');
+  eq(C.placeDismissed(raw, 's1', [DZ({ day_id: 'filifera:e1:2026-10-05' })]), null, 'another day');
+  eq(C.placeDismissed(raw, 's1', [DZ({ code: 'midnight_split' })]), null, 'another code');
+  eq(C.placeDismissed(raw, 'nope', [d]), null, 'a shift not on the day');
+  eq(C.placeDismissed(raw, { id: null }, [d]), null, 'a shift added here (no Gusto id)');
+  eq([C.placeDismissed(raw, 's1', []), C.placeDismissed(raw, 's1', null), C.placeDismissed(null, 's1', [d])], [null, null, null]);
+  eq(C.placeDismissed(raw, 's1', [d, DZ({ id: 'd2', dismissed_at: '2026-10-07T19:00:00Z' })]).id, 'd2', 'the newest that holds');
+  // Gusto's job, not a waiting change: a check holds on the ts_days row whatever waits here
+  eq(C.checkedText(d, C.TZ), 'Checked: job is right · lead@wizardtrees.com · Oct 7', 'who and the day, on the row clock');
+  eq(C.checkedText(DZ({ dismissed_at: '2026-10-08T05:30:00Z' }), C.TZ), 'Checked: job is right · lead@wizardtrees.com · Oct 7', 'late evening Pacific is still that day');
+  eq(C.checkedText(d, C.TZ, '7:03 AM'), '7:03 AM shift checked: job is right · lead@wizardtrees.com · Oct 7', 'a day with more than one shift: one colon, by its start');
+});
+check('a checked shift gives no Job vs place flag, no Move button and is never in Move all; its tag stays; a day with two flagged shifts, one checked, keeps the other\'s flag', () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const raw = edRow([PS('Deleaf/Harvest', PL('Slane', 'named')), Object.assign(onJob(ES('s2', '16:00', '18:00'), SJ('c-pack', 'Distro Packager')), { place: PL('Imperial', 'near') })]);
+  const before = C.placeLooks(raw, raw, [], CJOBS, ctx);
+  eq(before.map(x => [x.shift.id, x.look.kind, x.dismissed]), [['s1', 'clear', null], ['s2', 'check', null]], 'both flagged, none checked');
+  const f0 = C.placeFlag(before, C.TZ, true);
+  ok(/^7:00 AM shift: .*\. 4:00 PM shift: /.test(f0.msg), 'one flag naming both: ' + f0.msg);
+  eq(C.placeLooks(raw, raw, [], CJOBS, Object.assign({ dismissals: [] }, ctx)).map(x => x.dismissed), [null, null], 'no checks read: as before');
+  // the 7:00 AM one checked: the day keeps the 4:00 PM one's flag
+  const d1 = DZ({ id: 'k1', job: 'Deleaf/Harvest' });
+  const one = C.placeLooks(raw, raw, [], CJOBS, Object.assign({ dismissals: [d1] }, ctx));
+  eq(one.map(x => [x.shift.id, x.look.kind, x.look.tag, x.dismissed && x.dismissed.id]), [['s1', 'clear', 'At Slane', 'k1'], ['s2', 'check', 'Near Imperial', null]], 'the look and tag stay');
+  eq(C.placeFlag(one, C.TZ, true), { code: 'job_place', sev: 'warn', msg: '4:00 PM shift: On Distro Packager but clocked in at Imperial, so maybe Deleaf/Harvest - Imperial (packing there can be real)' }, 'only the other one');
+  eq(one.map(x => [C.placeMovable(x), C.placeInMoveAll(x)]), [[false, false], [true, false]], 'no button, never in Move all');
+  // both checked: no flag at all
+  const d2 = DZ({ id: 'k2', shift_id: 's2', job: 'Distro Packager', place: C.placeText(PL('Imperial', 'near')) });
+  const both = C.placeLooks(raw, raw, [], CJOBS, Object.assign({ dismissals: [d1, d2] }, ctx));
+  eq([C.placeFlag(both, C.TZ, true), both.map(x => x.look.tag)], [null, ['At Slane', 'Near Imperial']], 'no flag, the tags stay');
+  // the job changed in Gusto since: the check no longer counts and the flag comes back (the new job still does not fit)
+  const moved = edRow([PS('Distro Packager', PL('Slane', 'named')), raw.shifts[1]]);
+  const back = C.placeLooks(moved, moved, [], CJOBS, Object.assign({ dismissals: [d1, d2] }, ctx));
+  eq([back.map(x => !!x.dismissed), C.placeFlag(back, C.TZ, true).msg], [[false, true], '7:00 AM shift: On Distro Packager but clocked in at Slane, so maybe Deleaf/Harvest - Slane (packing there can be real)'], 'the flag is back for the changed one');
+  // a job change waiting here is not Gusto's, and the check was made on Gusto's job: while the board shows another job the
+  // check does not count (that job's own flag shows) and no check may be made (asGusto false: Job is right would store
+  // Gusto's job, not the one shown). A change of the times only keeps the check.
+  const wait = ED({ id: 'w1', shift_id: 's2', after: Object.assign(AFTER('16:00', '18:00'), { job: { id: 'c-cult', title: 'Cultivator' } }), times_status: 'pending' });
+  const wl = C.placeLooks(raw, OV(raw, [wait]), [wait], CJOBS, Object.assign({ dismissals: [d2] }, ctx));
+  eq(wl.map(x => [x.shift.id, x.asGusto, !!x.dismissed]), [['s1', true, false], ['s2', false, false]], 'a waiting job change: the check does not count');
+  const times = ED({ id: 'w3', shift_id: 's2', after: AFTER('16:00', '18:30'), times_status: 'pending' });
+  eq(C.placeLooks(raw, OV(raw, [times]), [times], CJOBS, Object.assign({ dismissals: [d2] }, ctx)).map(x => [x.asGusto, !!x.dismissed]), [[true, false], [true, true]], 'a waiting change of the times keeps it');
+  // the review's case: Gusto has Distro Packager at Slane, checked; plain Deleaf/Harvest waits here (clear): its flag shows
+  const gp = edRow([PS('Distro Packager', PL('Slane', 'named'))]);
+  const toPlain = ED({ id: 'w2', before: C.shiftSnap(gp.shifts[0]), after: Object.assign(AFTER('07:00', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]), { job: { id: 'c-plain', title: 'Deleaf/Harvest' } }), times_status: 'pending' });
+  const gl = C.placeLooks(gp, OV(gp, [toPlain]), [toPlain], CJOBS, Object.assign({ dismissals: [DZ({ id: 'kp' })] }, ctx));
+  eq([gl[0].shift.job.title, gl[0].look.kind, gl[0].asGusto, gl[0].dismissed], ['Deleaf/Harvest', 'clear', false, null], 'the waiting job is not hidden by the check on Gusto\'s');
+  eq(C.placeFlag(gl, C.TZ, false).msg, 'On Deleaf/Harvest but clocked in at Slane, so likely Deleaf/Harvest - Slane', 'its flag shows');
+  eq(C.placeLooks(gp, gp, [], CJOBS, Object.assign({ dismissals: [DZ({ id: 'kp' })] }, ctx)).map(x => [x.asGusto, x.dismissed && x.dismissed.id]), [[true, 'kp']], 'with nothing waiting it holds');
+  // the totals, the stripe and Flagged only follow the flag (withPlaces adds it only when placeFlag gives one)
+  ok(/const f = C\.placeFlag\(looks, C\.rowTz\(r\), r\.shifts\.filter\(s => !s\.hours_only\)\.length > 1\);\s*return f \? Object\.assign\(\{\}, r, \{ flags: \(r\.flags \|\| \[\]\)\.concat\(\[f\]\) \}\) : r;/.test(appFn('withPlaces')), 'withPlaces: the flag only when placeFlag gives one');
+  ok(/dismissals: dismissalsFor\(raw\.id\)/.test(appFn('placeLooksFor')), 'the board passes the day\'s checks');
+  // CSV: a checked flag is not in the Flags column (buildCsv reads the board's flags)
+  const csv = C.buildCsv([Object.assign({}, raw, { flags: [C.placeFlag(one, C.TZ, true)] })], {});
+  ok(/4:00 PM shift: On Distro Packager/.test(csv) && !/7:00 AM shift/.test(csv), 'CSV: only the flag still standing');
+});
+await acheck('Move all skips a checked shift, and the button refuses one checked since its list was made', async () => {
+  const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N, who: me, open: true };
+  const day = (n, title, place) => edRow([PS(title, place)], { id: 'filifera:k' + n + ':2026-10-06', employee_uuid: 'k' + n, employee_name: 'Test Crew ' + n });
+  const rows = [1, 2, 3].map(n => day(n, 'Deleaf/Harvest', PL('Slane', 'named')));
+  const checks = [DZ({ id: 'c2', day_id: rows[1].id, employee_uuid: 'k2', job: 'Deleaf/Harvest' })];
+  const S = { rows: new Map(rows.map(r => [r.id, r])) }, idx = new Map(rows.map(r => [r.id, C.placeLooks(r, r, [], CJOBS, Object.assign({ dismissals: checks }, ctx))]));
+  const sent = [], toasts = [];
+  const P = placeRunPage({ S, idx, me, sent, toasts, rows: () => rows, dismissals: checks });
+  P.placeAllOpen();
+  eq(P.PM.items.map(it => it.k), [rows[0].id, rows[2].id], 'the checked one is not listed');
+  await P.placeAllRun();
+  eq(sent.map(x => x.day), [rows[0].id, rows[2].id], 'and not moved');
+  sent.length = 0;
+  eq((await P.placeMove(rows[1].id, 's1', 'c-sla')).error, 'This shift no longer needs that move. Check it again.', 'its button (from a board drawn before the check) is refused');
+  eq(sent, [], 'nothing went');
+});
+// The page's Job is right pieces, run as written with stand-ins: o.me (S.me), o.state (S.dismissState), o.demo, o.idx (the
+// board's looks), o.busy (PD.busy)
+function okPage(o) {
+  const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
+  const code = [line(/\n  const PD = \{[^\n]*\n/), line(/\n  const OK_TIP = [^\n]*\n/), line(/\n  const plTip = [^\n]*\n/),
+    line(/\n  const whoWords = [^\n]*\n/), ...['dismissOn', 'placeLooksOf', 'placeOks', 'placeChecks', 'shiftAt', 'okBtns', 'checkLines'].map(appFn),
+    'for (const k of BUSY) PD.busy.add(k);', 'return { okBtns, checkLines, placeOks, placeChecks, dismissOn, plTip, OK_TIP };'].join('\n');
+  return new Function('C', 'h', 'S', 'DEMO', 'placeIdx', 'BUSY', code)(C, C.h, { me: o.me === undefined ? { email: 'boss@wizardtrees.com' } : o.me, dismissState: o.state || 'ok' }, !!o.demo, o.idx, o.busy || []);
+}
+check('Job is right: under a flagged shift for any signed-in sign-in once the server has the table (or the demo), whoever may change the day; never on a checked or unflagged shift; Saving... while it goes; the Checked line with Undo', () => {
+  const ctx = { today: '2026-10-07', now: NOW_N, who: { email: 'boss@wizardtrees.com', is_admin: true }, open: true };
+  const raw = edRow([PS('Deleaf/Harvest', PL('Slane', 'named'))]);
+  const lk = ds => new Map([[raw.id, C.placeLooks(raw, raw, [], CJOBS, Object.assign({ dismissals: ds || [] }, ctx))]]);
+  const P = okPage({ idx: lk() });
+  const html = String(P.okBtns(raw, 'xs'));
+  ok(new RegExp('^<button type="button" class="btn xs pok" data-act="place-ok" data-k="' + raw.id + '" data-s="s1" title="Mark this Job vs place warning as checked, for everyone\\. Nothing changes in Gusto\\.">Job is right</button>$').test(html), 'the button: ' + html);
+  eq(P.OK_TIP, 'Mark this Job vs place warning as checked, for everyone. Nothing changes in Gusto.');
+  eq(String(P.checkLines(raw)), '', 'nothing checked yet');
+  // the same for a manager who cannot pick jobs or change the day: the server decides who may (placeOks asks neither)
+  ok(!/canEditRow|jobPick|mayJob|mayEdit/.test(appFn('placeOks') + appFn('okBtns')), 'not tied to the editor\'s rules');
+  // before the SQL is applied (missing), a failed first read (error), not signed in: nothing new; the demo always has it
+  for (const state of ['missing', 'error', 'off']) eq(String(okPage({ idx: lk(), state }).okBtns(raw, 'xs')), '', state + ': no button');
+  eq(String(okPage({ idx: lk(), me: null }).okBtns(raw, 'xs')), '', 'signed out: no button');
+  ok(/>Job is right</.test(String(okPage({ idx: lk(), state: 'off', demo: true }).okBtns(raw, 'xs'))), 'demo: the button');
+  // busy
+  ok(/ disabled>Saving\.\.\.<\/button>$/.test(String(okPage({ idx: lk(), busy: [raw.id + '|s1'] }).okBtns(raw, ''))), 'Saving... and disabled while it goes');
+  // checked: no button, the line with Undo (Undo only while the server has the table)
+  const d = DZ({ id: 'q1', job: 'Deleaf/Harvest' }), Pc = okPage({ idx: lk([d]) });
+  eq(String(Pc.okBtns(raw, 'xs')), '', 'checked: no button');
+  const LINE = '<span>Checked: job is right</span> · <span>lead@<wbr>wizardtrees.com</span> · <span>Oct 7</span>';
+  const UNDO = '<button type="button" class="linkbtn no-print" data-act="place-undo" data-id="q1" title="Show this Job vs place warning again, for everyone">Undo</button>';
+  eq(String(Pc.checkLines(raw)), '<div class="pck"><div class="pck-l">' + LINE + UNDO + '</div></div>', 'the phone card: the whole line');
+  eq(String(Pc.checkLines(raw)).replace(/<[^>]+>/g, ''), 'Checked: job is right · lead@wizardtrees.com · Oct 7Undo', 'the words: what, who, the day');
+  // the tables' narrow Flags column (review 2026-11-20: five lines tall before): the day and Undo, the whole line in its bubble
+  eq(String(Pc.checkLines(raw, true)), '<div class="pck"><div class="pck-l" title="Checked: job is right · lead@wizardtrees.com · Oct 7"><span>Job checked Oct\u00a07</span>' + UNDO + '</div></div>', 'the tables: short');
+  ok(!/pck-t|pck-s|pck-w/.test(src), 'no line-per-part rules left');
+  ok(/\.pck\{[^}]*color:var\(--muted\)/.test(src), 'muted, not faint: 4.5:1 or better on the row');
+  ok(/disabled>Undoing\.\.\.<\/button>/.test(String(okPage({ idx: lk([d]), busy: ['q1'] }).checkLines(raw))), 'Undoing... while it goes');
+  eq(String(okPage({ idx: lk([d]), state: 'error' }).checkLines(raw)), '<div class="pck"><div class="pck-l">' + LINE + '</div></div>', 'a later read failed: the line, no Undo');
+  // a waiting job change on the shift: no Job is right (it would store Gusto's job, not the one shown)
+  const wj = ED({ id: 'w9', after: Object.assign(AFTER('07:00', '15:30', [['09:00', '09:10', 'rest'], ['11:30', '12:00', 'meal']]), { job: { id: 'c-pack', title: 'Distro Packager' } }), times_status: 'pending' });
+  const wb = OV(raw, [wj]), wlk = new Map([[raw.id, C.placeLooks(raw, wb, [wj], CJOBS, ctx)]]);
+  eq([wlk.get(raw.id)[0].look.kind, String(okPage({ idx: wlk }).okBtns(wb, 'xs'))], ['check', ''], 'a waiting job change: flagged, no Job is right');
+  eq(Pc.plTip(lk([d]).get(raw.id)[0], raw), 'At Slane. Checked: job is right · lead@wizardtrees.com · Oct 7', 'the tag\'s bubble says it was checked');
+  eq(P.plTip(lk().get(raw.id)[0], raw), 'On Deleaf/Harvest but clocked in at Slane, so likely Deleaf/Harvest - Slane', 'else what the place says');
+  // a shift whose job fits: no button
+  const fits = edRow([PS('Deleaf/Harvest - Slane', PL('Slane', 'named'))]);
+  eq(String(okPage({ idx: new Map([[fits.id, C.placeLooks(fits, fits, [], CJOBS, ctx)]]) }).okBtns(fits, 'xs')), '', 'no flag: no button');
+  // two flagged shifts: each by its start, like the Move button
+  const two = edRow([PS('Deleaf/Harvest', PL('Slane', 'named')), Object.assign(onJob(ES('s2', '16:00', '18:00'), SJ('c-pack', 'Distro Packager')), { place: PL('Imperial', 'near') })]);
+  const P2 = okPage({ idx: new Map([[two.id, C.placeLooks(two, two, [], CJOBS, ctx)]]) });
+  eq((String(P2.okBtns(two, 'xs')).match(/>[^<]+<\/button>/g) || []), ['>7:00 AM: Job is right</button>', '>4:00 PM: Job is right</button>']);
+  // and once one is checked, its line by its start, one colon (review 2026-11-20: "7:03 AM shift: Checked: job is right")
+  const dt2 = DZ({ id: 'q2', shift_id: 's2', job: 'Distro Packager', place: C.placeText(PL('Imperial', 'near')) });
+  const P3 = okPage({ idx: new Map([[two.id, C.placeLooks(two, two, [], CJOBS, Object.assign({ dismissals: [dt2] }, ctx))]]) });
+  eq([String(P3.checkLines(two)).replace(/<[^>]+>/g, ''), String(P3.checkLines(two, true)).replace(/<[^>]+>/g, '')],
+    ['4:00 PM shift checked: job is right · lead@wizardtrees.com · Oct 7Undo', '4:00 PM job checked Oct\u00a07Undo'], 'two shifts: by its start');
+  // part of a day (C.workRows) offers only its own shifts
+  eq((String(P2.okBtns(Object.assign({}, two, { part: true, shifts: [two.shifts[1]] }), 'xs')).match(/data-s="[^"]+"/g) || []), ['data-s="s2"'], 'a part: its own shift only');
+  // where it sits: beside the move under the flags (never printed), and in a phone card beside the move, or alone for whoever
+  // cannot change the day; the Checked line under the flags in both
+  const fc = appFn('flagsCell'), db = appFn('detailBody');
+  ok(/ok = okBtns\(r, 'xs'\)/.test(fc) && /\$\{mv \|\| ok \? h`<div class="pmv no-print">\$\{mv\}\$\{ok\}<\/div>` : ''\}\$\{checkLines\(r, true\)\}/.test(fc), 'the flags cell: ' + fc);
+  // a phone card (review 2026-11-20): Move and Job is right in a group of their own, a whole line, before Edit and Add a note
+  ok(/ok = okBtns\(r, ''\)/.test(db) && /\$\{mv \|\| ok \? h`<div class="pd-place">\$\{mv\}\$\{ok\}<\/div>` : ''\}<button/.test(db) && /: ok \? h`<div class="pd-act"><div class="pd-place">\$\{ok\}<\/div><\/div>` : ''/.test(db) && /\$\{checkLines\(r\)\}/.test(db), 'the phone card');
+  ok(/\.pd-place\{display:flex;flex-wrap:wrap;gap:8px;flex-basis:100%\}/.test(src), 'the group takes a line of its own');
+  ok(/title="\$\{plTip\(pp\[i\], r\)\}"/.test(appFn('dayRowOf')) && /title="\$\{plTip\(pp\[i\], r\)\}"/.test(appFn('empRow')), 'the tag\'s bubble in both tables');
+  ok(/pl && pl\.dismissed \? h`<p class="ed-plh ok">\$\{C\.checkedText\(pl\.dismissed, tz\)\}<\/p>`/.test(appFn('entryHtml')), 'the editor says it was checked, muted');
+  ok(/case 'place-ok': placeOkOne\(d\.k, d\.s\); break;/.test(block('ts-app')) && /case 'place-undo': placeUndoOne\(d\.id\); break;/.test(block('ts-app')), 'the clicks');
+  const phone = src.match(new RegExp(PHONE_CSS.replace(/[()]/g, '\\$&') + '\\{([\\s\\S]*?)\\n  \\}\\n'))[1];
+  ok(/\.pd-act \.btn\.pok\{min-height:44px\}/.test(phone) && /\.btn\.pok\{white-space:normal;/.test(src) && /\.pck\{[^}]*overflow-wrap:anywhere\}/.test(src), 'tap-sized on phones, long words wrap');
+  ok(!/<select/i.test(src), 'no <select>');
+});
+await acheck('before ts-flag-dismissals.sql is applied: a missing table (PostgREST cannot find it, or a 404) turns Job is right off with no error; another failure keeps what was loaded; the checks load with the days and each day read again', async () => {
+  const app = block('ts-app');
+  const colsLine = app.match(/\n  const DISMISS_COLS = [^\n]*\n/)[0];
+  const run = async (o) => {
+    const calls = [];
+    const q = { select(c) { calls.push(['select', c]); return q; }, gte(k, v) { calls.push(['gte', k, v]); return q; }, lte(k, v) { calls.push(['lte', k, v]); return q; },
+      is(k, v) { calls.push(['is', k, v]); return q; }, order(k) { calls.push(['order', k]); return q; }, range(a, b) { calls.push(['range', a, b]); return Promise.resolve(o.res); } };
+    const sb = { from(t) { calls.push(['from', t]); return q; } };
+    const S = { dismissals: new Map(o.had || []), dismissState: o.state || 'off', dismissGen: 0, dismissTouched: new Map() };
+    const f = new Function('sb', 'S', 'DEMO', 'console', 'dismissChanged', appFn('isSetupError') + colsLine + appFn('fetchDismissals') + '\nreturn fetchDismissals;')(sb, S, false, { warn: () => {} }, () => {});
+    const got = await f('2026-10-01', '2026-10-14');
+    return { got, S, calls };
+  };
+  // (review 2026-11-20) a read still on its way when Job is right or Undo saved never takes that back
+  {
+    let release;
+    const held = new Promise(res => { release = res; });
+    const q = { select() { return q; }, gte() { return q; }, lte() { return q; }, is() { return q; }, order() { return q; }, range() { return held; } };
+    const S = { dismissals: new Map([['u1', DZ({ id: 'u1', shift_id: 's3' })]]), dismissState: 'ok', dismissGen: 0, dismissTouched: new Map() };
+    const f = new Function('sb', 'S', 'DEMO', 'console', 'dismissChanged', appFn('isSetupError') + colsLine + appFn('fetchDismissals') + '\nreturn fetchDismissals;')({ from: () => q }, S, false, { warn: () => {} }, () => {});
+    const reading = f('2026-10-06', '2026-10-06');
+    // meanwhile: Job is right on s1 saves n9, and Undo of u1 saves (as runDismiss records them)
+    const touch = d => { S.dismissals.set(d.id, d); S.dismissTouched.set(d.id, ++S.dismissGen); };
+    touch(DZ({ id: 'n9' })); touch(DZ({ id: 'u1', shift_id: 's3', undone_by: 'lead@wizardtrees.com', undone_at: '2026-10-07T18:00:00Z' }));
+    release({ data: [DZ({ id: 'u1', shift_id: 's3' }), DZ({ id: 'o2', shift_id: 's4' })], error: null });   // read before both saved
+    eq(await reading, true);
+    eq([[...S.dismissals.keys()].sort(), !!S.dismissals.get('n9'), S.dismissals.get('u1').undone_at], [['n9', 'o2', 'u1'], true, '2026-10-07T18:00:00Z'], 'the new check stays, the undone one stays undone, the rest is the read\'s');
+    // a read begun after the saves is the server's word again
+    const q2 = { select() { return q2; }, gte() { return q2; }, lte() { return q2; }, is() { return q2; }, order() { return q2; }, range: () => Promise.resolve({ data: [DZ({ id: 'n9' })], error: null }) };
+    const f2 = new Function('sb', 'S', 'DEMO', 'console', 'dismissChanged', appFn('isSetupError') + colsLine + appFn('fetchDismissals') + '\nreturn fetchDismissals;')({ from: () => q2 }, S, false, { warn: () => {} }, () => {});
+    await f2('2026-10-06', '2026-10-06');
+    eq([...S.dismissals.keys()], ['n9'], 'a later read: the server\'s rows only');
+  }
+  const ok1 = await run({ res: { data: [DZ({ id: 'n1' })], error: null, status: 200 }, had: [['old', DZ({ id: 'old' })], ['far', DZ({ id: 'far', work_date: '2026-09-01' })]] });
+  eq([ok1.got, ok1.S.dismissState, [...ok1.S.dismissals.keys()].sort()], [true, 'ok', ['far', 'n1']], 'read: the range replaced, other days kept');
+  eq(ok1.calls, [['from', 'ts_flag_dismissals'], ['select', 'id,day_id,company,employee_uuid,work_date,shift_id,code,job,place,reason,dismissed_by,dismissed_at,undone_at'],
+    ['gte', 'work_date', '2026-10-01'], ['lte', 'work_date', '2026-10-14'], ['is', 'undone_at', null], ['order', 'dismissed_at'], ['order', 'id'], ['range', 0, 999]], 'one select of the needed columns, the dates on screen, still standing');
+  for (const err of [{ code: 'PGRST205', message: "Could not find the table 'public.ts_flag_dismissals' in the schema cache" }, { code: '42P01', message: 'relation "public.ts_flag_dismissals" does not exist' }]) {
+    const m = await run({ res: { data: null, error: err, status: 404 } });
+    eq([m.got, m.S.dismissState, m.S.dismissals.size], [false, 'missing', 0], err.code + ': missing, no error');
+  }
+  eq((await run({ res: { data: null, error: { code: '', message: 'Not Found' }, status: 404 } })).S.dismissState, 'missing', 'a bare 404: missing');
+  eq((await run({ res: { data: null, error: { code: '57014', message: 'timeout' }, status: 500 } })).S.dismissState, 'error', 'another failure before any read: error (no buttons, the board as before)');
+  const kept = await run({ res: { data: null, error: { code: '57014', message: 'timeout' }, status: 500 }, state: 'ok', had: [['x', DZ({ id: 'x' })]] });
+  eq([kept.S.dismissState, [...kept.S.dismissals.keys()]], ['ok', ['x']], 'after a good read: what was loaded stays');
+  const gone = await run({ res: { data: [], error: null }, state: 'missing' });
+  eq([gone.got, gone.calls], [false, []], 'missing: never asked again until a reload');
+  const fd = appFn('fetchDismissals');
+  ok(!/loadErr|throw new|toast/.test(fd.replace(/throw Object\.assign\(res\.error, \{ status: res\.status \}\);/, '')) && /\} catch \(e\) \{/.test(fd), 'never throws out, never shows an error');
+  ok(/const dz = fetchDismissals\(from, to\);/.test(appFn('fetchDays')) && /await dz;/.test(appFn('fetchDays')), 'with the days (beside their changes)');
+  ok(/const dz = date \? fetchDismissals\(date, date\) : null;/.test(appFn('refreshDay')), 'and each day read again (before a move, after a check)');
+  ok(/if \(S\.dismissState === 'missing'\) S\.dismissState = 'off';/.test(appFn('reload')), 'a reload tries again');
+  ok(/S\.dismissals = new Map\(\); S\.dismissState = 'ok'; dismissChanged\(\);/.test(appFn('loadDemo')), 'the demo starts with none');
+  ok(/function dismissOn\(\) \{ return !!S\.me && \(DEMO \|\| S\.dismissState === 'ok'\); \}/.test(app), 'the buttons only once read');
+  // live: the server's functions, by their names and arguments; a server without them says so in plain words
+  const rd = appFn('runDismiss');
+  ok(/S\.dismissals\.set\(data\.id, data\); S\.dismissTouched\.set\(data\.id, \+\+S\.dismissGen\);/.test(rd), 'each save is recorded for the reads on their way');
+  ok(/dismissGen: 0, dismissTouched: new Map\(\),/.test(app), 'from none');
+  ok(/sb\.rpc\('ts_flag_dismiss', \{ p_day_id: op\.raw\.id, p_shift_id: String\(op\.sid\), p_code: 'job_place', p_reason: null \}\)/.test(rd) && /sb\.rpc\('ts_flag_undismiss', \{ p_id: op\.id \}\)/.test(rd), 'ts_flag_dismiss and ts_flag_undismiss');
+  ok(/Ask Gianni to apply supabase\/ts-flag-dismissals\.sql/.test(rd), 'not set up yet: plain words');
+});
+// supabase/ts-flag-dismissals.sql, when it is in this checkout: the page calls its functions by their names and arguments,
+// and the demo twin refuses in its words
+const SQL_DISMISS = (() => { try { return fs.readFileSync(path.join(ROOT, 'supabase', 'ts-flag-dismissals.sql'), 'utf8'); } catch { return ''; } })();
+check('ts-flag-dismissals.sql (when present): the functions the page calls, the columns it reads, the place stored as Postgres writes the jsonb, and the refusals in the twin\'s words', () => {
+  if (!SQL_DISMISS) { console.log('          (skipped: no supabase/ts-flag-dismissals.sql in this checkout)'); return true; }
+  ok(/function public\.ts_flag_dismiss\(p_day_id text, p_shift_id text, p_code text, p_reason text default null\)\s*returns jsonb/.test(SQL_DISMISS), 'ts_flag_dismiss(p_day_id, p_shift_id, p_code, p_reason)');
+  ok(/function public\.ts_flag_undismiss\(p_id uuid\)\s*returns jsonb/.test(SQL_DISMISS), 'ts_flag_undismiss(p_id)');
+  for (const col of block('ts-app').match(/const DISMISS_COLS = '([^']+)'/)[1].split(',')) ok(new RegExp('\\n\\s+' + col + '\\s').test(SQL_DISMISS), 'column ' + col);
+  ok(/p_place::text/.test(SQL_DISMISS), 'the place as Postgres writes the jsonb (C.placeText makes the same text)');
+  for (const [k, w] of Object.entries(C.DISMISS_WORDS)) ok(SQL_DISMISS.includes("raise exception '" + w.replace(/'/g, "''") + "'"), k + ': ' + w);
+});
+check('the demo twins of ts_flag_dismiss and ts_flag_undismiss: who, the refusals in their words, the job and place from the day (never the caller), idempotent, undo', () => {
+  const raw = edRow([PS('Distro Packager', PL('Slane', 'named')), Object.assign(onJob(ES('s2', '16:00', '18:00'), SJ('c-pack', 'Distro Packager')), {})]);
+  const W = C.DISMISS_WORDS, me = { email: 'Lead@WizardTrees.com', now: '2026-10-07T17:15:00Z', id: 'z1' };
+  const go = (input, ctx, list) => C.flagDismiss(list || [], raw, Object.assign({ shift_id: 's1', code: 'job_place' }, input || {}), Object.assign({}, me, ctx || {}));
+  eq(go({}, { email: '' }).error, W.who, 'no sign-in');
+  eq(go({ code: 'midnight_split' }).error, W.code, 'another flag');
+  eq(go({ code: '' }).error, W.code);
+  eq(C.flagDismiss([], null, { shift_id: 's1', code: 'job_place' }, me).error, W.day, 'no such day');
+  eq(go({}, { canView: () => false }).error, W.day, 'a day the sign-in cannot see');
+  eq(go({ shift_id: 'nope' }).error, W.shift, 'a shift not on the day');
+  eq(go({ shift_id: '' }).error, W.shift);
+  eq(go({ shift_id: 's2' }).error, W.place, 'a shift with no place');
+  eq(go({ reason: 'x'.repeat(201) }).error, W.reason, 'a reason over 200');
+  eq([W.who, W.code, W.day, W.shift, W.place, W.reason, W.check], ['Only timesheet sign-ins can mark a warning as checked', 'Only a Job vs place warning can be marked as checked',
+    'No such day, or you cannot see it', 'That shift is not on this day any more (it may have changed in Gusto). Reload and try again',
+    'That shift has no clock-in place, so it has no Job vs place warning', 'The reason can be at most 200 characters', 'No such check, or you cannot see it'], 'the words');
+  // stored: the job and place from the day itself, whatever the caller sends; the sign-in in lower case; the reason one line
+  const a = go({ job: 'Deleaf/Harvest - Slane', place: '{"site": "Imperial"}', reason: '  right \n  job\there ' });
+  ok(a.ok, a.error);
+  eq(a.row, { id: 'z1', day_id: raw.id, company: 'filifera', employee_uuid: 'e1', work_date: '2026-10-06', shift_id: 's1', code: 'job_place', job: 'Distro Packager',
+    place: '{"at": "in", "how": "named", "site": "Slane"}', reason: 'right job here', dismissed_by: 'lead@wizardtrees.com', dismissed_at: '2026-10-07T17:15:00.000Z', undone_by: null, undone_at: null }, 'the stored row');
+  eq(go({ reason: 'x'.repeat(200) }).ok, true, '200 is fine');
+  eq(go({ reason: '   ' }).row.reason, null, 'a blank reason is none');
+  // the window and pay periods are never asked: a check of a day long gone still saves
+  ok(C.flagDismiss([], Object.assign({}, raw, { work_date: '2025-01-03' }), { shift_id: 's1', code: 'job_place' }, me).ok, 'an old day');
+  // idempotent: the same check again returns the one there, unchanged
+  const b = go({ reason: 'again' }, { id: 'z2', email: 'other@wizardtrees.com', now: '2026-10-07T18:00:00Z' }, a.list);
+  eq([b.ok, b.row, b.list.length], [true, a.row, 1], 'the same row, nothing added');
+  eq(C.placeDismissed(raw, 's1', b.list), a.row, 'it holds on the board');
+  eq(go({ code: ' JOB_PLACE ' }, {}, b.list).row, a.row, 'the code in any case');
+  // Gusto changed the shift's job since: the old check is closed (superseded) and a new one made on the job it has now
+  const moved = edRow([PS('Deleaf/Harvest', PL('Slane', 'named'))]);
+  const sup = C.flagDismiss(b.list, moved, { shift_id: 's1', code: 'job_place' }, Object.assign({}, me, { id: 'z9', now: '2026-10-07T18:30:00Z' }));
+  eq([sup.row.id, sup.row.job, sup.list.length, sup.list.find(x => x.id === 'z1').undone_by, sup.list.find(x => x.id === 'z1').undone_at],
+    ['z9', 'Deleaf/Harvest', 2, 'superseded', '2026-10-07T18:30:00.000Z'], 'superseded, then the new one');
+  eq([C.placeDismissed(moved, 's1', sup.list).id, C.placeDismissed(raw, 's1', sup.list)], ['z9', null], 'only the new one holds');
+  // undo
+  const U = (id, ctx, list) => C.flagUndismiss(list || b.list, id, Object.assign({ email: 'Other@WizardTrees.com', now: '2026-10-07T19:00:00Z' }, ctx || {}));
+  eq(U('z1', { email: '' }).error, W.who, 'no sign-in');
+  eq(U('nope').error, W.check, 'no such check');
+  eq(U('z1', { canView: () => false }).error, W.check, 'one the sign-in cannot see');
+  const u = U('z1');
+  eq([u.ok, u.row.undone_by, u.row.undone_at, u.row.dismissed_by, u.list.length], [true, 'other@wizardtrees.com', '2026-10-07T19:00:00.000Z', 'lead@wizardtrees.com', 1], 'undone, by whom and when');
+  eq(C.placeDismissed(raw, 's1', u.list), null, 'the flag shows again');
+  const u2 = U('z1', { email: 'third@wizardtrees.com', now: '2026-10-07T20:00:00Z' }, u.list);
+  eq([u2.ok, u2.row], [true, u.row], 'already undone: as it is');
+  // after an undo a new check is a new row
+  const c = go({}, { id: 'z3' }, u.list);
+  eq([c.row.id, c.list.length, C.placeDismissed(raw, 's1', c.list).id], ['z3', 2, 'z3'], 'checked again');
+});
+await acheck('demo: Job is right and Undo round trip through the page (Saving..., the toast, the check for the sign-in being previewed), and pressing it twice keeps one check', async () => {
+  const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
+  const raw = edRow([PS('Deleaf/Harvest', PL('Slane', 'named'))]);
+  const toasts = [], renders = [], draws = [];
+  const S = { me: { email: 'boss@wizardtrees.com', is_admin: true }, viewer: { email: 'lead@wizardtrees.com' }, rows: new Map([[raw.id, raw]]), dismissals: new Map(), dismissState: 'ok', dismissGen: 0, dismissTouched: new Map() };
+  let PD = null;
+  // pdDraw (the drawing that keeps the table's scroll and moves the focus) is tested on its own below
+  const env = { C, S, DEMO: true, actor: () => S.viewer || S.me, filterViewer: () => null, errText: e => String((e && e.message) || e), toast: m => toasts.push(m),
+    pdSel: (...a) => a.join('|'), pdDraw: (from, to, focus) => { renders.push(PD && [...PD.busy]); draws.push([from, to, !!focus]); },
+    refreshDay: async () => { throw new Error('the demo never reads again'); }, sb: null, isSetupError: () => false };
+  const code = ['let demoSeq = 100;', line(/\n  const PD = \{[^\n]*\n/), line(/\n  const demoSees = [^\n]*\n/), 'let dismissIdx = null;',
+    ...['dismissChanged', 'dismissalsFor', 'dismissOn', 'runDismiss', 'placeOkOne', 'placeUndoOne'].map(appFn), 'return { PD, placeOkOne, placeUndoOne, dismissalsFor };'].join('\n');
+  const P = new Function(...Object.keys(env), code)(...Object.values(env));
+  PD = P.PD;
+  await P.placeOkOne(raw.id, 's1');
+  eq(renders[0], [raw.id + '|s1'], 'Saving... while it goes (the key is busy at the first redraw)');
+  eq([...P.PD.busy], [], 'then free');
+  const OKS = 'place-ok|' + raw.id + '|s1';
+  eq(draws, [[OKS, [OKS], false], [OKS, ['place-undo|demo-check-101', OKS], true]], 'the table kept where the button was; the focus on its Undo');
+  const d = [...S.dismissals.values()];
+  eq([d.length, d[0].dismissed_by, d[0].job, d[0].place, d[0].id], [1, 'lead@wizardtrees.com', 'Deleaf/Harvest', '{"at": "in", "how": "named", "site": "Slane"}', 'demo-check-101'], 'in memory, as the previewed sign-in');
+  eq(toasts.pop(), 'Marked as checked, for everyone. Nothing changed in Gusto.');
+  eq(C.placeDismissed(raw, 's1', P.dismissalsFor(raw.id)).id, 'demo-check-101', 'the board sees it');
+  await P.placeOkOne(raw.id, 's1');
+  eq([S.dismissals.size, toasts.pop()], [1, 'Marked as checked, for everyone. Nothing changed in Gusto.'], 'twice: still one');
+  draws.length = 0;
+  await P.placeUndoOne('demo-check-101');
+  eq([S.dismissals.get('demo-check-101').undone_by, C.placeDismissed(raw, 's1', P.dismissalsFor(raw.id)), toasts.pop()], ['lead@wizardtrees.com', null, 'Undone: the Job vs place warning shows again.'], 'undone: the flag is back');
+  eq(draws, [['place-undo|demo-check-101', ['place-undo|demo-check-101'], false], ['place-undo|demo-check-101', [OKS, 'place-undo|demo-check-101'], true]], 'Undo: the focus back on Job is right');
+  await P.placeOkOne(raw.id, 's1');
+  eq([S.dismissals.size, C.placeDismissed(raw, 's1', P.dismissalsFor(raw.id)).id], [2, 'demo-check-103'], 'checked again: a new check');
+  // a refusal: the server's words in a toast
+  await P.placeOkOne(raw.id, 'nope');
+  eq(toasts.pop(), "Couldn't mark it as checked: " + C.DISMISS_WORDS.shift, 'a refusal in the server\'s words');
+  S.viewer = { email: '' };
+  await P.placeOkOne(raw.id, 's1');
+  eq(toasts.pop(), "Couldn't mark it as checked: " + C.DISMISS_WORDS.who);
+  await P.placeUndoOne('demo-check-103');
+  eq([toasts.pop(), S.dismissals.get('demo-check-103').undone_at], ["Couldn't undo it: " + C.DISMISS_WORDS.who, null], 'an Undo refused says why, and nothing changed');
+});
+// (review 2026-11-20) live, with a stand-in server: the server stores the job ts_days has now, which can differ from the one
+// the board showed at the press. The check must hold on the day as clicked; a check this press made on a job nobody here saw
+// is taken back, the day is read again, and the toast never says it was checked.
+await acheck('live: Job is right on a shift Gusto changed since the board showed it stores nothing the person did not see', async () => {
+  const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
+  const shown = edRow([PS('Deleaf/Harvest', PL('Slane', 'named'))]), now = edRow([PS('Distro Packager', PL('Slane', 'named'))]);
+  const build = o => {
+    const toasts = [], calls = [], reads = [];
+    const S = { me: { email: 'boss@wizardtrees.com', is_admin: false }, viewer: null, rows: new Map([[shown.id, shown]]), dismissals: new Map(o.had || []), dismissState: 'ok', dismissGen: 0, dismissTouched: new Map() };
+    const sb = { rpc: async (fn, args) => { calls.push([fn, args]); return o.rpc(fn, args); } };
+    const env = { C, S, DEMO: false, actor: () => S.me, filterViewer: () => null, errText: e => String((e && e.message) || e), toast: m => toasts.push(m),
+      pdSel: (...a) => a.join('|'), pdDraw: () => {}, refreshDay: async k => { reads.push(k); S.rows.set(k, now); return { ok: true }; }, sb, isSetupError: () => false };
+    const code = ['let demoSeq = 100;', line(/\n  const PD = \{[^\n]*\n/), line(/\n  const demoSees = [^\n]*\n/), 'let dismissIdx = null;',
+      ...['dismissChanged', 'dismissalsFor', 'dismissOn', 'runDismiss', 'placeOkOne', 'placeUndoOne'].map(appFn), 'return { placeOkOne, dismissalsFor };'].join('\n');
+    return Object.assign(new Function(...Object.keys(env), code)(...Object.values(env)), { S, toasts, calls, reads });
+  };
+  const stored = o => DZ(Object.assign({ id: 'live-1', day_id: shown.id, job: 'Distro Packager', dismissed_by: 'boss@wizardtrees.com' }, o || {}));
+  const undone = d => Object.assign({}, d, { undone_by: 'boss@wizardtrees.com', undone_at: '2026-10-07T18:01:00Z' });
+  const NOT = "This shift's job or place changed in Gusto since the board showed it, so it was not marked as checked. Look at it again.";
+  // the review's case: the board shows Deleaf/Harvest at Slane; Gusto moved it to Distro Packager; the server stores that
+  const a = build({ rpc: fn => fn === 'ts_flag_dismiss' ? { data: stored(), error: null } : { data: undone(stored()), error: null } });
+  await a.placeOkOne(shown.id, 's1');
+  eq(a.calls, [['ts_flag_dismiss', { p_day_id: shown.id, p_shift_id: 's1', p_code: 'job_place', p_reason: null }], ['ts_flag_undismiss', { p_id: 'live-1' }]], 'made by this press on a job nobody saw: taken back');
+  eq([a.reads, a.toasts, a.S.dismissals.get('live-1').undone_at], [[shown.id], [NOT], '2026-10-07T18:01:00Z'], 'the day read again; never "Marked as checked"');
+  eq(C.placeDismissed(a.S.rows.get(shown.id), 's1', a.dismissalsFor(shown.id)), null, 'the Distro Packager warning still shows for everyone');
+  // someone else had checked Gusto's job already (their row comes back): it stays theirs, nothing taken back
+  const b = build({ rpc: () => ({ data: stored({ id: 'theirs', dismissed_by: 'lead@wizardtrees.com' }), error: null }) });
+  await b.placeOkOne(shown.id, 's1');
+  eq([b.calls.map(c => c[0]), b.reads, b.toasts], [['ts_flag_dismiss'], [shown.id], [NOT]], 'another sign-in\'s check: left alone');
+  // one already here before the press is never taken back either
+  const c = build({ had: [['live-1', stored()]], rpc: () => ({ data: stored(), error: null }) });
+  await c.placeOkOne(shown.id, 's1');
+  eq(c.calls.map(x => x[0]), ['ts_flag_dismiss'], 'a check already read: left alone');
+  // taking it back failed: says so, and how to put it right
+  const d = build({ rpc: fn => fn === 'ts_flag_dismiss' ? { data: stored(), error: null } : { data: null, error: { message: 'timeout' } } });
+  await d.placeOkOne(shown.id, 's1');
+  eq(d.toasts, ["This shift's job or place changed in Gusto since the board showed it, and the check saved on Gusto's job couldn't be taken back (timeout). Look at it again, and press Undo if that job is not right."]);
+  // the job as shown: checked, no second call, no read
+  const e = build({ rpc: () => ({ data: stored({ job: 'Deleaf/Harvest' }), error: null }) });
+  await e.placeOkOne(shown.id, 's1');
+  eq([e.calls.length, e.reads, e.toasts, C.placeDismissed(shown, 's1', e.dismissalsFor(shown.id)).id], [1, [], ['Marked as checked, for everyone. Nothing changed in Gusto.'], 'live-1'], 'as shown: checked');
+  // a refusal: the server's words
+  const f = build({ rpc: () => ({ data: null, error: { message: C.DISMISS_WORDS.shift } }) });
+  await f.placeOkOne(shown.id, 's1');
+  eq([f.calls.length, f.reads, f.toasts], [1, [], ["Couldn't mark it as checked: " + C.DISMISS_WORDS.shift]]);
+});
+// (review 2026-11-20) render() draws the tables again at their left edge: pdDraw keeps the sideways scroll of the table the
+// button was pressed in and puts the focus on the first button of to that is there, without scrolling the page
+check('Job is right and Undo keep the table where it was scrolled sideways, and leave the focus on the button that took the pressed one\'s place', () => {
+  const app = block('ts-app');
+  const wrapA = { scrollLeft: 290 }, wrapB = { scrollLeft: 0 }, log = [];
+  let dom = { '#ok': { closest: () => wrapA } };
+  const document = { querySelector: sel => dom[sel] || null };
+  const render = () => { log.push('render'); wrapB.scrollLeft = 0; dom = { '#undo': { closest: () => wrapB, disabled: false, focus: o => log.push(['focus', o]) }, '#ok': null }; };
+  const pdDraw = new Function('document', 'render', appFn('pdDraw') + '\nreturn pdDraw;')(document, render);
+  pdDraw('#ok', ['#gone', '#undo'], true);
+  eq([wrapB.scrollLeft, log], [290, ['render', ['focus', { preventScroll: true }]]], 'the new table at the old scroll, the focus on Undo, the page not scrolled');
+  log.length = 0;
+  pdDraw('#undo', ['#undo'], false);
+  eq([wrapB.scrollLeft, log], [290, ['render']], 'no focus while it is saving');
+  // a phone card (no table): nothing scrolled, still focused
+  const card = { closest: () => null, disabled: false, focus: () => log.push('focus') };
+  log.length = 0;
+  new Function('document', 'render', appFn('pdDraw') + '\nreturn pdDraw;')({ querySelector: () => card }, () => log.push('render'))('#x', ['#x'], true);
+  eq(log, ['render', 'focus'], 'a phone card: focused');
+  ok(/const pdSel = \(act, a, b\) => /.test(app) && /CSS\.escape/.test(app.match(/const pdSel = [\s\S]*?;\n/)[0]), 'the buttons found by their data, escaped');
+});
 
 // ---------------------------------------------------------------------------------------------
 // 21. a deleaf crew's Packaging and Deleaf/Harvest buttons (Gianni 2026-11-04: buttons on the crew's tab, "then under deleaf

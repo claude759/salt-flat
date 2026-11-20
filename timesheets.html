@@ -547,6 +547,7 @@
   .edv{color:var(--ot-text)}
   .brk.ed{box-shadow:0 0 0 1px rgba(56,189,248,.6)}
   .pd-act{display:flex;flex-wrap:wrap;gap:8px}
+  .pd-place{display:flex;flex-wrap:wrap;gap:8px;flex-basis:100%}   /* a Job vs place warning's two answers, Move and Job is right, together */
   /* where a deleaf crew shift was clocked in (2026-10-30): a quiet line under its job, the one-click move under the day's
      flags, and Move all clear ones above the board. The place line under a job has a blank twin under its times. */
   .ts td.c-job > div.pl,.ts td.io > div.pl-sp{margin-top:0;font-size:11px;line-height:15px;height:15px;color:var(--faint)}
@@ -559,6 +560,14 @@
   .btn.pmove{white-space:normal;text-align:left;line-height:1.3;color:var(--accent2);border-color:rgba(124,92,255,.45);max-width:100%}
   .btn.xs.pmove{padding:3px 8px;font-size:11.5px}
   .btn.pmove:hover:not(:disabled){border-color:var(--accent);color:var(--text)}
+  /* (2026-11-20) Job is right: a quiet button beside the move; once checked, a muted line under the flags with Undo */
+  .btn.pok{white-space:normal;text-align:left;line-height:1.3;max-width:100%}
+  .btn.xs.pok{padding:3px 8px;font-size:11.5px}
+  .pck{display:flex;flex-direction:column;gap:3px;margin-top:6px;font-size:11.5px;line-height:1.4;color:var(--muted);overflow-wrap:anywhere}
+  .pck .linkbtn{font-size:11.5px;margin-left:6px}
+  .pd .pck{font-size:13px;margin-top:0}
+  .pd .pck .linkbtn{font-size:13px}
+  .ed-plh.ok{color:var(--faint)}
   .pmall{margin:-6px 0 14px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--warn-line);border-radius:10px;font-size:13.5px;line-height:1.5}
   .pm-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 12px}
   .pm-head .btn{margin-left:auto}
@@ -831,6 +840,8 @@
     .pm-head .btn{margin-left:0;min-height:40px}
     .pm-act .btn{min-height:44px;flex:1 1 140px}
     .pd-act .btn.pmove{min-height:44px}
+    .pd-act .btn.pok{min-height:44px}
+    .pd .pck .linkbtn{min-height:0;padding:8px 6px;margin:-8px -6px -8px 2px}   /* a tap-sized Undo that keeps the line's height */
     table.ts.day-t{min-width:1280px}
     table.ts.emp-t{min-width:1270px}
     .legend{min-width:0;width:auto}
@@ -2057,13 +2068,19 @@
       const en = ents.find(x => x.kind === 'shift' && x.id === String(s.id)) || null;
       const look = placeLook(s, jobs, { date: raw.work_date, readonly: !c.open || !en || !!en.readonly || !!en.del || !!en.split });
       if (look && look.kind === 'changed' && splitAtMove(s, b.shifts)) Object.assign(look, { kind: null, msg: '', reason: '' });
-      if (look) out.push({ shift: s, look, entry: en, waiting: !!(en && en.pendingIds && en.pendingIds.length) });
+      // dismissed: the check that holds for the shift (placeDismissed on ctx.dismissals, the day's ts_flag_dismissals), else
+      // null. asGusto: the board shows the job Gusto has (no job change waiting here); only then does a check count, since
+      // it was made on Gusto's job, and only then may one be made (Job is right stores Gusto's job, not the one waiting)
+      const rs = (raw.shifts || []).find(x => x && x.id != null && String(x.id) === String(s.id));
+      const asGusto = !!rs && sameJobText(dismissJob(s), dismissJob(rs));
+      if (look) out.push({ shift: s, look, entry: en, waiting: !!(en && en.pendingIds && en.pendingIds.length), asGusto, dismissed: asGusto ? placeDismissed(raw, s, c.dismissals) : null });
     }
     return out;
   }
   // a move the board may offer for one shift (the person's job that the place says, nothing waiting on the shift), and
-  // whether Move all clear ones takes it (clear, by its clock-in place)
-  const placeMovable = x => !!x && !!x.look && !!x.look.to && (x.look.kind === 'clear' || x.look.kind === 'check') && !x.waiting;
+  // whether Move all clear ones takes it (clear, by its clock-in place). A shift whose warning someone marked as checked
+  // (x.dismissed, placeDismissed) offers neither (2026-11-20).
+  const placeMovable = x => !!x && !!x.look && !x.dismissed && !!x.look.to && (x.look.kind === 'clear' || x.look.kind === 'check') && !x.waiting;
   const placeInMoveAll = x => placeMovable(x) && x.look.kind === 'clear' && x.look.at === 'in';
   // The Edit panel's break lengths, from the time boxes as typed: minutes, or null until both are filled and the end is after
   // the start. A rest is paid and a meal unpaid, as on the board.
@@ -2081,9 +2098,9 @@
   }
   // The day's Job vs place flag, a warning like the producer's flags (it counts, stripes the row, shows under Flagged only):
   // one for the day, its message naming each shift's (with its start when the day has more than one shift); null when every
-  // shift's job fits where it was clocked in. tz: the day's zone.
+  // shift's job fits where it was clocked in. tz: the day's zone. A shift someone marked as checked (x.dismissed) is left out.
   function placeFlag(looks, tz, many) {
-    const off = (looks || []).filter(x => x.look.kind);
+    const off = (looks || []).filter(x => x.look.kind && !x.dismissed);
     if (!off.length) return null;
     return { code: 'job_place', sev: 'warn', msg: off.map(x => (many ? fmtTime(x.shift.in, tz) + ' shift: ' : '') + x.look.msg).join('. ') };
   }
@@ -2104,6 +2121,117 @@
     const ops = plan.ops.filter(o => o.type === 'submit');
     if (Object.keys(plan.errors).length || ops.length !== 1 || ops[0].shift_id !== en.id || ops[0].action !== 'update') return { error: 'Nothing to move: the shift is on that job already.' };
     return { op: ops[0] };
+  }
+
+  /* ---------- a Job vs place warning marked as checked (2026-11-20, Gianni: "we should probably have an option to
+     officially dismiss a job vs place warning in case it was actually correct") ----------
+     public.ts_flag_dismissals (supabase/ts-flag-dismissals.sql): one row per shift someone marked "Job is right", written
+     only through ts_flag_dismiss and ts_flag_undismiss, which take the shift's job title and place from its ts_days row
+     (never from the page). It changes nothing in Gusto and no hours. A check holds only while the shift's job and place as
+     Gusto has them now (the ts_days row, never a change waiting here) are the ones it was made on: once either changes, the
+     check no longer counts, and the flag comes back if the new job still does not fit. */
+  const DISMISS_CODES = ['job_place'];
+  const DISMISS_REASON_MAX = 200;
+  // the server's words (ts_flag_dismiss, ts_flag_undismiss); the demo twin says the same
+  const DISMISS_WORDS = {
+    who: 'Only timesheet sign-ins can mark a warning as checked',
+    code: 'Only a Job vs place warning can be marked as checked',
+    day: 'No such day, or you cannot see it',
+    shift: 'That shift is not on this day any more (it may have changed in Gusto). Reload and try again',
+    place: 'That shift has no clock-in place, so it has no Job vs place warning',
+    reason: 'The reason can be at most ' + DISMISS_REASON_MAX + ' characters',
+    check: 'No such check, or you cannot see it',
+  };
+  // a place as text, the way Postgres writes the jsonb ts_days holds (keys shortest first, then A to Z; ", " and ": "), so
+  // the demo stores what the server stores; null for no place
+  function placeText(p) {
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+    const keys = Object.keys(p).filter(k => p[k] !== undefined).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0));
+    return '{' + keys.map(k => JSON.stringify(k) + ': ' + JSON.stringify(p[k])).join(', ') + '}';
+  }
+  // what a place says (site, how, at, other), from ts_days' object or a check's stored text; null when it cannot be read
+  function placeKeyOf(v) {
+    let p = v;
+    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { return null; } }
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+    const t = x => x == null ? null : String(x);
+    return JSON.stringify([t(p.site), t(p.how), t(p.at), t(p.other)]);
+  }
+  // a check's stored place against the shift's place now: by what each says, or (stored text the page cannot read as
+  // JSON) by the text itself
+  function samePlace(stored, now) {
+    if (stored == null || !now) return false;
+    const k = placeKeyOf(stored);
+    return k != null ? k === placeKeyOf(now) : String(stored) === placeText(now);
+  }
+  const dismissJob = s => s && s.job && typeof s.job.title === 'string' ? s.job.title : null;
+  const sameJobText = (a, b) => String(a == null ? '' : a).trim() === String(b == null ? '' : b).trim();
+  // The check that holds for one shift of a day: raw the ts_days row (as Gusto has it), shift the shift or its Gusto id,
+  // list the checks read (ts_flag_dismissals rows), code the flag (job_place). The newest one of that day, shift and code
+  // not undone whose job and place are the shift's as Gusto has them now; else null.
+  function placeDismissed(raw, shift, list, code) {
+    const c = code || 'job_place';
+    if (!raw || shift == null || (typeof shift === 'object' && shift.id == null)) return null;
+    const sid = String(typeof shift === 'object' ? shift.id : shift);
+    const s = (raw.shifts || []).find(x => x && x.id != null && String(x.id) === sid);
+    if (!s || !s.place) return null;
+    let best = null;
+    for (const d of list || []) {
+      if (!d || d.undone_at || d.code !== c || d.day_id !== raw.id || d.shift_id == null || String(d.shift_id) !== sid) continue;
+      if (!sameJobText(d.job, dismissJob(s)) || !samePlace(d.place, s.place)) continue;
+      if (!best || String(d.dismissed_at || '') > String(best.dismissed_at || '')) best = d;
+    }
+    return best;
+  }
+  // "Checked: job is right · ops@wizardtrees.com · Nov 19": who marked it (their sign-in, as a change made here names its
+  // author) and the day, on the row's clock. at: the shift's start on a day with more than one ("7:03 AM shift checked:
+  // job is right"), so the editor, the tables and the cards say it the same way
+  function checkedParts(d, tz, at) {
+    const day = d && d.dismissed_at ? zDate(d.dismissed_at, tz) : null;
+    return [at ? at + ' shift checked: job is right' : 'Checked: job is right', (d && d.dismissed_by) || 'someone', day ? fmtMonthDay(day) : ''].filter(Boolean);
+  }
+  const checkedText = (d, tz, at) => checkedParts(d, tz, at).join(' · ');
+  // a reason as the server keeps it: one line, whitespace evened, null when empty
+  const dismissReason = r => String(r == null ? '' : r).replace(/\s+/g, ' ').trim() || null;
+  /* what ts_flag_dismiss and ts_flag_undismiss do, for demo mode and the checks. list: the checks so far; row: the ts_days
+     row; input: {shift_id, code, reason}; ctx: {email, now, id, canView?(row)}. Returns {ok, row: the check, list} or
+     {ok: false, error, list}. The window and pay periods are never asked about: a check changes no hours and no pay. A
+     check already there for that day, shift and code comes back as it is while its job and place are the shift's now;
+     one made on a job or place Gusto has changed since is closed (undone_by 'superseded') and a new one made. */
+  function flagDismiss(list, row, input, ctx) {
+    const c = ctx || {}, inp = input || {}, all = (list || []).slice();
+    const fail = msg => ({ ok: false, error: msg, list: list || [] });
+    const email = String(c.email || '').trim().toLowerCase();
+    if (!email) return fail(DISMISS_WORDS.who);
+    const code = String(inp.code == null ? '' : inp.code).trim().toLowerCase();
+    if (!DISMISS_CODES.includes(code)) return fail(DISMISS_WORDS.code);
+    if (!row || row.blank || (c.canView && !c.canView(row))) return fail(DISMISS_WORDS.day);
+    const sid = inp.shift_id == null ? '' : String(inp.shift_id).trim();
+    const s = sid ? (row.shifts || []).find(x => x && x.id != null && String(x.id) === sid) : null;
+    if (!s) return fail(DISMISS_WORDS.shift);
+    if (!s.place || typeof s.place !== 'object' || Array.isArray(s.place)) return fail(DISMISS_WORDS.place);
+    const reason = dismissReason(inp.reason);
+    if (reason && reason.length > DISMISS_REASON_MAX) return fail(DISMISS_WORDS.reason);
+    const job = dismissJob(s), place = placeText(s.place), at = new Date(c.now == null ? Date.now() : c.now).toISOString();
+    const i = all.findIndex(d => d && !d.undone_at && d.day_id === row.id && String(d.shift_id) === sid && d.code === code);
+    if (i >= 0 && all[i].job === job && all[i].place === place) return { ok: true, row: all[i], list: all };
+    if (i >= 0) all[i] = Object.assign({}, all[i], { undone_by: 'superseded', undone_at: at });
+    const d = { id: c.id || 'local-check-' + (all.length + 1), day_id: row.id, company: row.company, employee_uuid: row.employee_uuid, work_date: row.work_date,
+      shift_id: sid, code, job, place, reason, dismissed_by: email, dismissed_at: at, undone_by: null, undone_at: null };
+    all.push(d);
+    return { ok: true, row: d, list: all };
+  }
+  // ctx: {email, now, canView?(the check)}; an undone check comes back as it is
+  function flagUndismiss(list, id, ctx) {
+    const c = ctx || {}, all = (list || []).slice();
+    const fail = msg => ({ ok: false, error: msg, list: list || [] });
+    const email = String(c.email || '').trim().toLowerCase();
+    if (!email) return fail(DISMISS_WORDS.who);
+    const i = all.findIndex(d => d && d.id === id);
+    if (i < 0 || (c.canView && !c.canView(all[i]))) return fail(DISMISS_WORDS.check);
+    if (all[i].undone_at) return { ok: true, row: all[i], list: all };
+    all[i] = Object.assign({}, all[i], { undone_by: email, undone_at: new Date(c.now == null ? Date.now() : c.now).toISOString() });
+    return { ok: true, row: all[i], list: all };
   }
 
   /* ---------- a deleaf crew's Packaging and Deleaf/Harvest buttons (2026-11-04, Gianni: buttons for "Packaging" and
@@ -4669,6 +4797,8 @@
     latePayDate, latePayDates, NO_JOB_TITLE, jobLabel, personJobs, shiftJobsShown, JOB_NOT_LOADED, JOB_NOT_THEIRS, jobStartsText, jobChange, setJobHeld, jobIsHeld,
     PLACE_SITES, PLACE_PACK_SITES, PLACE_ALL_SITES, PLACE_HOME, PLACE_JOB_PREFIX, PLACE_PLAIN_JOB, PLACE_PACK_JOB, PLACE_HOWS, shiftPlace, placeTag, placeLook, placeLooks,
     placeMovable, placeInMoveAll, placeFlag, placeMoveOp, breakLenText, breaksTotalText,
+    // a Job vs place warning marked as checked (2026-11-20)
+    DISMISS_CODES, DISMISS_REASON_MAX, DISMISS_WORDS, placeText, placeKeyOf, placeDismissed, checkedParts, checkedText, dismissReason, flagDismiss, flagUndismiss,
     // the clock-in tap fix (Gianni 2026-11-09)
     isStartOnly, setShiftOutOf, startWaits, setStartHeld, startIsHeld, startWaitText, editDueSec, validateStartOnly, TAP_FROM_MIN, TAP_TO_MIN, TAP_NEXT_MAX_MIN,
     clockInTap, tapIso, tapFixed, clockInTapText, clockInTapFlag, clockInTapLabel, tapEndLabel, tapNotInText, noteEndTime, tapNoteEnd, tapNotes,
@@ -5304,6 +5434,12 @@
     // changes made here (ts_edits) by id; editsState: 'off' (not read yet) | 'ok' | 'missing' (no table on
     // the server: no Edit buttons) | 'error' (a read failed: Edit stays, the board shows Gusto's values)
     edits: new Map(), editsState: 'off',
+    // Job vs place warnings marked as checked (ts_flag_dismissals, 2026-11-20) by id, read with the days; dismissState:
+    // 'off' (not read yet) | 'ok' | 'missing' (no table on the server: no Job is right buttons) | 'error' (a read failed)
+    dismissals: new Map(), dismissState: 'off',
+    // a check written here (Job is right, Undo) after a read of its dates began wins over that read: dismissGen counts the
+    // writes, dismissTouched is a check's id -> the number of its last write (dismissTouch, fetchDismissals)
+    dismissGen: 0, dismissTouched: new Map(),
   };
   // admin panel: section 'users' (who sees what), 'views' (saved views) or 'edits' (changes made here)
   const A = { section: 'users', editing: null, confirm: '', err: '', busy: false, vEditing: null, vConfirm: '', eFilter: 'all', eConfirm: '', ePick: '' };
@@ -5540,7 +5676,7 @@
   // part): the window before the next run, a pay period Gusto has not processed, someone still on the roster
   function placeDayOpen(raw) { return !!raw && C.canEditForRun(raw.work_date, C.rowTz(raw), Date.now()) && !periodClosed(raw) && !C.leftDay(raw, S.people); }
   function placeLooksFor(raw, board) {
-    return raw ? C.placeLooks(raw, board || raw, editsFor(raw.id), jobsFor(raw), { today: rowToday(raw), now: Date.now(), neighbors: rawNeighbors(raw), who: actor(), open: placeDayOpen(raw) }) : [];
+    return raw ? C.placeLooks(raw, board || raw, editsFor(raw.id), jobsFor(raw), { today: rowToday(raw), now: Date.now(), neighbors: rawNeighbors(raw), who: actor(), open: placeDayOpen(raw), dismissals: dismissalsFor(raw.id) }) : [];
   }
   // the board's rows with each crew day's looks kept (placeIdx) and its flag added; a day with no place is left as it is
   function withPlaces(rows) {
@@ -5619,6 +5755,58 @@
       return h`<button type="button" class="btn ${cls}" data-act="place-move" data-k="${r.id}" data-s="${String(x.shift.id)}" data-to="${x.look.to.id}" title="${x.look.msg}"${busy ? ' disabled' : ''}>${PM.busy.has(r.id + '|' + x.shift.id) ? 'Moving...' : what}</button>`;
     })}`;
   }
+  /* Job is right (2026-11-20, Gianni: "we should probably have an option to officially dismiss a job vs place warning in
+     case it was actually correct"): under a shift flagged Job vs place, beside its Move button when there is one, for every
+     signed-in sign-in that sees the flag (the server checks who may: ts_flag_dismiss). One click marks it as checked for
+     everyone (ts_flag_dismissals); the flag, the Move button and Move all leave it, its tag stays, and a muted line says
+     who checked it and when, with Undo. Nothing changes in Gusto. A server without the table shows none of it (dismissOn). */
+  let dismissIdx = null;
+  function dismissChanged() { dismissIdx = null; }
+  function dismissalsFor(dayId) {
+    if (!dismissIdx) {
+      dismissIdx = new Map();
+      for (const d of S.dismissals.values()) { if (!dismissIdx.has(d.day_id)) dismissIdx.set(d.day_id, []); dismissIdx.get(d.day_id).push(d); }
+    }
+    return dismissIdx.get(dayId) || [];
+  }
+  // signed in, and the server has ts_flag_dismissals (the demo has its twin)
+  function dismissOn() { return !!S.me && (DEMO || S.dismissState === 'ok'); }
+  // the day's looks as the board last showed them, only this part's shifts (C.workRows), like placeMoves
+  function placeLooksOf(r) { return ((r && placeIdx.get(r.id)) || []).filter(x => !r.part || r.shifts.some(s => String(s.id) === String(x.shift.id))); }
+  // the shifts that may be marked as checked now (flagged, not checked yet), and the checked ones
+  // (never on a shift whose board job is a change waiting here: the check would store Gusto's job, not the one shown)
+  function placeOks(r) { return dismissOn() ? placeLooksOf(r).filter(x => x.look.kind && !x.dismissed && x.asGusto) : []; }
+  function placeChecks(r) { return placeLooksOf(r).filter(x => x.dismissed); }
+  // the Job is right and Undo buttons being sent now (ts_days id|shift id, or a check's id)
+  const PD = { busy: new Set() };
+  const OK_TIP = 'Mark this Job vs place warning as checked, for everyone. Nothing changes in Gusto.';
+  // the shift's start on a day with more than one ("7:00 AM: Job is right"), like the Move button's
+  function shiftAt(r, x) { const tz = C.rowTz(r); return r.shifts.filter(s => !s.hours_only).length > 1 ? C.fmtTime(x.shift.in, tz) : ''; }
+  function okBtns(r, cls) {
+    const xs = placeOks(r);
+    if (!xs.length) return '';
+    return h`${xs.map(x => {
+      const key = r.id + '|' + x.shift.id, busy = PD.busy.has(key), at = shiftAt(r, x);
+      return h`<button type="button" class="btn ${cls} pok" data-act="place-ok" data-k="${r.id}" data-s="${String(x.shift.id)}" title="${OK_TIP}"${busy ? ' disabled' : ''}>${busy ? 'Saving...' : (at ? at + ': ' : '') + 'Job is right'}</button>`;
+    })}`;
+  }
+  // "Checked: job is right · <who> · <day>" under the flags, with Undo for whoever could mark it (never printed); a sign-in
+  // may break after @. short (the tables' narrow Flags column): "Job checked Nov 20" (the day kept whole) and Undo, the
+  // whole line in its bubble, so a checked row stays as low as the others (the phone card and the editor say it in full)
+  const whoWords = w => { const i = String(w).indexOf('@'); return i > 0 ? h`${String(w).slice(0, i + 1)}<wbr>${String(w).slice(i + 1)}` : w; };
+  function checkLines(r, short) {
+    const xs = placeChecks(r);
+    if (!xs.length) return '';
+    const tz = C.rowTz(r), on = dismissOn();
+    return h`<div class="pck">${xs.map(x => {
+      const d = x.dismissed, busy = PD.busy.has(d.id), at = shiftAt(r, x), [what, who, day] = C.checkedParts(d, tz, at);
+      const undo = on ? h`<button type="button" class="linkbtn no-print" data-act="place-undo" data-id="${d.id}" title="Show this Job vs place warning again, for everyone"${busy ? ' disabled' : ''}>${busy ? 'Undoing...' : 'Undo'}</button>` : '';
+      return short ? h`<div class="pck-l" title="${C.checkedText(d, tz, at)}"><span>${(at ? at + ' job' : 'Job') + ' checked' + (day ? ' ' + day.replace(/ /g, '\u00a0') : '')}</span>${undo}</div>`
+        : h`<div class="pck-l"><span>${what}</span> · <span>${whoWords(who)}</span>${day ? h` · <span>${day}</span>` : ''}${undo}</div>`;
+    })}</div>`;
+  }
+  // a tag's bubble: what the place says about the job, or that someone checked it
+  const plTip = (x, r) => x.dismissed ? x.look.tag + '. ' + C.checkedText(x.dismissed, C.rowTz(r)) : x.look.msg || x.look.tag;
   function noteTargets(raw) { return raw ? C.noteShifts(raw, { neighbors: rawNeighbors(raw), edits: editsFor(raw.id) }) : []; }
   function canNoteRow(r) { const raw = r && S.rows.get(r.id); return !!raw && canEditRow(raw) && mayNote(raw) && noteTargets(raw).length > 0; }
   // the day's pay period as Gusto has it (C.periodState): once Gusto processed its payroll, a change can no longer go in
@@ -5666,6 +5854,34 @@
     editsChanged();
     return done;
   }
+  // the Job vs place checks still standing (ts_flag_dismissals, undone_at null) for the days from..to, read with the days
+  // and their changes. Never throws: a missing table (the relation PostgREST cannot find, or a 404) turns Job is right off
+  // with no error, so the board is as it was before supabase/ts-flag-dismissals.sql; any other failure keeps what was
+  // loaded. true = read.
+  const DISMISS_COLS = 'id,day_id,company,employee_uuid,work_date,shift_id,code,job,place,reason,dismissed_by,dismissed_at,undone_at';
+  async function fetchDismissals(from, to) {
+    if (DEMO || S.dismissState === 'missing') return DEMO;
+    let done = false;
+    // a read still on its way when Job is right or Undo saved never takes that back: what was written here since it began stays
+    const g0 = S.dismissGen, newer = id => (S.dismissTouched.get(id) || 0) > g0;
+    try {
+      const data = [];
+      for (let i = 0; ; i += 1000) {
+        const res = await sb.from('ts_flag_dismissals').select(DISMISS_COLS).gte('work_date', from).lte('work_date', to).is('undone_at', null).order('dismissed_at').order('id').range(i, i + 999);
+        if (res.error) throw Object.assign(res.error, { status: res.status });
+        data.push(...(res.data || []));
+        if (!res.data || res.data.length < 1000) break;
+      }
+      for (const [id, d] of S.dismissals) if (d.work_date >= from && d.work_date <= to && !newer(id)) S.dismissals.delete(id);
+      for (const d of data) if (!newer(d.id)) S.dismissals.set(d.id, d);
+      S.dismissState = 'ok'; done = true;
+    } catch (e) {
+      console.warn('Job vs place checks not loaded', e);
+      S.dismissState = e && (e.status === 404 || isSetupError(e)) ? 'missing' : S.dismissState === 'ok' ? 'ok' : 'error';
+    }
+    dismissChanged();
+    return done;
+  }
   // Admin > Edits > Missed payroll: every change that needs a look and is not cleared yet, whatever its date (RLS: an admin
   // reads them all), so the ones that missed a payroll show even when their days are not on screen. Never throws.
   async function fetchMissed() {
@@ -5708,7 +5924,9 @@
       const r = (data || [])[0];
       if (r) S.rows.set(r.id, C.normRow(r)); else S.rows.delete(dayId);   // gone: Gusto has no hours that day any more
       const date = (r && r.work_date) || (had && had.work_date);
-      if (date && !(await fetchEdits(date, date))) return { ok: false, error: "the changes made here to it couldn't load" };
+      const dz = date ? fetchDismissals(date, date) : null;   // its Job vs place checks too (never throws)
+      if (date && !(await fetchEdits(date, date))) { await dz; return { ok: false, error: "the changes made here to it couldn't load" }; }
+      await dz;
       return { ok: true };
     } catch (e) {
       console.warn('day not read again', e);
@@ -5989,7 +6207,8 @@
     return h`<span class="flag late" title="${'Late pay: hours worked ' + days + ', missed in that pay period\'s payroll and paid on this day in Gusto. Not worked on ' + C.fmtDay(r.work_date) + '.'}" tabindex="0">Late pay · for ${days}</span>`;
   }
   // and the clock-in tap's button (tapBtn: only for whoever may make the fix)
-  function flagsCell(r) { const ep = editPills(r), mv = moveBtns(r, 'xs pmove'), lp = latePill(r), tb = tapBtn(r, 'xs'); return h`${lp ? h`<div class="flags">${lp}</div>` : ''}${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}${tb ? h`<div class="pmv no-print">${tb}</div>` : ''}${mv ? h`<div class="pmv no-print">${mv}</div>` : ''}`; }
+  // and a deleaf crew shift's Job is right (okBtns, beside its move) and the line saying it was checked (checkLines)
+  function flagsCell(r) { const ep = editPills(r), mv = moveBtns(r, 'xs pmove'), ok = okBtns(r, 'xs'), lp = latePill(r), tb = tapBtn(r, 'xs'); return h`${lp ? h`<div class="flags">${lp}</div>` : ''}${ep ? h`<div class="flags eflags">${ep}</div>` : ''}${C.flagsHtml(r.flags, r.region)}${tb ? h`<div class="pmv no-print">${tb}</div>` : ''}${mv || ok ? h`<div class="pmv no-print">${mv}${ok}</div>` : ''}${checkLines(r, true)}`; }
   function editPills(r) {
     const ed = r && r.edit;
     if (!ed || (!ed.pending.length && !ed.attention.length)) return '';
@@ -6078,7 +6297,7 @@
   // one job for all its shifts lists the places under it.
   function dayRowOf(r, job) {
     const jp = jobParts(r), pp = placeParts(r);
-    const plj = i => pp && pp[i] ? h`<div class="pl" title="${pp[i].look.msg || pp[i].look.tag}">${pp[i].look.tag}</div>` : '';
+    const plj = i => pp && pp[i] ? h`<div class="pl" title="${plTip(pp[i], r)}">${pp[i].look.tag}</div>` : '';
     const ple = i => pp && pp[i] ? h`<span class="ej pl">${pp[i].look.tag}</span>` : '';
     const all = (f) => pp ? pp.map((x, i) => f(i)) : '';
     const ej = jp ? jp.map((p, i) => h`${p.job ? h`<span class="ej">${p.job}</span>` : ''}${ple(i)}`) : h`${r.job_title ? h`<span class="ej">${r.job_title}</span>` : ''}${all(ple)}`;
@@ -6119,7 +6338,7 @@
   // and a deleaf crew shift's place on a line of its own under its job (placeParts)
   function empRow(r, e) {
     const jp = jobParts(r), pp = placeParts(r);
-    const pl = i => pp && pp[i] ? h`<span class="dj pl" title="${pp[i].look.msg || pp[i].look.tag}">${pp[i].look.tag}</span>` : '';
+    const pl = i => pp && pp[i] ? h`<span class="dj pl" title="${plTip(pp[i], r)}">${pp[i].look.tag}</span>` : '';
     const dj = jp ? jp.map((p, i) => h`${p.job ? h`<span class="dj${p.edJob ? ' edv' : ''}">${p.job}</span>` : ''}${pl(i)}`)
       : h`${r.job_title && r.job_title !== e.job ? h`<span class="dj">${r.job_title}</span>` : ''}${pp ? pp.map((x, i) => pl(i)) : ''}`;
     return h`<tr class="r${C.hasWarn(r) ? ' flagged' : ''}${lateCls(r)}"><td class="c-date">${C.fmtDay(r.work_date)}${noteMark(r)}${dj}</td>${inOutCells(r)}<td class="c-brk">${breaksCell(r)}</td><td class="num">${minCell(r.paid_break_min)}</td><td class="num">${minCell(r.unpaid_break_min)}</td><td class="num c-hours">${hoursCell(r)}</td><td class="num c-ot">${otCell(r)}</td><td class="c-flags">${flagsCell(r)}</td>${editCell(r)}</tr>`;
@@ -6218,7 +6437,7 @@
     const warn = fl.filter(f => C.flagSev(f) === 'warn'), info = fl.filter(f => C.flagSev(f) === 'info');
     const he = C.onlyHoursEntered(r);
     const guessed = !he && r.shifts.some(s => (s.breaks || []).some(C.breakUnsure));
-    const ot = +r.ot_min || 0, dt = +r.dt_min || 0;
+    const ot = +r.ot_min || 0, dt = +r.dt_min || 0, ok = okBtns(r, ''), mv = canEditRow(r) ? moveBtns(r, 'pmove') : '';
     return h`<div class="pd">
       ${job ? h`<div class="pd-job">${job}</div>` : ''}
       ${he ? h`<p class="pd-fine">Hours were entered in Gusto without clock times.</p>` : h`<div>${breaksCell(r)}</div>`}
@@ -6228,9 +6447,11 @@
       ${notesList(r, rowNotes(r))}
       ${guessed ? h`<p class="pd-fine">${EST_BREAK_NOTE}</p>` : ''}
       ${r.ot_src === 'est' && (ot || dt) ? h`<p class="pd-fine">${r.region === 'NY' ? EST_OT_NOTE_NY : EST_OT_NOTE}</p>` : ''}
+      ${checkLines(r)}
       ${histList(r)}
       ${editsOn() && C.leftDay(r, S.people) ? h`<p class="pd-fine">${C.LEFT_TEXT}.</p>` : ''}
-      ${canEditRow(r) ? h`<div class="pd-act">${tapBtn(r, '')}${moveBtns(r, 'pmove')}<button type="button" class="btn" data-act="edit-day" data-k="${r.id}">Edit times or breaks</button>${canNoteRow(r) ? h`<button type="button" class="btn" data-act="note-day" data-k="${r.id}">Add a note</button>` : ''}</div>` : ''}
+      ${canEditRow(r) ? h`<div class="pd-act">${tapBtn(r, '')}${mv || ok ? h`<div class="pd-place">${mv}${ok}</div>` : ''}<button type="button" class="btn" data-act="edit-day" data-k="${r.id}">Edit times or breaks</button>${canNoteRow(r) ? h`<button type="button" class="btn" data-act="note-day" data-k="${r.id}">Add a note</button>` : ''}</div>`
+        : ok ? h`<div class="pd-act"><div class="pd-place">${ok}</div></div>` : ''}
     </div>`;
   }
   const openAttr = r => S.openCards.has(r.id) ? h` open` : '';
@@ -6401,7 +6622,9 @@
     for (const r of data) S.rows.set(r.id, C.normRow(r));
     S.fetched = mergeRanges(S.fetched.concat([{ from, to }]));
     S.lastLoad = Date.now();
+    const dz = fetchDismissals(from, to);   // and the Job vs place warnings marked as checked (never throws)
     await fetchEdits(from, to);   // the changes made here to those days (never throws)
+    await dz;
   }
   // A server without ts_people.jobs yet (supabase/ts-edit-jobs.sql not applied): Postgres says the column does not exist
   const noJobsColumn = e => /42703|PGRST204/.test(String((e && e.code) || '')) && /\bjobs\b/.test(errText(e));
@@ -6466,6 +6689,7 @@
     S.lastLoad = Date.now();
     // made-up edits; a rebuild starts them over (the rebuilt days can have other shift ids)
     S.edits = new Map((d.edits || []).map(e => [e.id, e])); S.editsState = 'ok'; editsChanged();
+    S.dismissals = new Map(); S.dismissState = 'ok'; dismissChanged();   // and no Job vs place checks yet (C.flagDismiss keeps them)
   }
   async function setRange(from, to, preset, note) {
     S.preset = preset; S.from = from; S.to = to; S.rangeNote = note || '';
@@ -6496,6 +6720,7 @@
       await loadMeta();
       await loadViews();
       if (S.editsState === 'missing') S.editsState = 'off';   // ts-edits.sql may have been applied since
+      if (S.dismissState === 'missing') S.dismissState = 'off';   // and ts-flag-dismissals.sql
       S.fetched = [];
       const w = defaultWindow();
       await fetchDays(w.from, w.to);
@@ -7286,7 +7511,9 @@
     // the marks after the label: the shift's job when no Job pick below says it (jobTag), where it was clocked in
     // (placeOfEntry), then Pending; and under the Job pick, what the place says about the job
     const pend = h`${jf ? '' : jobTag(en, raw)}${pl ? h`<span class="ed-pl">${pl.look.tag}</span>` : ''}${(en.pendingIds && en.pendingIds.length) || en.kind === 'add' ? h`<span class="flag epend">Pending</span>` : ''}`;
-    const plh = pl && pl.look.msg && !(pl.look.to && en.job === pl.look.to.id) ? h`<p class="ed-plh">${pl.look.msg}.</p>` : '';
+    // (2026-11-20) a shift whose warning someone marked as checked says so instead, muted
+    const plh = pl && pl.dismissed ? h`<p class="ed-plh ok">${C.checkedText(pl.dismissed, tz)}</p>`
+      : pl && pl.look.msg && !(pl.look.to && en.job === pl.look.to.id) ? h`<p class="ed-plh">${pl.look.msg}.</p>` : '';
     const times = (en.inT ? C.fmtHhmm(en.inT) : 'no start') + ' - ' + (en.outT ? C.fmtHhmm(en.outT) : 'still clocked in');
     const err = en.err ? h`<div class="inline-err" role="alert">${en.err}</div>` : '';
     const bad = !!en.err || !!(en.brkErr && Object.keys(en.brkErr).length);
@@ -8070,6 +8297,79 @@
     toast(done.length === PM.done.items.length ? PM.done.msg : 'Moved ' + done.length + ' of ' + PM.done.items.length + '. The ones not moved say why.');
   }
 
+  /* ---------- Job is right and its Undo (2026-11-20) ----------
+     One call each (ts_flag_dismiss, ts_flag_undismiss; in demo their twins, C.flagDismiss and C.flagUndismiss, with the
+     sign-in being previewed). {row} (the check as stored) or {error} (the server's words). */
+  const demoSees = r => { const v = filterViewer(); return !v || (!!r && C.canView(v, r.company, C.deptOf(r), r.employee_uuid, r.region)); };
+  async function runDismiss(op) {
+    const who = actor();
+    if (DEMO) {
+      const list = [...S.dismissals.values()], now = Date.now(), email = who && who.email;
+      const res = op.type === 'undo' ? C.flagUndismiss(list, op.id, { email, now, canView: d => demoSees(S.rows.get(d.day_id)) })
+        : C.flagDismiss(list, op.raw, { shift_id: op.sid, code: 'job_place', reason: null }, { email, now, id: 'demo-check-' + (++demoSeq), canView: demoSees });
+      if (!res.ok) return { error: res.error };
+      S.dismissals = new Map(res.list.map(x => [x.id, x])); dismissChanged();
+      return { row: res.row };
+    }
+    try {
+      const { data, error } = op.type === 'undo' ? await sb.rpc('ts_flag_undismiss', { p_id: op.id })
+        : await sb.rpc('ts_flag_dismiss', { p_day_id: op.raw.id, p_shift_id: String(op.sid), p_code: 'job_place', p_reason: null });
+      if (error) return { error: isSetupError(error) ? "Marking a warning as checked isn't set up on the server yet. Ask Gianni to apply supabase/ts-flag-dismissals.sql." : errText(error) };
+      if (data && data.id) { S.dismissals.set(data.id, data); S.dismissTouched.set(data.id, ++S.dismissGen); dismissChanged(); }
+      return { row: data || null };
+    } catch (e) { return { error: errText(e) }; }
+  }
+  // render() draws the tables again at their left edge. Job is right and Undo keep the sideways scroll of the table they
+  // were pressed in (from: the pressed button, or its busy twin), and the last drawing puts the focus on the first of to
+  // there (Undo after Job is right, Job is right after Undo), so a keyboard carries on from the same row.
+  const pdSel = (act, a, b) => '[data-act="' + act + '"]' + (act === 'place-undo' ? '[data-id="' + CSS.escape(String(a)) + '"]'
+    : '[data-k="' + CSS.escape(String(a)) + '"][data-s="' + CSS.escape(String(b)) + '"]');
+  function pdDraw(from, to, focus) {
+    const at = document.querySelector(from), w0 = at && at.closest('.tablewrap'), left = w0 ? w0.scrollLeft : null;
+    render();
+    const el = to.map(x => document.querySelector(x)).find(Boolean);
+    if (!el) return;
+    const w = el.closest('.tablewrap');
+    if (w && left != null) w.scrollLeft = left;
+    if (focus && !el.disabled) el.focus({ preventScroll: true });
+  }
+  // the button: "Saving..." while it goes. The server takes the job and place from the day's ts_days row, which may be
+  // newer than the day the board showed at the press (raw): the check must hold on that one. When it does not (Gusto
+  // changed the shift since), a check this press made is taken back, so no warning is hidden on a job nobody here saw;
+  // the day is read again and the board shows it as Gusto has it.
+  async function placeOkOne(k, sid) {
+    const key = k + '|' + sid, raw = S.rows.get(k), okSel = pdSel('place-ok', k, sid);
+    if (PD.busy.has(key) || !dismissOn() || !raw) return;
+    const had = new Set(S.dismissals.keys());
+    PD.busy.add(key); pdDraw(okSel, [okSel]);
+    let res;
+    try { res = await runDismiss({ type: 'dismiss', raw, sid }); } catch (e) { res = { error: errText(e) }; }
+    const row = res.error ? null : res.row, holds = !!row && !!C.placeDismissed(raw, sid, [row]);
+    let back = null;
+    if (!res.error && !holds) {
+      const me = String((actor() || {}).email || '').toLowerCase();
+      if (row && row.id && !had.has(row.id) && String(row.dismissed_by || '').toLowerCase() === me) {
+        try { back = await runDismiss({ type: 'undo', id: row.id }); } catch (e) { back = { error: errText(e) }; }
+      }
+      if (!DEMO) await refreshDay(k);
+    }
+    PD.busy.delete(key); pdDraw(okSel, holds ? [pdSel('place-undo', row.id), okSel] : [okSel], true);
+    toast(res.error ? "Couldn't mark it as checked: " + res.error
+      : holds ? 'Marked as checked, for everyone. Nothing changed in Gusto.'
+      : back && back.error ? "This shift's job or place changed in Gusto since the board showed it, and the check saved on Gusto's job couldn't be taken back (" + back.error + '). Look at it again, and press Undo if that job is not right.'
+      : "This shift's job or place changed in Gusto since the board showed it, so it was not marked as checked. Look at it again.");
+  }
+  async function placeUndoOne(id) {
+    const d0 = S.dismissals.get(id);
+    if (PD.busy.has(id) || !dismissOn() || !d0) return;
+    const undoSel = pdSel('place-undo', id), okSel = pdSel('place-ok', d0.day_id, d0.shift_id);
+    PD.busy.add(id); pdDraw(undoSel, [undoSel]);
+    let res;
+    try { res = await runDismiss({ type: 'undo', id }); } catch (e) { res = { error: errText(e) }; }
+    PD.busy.delete(id); pdDraw(undoSel, res.error ? [undoSel] : [okSel, undoSel], true);
+    toast(res.error ? "Couldn't undo it: " + res.error : 'Undone: the Job vs place warning shows again.');
+  }
+
   // Cancel one waiting change (the editor's history, or Admin > Edits)
   async function cancelOne(id) {
     const e = S.edits.get(id); if (!e) return { error: 'That change is gone.' };
@@ -8217,6 +8517,8 @@
       case 'place-all-yes': placeAllRun(); break;
       case 'place-all-no': if (!PM.running) { PM.open = false; PM.items = []; render(); } break;
       case 'place-all-done': PM.done = null; render(); break;
+      case 'place-ok': placeOkOne(d.k, d.s); break;
+      case 'place-undo': placeUndoOne(d.id); break;
       case 'note-day': openEditor(d.k, el, { note: true }); break;
       case 'tap-open': openEditor(d.k, el, { tap: true }); break;
       case 'ed-tap-open': edTapOpen(); break;

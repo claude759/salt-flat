@@ -367,7 +367,7 @@ begin
     $q$select count(*) || '/' || string_agg(pg_get_function_identity_arguments(p.oid), ',') || '/' || string_agg(pg_get_expr(p.proargdefaults, 0), ',')
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'ts_edit_submit'$q$,
     '1/p_day_id text, p_shift_id text, p_action text, p_after jsonb, p_note text, p_expect jsonb/NULL::jsonb');
-  -- (the list of ts-edits-verify.sql A6: no function is new)
+  -- (the list of ts-edits-verify.sql A6: no function is new; ts-flag-dismissals.sql, when applied, adds its two)
   perform pg_temp.ts_v('A4 authenticated can execute exactly the ts_ functions it could before', null, null,
     $q$select string_agg(p.proname, ',' order by p.proname) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname = 'public' and p.proname like 'ts\_%' and has_function_privilege('authenticated', p.oid, 'EXECUTE')$q$,
@@ -375,6 +375,7 @@ begin
                   || 'ts_edit_cancel,' || case when to_regprocedure('public.ts_edit_clear(uuid,text)') is not null then 'ts_edit_clear,' else '' end
                   || 'ts_edit_mark,ts_edit_submit,ts_edits_pending,'
                   || case when to_regprocedure('public.ts_edits_to_recheck()') is not null then 'ts_edits_to_recheck,' else '' end
+                  || case when to_regprocedure('public.ts_flag_dismiss(text,text,text,text)') is not null then 'ts_flag_dismiss,ts_flag_undismiss,' else '' end
                   || 'ts_is_admin,ts_me,ts_my_email,ts_my_grant_keys,ts_my_view_ids,'
                   || case when to_regprocedure('public.ts_pay_periods_sync(text,jsonb)') is not null then 'ts_pay_periods_sync,' else '' end
                   || 'ts_sync'));
