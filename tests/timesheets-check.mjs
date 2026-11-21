@@ -2948,9 +2948,9 @@ check('review 2026-10-25: a split shift is offered for a fix only when it is a f
   // the page: the switches, what each sign-in may send, and the carried part's words (no "fix it on the day before" when that
   // day is not offered for a fix)
   const app = block('ts-app');
-  ok(/midnight: \{ fix: mayMidnight\(raw\), end: mayEdit\('midnightEnd'\), whole: mayWhole\(raw\) \}/.test(appFn('openEditor')), 'the editor knows what this sign-in may send');
+  ok(/midnight: \{ fix: mayMidnight\(raw\), end: mayEdit\('midnightEnd'\), whole: mayWhole\(raw\), cross: mayCross\(raw\) \}/.test(appFn('openEditor')), 'the editor knows what this sign-in may send');
   const ch = appFn('carriedHtml');
-  ok(/prevRow = prevKey \? S\.rows\.get\(prevKey\) \|\| null : null;/.test(ch) && /const canOpen = en\.split\.forgotten && en\.split\.samePeriod && !!prevRow && mayMidnight\(prevRow\) && canEditRow\(prevRow\);/.test(ch), 'Open <day before> only where that day can take the fix');
+  ok(/prevRow = prevKey \? S\.rows\.get\(prevKey\) \|\| null : null;/.test(ch) && /const canOpen = en\.split\.forgotten && !!prevRow && \(en\.split\.samePeriod \|\| mayCross\(prevRow\)\) && mayMidnight\(prevRow\) && canEditRow\(prevRow\);/.test(ch), 'Open <day before> only where that day can take the fix (in another pay period: only for a sign-in mayCross lets fix it, 2026-11-21; the day before checked first, review 2026-11-21)');
   const ct = appFn('carriedText');
   ok(/Fix its end on ' \+ prevDay \+ ': a new end there fixes both days at once\./.test(ct) && /Fix its end time in Gusto/.test(ct) && /Change it in Gusto\./.test(ct), 'each case says where to fix it');
   ok(/if \(en\.readonly === 'split'\) return h`[^\n]*C\.splitWhy\(en, tz\)/.test(appFn('entryHtml')), 'read-only parts say why');
@@ -3283,7 +3283,7 @@ check('demo: the data-error flags come from the made-up scenarios, in the produc
   ok(cedar[1].work_date < demo.todays.CA, 'both days are over');
   eq(msgs('Linden Fogsworth', 'long_meal'), ['Unpaid meal of 2 h 30 min: was the clock-in after it missed?'], 'back from lunch without clocking in (long_meal, 2026-11-09)');
   // (Marigold Puddleby: the clock-in tap of 2026-11-09, a forgotten clock-out too)
-  const strays = demo.rows.filter(r => r.flags.some(f => DATA_CODES.includes(f.code)) && !['Pepper Moonwhistle', 'Bramble Featherstone', 'Oakley Whistledown', 'Dewberry Quillon', 'Cedar Puddlejump', 'Marigold Puddleby', 'Linden Fogsworth'].includes(r.employee_name));
+  const strays = demo.rows.filter(r => r.flags.some(f => DATA_CODES.includes(f.code)) && !['Pepper Moonwhistle', 'Bramble Featherstone', 'Oakley Whistledown', 'Dewberry Quillon', 'Cedar Puddlejump', 'Marigold Puddleby', 'Linden Fogsworth', 'Mulberry Fiddlesticks'].includes(r.employee_name));
   eq(strays.map(r => r.id), [], 'no data-error flag on an ordinary made-up day');
   if (!P) return;
   // the producer on the demo's own days: its dataFlags on each row, and its midnight pass on the shifts given back as Gusto lists them
@@ -5590,7 +5590,7 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
   class FD extends Date { constructor(...a) { super(...(a.length ? a : [FIXED])); } static now() { return FIXED; } }
   function tapPage(o) {
     const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
-    const code = [line(/\n  let tapIdx = new Map\(\);[^\n]*\n/), line(/\n  const minHhmm = [^\n]*\n/), appFn('mayMidnight'),
+    const code = [line(/\n  let tapIdx = new Map\(\);[^\n]*\n/), line(/\n  const minHhmm = [^\n]*\n/), line(/\n  const CROSS_OFF = [^\n]*\n/), appFn('mayMidnight'), appFn('mayCross'),
       ...['tapOfRaw', 'tapPrev', 'tapEdits', 'mayTap', 'withTaps', 'tapBtn', 'tapOffered', 'resetTap', 'tapFocus', 'openTapForm', 'tapHtml', 'tapPlanNow', 'edSaveTap'].map(appFn),
       'return { withTaps, tapBtn, openTapForm, tapHtml, edSaveTap, tapOffered, idx: () => tapIdx };'].join('\n');
     const env = { C, h: C.h, S: o.S, E: o.E, DEMO: true, Date: FD, mayEdit: w => w !== 'midnight' || o.midnight !== false, canEditRow: () => true, rowRegion: r => r.region || C.regionOfCompany(r.company),
@@ -5630,7 +5630,7 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
     const done = tapEnv([ROW5, ROW6]); done.set([a, b]);
     eq(done.P.withTaps([ROW5, ROW6])[1].flags.map(f => f.code), ['midnight_split']);
     // the page: the flag on the table and the phone card (r.flags), the button under it, both gated like the first-day end fix
-    ok(/return !!prev && tap\.samePeriod && mayMidnight\(raw\) && canEditRow\(raw\) && canEditRow\(prev\);/.test(appFn('mayTap')), 'mayTap: the first-day fix\'s rule');
+    ok(/return !!prev && \(tap\.samePeriod \|\| mayCross\(prev\)\) && mayMidnight\(raw\) && canEditRow\(raw\) && canEditRow\(prev\);/.test(appFn('mayTap')), 'mayTap: the first-day fix\'s rule (in two pay periods: mayCross, 2026-11-21)');
     ok(/tb = tapBtn\(r, 'xs'\)/.test(appFn('flagsCell')) && /\$\{tapBtn\(r, ''\)\}/.test(appFn('detailBody')), 'desktop and phone');
     ok(/case 'tap-open': openEditor\(d\.k, el, \{ tap: true \}\); break;/.test(src) && /case 'ed-tap-open': edTapOpen\(\); break;/.test(src)
       && /case 'ed-tap-cancel': edTapClose\(\); break;/.test(src) && /case 'ed-tap-save': edSaveTap\(\); break;/.test(src), 'wired');
@@ -5778,7 +5778,7 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
     eq([later, meal, other, null, WN].map(r => C.wholeRestSame(en, r)), [false, false, false, false, false], 'a later clock-out, a meal added, the part gone (another id, or no day), another day');
     eq(C.wholeRestSame(en, MROW('2026-10-07', [MSH('w-r', '2026-10-07', '00:00:00', '07:03:40')], [MFLAG('cont')])), true, 'to the minute, as everywhere');
     const sv = appFn('saveDayEdits');
-    ok(/const wen = wholeOp \? edEntry\(wholeOp\.key\) : null;/.test(sv) && /const nx = await readNextDay\(raw\)/.test(sv) && /!nx\.ok \|\| !C\.wholeRestSame\(wen, nx\.row\)/.test(sv)
+    ok(/const restOp = wholeOp \|\| plan\.ops\.find\(o => o\.cross\);\s*const wen = restOp \? edEntry\(restOp\.key\) : null;/.test(sv) && /const nx = await readNextDay\(raw\)/.test(sv) && /!nx\.ok \|\| !C\.wholeRestSame\(wen, nx\.row\)/.test(sv)
       && sv.indexOf('await refreshDay(k)') < sv.indexOf('readNextDay(raw)') && sv.indexOf('readNextDay(raw)') < sv.indexOf('runEditOp('), 'read after the day itself, before anything is sent');
     ok(sv.includes("'The rest of this shift on ' + nd + ' changed since you opened this day. Reload it and try again.'") && /E\.stale = nx\.ok;/.test(sv), 'said plainly, with Reload this day');
     const rn = appFn('readNextDay');
@@ -5888,12 +5888,12 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
   check('page: Delete the whole shift, its question before Save, its waiting copy on the day after, an older server, the shifts that stop Save, and who gets it (EDIT_PROVEN, 2026-11-16)', () => {
     const app = block('ts-app');
     const ep = new Function('return ' + app.match(/const EDIT_PROVEN = (\{[\s\S]*?\});/)[1])();
-    eq(ep, { add: true, delete: true, ny: true, midnight: true, nyMidnight: false, midnightEnd: false, midnightDelete: false, nyMidnightDelete: false, note: false, nyNote: false,
+    eq(ep, { add: true, delete: true, ny: true, midnight: true, nyMidnight: false, midnightEnd: false, midnightDelete: false, nyMidnightDelete: false, midnightCross: false, nyMidnightCross: false, note: false, nyNote: false,
       job: false, nyJob: false, addJob: false, nyAddJob: false, startAfterClockout: true, nyStartAfterClockout: false }, 'EDIT_PROVEN as decided');
     ok(/function mayMidnight\(r\) \{ return mayEdit\('midnight'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnight'\)\); \}/.test(app), 'mayMidnight');
     ok(/function mayWhole\(r\) \{ return mayEdit\('midnightDelete'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnightDelete'\)\); \}/.test(app), 'mayWhole');
     eq((app.match(/mayEdit\('midnight'\)/g) || []).length, 1, "every gate goes through mayMidnight (the day's region)");
-    ok(/fix: mayMidnight\(prev\) \}\);/.test(appFn('tapPlanNow')), 'the clock-in tap fix too');
+    ok(/fix: mayMidnight\(prev\), cross: mayCross\(prev\) \}\);/.test(appFn('tapPlanNow')), 'the clock-in tap fix too');
     const eh = appFn('entryHtml');
     ok(/\$\{whole \? 'Delete the whole shift' : 'Delete this shift'\}/.test(eh) && /const canDel = en\.kind !== 'shift' \|\| mayEdit\('delete'\);/.test(eh), 'the link reads Delete the whole shift; who may delete is unchanged');
     ok(/<s>\$\{times\}<\/s> and <s>\$\{'12:00 AM - ' \+ C\.fmtTime\(en\.split\.out, tz\) \+ ' on ' \+ C\.fmtDay\(en\.split\.date\)\}<\/s> will be deleted\./.test(eh) && /<p class="pd-fine ed-whole">\$\{C\.wholeText\(en, tz\)\}<\/p>/.test(eh), 'both parts struck, with what each day loses');
@@ -5908,8 +5908,8 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
     ok(/if \(E\.confirm === 'close' \|\| E\.confirm === 'whole'\) \{ E\.confirm = ''; renderEditor\(\); return; \}/.test(appFn('onEditorInput')), 'typing takes the question back');
     const ch = appFn('carriedHtml'), ct = appFn('carriedText');
     ok(/Goes with the whole shift deleted from \$\{prevDay\} \(waiting to go to Gusto\)\./.test(ch) && /\(en\.pendingIds \|\| \[\]\)\.some\(id => C\.isWholeDelete\(S\.edits\.get\(id\)\)\)/.test(ch), 'the day after: it goes with it, no buttons');
-    ok(/const wholeOk = canOpen && mayWhole\(prevRow\) && !!\(en\.orig && en\.orig\.out\);/.test(ch) && /To remove the whole shift instead \(when none of it was work\), open ' \+ prevDay \+ ' and use Delete the whole shift\./.test(ct), 'and says where to delete it as a whole');
-    ok(/next: op\.whole \? dayRaw\(C\.nextDayId\(raw\)\) : null/.test(appFn('runEditOp')), 'demo: the day after goes with it');
+    ok(/const wholeOk = canOpen && en\.split\.samePeriod && mayWhole\(prevRow\) && !!\(en\.orig && en\.orig\.out\);/.test(ch) && /To remove the whole shift instead \(when none of it was work\), open ' \+ prevDay \+ ' and use Delete the whole shift\./.test(ct), 'and says where to delete it as a whole');
+    ok(/next: op\.whole \|\| op\.action === 'update' \? dayRaw\(C\.nextDayId\(raw\)\) : null/.test(appFn('runEditOp')), 'demo: the day after goes with it (and with every update, which the server reads for the end fix of a shift that ran into the next pay period, 2026-11-21)');
     ok(/if \(fx\.start \|\| fx\.whole\) return r;/.test(appFn('withTaps')) && /return !fx\.start && !fx\.whole;/.test(appFn('tapOffered')), 'no clock-in tap fix on a shift that goes as a whole');
     ok(/E\.err = PLAN_ERR; E\.errList = C\.planErrorSummary\(E\.entries, plan\.errors, C\.rowTz\(raw0\)\);/.test(sv) && app.includes("const PLAN_ERR = 'Nothing was saved. Fix the shift named below, then save again.';"), 'what stops Save, named next to it (all or nothing, as before)');
     ok(/E\.err === PLAN_ERR && E\.errList && E\.errList\.length \? h`<ul class="ed-errs">\$\{E\.errList\.map\(x => h`<li><b>\$\{x\.label\}<\/b>: \$\{x\.msg\}<\/li>`\)\}<\/ul>`/.test(eb), 'as a list in the error line');
@@ -6490,6 +6490,385 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
     docW.visibilityState = 'hidden'; on.vis();
     eq([did, on.passive], [['check start', 'check visible', 'show scroll', 'show return'], true], 'shown again: a check, or a waiting bar at once; a scroll (passive) shows a waiting bar once the page has moved');
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// 29. (Gianni 2026-11-21, "yes, give me a way to fix this from the app") a forgotten clock-out on the LAST day of a pay period:
+//     Gusto ran it past midnight under one id into the next pay period. The manager gives the first day's part its real end, as
+//     within one period; the server keeps the 12:00 AM part as the manager saw it (before.carried, supabase/
+//     ts-edit-cross-period-midnight.sql), and the worker reads both pay periods ('midnight-split-cross', held until a supervised
+//     run). Made-up people only.
+// ---------------------------------------------------------------------------------------------
+{
+  // Fri Oct 9 ends a pay period (the EDIT_ANCHOR_END grid); 8:15 AM to Gusto's 11:59:59 PM cut, no meal; Sat Oct 10 from 12:00 AM
+  const FRI = '2026-10-09', SAT = '2026-10-10', NOW_X = Date.parse('2026-10-10T17:00:00Z'), TODAY_X = SAT;   // Sat 10 AM PDT
+  const boss = { email: 'boss@wizardtrees.com', is_admin: true };
+  const XF = MSH('x-r', FRI, '08:15:00', '23:59:59'), XFR = MROW(FRI, [XF], [MFLAG('start')]);
+  const XSO = MSH('x-r', SAT, '00:00:00', null), XSRO = MROW(SAT, [XSO], []);                 // still clocked in
+  const XSC = MSH('x-r', SAT, '00:00:00', '02:05:00'), XSRC = MROW(SAT, [XSC], [MFLAG('cont')]);   // closed at 2:05 AM
+  const nbX = (raw, rows) => rows.filter(r => r.work_date === C.addDays(raw.work_date, -1) || r.work_date === C.addDays(raw.work_date, 1))
+    .flatMap(r => r.shifts.filter(s => !s.hours_only && s.in).map(s => ({ id: String(s.id), in: s.in, out: s.out || null, date: r.work_date, breaks: s.breaks || [] })));
+  const MIDX = { fix: true, end: true, whole: true, cross: true }, MID0 = { fix: true, end: true, whole: true };
+  const entX = (raw, rows, mid, o) => C.editorEntries(raw, (o && o.board) || raw, (o && o.edits) || [], boss, { today: TODAY_X, now: NOW_X, neighbors: nbX(raw, rows), midnight: mid });
+  const WHY_X = 'Gusto ran this shift past midnight (likely a missed clock-out), and its part on Sat, Oct 10 is in another pay period. Fix its end time in Gusto.';
+  // the demo twin of ts_edit_submit on the Friday end fix (o.input over the update, o.list; c: ctx over next = the open Saturday)
+  const subX = (row, o, c) => C.submitEdit((o && o.list) || [], row, Object.assign({ shift_id: 'x-r', action: 'update', after: { in: XF.in, out: MT(FRI, '16:45'), breaks: [] }, expect: [] }, (o && o.input) || {}),
+    Object.assign({ email: boss.email, now: NOW_X, today: TODAY_X, id: 'xc1', next: XSRO }, c || {}));
+  // the server's words, as the demo twin says them (with a full stop): ts_edit_submit in supabase/ts-edit-cross-period-midnight.sql
+  const X_MSG = {
+    flag: 'Only a shift the sync marked as a likely missed clock-out can have its end fixed here across two pay periods. Fix it in Gusto.',
+    long: 'Gusto keeps this shift on more than two days under one id. Change it in Gusto.',
+    breaks: d => 'Gusto has a break after midnight on this shift (on ' + d + '), which a new end here would leave outside it. Fix it in Gusto.',
+    future: 'You cannot edit a day that has not happened yet.',
+    end: d => 'This shift ran past midnight in Gusto: end it before midnight on ' + d + ' here (that fixes both days at once). To end it after midnight, change it in Gusto.',
+    busy: d => 'A change of this shift on ' + d + ' is waiting or was just sent to Gusto. Cancel it there, or reload after the next sync, then try again.',
+    closed: d => 'The rest of this shift (on ' + d + ') is in a pay period Gusto has closed, so its end cannot be fixed here. Fix it in Gusto.',
+    waitFix: d => 'The end of this shift waits to be fixed from ' + d + '. Cancel that change first, or reload after the next sync.',
+  };
+  const REMOVES_OPEN = 'Removes the 12:00 AM - clocked in part on Sat, Oct 10 (next pay period)';
+  check('cross-period end fix: the first day of a forgotten clock-out that ends a pay period takes a new end for a sign-in the page lets send one (midnight.cross), and its op says so', () => {
+    const en = entX(XFR, [XFR, XSRO], MIDX)[0];
+    eq([en.readonly || null, en.split.role, en.split.samePeriod, en.split.cross, en.split.fix, en.split.whole, en.split.end, en.split.out], [null, 'first', false, true, true, false, false, null]);
+    en.outT = '16:45';
+    const p = C.editPlan(XFR, en ? [en] : [], {});
+    eq([p.errors, p.ops.map(o => [o.type, o.action, o.shift_id, o.after.in, o.after.out, o.cross])], [{}, [['submit', 'update', 'x-r', XF.in, MT(FRI, '16:45'), true]]]);
+    // the 12:00 AM part closed (a later tap): the same
+    const ec = entX(XFR, [XFR, XSRC], MIDX)[0]; ec.outT = '17:00';
+    eq(C.editPlan(XFR, [ec], {}).ops.map(o => o.cross), [true]);
+    // without the cross switch (a sign-in it is not open to yet): read-only, in the words of before (F8)
+    const ro = entX(XFR, [XFR, XSRO], MID0)[0];
+    eq([ro.readonly, ro.split.cross, ro.split.fix, C.splitWhy(ro, C.TZ)], ['split', true, false, WHY_X]);
+    ro.outT = '16:45';
+    eq(C.editPlan(XFR, [ro], {}).ops, [], 'nothing typed on a read-only part is sent');
+    // one period (Tue Oct 6 into Wed Oct 7): no cross, whatever the switch says, and its op is as before
+    const TUE = MROW('2026-10-06', [MSH('x-r', '2026-10-06', '08:15:00', '23:59:59')], [MFLAG('start')]), WED = MROW('2026-10-07', [MSH('x-r', '2026-10-07', '00:00:00', '02:05:00')], [MFLAG('cont')]);
+    const te = entX(TUE, [TUE, WED], { fix: true, cross: false })[0];
+    eq([te.split.samePeriod, te.split.cross, te.split.fix], [true, false, true]);
+    te.outT = '16:45';
+    eq(C.editPlan(TUE, [te], {}).ops.map(o => [o.action, 'cross' in o]), [['update', false]]);
+    eq(entX(TUE, [TUE, WED], { fix: false, cross: true })[0].split.fix, false, 'cross alone never opens a one-period fix');
+  });
+  check('cross-period end fix: the end left at 11:59 PM, one after midnight, a break after midnight, a delete or a chain over more than two days are refused or read-only, as within one period', () => {
+    const one = (rows, mid, f) => { const en = entX(XFR, rows, mid || MIDX)[0]; f(en); return [en, C.editPlan(XFR, [en], {})]; };
+    let [en, p] = one([XFR, XSRO], null, e => { e.inT = '08:30'; });
+    eq([p.ops, p.errors[en.key].map(x => [x.code, x.msg])], [[], [['split_end', 'Gusto ran this shift past midnight (it goes on as 12:00 AM to now (still clocked in) on Sat, Oct 10, likely a missed clock-out). Give its real end time here: both days are fixed at once, and your other changes go with it.']]], 'the end left as Gusto cut it');
+    [en, p] = one([XFR, XSRO], null, e => { e.inT = '10:00'; e.outT = '01:00'; });
+    eq(p.errors[en.key].map(x => [x.code, x.msg]), [['split_end', 'This shift ran past midnight in Gusto: end it before midnight on Fri, Oct 9 here (that fixes both days at once). To end it after midnight, change it in Gusto.']], 'an end after midnight');
+    const XSB = MROW(SAT, [MSH('x-r', SAT, '00:00:00', '02:05:00', [['01:00', '01:10', 'rest']])], [MFLAG('cont')]);
+    [en, p] = one([XFR, XSB], null, e => { e.outT = '16:45'; });
+    eq(p.errors[en.key].map(x => x.code), ['split_breaks'], 'a break after midnight');
+    [en, p] = one([XFR, XSRO], null, e => { e.del = true; });
+    eq(p.errors[en.key].map(x => x.code), ['split_delete'], 'deleting it would take both days: refused, no whole delete across two periods');
+    const LONG = MROW(SAT, [MSH('x-r', SAT, '00:00:00', '23:59:59')], [MFLAG('cont')]);
+    const le = entX(XFR, [XFR, LONG], MIDX)[0];
+    eq([le.readonly, le.split.role, le.split.fix], ['split', 'long', false], 'a chain over more than two days stays read-only');
+    // the 12:00 AM part on its own day: carried, no "End it at 11:59 PM" across two periods
+    const ce = entX(XSRC, [XFR, XSRC], MIDX)[0];
+    eq([ce.readonly, ce.split.role, ce.split.cross, ce.split.end, ce.split.whole], ['carried', 'carried', true, false, false]);
+    // a waiting fix put back to what Gusto has goes as a plain update (the main loop's take-back), never as a cross fix
+    const r = subX(XFR);
+    const board = C.overlayDay(XFR, [r.edit], { today: TODAY_X });
+    const pe = entX(XFR, [XFR, XSRO], MIDX, { board, edits: [r.edit] })[0];
+    eq([pe.pendingIds, pe.outT], [['xc1'], '16:45']);
+    pe.outT = '23:59';
+    const pp = C.editPlan(XFR, [pe], {});
+    eq(pp.ops.map(o => [o.action, o.expect, 'cross' in o]), [['update', ['xc1'], false]]);
+  });
+  check("cross-period end fix: the demo twin of ts_edit_submit keeps the 12:00 AM part as the manager saw it, and refuses in the server's words what the server refuses", () => {
+    const r = subX(XFR);
+    ok(r.ok, r.error);
+    eq(r.edit.before, Object.assign(C.shiftSnap(XF), { carried: Object.assign(C.shiftSnap(XSO), { date: SAT }) }), 'before carries the open 12:00 AM part');
+    eq([r.edit.action, r.edit.times_status, r.edit.breaks_status, r.edit.before.carried.out, C.isCrossEnd(r.edit), C.isWholeDelete(r.edit)], ['update', 'pending', 'none', null, true, false]);
+    eq(C.describeEdit(r.edit, C.TZ), ['End 11:59 PM → 4:45 PM', REMOVES_OPEN]);
+    const rc = subX(XFR, {}, { next: XSRC });
+    eq([rc.edit.before.carried.out, C.describeEdit(rc.edit, C.TZ)[1]], [XSC.out, 'Removes the 12:00 AM - 2:05 AM part on Sat, Oct 10 (next pay period)']);
+    const err = (row, o, c) => subX(row, o, c).error;
+    eq(err(MROW(FRI, [XF])), X_MSG.flag, 'no midnight_split flag on the first day');
+    eq(err(XFR, {}, { next: MROW(SAT, [MSH('x-r', SAT, '00:00:00', '23:59:59')], [MFLAG('cont')]) }), X_MSG.long, 'more than two days');
+    eq(err(XFR, {}, { next: MROW(SAT, [MSH('x-r', SAT, '00:00:00', '02:05:00', [['01:00', '01:10', 'rest']])], [MFLAG('cont')]) }), X_MSG.breaks('Sat Oct 10'), 'a break after midnight');
+    // (review 2026-11-21) the flag is per day, not per shift: a 12:00 AM part with a clock-out must look forgotten itself (the
+    // server's rule, as for a whole delete: over 14 hours, or back in within 5 minutes, and the day after flagged too)
+    const NGT = MROW(FRI, [MSH('x-o', FRI, '00:00:00', '07:03:00'), MSH('x-r', FRI, '22:00:00', '23:59:59')], [MFLAG('cont')]);
+    const ngt = (flags, extra) => C.submitEdit([], NGT, { shift_id: 'x-r', action: 'update', after: { in: MT(FRI, '22:00'), out: MT(FRI, '23:30'), breaks: [] }, expect: [] },
+      { email: boss.email, now: NOW_X, today: TODAY_X, id: 'xn9', next: MROW(SAT, [MSH('x-r', SAT, '00:00:00', '06:00:00')].concat(extra || []), flags) });
+    eq([ngt([]).error, ngt([MFLAG('cont')]).error], [X_MSG.flag, X_MSG.flag], 'day N flagged for another shift, this one real overnight work to 6:00 AM: refused');
+    const back = ngt([MFLAG('cont')], [MSH('x-b', SAT, '06:03:00', '09:00:00')]);
+    ok(back.ok && back.edit.before.carried.out === MT(SAT, '06:00:00'), back.error || J(back.edit && back.edit.before));
+    eq(ngt([], [MSH('x-b', SAT, '06:03:00', '09:00:00')]).error, X_MSG.flag, 'back in within 5 minutes, but the day after not flagged: refused');
+    const ne = C.editorEntries(NGT, NGT, [], boss, { today: TODAY_X, now: NOW_X, midnight: MIDX, neighbors: [{ id: 'x-r', in: MT(SAT, '00:00'), out: MT(SAT, '06:00'), date: SAT, breaks: [] }] }).find(x => x.id === 'x-r');
+    eq([ne.readonly, ne.split.cross, ne.split.fix], ['split', true, false], 'the editor offers no fix the server refuses');
+    // (review 2026-11-21) a waiting fix put back exactly as Gusto has it: a plain update that replaces it (the page's take-back)
+    const fx = subX(XFR, {}, { next: XSRC });
+    for (const out of [MT(FRI, '23:59'), XF.out]) {
+      const pb = subX(XFR, { list: fx.edits, input: { after: { in: XF.in, out, breaks: [] }, expect: ['xc1'] } }, { next: XSRC, id: 'xc2' });
+      ok(pb.ok, pb.error);
+      eq([pb.edit.times_status, pb.edit.breaks_status, !!pb.edit.before.carried, C.isCrossEnd(pb.edit), pb.edits.find(x => x.id === 'xc1').cancelled_by], ['none', 'none', false, false, 'superseded'], 'put back to ' + out);
+    }
+    eq(subX(XFR, { input: { after: { in: XF.in, out: MT(FRI, '23:59'), breaks: [] } } }, { next: XSRC }).error, 'Nothing changed: the shift already has these times and breaks.', 'nothing waiting: nothing changed');
+    eq(err(XFR, { list: fx.edits, input: { after: { in: XF.in, out: MT(FRI, '23:59'), breaks: [{ start: MT(FRI, '12:00'), end: MT(FRI, '12:30'), kind: 'meal' }] }, expect: ['xc1'] } }, { next: XSRC }),
+      X_MSG.end('Fri Oct 9'), 'the end left at 11:59 PM with a break added is no put-back');
+    // (review 2026-11-21) while a fix waits on the first day (or was sent since the day after's last sync), nothing else changes that
+    // id on the day after: a change, a delete or a note of its 12:00 AM part
+    const XSR2 = Object.assign({}, MROW(SAT, [XSC, MSH('x-z', SAT, '03:00:00', '04:00:00')], [MFLAG('cont')]), { synced_at: '2026-10-10T15:00:00Z' });
+    const onSat = (list, input) => C.submitEdit(list, XSR2, Object.assign({ shift_id: 'x-r', expect: [] }, input), { email: boss.email, now: NOW_X, today: TODAY_X, id: 'xs1' });
+    const fx2 = subX(XFR, {}, { next: XSR2 }), applied = fx2.edits.map(x => Object.assign({}, x, { times_status: 'applied', times_applied_at: '2026-10-10T16:00:00Z' }));
+    for (const [list, what] of [[fx2.edits, 'waiting'], [fx2.edits.map(x => Object.assign({}, x, { times_status: 'applying' })), 'being sent'], [applied, 'sent since that day\'s last sync']])
+      eq([onSat(list, { action: 'delete', after: null }).error, onSat(list, { action: 'note', after: null, note: 'Left at 2' }).error,
+        onSat(list, { action: 'update', after: { in: XSC.in, out: MT(SAT, '01:30'), breaks: [] } }).error], [X_MSG.waitFix('Fri Oct 9'), X_MSG.waitFix('Fri Oct 9'), X_MSG.waitFix('Fri Oct 9')], what);
+    ok(onSat(fx2.edits, { shift_id: 'x-z', action: 'delete', after: null }).ok, 'another shift on the day after still takes a change');
+    ok(onSat(applied.map(x => Object.assign({}, x, { times_applied_at: '2026-10-10T13:00:00Z' })), { action: 'delete', after: null }).ok, 'sent before that day\'s last sync: taken');
+    ok(onSat(C.cancelEdit(fx2.edits, 'xc1', { email: boss.email, is_admin: true, now: NOW_X }).edits, { action: 'delete', after: null }).ok, 'a fix cancelled: taken');
+    eq(err(XFR, {}, { today: FRI, now: Date.parse('2026-10-10T06:59:00Z') }), X_MSG.future, 'the day after has not happened yet');
+    const wait = MED(XSRC, XSC, { id: 'xw1', times_status: 'pending', after: { in: XSC.in, out: MT(SAT, '01:30'), breaks: [] } });
+    eq([err(XFR, { list: [wait] }, { next: XSRC }), err(XFR, { list: [Object.assign({}, wait, { times_status: 'applied', times_applied_at: '2026-10-07T13:00:00Z' })] }, { next: XSRC })],
+      [X_MSG.busy('Sat Oct 10'), X_MSG.busy('Sat Oct 10')], 'a change of the 12:00 AM part waiting, or sent since that day\'s last sync');
+    ok(subX(XFR, { list: [Object.assign({}, wait, { times_status: 'applied', times_applied_at: '2026-10-07T11:00:00Z' })] }, { next: XSRC }).ok, 'one in Gusto before that sync');
+    ok(subX(XFR, { list: [MED(XSRC, XSC, { id: 'xn1', action: 'note', after: null, note: 'Left at 2', breaks_status: 'pending' })] }, { next: XSRC }).ok, 'a waiting note there does not stop it');
+    eq(err(XFR, {}, { closedOn: r2 => r2.work_date === SAT }), X_MSG.closed('Sat Oct 10'), 'the next pay period closed in Gusto');
+    eq(err(XFR, { input: { after: { in: MT(FRI, '09:00'), out: MT(FRI, '23:59'), breaks: [] } } }), X_MSG.end('Fri Oct 9'), 'an end left at 11:59 PM, the start moved (the same times are a put-back, below)');
+    eq(err(XFR, { input: { after: { in: MT(FRI, '10:00'), out: MT(SAT, '01:00'), breaks: [] } } }), X_MSG.end('Fri Oct 9'), 'an end after midnight');
+    ok(subX(XFR, { input: { after: { in: XF.in, out: MT(FRI, '23:58'), breaks: [] } } }).ok, '11:58 PM is taken');
+    // not this fix: stored exactly as before, with no carried part
+    const plain = (row, o, c) => { const x = subX(row, o, c); ok(x.ok, x.error); return [!!x.edit.before.carried, C.isCrossEnd(x.edit)]; };
+    eq(plain(XFR, {}, { next: null }), [false, false], 'the day after not loaded (no such row)');
+    eq(plain(XFR, {}, { next: MROW(SAT, [MSH('x-other', SAT, '00:00:00', null)]) }), [false, false], 'another id after midnight');
+    eq(plain(XFR, {}, { canView: () => false }), [false, false], 'a day after this sign-in cannot see: nothing about it is told');
+    eq(plain(MROW(FRI, [MSH('x-r', FRI, '08:15:00', '23:58:59')], [MFLAG('start')])), [false, false], 'a first part that ends 11:58:59 PM');
+    const TUE = MROW('2026-10-06', [MSH('x-r', '2026-10-06', '08:15:00', '23:59:59')], [MFLAG('start')]);
+    eq(plain(TUE, { input: { after: { in: MT('2026-10-06', '08:15'), out: MT('2026-10-06', '16:45'), breaks: [] } } }, { next: MROW('2026-10-07', [MSH('x-r', '2026-10-07', '00:00:00', '02:05:00')]) }), [false, false], 'within one pay period (as before)');
+    const del = subX(XFR, { input: { action: 'delete', after: null } });
+    ok(del.ok && !del.edit.before.carried && !C.isWholeDelete(del.edit), 'a plain delete keeps no carried part (on a delete it would mean a whole one)');
+    for (const m of Object.values(X_MSG).map(x => typeof x === 'function' ? x('Sat Oct 10') : x).concat([REMOVES_OPEN])) ok(!/[–—]/.test(m), 'no en or em dash: ' + m);
+  });
+  check('cross-period end fix: isCrossEnd reads a stored one by its shape (an update with an end and before.carried), never a delete or a start alone', () => {
+    const e = subX(XFR).edit;
+    eq([C.isCrossEnd(e), C.isCrossEnd(Object.assign({}, e, { action: 'delete', after: null })), C.isCrossEnd(Object.assign({}, e, { after: Object.assign({}, e.after, { out: null }) })),
+      C.isCrossEnd(Object.assign({}, e, { before: C.shiftSnap(XF) })), C.isCrossEnd(Object.assign({}, e, { before: Object.assign({}, e.before, { carried: Object.assign({}, e.before.carried, { date: 'Sat' }) }) })), C.isCrossEnd(null)],
+      [true, false, false, false, false, false]);
+  });
+  // The page's own rule for a fix the worker holds (its C.setCrossHeld call), run as written
+  function crossHeldRule(proven) {
+    const m = block('ts-app').match(/C\.setCrossHeld\((e => \{[\s\S]*?\})\);\n/);
+    if (!m) throw new Error('no C.setCrossHeld in ts-app');
+    return new Function('EDIT_PROVEN', 'dayRaw', 'rowRegion', 'return ' + m[1] + ';')(proven, () => null, r => r.region || C.regionOfCompany(r.company));
+  }
+  check('cross-period end fix: held until a supervised run in its region, it says so, is never Late, and Save says it waits', () => {
+    const e = subX(XFR).edit, other = ED({ id: 'o1', times_status: 'pending' });
+    C.setCrossHeld(() => true);
+    try {
+      eq(C.editPartLines(e, C.TZ, NOW_X), ['Start and end: waits for the first run of this kind Gianni watches']);
+      eq([C.editLate(e, '2026-10-14T20:00:00Z'), C.crossIsHeld(e), C.crossIsHeld(other)], [false, true, false], 'never Late; only the cross fix waits for that run');
+      eq(C.saveMessage([{ op: { type: 'submit' }, edit: e }], 'at noon today'), 'Saved. Fixing a shift that ran into the next pay period waits for the first run Gianni watches, then goes to Gusto.');
+      eq(C.saveMessage([{ op: { type: 'submit' }, edit: e }, { op: { type: 'submit' }, edit: other }], 'at noon today'),
+        'Saved. It goes to Gusto at noon today and shows as Pending until then. Fixing the shift that ran into the next pay period waits for the first run Gianni watches.');
+      eq(C.crossIsHeld(Object.assign({}, e, { times_status: 'applied' })), false, 'once in Gusto: not held');
+    } finally { C.setCrossHeld(null); }
+    eq([C.crossIsHeld(e), C.saveMessage([{ op: { type: 'submit' }, edit: e }], 'at noon today')], [false, 'Saved. It goes to Gusto at noon today and shows as Pending until then.'], "without the page's rule: not held");
+    // the page's rule: held in California until CA:midnight-split-cross, in New York until NY:midnight-split-cross; no other switch opens it
+    const held = proven => { const f = crossHeldRule(proven); return [e, Object.assign({}, e, { region: 'NY', company: 'wtny' })].map(f); };
+    // (review 2026-11-21) each region on its own switch: New York may be proven first (this case's supervised run is New York's)
+    eq([held({ midnightCross: false, nyMidnightCross: false, midnight: true, nyMidnight: true, midnightDelete: true, nyMidnightDelete: true }),
+      held({ midnightCross: true, nyMidnightCross: false }), held({ midnightCross: false, nyMidnightCross: true }), held({ midnightCross: true, nyMidnightCross: true })],
+      [[true, true], [false, true], [true, false], [false, false]]);
+  });
+  check('page: the cross switch and who gets it (EDIT_PROVEN.midnightCross / .nyMidnightCross, 2026-11-21), the editor, Open <day before>, Save\'s last look and an older server', () => {
+    const app = block('ts-app');
+    const ep = new Function('return ' + app.match(/const EDIT_PROVEN = (\{[\s\S]*?\});/)[1])();
+    eq([ep.midnightCross, ep.nyMidnightCross], [false, false], 'held in both regions until a supervised run');
+    ok(/midnightDelete: false, nyMidnightDelete: false,\n[^\n]*2026-11-21[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*midnightCross: false, nyMidnightCross: false,/.test(app), 'right after the whole delete\'s switches, with a dated comment');
+    ok(/function mayCross\(r\) \{ return mayMidnight\(r\) && mayEdit\(rowRegion\(r\) === 'NY' \? 'nyMidnightCross' : 'midnightCross'\); \}/.test(app), 'mayCross: the first-day fix\'s rule and its own switch, one per region (review 2026-11-21)');
+    eq([(app.match(/'midnightCross'/g) || []).length, (app.match(/'nyMidnightCross'/g) || []).length], [1, 1], 'every gate goes through mayCross');
+    ok(/\$\{en\.split\.cross \? ', in the next pay period' : ''\}\. Set its real end time here: both days are fixed at once\./.test(appFn('entryHtml')), 'the editor says the rest is in the next pay period');
+    const sv = appFn('saveDayEdits');
+    ok(/if \(op\.cross && !\(res\.edit && res\.edit\.before && res\.edit\.before\.carried\)\) \{\s*if \(res\.edit && res\.edit\.id\) await runEditOp\(raw, \{ type: 'cancel', key: op\.key, id: res\.edit\.id \}, ''\);\s*failed\.add\(op\.key\); undone = true; if \(en\) en\.err = CROSS_OFF;/.test(sv),
+      'a server older than the SQL file: taken back at once, and said plainly');
+    ok(sv.indexOf('await refreshDay(k)') < sv.indexOf('readNextDay(raw)') && sv.indexOf('readNextDay(raw)') < sv.indexOf('runEditOp('), 'the day after read again before anything is sent');
+    ok(app.includes("const CROSS_OFF = 'Fixing a shift that ran into the next pay period is not switched on yet: fix its end time in Gusto.';"), 'its words');
+    ok(/closedOn: r => periodClosed\(r\)/.test(appFn('runEditOp')), 'demo: whether the next pay period is closed');
+    const st = appFn('edSaveTap');
+    ok(/if \(!res\.error && x\.op\.cross && !\(res\.edit && res\.edit\.before && res\.edit\.before\.carried\)\) \{/.test(st) && /return stop\(CROSS_OFF\);/.test(st), 'the clock-in tap fix takes one back too, before the start goes');
+  });
+  // the page's carried-part box with stand-ins (Open <day before> across two pay periods only for a sign-in mayCross lets fix it)
+  const carriedPage = may => new Function('C', 'h', 'E', 'S', 'dayRaw', 'mayCross', 'mayMidnight', 'canEditRow', 'mayWhole', 'tapOffered', 'tapHtml',
+    appFn('carriedText') + appFn('carriedHtml') + '\nreturn carriedHtml;')(C, C.h, { rowId: XSRC.id, busy: false, tap: null }, { rows: new Map([[XFR.id, XFR], [XSRC.id, XSRC]]), edits: new Map() },
+      id => (id === XSRC.id ? XSRC : null), () => may, () => true, () => true, () => true, () => false, () => '');
+  check('page: the 12:00 AM part on the next pay period\'s first day opens the day before for whoever may fix it, never offers Delete the whole shift there, and else says to fix it in Gusto', () => {
+    const en = entX(XSRC, [XFR, XSRC], MIDX)[0];
+    const yes = String(carriedPage(true)(en, 'Shift 1', '', '12:00 AM - 2:05 AM'));
+    ok(/data-act="ed-open-day" data-k="filifera:m1:2026-10-09"[^>]*>Open Fri, Oct 9<\/button>/.test(yes) && yes.includes('Fix its end on Fri, Oct 9: a new end there fixes both days at once.') && !/Delete the whole shift/.test(yes), yes);
+    const no = String(carriedPage(false)(en, 'Shift 1', '', '12:00 AM - 2:05 AM'));
+    ok(!/ed-open-day/.test(no) && no.includes('Fix its end time in Gusto (Fri, Oct 9 is in another pay period).'), no);
+  });
+  // (review 2026-11-21) the page's own gates, run as written (no stand-ins): on the first day of the loaded window the day before
+  // is known to the editor (its neighbours) but not loaded in S.rows, so prevRow is null, and nothing may read its region
+  const carriedReal = (who, rows) => {
+    const app = block('ts-app'), m = app.match(/\n  const rowRegion = [^\n]*\n/);
+    if (!m) throw new Error('no rowRegion in ts-app');
+    const EP = new Function('return ' + app.match(/const EDIT_PROVEN = (\{[\s\S]*?\});/)[1])();
+    const code = [m[0], appFn('mayEdit'), appFn('mayMidnight'), appFn('mayWhole'), appFn('mayCross'), appFn('carriedText'), appFn('carriedHtml'), 'return carriedHtml;'].join('\n');
+    return new Function('C', 'h', 'E', 'S', 'dayRaw', 'actor', 'EDIT_PROVEN', 'canEditRow', 'tapOffered', 'tapHtml', code)(C, C.h, { rowId: XSRC.id, busy: false, tap: null },
+      { rows: new Map(rows.map(r => [r.id, r])), edits: new Map() }, id => (id === XSRC.id ? XSRC : null), () => who, EP, () => true, () => false, () => '');
+  };
+  check("page: the 12:00 AM part on the loaded window's first day, the day before not loaded, still draws for every sign-in, with no Open button (the real mayCross, mayMidnight and rowRegion)", () => {
+    const en = entX(XSRC, [XFR, XSRC], MIDX)[0];
+    for (const who of [{ email: 'lead@wizardtrees.com', is_admin: false }, boss]) {
+      const out = String(carriedReal(who, [XSRC])(en, 'Shift 1', '', '12:00 AM - 2:05 AM'));
+      ok(!/ed-open-day/.test(out) && out.includes('Fix its end time in Gusto (Fri, Oct 9 is in another pay period).'), (who.is_admin ? 'admin: ' : 'manager: ') + out);
+    }
+    // with the day before loaded: an admin gets Open Fri, Oct 9; a manager (the switch off) does not
+    const yes = String(carriedReal(boss, [XFR, XSRC])(en, 'Shift 1', '', '12:00 AM - 2:05 AM')), no = String(carriedReal({ email: 'lead@wizardtrees.com', is_admin: false }, [XFR, XSRC])(en, 'Shift 1', '', '12:00 AM - 2:05 AM'));
+    eq([/>Open Fri, Oct 9<\/button>/.test(yes), /ed-open-day/.test(no)], [true, false]);
+  });
+  // the clock-in tap across two pay periods: Fri Oct 9 left open, the Sat Oct 10 7:46 AM clock-in tap closed it, then a clock-in
+  const XC6 = MSH('x-r', SAT, '00:00:00', '07:46:12'), XN6 = MSH('x-n', SAT, '08:02:38', null);
+  const XT6 = MROW(SAT, [XC6, XN6], [MFLAG('cont')]);
+  const tapCtx = o => Object.assign({ day: { raw: XT6, board: XT6, edits: [], neighbors: nbX(XT6, [XFR, XT6]) }, prev: { raw: XFR, board: XFR, edits: [], neighbors: nbX(XFR, [XFR, XT6]), around: [] },
+    who: boss, now: NOW_X, endT: '16:45', fix: true }, o || {});
+  check('clock-in tap across two pay periods: offered with the cross switch (the end then carries the 12:00 AM part), else it says to fix the end in Gusto', () => {
+    const tap = C.clockInTap(XT6, nbX(XT6, [XFR, XT6]), { today: TODAY_X });
+    ok(tap && !tap.samePeriod && tap.date === FRI && tap.running, 'spotted, across two pay periods');
+    eq(C.clockInTapPlan(tapCtx()).error, WHY_X, 'without cross');
+    const plan = C.clockInTapPlan(tapCtx({ cross: true }));
+    ok(!plan.error, plan.error);
+    eq([plan.wait, plan.ops.map(x => [x.day, x.op.action, x.op.shift_id, x.op.after.out, !!x.op.cross])], ['running', [['prev', 'update', 'x-r', MT(FRI, '16:45'), true], ['day', 'update', 'x-n', null, false]]]);
+    const r = C.submitEdit([], XFR, { shift_id: 'x-r', action: 'update', after: plan.ops[0].op.after, expect: [] }, { email: boss.email, now: NOW_X, today: TODAY_X, next: XT6 });
+    ok(r.ok, r.error);
+    eq(r.edit.before.carried, Object.assign(C.shiftSnap(XC6), { date: SAT }), 'the part the tap closed, as the manager saw it');
+    eq(C.tapSavedText(plan, { tz: C.TZ, when: 'at noon today', endWhen: 'after the first run of this kind Gianni watches', name: 'Test Midnight' }),
+      'Saved. Fri, Oct 9 ends at 4:45 PM, going to Gusto after the first run of this kind Gianni watches. The start moves to 7:46 AM after they clock out.', 'the end waits for its run, the start for the clock-out');
+  });
+  // the page's own tap form code with stand-ins (as section 25's tapPage), to Save through runEditOp
+  {
+    const FIXED = NOW_X;
+    class FD extends Date { constructor(...a) { super(...(a.length ? a : [FIXED])); } static now() { return FIXED; } }
+    const tapPageX = o => {
+      const app = block('ts-app'), line = re => { const m = app.match(re); if (!m) throw new Error('not in the page: ' + re); return m[0]; };
+      const code = [line(/\n  let tapIdx = new Map\(\);[^\n]*\n/), line(/\n  const minHhmm = [^\n]*\n/), line(/\n  const CROSS_OFF = [^\n]*\n/), appFn('mayMidnight'), appFn('mayCross'),
+        ...['tapOfRaw', 'tapPrev', 'tapEdits', 'mayTap', 'tapOffered', 'resetTap', 'tapFocus', 'openTapForm', 'tapHtml', 'tapPlanNow', 'edSaveTap'].map(appFn),
+        'return { openTapForm, edSaveTap, tapOffered, mayTap };'].join('\n');
+      const env = { C, h: C.h, S: o.S, E: o.E, DEMO: true, Date: FD, mayEdit: w => w !== 'midnightCross' || o.cross !== false, canEditRow: () => true, rowRegion: r => r.region || C.regionOfCompany(r.company),
+        editsFor: id => o.list().filter(e => e.day_id === id), refreshDay: async () => ({ ok: true }),
+        boardRow: r => C.overlayDay(r, o.list().filter(e => e.day_id === r.id), { today: TODAY_X }), rawNeighbors: r => nbX(r, [...o.S.rows.values()]), neighborShifts: () => [],
+        actor: () => boss, rowToday: () => TODAY_X, NOTE_FIRST: 'Save the note first.', $: () => null,
+        runEditOp: async (raw, op, note) => {
+          if (op.type === 'cancel') { const c = C.cancelEdit(o.list(), op.id, { email: boss.email, is_admin: true, now: NOW_X }); if (!c.ok) return { error: c.error }; o.set(c.edits); o.sent.push({ cancel: op.id }); return { edit: c.edit }; }
+          const r = C.submitEdit(o.list(), raw, { shift_id: op.shift_id, action: op.action, after: op.after, note, expect: op.expect }, { email: boss.email, now: NOW_X, today: TODAY_X, id: 'tx-' + (o.sent.length + 1),
+            next: op.cross ? o.S.rows.get(C.nextDayId(raw)) : null });
+          if (!r.ok) return { error: r.error };
+          // an older server keeps no carried part
+          const edit = o.old && r.edit.before && r.edit.before.carried ? Object.assign({}, r.edit, { before: C.shiftSnap(XF) }) : r.edit;
+          o.set(r.edits.map(x => x.id === edit.id ? edit : x)); o.sent.push({ day: raw.id, edit });
+          return { edit };
+        },
+        fetchEdits: async () => true, render: () => {}, renderEditor: () => {}, closeEditor: () => { o.closed.n++; }, toast: m => o.toasts.push(m) };
+      return new Function(...Object.keys(env), code)(...Object.values(env));
+    };
+    const envX = extra => {
+      let list = [];
+      const o = Object.assign({ S: { rows: new Map([[XFR.id, XFR], [XT6.id, XT6]]) }, list: () => list, set: l => { list = l; }, sent: [], toasts: [], closed: { n: 0 } }, extra || {});
+      o.E = { rowId: XT6.id, entries: [], note: '', busy: false, loading: false, noteBusy: false, noteOpen: false, noteText: '', stamp: C.dayStamp(XT6, []),
+        tap: C.clockInTap(XT6, nbX(XT6, [XFR, XT6]), { today: TODAY_X }), tapOpen: false, tapEnd: '', tapFrom: '', tapErr: '', tapBusy: false, tapStamp: '' };
+      return Object.assign(o, { P: tapPageX(o) });
+    };
+    await acheck('clock-in tap across two pay periods through the page: offered only with the cross switch, held words in the toast, and an older server\'s plain update taken back before the start goes', async () => {
+      const off = envX({ cross: false });
+      eq([off.P.tapOffered(XT6), off.P.mayTap(XT6, off.E.tap)], [false, false], 'a sign-in the cross fix is not open to: no form');
+      C.setCrossHeld(() => true);
+      try {
+        const on = envX();
+        ok(on.P.tapOffered(XT6), 'offered');
+        on.P.openTapForm(XT6); on.E.tapEnd = '16:45';
+        await on.P.edSaveTap();
+        eq([on.E.tapErr, on.sent.map(x => [x.day, x.edit.shift_id, !!x.edit.before.carried])], ['', [[XFR.id, 'x-r', true], [XT6.id, 'x-n', false]]]);
+        eq(on.toasts, ['Saved. Fri, Oct 9 ends at 4:45 PM, going to Gusto after the first run of this kind Gianni watches. The start moves to 7:46 AM after they clock out.']);
+        const old = envX({ old: true });
+        old.P.openTapForm(XT6); old.E.tapEnd = '16:45';
+        await old.P.edSaveTap();
+        eq([old.E.tapErr, old.sent.map(x => x.cancel ? 'cancel ' + x.cancel : x.edit.shift_id), old.closed.n],
+          ['Fixing a shift that ran into the next pay period is not switched on yet: fix its end time in Gusto.', ['x-r', 'cancel tx-1'], 0], 'taken back at once; the start never went');
+      } finally { C.setCrossHeld(null); }
+    });
+  }
+  check("demo (made-up): Mulberry Fiddlesticks' forgotten clock-out on the previous pay period's last day runs into the current one, open when that day is today, and is fixed from the editor as an admin", () => {
+    const me = { email: 'demo.owner@wizardtrees.com', is_admin: true };
+    let builds = 0, open = 0;
+    for (let i = 0; i < 14 * 24; i += 13) {
+      const t = Date.parse(NOW) + i * 3600000, d = D.build(t), today = d.todays.NY, at = ' (opened ' + new Date(t).toISOString() + ')';
+      const rows = d.rows.filter(r => r.employee_name === 'Mulberry Fiddlesticks').map(r => C.normRow(r));
+      const N = C.addDays(C.payPeriodFor(today, C.EDIT_ANCHOR_END).from, -1);
+      const fri = rows.find(r => r.work_date === N), sat = rows.find(r => r.work_date === C.addDays(N, 1));
+      ok(fri && sat && fri.flags.some(f => f.code === 'midnight_split'), 'the first day flagged' + at);
+      eq([C.fmtTime(fri.shifts[0].in, C.rowTz(fri)), fri.shifts[0].out.slice(11, 19), String(sat.shifts[0].id), sat.shifts[0].in.slice(11, 19)], ['8:15 AM', '23:59:59', String(fri.shifts[0].id), '00:00:00'], 'one Gusto id' + at);
+      eq(sat.shifts[0].out ? sat.shifts[0].out.slice(11, 16) : null, sat.work_date === today ? null : '02:05', 'still clocked in when that day is today' + at);
+      if (!sat.shifts[0].out) open++;
+      const nb = nbX(fri, rows);
+      const en = C.editorEntries(fri, fri, [], me, { today, now: t, neighbors: nb, midnight: MIDX })[0];
+      eq([en.readonly || null, en.split.cross, en.split.fix], [null, true, true], 'an admin may fix it' + at);
+      const ro = C.editorEntries(fri, fri, [], { email: 'ny.lead@wizardtrees.com', is_admin: false }, { today, now: t, neighbors: nb, midnight: { fix: false, end: false, whole: false, cross: false } })[0];
+      eq([ro.readonly, C.splitWhy(ro, C.rowTz(fri))], ['split', 'Gusto ran this shift past midnight (likely a missed clock-out), and its part on ' + C.fmtDay(sat.work_date) + ' is in another pay period. Fix its end time in Gusto.'], 'a plain manager reads why' + at);
+      en.outT = '16:45';
+      const p = C.editPlan(fri, [en], {});
+      eq([p.errors, p.ops.map(o => o.cross)], [{}, [true]], at);
+      const r = C.submitEdit(d.edits, fri, { shift_id: p.ops[0].shift_id, action: 'update', after: p.ops[0].after, expect: p.ops[0].expect }, { email: me.email, now: t, today, next: sat });
+      ok(r.ok, r.error + at);
+      eq([r.edit.before.carried.date, r.edit.before.carried.out], [sat.work_date, sat.shifts[0].out || null], at);
+      ok(!d.edits.some(e => e.day_id === fri.id || e.day_id === sat.id), 'no other demo change on these days' + at);
+      builds++;
+    }
+    eq(builds, 26);
+    ok(open > 0, 'some builds open it on the day its 12:00 AM part is still clocked in');
+    ok(D.NAMES.includes('Mulberry Fiddlesticks'), 'a made-up name');
+  });
+  // its twins: the worker's isCrossEnd and kind (~/gusto-sync/ts-edit-plan.mjs), the daily list's words (ts-edit-mail.mjs), the SQL file
+  {
+    const dir = process.env.TS_GUSTO_SYNC_DIR || path.join(os.homedir(), 'gusto-sync'), where = dir.replace(os.homedir(), '~');
+    let plan = null, mail = null;
+    try { const f = path.join(dir, 'ts-edit-plan.mjs'); plan = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { plan = null; }
+    try { const f = path.join(dir, 'ts-edit-mail.mjs'); mail = fs.existsSync(f) ? await import(pathToFileURL(f).href) : null; } catch (e) { mail = null; }
+    const KIND = 'midnight-split-cross';
+    check('the worker knows the cross-period fix the way the page does: isCrossEnd, its kind and its words, and holds it in the same regions (where ' + where + ' has it)', () => {
+      if (!plan || typeof plan.isCrossEnd !== 'function' || !plan.WRITE_KINDS || !(KIND in plan.WRITE_KINDS)) { console.log('          (skipped: the worker in ' + where + ' does not know ' + KIND + ' yet)'); return true; }
+      const e = subX(XFR).edit, samples = [e, Object.assign({}, e, { action: 'delete', after: null }), Object.assign({}, e, { after: Object.assign({}, e.after, { out: null }) }), Object.assign({}, e, { before: C.shiftSnap(XF) }), null];
+      eq(samples.map(x => plan.isCrossEnd(x)), samples.map(x => C.isCrossEnd(x)), 'isCrossEnd twins');
+      eq(plan.WRITE_KINDS[KIND], 'a shift that ran past midnight into the next pay period given its end on the first day (a missed clock-out fixed)');
+      if (typeof plan.heldKinds !== 'function' || typeof plan.provenSet !== 'function') return true;
+      eq(plan.provenSet(null).has ? [...plan.provenSet(null)].filter(k => /cross/.test(k)) : [], [], 'nothing proven by default');
+      // (review 2026-11-21) each region apart, in either order: the page's rule follows the worker's
+      for (const [ca, ny] of [[false, false], [true, false], [false, true], [true, true]]) {
+        const proven = plan.provenSet({ proven: [ca ? 'CA:' + KIND : null, ny ? 'NY:' + KIND : null, 'CA:midnight-split', 'NY:midnight-split', 'CA:delete-split', 'NY:delete-split'].filter(Boolean).map(kind => ({ kind })) });
+        const rule = crossHeldRule({ midnightCross: ca, nyMidnightCross: ny });
+        for (const x of [e, Object.assign({}, e, { region: 'NY', company: 'wtny' })])
+          eq(rule(x), plan.heldKinds({ kind: 'edit', writeKinds: [KIND] }, x.region, proven).length > 0, x.region + ' with CA ' + ca + ', NY ' + ny + ' proven');
+      }
+    });
+    check('a cross-period fix reads the same in the daily list (where ' + where + ' knows them)', () => {
+      const e = subX(XFR).edit;
+      const got = mail && typeof mail.describeChange === 'function' ? mail.describeChange(e) || [] : [];
+      if (!got.some(l => /^Removes the /.test(l))) { console.log('          (skipped: the daily list in ' + where + ' does not read cross-period fixes yet)'); return true; }
+      // the daily list writes days as "Sat Oct 10", the board as "Sat, Oct 10"
+      eq(got.map(l => l.replace(/,/g, '')), C.describeEdit(e, C.TZ).map(l => l.replace(/,/g, '')));
+    });
+    check('supabase/ts-edit-cross-period-midnight.sql (once it is in the folder) carries the refusals the page and its demo twin say, and keeps every earlier path', () => {
+      const f = path.join(ROOT, 'supabase', 'ts-edit-cross-period-midnight.sql');
+      if (!fs.existsSync(f)) { console.log('          (skipped: supabase/ts-edit-cross-period-midnight.sql is not here yet)'); return true; }
+      const t = fs.readFileSync(f, 'utf8'), q = s => s.replace(/'/g, "''").replace(/\.$/, '');
+      const raised = t.split('\n').filter(l => /raise exception '/.test(l)).join('\n');
+      const words = [X_MSG.flag, X_MSG.long, 'Gusto has a break after midnight on this shift (on %), which a new end here would leave outside it. Fix it in Gusto', X_MSG.future,
+        'A change of this shift on % is waiting or was just sent to Gusto. Cancel it there, or reload after the next sync, then try again',
+        'The rest of this shift (on %) is in a pay period Gusto has closed, so its end cannot be fixed here. Fix it in Gusto',
+        'This shift ran past midnight in Gusto: end it before midnight on % here (that fixes both days at once). To end it after midnight, change it in Gusto',
+        // (review 2026-11-21) the day after, while a fix waits on the first day
+        'The end of this shift waits to be fixed from %. Cancel that change first, or reload after the next sync'];
+      const missing = words.filter(w => !raised.includes(q(w)));
+      ok(!missing.length, 'not raised in the SQL file: ' + J(missing));
+      for (const v of ['v_cross', 'v_whole', 'v_blank', 'v_start_only', "c_whole    constant text := '" + C.DELETE_WHOLE_NOTE + "';"]) ok(t.includes(v), v);
+      ok(/mod\(d\.work_date - date '2026-10-09', 14\) = 0/.test(t) && t.includes("date '" + C.EDIT_ANCHOR_END + "'"), 'the page\'s pay period grid');
+      ok(/if v_whole or v_cross then\s*perform pg_advisory_xact_lock\(hashtext\('ts_edit:' \|\| v_next_id\)\);/.test(t), 'day N, then day N + 1, locked');
+      ok(!/[–—]/.test(t), 'no en or em dash');
+      const vf = path.join(ROOT, 'supabase', 'ts-edit-cross-period-midnight-verify.sql');
+      ok(fs.existsSync(vf) && /^rollback;\s*$/m.test(fs.readFileSync(vf, 'utf8')), 'its verify is there, and rolls back');
+    });
+  }
 }
 
 // not a check: a reminder that the page links these files, so they must be committed with it, by name
