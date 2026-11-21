@@ -209,6 +209,7 @@ if(new URLSearchParams(location.search).get('embed')==='schedule')document.docum
     box-shadow:var(--shadow);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;max-width:90%}
   #toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
   #toast.err{border-color:var(--red)} #toast.ok{border-color:var(--green)}
+  #toast.show .toast-act{pointer-events:auto}
   .toast-act{margin-left:9px;background:transparent;border:1px solid rgba(255,255,255,.45);color:inherit;
     font:inherit;font-weight:800;padding:2px 10px;border-radius:999px;cursor:pointer}
 
@@ -413,7 +414,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-11-10.129';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-11-20.130';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -1100,7 +1101,7 @@ function openSheet(html){
 // The select stays in the DOM (hidden) as the value holder, so all existing
 // .value reads and change handlers keep working untouched.
 function searchifySelect(sel, title){
-  if(!sel || sel._searchified || sel.disabled || sel.options.length<8) return;
+  if(!sel || sel._searchified || sel.disabled || (sel.options.length<8 && !sel.hasAttribute('data-searchable'))) return;
   sel._searchified=true;
   if(!title){ let el=sel.previousElementSibling;                       // use the field's label as the picker title
     while(el && !(el.tagName==='LABEL'&&el.classList.contains('fl'))) el=el.previousElementSibling;
@@ -1355,6 +1356,7 @@ async function drawBA(){
   if(state.baTab==='sched') return drawSchedule(m);
   await flushGrid();                                  // commit pending grid edits before reading
   const seq = state._drawSeq = (state._drawSeq||0)+1; // latest render wins
+  const myTasksP = myTasksLoad().catch(()=>null);     // read alongside the rest, drawn with the page (no jump)
   m.innerHTML = `<div class="loading"><span class="spin"></span></div>`;
 
   // Periods the BA may see: current + past. A not-yet-started period stays hidden
@@ -1413,7 +1415,10 @@ async function drawBA(){
       <div class="small muted" style="margin:4px 0 6px">Open it, add anything missing and submit. No mileage or expenses? Tap “Nothing to claim”. You'll get a reminder each morning until it's in.</div>
       ${owed.map(p=>`<button class="btn block" data-owed="${p.id}" style="margin-top:6px">Open ${esc(p.label)}</button>`).join('')}
     </div>` : '';
-  m.innerHTML = owedBanner + visible.map(p=>{
+  let mt=await myTasksP; if(seq !== state._drawSeq) return;
+  if(!mt||mt.error) mt=(state._myTasks&&state._myTasks.for===state.session?.user?.id)?state._myTasks:null;   // the last good copy
+  else state._myTasks=mt;
+  m.innerHTML = owedBanner + `<div id="myTasks">${myTasksHtml(mt)}</div>` + visible.map(p=>{
     const open=active && p.id===active.id;
     const sub=subByPid[p.id];
     const headTotal = open ? reimburseTotal() : (sub&&sub.totals? Number(sub.totals.total||0) : null);
@@ -1427,6 +1432,10 @@ async function drawBA(){
   if(active && canEdit) wireEditableBody();
   m.querySelectorAll('.perhead').forEach(h=>h.onclick=()=>togglePeriod(h.dataset.pid));
   m.querySelectorAll('[data-owed]').forEach(b=>b.onclick=()=>{ state._baPickPid=b.dataset.owed; drawBA(); });
+  wireMyTasks(mt);
+  // the database marks visits done from what the BAs logged; redraw the card only if that changed something
+  const mw=myTasksWho();
+  if(mw) schedAutocomplete(mw.st, schedIso(schedAdd(new Date(),-30))).then(n=>{ if(n>0) drawMyTasks(); }).catch(()=>{});
 }
 // the expandable header bar for one pay period
 function periodHeadHtml(p, open, total, badge){
@@ -3643,7 +3652,7 @@ function visitsCardsHtml(visits, nonVisit){
       <div class="small" style="margin-top:8px;line-height:1.7">${nv.tripCount>0?`🚗 ${money(nv.tripAmt)} mileage · ${nv.tripCount} trip${nv.tripCount>1?'s':''}`:''}${nv.tripCount>0&&nv.expCount>0?'<br>':''}${nv.expCount>0?`🧾 ${money((nv.expReimb||0)+(nv.expCard||0))} expenses · ${nv.expCount} item${nv.expCount>1?'s':''}`:''}</div>
     </div>` : '';
   return `<div class="card">
-    <div class="row" style="align-items:baseline"><h3 class="grow" style="margin:0">Visits <span class="muted small">· ${rangeLabel()} · tap a store, then a visit</span></h3>${groups.length?`<button class="btn ghost sm" id="visitsCsv">⬇ CSV</button>`:''}</div>
+    <div class="row" style="align-items:baseline"><h3 class="grow" style="margin:0">Visits <span class="muted small">· ${rangeLabel()} · tap a store, then a visit</span></h3>${groups.length?`<button class="btn ghost sm" id="visitsCsv" title="Each store visit's mileage, labor and expense cost">⬇ Visit costs CSV</button>`:''}</div>
     ${groups.length?groups.map(groupHtml).join(''):`<p class="muted small" style="margin-top:8px">No store visits logged for this range yet.</p>`}
   </div>${overHtml}${nvHtml}`;
 }
@@ -5616,6 +5625,9 @@ async function schedReloadTasks(){
     // keeps the viewed board's calendar from showing the other state's tasks
     // deleted_at is null → the live rows. Deletes are soft (see migrate-schedule-backup.sql),
     // so a removed task is still in the table and can be undeleted.
+    // visits the BA has since logged are marked done by the database: ask it to catch up on this board's
+    // last weeks first (at most every 2 minutes; the calendar loads the same if it can't)
+    await schedAutocomplete(state.schedState||'CA', schedIso(schedAdd(S.month||new Date(),-45)));
     let q=supabase.from('schedule_tasks').select('*').is('deleted_at',null).order('created_at');
     if(state.schedState) q=q.eq('state',state.schedState);
     const { data:tasks, error } = await q;
@@ -5627,7 +5639,9 @@ async function schedReloadTasks(){
       const canon=schedCanon(t.driver);
       return { iso:t.task_date, account:t.account, region:t.region||'', driver:t.driver||'',
         inv:t.inv_total==null?'':String(t.inv_total), soNotes:t.notes||'', teamNotes:'',
-        soNum:t.so_num||'', sheet:'app', dbId:t.id, canon, color:schedColor(canon), time:schedTime(t.notes||'') };
+        soNum:t.so_num||'', sheet:'app', dbId:t.id, canon, color:schedColor(canon), time:schedTime(t.notes||''),
+        kind:t.kind||null, doneAt:t.done_at||null, doneHow:t.done_how||null, doneNote:t.done_note||'', doneBy:t.done_by||null,
+        createdAt:t.created_at||null, doneOn:t.done_on||null };
     });
   }catch(e){ S.dbRows=S.dbRows||[];        // keep the last good rows rather than blanking
     toast('Couldn’t refresh tasks. Showing the last loaded copy.'); }
@@ -5724,6 +5738,11 @@ function schedCss(){
   .sb-tag.cod{color:#fff;background:var(--red);border-color:var(--red)}
   .sb-tag.net{color:var(--text)}
   .sb-tag.region{color:var(--text);font-weight:600}
+  .sb-tag.kind{color:var(--text);border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
+  .sb-tag.done{color:var(--green);border-color:var(--green)}
+  .sb-tag.overdue{color:var(--orange);border-color:color-mix(in srgb,var(--orange) 60%,var(--line))}
+  .sb-mini.od{box-shadow:inset 0 0 0 1px #0b0d10,inset 0 0 0 2.5px var(--orange)}
+  .sb-done-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:7px}
   .sb-grp{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 4px 2px}
   .sb-filt{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:8px 0 0;padding:7px 10px;font-size:12px;
     background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));border-radius:10px}
@@ -5753,6 +5772,122 @@ function schedCss(){
   document.head.appendChild(st);
 }
 const SCHED_PAD=/\bPADs?\b/i, SCHED_EDU=/\bEDUs?\b|educat/i;
+/* ── SCHEDULE TASK MODEL (pure: no DOM, no database; tests/ba-schedule-tasks.test.mjs runs it) ──
+   Gianni 2026-11-20, for Amanda ("assigning follow-ups and trainings and tracking when they're done"): an
+   app task has a type and a done mark (supabase/ba-schedule-task-status.sql). Visits, Demo / PAD and EDU
+   visits are marked done by the database when the assigned BA logs a trip or hours at that store on that
+   day, or files the post-visit report; trainings and follow-ups only when someone marks them. A task
+   someone marked not done ('reopened') is never marked done automatically again. */
+const SCHED_KINDS=[{k:'visit',label:'Visit',search:'Visit store visit'},{k:'pad',label:'Demo / PAD',search:'Demo / PAD demo pad demo/pad'},
+  {k:'edu',label:'Education talk',search:'Education talk edu'},{k:'training',label:'Training',search:'Training train'},
+  {k:'followup',label:'Follow-up',search:'Follow-up followup follow up'},{k:'delivery',label:'Delivery',search:'Delivery drop off'}];
+const SCHED_DONE_HOW={marked:'marked done',trip:'trip logged',hours:'hours logged',report:'post-visit report filed'};
+const SCHED_AUTO_HOW=new Set(['trip','hours','report']);   // done by what the BA logged for that day
+// a task's type: its own; an older task's from what it carries, like the schedule sheet's rows (an SO# is
+// a delivery, PAD or EDU in its notes a Demo / PAD or an Education talk, anything else a visit)
+function schedKindOf(v){
+  if(v&&v.kind) return v.kind;
+  if(String((v&&(v.soNum??v.so_num))||'').trim()) return 'delivery';
+  const blob=String((v&&(v.soNotes??v.notes))||'')+' '+String((v&&v.teamNotes)||'');
+  return SCHED_PAD.test(blob)?'pad':SCHED_EDU.test(blob)?'edu':'visit';
+}
+// visits, Demo / PAD and EDU visits are confirmed by what the BA logs (trip, hours, post-visit report);
+// BAs log at the end of the pay period, so a past one waits this many days before it counts as overdue
+const SCHED_VISIT_KINDS=new Set(['visit','pad','edu']);
+const SCHED_CONFIRM_DAYS=16;
+function schedKindLabel(k){ const x=SCHED_KINDS.find(o=>o.k===k); return x?x.label:''; }
+// other names the schedule knows a person by (SCHED_ALIASES: Leti and Leticia are Ledy), for the picker's search
+function schedAlsoKnown(name){ return Object.keys(SCHED_ALIASES).filter(k=>SCHED_ALIASES[k]===name).join(' '); }
+// A store name reduced the way the database and the post-visit forms sync compare names (schedule_store_key,
+// normStore in ba/docs/ba-forms-sync.mjs): "Kolas - ARDEN" and "KOLAS Arden" are one key.
+function schedStoreKey(x){
+  return String(x||'').replace(/\s*\[[^\]]*\]\s*$/,'').toLowerCase().replace(/&/g,' and ').replace(/\((rec|med)\.?\)/g,' ')
+    .replace(/[^a-z0-9]+/g,' ').replace(/\b(llc|inc|the|dispensary|cannabis|co)\b/g,' ').replace(/\s+/g,' ').trim();
+}
+// The store a task's account names, by the database's rule (schedule_store): exact name, exact alias or Pistil
+// name, then the same reduced; the board's own store before one with no state; only the first kind of match
+// that finds anything counts, and only when it finds one store. null = the app can't confirm visits there.
+function schedStoreFor(stores, st, account){
+  const k=String(account||'').trim().toLowerCase(), nk=schedStoreKey(account); if(!k) return null;
+  let best=99, ids=new Set(), hit=null;
+  for(const d of stores||[]){
+    if(d.active===false || (d.state && d.state!==st)) continue;
+    const names=[d.name], alt=[...(d.aliases||[]), d.pistil_name].filter(Boolean);
+    const low=x=>String(x||'').trim().toLowerCase();
+    const t=names.some(x=>low(x)===k)?1 : alt.some(x=>low(x)===k)?3
+      : (nk&&names.some(x=>schedStoreKey(x)===nk))?5 : (nk&&alt.some(x=>schedStoreKey(x)===nk))?7 : 0;
+    if(!t) continue;
+    const tier=t+(d.state===st?0:1);
+    if(tier<best){ best=tier; ids=new Set([d.id]); hit=d; } else if(tier===best){ ids.add(d.id); }
+  }
+  return ids.size===1?hit:null;
+}
+// an app task's state: 'done'; 'open' (today or later); a past visit not confirmed yet ('unconfirmed', up to
+// SCHED_CONFIRM_DAYS after its day, then 'overdue'); a past training or follow-up not marked: 'overdue'.
+// '' for rows that aren't app tasks and for deliveries (no done mark is expected for those)
+function schedTaskStatus(v, todayIso){
+  if(!v||!v.dbId) return '';
+  if(v.doneAt) return 'done';
+  const k=schedKindOf(v);
+  if(k==='delivery') return '';
+  if(v.iso>=todayIso) return 'open';
+  if(!SCHED_VISIT_KINDS.has(k)) return 'overdue';
+  const wait=new Date(v.iso+'T12:00:00'); wait.setDate(wait.getDate()+SCHED_CONFIRM_DAYS);
+  const w=`${wait.getFullYear()}-${String(wait.getMonth()+1).padStart(2,'0')}-${String(wait.getDate()).padStart(2,'0')}`;
+  return todayIso<=w?'unconfirmed':'overdue';
+}
+const SCHED_STATUS_WORD={done:'Done', open:'Open', unconfirmed:'Not confirmed yet', overdue:'Overdue'};
+// the day a task was done: the visit's own day when what the BA logged marked it, or when someone confirmed
+// a visit (the tap says it happened on its day; never later than the tap) or ticked Done as they added it;
+// otherwise (a training or follow-up marked afterwards) the day it was marked. localDay turns a stored time
+// into that person's calendar day.
+function schedDoneDay(v, localDay){
+  if(!v||!v.doneAt) return '';
+  if(SCHED_AUTO_HOW.has(v.doneHow)) return v.doneOn||v.iso;   // the visit's own day (a report can name a later one)
+  const click=localDay?localDay(v.doneAt):String(v.doneAt).slice(0,10);
+  const atAdd=v.createdAt && Math.abs(Date.parse(v.doneAt)-Date.parse(v.createdAt))<120000;
+  if(SCHED_VISIT_KINDS.has(schedKindOf(v))||atAdd) return click<v.iso?click:v.iso;
+  return click;
+}
+// what a row is, in words
+function schedRowType(v){
+  if(v.dbId) return schedKindLabel(schedKindOf(v));
+  if(v.soNum||v.synth) return 'Delivery';
+  const blob=(v.soNotes||'')+' '+(v.teamNotes||'');
+  return SCHED_PAD.test(blob)?'Demo / PAD':SCHED_EDU.test(blob)?'Education talk':'Visit';
+}
+// The Schedule export: every row on the calendar from o.from to o.to (YYYY-MM-DD, both included) for the
+// people picked (o.sel: a Set of schedule names, or null for everyone), deliveries optional. o.place(v)
+// gives an address, o.reports(v) how many post-visit reports paired with it, o.localDay(ts) a time's day.
+const SCHED_CSV_HEAD=['Date','Day','Person','Type','Account','Address','Region','Status','Done on','How','Marked on','Post-visit report','Notes','SO #','Invoice $','Source'];
+function schedExportRows(rows, o){
+  const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const out=(rows||[]).filter(v=>v && v.iso>=o.from && v.iso<=o.to && (!o.sel || o.sel.has(v.canon))
+      && !(o.noDeliveries && schedRowType(v)==='Delivery'))
+    .map(v=>{
+      const st=schedTaskStatus(v, o.todayIso), type=schedRowType(v);
+      const who=v.canon==='Team'?(v.driver||'Team'):(v.canon||'');
+      const visit=type!=='Delivery', isVisit=['Visit','Demo / PAD','Education talk'].includes(type);
+      const nRep=visit&&o.reports?o.reports(v):0;
+      const d=new Date(v.iso+'T12:00:00');
+      return { key:[v.iso, who.toLowerCase(), String(v.account||'').toLowerCase()], cells:[
+        v.iso, DOW[d.getDay()], who, type, String(v.account||'').trim(), (o.place&&o.place(v))||'', v.region||'',
+        SCHED_STATUS_WORD[st]||'',
+        st==='done'?schedDoneDay(v, o.localDay):'', st==='done'?(SCHED_DONE_HOW[v.doneHow]||''):'',
+        st==='done'&&v.doneHow==='marked'?(o.localDay?o.localDay(v.doneAt):String(v.doneAt).slice(0,10)):'',   // the day someone tapped Done
+        nRep?'Filed':(isVisit&&v.iso<o.todayIso?'Not filed':''),   // trainings and follow-ups need no report
+        [v.soNotes, v.teamNotes?('Team: '+v.teamNotes):'', v.doneNote?('Done note: '+v.doneNote):''].filter(Boolean).join(' · '),
+        v.soNum||'', v.inv||'', v.dbId?'App task':v.synth?'Distru order':'Schedule sheet' ] };
+    });
+  out.sort((a,b)=>{ for(let i=0;i<3;i++){ const c=a.key[i].localeCompare(b.key[i]); if(c) return c; } return 0; });
+  return [SCHED_CSV_HEAD, ...out.map(x=>x.cells)];
+}
+// rows -> CSV text; a cell starting with = + - @ is kept as text so a spreadsheet never runs it as a formula
+function schedCsv(rows){
+  return rows.map(r=>r.map(c=>{ let s=String(c??''); if(/^[=+\-@\t\r]/.test(s)) s="'"+s;
+    return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(',')).join('\n');
+}
+/* ── end SCHEDULE TASK MODEL ── */
 const SCHED_MONL=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 let schedGen=0;   // bumped per draw: a superseded run must not repaint the new board
 // The Schedule has TWO entry points — the admin tab bar (state.adminTab) and the BA
@@ -5962,9 +6097,14 @@ function schedDaySheet(iso){
   const items=list.map((v,i)=>{
     const who=v.canon==='Team'?(v.driver||'Team'):(v.canon||'');
     const blob=(v.soNotes||'')+' '+(v.teamNotes||'');
+    const st=schedTaskStatus(v, schedIso(new Date())), kind=v.dbId?schedKindOf(v):'';
     const chips=(v.time?`<span class="sb-tag time">${v.time.label}</span>`:'')
-      +(SCHED_PAD.test(blob)?'<span class="sb-tag pad">PAD</span>':'')
-      +(SCHED_EDU.test(blob)?'<span class="sb-tag edu">EDU</span>':'');
+      +((SCHED_PAD.test(blob)||kind==='pad')?'<span class="sb-tag pad">PAD</span>':'')
+      +((SCHED_EDU.test(blob)||kind==='edu')?'<span class="sb-tag edu">EDU</span>':'')
+      +((kind==='training'||kind==='followup')?`<span class="sb-tag kind">${schedKindLabel(kind)}</span>`:'')
+      +(st==='done'?`<span class="sb-tag done" title="${esc(schedDoneTitle(v))}">✓ Done</span>`
+        :st==='overdue'?'<span class="sb-tag overdue" title="Its day has passed and it isn\'t done">Overdue</span>'
+        :st==='unconfirmed'?'<span class="sb-tag" title="No trip, hours or post-visit report for this store that day yet. BAs usually log at the end of the pay period.">Not confirmed yet</span>':'');
     const inv=schedMoney(v.inv);
     const ord=schedOrderFor(v), pl=place.get(v);
     const meta=[
@@ -5990,7 +6130,8 @@ function schedDaySheet(iso){
     // visit is in the past and nobody filed one
     const acts=schedActsFor(v);
     const past=v.iso<schedIso(new Date());
-    const isVisit=!/^\s*$/.test(v.account) && !v.soNum;   // pure delivery rows aren't store visits
+    const isVisit=!/^\s*$/.test(v.account) && !v.soNum    // pure delivery rows aren't store visits
+      && !(v.dbId && ['training','followup','delivery'].includes(kind));   // nor are trainings and follow-ups
     const review=acts.length
       ? `<div class="sb-pv">${acts.map((a,ai)=>`<button class="sb-pvhead" data-sbpv="${i}-${ai}">📋 Post-visit report${a.rep_name?` · ${esc(a.rep_name)}`:''}${a._diff?` <span class="chev">(filed ${a._diff} day${a._diff===1?'':'s'} later)</span>`:''} <span class="chev">›</span></button>`).join('')}</div>`
       : (past&&isVisit?`<div class="sb-pv"><span class="sb-pvmiss">📋 No post-visit report</span></div>`:'');
@@ -6003,6 +6144,9 @@ function schedDaySheet(iso){
       ${v.location?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(v.location)}" target="_blank" rel="noopener">📍 ${esc(v.location)}</a></div>`:''}
       ${(!v.location && pl && pl.address && !schedIsPickup(v))?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(pl.address)}" target="_blank" rel="noopener">📍 ${esc(pl.address)}</a>${pl.mi!=null?` <span class="muted">· ~${Math.round(pl.mi)} mi from the office</span>`:''}</div>`:''}
       ${notes?`<div class="notes">${esc(notes)}</div>`:''}
+      ${v.dbId?`<div class="sb-done-row">${st==='done'
+        ?`<span class="small muted">${esc(schedDoneTitle(v))}</span><button class="btn sm ghost" data-sbundone="${i}">Not done</button>`
+        :`<button class="btn sm" data-sbdone="${i}">✓ Mark done</button>`}</div>`:''}
       ${review}</div>`;
   }).join('');
   // Reports filed for this date that DIDN'T pair with a scheduled row — the visit
@@ -6019,8 +6163,13 @@ function schedDaySheet(iso){
       (withReport||loose.length)?` · <span style="color:var(--green)">${withReport+loose.length} post-visit report${(withReport+loose.length)!==1?'s':''}</span>`:''}</div>
     <div class="sb-sheet">${items||'<div class="small muted" style="padding:8px 0">Nothing scheduled.</div>'}${looseHtml}</div>
     <button class="btn primary block" id="sbDayAdd" style="margin-top:12px">＋ Add task</button>`);
+  { const sh=$('#sheet'); if(sh) sh.dataset.day=iso; }
   $('#sbDayAdd').onclick=()=>schedTaskSheet(iso,null);
   document.querySelectorAll('[data-sbe]').forEach(b=>b.onclick=()=>schedTaskSheet(iso,list[+b.dataset.sbe]));
+  document.querySelectorAll('[data-sbdone]').forEach(b=>b.onclick=()=>{ b.disabled=true;
+    schedMarkDone(list[+b.dataset.sbdone], true, ()=>schedAfterTaskChange(iso)).then(ok=>{ if(!ok) b.disabled=false; }); });
+  document.querySelectorAll('[data-sbundone]').forEach(b=>b.onclick=()=>{ b.disabled=true;
+    schedMarkDone(list[+b.dataset.sbundone], false, ()=>schedAfterTaskChange(iso)).then(ok=>{ if(!ok) b.disabled=false; }); });
   document.querySelectorAll('[data-sbpv]').forEach(b=>b.onclick=()=>{
     const [vi,ai]=b.dataset.sbpv.split('-').map(Number);
     schedActivitySheet(schedActsFor(list[vi])[ai], list[vi], iso);
@@ -6215,8 +6364,10 @@ const schedRoster=()=>SCHED_ROSTER[state.schedState==='NY'?'NY':'CA'];
 function schedTaskSheet(iso, task){
   const S=state.sched;
   const known=S.rows.concat(S.dbRows);
-  const accounts=[...new Set(known.map(v=>v.account.trim())
-    .concat((state.dispensaries||[]).filter(x=>!x.private&&x.retail!==false).map(x=>x.name)))].sort((a,b)=>a.localeCompare(b));
+  // suggestions: the board's stores (names typed on older tasks repeated their typos), plus this task's own
+  const bdSt=state.schedState||'CA';
+  const accounts=[...new Set((state.dispensaries||[]).filter(x=>!x.private&&x.retail!==false&&(!x.state||x.state===bdSt)).map(x=>x.name)
+    .concat(task&&task.account?[task.account.trim()]:[]))].sort((a,b)=>a.localeCompare(b));
   const regions=[...new Set(known.map(v=>(v.region||'').trim()).filter(Boolean))].sort();
   // Whoever actually works THIS board: the people already on its workbook rows,
   // plus that state's roster as a floor (a brand-new month has no rows yet). A
@@ -6232,21 +6383,31 @@ function schedTaskSheet(iso, task){
       // rows currently loaded, so editing an older task whose BA has since left (or
       // isn't on this month's sheet) would otherwise silently blank the assignment
       .concat(task&&schedCanon(task.driver)?[schedCanon(task.driver)]:[])
-      )].sort((a,b)=>a.localeCompare(b)).concat('Team');
+      )].sort((a,b)=>a.localeCompare(b)).filter(n=>n!=='Team').concat('Team');
+  // the picker's search also finds a person by the other names the schedule knows them by (Leti is Ledy)
+  const alsoKnown=schedAlsoKnown;
+  const kindNow=task?schedKindOf(task):'visit';
   openSheet(`<h3 style="margin:0 0 4px">${task?'Edit task':'New task'}</h3>
     <label class="fl">Date</label><input type="date" id="stDate" value="${task?task.iso:iso}">
     <label class="fl">Account / destination</label>
     <input id="stAcct" list="stAcctList" placeholder="Start typing a store…" value="${task?esc(task.account):''}" autocomplete="off">
+    <div id="stAcctHint" class="small" style="color:var(--orange);margin-top:4px" hidden>Not one store in the store list, so the app can't confirm this visit from the BA's trips or reports. Pick a store from the suggestions.</div>
     <datalist id="stAcctList">${accounts.map(a=>`<option value="${esc(a)}">`).join('')}</datalist>
+    <label class="fl">Type</label>
+    <select id="stKind" data-searchable>${SCHED_KINDS.map(o=>`<option value="${o.k}" data-search="${esc(o.search)}"${o.k===kindNow?' selected':''}>${esc(o.label)}</option>`).join('')}</select>
     <label class="fl">Invoice total <span class="muted">(optional)</span></label>
     <input id="stInv" type="number" step="0.01" inputmode="decimal" placeholder="0.00" value="${task&&task.inv?esc(String(task.inv).replace(/[^0-9.]/g,'')):''}">
     <label class="fl">Region</label>
     <input id="stRegion" list="stRegionList" placeholder="e.g. SD, LA, Valley" value="${task?esc(task.region):''}" autocomplete="off">
     <datalist id="stRegionList">${regions.map(r=>`<option value="${esc(r)}">`).join('')}</datalist>
     <label class="fl">Driver / BA</label>
-    <select id="stDriver"><option value=""></option>${drivers.map(x=>`<option${pre===x?' selected':''}>${x}</option>`).join('')}</select>
+    <select id="stDriver" data-searchable><option value="">Nobody</option>${drivers.map(x=>`<option value="${esc(x)}" data-search="${esc((x+' '+alsoKnown(x)).trim())}"${pre===x?' selected':''}>${esc(x)}</option>`).join('')}</select>
     <label class="fl">SO #</label><input id="stSo" placeholder="#SO-0000123" value="${task?esc(task.soNum):''}">
     <label class="fl">Notes</label><textarea id="stNotes" placeholder="Store visit, demo 2–4pm…">${task?esc(task.soNotes):''}</textarea>
+    <label class="fl">Status</label>
+    <label style="display:flex;gap:8px;align-items:center;font-weight:600"><input type="checkbox" id="stDone" style="width:auto;margin:0"${task&&task.doneAt?' checked':''}> Done</label>
+    ${task&&task.doneAt?`<div class="small muted" style="margin-top:2px">${esc(schedDoneTitle(task))}</div>`:''}
+    <input id="stDoneNote" style="margin-top:6px${task&&task.doneAt?'':';display:none'}" placeholder="Done note (optional): who was trained, what's next…" value="${esc((task&&task.doneNote)||'')}">
     <div style="display:flex;gap:8px;margin-top:14px">
       ${task?'<button class="btn" id="stDel" style="color:var(--red);border-color:var(--red)">Delete</button>':''}
       <button class="btn primary" id="stSave" style="flex:1">${task?'Save changes':'Add to schedule'}</button>
@@ -6277,12 +6438,38 @@ function schedTaskSheet(iso, task){
     const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m);
     schedDaySheet(dateIso);
   };
+  // a visit at a name that isn't one store can never be confirmed by the BA's records: say so under Account
+  const acctHint=()=>{ const h=$('#stAcctHint'); if(!h) return;
+    const a=$('#stAcct').value.trim();
+    h.hidden=!a || !SCHED_VISIT_KINDS.has($('#stKind').value) || !!schedStoreFor(state.dispensaries, bdSt, a); };
+  ['input','change'].forEach(ev=>$('#stAcct').addEventListener(ev, acctHint));
+  $('#stKind').addEventListener('change', acctHint); acctHint();
+  // the Done note shows while Done is ticked, so nothing typed there is thrown away
+  $('#stDone').addEventListener('change',()=>{ $('#stDoneNote').style.display=$('#stDone').checked?'':'none'; });
   $('#stSave').onclick=async()=>{
+    const kind=SCHED_KINDS.some(o=>o.k===$('#stKind').value)?$('#stKind').value:'visit';
+    const driver=$('#stDriver').value||null;
     const rec={ task_date:$('#stDate').value, account:$('#stAcct').value.trim(),
       inv_total:$('#stInv').value?Number($('#stInv').value):null,
-      region:$('#stRegion').value.trim()||null, driver:$('#stDriver').value||null,
+      region:$('#stRegion').value.trim()||null, driver,
+      kind,
       so_num:$('#stSo').value.trim()||null, notes:$('#stNotes').value.trim()||null,
       state:state.schedState||'CA' };   // a task belongs to the board it was created on
+    // Done: ticking it marks the task done by you now; unticking reopens it (and the automatic check then
+    // leaves it alone); a done task's note can change on its own
+    const wantDone=$('#stDone').checked, wasDone=!!(task&&task.doneAt), doneNote=$('#stDoneNote').value.trim()||null;
+    if(wantDone&&!wasDone) Object.assign(rec,{done_at:new Date().toISOString(), done_by:state.session?.user?.id||null, done_how:'marked', done_note:doneNote, done_on:null});
+    else if(!wantDone&&wasDone) Object.assign(rec,{done_at:null, done_by:null, done_how:'reopened', done_note:null, done_on:null});
+    else if(wantDone) rec.done_note=doneNote;
+    // a task moved to another day, store or person is checked again: a done mark from the BA's records (or a
+    // "not done") belonged to the old one; the database marks it again if the new one has a record
+    const moved=!!(task&&task.dbId) && (rec.task_date!==task.iso
+      || rec.account.toLowerCase()!==String(task.account||'').trim().toLowerCase()
+      || schedCanon(rec.driver||'')!==schedCanon(task.driver||''));
+    if(moved&&wantDone===wasDone){
+      if(wasDone&&SCHED_AUTO_HOW.has(task.doneHow)) Object.assign(rec,{done_at:null, done_by:null, done_how:null, done_on:null});
+      else if(!wasDone&&task.doneHow==='reopened') rec.done_how=null;
+    }
     $('#stAcct').classList.toggle('needs',!rec.account);
     $('#stDate').classList.toggle('needs',!rec.task_date);
     if(!rec.task_date||!rec.account) return;
@@ -6296,6 +6483,7 @@ function schedTaskSheet(iso, task){
         const { error }=await supabase.from('schedule_tasks').insert(rec);
         if(error) throw error;
       }
+      if(moved) await schedAutocomplete(state.schedState||'CA', rec.task_date<task.iso?rec.task_date:task.iso, true);
       await refresh(rec.task_date, rec.driver);
     }catch(e){ btn.disabled=false; btn.textContent=task?'Save changes':'Add to schedule'; toast('Could not save: '+(e.message||e)); }
   };
@@ -6317,6 +6505,184 @@ function schedTaskSheet(iso, task){
       });
     }catch(e){ toast('Could not delete: '+(e.message||e)); }
   };
+}
+// Ask the database to mark done the open visits of a board that the BAs have since logged (a trip or hours
+// at that store that day, or the post-visit report). At most every 2 minutes per board and start day unless
+// forced; it never throws, and a board you can't see is simply not touched.
+const SCHED_AUTOC={};
+async function schedAutocomplete(st, fromIso, force){
+  const k=st+'|'+fromIso;
+  if(!force && SCHED_AUTOC[k] && Date.now()-SCHED_AUTOC[k]<120000) return 0;
+  SCHED_AUTOC[k]=Date.now();
+  try{ const { data }=await supabase.rpc('schedule_tasks_autocomplete',{p_state:st, p_from:fromIso, p_to:schedIso(new Date())}); return +data||0; }
+  catch(_){ return 0; }
+}
+// "Done Nov 18 · trip logged · trained 3 budtenders"
+function schedDoneTitle(v){
+  if(!v||!v.doneAt) return '';
+  const day=schedDoneDay(v, ts=>schedIso(new Date(ts))), d=new Date(day+'T12:00:00');
+  return `Done ${isNaN(d)?'':`${SCHED_MONL[d.getMonth()]} ${d.getDate()}`}${SCHED_DONE_HOW[v.doneHow]?' · '+SCHED_DONE_HOW[v.doneHow]:''}${v.doneNote?' · '+v.doneNote:''}`;
+}
+// Mark one app task done (by you, now) or not done (reopened: the automatic check leaves it alone from then
+// on), with Undo. after() redraws whatever showed it. Returns true when it saved.
+async function schedMarkDone(v, done, after){
+  if(!v||!v.dbId) return false;
+  const now=()=>new Date().toISOString();
+  const before={done_at:v.doneAt||null, done_by:v.doneBy||null, done_how:v.doneHow||null, done_note:v.doneNote||null, done_on:v.doneOn||null};
+  const patch=done?{done_at:now(), done_by:state.session?.user?.id||null, done_how:'marked', done_note:v.doneNote||null, done_on:null}
+                  :{done_at:null, done_by:null, done_how:'reopened', done_note:null, done_on:null};
+  const { error }=await supabase.from('schedule_tasks').update({...patch, updated_at:now()}).eq('id',v.dbId);
+  if(error){ toast('Could not save: '+error.message); return false; }
+  if(after) await after();
+  toastAction(done?'Marked done.':'Marked not done.','Undo',async()=>{
+    const { error:e2 }=await supabase.from('schedule_tasks').update({...before, updated_at:now()}).eq('id',v.dbId);
+    if(e2){ toast('Could not undo: '+e2.message); return; }
+    if(after) await after();
+  });
+  return true;
+}
+// after a task changes: reload the tasks, redraw the calendar behind, and reopen the day
+async function schedAfterTaskChange(iso){
+  await schedReloadTasks();
+  const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m);
+  const sh=$('#sheet');
+  if(iso && sh && sh.dataset.day===iso){
+    const sc=sh.querySelector('.sb-sheet')?.scrollTop||0;
+    schedDaySheet(iso);
+    const s2=$('#sheet .sb-sheet'); if(s2) s2.scrollTop=sc;
+  }
+}
+// Export: a spreadsheet of what the calendar holds between two days, for the names picked above the calendar
+// (everyone when none are), with type, address, done or not, and the post-visit report (Amanda 2026-11-20:
+// "export schedules for all CA BAs")
+function schedExportSheet(){
+  const S=state.sched; if(!S) return;
+  const y=S.month.getFullYear(), mo=S.month.getMonth();
+  const who=S.sel?[...S.sel].join(', '):`everyone on the ${esc(state.schedState||'CA')} board`;
+  openSheet(`<h3 style="margin:0 0 4px">Export the schedule</h3>
+    <div class="small muted" style="margin-bottom:10px">A spreadsheet of every visit, task and delivery on the calendar: who, where, what type, done or not, and the post-visit report. People: <b>${esc(who)}</b>${S.sel?' (the names picked above the calendar)':''}.</div>
+    <label class="fl">From</label><input type="date" id="sxFrom" value="${schedIso(new Date(y,mo,1))}">
+    <label class="fl">To</label><input type="date" id="sxTo" value="${schedIso(new Date(y,mo+1,0))}">
+    <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="sxNoDel" style="width:auto;margin:0"> Leave out deliveries</label>
+    <div id="sxMsg" class="small muted" style="margin-top:8px"></div>
+    <button class="btn primary block" id="sxGo" style="margin-top:12px">⬇ Download CSV</button>`);
+  $('#sxGo').onclick=async()=>{
+    const f=$('#sxFrom').value, t=$('#sxTo').value, msg=$('#sxMsg'), btn=$('#sxGo');
+    if(!f||!t||t<f){ msg.textContent='Pick a From day on or before the To day.'; return; }
+    if((new Date(t+'T12:00:00')-new Date(f+'T12:00:00'))/864e5>186){ msg.textContent='Pick 6 months or less at a time.'; return; }
+    btn.disabled=true; btn.textContent='Gathering…';
+    try{
+      // the calendar holds the month on screen and its neighbours; load every month the range touches
+      for(let d=new Date(f.slice(0,7)+'-15T12:00:00'); schedIso(d).slice(0,7)<=t.slice(0,7); d=new Date(d.getFullYear(),d.getMonth()+1,15))
+        await schedLoad(new Date(d.getFullYear(),d.getMonth(),15));
+      // a month the workbook didn't answer for, or reports that didn't load, would make a file that looks
+      // complete and isn't: stop and say so instead
+      const missing=[];
+      for(let d=new Date(f.slice(0,7)+'-15T12:00:00'); schedIso(d).slice(0,7)<=t.slice(0,7); d=new Date(d.getFullYear(),d.getMonth()+1,15))
+        if(!S.tried.has(`${d.getFullYear()}-${d.getMonth()}`)) missing.push(`${SCHED_MONL[d.getMonth()]} ${d.getFullYear()}`);
+      if(missing.length||S.actsErr){
+        msg.textContent=missing.length?`Couldn't read ${missing.join(', ')} of the schedule sheet (connection). Try again.`
+          :`Couldn't read the post-visit reports (connection). Try again.`;
+        btn.disabled=false; btn.textContent='⬇ Download CSV'; return;
+      }
+      await schedAutocomplete(state.schedState||'CA', f, true);
+      await schedReloadTasks();
+      const rows=schedExportRows(schedAllRows(), { from:f, to:t, sel:S.sel, noDeliveries:$('#sxNoDel').checked, todayIso:schedIso(new Date()),
+        place:v=>{ const p=schedDeliveryPlace(v); return v.location||(p&&p.address)||''; },
+        reports:v=>schedActsFor(v).length, localDay:ts=>schedIso(new Date(ts)) });
+      if(rows.length<2){ msg.textContent='Nothing on the calendar for those days and people.'; btn.disabled=false; btn.textContent='⬇ Download CSV'; return; }
+      const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['\ufeff'+schedCsv(rows)],{type:'text/csv;charset=utf-8'}));
+      a.download=`schedule_${state.schedState||'CA'}_${f}_to_${t}.csv`; a.click();
+      closeSheet(); toast(`Downloaded ${rows.length-1} row${rows.length===2?'':'s'}.`);
+      const m=$('#main'); if(m&&m.querySelector('.sb-wrap')) schedRender(m);
+    }catch(e){ btn.disabled=false; btn.textContent='⬇ Download CSV'; msg.textContent='Could not gather the schedule: '+(e.message||e); }
+  };
+}
+// My tasks (home screen): the signed-in person's tasks on their own board, assigned by first name the way the
+// Schedule writes it, from the last 30 days and the next 14. The card shows what needs them first (overdue
+// trainings, follow-ups and visits), then today's and the next ones, 5 rows at most; the rest (visits still
+// waiting for their trip, hours or report, and anything past the 5) sit behind one button. It is read alongside
+// the rest of the home screen and drawn with it, so nothing jumps; the database's catch-up runs after, and the
+// card is redrawn only when it changed something.
+function myTasksWho(){
+  const st=personRegion(state.profile);
+  const me=schedCanon(String((state.profile&&state.profile.full_name)||'').trim().split(/\s+/)[0]);
+  return st&&me?{st,me}:null;
+}
+async function myTasksLoad(){
+  const w=myTasksWho(); if(!w) return null;
+  const today=schedIso(new Date()), from=schedIso(schedAdd(new Date(),-30)), to=schedIso(schedAdd(new Date(),14));
+  const { data, error }=await supabase.from('schedule_tasks')
+    .select('id,task_date,account,kind,notes,so_num,driver,done_at,done_how,done_note,done_by,done_on,created_at')
+    .eq('state',w.st).is('deleted_at',null).gte('task_date',from).lte('task_date',to).order('task_date');
+  if(error||!data) return { error:true };
+  const mine=data.filter(t=>schedCanon(t.driver)===w.me).map(t=>({ dbId:t.id, iso:t.task_date, account:t.account||'', kind:t.kind||null,
+    soNum:t.so_num||'', soNotes:t.notes||'', doneAt:t.done_at||null, doneHow:t.done_how||null, doneNote:t.done_note||'',
+    doneBy:t.done_by||null, doneOn:t.done_on||null, createdAt:t.created_at||null }));
+  const st=v=>schedTaskStatus(v,today);
+  const overdue=mine.filter(v=>st(v)==='overdue')
+    .sort((a,b)=>(SCHED_VISIT_KINDS.has(schedKindOf(a))?1:0)-(SCHED_VISIT_KINDS.has(schedKindOf(b))?1:0) || a.iso.localeCompare(b.iso));
+  const next=mine.filter(v=>st(v)==='open');
+  const waiting=mine.filter(v=>st(v)==='unconfirmed').sort((a,b)=>b.iso.localeCompare(a.iso));
+  const card=[...overdue, ...next].slice(0,5);
+  const rest=[...overdue, ...next].slice(5);
+  const done7=mine.filter(v=>v.doneAt&&v.iso>=schedIso(schedAdd(new Date(),-7))&&v.iso<=today).length;
+  return { today, card, rest, waiting, done7, for:state.session?.user?.id };
+}
+function myTaskRowHtml(v, src, i, today){
+  const stt=schedTaskStatus(v,today);
+  const d=new Date(v.iso+'T12:00:00'), DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const day=v.iso===today?'Today':`${DOW[d.getDay()]} ${SCHED_MONL[d.getMonth()]} ${d.getDate()}`;
+  const word=stt==='overdue'?' · overdue':stt==='unconfirmed'?' · waiting for your trip, hours or report':'';
+  return `<div class="mt-row" style="display:flex;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--line)">
+    <div style="flex:1;min-width:0">
+      <div class="small" style="${stt==='overdue'?'color:var(--orange);font-weight:700':'color:var(--muted)'}">${day}${word} · ${esc(schedKindLabel(schedKindOf(v)))}</div>
+      <div style="font-weight:650;overflow-wrap:anywhere">${esc(v.account)}</div>
+      ${v.soNotes?`<div class="small muted" style="overflow-wrap:anywhere">${esc(v.soNotes)}</div>`:''}
+    </div>
+    <button class="btn sm" data-mtdone="${src}:${i}">✓ Done</button></div>`;
+}
+function myTasksHtml(mt){
+  if(!mt||mt.error||(!mt.card.length&&!mt.rest.length&&!mt.waiting.length&&!mt.done7)) return '';
+  const more=mt.rest.length, wait=mt.waiting.length;
+  const btn=(wait||more)?`${wait?`${wait} visit${wait!==1?'s':''} waiting for your trip, hours or report`:''}${wait&&more?' · ':''}${more?`${more} more task${more!==1?'s':''}`:''} ›`:'';
+  return `<div class="card" style="margin-bottom:12px">
+    <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px"><b style="flex:1">My tasks</b>${mt.done7?`<span class="small muted">${mt.done7} done in the last 7 days</span>`:''}</div>
+    ${mt.card.map((v,i)=>myTaskRowHtml(v,'c',i,mt.today)).join('')}
+    ${!mt.card.length?'<div class="small muted" style="padding:6px 0">Nothing due.</div>':''}
+    ${btn?`<button class="btn sm ghost block" id="mtMore" style="margin-top:8px">${btn}</button>`:''}
+    <div class="small" id="mtNote" style="color:var(--orange);margin-top:6px" hidden></div>
+  </div>`;
+}
+// wire the card's buttons to the tasks it was drawn from (also for the copy drawn from memory)
+function wireMyTasks(mt){
+  const host=$('#myTasks'); if(!host||!mt||mt.error) return;
+  const mark=(v,b,after)=>{ b.disabled=true; schedMarkDone(v, true, after).then(ok=>{ if(!ok) b.disabled=false; }); };
+  host.querySelectorAll('[data-mtdone]').forEach(b=>b.onclick=()=>mark(mt.card[+b.dataset.mtdone.split(':')[1]], b, ()=>drawMyTasks()));
+  const mb=$('#mtMore'); if(mb) mb.onclick=()=>myTasksMoreSheet();
+}
+// everything not on the card, in one sheet; it redraws itself from the database after a Done or an Undo
+function myTasksMoreSheet(){
+  const mt=state._myTasks; if(!mt||mt.error) return;
+  const list=[...mt.rest, ...mt.waiting];
+  openSheet(`<h3 style="margin:0 0 2px">My tasks</h3>
+    <div class="small muted" style="margin-bottom:8px">Visits mark themselves done when you log a trip or hours at that store that day, or file the post-visit report. Tap Done for anything else you finished.</div>
+    <div>${list.length?list.map((v,i)=>myTaskRowHtml(v,'m',i,mt.today)).join(''):'<div class="small muted" style="padding:8px 0">Nothing else.</div>'}</div>`);
+  const sh=$('#sheet'); if(sh) sh.dataset.mt='1';
+  document.querySelectorAll('#sheet [data-mtdone]').forEach(b=>b.onclick=()=>{ b.disabled=true;
+    schedMarkDone(list[+b.dataset.mtdone.split(':')[1]], true, async()=>{
+      await drawMyTasks();
+      if($('#sheet')?.dataset.mt==='1') myTasksMoreSheet();   // redrawn from the database, so an Undo brings the row back
+    }).then(ok=>{ if(!ok) b.disabled=false; }); });
+}
+// redraw the card in place (after a Done or an Undo, or when the database's catch-up changed something)
+async function drawMyTasks(){
+  if(!$('#myTasks')) return;
+  const mt=await myTasksLoad().catch(()=>({error:true}));
+  const host=$('#myTasks'); if(!host||!mt) return;
+  if(mt.error){ const n=$('#mtNote'); if(n){ n.textContent="Couldn't refresh your tasks (connection)."; n.hidden=false; } return; }
+  state._myTasks=mt; state._myTasksHtml=myTasksHtml(mt);
+  host.innerHTML=state._myTasksHtml; wireMyTasks(mt);
 }
 function schedRender(m){
   const S=state.sched, todayIso=schedIso(new Date());
@@ -6351,7 +6717,8 @@ function schedRender(m){
     const dim=d.getMonth()!==mo?' dim':'', today=iso===todayIso?' today':'';
     // one extra fits when nothing is hidden (no "+N" line to leave room for)
     const shown=list.length===maxChips+1?list.length:maxChips;
-    const minis=list.slice(0,shown).map(v=>`<div class="sb-mini" style="--dv:${v.color};--dvink:${schedInk(v.color)}"${v.canon==='Driver needed'?' title="Driver needed"':''}><span class="dot"></span>${v.canon==='Driver needed'?'⚠︎ ':''}${esc(v.account)}</div>`).join('')
+    const minis=list.slice(0,shown).map(v=>{ const tst=schedTaskStatus(v,todayIso);
+      return `<div class="sb-mini${tst==='overdue'?' od':''}" style="--dv:${v.color};--dvink:${schedInk(v.color)}"${v.canon==='Driver needed'?' title="Driver needed"':tst==='overdue'?' title="Overdue: not marked done"':tst==='done'?' title="Done"':''}><span class="dot"></span>${v.canon==='Driver needed'?'⚠︎ ':''}${tst==='done'?'✓ ':''}${esc(v.account)}</div>`; }).join('')
       +(list.length>shown?`<div class="sb-more">+${list.length-shown}</div>`:'');
     return `<div class="sb-cell${dim}${today}" data-sbday="${iso}">
       <div class="sb-dnum">${d.getDate()}${(()=>{const n=schedDayReportCount(iso,list);
@@ -6371,6 +6738,7 @@ function schedRender(m){
       <button class="btn sm ghost" id="sbNext">›</button>
       <button class="btn sm ghost" id="sbToday">Today</button>
       <span class="grow"></span>
+      <button class="btn sm ghost" id="sbExport" title="Download the schedule as a spreadsheet">⬇ Export</button>
       <button class="btn sm ghost" id="sbReload" title="Re-fetch the workbook">⟳</button>
       ${state.profile?.role==='admin'?`<button class="btn sm ghost" id="sbBackup" title="Backup &amp; restore tasks">🛟</button>`:''}
       ${EMBED?`<button class="btn sm primary sb-addnav" id="sbAddNav" title="New task">＋ New task</button>`:''}
@@ -6409,6 +6777,7 @@ function schedRender(m){
   // negative markers on disk, or a month that failed once stays blank for 6 hours
   // no matter how many times they tap it.
   $('#sbReload').onclick=()=>{ schedClearMisses(state.schedState); state.sched=null; drawSchedule(m); };
+  $('#sbExport').onclick=()=>schedExportSheet();
   // switching board = a different workbook AND a different task set: drop the
   // whole cache so no CA row can survive into the NY calendar
   m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{
