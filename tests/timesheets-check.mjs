@@ -5888,7 +5888,7 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
   check('page: Delete the whole shift, its question before Save, its waiting copy on the day after, an older server, the shifts that stop Save, and who gets it (EDIT_PROVEN, 2026-11-16)', () => {
     const app = block('ts-app');
     const ep = new Function('return ' + app.match(/const EDIT_PROVEN = (\{[\s\S]*?\});/)[1])();
-    eq(ep, { add: true, delete: true, ny: true, midnight: true, nyMidnight: false, midnightEnd: false, midnightDelete: false, nyMidnightDelete: false, midnightCross: false, nyMidnightCross: false, note: false, nyNote: false,
+    eq(ep, { add: true, delete: true, ny: true, midnight: true, nyMidnight: false, midnightEnd: false, midnightDelete: false, nyMidnightDelete: false, midnightCross: false, nyMidnightCross: true, note: false, nyNote: false,
       job: false, nyJob: false, addJob: false, nyAddJob: false, startAfterClockout: true, nyStartAfterClockout: false }, 'EDIT_PROVEN as decided');
     ok(/function mayMidnight\(r\) \{ return mayEdit\('midnight'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnight'\)\); \}/.test(app), 'mayMidnight');
     ok(/function mayWhole\(r\) \{ return mayEdit\('midnightDelete'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnightDelete'\)\); \}/.test(app), 'mayWhole');
@@ -6674,8 +6674,8 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
   check('page: the cross switch and who gets it (EDIT_PROVEN.midnightCross / .nyMidnightCross, 2026-11-21), the editor, Open <day before>, Save\'s last look and an older server', () => {
     const app = block('ts-app');
     const ep = new Function('return ' + app.match(/const EDIT_PROVEN = (\{[\s\S]*?\});/)[1])();
-    eq([ep.midnightCross, ep.nyMidnightCross], [false, false], 'held in both regions until a supervised run');
-    ok(/midnightDelete: false, nyMidnightDelete: false,\n[^\n]*2026-11-21[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*midnightCross: false, nyMidnightCross: false,/.test(app), 'right after the whole delete\'s switches, with a dated comment');
+    eq([ep.midnightCross, ep.nyMidnightCross], [false, true], 'California held until a supervised run; New York proven 2026-11-21');
+    ok(/midnightDelete: false, nyMidnightDelete: false,\n[^\n]*2026-11-21[^\n]*\n(?:\s*\/\/[^\n]*\n)*\s*midnightCross: false, nyMidnightCross: true,/.test(app), 'right after the whole delete\'s switches, with a dated comment');
     ok(/function mayCross\(r\) \{ return mayMidnight\(r\) && mayEdit\(rowRegion\(r\) === 'NY' \? 'nyMidnightCross' : 'midnightCross'\); \}/.test(app), 'mayCross: the first-day fix\'s rule and its own switch, one per region (review 2026-11-21)');
     eq([(app.match(/'midnightCross'/g) || []).length, (app.match(/'nyMidnightCross'/g) || []).length], [1, 1], 'every gate goes through mayCross');
     ok(/\$\{en\.split\.cross \? ', in the next pay period' : ''\}\. Set its real end time here: both days are fixed at once\./.test(appFn('entryHtml')), 'the editor says the rest is in the next pay period');
