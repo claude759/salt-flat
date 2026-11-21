@@ -107,8 +107,10 @@ revoke all on function public.schedule_store_key(text) from public, anon, authen
 -- caller can see only), and every 30 minutes by the timer below (no signed-in user: every board).
 --   * an open visit, Demo / PAD or EDU task is marked done when the assigned BA's own records show it:
 --     a trip or hours at that store that day, else a post-visit report for that store whose visit day is
---     the task's day or up to 2 days later (one report closes only the latest of that BA's tasks at that
---     store on or before the report's day, as the calendar pairs them); done_on is that visit's day;
+--     the task's day or up to 2 days later; done_on is that visit's day. A report filed from a task in the
+--     app (ba_activity.task_id) counts for that task only. A report with no task (the Google form, or one
+--     filed from the Report tab) closes only the latest of that BA's tasks at that store on or before the
+--     report's day, as the calendar pairs them;
 --   * a task the records marked done is checked again: a different record updates how and when, no record
 --     any more (a trip deleted or rejected, the task moved) opens it again. When the BA or the store can't
 --     be told any more (someone left, a store was duplicated), the task is left as it is;
@@ -177,9 +179,11 @@ begin
           and (lower(coalesce(a.rep_email, '')) = lower(coalesce(p.email, '-'))
                or (coalesce(a.rep_name, '') <> ''
                    and lower(split_part(trim(a.rep_name), ' ', 1)) = lower(split_part(trim(p.full_name), ' ', 1))))
-          and not exists (select 1 from cand n
-                           where n.person = c.person and n.store = c.store and n.id <> c.id
-                             and n.task_date > c.task_date and n.task_date <= a.visit_date)) as report_day
+          and (a.task_id = c.id
+               or (a.task_id is null
+                   and not exists (select 1 from cand n
+                                    where n.person = c.person and n.store = c.store and n.id <> c.id
+                                      and n.task_date > c.task_date and n.task_date <= a.visit_date)))) as report_day
       from chk c
   ), res as (
     select e.id,

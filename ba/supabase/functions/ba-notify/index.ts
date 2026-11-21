@@ -1,7 +1,11 @@
-// ba-notify: outbound email for the BA app. Two jobs, both server-triggered:
+// ba-notify: outbound email for the BA app. Its server-triggered jobs include:
 //   job:'reminder'  — cron-driven, 9am America/Los_Angeles EVERY day. Emails every field
 //                     worker who has an ended, not-closed pay period they haven't submitted,
 //                     and keeps doing so each morning until they submit (see CHASE_FROM).
+//   job:'tasks'     - cron-driven (ba-task-digest), 9am America/Los_Angeles every day. One
+//                     "Your tasks" email per person with something on the Schedule: today's
+//                     tasks, ones assigned to them since their last email, and trainings and
+//                     follow-ups past their day (schedule_task_digest, ba-store-planning.sql).
 //   job:'submitted' — DB-trigger-driven. The moment a BA's period flips to
 //                     'submitted', email the admin (gianni@wizardtrees.com).
 // Sends via Gmail SMTP (app password). Callers prove themselves with a shared
@@ -75,6 +79,13 @@ async function sendMail(to: string, subject: string, html: string, text: string,
   const msg: Record<string, unknown> = { from: `${FROM_NAME} <${GMAIL_USER}>`, to, subject: asciiSubject, content: text, html: flat };
   if (cc && cc.length) msg.cc = cc;
   await _smtp.send(msg as never);
+}
+// after a failed send the shared connection can be left mid-conversation: drop it so the next
+// send opens a fresh one (closed in the background, so a dead connection can't hold up the rest)
+function dropMail() {
+  const c = _smtp;
+  _smtp = null;
+  try { Promise.resolve(c?.close()).catch(() => {}); } catch { /* already gone */ }
 }
 
 function shell(title: string, body: string) {
@@ -183,6 +194,71 @@ function approvedEmail(ba: any, p: any, sub: any, approver: any, wasSubmitted: b
   return { subject: `${ba?.full_name || "A BA"} period APPROVED by ${approver?.full_name || "an admin"} (${periodLabel(p)})`, html, text };
 }
 
+// ── "Your tasks" email (job 'tasks'): pure, so tests/ba-notify-tasks.test.mjs can run it ──
+// Each task arrives as schedule_task_digest builds it: {id, date, time, kind, title, account, notes, booking}.
+const TASK_KINDS: Record<string, string> = {
+  visit: "Visit", pad: "Demo / PAD", edu: "Education talk", training: "Training", followup: "Follow-up", delivery: "Delivery",
+};
+const TASKS_FOOTER = "Visits mark themselves done when you log a trip or hours at that store that day, or file the post-visit report. Tap Done in the app for trainings and follow-ups.";
+const firstName = (n: unknown) => String(n ?? "").trim().split(/\s+/)[0];
+// 'HH:MM' (24-hour, as the Schedule stores it) the way the app shows a time: 9 AM, 10:30 AM, 1:05 PM
+function taskTime(v: unknown) {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(v ?? "").trim());
+  if (!m) return "";
+  const h = Number(m[1]);
+  return `${h % 12 || 12}${m[2] === "00" ? "" : ":" + m[2]} ${h < 12 ? "AM" : "PM"}`;
+}
+// a YYYY-MM-DD as the app's My tasks writes it, "Tue Nov 24", or long, "Saturday, Nov 21"
+function taskDay(iso: unknown, long = false) {
+  const d = new Date(String(iso ?? "").slice(0, 10) + "T12:00:00Z");
+  if (isNaN(d.getTime())) return "";
+  const o = { timeZone: "UTC", month: "short", day: "numeric" } as const;
+  return long ? d.toLocaleDateString("en-US", { ...o, weekday: "long" })
+    : d.toLocaleDateString("en-US", { ...o, weekday: "short" }).replace(",", "");
+}
+// the notes on one line, cut at a word near 120 characters
+function taskNote(v: unknown, max = 120) {
+  const s = String(v ?? "").replace(/\s+/g, " ").trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max + 1), sp = cut.lastIndexOf(" ");
+  return (sp > max * 0.6 ? cut.slice(0, sp) : s.slice(0, max)).replace(/[\s,;:.-]+$/, "") + "…";
+}
+// one task, one line: its day (outside Today), time, type, title, store and notes, plus "Needs
+// scheduling" for a visit still to be booked with the store
+function taskLine(t: any, withDay: boolean) {
+  const kind = TASK_KINDS[t?.kind] || "Task";
+  const one = (v: unknown) => String(v ?? "").replace(/\s+/g, " ").trim();
+  const title = one(t?.title), store = one(t?.account);
+  const head = [withDay ? taskDay(t?.date) : "", taskTime(t?.time), kind].filter(Boolean).join(" · ");
+  const rest = [title.toLowerCase() === kind.toLowerCase() ? "" : title, store].filter(Boolean);
+  const note = taskNote(t?.notes), needs = t?.booking === "needs";
+  const html = `<li style="margin:0 0 8px"><b>${esc(head)}</b>${rest.map((x) => ` · ${esc(x)}`).join("")}`
+    + (note ? ` <span style="color:#666">· ${esc(note)}</span>` : "")
+    + (needs ? ` <span style="background:#fff6e5;color:#8a5300;border-radius:6px;padding:1px 6px;font-size:12px;font-weight:700;white-space:nowrap">Needs scheduling</span>` : "")
+    + `</li>`;
+  const text = "- " + [head, ...rest, note].filter(Boolean).join(" · ") + (needs ? " (Needs scheduling)" : "");
+  return { html, text };
+}
+// The morning email: Today, New for you (assigned since their last one) and Past due (trainings and
+// follow-ups past their day), each only when it has something. Every line goes through taskLine.
+function tasksEmail(name: string, dateISO: string, lists: { today: any[]; added: any[]; overdue: any[] }) {
+  const day = taskDay(dateISO, true);
+  const parts: [string, any[], boolean][] = [
+    ["Today", lists.today, false], ["New for you", lists.added, true], ["Past due", lists.overdue, true]];
+  const shown = parts.filter(([, l]) => l.length).map(([h, l, withDay]) => ({ h, lines: l.map((t) => taskLine(t, withDay)) }));
+  const html = mailShell(`Your tasks for ${day}`, `
+    <p style="margin:0 0 14px">Hi ${esc(name || "there")}, here are your tasks.</p>
+    ${shown.map((s) => `<p style="margin:0 0 6px;font-weight:700">${esc(s.h)}</p>
+      <ul style="margin:0 0 14px;padding-left:18px">${s.lines.map((x) => x.html).join("")}</ul>`).join("")}
+    <p style="margin:0 0 8px">${btn(APP_URL, "Open the app →")}</p>
+    <p style="margin:16px 0 0;color:#888;font-size:12px">${esc(TASKS_FOOTER)}</p>`);
+  const text = `Hi ${name || "there"}, here are your tasks for ${day}.\n\n`
+    + shown.map((s) => `${s.h}\n${s.lines.map((x) => x.text).join("\n")}`).join("\n\n")
+    + `\n\nOpen the app: ${APP_URL}\n\n${TASKS_FOOTER}`;
+  return { subject: `Your tasks for ${day}`, html, text };
+}
+// ── end "Your tasks" email ──
+
 Deno.serve(async (req) => {
   const pf = preflight(req); if (pf) return pf;
   try {
@@ -290,6 +366,61 @@ Deno.serve(async (req) => {
         if (first.length) await db.from("pay_periods").update({ reminder_sent_at: new Date().toISOString() }).in("id", first);
       }
       return json({ ok: true, date, periods: periods.map((p) => p.end_date), reminded: sent });
+    }
+
+    if (job === "tasks") {
+      // The 9 AM "Your tasks" email (cron 'ba-task-digest', ba-store-planning.sql). One email per
+      // person, never CC'd. dry (or dry_run) builds every email and sends and logs nothing; test_to
+      // diverts the sends and logs nothing, so the real ones still go.
+      const force = body.force === true;    // bypass the 9am guard for testing
+      const preview = dry || body.dry === true;
+      const { date, hour } = laParts();
+      // same two cron runs as the reminder (16:04 and 17:04 UTC): this guard picks the one at 9am LA
+      if (!force && hour !== 9) return json({ ok: true, skipped: `not 9am LA (hour ${hour})` });
+      // who hears today and what about; anyone already emailed today isn't returned
+      const { data: rows, error } = await db.rpc("schedule_task_digest", { p_today: date });
+      if (error) throw new Error(error.message);
+      const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+      const people = (rows || []).map((r: any) => ({ r, name: firstName(r.full_name),
+        lists: { today: arr(r.today_tasks), added: arr(r.new_tasks), overdue: arr(r.overdue_tasks) } }))
+        .sort((a: any, b: any) => String(a.r.full_name ?? "").localeCompare(String(b.r.full_name ?? "")));
+      const count = (p: any) => p.lists.today.length + p.lists.added.length + p.lists.overdue.length;
+      const mails = people.filter((p: any) => count(p) > 0).map((p: any) => ({ ...p, mail: tasksEmail(p.name, date, p.lists) }));
+      const skipped = people.length - mails.length;
+      // first names and counts only: no addresses in the response
+      if (preview) return json({ ok: true, dry: true, date, subject: mails[0]?.mail.subject ?? null, skipped_empty: skipped,
+        would_email: mails.map((p: any) => ({ name: p.name, today: p.lists.today.length, new: p.lists.added.length,
+          past_due: p.lists.overdue.length })) });
+
+      // one person's failure never stops the rest; a server's refusal can quote the address, so it's masked
+      const problems: { name: string; error: string }[] = [];
+      const why = (e: unknown) => String((e as Error)?.message || e).replace(/[^\s<>()"',;:]+@[^\s<>()"',;:]+/g, "(address)");
+      let sent = 0, failed = 0, notLogged = 0;
+      for (const p of mails) {
+        try {
+          await sendMail(testTo || p.r.email, p.mail.subject, p.mail.html, p.mail.text);
+        } catch (e) {
+          failed++;
+          problems.push({ name: p.name, error: why(e) });
+          dropMail();
+          continue;
+        }
+        sent++;
+        if (testTo) continue;
+        // logged so the same morning never sends twice, and so tomorrow's "New for you" starts from here
+        const ids = [...new Set([...p.lists.today, ...p.lists.added, ...p.lists.overdue].map((t: any) => t?.id).filter(Boolean))];
+        try {
+          const { error: lErr } = await db.from("schedule_task_digest_log").upsert(
+            { person_id: p.r.person_id, sent_on: date, task_ids: ids },
+            { onConflict: "person_id,sent_on", ignoreDuplicates: true });
+          if (lErr) throw new Error(lErr.message);
+        } catch (e) {
+          notLogged++;
+          problems.push({ name: p.name, error: `sent, but not logged: ${why(e)}` });
+        }
+      }
+      return json({ ok: true, date, sent, failed, not_logged: notLogged, skipped_empty: skipped,
+        ...(testTo ? { diverted: true } : {}), ...(problems.length ? { problems } : {}) });
     }
 
     if (job === "submitted_for") {

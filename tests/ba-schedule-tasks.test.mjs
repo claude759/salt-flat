@@ -83,6 +83,8 @@ test('done day: the visit day for logged or confirmed visits; the marking day fo
   assert.equal(dd({ iso: '2026-11-03', doneAt: '2026-11-20T18:00:00Z', doneHow: 'trip' }, local), '2026-11-03');
   assert.equal(dd({ iso: '2026-11-03', doneAt: '2026-11-20T18:00:00Z', doneHow: 'report' }, local), '2026-11-03');
   assert.equal(dd({ iso: '2026-11-06', doneAt: '2026-11-20T18:00:00Z', doneHow: 'report', doneOn: '2026-11-08' }, local), '2026-11-08'); // the report's visit day
+  // a report filed from the task marks it ('marked') and names its visit day, five days after the planned day
+  assert.equal(dd({ iso: '2026-11-03', kind: 'visit', doneAt: '2026-11-08T18:00:00Z', doneHow: 'marked', doneOn: '2026-11-08' }, local), '2026-11-08');
   assert.equal(dd({ iso: '2026-11-03', kind: 'visit', doneAt: '2026-11-05T18:00:00Z', doneHow: 'marked' }, local), '2026-11-03');
   assert.equal(dd({ iso: '2026-11-30', kind: 'visit', doneAt: '2026-11-05T18:00:00Z', doneHow: 'marked' }, local), '2026-11-05'); // never later than the tap
   assert.equal(dd({ iso: '2026-11-03', kind: 'followup', doneAt: '2026-11-05T18:00:00Z', doneHow: 'marked' }, local), '2026-11-05');
@@ -106,7 +108,8 @@ const ROWS = [
   { iso: '2026-11-03', canon: 'Makenna', account: 'Buzz Santee', dbId: 't1', kind: 'visit', doneAt: '2026-11-20T18:00:00Z', doneHow: 'trip', soNotes: 'restock' },
   { iso: '2026-11-03', canon: 'Ledy', account: 'Zen Leaf', dbId: 't2', kind: 'training', doneAt: null, soNotes: '=HYPERLINK("x")' },
   { iso: '2026-11-18', canon: 'Cesar', account: 'Urban Smoke Avalon', dbId: 't4', kind: null, doneAt: null, soNotes: 'PAD 12-2' },
-  { iso: '2026-11-25', canon: 'Ledy', account: 'Alpha Store', dbId: 't3', kind: 'followup', doneAt: null },
+  { iso: '2026-11-25', canon: 'Ledy', account: 'Alpha Store', dbId: 't3', kind: 'followup', doneAt: null, title: 'Order draft - Vapes',
+    time: { mins: 870, label: '2:30 PM' }, booking: null },
   { iso: '2026-11-06', canon: 'Joanna', account: 'Sharps Co', dbId: 't5', kind: 'visit', doneAt: '2026-11-18T20:00:00Z', doneHow: 'marked' },
   { iso: '2026-11-04', canon: 'Carlos', account: 'Catalyst Santa Ana', soNum: 'SO-0000476', inv: '1,200.00', synth: true },
   { iso: '2026-11-05', canon: 'Joanna', account: 'Benzeen La Brea', soNotes: 'PAD 2-4', teamNotes: 'bring table', region: 'LA' },
@@ -120,14 +123,17 @@ const OPTS = (x = {}) => ({ from: '2026-11-01', to: '2026-11-30', sel: null, tod
 test('export: header, days included at both ends, sorted by day, person, store', () => {
   const rows = plain(get('schedExportRows')(ROWS, OPTS()));
   assert.deepEqual(rows[0], plain(get('SCHED_CSV_HEAD')));
-  assert.deepEqual(rows.slice(1).map(r => r[0] + ' ' + r[2] + ' ' + r[4]), [
+  const H = rows[0], col = n => H.indexOf(n);
+  assert.deepEqual(H.slice(0, 7), ['Date', 'Day', 'Time', 'Person', 'Type', 'Title', 'Account']);
+  assert.deepEqual(rows.slice(1).map(r => r[col('Date')] + ' ' + r[col('Person')] + ' ' + r[col('Account')]), [
     '2026-11-03 Ledy Zen Leaf', '2026-11-03 Makenna Buzz Santee', '2026-11-04 Carlos Catalyst Santa Ana',
     '2026-11-05 Joanna Benzeen La Brea', '2026-11-06 Joanna Sharps Co', '2026-11-18 Cesar Urban Smoke Avalon', '2026-11-25 Ledy Alpha Store']);
 });
 
 test('export: status, done day and how, post-visit report, notes, source', () => {
   const rows = plain(get('schedExportRows')(ROWS, OPTS()));
-  const by = Object.fromEntries(rows.slice(1).map(r => [r[4], Object.fromEntries(rows[0].map((h, i) => [h, r[i]]))]));
+  const ai = rows[0].indexOf('Account');
+  const by = Object.fromEntries(rows.slice(1).map(r => [r[ai], Object.fromEntries(rows[0].map((h, i) => [h, r[i]]))]));
   assert.equal(by['Buzz Santee'].Status, 'Done');
   assert.equal(by['Buzz Santee']['Done on'], '2026-11-03');      // the visit day, not the day it was marked
   assert.equal(by['Buzz Santee'].How, 'trip logged');
@@ -157,14 +163,17 @@ test('export: status, done day and how, post-visit report, notes, source', () =>
   assert.equal(by['Sharps Co']['Done on'], '2026-11-06');         // a visit confirmed by hand counts on its own day
   assert.equal(by['Sharps Co']['Marked on'], '2026-11-18');       // and the tap day is kept
   assert.equal(by['Sharps Co'].How, 'marked done');
+  assert.equal(by['Alpha Store'].Title, 'Order draft - Vapes');
+  assert.equal(by['Alpha Store'].Time, '2:30 PM');
 });
 
 test('export: only the people picked, and deliveries can be left out', () => {
   const ex = get('schedExportRows');
   const onlyLedy = plain(ex(ROWS, OPTS({ sel: new Set(['Ledy']) })));
-  assert.deepEqual(onlyLedy.slice(1).map(r => r[4]), ['Zen Leaf', 'Alpha Store']);
+  const ai = onlyLedy[0].indexOf('Account'), ti = onlyLedy[0].indexOf('Type');
+  assert.deepEqual(onlyLedy.slice(1).map(r => r[ai]), ['Zen Leaf', 'Alpha Store']);
   const noDel = plain(ex(ROWS, OPTS({ noDeliveries: true })));
-  assert.ok(!noDel.slice(1).some(r => r[3] === 'Delivery'));
+  assert.ok(!noDel.slice(1).some(r => r[ti] === 'Delivery'));
   assert.equal(noDel.length, 7);
   assert.equal(plain(ex([], OPTS())).length, 1);                  // header only
 });

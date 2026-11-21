@@ -414,7 +414,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-11-20.130';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-11-21.131';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -5639,7 +5639,8 @@ async function schedReloadTasks(){
       const canon=schedCanon(t.driver);
       return { iso:t.task_date, account:t.account, region:t.region||'', driver:t.driver||'',
         inv:t.inv_total==null?'':String(t.inv_total), soNotes:t.notes||'', teamNotes:'',
-        soNum:t.so_num||'', sheet:'app', dbId:t.id, canon, color:schedColor(canon), time:schedTime(t.notes||''),
+        soNum:t.so_num||'', sheet:'app', dbId:t.id, canon, color:schedColor(canon),
+        time:schedClock(t.task_time)||schedTime(t.notes||''), taskTime:t.task_time||'', booking:t.booking||null, title:t.title||'',
         kind:t.kind||null, doneAt:t.done_at||null, doneHow:t.done_how||null, doneNote:t.done_note||'', doneBy:t.done_by||null,
         createdAt:t.created_at||null, doneOn:t.done_on||null };
     });
@@ -5743,6 +5744,26 @@ function schedCss(){
   .sb-tag.overdue{color:var(--orange);border-color:color-mix(in srgb,var(--orange) 60%,var(--line))}
   .sb-mini.od{box-shadow:inset 0 0 0 1px #0b0d10,inset 0 0 0 2.5px var(--orange)}
   .sb-done-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:7px}
+  .sb-tag.book{color:var(--yellow,#e7b416);border-color:color-mix(in srgb,var(--yellow,#e7b416) 55%,var(--line))}
+  .sb-tag.opp{color:var(--orange);border-color:color-mix(in srgb,var(--orange) 55%,var(--line))}
+  .sb-title{font-weight:600}
+  .sp-filters{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:2px 0 8px}
+  .sp-filters input[type=search]{grid-column:1/-1}
+  @media(min-width:760px){ .sp-filters{grid-template-columns:2fr 1fr 1fr 1fr 1fr} .sp-filters input[type=search]{grid-column:auto} }
+  .sp-list{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px}
+  @media(min-width:900px){ .sp-list{grid-template-columns:1fr 1fr} }
+  .sp-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;min-width:0}
+  .sp-top{display:flex;gap:9px;align-items:center}
+  .sp-name{font-weight:750;font-size:15px;overflow-wrap:anywhere}
+  .sp-tags,.sp-team,.sp-acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .sp-sel{width:18px;height:18px;margin:0;flex:none}
+  .sp-bulk{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;padding:8px 10px;border:1px dashed var(--line);border-radius:10px;font-size:13px}
+  .sp-bulk input{width:auto;margin:0}
+  .sp-checks{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:2px}
+  .sp-checks label{display:flex;gap:6px;align-items:center;font-size:13.5px}
+  .sp-checks input{width:auto;margin:0}
+  .sp-facts{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:6px 0 4px;font-size:13px}
+  .sp-facts .k{color:var(--muted)}
   .sb-grp{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 4px 2px}
   .sb-filt{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:8px 0 0;padding:7px 10px;font-size:12px;
     background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));border-radius:10px}
@@ -5843,7 +5864,8 @@ const SCHED_STATUS_WORD={done:'Done', open:'Open', unconfirmed:'Not confirmed ye
 // into that person's calendar day.
 function schedDoneDay(v, localDay){
   if(!v||!v.doneAt) return '';
-  if(SCHED_AUTO_HOW.has(v.doneHow)) return v.doneOn||v.iso;   // the visit's own day (a report can name a later one)
+  if(v.doneOn) return v.doneOn;                                 // the day a report filed from the task names
+  if(SCHED_AUTO_HOW.has(v.doneHow)) return v.iso;              // the visit's own day
   const click=localDay?localDay(v.doneAt):String(v.doneAt).slice(0,10);
   const atAdd=v.createdAt && Math.abs(Date.parse(v.doneAt)-Date.parse(v.createdAt))<120000;
   if(SCHED_VISIT_KINDS.has(schedKindOf(v))||atAdd) return click<v.iso?click:v.iso;
@@ -5859,7 +5881,7 @@ function schedRowType(v){
 // The Schedule export: every row on the calendar from o.from to o.to (YYYY-MM-DD, both included) for the
 // people picked (o.sel: a Set of schedule names, or null for everyone), deliveries optional. o.place(v)
 // gives an address, o.reports(v) how many post-visit reports paired with it, o.localDay(ts) a time's day.
-const SCHED_CSV_HEAD=['Date','Day','Person','Type','Account','Address','Region','Status','Done on','How','Marked on','Post-visit report','Notes','SO #','Invoice $','Source'];
+const SCHED_CSV_HEAD=['Date','Day','Time','Person','Type','Title','Account','Address','Region','Status','Booking','Done on','How','Marked on','Post-visit report','Notes','SO #','Invoice $','Source'];
 function schedExportRows(rows, o){
   const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const out=(rows||[]).filter(v=>v && v.iso>=o.from && v.iso<=o.to && (!o.sel || o.sel.has(v.canon))
@@ -5871,8 +5893,8 @@ function schedExportRows(rows, o){
       const nRep=visit&&o.reports?o.reports(v):0;
       const d=new Date(v.iso+'T12:00:00');
       return { key:[v.iso, who.toLowerCase(), String(v.account||'').toLowerCase()], cells:[
-        v.iso, DOW[d.getDay()], who, type, String(v.account||'').trim(), (o.place&&o.place(v))||'', v.region||'',
-        SCHED_STATUS_WORD[st]||'',
+        v.iso, DOW[d.getDay()], (v.time&&v.time.label)||'', who, type, v.title||'', String(v.account||'').trim(), (o.place&&o.place(v))||'', v.region||'',
+        SCHED_STATUS_WORD[st]||'', v.booking==='needs'?'Needs scheduling':v.booking==='confirmed'?'Confirmed':'',
         st==='done'?schedDoneDay(v, o.localDay):'', st==='done'?(SCHED_DONE_HOW[v.doneHow]||''):'',
         st==='done'&&v.doneHow==='marked'?(o.localDay?o.localDay(v.doneAt):String(v.doneAt).slice(0,10)):'',   // the day someone tapped Done
         nRep?'Filed':(isVisit&&v.iso<o.todayIso?'Not filed':''),   // trainings and follow-ups need no report
@@ -5888,6 +5910,100 @@ function schedCsv(rows){
     return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(',')).join('\n');
 }
 /* ── end SCHEDULE TASK MODEL ── */
+/* ── STORE PLAN MODEL (pure: no DOM, no database; tests/ba-store-planning.test.mjs runs it) ──
+   Gianni 2026-11-21 ("Ya, do all that", after Amanda's Field Planner): a Stores page on the Schedule. Every
+   store of the board with its planning profile (store_plan: territory, team, samples, promo days, demo
+   booking), the sales app's 6-month sales for its sales account (store_sales, managers only), what the BAs
+   logged there in the last year (store_visit_summary) and its open app tasks. */
+const SP_TERRITORIES={ CA:['SoCal','NorCal','San Diego','Central California','Needs review'] };
+const SP_SAMPLES=[{k:'hand',label:'Hand-to-hand'},{k:'metrc',label:'Metrc only'},{k:'offsite',label:'Off-site'}];
+const SP_DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const SP_SHOW=[{k:'all',label:'All stores'},{k:'noedu',label:'No EDU on record'},{k:'d30',label:'No visit in 30+ days'},
+  {k:'d60',label:'No visit in 60+ days'},{k:'d90',label:'No visit in 90+ days'},{k:'never',label:'Never visited'},
+  {k:'tasks',label:'Has open tasks'},{k:'mine',label:'Someone assigned'},{k:'nobody',label:'Nobody assigned'}];
+const SP_SORTS=[{k:'sales',label:'Highest sales'},{k:'longest',label:'Longest since a visit'},
+  {k:'recent',label:'Most recently visited'},{k:'name',label:'Store name'}];
+function spDaysBetween(a, b){ return Math.round((Date.parse(b+'T12:00:00')-Date.parse(a+'T12:00:00'))/864e5); }
+// days since a visit, in words: today, yesterday, 12 days ago
+function spAgo(n){ return n==null?'':n<=0?'today':n===1?'yesterday':`${n} days ago`; }
+// one row per store of the board: o = {stores, plans, sales, visits, tasks, taskStore(task) -> store id, st, todayIso}
+function spRows(o){
+  const planBy=new Map((o.plans||[]).map(x=>[x.dispensary_id,x]));
+  const salesBy=new Map((o.sales||[]).map(x=>[x.sales_key,x]));
+  const salesIds=x=>(Array.isArray(x.dispensary_ids)?x.dispensary_ids:null);   // null: saved without links
+  const visBy=new Map((o.visits||[]).map(x=>[x.dispensary_id,x]));
+  const stores=(o.stores||[]).filter(d=>d && d.active!==false && d.state===o.st && !/^\*\s/.test(d.name||'')
+    && !d.private && d.retail!==false);
+  // each store's sales accounts: the ones the sales app links to it (dispensary_ids), else (an account saved
+  // without links) the one its sales_key names; an account several stores share shows whole on each, with how many
+  const inBoard=new Set(stores.map(d=>d.id)), accBy=new Map();
+  for(const x of o.sales||[]){
+    const ids=(salesIds(x)||[]).filter(id=>inBoard.has(id));
+    ids.forEach(id=>{ if(!accBy.has(id)) accBy.set(id,[]); accBy.get(id).push({ x, n:ids.length }); });
+  }
+  const shared=new Map(); stores.forEach(d=>{ if(d.sales_key) shared.set(d.sales_key,(shared.get(d.sales_key)||0)+1); });
+  const accFor=d=>{
+    if(accBy.has(d.id)) return accBy.get(d.id);
+    const x=d.sales_key?salesBy.get(d.sales_key):null;
+    return x&&!salesIds(x)?[{ x, n:shared.get(d.sales_key)||1 }]:[];
+  };
+  const open=new Map();
+  for(const v of o.tasks||[]){
+    if(!v||!v.dbId||v.doneAt||schedKindOf(v)==='delivery') continue;
+    const id=o.taskStore?o.taskStore(v):null; if(!id) continue;
+    if(!open.has(id)) open.set(id,[]); open.get(id).push(v);
+  }
+  return stores.map(d=>{
+    const pl=planBy.get(d.id)||{}, acc=accFor(d), vi=visBy.get(d.id)||null;
+    const sum=f=>acc.reduce((s,a)=>s+(Number(a.x[f])||0),0);
+    const lastOrder=acc.map(a=>a.x.last_order).filter(Boolean).sort().pop()||null;
+    const last=(vi&&vi.last_visit)||null;
+    return { id:d.id, name:d.name||'', address:d.address||'', salesKey:d.sales_key||'',
+      territory:pl.territory||'', team:Array.isArray(pl.team)?pl.team:[], plan:pl,
+      sales:acc.length?sum('net'):null, orders:acc.length?sum('orders'):null, lastOrder,
+      salesShared:acc.length?Math.max(...acc.map(a=>a.n)):0,
+      // a record dated after today (hours entered ahead) counts as today, never a negative number of days
+      lastVisit:last, daysSince:last?Math.max(0, spDaysBetween(last, o.todayIso)):null, lastBy:(vi&&vi.last_by)||'',
+      visits:vi?Number(vi.visits)||0:0, edu:vi?Number(vi.edu)||0:0, lastEdu:(vi&&vi.last_edu)||null, pad:vi?Number(vi.pad)||0:0,
+      tasks:open.get(d.id)||[] };
+  });
+}
+// the rows the filters keep, in the order picked: f = {q, territory ('all' | '~none' | name), person ('all' |
+// '~none' | name), show (SP_SHOW), sort (SP_SORTS)}; a store never visited counts as "no visit in 30+ days" too
+function spFilter(rows, f){
+  const q=String(f.q||'').trim().toLowerCase();
+  const out=(rows||[]).filter(r=>{
+    if(q && !(r.name.toLowerCase().includes(q) || r.address.toLowerCase().includes(q))) return false;
+    if(f.territory && f.territory!=='all' && (f.territory==='~none' ? !!r.territory : r.territory!==f.territory)) return false;
+    if(f.person && f.person!=='all' && (f.person==='~none' ? r.team.length>0 : !r.team.includes(f.person))) return false;
+    switch(f.show||'all'){
+      case 'noedu': return !r.edu;
+      case 'd30': return r.daysSince==null || r.daysSince>=30;
+      case 'd60': return r.daysSince==null || r.daysSince>=60;
+      case 'd90': return r.daysSince==null || r.daysSince>=90;
+      case 'never': return r.daysSince==null;
+      case 'tasks': return r.tasks.length>0;
+      case 'mine': return r.team.length>0;
+      case 'nobody': return !r.team.length;
+    }
+    return true;
+  });
+  const nm=(a,b)=>a.name.localeCompare(b.name);
+  // an account several stores share ranks by each store's share (the card still shows the whole account),
+  // so one chain's account doesn't fill the top of "Highest sales"
+  const per=r=>r.sales==null?-1:r.sales/Math.max(1,r.salesShared||1);
+  const cmp={ sales:(a,b)=>(per(b)-per(a))||nm(a,b),
+    longest:(a,b)=>((b.daysSince??1e9)-(a.daysSince??1e9))||nm(a,b),
+    recent:(a,b)=>((a.daysSince??1e9)-(b.daysSince??1e9))||nm(a,b), name:nm }[f.sort||'sales']||nm;
+  return out.sort(cmp);
+}
+// "14:30" -> {mins, label:"2:30 PM"} (a task's own time; older tasks only had one written in their notes)
+function schedClock(hhmm){
+  const m=/^(\d{1,2}):(\d{2})/.exec(String(hhmm||'')); if(!m) return null;
+  const h=+m[1], mi=+m[2]; if(h>23||mi>59) return null;
+  return { mins:h*60+mi, label:`${(h%12)||12}${mi?':'+String(mi).padStart(2,'0'):''} ${h<12?'AM':'PM'}` };
+}
+/* ── end STORE PLAN MODEL ── */
 const SCHED_MONL=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 let schedGen=0;   // bumped per draw: a superseded run must not repaint the new board
 // The Schedule has TWO entry points — the admin tab bar (state.adminTab) and the BA
@@ -5910,6 +6026,7 @@ async function drawSchedule(m){
     if(EMBED) embedSlow(m);
     const ok=await schedLoad(S.month).catch(()=>false);
     if(gen!==schedGen) return;   // the user switched boards while this was loading
+    if(!ok && !schedShowing(surface)) return;   // nor paint the error card over the tab they went to
     if(!ok){
       // Keep the state switcher ON the error card: the chosen board is remembered,
       // so without it one unreachable workbook would strand a two-board user here
@@ -5965,7 +6082,7 @@ async function schedLoadActivity(){
     const [from,to]=schedActRange(), PAGE=1000, rows=[];
     for(let p=0;p<20;p++){
       let q=supabase.from('ba_activity')
-        .select('id,state,visit_date,dispensary_id,store_raw,rep_name,activities,promo,aged_product,brand_presence,stock_status,connected_with,next_steps,traffic,est_units,manager,photos')
+        .select('id,state,visit_date,dispensary_id,store_raw,rep_name,activities,promo,aged_product,brand_presence,stock_status,connected_with,next_steps,traffic,est_units,manager,photos,staff_trained,topics,reorder,notes,task_id')
         .gte('visit_date', from).lte('visit_date', to);
       if(state.schedState) q=q.eq('state',state.schedState);
       const { data, error } = await q.order('visit_date',{ascending:false}).order('id',{ascending:false})
@@ -6020,8 +6137,21 @@ function schedPairActs(){
   // deterministic order so the same data always pairs the same way
   const acts=S.acts.slice().sort((a,b)=>
     String(a.visit_date).localeCompare(String(b.visit_date))||String(schedActId(a)).localeCompare(String(schedActId(b))));
+  const claim=(a, v, diff)=>{ const kk=key(v);
+    S.actOwner.set(schedActId(a), kk);
+    if(!S.visitActs.has(kk)) S.visitActs.set(kk,[]);
+    S.visitActs.get(kk).push({...a,_diff:diff}); };
+  // a report filed in the app from a task names it (task_id): it belongs to that task whatever day the BA
+  // picked (a visit done early or late), and stays out of the store-and-day pass below
+  const byTask=new Map();
+  for(const list of S.byIso.values()) for(const v of list) if(v.dbId) byTask.set(String(v.dbId), v);
+  const own=new Set();
   for(const a of acts){
-    if(!a.visit_date) continue;
+    const v=a.task_id!=null?byTask.get(String(a.task_id)):null; if(!v) continue;
+    claim(a, v, a.visit_date?Math.max(0, dayN(a.visit_date)-dayN(v.iso)):0); own.add(a);
+  }
+  for(const a of acts){
+    if(!a.visit_date || own.has(a)) continue;
     const an=dayN(a.visit_date);
     let best=null, bestDiff=Infinity;
     const seen=new Set();
@@ -6036,10 +6166,7 @@ function schedPairActs(){
       }
     }
     if(!best) continue;
-    const kk=key(best);
-    S.actOwner.set(schedActId(a), kk);
-    if(!S.visitActs.has(kk)) S.visitActs.set(kk,[]);
-    S.visitActs.get(kk).push({...a,_diff:bestDiff});
+    claim(a, best, bestDiff);
   }
 }
 const SCHED_ACT_SLACK=2;   // days a report may lag the visit and still pair with it
@@ -6104,7 +6231,8 @@ function schedDaySheet(iso){
       +((kind==='training'||kind==='followup')?`<span class="sb-tag kind">${schedKindLabel(kind)}</span>`:'')
       +(st==='done'?`<span class="sb-tag done" title="${esc(schedDoneTitle(v))}">✓ Done</span>`
         :st==='overdue'?'<span class="sb-tag overdue" title="Its day has passed and it isn\'t done">Overdue</span>'
-        :st==='unconfirmed'?'<span class="sb-tag" title="No trip, hours or post-visit report for this store that day yet. BAs usually log at the end of the pay period.">Not confirmed yet</span>':'');
+        :st==='unconfirmed'?'<span class="sb-tag" title="No trip, hours or post-visit report for this store that day yet. BAs usually log at the end of the pay period.">Not confirmed yet</span>':'')
+      +(v.booking==='needs'&&st!=='done'?'<span class="sb-tag book" title="Not booked with the store yet">Needs scheduling</span>':'');
     const inv=schedMoney(v.inv);
     const ord=schedOrderFor(v), pl=place.get(v);
     const meta=[
@@ -6139,7 +6267,7 @@ function schedDaySheet(iso){
       : (dels.length && rest.length && i===dels.length) ? `<div class="sb-grp">Visits &amp; tasks</div>`
       : (dels.length>1 && !rest.length && i===0) ? `<div class="sb-grp">Deliveries · farthest first</div>` : '';
     return grp+`<div class="sb-item" style="--dv:${v.color}">
-      <div class="acct">${esc(v.account)}${v.dbId?`<button class="sb-edit" data-sbe="${i}" title="Edit task">✎</button>`:''}</div>
+      <div class="acct"><span style="min-width:0">${v.title?`<span class="sb-title">${esc(v.title)}</span> · `:''}${esc(v.account)}</span>${v.dbId?`<button class="sb-edit" data-sbe="${i}" title="Edit task">✎</button>`:''}</div>
       ${meta?`<div class="meta">${meta}</div>`:''}
       ${v.location?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(v.location)}" target="_blank" rel="noopener">📍 ${esc(v.location)}</a></div>`:''}
       ${(!v.location && pl && pl.address && !schedIsPickup(v))?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(pl.address)}" target="_blank" rel="noopener">📍 ${esc(pl.address)}</a>${pl.mi!=null?` <span class="muted">· ~${Math.round(pl.mi)} mi from the office</span>`:''}</div>`:''}
@@ -6162,12 +6290,16 @@ function schedDaySheet(iso){
     <div class="small muted" style="margin-bottom:8px">${list.length} visit${list.length!==1?'s':''}${S.sel?' · filtered':''}${
       (withReport||loose.length)?` · <span style="color:var(--green)">${withReport+loose.length} post-visit report${(withReport+loose.length)!==1?'s':''}</span>`:''}</div>
     <div class="sb-sheet">${items||'<div class="small muted" style="padding:8px 0">Nothing scheduled.</div>'}${looseHtml}</div>
-    <button class="btn primary block" id="sbDayAdd" style="margin-top:12px">＋ Add task</button>`);
+    <div style="display:flex;gap:8px;margin-top:12px"><button class="btn primary" id="sbDayAdd" style="flex:1">＋ Add task</button>
+      <button class="btn" id="sbDayReport" style="flex:1" title="A post-visit report for a visit that wasn't on the schedule">＋ Visit report</button></div>`);
   { const sh=$('#sheet'); if(sh) sh.dataset.day=iso; }
   $('#sbDayAdd').onclick=()=>schedTaskSheet(iso,null);
   document.querySelectorAll('[data-sbe]').forEach(b=>b.onclick=()=>schedTaskSheet(iso,list[+b.dataset.sbe]));
+  $('#sbDayReport').onclick=()=>schedReportSheet({ iso, after:()=>schedAfterReport(iso) });
+  // "Mark done without a report" closes the report: bring the day back unless another sheet is open by then
+  const afterDone=async()=>{ await schedAfterTaskChange(iso); if(!$('#sheet') && schedShowing(schedSurface())) schedDaySheet(iso); };
   document.querySelectorAll('[data-sbdone]').forEach(b=>b.onclick=()=>{ b.disabled=true;
-    schedMarkDone(list[+b.dataset.sbdone], true, ()=>schedAfterTaskChange(iso)).then(ok=>{ if(!ok) b.disabled=false; }); });
+    schedDoneFlow(list[+b.dataset.sbdone], ()=>schedAfterReport(iso), afterDone).then(ok=>{ if(!ok) b.disabled=false; }); });
   document.querySelectorAll('[data-sbundone]').forEach(b=>b.onclick=()=>{ b.disabled=true;
     schedMarkDone(list[+b.dataset.sbundone], false, ()=>schedAfterTaskChange(iso)).then(ok=>{ if(!ok) b.disabled=false; }); });
   document.querySelectorAll('[data-sbpv]').forEach(b=>b.onclick=()=>{
@@ -6181,7 +6313,8 @@ function schedActivitySheet(a, v, iso){
   if(!a) return;
   const row=(label,val)=> val&&String(val).trim()&&String(val).trim()!=='N/A'
     ? `<div class="sb-pvrow"><div class="k">${esc(label)}</div><div class="val">${esc(val)}</div></div>` : '';
-  const photos=(a.photos||'').split(/[\s,]+/).filter(u=>/^https?:/.test(u));
+  const photoList=(a.photos||'').split(/[\s,]+/).filter(Boolean);
+  const photos=photoList.filter(u=>/^https?:/.test(u)), appPhotos=photoList.filter(u=>/^sb:receipts\//.test(u)).map(u=>u.slice(12));
   openSheet(`<h3 style="margin:0 0 2px">Post-visit report</h3>
     <div class="small muted" style="margin-bottom:10px">${esc(v?v.account:a.store_raw||'')} · ${esc(a.visit_date||iso)}${a.rep_name?` · ${esc(a.rep_name)}`:''}</div>
     <div class="sb-pvbody">
@@ -6194,11 +6327,18 @@ function schedActivitySheet(a, v, iso){
       ${row('Connected with', a.connected_with)}
       ${row('Store traffic', a.traffic)}
       ${row('Estimated units sold', a.est_units)}
+      ${row('Staff trained', a.staff_trained)}
+      ${row('Products or training topics', a.topics)}
+      ${row('Reorder needs', a.reorder)}
       ${row('Next steps', a.next_steps)}
+      ${row('Notes', a.notes)}
       ${photos.length?`<div class="sb-pvrow"><div class="k">Photos</div><div class="val">${photos.map((u,i)=>`<a href="${esc(u)}" target="_blank" rel="noopener">photo ${i+1} ↗</a>`).join(' · ')}</div></div>`:''}
+      ${appPhotos.length?`<div class="sb-pvrow"><div class="k">Photos</div><div class="val">${appPhotos.map((u,i)=>`<a href="#" data-pvph="${esc(u)}">photo ${i+1} ↗</a>`).join(' · ')}</div></div>`:''}
     </div>
     <button class="btn block" id="pvBack" style="margin-top:12px">‹ Back to the day</button>`);
   $('#pvBack').onclick=()=>schedDaySheet(iso);
+  document.querySelectorAll('[data-pvph]').forEach(x=>x.onclick=async ev=>{ ev.preventDefault();
+    const u=await signedUrl('receipts', x.dataset.pvph); u?window.open(u,'_blank'):toast('Photo unavailable','err'); });
 }
 // Create/edit an in-app schedule task (stored in schedule_tasks, not the workbook)
 // Keep a copy of the WORKBOOK itself — the calendar's actual content. The visits on
@@ -6361,8 +6501,8 @@ async function schedBackupAfterRestore(){
 const SCHED_ROSTER={ CA:{ bas:['Cesar','Jesse','Joanna','Ledy','Makenna'], drivers:['Al','AJ'] },
   NY:{ bas:['Rachel','Terrance','Jackie','Chandler','Maddy'], drivers:[] } };
 const schedRoster=()=>SCHED_ROSTER[state.schedState==='NY'?'NY':'CA'];
-function schedTaskSheet(iso, task){
-  const S=state.sched;
+function schedTaskSheet(iso, task, preset){
+  const S=state.sched; preset=preset||{};
   const known=S.rows.concat(S.dbRows);
   // suggestions: the board's stores (names typed on older tasks repeated their typos), plus this task's own
   const bdSt=state.schedState||'CA';
@@ -6375,7 +6515,7 @@ function schedTaskSheet(iso, task){
   // task with no BA on it.
   const roster=[...schedRoster().bas, ...schedRoster().drivers];
   // a new task from a one-person filter starts assigned to that person
-  const pre=task?schedCanon(task.driver):(S.sel&&S.sel.size===1?[...S.sel][0]:null);
+  const pre=task?schedCanon(task.driver):preset.driver?schedCanon(preset.driver):(S.sel&&S.sel.size===1?[...S.sel][0]:null);
   const drivers=[...new Set(
     (state.sched?.rows||[]).map(r=>r.canon).filter(Boolean).filter(n=>n!=='—')
       .concat(roster)
@@ -6383,18 +6523,25 @@ function schedTaskSheet(iso, task){
       // rows currently loaded, so editing an older task whose BA has since left (or
       // isn't on this month's sheet) would otherwise silently blank the assignment
       .concat(task&&schedCanon(task.driver)?[schedCanon(task.driver)]:[])
+      .concat(!task&&pre?[pre]:[])   // and so must a new task's preset assignee (a BA planning for herself)
       )].sort((a,b)=>a.localeCompare(b)).filter(n=>n!=='Team').concat('Team');
   // the picker's search also finds a person by the other names the schedule knows them by (Leti is Ledy)
   const alsoKnown=schedAlsoKnown;
-  const kindNow=task?schedKindOf(task):'visit';
+  const kindNow=task?schedKindOf(task):(preset.kind||'visit');
+  const bookNow=task?(task.booking||'confirmed'):(preset.booking||'confirmed');
   openSheet(`<h3 style="margin:0 0 4px">${task?'Edit task':'New task'}</h3>
     <label class="fl">Date</label><input type="date" id="stDate" value="${task?task.iso:iso}">
+    <label class="fl">Time <span class="muted">(optional)</span></label><input type="time" id="stTime" value="${esc(task?task.taskTime||'':preset.time||'')}">
     <label class="fl">Account / destination</label>
-    <input id="stAcct" list="stAcctList" placeholder="Start typing a store…" value="${task?esc(task.account):''}" autocomplete="off">
+    <input id="stAcct" list="stAcctList" placeholder="Start typing a store…" value="${task?esc(task.account):esc(preset.account||'')}" autocomplete="off">
     <div id="stAcctHint" class="small" style="color:var(--orange);margin-top:4px" hidden>Not one store in the store list, so the app can't confirm this visit from the BA's trips or reports. Pick a store from the suggestions.</div>
     <datalist id="stAcctList">${accounts.map(a=>`<option value="${esc(a)}">`).join('')}</datalist>
     <label class="fl">Type</label>
     <select id="stKind" data-searchable>${SCHED_KINDS.map(o=>`<option value="${o.k}" data-search="${esc(o.search)}"${o.k===kindNow?' selected':''}>${esc(o.label)}</option>`).join('')}</select>
+    <label class="fl">Title <span class="muted">(optional)</span></label>
+    <input id="stTitle" placeholder="e.g. Staff training on vapes" value="${esc(task?task.title||'':preset.title||'')}">
+    <div id="stBookWrap"><label class="fl">Booking</label>
+    <select id="stBooking" data-searchable><option value="confirmed"${bookNow==='confirmed'?' selected':''}>Confirmed</option><option value="needs"${bookNow==='needs'?' selected':''}>Needs scheduling</option></select></div>
     <label class="fl">Invoice total <span class="muted">(optional)</span></label>
     <input id="stInv" type="number" step="0.01" inputmode="decimal" placeholder="0.00" value="${task&&task.inv?esc(String(task.inv).replace(/[^0-9.]/g,'')):''}">
     <label class="fl">Region</label>
@@ -6412,6 +6559,8 @@ function schedTaskSheet(iso, task){
       ${task?'<button class="btn" id="stDel" style="color:var(--red);border-color:var(--red)">Delete</button>':''}
       <button class="btn primary" id="stSave" style="flex:1">${task?'Save changes':'Add to schedule'}</button>
     </div>`);
+  const formSh=$('#sheet');
+
   // region autofill: latest region the schedule used for this account, else the
   // registry address's city — only when the Region field is still empty
   const regionFor=(account)=>{
@@ -6444,6 +6593,9 @@ function schedTaskSheet(iso, task){
     h.hidden=!a || !SCHED_VISIT_KINDS.has($('#stKind').value) || !!schedStoreFor(state.dispensaries, bdSt, a); };
   ['input','change'].forEach(ev=>$('#stAcct').addEventListener(ev, acctHint));
   $('#stKind').addEventListener('change', acctHint); acctHint();
+  // a booking only means something for a visit, Demo / PAD, EDU or training
+  const bookShow=()=>{ const w=$('#stBookWrap'); if(w) w.style.display=['followup','delivery'].includes($('#stKind').value)?'none':''; };
+  $('#stKind').addEventListener('change', bookShow); bookShow();
   // the Done note shows while Done is ticked, so nothing typed there is thrown away
   $('#stDone').addEventListener('change',()=>{ $('#stDoneNote').style.display=$('#stDone').checked?'':'none'; });
   $('#stSave').onclick=async()=>{
@@ -6452,7 +6604,8 @@ function schedTaskSheet(iso, task){
     const rec={ task_date:$('#stDate').value, account:$('#stAcct').value.trim(),
       inv_total:$('#stInv').value?Number($('#stInv').value):null,
       region:$('#stRegion').value.trim()||null, driver,
-      kind,
+      kind, title:$('#stTitle').value.trim()||null, task_time:$('#stTime').value||null,
+      booking:['followup','delivery'].includes(kind)?null:($('#stBooking').value==='needs'?'needs':'confirmed'),
       so_num:$('#stSo').value.trim()||null, notes:$('#stNotes').value.trim()||null,
       state:state.schedState||'CA' };   // a task belongs to the board it was created on
     // Done: ticking it marks the task done by you now; unticking reopens it (and the automatic check then
@@ -6484,7 +6637,10 @@ function schedTaskSheet(iso, task){
         if(error) throw error;
       }
       if(moved) await schedAutocomplete(state.schedState||'CA', rec.task_date<task.iso?rec.task_date:task.iso, true);
-      await refresh(rec.task_date, rec.driver);
+      // a slow save closes only its own form, never one opened since
+      if(preset.onSaved){ if($('#sheet')===formSh) closeSheet(); await schedReloadTasks(); if(!$('#sheet')||$('#sheet')===formSh) await preset.onSaved(rec); toast(task?'Saved':'Added to the schedule','ok'); }
+      else if(!$('#sheet')||$('#sheet')===formSh) await refresh(rec.task_date, rec.driver);
+      else { await schedReloadTasks(); const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m); toast(task?'Saved':'Added to the schedule','ok'); }
     }catch(e){ btn.disabled=false; btn.textContent=task?'Save changes':'Add to schedule'; toast('Could not save: '+(e.message||e)); }
   };
   if(task&&task.dbId) $('#stDel').onclick=async()=>{
@@ -6604,21 +6760,23 @@ function schedExportSheet(){
 // waiting for their trip, hours or report, and anything past the 5) sit behind one button. It is read alongside
 // the rest of the home screen and drawn with it, so nothing jumps; the database's catch-up runs after, and the
 // card is redrawn only when it changed something.
+// the signed-in person's schedule name (her first name, as the Schedule writes it)
+function schedMyName(){ return schedCanon(String((state.profile&&state.profile.full_name)||'').trim().split(/\s+/)[0]); }
 function myTasksWho(){
-  const st=personRegion(state.profile);
-  const me=schedCanon(String((state.profile&&state.profile.full_name)||'').trim().split(/\s+/)[0]);
+  const st=personRegion(state.profile), me=schedMyName();
   return st&&me?{st,me}:null;
 }
 async function myTasksLoad(){
   const w=myTasksWho(); if(!w) return null;
   const today=schedIso(new Date()), from=schedIso(schedAdd(new Date(),-30)), to=schedIso(schedAdd(new Date(),14));
   const { data, error }=await supabase.from('schedule_tasks')
-    .select('id,task_date,account,kind,notes,so_num,driver,done_at,done_how,done_note,done_by,done_on,created_at')
+    .select('id,task_date,account,kind,notes,so_num,driver,done_at,done_how,done_note,done_by,done_on,created_at,task_time,booking,title')
     .eq('state',w.st).is('deleted_at',null).gte('task_date',from).lte('task_date',to).order('task_date');
   if(error||!data) return { error:true };
   const mine=data.filter(t=>schedCanon(t.driver)===w.me).map(t=>({ dbId:t.id, iso:t.task_date, account:t.account||'', kind:t.kind||null,
     soNum:t.so_num||'', soNotes:t.notes||'', doneAt:t.done_at||null, doneHow:t.done_how||null, doneNote:t.done_note||'',
-    doneBy:t.done_by||null, doneOn:t.done_on||null, createdAt:t.created_at||null }));
+    doneBy:t.done_by||null, doneOn:t.done_on||null, createdAt:t.created_at||null,
+    taskTime:t.task_time||'', time:schedClock(t.task_time), booking:t.booking||null, title:t.title||'' }));
   const st=v=>schedTaskStatus(v,today);
   const overdue=mine.filter(v=>st(v)==='overdue')
     .sort((a,b)=>(SCHED_VISIT_KINDS.has(schedKindOf(a))?1:0)-(SCHED_VISIT_KINDS.has(schedKindOf(b))?1:0) || a.iso.localeCompare(b.iso));
@@ -6636,8 +6794,8 @@ function myTaskRowHtml(v, src, i, today){
   const word=stt==='overdue'?' · overdue':stt==='unconfirmed'?' · waiting for your trip, hours or report':'';
   return `<div class="mt-row" style="display:flex;gap:10px;align-items:center;padding:9px 0;border-top:1px solid var(--line)">
     <div style="flex:1;min-width:0">
-      <div class="small" style="${stt==='overdue'?'color:var(--orange);font-weight:700':'color:var(--muted)'}">${day}${word} · ${esc(schedKindLabel(schedKindOf(v)))}</div>
-      <div style="font-weight:650;overflow-wrap:anywhere">${esc(v.account)}</div>
+      <div class="small" style="${stt==='overdue'?'color:var(--orange);font-weight:700':'color:var(--muted)'}">${day}${v.time?' · '+v.time.label:''}${word} · ${esc(schedKindLabel(schedKindOf(v)))}${v.booking==='needs'?' · needs scheduling':''}</div>
+      <div style="font-weight:650;overflow-wrap:anywhere">${v.title?esc(v.title)+' · ':''}${esc(v.account)}</div>
       ${v.soNotes?`<div class="small muted" style="overflow-wrap:anywhere">${esc(v.soNotes)}</div>`:''}
     </div>
     <button class="btn sm" data-mtdone="${src}:${i}">✓ Done</button></div>`;
@@ -6657,7 +6815,8 @@ function myTasksHtml(mt){
 // wire the card's buttons to the tasks it was drawn from (also for the copy drawn from memory)
 function wireMyTasks(mt){
   const host=$('#myTasks'); if(!host||!mt||mt.error) return;
-  const mark=(v,b,after)=>{ b.disabled=true; schedMarkDone(v, true, after).then(ok=>{ if(!ok) b.disabled=false; }); };
+  const mark=(v,b,after)=>{ b.disabled=true;
+    schedDoneFlow(v, async()=>{ closeSheet(); await drawMyTasks(); }, after).then(ok=>{ if(!ok) b.disabled=false; }); };
   host.querySelectorAll('[data-mtdone]').forEach(b=>b.onclick=()=>mark(mt.card[+b.dataset.mtdone.split(':')[1]], b, ()=>drawMyTasks()));
   const mb=$('#mtMore'); if(mb) mb.onclick=()=>myTasksMoreSheet();
 }
@@ -6670,7 +6829,7 @@ function myTasksMoreSheet(){
     <div>${list.length?list.map((v,i)=>myTaskRowHtml(v,'m',i,mt.today)).join(''):'<div class="small muted" style="padding:8px 0">Nothing else.</div>'}</div>`);
   const sh=$('#sheet'); if(sh) sh.dataset.mt='1';
   document.querySelectorAll('#sheet [data-mtdone]').forEach(b=>b.onclick=()=>{ b.disabled=true;
-    schedMarkDone(list[+b.dataset.mtdone.split(':')[1]], true, async()=>{
+    schedDoneFlow(list[+b.dataset.mtdone.split(':')[1]], async()=>{ await drawMyTasks(); if(!$('#sheet')) myTasksMoreSheet(); }, async()=>{
       await drawMyTasks();
       if($('#sheet')?.dataset.mt==='1') myTasksMoreSheet();   // redrawn from the database, so an Undo brings the row back
     }).then(ok=>{ if(!ok) b.disabled=false; }); });
@@ -6684,8 +6843,393 @@ async function drawMyTasks(){
   state._myTasks=mt; state._myTasksHtml=myTasksHtml(mt);
   host.innerHTML=state._myTasksHtml; wireMyTasks(mt);
 }
+// ── Done, and the post-visit report ───────────────────────────────────────────────────────────────
+// Done on a visit, Demo / PAD, EDU or training opens the post-visit report first (with a way to skip it);
+// a follow-up is just done. afterReport redraws once a report saved, afterDone once the task was marked.
+// Resolves true only when it marked the task: opening the report saves nothing yet, so the caller gives its
+// Done button back (the report covers it, and closing the report must not leave it greyed out).
+function schedDoneFlow(v, afterReport, afterDone){
+  if(!v||!v.dbId) return Promise.resolve(false);
+  if(['visit','pad','edu','training'].includes(schedKindOf(v))){ schedReportSheet({ task:v, iso:v.iso, after:afterReport, afterSkip:afterDone }); return Promise.resolve(false); }
+  return schedMarkDone(v, true, afterDone);
+}
+// after a report from the calendar: tasks and reports again, the calendar behind, the day on top
+async function schedAfterReport(iso){
+  const S=state.sched; if(!S) return;
+  await schedLoadActivity().catch(()=>{}); await schedReloadTasks();
+  const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m);
+  if(iso && !$('#sheet') && schedShowing(schedSurface())) schedDaySheet(iso);   // never over a sheet opened meanwhile
+}
+// The post-visit report, in the app (it was a Google form). The answers land in the same table as the form's
+// (ba_activity, by ba_report_submit), so the calendar's 📋, the sales app's BA report and every other reader
+// keep working. From a task it also marks the task done; from a day it reports a visit that wasn't scheduled.
+// o = {task?, iso, after(), afterSkip()}
+function schedReportSheet(o){
+  const v=o.task||null, st=state.schedState||personRegion(state.profile)||'CA';
+  const stores=(state.dispensaries||[]).filter(d=>d.active!==false&&(!d.state||d.state===st)&&!/^\*\s/.test(d.name||'')
+    &&!d.private&&d.retail!==false).sort((a,b)=>a.name.localeCompare(b.name));
+  const preStore=v?schedStoreFor(state.dispensaries, st, v.account):null;
+  const ACTS=['Store visit','Demo / PAD','Education talk','Training'];
+  const preAct={visit:'Store visit', pad:'Demo / PAD', edu:'Education talk', training:'Training'}[v?schedKindOf(v):'visit']||'Store visit';
+  const today=schedIso(new Date());
+  const fld=(id,label,ph,area)=>`<label class="fl">${label}</label>${area?`<textarea id="${id}" rows="2" placeholder="${esc(ph)}"></textarea>`:`<input id="${id}" placeholder="${esc(ph)}">`}`;
+  openSheet(`<h3 style="margin:0 0 2px">Post-visit report</h3>
+    <div class="small muted" style="margin-bottom:8px">${v?`${esc(v.title?v.title+' · ':'')}${esc(v.account)}`:'For a visit that wasn\'t on the schedule'}</div>
+    <label class="fl">Store</label>
+    <select id="rpStore" data-searchable><option value="">Pick the store…</option>${stores.map(d=>`<option value="${d.id}" data-search="${esc([d.name,...(d.aliases||[]),d.address||''].join(' '))}"${preStore&&preStore.id===d.id?' selected':''}>${esc(d.name)}</option>`).join('')}</select>
+    <label class="fl">Day of the visit</label><input type="date" id="rpDate" value="${esc(v?(v.iso>today?today:v.iso):(o.iso&&o.iso<=today?o.iso:today))}" max="${today}">
+    <label class="fl">What you did</label>
+    <div class="sp-checks">${ACTS.map(a=>`<label><input type="checkbox" data-rpact="${esc(a)}"${a===preAct?' checked':''}> ${esc(a)}</label>`).join('')}</div>
+    ${fld('rpStaff','Staff trained','How many, or their names')}
+    ${fld('rpConn','Who you connected with','Buyer, manager, budtenders')}
+    ${fld('rpTopics','Products or training topics','What you covered',true)}
+    ${fld('rpPromo','Promotion or shelf price','')}
+    ${fld('rpStock','Stock status','What they have and what is low')}
+    ${fld('rpReorder','Reorder needs','',true)}
+    ${fld('rpAged','Aged product (60+ days)','')}
+    ${fld('rpBrand','Brand presence and opportunities','',true)}
+    ${fld('rpMgr','Manager on duty','')}
+    ${fld('rpTraffic','Store traffic','Slow, steady or busy')}
+    ${fld('rpUnits','Estimated units sold','')}
+    ${fld('rpNext','Next steps','',true)}
+    ${fld('rpNotes','Notes','',true)}
+    <label class="fl">Photos <span class="muted">(optional)</span></label><input type="file" id="rpPhotos" accept="image/*" multiple>
+    <div id="rpMsg" class="small" style="color:var(--orange);margin-top:6px"></div>
+    <button class="btn primary block" id="rpSave" style="margin-top:12px">${v?'Save report and mark done':'Save report'}</button>
+    ${v?'<button class="btn ghost block" id="rpSkip" style="margin-top:8px">Mark done without a report</button>':''}`);
+  // This sheet, the answers' ids, and one key per report: a Save retried after a lost answer files it once (the
+  // database keeps the first report with this key), and photos already uploaded aren't sent again.
+  const sh=$('#sheet'), clientKey=o.clientKey||crypto.randomUUID(), upPaths=o.upPaths||new Map();
+  // reopened after a save that failed with the sheet closed: what was typed comes back
+  if(o.prefill){ const f=o.prefill;
+    if(f.dispensary_id) sh.querySelector('#rpStore').value=f.dispensary_id;
+    if(f.visit_date) sh.querySelector('#rpDate').value=f.visit_date;
+    const acts=String(f.activities||'').split(', ');
+    sh.querySelectorAll('[data-rpact]').forEach(x=>{ x.checked=acts.includes(x.dataset.rpact); });
+    sh.querySelector('#rpStore').dispatchEvent(new Event('change')); }
+  const FIELDS={ staff_trained:'rpStaff', connected_with:'rpConn', topics:'rpTopics', promo:'rpPromo', stock_status:'rpStock',
+    reorder:'rpReorder', aged_product:'rpAged', brand_presence:'rpBrand', manager:'rpMgr', traffic:'rpTraffic',
+    est_units:'rpUnits', next_steps:'rpNext', notes:'rpNotes' };
+  const val=id=>(sh.querySelector('#'+id)?.value||'').trim()||null;
+  const mine=()=>$('#sheet')===sh;   // still this report on screen (not closed, not replaced by another sheet)
+  const msg=t=>{ const e=mine()&&sh.querySelector('#rpMsg'); if(e) e.textContent=t||''; };
+  // the inputs, Save and the skip, while a save is under way (the ✕ still closes the sheet)
+  const lock=on=>sh.querySelectorAll('input,textarea,select,.selpick,#rpSave,#rpSkip').forEach(x=>x.disabled=on);
+  if(v) $('#rpSkip').onclick=async()=>{
+    const typed=Object.values(FIELDS).some(id=>val(id)) || (sh.querySelector('#rpPhotos')?.files?.length||0)>0;
+    if(typed && !confirm('Mark it done without the report? What you typed here won\'t be saved.')) return;
+    const b=$('#rpSkip'); b.disabled=true;
+    const ok=await schedMarkDone(v, true, async()=>{ if(mine()) closeSheet(); if(o.afterSkip) await o.afterSkip(); });
+    if(!ok) b.disabled=false; };
+  $('#rpSave').onclick=async()=>{
+    // everything is read now, before the first wait: closing the sheet or opening another report mid-save
+    // can't change what this one files
+    const store=$('#rpStore').value, day=$('#rpDate').value;
+    if(!store){ msg('Pick the store this report is for.'); return; }
+    if(!day||day>today){ msg('Pick the day of the visit (today or before).'); return; }
+    const p={ task_id:v?v.dbId:null, dispensary_id:store, visit_date:day, state:st, client_key:clientKey,
+      activities:[...sh.querySelectorAll('[data-rpact]')].filter(x=>x.checked).map(x=>x.dataset.rpact).join(', ')||null,
+      ...Object.fromEntries(Object.entries(FIELDS).map(([k,id])=>[k,val(id)])) };
+    const files=[...(sh.querySelector('#rpPhotos').files||[])];
+    const btn=$('#rpSave'), label=v?'Save report and mark done':'Save report';
+    lock(true); btn.textContent='Saving…'; msg('');
+    try{
+      const paths=[];
+      for(const f of files){ const k=[f.name,f.size,f.lastModified].join('|');
+        if(!upPaths.has(k)) upPaths.set(k, 'sb:receipts/'+await uploadPhoto('receipts', f));
+        paths.push(upPaths.get(k)); }
+      // a report reopened after a failed save keeps the photos it had already uploaded
+      p.photos=[...new Set([...String(o.prefill?.photos||'').split(' ').filter(Boolean), ...paths])].join(' ')||null;
+      const { error }=await supabase.rpc('ba_report_submit',{p});
+      if(error) throw error;
+      toast(v?'Report saved and marked done':'Report saved','ok');
+      if(mine()){ closeSheet(); if(o.after) await o.after(); }
+      else {   // closed while saving: still bring My tasks and the calendar up to date, without opening anything
+        await drawMyTasks();
+        if(state.sched){ await schedLoadActivity().catch(()=>{}); await schedAfterTaskChange(null); }
+      }
+    }catch(e){
+      lock(false); btn.textContent=label;
+      if(mine()) msg('Couldn\'t save: '+(e.message||e));
+      else toastAction('Couldn\'t save the post-visit report.','Open it',()=>{   // closed while saving: keep what was typed
+        schedReportSheet({ ...o, prefill:p, clientKey, upPaths });
+        const s2=$('#sheet'); Object.entries(FIELDS).forEach(([k,id])=>{ const x=s2&&s2.querySelector('#'+id); if(x) x.value=p[k]||''; });
+      }, 30000);
+    }
+  };
+}
+// ── Stores page (the Schedule's second view) ───────────────────────────────────────────────────────
+// Read once per board, again after 5 minutes or a change: the plans, the 6-month sales (managers only; the
+// database refuses everyone else) and what the BAs logged. The store list itself is state.dispensaries.
+async function storesLoad(force){
+  const S=state.sched, st=state.schedState||'CA';
+  if(!force && S.storesData && S.storesData.st===st && Date.now()-S.storesData.at<300000) return S.storesData;
+  if(state.dispPending) await state.dispPending;
+  const mgr=state.profile?.role==='admin';
+  const [pl, sa, vi]=await Promise.all([
+    supabase.from('store_plan').select('*'),
+    mgr ? supabase.from('store_sales').select('sales_key,name,net,orders,last_order,channel,window_from,window_to,updated_at,dispensary_ids').eq('state',st) : Promise.resolve({ data:[] }),
+    supabase.rpc('store_visit_summary',{ p_state:st, p_since:schedIso(schedAdd(new Date(),-365)) }),
+  ]);
+  const bad=[pl,sa,vi].find(r=>r&&r.error);
+  if(bad && !S.storesData) throw bad.error;
+  const keep=S.storesData&&S.storesData.st===st?S.storesData:{};
+  S.storesData={ st, at:Date.now(), plans:pl.error?keep.plans||[]:pl.data||[], sales:sa.error?keep.sales||[]:sa.data||[],
+    visits:vi.error?keep.visits||[]:vi.data||[], err:bad?(bad.error.message||'error'):'' };
+  return S.storesData;
+}
+function storesRows(){
+  const S=state.sched, st=state.schedState||'CA', D=S.storesData||{}, memo=new Map();
+  const taskStore=v=>{ const k=String(v.account||'').trim().toLowerCase();
+    if(!memo.has(k)) memo.set(k,(schedStoreFor(state.dispensaries, st, v.account)||{}).id||null); return memo.get(k); };
+  return spRows({ stores:state.dispensaries||[], plans:D.plans, sales:D.sales, visits:D.visits, tasks:S.dbRows||[], taskStore, st, todayIso:schedIso(new Date()) });
+}
+const spShort=iso=>{ const d=new Date(iso+'T12:00:00'); return isNaN(d)?'':`${SCHED_MONL[d.getMonth()]} ${d.getDate()}`; };
+const spMoney=n=>'$'+Math.round(Number(n)||0).toLocaleString();
+function storesPeople(rows){ return [...new Set([...schedRoster().bas, ...(rows||[]).flatMap(r=>r.team)])].sort((a,b)=>a.localeCompare(b)); }
+async function storesRender(m){
+  const S=state.sched, st=state.schedState||'CA', mgr=state.profile?.role==='admin';
+  S.storesF=S.storesF||{ q:'', territory:'all', person:'all', show:'all', sort:mgr?'sales':'longest', limit:60 };
+  S.storesSel=S.storesSel||new Set();
+  // A slow read must not paint over another tab, another board or the calendar the person went back to.
+  const surface=schedSurface(), gen=schedGen;
+  const here=()=>state.sched===S && S.view==='stores' && gen===schedGen && schedShowing(surface) && m.isConnected;
+  // Every visit asks storesLoad: it hands back the copy while it is under 5 minutes old, else reads again. With a
+  // copy of this board the page draws from it at once and the list is redrawn when the new read lands.
+  const had=S.storesData&&S.storesData.st===st?S.storesData:null, load=storesLoad();
+  if(!had){
+    m.innerHTML='<div class="loading"><span class="spin"></span></div>';
+    try{ await load; }
+    catch(e){ if(!here()) return;
+      m.innerHTML=`<div class="card" style="margin:12px">Couldn't load the stores (${esc(e.message||e)}).
+      <button class="btn sm" id="spRetry" style="margin-left:6px">Try again</button> <button class="btn sm ghost" id="spBack">Back to the calendar</button></div>`;
+      $('#spRetry').onclick=()=>storesRender(m); $('#spBack').onclick=()=>{ S.view='cal'; schedRender(m); }; return; }
+    if(!here()) return;
+  }else load.then(d=>{ if(d!==had && here() && $('#spList')) storesDrawList(m); }, ()=>{});
+  const F=S.storesF, rows=storesRows();
+  const terrs=[...new Set([...(SP_TERRITORIES[st]||[]), ...rows.map(r=>r.territory).filter(Boolean)])];
+  const people=storesPeople(rows);
+  const opt=(list,cur)=>list.map(o=>`<option value="${esc(o.k)}"${o.k===cur?' selected':''}>${esc(o.label)}</option>`).join('');
+  const boards=state.scheduleBoards||[];
+  const switcher=boards.length>1?`<div class="sb-states">${boards.map(b=>
+    `<button class="sb-st${b.state===state.schedState?' on':''}" data-sbst="${esc(b.state)}">${esc(b.state)}</button>`).join('')}</div>`:'';
+  m.innerHTML=`<div class="sb-wrap">
+    ${switcher}
+    <div class="sb-nav">
+      <button class="btn sm ghost" id="spCal">📅 Calendar</button>
+      <div class="sb-wk">Stores</div>
+      <span class="grow"></span>
+      <button class="btn sm ghost" id="spReload" title="Read the stores again">⟳</button>
+    </div>
+    <div class="sp-filters">
+      <input id="spQ" type="search" placeholder="Search stores or addresses…" value="${esc(F.q)}" autocomplete="off">
+      <select id="spTerr" data-searchable>${opt([{k:'all',label:'All territories'},...terrs.map(t=>({k:t,label:t})),{k:'~none',label:'No territory set'}],F.territory)}</select>
+      <select id="spPerson" data-searchable>${opt([{k:'all',label:'Everyone'},...people.map(n=>({k:n,label:n})),{k:'~none',label:'Nobody assigned'}],F.person)}</select>
+      <select id="spShow" data-searchable>${opt(SP_SHOW,F.show)}</select>
+      <select id="spSort" data-searchable>${opt(mgr?SP_SORTS:SP_SORTS.filter(o=>o.k!=='sales'),F.sort)}</select>
+    </div>
+    <div class="small muted" id="spCount"></div>
+    ${mgr?`<div class="sp-bulk"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="spAll"> Select the stores shown</label>
+      <span id="spSelN" class="muted"></span><span class="grow" style="flex:1"></span>
+      <button class="btn sm" id="spAssign">Assign to…</button><button class="btn sm ghost" id="spClear">Clear</button></div>`:''}
+    <div class="sp-list" id="spList"></div>
+    <div id="spMoreWrap"></div>
+  </div>`;
+  const titles={spTerr:'Territory', spPerson:'Team member', spShow:'Show', spSort:'Sort by'};
+  m.querySelectorAll('select[data-searchable]').forEach(x=>searchifySelect(x, titles[x.id]));
+  $('#spCal').onclick=()=>{ S.view='cal'; schedRender(m); };
+  $('#spReload').onclick=async()=>{ try{ await storesLoad(true); await schedReloadTasks(); }catch(e){ toast('Couldn\'t refresh: '+(e.message||e),'err'); } if(S.view==='stores') storesDrawList(m); };
+  m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{ const ns=b.dataset.sbst; if(ns===state.schedState) return;
+    state.schedState=ns; state.scheduleWb=schedBoard()?.workbook_id||null;
+    if(!EMBED) try{ localStorage.setItem('ba.schedstate',ns); }catch(_){}
+    state.sched=null; const surface=schedSurface(), run=drawSchedule(m), g=schedGen;   // drawSchedule counts its run at once
+    // drawSchedule ends on the calendar; turn to Stores only if that run is still the one showing
+    run.then(()=>{ if(g===schedGen && schedShowing(surface) && state.sched?.ready){ state.sched.view='stores'; storesRender(m); } }); });
+  // a search or filter change keeps ticked only the stores it still shows, so Assign never writes a store
+  // that is off screen
+  let qt=null; $('#spQ').addEventListener('input',e=>{ clearTimeout(qt); qt=setTimeout(()=>{ F.q=e.target.value; F.limit=60; storesDrawList(m, true); },150); });
+  [['spTerr','territory'],['spPerson','person'],['spShow','show'],['spSort','sort']].forEach(([id,k])=>
+    $('#'+id).addEventListener('change',e=>{ F[k]=e.target.value; F.limit=60; storesDrawList(m, true); }));
+  if(mgr){
+    $('#spAll').onchange=e=>{ const shown=spFilter(storesRows(), F).slice(0, F.limit);
+      shown.forEach(r=>e.target.checked?S.storesSel.add(r.id):S.storesSel.delete(r.id)); storesDrawList(m); };
+    $('#spAssign').onclick=()=>storesAssignSheet(m);
+    $('#spClear').onclick=()=>{ S.storesSel.clear(); storesDrawList(m); };
+  }
+  storesDrawList(m);
+}
+// the list, the count line and "Show more"; also after every filter change and save. trim: a search or filter
+// changed, so only the stores still shown stay ticked
+function storesDrawList(m, trim){
+  const S=state.sched, F=S.storesF, mgr=state.profile?.role==='admin', D=S.storesData||{};
+  const list=$('#spList'); if(!list) return;
+  const rows=storesRows(), view=spFilter(rows, F), shown=view.slice(0, F.limit);
+  if(trim){ const ids=new Set(shown.map(r=>r.id)); [...S.storesSel].forEach(id=>{ if(!ids.has(id)) S.storesSel.delete(id); }); }
+  const noEdu=rows.filter(r=>!r.edu).length, cold=rows.filter(r=>r.daysSince==null||r.daysSince>=30).length;
+  const sw=mgr&&D.sales&&D.sales.length?D.sales[0]:null;
+  $('#spCount').innerHTML=`${view.length} of ${rows.length} stores · ${noEdu} with no EDU on record · ${cold} not visited in 30+ days`
+    +(sw&&sw.window_from?` · sales ${esc(spShort(sw.window_from))} to ${esc(spShort(sw.window_to))}`:'')
+    +(D.err?` · <span style="color:var(--orange)">some numbers didn't load</span>`:'');
+  const card=r=>{
+    const tags=[r.territory?`<span class="sb-tag region">${esc(r.territory)}</span>`:'',
+      r.edu?`<span class="sb-tag edu" title="Education talks logged here in the last year">${r.edu} EDU</span>`
+        :'<span class="sb-tag opp" title="No education talk (staff training) logged here in the last year">Training opportunity</span>',
+      r.pad?`<span class="sb-tag pad" title="Demos logged here in the last year">${r.pad} PAD</span>`:''].join('');
+    const team=r.team.length?r.team.map(n=>`<span class="sb-who" style="--dv:${schedColor(n)}">${esc(n)}</span>`).join('')
+      :'<span class="small muted">Nobody assigned</span>';
+    const visit=r.lastVisit?`Last visit ${esc(spShort(r.lastVisit))} · ${spAgo(r.daysSince)}${r.lastBy?' · '+esc(r.lastBy.split(' ')[0]):''}`
+      :'No visit logged in the last year';
+    const sales=mgr&&r.sales!=null?`<div><b>${spMoney(r.sales)}</b> <span class="small muted">6-month sales${r.salesShared>1?` · the whole account, ${r.salesShared} stores`:''}</span></div>`:'';
+    return `<div class="sp-card">
+      <div class="sp-top">${mgr?`<input type="checkbox" class="sp-sel" data-spsel="${r.id}"${S.storesSel.has(r.id)?' checked':''} aria-label="Select ${esc(r.name)}">`:''}
+        <div class="sp-name">${esc(r.name)}</div></div>
+      <div class="sp-tags">${tags}</div>
+      <div class="sp-team">${team}</div>
+      ${sales}
+      <div class="small muted">${visit}</div>
+      ${r.tasks.length?`<div class="small" style="color:var(--accent)">${r.tasks.length} open task${r.tasks.length!==1?'s':''}</div>`:''}
+      <div class="sp-acts"><button class="btn sm" data-spvisit="${r.id}">＋ Visit</button><button class="btn sm ghost" data-sptask="${r.id}">＋ Task</button>
+        <button class="btn sm ghost" data-spprof="${r.id}">${mgr?'Profile':'Details'}</button></div>
+    </div>`; };
+  list.innerHTML=shown.length?shown.map(card).join(''):'<div class="small muted" style="padding:10px 2px">No stores match.</div>';
+  const more=$('#spMoreWrap');
+  if(more) more.innerHTML=view.length>shown.length?`<button class="btn block" id="spMore" style="margin-top:10px">Show ${Math.min(60,view.length-shown.length)} more</button>`:'';
+  const mb=$('#spMore'); if(mb) mb.onclick=()=>{ F.limit+=60; storesDrawList(m); };
+  const sn=$('#spSelN'); if(sn) sn.textContent=S.storesSel.size?`${S.storesSel.size} selected`:'';
+  const byId=new Map(rows.map(r=>[r.id,r])), today=schedIso(new Date());
+  const reopen=async()=>{ await storesLoad(true).catch(()=>{}); if(S.view==='stores') storesDrawList(m); };
+  // "Select the stores shown" is ticked only while every store shown is (so it clears after Clear, a save or a new filter)
+  const allBox=()=>{ const a=$('#spAll'); if(a) a.checked=shown.length>0 && shown.every(r=>S.storesSel.has(r.id)); };
+  allBox();
+  list.querySelectorAll('[data-spsel]').forEach(x=>x.onchange=()=>{ x.checked?S.storesSel.add(x.dataset.spsel):S.storesSel.delete(x.dataset.spsel);
+    const n=$('#spSelN'); if(n) n.textContent=S.storesSel.size?`${S.storesSel.size} selected`:''; allBox(); });
+  list.querySelectorAll('[data-spvisit]').forEach(b=>b.onclick=()=>{ const r=byId.get(b.dataset.spvisit); if(!r) return;
+    schedTaskSheet(today, null, { account:r.name, kind:'visit', booking:'needs', driver:spAssignee(r.team), onSaved:reopen }); });
+  list.querySelectorAll('[data-sptask]').forEach(b=>b.onclick=()=>{ const r=byId.get(b.dataset.sptask); if(!r) return;
+    schedTaskSheet(today, null, { account:r.name, kind:'followup', driver:spAssignee(r.team), onSaved:reopen }); });
+  list.querySelectorAll('[data-spprof]').forEach(b=>b.onclick=()=>{ const r=byId.get(b.dataset.spprof); if(r) storeProfileSheet(r, m); });
+}
+// who a visit or task planned from a store starts assigned to: a manager plans for the store's first team
+// member, a BA for herself
+function spAssignee(team){ return state.profile?.role==='admin' ? ((team||[])[0]||'') : schedMyName(); }
+// save one store's plan fields (managers; the database refuses anyone else)
+async function storesSavePlan(rows){
+  const me=state.session?.user?.id||null, now=new Date().toISOString();
+  const { error }=await supabase.from('store_plan').upsert(rows.map(r=>({ ...r, updated_at:now, updated_by:me })),{ onConflict:'dispensary_id' });
+  if(error) throw error;
+}
+// assign the ticked stores to people: add them to each store's team, or make them its whole team
+function storesAssignSheet(m){
+  const S=state.sched, ids=[...S.storesSel]; if(!ids.length){ toast('Tick some stores first.'); return; }
+  const rows=storesRows(), byId=new Map(rows.map(r=>[r.id,r]));
+  cellPickerSheet({ title:`Assign ${ids.length} store${ids.length!==1?'s':''} to`, multi:true,
+    options:storesPeople(rows).map(n=>({ id:n, name:n, search:(n+' '+schedAlsoKnown(n)).trim() })), selected:[],
+    onSave:names=>{ if(!names.length) return;
+      // the teams "whole team" would replace: a store that has a team other than exactly these names
+      const same=t=>t.length===names.length && t.every(n=>names.includes(n));
+      const nRep=ids.filter(id=>{ const t=(byId.get(id)||{}).team||[]; return t.length && !same(t); }).length;
+      openSheet(`<h3 style="margin:0 0 4px">Assign ${ids.length} store${ids.length!==1?'s':''}</h3>
+        <div class="small muted" style="margin-bottom:10px">To: <b>${esc(names.join(', '))}</b></div>
+        <button class="btn primary block" id="spAddT">Add to each store's team</button>
+        <button class="btn block" id="spRepT" style="margin-top:8px">Make them each store's whole team</button>
+        <div class="small muted" style="margin-top:6px">${nRep?`Making them the whole team replaces the team ${nRep} of these stores already ${nRep!==1?'have':'has'}.`:'None of these stores has another team now, so nothing is replaced.'}</div>`);
+      const sh=$('#sheet');
+      const go=async replace=>{
+        const bs=[$('#spAddT'),$('#spRepT')]; bs.forEach(b=>b.disabled=true);
+        try{
+          // Add merges into each store's team as it is now (someone may have changed it since this page read it)
+          let cur=new Map();
+          if(!replace){ const { data, error }=await supabase.from('store_plan').select('dispensary_id,team').in('dispensary_id', ids);
+            if(error) throw error;
+            cur=new Map((data||[]).map(x=>[x.dispensary_id, Array.isArray(x.team)?x.team:[]])); }
+          await storesSavePlan(ids.map(id=>({ dispensary_id:id, team:replace?names.slice():[...new Set([...(cur.get(id)||[]), ...names])] })));
+          if($('#sheet')===sh) closeSheet();
+          S.storesSel.clear(); toast(`Assigned ${ids.length} store${ids.length!==1?'s':''}`,'ok');
+          await storesLoad(true).catch(()=>{}); if(S.view==='stores') storesDrawList(m);
+        }catch(e){ bs.forEach(b=>b.disabled=false); toast('Couldn\'t save: '+(e.message||e),'err'); } };
+      $('#spAddT').onclick=()=>go(false); $('#spRepT').onclick=()=>go(true);
+    } });
+}
+// one store's profile: managers edit it, everyone else reads it
+function storeProfileSheet(r, m){
+  const S=state.sched, st=state.schedState||'CA', mgr=state.profile?.role==='admin', p=r.plan||{};
+  const terrs=[...new Set([...(SP_TERRITORIES[st]||[]), ...(r.territory?[r.territory]:[]), ...storesRows().map(x=>x.territory).filter(Boolean)])];
+  const dis=mgr?'':' disabled';
+  let team=r.team.slice();
+  const link=/^https?:\/\//i.test(p.demo_link||'')?p.demo_link:'';
+  const fact=(k,v)=>v?`<div class="k">${k}</div><div>${v}</div>`:'';
+  const tasks=r.tasks.slice().sort((a,b)=>a.iso.localeCompare(b.iso));
+  openSheet(`<h3 style="margin:0 0 2px">${esc(r.name)}</h3>
+    ${r.address?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(r.address)}" target="_blank" rel="noopener">📍 ${esc(r.address)}</a></div>`:''}
+    <div class="sp-facts">
+      ${fact('6-month sales', mgr&&r.sales!=null?`${spMoney(r.sales)}${r.orders?` · ${r.orders} order${r.orders!==1?'s':''}`:''}${r.salesShared>1?` <span class="muted">(the whole account, ${r.salesShared} stores)</span>`:''}`:'')}
+      ${fact('Last visit', r.lastVisit?`${esc(spShort(r.lastVisit))} · ${spAgo(r.daysSince)}${r.lastBy?' · '+esc(r.lastBy):''}`:'None logged in the last year')}
+      ${fact('In the last year', `${r.visits} visit day${r.visits!==1?'s':''} · ${r.edu} EDU${r.lastEdu?` (last ${esc(spShort(r.lastEdu))})`:''} · ${r.pad} PAD`)}
+      ${fact('Open tasks', tasks.length?tasks.map(t=>`${esc(spShort(t.iso))} ${esc(schedKindLabel(schedKindOf(t)))}${t.canon?' · '+esc(t.canon):''}`).join('<br>'):'')}
+    </div>
+    <label class="fl">Territory</label>
+    <select id="spfTerr" data-searchable${dis}><option value="">Not set</option>${terrs.map(t=>`<option${t===r.territory?' selected':''}>${esc(t)}</option>`).join('')}</select>
+    <label class="fl">Team</label>
+    <div class="sp-team" id="spfTeam"></div>
+    ${mgr?'<button class="btn sm ghost" id="spfTeamPick" style="margin-top:6px">Choose the team…</button>':''}
+    <label class="fl">Samples</label>
+    <div class="sp-checks">${SP_SAMPLES.map(o=>`<label><input type="checkbox" data-spsample="${o.k}"${(p.sample_rules||[]).includes(o.k)?' checked':''}${dis}> ${esc(o.label)}</label>`).join('')}</div>
+    <label class="fl">Promo days</label>
+    <div class="sp-checks">${SP_DAYS.map(d=>`<label><input type="checkbox" data-spday="${d}"${(p.promo_days||[]).includes(d)?' checked':''}${dis}> ${d}</label>`).join('')}</div>
+    <label class="fl">Demo booking link</label><input id="spfLink" type="url" placeholder="https://…" value="${esc(p.demo_link||'')}"${dis}>
+    ${link?`<div class="small" style="margin-top:4px"><a href="${esc(link)}" target="_blank" rel="noopener">Open the booking link ↗</a></div>`:''}
+    <label class="fl">Demo contact</label><input id="spfContact" placeholder="Name, phone or email" value="${esc(p.demo_contact||'')}"${dis}>
+    <label class="fl">Good to know</label><textarea id="spfNotes" rows="3" placeholder="Best times, who to ask for, parking…"${dis}>${esc(p.notes||'')}</textarea>
+    ${mgr?'<button class="btn primary block" id="spfSave" style="margin-top:12px">Save</button>':''}
+    <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" id="spfVisit" style="flex:1">＋ Plan a visit</button><button class="btn ghost" id="spfTask" style="flex:1">＋ Add task</button></div>`);
+  const drawTeam=()=>{ const t=$('#spfTeam'); if(t) t.innerHTML=team.length?team.map(n=>`<span class="sb-who" style="--dv:${schedColor(n)}">${esc(n)}</span>`).join(''):'<span class="small muted">Nobody assigned</span>'; };
+  drawTeam();
+  const today=schedIso(new Date()), sh=$('#sheet');
+  const reopen=async()=>{ await storesLoad(true).catch(()=>{}); if(S.view==='stores') storesDrawList(m); };
+  // the profile's fields as they stand; what the sheet opened with is kept to send only what a manager changed
+  const read=()=>({ territory:sh.querySelector('#spfTerr').value||null, team:team.slice(),
+    sample_rules:[...sh.querySelectorAll('[data-spsample]')].filter(x=>x.checked).map(x=>x.dataset.spsample),
+    promo_days:[...sh.querySelectorAll('[data-spday]')].filter(x=>x.checked).map(x=>x.dataset.spday),
+    demo_link:sh.querySelector('#spfLink').value.trim()||null, demo_contact:sh.querySelector('#spfContact').value.trim()||null,
+    notes:sh.querySelector('#spfNotes').value.trim()||null });
+  const start=read();
+  const changes=()=>{ const now=read(), out={};
+    for(const k in now) if(JSON.stringify(now[k])!==JSON.stringify(start[k])) out[k]=now[k];
+    return out; };
+  // Save: dispensary_id and only the fields changed here, so a field someone else changed since this page read
+  // the stores stays theirs (a store with no profile yet gets a new row; the fields not sent keep their defaults).
+  // True when there was nothing to save or it saved; false (with the reason shown) otherwise.
+  const saveProfile=async()=>{
+    const diff=changes(); if(!Object.keys(diff).length) return true;
+    if(diff.demo_link && !/^https?:\/\//i.test(diff.demo_link)){ toast('The booking link should start with https://','err'); return false; }
+    const b=sh.querySelector('#spfSave'); b.disabled=true; b.textContent='Saving…';
+    try{ await storesSavePlan([{ dispensary_id:r.id, ...diff }]); Object.assign(start, diff); toast('Saved','ok'); return true; }
+    catch(e){ toast('Couldn\'t save: '+(e.message||e),'err'); return false; }
+    finally{ b.disabled=false; b.textContent='Save'; }
+  };
+  // planning a visit or a task from here saves a manager's changes first, and stays on the profile if that fails
+  const plan=kind=>async()=>{
+    if(mgr && Object.keys(changes()).length){ if(!await saveProfile()) return; reopen(); }
+    if($('#sheet')!==sh) return;   // closed meanwhile
+    schedTaskSheet(today, null, { account:r.name, kind, ...(kind==='visit'?{booking:'needs'}:{}), driver:mgr?(team[0]||''):schedMyName(), onSaved:reopen });
+  };
+  $('#spfVisit').onclick=plan('visit');
+  $('#spfTask').onclick=plan('followup');
+  if(!mgr) return;
+  $('#spfTeamPick').onclick=()=>cellPickerSheet({ title:'Team for '+r.name, multi:true,
+    options:storesPeople(storesRows()).map(n=>({ id:n, name:n, search:(n+' '+schedAlsoKnown(n)).trim() })), selected:team.slice(),
+    onSave:names=>{ team=names.slice(); drawTeam(); } });
+  $('#spfSave').onclick=async()=>{
+    const had=Object.keys(changes()).length;
+    if(!await saveProfile()) return;
+    if($('#sheet')===sh) closeSheet();
+    if(!had) toast('Nothing changed');
+    else await reopen();
+  };
+}
 function schedRender(m){
   const S=state.sched, todayIso=schedIso(new Date());
+  if(S.view==='stores') return storesRender(m);
   const vis=v=>!S.sel||S.sel.has(v.canon);
   const y=S.month.getFullYear(), mo=S.month.getMonth();
   const first=new Date(y,mo,1), start=schedWeekStart(first);
@@ -6738,6 +7282,7 @@ function schedRender(m){
       <button class="btn sm ghost" id="sbNext">›</button>
       <button class="btn sm ghost" id="sbToday">Today</button>
       <span class="grow"></span>
+      <button class="btn sm ghost" id="sbStores" title="Plan by store: territory, team, sales, last visit">🏪 Stores</button>
       <button class="btn sm ghost" id="sbExport" title="Download the schedule as a spreadsheet">⬇ Export</button>
       <button class="btn sm ghost" id="sbReload" title="Re-fetch the workbook">⟳</button>
       ${state.profile?.role==='admin'?`<button class="btn sm ghost" id="sbBackup" title="Backup &amp; restore tasks">🛟</button>`:''}
@@ -6778,6 +7323,7 @@ function schedRender(m){
   // no matter how many times they tap it.
   $('#sbReload').onclick=()=>{ schedClearMisses(state.schedState); state.sched=null; drawSchedule(m); };
   $('#sbExport').onclick=()=>schedExportSheet();
+  $('#sbStores').onclick=()=>{ S.view='stores'; storesRender(m); };
   // switching board = a different workbook AND a different task set: drop the
   // whole cache so no CA row can survive into the NY calendar
   m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{
