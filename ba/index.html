@@ -178,6 +178,30 @@ if(new URLSearchParams(location.search).get('embed')==='schedule')document.docum
   .badge.draft{color:var(--muted)} .badge.submitted{color:var(--yellow);border-color:var(--yellow)}
   .badge.approved{color:var(--green);border-color:var(--green)}
   .badge.rejected{color:var(--red);border-color:var(--red)}
+  /* Book in QuickBooks (only for ba_qbo_can_book(): the person's QuickBooks section, the Book card, the Review tags) */
+  .qbo-tag{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:999px;border:1px solid var(--line);
+    color:var(--muted);white-space:nowrap;vertical-align:1px}
+  .qbo-tag.in{color:var(--green);border-color:var(--green)} .qbo-tag.part{color:var(--yellow);border-color:var(--yellow)}
+  .qbo-tag.ready{color:var(--accent2);border-color:var(--accent2)} .qbo-tag.wait{color:var(--text)}
+  .qbo-tag.check{color:var(--yellow);border-color:var(--yellow);background:color-mix(in srgb,var(--yellow) 16%,transparent)}
+  .qbo-tag.check::before{content:'⚠ '}
+  .qbo-warn{color:var(--yellow)} .qbo-bad{color:var(--red)} .qbo-good{color:var(--green)}
+  .qbo-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid var(--line)}
+  .qbo-row .ic{flex:none;width:18px;text-align:center;line-height:1.4}
+  .qbo-row .btn{flex:none}
+  .qbo-kv{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+  .qbo-kv>span:last-child{text-align:right;min-width:0}
+  .qbo-head{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);font-weight:700;margin:14px 0 4px}
+  .qbo-line{border:1px solid var(--line);border-radius:11px;padding:8px 10px;margin-top:8px;background:var(--panel2)}
+  .qbo-line.pick{border-color:var(--red)}
+  .qbo-line .selpick{min-height:38px;padding:7px 10px;font-size:14px;background:var(--panel);min-width:0}
+  .qbo-line .selpick>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qbo-link{background:none;border:0;padding:0;color:var(--accent2);font:inherit;font-size:12px;cursor:pointer}
+  .qbo-items{margin-top:6px}
+  .qbo-item{display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:12.5px}
+  .qbo-item .btn{min-height:28px;padding:3px 9px;font-size:12px;flex:none}
+  .qbo-status{border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-top:12px;background:var(--panel2);font-size:13px}
+  .qbo-status.ok{border-color:var(--green)} .qbo-status.bad{border-color:var(--red)}
   .thumb{width:42px;height:42px;border-radius:8px;object-fit:cover;background:var(--panel2);flex:none;border:1px solid var(--line)}
 
   /* bottom tab bar (BA) */
@@ -414,7 +438,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-11-21.131';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-11-21.132';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -485,9 +509,26 @@ const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>'
 const todayISO = () => { const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
 const fmtDate = s => s ? new Date(s+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
 
-function toast(msg, kind='') {
+function toast(msg, kind='', ms=2600) {
   const t = $('#toast'); t.textContent = msg; t.className = 'show ' + kind;
-  clearTimeout(toast._t); toast._t = setTimeout(()=>{ t.className=''; }, 2600);
+  clearTimeout(toast._t); toast._t = setTimeout(()=>{ t.className=''; }, ms);
+}
+// The QuickBooks guard (supabase/ba-qbo-bookings.sql, ba_qbo_held_msg) refuses a change to an item or a period that is in
+// QuickBooks or on its way there, in plain words that follow the booking's status and say what the person asking can do:
+// queued "This is on its way to QuickBooks. Cancel that booking first." (or "Ask Gianni to cancel that booking first.");
+// working "This is being booked in QuickBooks right now as JE 123138 Cesar, so try again in a few minutes."; undo asked
+// "This is being taken out of QuickBooks right now, so try again in a few minutes."; booked "This is in QuickBooks as JE
+// 123138 Cesar. Undo the booking first." (or "... Ask Gianni to undo that booking first.", or "... booked by hand, so it
+// can't change here. ..."); "This period ..." for a period. Its words as they are; '' for any other error.
+const qboRefusal = e => { const m=String((e&&e.message)||''); return /in QuickBooks as JE|in QuickBooks right now|out of QuickBooks right now|on its way to QuickBooks/.test(m) ? m : ''; };
+// where a refused period's booked part is, in the guard's terms: "The period stays approved because part of it ..."
+const qboPartWords = m => /on its way to QuickBooks/.test(m) ? 'is on its way to QuickBooks' : /out of QuickBooks right now/.test(m) ? 'is being taken out of QuickBooks right now'
+  : /in QuickBooks right now/.test(m) ? 'is being booked in QuickBooks right now' : 'is in QuickBooks';
+// an error toast: the guard's own words, held long enough to read; anything else as before ("lead: message")
+function errToast(e, lead){
+  const g=qboRefusal(e); if(g) return toast(g,'err',9000);
+  const m=(e&&e.message)||(typeof e==='string'?e:'');
+  toast(lead ? (m ? lead+': '+m : lead) : m, 'err');
 }
 // A toast carrying one action (Undo after a delete). Separate from toast() so the
 // plain-text path keeps its exact behaviour; stays up longer because it needs a click.
@@ -895,6 +936,13 @@ async function loadMe(){
     state.loadError = null; state.profile = prof;
     const { data: s } = await supabase.from('app_settings').select('*').eq('id',1).single();
     state.settings = s;
+    // Book in QuickBooks (ba/docs/qbo-reimbursements.md) is only for the accounts in ba_qbo_bookers. Read once; any error
+    // or a slow answer means no: nobody else sees any of it, and the database refuses everyone else anyway.
+    state.qboCanBook = false;
+    if(prof.role==='admin'){
+      try{ const { data: cb, error: ce } = await withTimeout(supabase.rpc('ba_qbo_can_book'), 8000); state.qboCanBook = !ce && cb===true; }
+      catch(_){ state.qboCanBook = false; }
+    }
     // make sure today's period exists, then load periods + dispensaries
     await withTimeout(supabase.rpc('ensure_period'));
     const { data: per } = await withTimeout(supabase.from('pay_periods').select('*').order('start_date',{ascending:false}));
@@ -1259,8 +1307,10 @@ function periodPicker(onChange, opts={}){
       : (opts.hideFuture && periodPhase(p)==='past' ? ' (view only)' : ''));
     return `<option value="${p.id}" ${state.period?.id===p.id?'selected':''}>${esc(p.label)}${tag}</option>`;
   }).join('');
-  setTimeout(()=>{ const s=$('#perSel'); if(s) s.onchange=()=>{ state.period = s.value==='all' ? ALL_PERIODS : state.periods.find(p=>p.id===s.value); onChange(); }; },0);
-  return `<select id="perSel">${html||'<option>No periods</option>'}</select>`;
+  // type-to-search (Gianni's rule for every pick-list): the select stays as the value holder behind the picker button
+  setTimeout(()=>{ const s=$('#perSel'); if(s){ s.onchange=()=>{ state.period = s.value==='all' ? ALL_PERIODS : state.periods.find(p=>p.id===s.value); onChange(); };
+    searchifySelect(s, 'Pay period'); } },0);
+  return `<select id="perSel" data-searchable>${html||'<option>No periods</option>'}</select>`;
 }
 
 /* ── Report date range: presets + custom start/end. Reports query by trip_date / expense_date,
@@ -2867,13 +2917,15 @@ function tripSheet(presetDate, editTrip, opts){
       const pick=[...sh2.querySelectorAll('[data-mv]:checked')].map(c=>movable[Number(c.dataset.mv)]);
       if(!pick.length) return toast('Tick the legs to move','err');
       going=true; const btn=sh2.querySelector('#mvGo'); busy(btn,true);
-      const moved=new Set();
+      const moved=new Set(); let refused='';
       for(const q of pick){
         const {data,error}=await supabase.from('trips').update({trip_date:nd}).eq('id',q.tripId).select('*').single();
         if(!error && data){ syncT(data); moved.add(q); }   // syncT drops it from the list if it left this period
+        else if(!refused) refused=qboRefusal(error);        // a leg in QuickBooks: say so in the guard's words
       }
       going=false; sh2.remove();
-      toast(moved.size===pick.length?`Moved ${moved.size} leg${moved.size>1?'s':''} to ${fmtDate(nd)} ✓`:`Moved ${moved.size} of ${pick.length} legs · the rest are locked`, moved.size?'ok':'err');
+      if(refused && moved.size<pick.length) toast(moved.size?`Moved ${moved.size} of ${pick.length} legs. ${refused}`:refused,'err',9000);
+      else toast(moved.size===pick.length?`Moved ${moved.size} leg${moved.size>1?'s':''} to ${fmtDate(nd)} ✓`:`Moved ${moved.size} of ${pick.length} legs · the rest are locked`, moved.size?'ok':'err');
       if(!editorEl || !editorEl.isConnected){ refreshAfter(); return; }   // the editor was closed meanwhile
       const el=$('#tDate'); if(el) el.value=date;
       if(!moved.size) return;
@@ -2990,7 +3042,7 @@ function tripSheet(presetDate, editTrip, opts){
         // .select('id') so an RLS-filtered no-op (locked trip) is detectable — a bare
         // delete returns no error even when it deleted nothing
         const {data,error}=await supabase.from('trips').delete().eq('id',p.tripId).select('id');
-        if(error) return toast('Couldn’t delete: '+error.message,'err');
+        if(error) return errToast(error,'Couldn’t delete');
         if(!data || !data.length) return toast('This trip is locked (already submitted) — ask an admin.','err');
         syncT(p.tripId,true);
         toast('Trip deleted','ok');
@@ -3195,7 +3247,7 @@ function tripSheet(presetDate, editTrip, opts){
       if(p.tripId) res=await supabase.from('trips').update(row).eq('id',p.tripId).select('*').single();
       else res=await supabase.from('trips').insert(row).select('*').single();
       busy(btn,false);
-      if(res.error) return toast(res.error.message,'err');
+      if(res.error) return errToast(res.error);
       p.tripId=res.data.id; p.saved=true; p.status=res.data.status||'draft'; p.tripDate=res.data.trip_date; p._sig=legSig(p);
       syncT(res.data);
       rememberPlaces(startLoc, p.destLabel);
@@ -3907,7 +3959,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     // .select('id') so an RLS-filtered no-op errors instead of silently "succeeding"
     const {data,error}=await supabase.from(table).delete().eq('id',id).select('id');
     busy(d,false);
-    if(error) return toast('Couldn’t delete: '+error.message,'err');
+    if(error) return errToast(error,'Couldn’t delete');   // in QuickBooks: the guard's own words
     if(!data||!data.length) return toast('Couldn’t delete — this item is locked.','err');
     closeSheet(); toast(kind==='trip'?'Trip deleted':'Expense deleted','ok');
     onSaved&&onSaved({_deleted:true, id});
@@ -3929,13 +3981,13 @@ async function adminEditItem(kind, id, onSaved, preloaded){
     openSheet(`
       <h3>${isNew?'Add trip':'Edit trip'} ${isNew?'':`<span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span>`}</h3>${issHint}
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.trip_date||''}">
-      <label class="fl">Location <span class="muted">(the dispensary this trip is associated with)</span></label><select id="aDisp" class="${!hasDisp?'needs':''}">${dispOpts}</select>
-      <label class="fl">Category</label><select id="aKind" class="${!x.kind?'needs':''}"><option value="">Pick…</option>${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
+      <label class="fl">Location <span class="muted">(the dispensary this trip is associated with)</span></label><select id="aDisp" data-searchable class="${!hasDisp?'needs':''}">${dispOpts}</select>
+      <label class="fl">Category</label><select id="aKind" data-searchable class="${!x.kind?'needs':''}"><option value="">Pick…</option>${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
       <label class="fl">Starting location</label><input id="aStart" value="${esc(x.start_label||'')}" autocomplete="off" class="${needMiles&&!x.start_label?'needs':''}">
       <label class="fl">Destination</label><input id="aDest" value="${esc(x.dest_label||'')}" autocomplete="off" class="${needMiles&&!x.dest_label?'needs':''}">
       <div class="row">
         <div class="grow"><label class="fl">Miles</label><input id="aMiles" type="number" inputmode="decimal" value="${x.miles!=null?x.miles:''}" class="${needMiles?'needs':''}"></div>
-        <div class="grow"><label class="fl">Method</label><select id="aMethod"><option value="manual" ${x.method==='manual'?'selected':''}>manual</option><option value="odometer" ${x.method==='odometer'?'selected':''}>odometer</option></select></div>
+        <div class="grow"><label class="fl">Method</label><select id="aMethod" data-searchable><option value="manual" ${x.method==='manual'?'selected':''}>manual</option><option value="odometer" ${x.method==='odometer'?'selected':''}>odometer</option></select></div>
       </div>
       <button type="button" id="aRoutes" class="btn ghost sm block" style="display:none;margin-top:8px"></button>
       <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="aRound" ${x.roundtrip?'checked':''} style="width:auto;min-height:auto"> Round trip (there &amp; back) <span class="muted">— toggling adjusts the miles</span></label>
@@ -4033,7 +4085,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       busy(btn,true);
       const {data,error}=await write(patch);
       busy(btn,false);
-      if(error){ $('#aMsg').style.color='var(--red)'; $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
+      if(error){ $('#aMsg').style.color='var(--red)'; $('#aMsg').textContent=qboRefusal(error)||('Couldn’t save: '+error.message); return; }
       const keepRet=chainNext?state._sheetReturn:null; if(chainNext) state._sheetReturn=null;
       closeSheet(); toast(isNew?'Trip added ✓':'Trip updated ✓','ok'); onSaved&&onSaved(data);
       // chain the day like the BA multi-leg logger: fresh popup, same BA + date,
@@ -4048,7 +4100,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       <h3>Edit hours <span class="badge ${x.status}" style="vertical-align:middle">${x.status}</span></h3>${issHint}
       <label class="fl">Date</label><input id="aDate" type="date" value="${x.work_date||''}">
       <label class="fl">Category</label>
-      <select id="aKind">${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
+      <select id="aKind" data-searchable>${laborKindNames().map(k=>`<option ${x.kind===k?'selected':''}>${esc(k)}</option>`).join('')}${x.kind&&!laborKindNames().includes(x.kind)?`<option selected>${esc(x.kind)}</option>`:''}</select>
       <label class="fl">Dispensaries <span class="muted">(tap all stores this shift covered — cost splits evenly)</span></label>
       ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips', needs:!hasDisp})}
       <div class="row" style="margin-top:10px">
@@ -4085,7 +4137,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
         <div class="grow"><label class="fl">Amount</label><input id="aAmt" type="number" inputmode="decimal" step="0.01" value="${x.amount!=null?x.amount:''}" class="${needAmt?'needs':''}"></div>
         <div class="grow"><label class="fl">Category</label><select id="aCat">${cats}</select></div>
       </div>
-      <label class="fl">Paid with</label><select id="aPay">${PAYMENTS.map(([v,l])=>`<option value="${v}" ${x.payment===v?'selected':''}>${l}</option>`).join('')}</select>
+      <label class="fl">Paid with</label><select id="aPay" data-searchable>${PAYMENTS.map(([v,l])=>`<option value="${v}" ${x.payment===v?'selected':''}>${l}</option>`).join('')}</select>
       <label class="fl">Dispensaries <span class="muted">(tap all stores)</span></label>
       ${dispChipsHtml(x.dispensary_ids||(x.dispensary_id?[x.dispensary_id]:[]), {all:true, id:'aDispChips', needs:!hasDisp})}
       ${splitEditorHtml('aSplit')}
@@ -4119,7 +4171,7 @@ async function adminEditItem(kind, id, onSaved, preloaded){
       busy(btn,true);
       const {data,error}=await write(patch);
       busy(btn,false);
-      if(error){ $('#aMsg').textContent='Couldn’t save: '+error.message; return; }
+      if(error){ $('#aMsg').textContent=qboRefusal(error)||('Couldn’t save: '+error.message); return; }   // in QuickBooks: the guard's own words
       closeSheet(); toast(isNew?'Expense added ✓':'Expense updated ✓','ok'); onSaved&&onSaved(data);
     };
   }
@@ -4222,6 +4274,9 @@ async function adminBaDetail(baId){
         <div class="catlist hide">${list||'<div class="small muted" style="padding:4px 0 4px 14px">none</div>'}</div></div>`;
     }).join('');
   const S=sub||{status:'open'};
+  // items that came in (or went back for review) after the period was approved, company-paid ones and hours included: every
+  // admin can approve them without unapproving the period (which a period in QuickBooks refuses)
+  const lateN=(!allPer && S.status==='approved') ? [...(T||[]),...(E||[]),...(H||[])].filter(x=>x.status==='draft'||x.status==='submitted').length : 0;
   const kst='font-size:10px;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);font-weight:700';
   const items=[...(T||[]).map(x=>({...x,_k:'trip'})),...(E||[]).map(x=>({...x,_k:'exp'})),...(H||[]).map(x=>({...x,_k:'hours'}))];
   // shared day-grid context: the admin edits THIS BA's data inline (RLS lets admins
@@ -4253,6 +4308,7 @@ async function adminBaDetail(baId){
         prof.hourly_rate==null
         ? ` <span style="color:var(--yellow)">⚠ ${esc((prof.full_name||'This BA').split(' ')[0])} has no hourly rate set, so their Gusto hours can't import.</span> Set one in Settings → edit ${esc(prof.full_name||'them')}.`
         : ` Use “⬇ Pull from Gusto now” in Settings, or wait for the nightly sync.`}`}</div></div></div>`:''}
+    ${(state.qboCanBook && !allPer)?`<div id="qboSec" data-ba="${esc(baId)}" data-per="${esc(per.id)}" data-sub="${esc(S.status||'open')}"></div>`:''}
     <div id="admTodo">${todoCard(items,false,true)}</div>
     <div id="admGrid"></div>
     ${(!allPer && (H||[]).some(x=>!x.dispensary_id))?`<button class="btn block" id="autolinkBtn" style="margin-top:10px">🔗 Auto-link hours to dispensaries <span class="muted small">— match each shift to that day's trips/expenses</span></button>`:''}
@@ -4262,6 +4318,7 @@ async function adminBaDetail(baId){
         // nothing to approve but the period has ENDED: let an admin mark it done (nothing to
         // claim), which is what stops that person's daily reminder for it
         :(!allPer && S.status!=='approved' && S.status!=='submitted' && per.end_date && per.end_date<todayISO())?`<button class="btn ok grow" id="approveBtn">Mark done · nothing to claim</button>`:''}
+      ${lateN?`<button class="btn ok grow" id="approveLateBtn">Approve late items</button>`:''}
       ${(!allPer && S.status==='approved')?`<button class="btn grow" id="unapproveBtn">↩ Unapprove</button>`:''}
       <button class="btn grow" id="csvBtn">⬇ CSV</button>
       <button class="btn grow" id="pdfBtn">🖨 Print / PDF</button>
@@ -4286,11 +4343,13 @@ async function adminBaDetail(baId){
   });
   $('#submitForBtn')&&($('#submitForBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); submitForBA(baId,per.id,c.T,c.E,c.H,S.status); });
   $('#approveBtn')&&($('#approveBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); approveSubmission(baId,per.id,c.T,c.E,c.H,S.status); });
+  $('#approveLateBtn')&&($('#approveLateBtn').onclick=async()=>{ await flushGrid($('#admGrid')); const c=gridCtx(); approveSubmission(baId,per.id,c.T,c.E,c.H,'approved',{ reopen:true }); });
   $('#unapproveBtn')&&($('#unapproveBtn').onclick=()=>unapprovePeriod(baId,per.id));
   $('#autolinkBtn')&&($('#autolinkBtn').onclick=async()=>{ await flushGrid($('#admGrid')); autoLinkHours(baId,per.id,gridCtx().H||[]); });
   // to-do rows (delegated so they survive live re-renders) open the field-fix popup editor
   const at=$('#admTodo'); if(at) at.onclick=e=>{ const row=e.target.closest('.todo-fix');
     if(row){ state._sheetReturn=()=>adminBaDetail(baId); adminEditItem(row.dataset.fixKind, row.dataset.fixId, ()=>{}); } };
+  if(state.qboCanBook && !allPer) qboSection(baId, per, prof, S.status);   // Book in QuickBooks (bookers only)
 }
 // admin attaches/replaces a receipt image on an expense (e.g. for back-filled data).
 // Uploaded under the admin's own storage prefix (which RLS already permits); admins can view any receipt.
@@ -4348,13 +4407,24 @@ async function submitForBA(baId, periodId, T, E, H, subStatus){
   // period going read-only without warning is how this went wrong before.
   toast(`Submitted for ${first} — they've been emailed`,'ok'); closeSheet(); drawAdmin();
 }
-async function approveSubmission(baId,periodId,T,E,H,subStatus){
+// opts.reopen: open this person's sheet again afterwards ("Approve late items")
+async function approveSubmission(baId,periodId,T,E,H,subStatus,opts={}){
   const sweep = subStatus!=='submitted';
+  // 'approved': items that came in, or went back for review, after the period was approved ("Approve late items", for
+  // every admin). Only draft and submitted items change; the submission stays approved (its guard refuses un-approving a
+  // period that is in QuickBooks) and its totals are re-stamped.
+  const late = subStatus==='approved';
   const take = x=> x.status==='submitted' || (sweep && x.status==='draft');
   const pend=[...(T||[]).filter(take).map(x=>({...x,_k:'trip'})), ...(E||[]).filter(take).map(x=>({...x,_k:'exp'}))];
   const todoN=pend.filter(x=>itemIssues(x).length).length;
   const perL=(state.periods||[]).find(p=>p.id===periodId);
-  if(sweep && !pend.length && !(H||[]).some(x=>x.status==='draft'||x.status==='submitted')){
+  if(late){
+    const pendH=(H||[]).filter(x=>x.status==='draft'||x.status==='submitted');
+    if(!pend.length && !pendH.length) return toast('Nothing new to approve.','err');
+    const lateAmt=pend.reduce((a,x)=>a+((x._k==='exp'&&isCoPaid(x.payment))?0:Number(x.amount||0)),0);
+    const what=[pend.length?`${pend.length} item${pend.length===1?'':'s'}`:'', pendH.length?`${pendH.length} hours entr${pendH.length===1?'y':'ies'}`:''].filter(Boolean).join(' and ');
+    if(!confirm(`Approve the ${what} in ${perL?.label||'this period'} not approved yet${pend.length?` (${money(lateAmt)} to reimburse)`:''}? Everything already approved stays as it is.${todoN?`\n\n⚠ ${todoN} still ${todoN===1?'has':'have'} open to-dos.`:''}`)) return;
+  } else if(sweep && !pend.length && !(H||[]).some(x=>x.status==='draft'||x.status==='submitted')){
     if(!confirm(`Mark ${perL?.label||'this period'} done for this person with nothing to claim? That stops their daily reminder for it.`)) return;
   } else {
   // Approving a period that hasn't ended freezes the stamped totals while the BA can still
@@ -4380,16 +4450,18 @@ async function approveSubmission(baId,periodId,T,E,H,subStatus){
   const subLabor=(H||[]).reduce((a,x)=>a+Number(x.amount||0),0);
   const sts = sweep?['draft','submitted']:['submitted'];
   const { error:e1 }=await supabase.from('trips').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).in('status',sts);
-  if(e1) return toast('Approve failed: '+e1.message,'err');
+  if(e1) return errToast(e1,'Approve failed');
   const { error:e2 }=await supabase.from('expenses').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).in('status',sts);
-  if(e2) return toast('Approve failed: '+e2.message,'err');
+  if(e2) return errToast(e2,'Approve failed');
   const { error:eH }=await supabase.from('hours').update({status:'approved'}).eq('ba_id',baId).eq('period_id',periodId).in('status',['draft','submitted']);
-  if(eH) return toast('Approve failed: '+eH.message,'err');
+  if(eH) return errToast(eH,'Approve failed');
   const { error:e3 }=await supabase.from('submissions').upsert({ba_id:baId, period_id:periodId, status:'approved',
     approved_by:state.session.user.id, approved_at:new Date().toISOString(),
     totals:{mileage:subMile,expenses:subExp,company_card:subCard,labor:subLabor,total:subMile+subExp}}, {onConflict:'ba_id,period_id'});
-  if(e3) return toast('Approve failed: '+e3.message,'err');
-  toast('Approved','ok'); closeSheet(); drawAdmin();
+  if(e3) return errToast(e3,'Approve failed');
+  toast('Approved','ok');
+  if(opts.reopen){ drawAdmin(); return adminBaDetail(baId); }
+  closeSheet(); drawAdmin();
 }
 async function rejectItem(kind,id,baId){
   const note=prompt('Reason for rejection (the BA will see this):'); if(note===null) return;
@@ -4412,17 +4484,21 @@ async function unapprovePeriod(baId, periodId){
   const itemStatus = wasSwept ? 'draft' : 'submitted';
   const subStatus  = wasSwept ? 'open'  : 'submitted';
   if(!confirm(`Undo this approval? Every approved item this period goes back to “${itemStatus}”${wasSwept?' so the BA can finish it':' for re-review'} (nothing is deleted).`)) return;
-  // trips/expenses follow itemStatus (draft on a sweep-undo so the BA regains edit access);
-  // hours are payroll-managed + never BA-editable → 'submitted' regardless (re-approve restores them)
-  for(const t of ['trips','expenses']){
-    const {error}=await supabase.from(t).update({status:itemStatus}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
-    if(error) return toast('Unapprove failed: '+error.message,'err');
-  }
-  const {error:eh}=await supabase.from('hours').update({status:'submitted'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
-  if(eh) return toast('Unapprove failed: '+eh.message,'err');
+  // The submission goes first. A period that is in QuickBooks (or on its way there) refuses this, in the guard's words,
+  // and then nothing has changed; moving the items first would leave some back in review under a period still approved.
   const {error:e2}=await supabase.from('submissions').update({status:subStatus, approved_by:null, approved_at:null})
     .eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
-  if(e2) return toast('Items reverted, but the period is still stamped approved — reopen and retry.','err');
+  if(e2) return errToast(e2,'Unapprove failed');
+  // trips/expenses follow itemStatus (draft on a sweep-undo so the BA regains edit access);
+  // hours are payroll-managed + never BA-editable → 'submitted' regardless (re-approve restores them)
+  const half=e=>{ toast(`The period is back in review, but some items are still approved (${qboRefusal(e)||e.message}). Approve all puts them back together.`,'err',9000);
+    try{ drawAdmin(); }catch(_){} adminBaDetail(baId); };
+  for(const t of ['trips','expenses']){
+    const {error}=await supabase.from(t).update({status:itemStatus}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
+    if(error) return half(error);
+  }
+  const {error:eh}=await supabase.from('hours').update({status:'submitted'}).eq('ba_id',baId).eq('period_id',periodId).eq('status','approved');
+  if(eh) return half(eh);
   toast('Approval undone — period is back in review','ok');
   try{ drawAdmin(); }catch(_){}
   adminBaDetail(baId);
@@ -4430,14 +4506,26 @@ async function unapprovePeriod(baId, periodId){
 // Undo an approval: the item drops back to 'submitted' for re-review. If the whole
 // submission had already been stamped approved, it reverts too — so the BA's card
 // reads "awaiting approval" again and the “Approve all” button comes back.
+// The item goes first, as it always has. An item in QuickBooks is refused by its own guard (its words, and nothing
+// changes). When the item went back but the period's stamp is refused because part of the period is in QuickBooks, the
+// period stays approved and the item waits on its own: "Approve late items" on the person's sheet takes it again.
 async function undoApproval(table, id){
   const {data:rows, error}=await supabase.from(table).update({status:'submitted'}).eq('id',id).select('ba_id,period_id');
-  if(error || !rows || !rows.length){ toast('Couldn’t undo approval'+(error?': '+error.message:''),'err'); return null; }
+  if(error || !rows || !rows.length){
+    const g=qboRefusal(error);
+    toast(g || 'Couldn’t undo approval'+(error?': '+error.message:''),'err', g?9000:2600);
+    return null;
+  }
   const r=rows[0];
   if(r.ba_id && r.period_id){
     const {error:e2}=await supabase.from('submissions')
       .update({status:'submitted', approved_by:null, approved_at:null})
       .eq('ba_id',r.ba_id).eq('period_id',r.period_id).eq('status','approved');
+    if(e2 && qboRefusal(e2)){
+      toast(`The period stays approved because part of it ${qboPartWords(qboRefusal(e2))}; this item went back to submitted.`, 'ok', 9000);
+      try{ if(state.profile && state.profile.role==='admin') drawAdmin(); }catch(_){}
+      return r;
+    }
     if(e2){ toast('Item is back to submitted, but the period is still stamped approved — reopen and retry.','err'); return r; }
   }
   toast('Approval undone — back to submitted','ok');
@@ -4554,6 +4642,865 @@ function exportPDF(prof,per,T,E,H){
   window.print();
 }
 
+/* ── QBO PLAN MODEL ── */
+// Pure: no DOM, no database; tests/ba-qbo-plan.test.mjs runs it. "Book in QuickBooks" (ba/docs/qbo-reimbursements.md):
+// which approved items a booking takes, the JE's lines, the date it defaults to, the JEs to check before booking and the
+// Review list's badge. Money is worked in whole cents, the way the database's ba_qbo_request() checks it. Uses isCoPaid and
+// isBooks from the payment helpers near the top.
+const QBO_LIVE=new Set(['queued','working','booked','undo_queued','undoing','undo_failed']);   // its items are held
+const QBO_WAIT=new Set(['queued','working','undo_queued','undoing']);                         // the Mac hasn't answered yet
+const QBO_DONE=new Set(['booked','failed','cancelled','expired','undone','undo_failed']);     // where following a booking stops
+// a money value (a number, or Postgres' numeric as text) in whole cents, rounded half away from zero like round(x, 2)
+function qboCents(v){
+  const s=String(v??'').trim(), m=/^([-+])?(\d*)(?:\.(\d*))?$/.exec(s);
+  if(!m || !(m[2]||m[3])){ const n=Number(v); return Number.isFinite(n) ? Math.sign(n)*Math.round(Math.abs(n)*100) : 0; }
+  const f=(m[3]||'')+'000';
+  const c=Number(m[2]||'0')*100 + Number(f.slice(0,2)) + (Number(f[2])>=5 ? 1 : 0);
+  return m[1]==='-' ? -c : c;
+}
+const qboKey=(kind,id)=>kind+':'+id;
+function qboAddDays(iso,n){ const d=new Date(iso+'T12:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+const qboMD=iso=>{ const m=/^\d{4}-(\d{2})-(\d{2})/.exec(iso||''); return m ? `${+m[1]}/${+m[2]}` : ''; };
+// US bank holidays, as the Federal Reserve keeps them: a Sunday one is the Monday after; a Saturday one is no weekday off
+const QBO_BANK_HOLIDAYS=new Set(['2026-01-01','2026-01-19','2026-02-16','2026-05-25','2026-06-19','2026-09-07','2026-10-12',
+  '2026-11-11','2026-11-26','2026-12-25','2027-01-01','2027-01-18','2027-02-15','2027-05-31','2027-07-05','2027-09-06',
+  '2027-10-11','2027-11-11','2027-11-25']);
+function qboBankDayBack(iso){
+  let d=iso;
+  for(let i=0;i<14;i++){ const wd=new Date(d+'T12:00:00Z').getUTCDay(); if(wd!==0 && wd!==6 && !QBO_BANK_HOLIDAYS.has(d)) return d; d=qboAddDays(d,-1); }
+  return d;
+}
+// Gusto's check date for a BA period when Gusto can't be read: the Wednesday after the Friday it ends, or the bank day before
+const qboEstPayday=periodEnd=>qboBankDayBack(qboAddDays(periodEnd,5));
+// A period that ended more than 400 days ago isn't booked here: the Mac's JE list (ba_qbo_jes) covers 400 days, so nothing
+// could tell whether QuickBooks already has it. ba_qbo_request() and the Mac refuse it too.
+const QBO_MAX_AGE=400;
+const QBO_OLD_WHY='older than the JEs the Mac reads from QuickBooks; book it by hand';
+const qboTooOld=(period,today)=>!!(period && period.end_date && today && period.end_date<qboAddDays(today,-QBO_MAX_AGE));
+// One name key everywhere, the Mac's too: accents off, lowercased, letters only, then the aliases ("Makkena" is Makenna).
+// '' is no key (nothing with a letter). A JE's key is the last word of its number (ba_qbo_jes.name_key, qboDocKey); a
+// person has a set of them (qboPersonKeys).
+const QBO_NAME_ALIASES={ makkena:'makenna' };
+const qboNameKey=s=>{ const k=String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z]+/g,'');
+  return Object.prototype.hasOwnProperty.call(QBO_NAME_ALIASES,k) ? QBO_NAME_ALIASES[k] : k; };
+// the app first name as the Mac reads it (the first word of profiles.full_name): the name in the JE's number
+const qboDocNameOf=full=>String(full??'').trim().split(' ')[0]||'';
+// the JE's name for a person: the first word of the name the page shows, else the one the Mac stored
+const qboDocName=(full,person)=>qboDocNameOf(full)||String((person&&person.doc_name)||'').trim();
+// the key of a JE number: its last word ("123138 Cesar" is cesar; a number alone has none), the Mac's docNameKey
+const qboDocKey=doc=>{ const w=String(doc??'').trim().split(/\s+/); return qboNameKey(w[w.length-1]); };
+// keys (a Set or a list of names or keys) plus one more name, each keyed, as a Set without ''
+function qboKeySet(keys,name){
+  const out=new Set(), list=keys==null ? [] : (typeof keys==='string' ? [keys] : [...keys]);
+  if(name!=null && name!=='') list.push(name);
+  list.forEach(x=>{ const k=qboNameKey(x); if(k) out.add(k); });
+  return out;
+}
+// A person's name keys, the same set the Mac uses (ba/docs/qbo-reimbursements.md): their app first name, the last word of
+// the JE number on every booking of theirs (hand or app, any status, any period: each name they were booked under), and
+// the first word of their Name in Gusto. Renaming yourself in the app can't hide an old JE. bookings = rows (or numbers)
+// with doc_number. An empty set: nothing to match their JEs by, so they can't be booked here.
+function qboPersonKeys(o){
+  const { fullName=null, person=null, bookings=[] } = o||{};
+  const out=new Set(), add=k=>{ if(k) out.add(k); };
+  add(qboNameKey(qboDocNameOf(fullName)));
+  (bookings||[]).forEach(b=>{ const d=(b && typeof b==='object') ? b.doc_number : b; if(d!=null && d!=='') add(qboDocKey(d)); });
+  add(qboNameKey(qboDocNameOf(person && person.gusto_name)));
+  return out;
+}
+const QBO_NOKEY_WHY='No name to match their QuickBooks JEs';
+const QBO_NONAME_WHY='Their first name in the app has no letters, so the JE would have no name';
+// a note from the Mac on a booked JE asks for something only when it says to check, or that a file didn't attach
+const qboNoteAsks=d=>/check|didn.t attach|attach (it|them|the CSV)/i.test(String(d||''));
+// a receipt the app stored ("<uuid>/<file>"); any other receipt_path is never sent to the Mac
+const QBO_RECEIPT_RE=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[A-Za-z0-9._-]+$/i;
+const qboReceiptOk=p=>typeof p==='string' && QBO_RECEIPT_RE.test(p) && !p.split('/').some(s=>s==='.'||s==='..');
+// what a booking can take: approved trips; approved expenses the person paid (never company-paid, never the books' rows)
+const qboTripOk=t=>!!t && t.status==='approved';
+const qboExpOk=e=>!!e && e.status==='approved' && !isCoPaid(e.payment) && !isBooks(e);
+// ba_qbo_booking_items rows -> the items a live booking holds ("trip:<id>", "expense:<id>")
+const qboTaken=rows=>new Set((rows||[]).filter(r=>r && r.live!==false).map(r=>qboKey(r.kind, r.item_id)));
+const qboHas=(set,k)=>!!set && typeof set.has==='function' && set.has(k);
+function qboBookable(T,E,taken){
+  const out=[];
+  (T||[]).forEach(t=>{ if(qboTripOk(t) && !qboHas(taken,qboKey('trip',t.id))) out.push({ kind:'trip', id:t.id, cents:qboCents(t.amount),
+    date:t.trip_date||'', label:t.dest_label||t.start_label||'Trip', disp:t.dispensary_id||null, category:'Mileage', event:'', receipt:null }); });
+  (E||[]).forEach(e=>{ if(qboExpOk(e) && !qboHas(taken,qboKey('expense',e.id))) out.push({ kind:'expense', id:e.id, cents:qboCents(e.amount),
+    date:e.expense_date||'', label:e.vendor||'Expense', disp:e.dispensary_id||null, category:e.category||'Other',
+    event:String(e.event_name||'').trim(), receipt:e.receipt_path||null }); });
+  return out;
+}
+// an account as {id, name}: from a setup value (an object, or a bare id) or an override, named from the company's list
+function qboAcct(setup,a){
+  if(a==null || a==='') return null;
+  const list=(setup&&setup.accounts)||[];
+  const id=typeof a==='object' ? a.id : a; if(id==null || id==='') return null;
+  const f=list.find(x=>x && String(x.id)===String(id));
+  return { id:String(id), name:String((typeof a==='object'&&a.name)||(f&&f.name)||id) };
+}
+function qboDefaultAcct(setup,it){
+  if(!setup) return null;
+  return it.kind==='trip' ? qboAcct(setup, setup.mileage) : qboAcct(setup, (setup.categories||{})[it.category]);
+}
+// The JE for one person's bookable items. overrides = {lines: {<line base key>: account}, items: {"<kind>:<id>": account}};
+// an item's own override wins, then its line's, then the default. Lines: one per (account, description); an item with no
+// account yet waits in a line per (category, description) and Book waits for it (needsPick). fullName = the profile's
+// full_name as the page shows it: the JE's number takes its first word (else the Mac's stored doc_name).
+function qboPlan(o){
+  const { T=[], E=[], taken=null, setup=null, person=null, overrides=null, cls=null, fullName=null } = o||{};
+  const ovL=(overrides&&overrides.lines)||{}, ovI=(overrides&&overrides.items)||{};
+  const items=qboBookable(T,E,taken);
+  items.forEach(it=>{
+    it.key=qboKey(it.kind,it.id);
+    it.description=it.event ? 'Event: '+it.event : '';
+    it.def=qboDefaultAcct(setup,it);
+    it.base=(it.def ? 'a'+it.def.id : '?'+it.category)+'|'+it.description;
+    it.account=qboAcct(setup,ovI[it.key]) || qboAcct(setup,ovL[it.base]) || it.def || null;
+  });
+  const mile=setup ? qboAcct(setup,setup.mileage) : null;
+  const map=new Map();
+  items.forEach(it=>{
+    const k=it.account ? 'a'+it.account.id+'|'+it.description : it.base;
+    let l=map.get(k);
+    if(!l){ l={ key:k, account:it.account, description:it.description, cents:0, items:[], bases:[], pick:!it.account,
+      category:it.account?null:it.category, mileage:!!(it.account && mile && it.account.id===mile.id) }; map.set(k,l); }
+    l.cents+=it.cents; l.items.push(it); if(!l.bases.includes(it.base)) l.bases.push(it.base);
+  });
+  const nm=l=>String(l.account ? l.account.name : l.category||'');
+  const lines=[...map.values()].sort((a,b)=>(a.pick-b.pick) || (b.mileage-a.mileage) || nm(a).localeCompare(nm(b)) || a.description.localeCompare(b.description));
+  const cents=items.reduce((s,it)=>s+it.cents,0);
+  const needsPick=items.filter(it=>!it.account).map(it=>it.key);
+  // all of the person's approved reimbursable items in the period (none already held): the receipt of every APPROVED expense
+  // in the period goes with it, company-paid ones too (Gianni's habit), never the books' rows; a later, partial booking takes
+  // only its own items' receipts. Only receipts the app stored ("<uuid>/<file>") are sent.
+  const held=(T||[]).some(t=>qboTripOk(t) && qboHas(taken,qboKey('trip',t.id))) || (E||[]).some(e=>qboExpOk(e) && qboHas(taken,qboKey('expense',e.id)));
+  const full=!held;
+  const receipts=[], seen=new Set(), add=p=>{ if(qboReceiptOk(p) && !seen.has(p)){ seen.add(p); receipts.push(p); } };
+  if(full) (E||[]).forEach(e=>{ if(e && e.status==='approved' && !isBooks(e)) add(e.receipt_path); }); else items.forEach(it=>add(it.receipt));
+  const klass=(cls && cls.id!=null) ? cls : ((person && person.class && person.class.id!=null) ? person.class : null);
+  const credit=setup ? qboAcct(setup,setup.credit) : null;
+  const problems=[];
+  if(lines.some(l=>l.cents<0)) problems.push('A line adds up to less than zero. Fix its items first.');
+  const docName=qboDocName(fullName, person);
+  const ready=!!setup && !!credit && items.length>0 && cents>0 && !needsPick.length && !!klass && !problems.length && !!docName;
+  return { items, lines, needsPick, cents, full, receipts, cls:klass, credit, docName, company:(person&&person.company)||null, problems, ready };
+}
+// the plan as ba_qbo_request() takes it (supabase/ba-qbo-bookings.sql); d = the date's {how, note}; checked = the ids of the
+// JEs to check that Gianni booked past on the card ("Book anyway?"): the Mac refuses any other such JE it finds
+function qboRequestPlan(plan,d,checked){
+  const a=x=>x ? { id:String(x.id), name:String(x.name) } : null;
+  return { doc_name:plan.docName, class:a(plan.cls), credit:a(plan.credit),
+    lines:plan.lines.filter(l=>l.cents!==0).map(l=>({ account:a(l.account), amount:l.cents/100, description:l.description })),
+    items:plan.items.map(it=>({ kind:it.kind, id:it.id, amount:it.cents/100, account:a(it.account), description:it.description })),
+    total:plan.cents/100, full:!!plan.full, receipts:plan.receipts.slice(), date_how:(d&&d.how)||'', date_note:(d&&d.note)||'',
+    checked_jes:[...new Set((checked||[]).filter(x=>x!=null && x!=='').map(x=>String(x)))] };
+}
+// did this payroll pay this person a reimbursement line, or a total, of exactly these cents?
+function qboPaidHit(paid,uuid,cents){
+  const p=(paid && uuid) ? paid[uuid] : null; if(!p || !cents) return false;
+  return (p.total!=null && qboCents(p.total)===cents) || (Array.isArray(p.lines) && p.lines.some(x=>qboCents(x)===cents));
+}
+// The JE's date (the contract's four rules), from this company's ba_qbo_paydays rows: {date, how, note}. jes = ba_qbo_jes
+// rows, with company and the person's name keys (keys: qboPersonKeys; nameKey: one more name), for rule 2's "paid
+// together with another period".
+function qboDefaultDate(o){
+  const { period=null, paydays=[], gustoUuid=null, cents=0, today='', jes=[], company=null, keys=null, nameKey='' } = o||{};
+  if(!period || !period.end_date) return null;
+  const rows=(paydays||[]).filter(r=>r && r.check_date).slice().sort((a,b)=>String(a.check_date).localeCompare(String(b.check_date)));
+  const own=rows.find(r=>r.period_start===period.start_date) || null;
+  // 1. the period's own payroll hasn't run: its check date (the usual case, booked right after approving)
+  if(own && !own.processed) return { date:own.check_date, how:'payday', note:`Payday ${qboMD(own.check_date)}, from Gusto`+(own.late?' (Gusto has this payroll as late)':'') };
+  const ownDay=own ? own.check_date : qboEstPayday(period.end_date);
+  // 2. a processed payroll on or after it paid this: one of its reimbursement lines for the person, or their total, is
+  //    exactly this amount, or their total less their JEs already dated that check date is (Gusto paid it together with
+  //    another period: Leti's Jun 20 claim of $1,206.00 inside her $2,004.80 on 7/22, with 2059 Leti's $798.80)
+  const K=qboKeySet(keys, nameKey);
+  const jeCents=day=>(company && K.size) ? (jes||[]).filter(j=>j && j.company===company && j.txn_date===day && K.has(qboNameKey(j.name_key)))
+    .reduce((s,j)=>s+qboCents(j.total),0) : 0;
+  for(const r of rows){
+    if(!r.processed || r.check_date<ownDay) continue;
+    if(qboPaidHit(r.paid,gustoUuid,cents)) return { date:r.check_date, how:'paid', note:`Gusto paid this on ${qboMD(r.check_date)}` };
+    const p=(r.paid && gustoUuid) ? r.paid[gustoUuid] : null;
+    if(p && p.total!=null && cents>0){ const other=jeCents(r.check_date);
+      if(other>0 && qboCents(p.total)-other===cents) return { date:r.check_date, how:'paid', note:`Gusto paid this on ${qboMD(r.check_date)}, with another period` }; }
+  }
+  // 3. it ran without paying this: the next payday that hasn't run (else the next one on the two-week grid)
+  if(own){
+    const next=rows.find(r=>!r.processed && r.check_date>ownDay);
+    if(next) return { date:next.check_date, how:'late', note:`Late: next payday ${qboMD(next.check_date)}` };
+    let end=period.end_date, d=qboEstPayday(end);
+    for(let i=0;i<80 && (d<=ownDay || (today && d<today));i++){ end=qboAddDays(end,14); d=qboEstPayday(end); }
+    return { date:d, how:'late', note:`Late: next payday ${qboMD(d)} (estimated)` };
+  }
+  // 4. no payday from Gusto for this period: its end + 5 days, the bank day before a holiday
+  const est=qboEstPayday(period.end_date);
+  return { date:est, how:'estimated', note:`Payday ${qboMD(est)} (estimated)` };
+}
+// what Gusto paid this person on the period's own payroll, once it has run: {date, cents, lines, same}; null until then
+function qboGustoPaid(o){
+  const { period=null, paydays=[], gustoUuid=null, cents=0 } = o||{};
+  if(!period || !gustoUuid) return null;
+  const own=(paydays||[]).find(r=>r && r.period_start===period.start_date);
+  if(!own || !own.processed) return null;
+  const p=own.paid ? own.paid[gustoUuid] : null;
+  const lines=(p && Array.isArray(p.lines)) ? p.lines.map(qboCents) : [];
+  const paidC=p ? (p.total!=null ? qboCents(p.total) : lines.reduce((s,x)=>s+x,0)) : 0;
+  return { date:own.check_date, cents:paidC, lines, same:qboPaidHit(own.paid,gustoUuid,cents) };
+}
+// "company|je_id" of every JE a live booking holds, in whichever period (bookings looked up by je_id, as the Mac does)
+const qboHeldJes=bookings=>new Set((bookings||[]).filter(b=>b && b.je_id!=null && b.je_id!=='' && QBO_LIVE.has(b.status)).map(b=>b.company+'|'+b.je_id));
+// JEs QuickBooks has for this person (same company, and a name key of theirs: keys = qboPersonKeys, nameKey = one more name)
+// dated after the period ends and within 120 days, that no live booking holds: check them before booking, so nothing goes
+// in twice. held = qboHeldJes(the bookings that hold JEs). No key at all: none (and qboReadyWhy and Book refuse them).
+function qboHandWarnings(o){
+  const { jes=[], company=null, keys=null, nameKey='', periodEnd='', held=null } = o||{};
+  const K=qboKeySet(keys, nameKey); if(!K.size || !periodEnd || !company) return [];
+  const last=qboAddDays(periodEnd,120);
+  return (jes||[]).filter(j=>j && j.company===company && K.has(qboNameKey(j.name_key)) && j.txn_date>periodEnd && j.txn_date<=last
+      && !qboHas(held, company+'|'+j.je_id))
+    .sort((a,b)=>String(a.txn_date).localeCompare(String(b.txn_date)));
+}
+// The Review list's tag for one person and period (cents = what is still bookable): a booking in flight, what is in
+// QuickBooks, then what the rest needs. "Ready to book" only when Book all ready takes them (ready: qboReadyWhy found
+// nothing); a period too old to book here gets no to-book tag.
+function qboBadge(o){
+  const { bookings=[], cents=0, warnings=[], person=null, tooOld=false, ready=false } = o||{};
+  const live=(bookings||[]).filter(b=>b && QBO_LIVE.has(b.status));
+  if(live.some(b=>QBO_WAIT.has(b.status))) return { k:'wait', label:'Waiting for the Mac' };
+  if(!(cents>0)) return live.length ? { k:'in', label:'In QuickBooks' } : null;
+  if(tooOld) return live.length ? { k:'part', label:'Part in QuickBooks' } : null;
+  if((warnings||[]).length) return { k:'check', label:'Check QuickBooks' };
+  if(!person || !person.company) return { k:'link', label:'Link to Gusto' };
+  if(live.length) return { k:'part', label:'Part in QuickBooks' };
+  return ready ? { k:'ready', label:'Ready to book' } : { k:'look', label:'Needs a look' };
+}
+// why "Book all ready" leaves someone out ([] = they go in): a period it can still book, linked with a class, nothing to
+// pick, no JE to check first, a name key to check JEs by (keys: qboPersonKeys; none given is none), and a date from Gusto
+// (the period's payday, or the payroll that paid it)
+function qboReadyWhy(o){
+  const { plan=null, person=null, setup=null, warnings=[], date=null, tooOld=false, keys=null } = o||{};
+  if(!plan || !(plan.cents>0)) return ['nothing to book'];
+  if(tooOld) return [QBO_OLD_WHY];
+  if(!person || !person.company) return ['not linked to anyone in Gusto yet'];
+  if(!setup) return ['their QuickBooks company isn’t set up yet'];
+  const why=[];
+  if(person.problem) why.push(String(person.problem));
+  if(!plan.cls) why.push('no class yet');
+  const picks=plan.lines.filter(l=>l.pick);
+  if(picks.length) why.push(picks.map(l=>l.category).join(', ')+(picks.length===1?' needs':' need')+' an account');
+  if((warnings||[]).length) why.push(`QuickBooks has ${warnings.length===1?'a JE':warnings.length+' JEs'} to check first`);
+  if(!qboKeySet(keys).size) why.push(QBO_NOKEY_WHY);
+  if(!date || !date.date) why.push('no date yet');
+  else if(date.how==='late') why.push('Gusto already ran this period’s payroll without paying exactly this, so check the date on the card');
+  else if(date.how!=='payday' && date.how!=='paid') why.push('Gusto has no payday for this period, so its date is a guess: check it on the card');
+  (plan.problems||[]).forEach(p=>why.push(p));
+  if(!plan.credit) why.push('no Reimbursements account from the Mac yet');
+  if(!plan.docName) why.push('no name for the JE number yet');
+  else if(!qboNameKey(plan.docName)) why.push(QBO_NONAME_WHY);
+  return why;
+}
+/* ── end QBO PLAN MODEL ── */
+
+/* ── Book in QuickBooks: the page side (only when state.qboCanBook) ──
+   The page asks, the Mac books, the page shows the result (ba/docs/qbo-reimbursements.md). It reads only the ba_qbo_*
+   tables (bookers only) and writes only through their RPCs; QuickBooks itself is never called from the page. */
+const QBO_CO={ filifera:'Filifera LLC', wtny:'WTNY', wafgus:'Waf & Gus LLC' };   // until the Mac's ba_qbo_setup names them
+const qboCoName=(co,setupBy)=>(setupBy && setupBy[co] && setupBy[co].label) || QBO_CO[co] || co || '';
+const qboPlural=(n,one,many)=>`${n} ${n===1?one:(many||one+'s')}`;
+const qboReceiptWords=n=>`CSV + ${qboPlural(n,'receipt')}`;
+const qboFirst=prof=>String((prof&&(prof.full_name||prof.email))||'this person').trim().split(/\s+/)[0];
+function qboWhen(ts){
+  if(!ts) return ''; const d=new Date(ts); if(isNaN(d)) return '';
+  const t=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});
+  return localISO(ts)===todayISO() ? t : d.toLocaleDateString([],{month:'short',day:'numeric'})+', '+t;
+}
+function qboAgo(ts){
+  if(!ts) return ''; const s=(Date.now()-new Date(ts).getTime())/1000;
+  if(!(s>=0) || s<90) return 'just now'; if(s<3600) return Math.round(s/60)+' min ago'; if(s<48*3600) return Math.round(s/3600)+' h ago';
+  return 'on '+new Date(ts).toLocaleDateString([],{month:'short',day:'numeric'});
+}
+// how old the Mac's copy of QuickBooks and Gusto is, a Refresh, and a warning when the Mac hasn't checked in for 5 minutes
+function qboFreshHtml(w){
+  const hb=w && w.heartbeat_at ? new Date(w.heartbeat_at).getTime() : 0;
+  const stale=!hb || Date.now()-hb>5*60e3;
+  const asked=!!(w && w.refresh_requested_at && (!w.refreshed_at || new Date(w.refresh_requested_at)>new Date(w.refreshed_at)));
+  const data=w && w.refreshed_at ? `QuickBooks and Gusto as of ${qboAgo(w.refreshed_at)}.` : 'The Mac hasn’t read QuickBooks and Gusto yet.';
+  return `<div class="row" style="gap:8px;align-items:center;margin-top:4px">
+      <div class="small muted grow">${esc(data)}${asked?' A refresh is waiting for the Mac.':''}</div>
+      <button type="button" class="btn sm ghost" data-qbo="refresh" data-prev="${esc((w&&w.refreshed_at)||'')}" style="flex:none">⟳ Refresh</button></div>
+    ${stale?`<div class="small qbo-warn" style="margin-top:4px">⚠ The Mac hasn’t checked in ${hb?'since '+esc(qboWhen(w.heartbeat_at)):'yet'}. Bookings wait until it does.</div>`:''}`;
+}
+async function qboRefresh(btn, after){
+  if(!btn || btn.disabled) return;
+  const prev=btn.dataset.prev||'';
+  busy(btn,true);
+  const { error }=await supabase.rpc('ba_qbo_refresh');
+  if(error){ busy(btn,false); return toast(error.message,'err',9000); }
+  toast('Asked the Mac to read QuickBooks and Gusto again. It takes about a minute.','ok',5000);
+  const t0=Date.now();
+  while(btn.isConnected && Date.now()-t0<6*60e3){
+    await new Promise(r=>setTimeout(r, Date.now()-t0<3*60e3 ? 5000 : 20000));
+    if(!btn.isConnected) return;   // the screen changed meanwhile
+    const { data:w }=await supabase.from('ba_qbo_worker').select('refreshed_at').eq('id',1).maybeSingle();
+    if(w && w.refreshed_at && w.refreshed_at!==prev){ toast('QuickBooks and Gusto are read again.','ok'); return after && after(); }
+  }
+  if(btn.isConnected){ busy(btn,false); toast('The Mac hasn’t answered yet. Bookings wait until it does.','err',6000); }
+}
+// Following one booking row: every 5 seconds for 3 minutes, then every 20 seconds, until it ends (QBO_DONE) or 30 minutes
+// pass. Named subscribers hear each change; unless every subscriber asked for quiet, the end is a toast (Booked: with Undo).
+const QBO_W=new Map();
+function qboWatch(id, name, fn, opts={}){
+  if(!id) return;
+  let w=QBO_W.get(id);
+  if(!w){ w={ subs:new Map(), t0:Date.now(), last:null, quiet:!!opts.quiet }; QBO_W.set(id,w); setTimeout(()=>qboTick(id), 5000); }
+  else if(!opts.quiet) w.quiet=false;
+  if(fn) w.subs.set(name, fn);
+}
+async function qboTick(id){
+  const w=QBO_W.get(id); if(!w) return;
+  let row=null;
+  try{ const { data }=await supabase.from('ba_qbo_bookings').select('*').eq('id',id).maybeSingle(); row=data||null; }catch(_){}
+  // a change of status, of the Mac's note, or of the number (the Mac reserves it while 'working') is heard
+  if(row && (!w.last || w.last.status!==row.status || w.last.detail!==row.detail || w.last.doc_number!==row.doc_number)){ w.last=row; w.subs.forEach(fn=>{ try{ fn(row); }catch(_){} }); }
+  if(row && QBO_DONE.has(row.status)){ QBO_W.delete(id); if(!w.quiet) qboToastResult(row); return; }
+  const age=Date.now()-w.t0;
+  if(age>30*60e3 || !state.session){ QBO_W.delete(id); return; }
+  setTimeout(()=>qboTick(id), age<3*60e3 ? 5000 : 20000);
+}
+function qboToastResult(b){
+  const je=b.doc_number ? 'JE '+b.doc_number : 'the JE';
+  // the Mac's note on a booked JE is something to check ("this file didn't attach, so attach it in QuickBooks: ..."); the
+  // rows and the card show it in full, the toast only says it is there (a long toast would cover the card on a phone)
+  if(b.status==='booked') return toastAction(`Booked ${je} in QuickBooks${b.detail&&qboNoteAsks(b.detail)?', with a note from the Mac to check':''}.`, 'Undo', ()=>qboUndo(b), 12000);
+  if(b.status==='undone') return toast(b.source==='hand' ? 'Unlinked. QuickBooks wasn’t changed.' : `${je} is out of QuickBooks.`,'ok',5000);
+  if(b.status==='failed') return toast('Didn’t book: '+(b.detail||'the Mac didn’t say why.'),'err',9000);
+  if(b.status==='expired') return toast('Not booked: the Mac didn’t pick it up in 15 minutes.','err',9000);
+  if(b.status==='undo_failed') return toast(`Couldn’t undo ${je}: `+(b.detail||'the Mac didn’t say why.'),'err',9000);
+  if(b.status==='cancelled') return toast('Cancelled. Nothing was booked.','ok');
+}
+// a booking moved on: redraw this person's QuickBooks section if it is open, and the Review list's tags behind it
+let qboRevT=null;
+function qboAfterChange(row){
+  if(!row) return;
+  const h=document.getElementById('qboSec');
+  if(h && h.dataset.ba===String(row.ba_id) && h.dataset.per===String(row.period_id)) qboSection(row.ba_id, state.period, state._admProf, h.dataset.sub);
+  clearTimeout(qboRevT);
+  qboRevT=setTimeout(()=>{ const m=$('#main');
+    if(m && m.querySelector('#qboRev') && state.adminTab==='review' && state.period && state.period.id===row.period_id && state._qboRevRows)
+      qboReviewExtras(m, state.period, state._qboRevRows); }, 1500);
+}
+async function qboUndo(b){
+  const je=b.doc_number ? 'JE '+b.doc_number : 'this JE';
+  if(!confirm(`Take ${je} out of QuickBooks?\n\nThe Mac deletes the JE and the files it attached, usually within a minute. If someone changed the JE in QuickBooks since it was booked, the Mac leaves it alone and says so.`)) return false;
+  const { error }=await supabase.rpc('ba_qbo_undo',{ p_id:b.id });
+  if(error){ toast(error.message,'err',9000); return false; }
+  toast('Undo asked. The Mac takes it out within about a minute.','ok',5000);
+  qboWatch(b.id,'after',qboAfterChange);
+  qboAfterChange({ ...b, status:'undo_queued' });
+  return true;
+}
+async function qboCancel(b){
+  if(!confirm('Cancel this booking? The Mac hasn’t picked it up yet, so nothing is in QuickBooks.')) return false;
+  const { error }=await supabase.rpc('ba_qbo_cancel',{ p_id:b.id });
+  if(error){ toast(error.message,'err',9000); qboAfterChange(b); return false; }
+  toast('Cancelled. Nothing was booked.','ok');
+  const w=QBO_W.get(b.id); if(w) w.quiet=true;   // said once here; the follow ends quietly when it reads it
+  qboAfterChange({ ...b, status:'cancelled' });
+  return true;
+}
+async function qboUnlink(b){
+  const je=b.doc_number ? 'JE '+b.doc_number : 'that JE';
+  if(!confirm(`Is ${je} not for these items?\n\nThe Mac matched ${je}, which you booked by hand, to these items. Unlinking forgets that match, so they can be booked here again. QuickBooks isn’t changed.`)) return false;
+  const { error }=await supabase.rpc('ba_qbo_unlink',{ p_id:b.id });
+  if(error){ toast(error.message,'err',9000); return false; }
+  toast('Unlinked. QuickBooks wasn’t changed.','ok',5000);
+  qboAfterChange({ ...b, status:'undone' });
+  return true;
+}
+// The JE number on every booking (hand or app, any status, any period) of one person, or of everyone (baId null): the
+// names they were booked under, for their name keys (qboPersonKeys). Read in pages, since the database hands back at most
+// 1,000 rows a request; an error throws, and then nothing is booked from what was read.
+async function qboLoadDocs(baId){
+  const PAGE=1000, out=[];
+  for(let p=0;;p++){
+    if(p>=200) throw new Error('Too many bookings to read their JE numbers.');
+    let q=supabase.from('ba_qbo_bookings').select('ba_id,doc_number').not('doc_number','is',null);
+    if(baId) q=q.eq('ba_id',baId);
+    const { data, error }=await q.order('id').range(p*PAGE, p*PAGE+PAGE-1);
+    if(error) throw error;
+    (data||[]).forEach(r=>{ if(r && r.doc_number!=null && r.doc_number!=='') out.push({ ba_id:r.ba_id, doc_number:r.doc_number }); });
+    if(!data || data.length<PAGE) return out;
+  }
+}
+// one person and period: who pays them, their bookings and booked items, the JE numbers of all their bookings (for their
+// name keys), the company's paydays and the JEs to check
+async function qboLoadPerson(baId, per){
+  const ok=r=>{ if(r && r.error) throw r.error; return r ? r.data : null; };
+  const [pp, st, bk, wk, docs]=await Promise.all([
+    supabase.from('ba_qbo_people').select('*').eq('profile_id',baId).maybeSingle(),
+    supabase.from('ba_qbo_setup').select('*'),
+    supabase.from('ba_qbo_bookings').select('*').eq('ba_id',baId).eq('period_id',per.id).order('requested_at',{ascending:false}),
+    supabase.from('ba_qbo_worker').select('*').eq('id',1).maybeSingle(),
+    qboLoadDocs(baId),
+  ]);
+  const person=ok(pp)||null, setupBy={}; (ok(st)||[]).forEach(s=>{ setupBy[s.company]=s; });
+  const bookings=ok(bk)||[], worker=ok(wk)||null, co=person && person.company;
+  const ids=bookings.map(b=>b.id);
+  const [it, pd, je]=await Promise.all([
+    ids.length ? supabase.from('ba_qbo_booking_items').select('*').in('booking_id',ids) : { data:[] },
+    co ? supabase.from('ba_qbo_paydays').select('*').eq('company',co).gte('period_start',per.start_date).order('check_date') : { data:[] },
+    co ? supabase.from('ba_qbo_jes').select('*').eq('company',co).gt('txn_date',per.end_date).lte('txn_date',qboAddDays(per.end_date,120)).order('txn_date') : { data:[] },
+  ]);
+  const jes=ok(je)||[];
+  // a JE any live booking holds, of this period or another, is matched: read the bookings that carry these JEs' ids
+  const jeIds=[...new Set(jes.map(j=>String(j.je_id)))];
+  const byJe=jeIds.length ? ok(await supabase.from('ba_qbo_bookings').select('id,company,je_id,status').eq('company',co).in('je_id',jeIds))||[] : [];
+  return { person, setupBy, bookings, bookingItems:ok(it)||[], paydays:ok(pd)||[], jes, held:qboHeldJes([...bookings, ...byJe]), worker,
+    docs:(docs||[]).filter(d=>String(d.ba_id)===String(baId)) };
+}
+// the person's name keys on their sheet and card: the name the page shows, their Name in Gusto, their bookings' numbers
+const qboCtxKeys=ctx=>qboPersonKeys({ fullName:(ctx.prof||{}).full_name, person:ctx.person, bookings:ctx.docs });
+// the person's items as the review sheet holds them now (inline edits included)
+function qboArrays(ctx){
+  const c=gridCtx(), mine=!!c && String(c.baId)===String(ctx.baId);
+  return { T:(mine&&c.T)||ctx.T||[], E:(mine&&c.E)||ctx.E||[], H:(mine&&c.H)||ctx.H||[] };
+}
+// the QuickBooks section of the person's review sheet (adminBaDetail), for bookers only
+let qboSecGen=0;
+async function qboSection(baId, per, prof, subStatus){
+  const host=document.getElementById('qboSec'); if(!host || !per || isAllPeriods(per)) return;
+  const gen=++qboSecGen;
+  if(!host.dataset.drawn) host.innerHTML=`<div class="card" style="margin:0 0 12px"><h3 style="margin:0">QuickBooks</h3><div class="loading" style="padding:12px"><span class="spin"></span></div></div>`;
+  let ctx;
+  try{ ctx=await qboLoadPerson(baId, per); }catch(e){ ctx={ error:String((e&&e.message)||e) }; }
+  const h=document.getElementById('qboSec');
+  if(gen!==qboSecGen || !h || h.dataset.ba!==String(baId) || h.dataset.per!==String(per.id)) return;   // the sheet moved on
+  Object.assign(ctx, { baId, per, prof:prof||{}, subStatus:subStatus||h.dataset.sub||'open' });
+  h.dataset.drawn='1';
+  qboDrawSection(h, ctx);
+}
+function qboBookingRowHtml(b, n){
+  const je=b.doc_number ? `JE ${esc(b.doc_number)}` : 'the JE';
+  const amt=money(Number(b.total)), day=esc(fmtDate(b.txn_date));
+  const files=Array.isArray(b.attachments) ? b.attachments.length : 0;
+  const why=b.detail ? esc(b.detail) : '';
+  const btn=(act,label)=>`<button type="button" class="btn sm ghost" data-qbb="${esc(b.id)}" data-act="${act}">${label}</button>`;
+  const row=(ic,main,sub,button,cls)=>`<div class="qbo-row"><div class="ic${cls?' '+cls:''}">${ic}</div><div class="grow small" style="min-width:0"><div class="${cls||''}">${main}</div>${sub?`<div class="muted" style="margin-top:2px">${sub}</div>`:''}</div>${button||''}</div>`;
+  switch(b.status){
+    // a booked JE of this app's carries the Mac's note only when there is something to check in QuickBooks
+    case 'booked': return b.source==='hand'
+      ? row('✓',`Booked by hand: <b>${je}</b> · ${day} · ${amt}`,`The Mac matched this JE to ${qboPlural(n,'item')} here.`,btn('unlink','Not these items'))
+      : row('✓',`In QuickBooks: <b>${je}</b> · ${day} · ${amt}`,`${qboPlural(files,'file')} attached${n?' · '+qboPlural(n,'item'):''}${why?(qboNoteAsks(b.detail)?`<div class="qbo-warn" style="margin-top:2px">⚠ ${why}</div>`:`<div class="muted" style="margin-top:2px">${why}</div>`):''}`,btn('undo','Undo'));
+    case 'queued': return row('⏳',`Waiting for the Mac: ${amt}, dated ${day}`,`Asked ${esc(qboWhen(b.requested_at))}. The Mac checks every minute.`,btn('cancel','Cancel'));
+    // the number the Mac took for it, and its note when QuickBooks didn't answer (it then looks again in about 15 minutes)
+    case 'working': return row('⏳',`The Mac is booking ${amt}${b.doc_number?` as <b>${je}</b>`:''}${why?'':' now'}…`,why||'Usually done within a minute.');
+    case 'undo_queued': return row('⏳',`Taking ${je} out of QuickBooks: waiting for the Mac`,b.undo_at?`Asked ${esc(qboWhen(b.undo_at))}.`:'');
+    case 'undoing': return row('⏳',`Taking ${je} out of QuickBooks…`,'');
+    case 'undo_failed': return row('⚠',`Couldn’t undo ${je} (${day} · ${amt})`,why||'The Mac didn’t say why.',btn('undo','Try again'),'qbo-warn');
+    case 'failed': return row('⚠',`Didn’t book ${amt}`,`${why||'The Mac didn’t say why.'} (${esc(qboWhen(b.finished_at||b.requested_at))})`,'','qbo-warn');
+    case 'expired': return row('⚠','Not booked: the Mac didn’t pick it up in 15 minutes.',why,'','qbo-warn');
+    case 'cancelled': return row('·','Cancelled before the Mac picked it up. Nothing was booked.','');
+    case 'undone': return row('·', b.source==='hand' ? `Unlinked ${je}: it isn’t for these items. QuickBooks wasn’t changed.` : `Undone: ${je} is out of QuickBooks.`, b.undo_at?esc(qboWhen(b.undo_at)):'');
+  }
+  return '';
+}
+function qboDrawSection(host, ctx){
+  const per=ctx.per, prof=ctx.prof||{}, first=qboFirst(prof);
+  const card=inner=>`<div class="card" style="margin:0 0 12px"><h3 style="margin:0">QuickBooks</h3>${inner}</div>`;
+  if(ctx.error){
+    host.innerHTML=card(`<div class="small qbo-warn" style="margin-top:6px">Couldn’t read the QuickBooks tables: ${esc(ctx.error)}</div>
+      <button type="button" class="btn sm" data-qbo="retry" style="margin-top:8px">Try again</button>`);
+    host.querySelector('[data-qbo="retry"]').onclick=()=>qboSection(ctx.baId, per, prof, ctx.subStatus);
+    return;
+  }
+  const { T, E }=qboArrays(ctx);
+  const person=ctx.person, setup=person && person.company ? ctx.setupBy[person.company] : null;
+  const co=person && person.company ? qboCoName(person.company, ctx.setupBy) : '';
+  const plan=qboPlan({ T, E, taken:qboTaken(ctx.bookingItems), setup, person, fullName:prof.full_name });
+  const old=qboTooOld(per, todayISO());   // older than the Mac's JE list: never booked here
+  // every name they have been booked under, the Mac's set too: an app rename can't hide an old JE (none: no Book)
+  const keys=qboCtxKeys(ctx);
+  const warns=(person && person.company && !old) ? qboHandWarnings({ jes:ctx.jes, company:person.company, keys, periodEnd:per.end_date, held:ctx.held }) : [];
+  const parts=[qboFreshHtml(ctx.worker)];
+  // who pays them: from the Mac's Gusto match, or picked here
+  if(!person || !person.company){
+    parts.push(`<div class="qbo-row"><div class="ic">❓</div><div class="grow small" style="min-width:0"><b>Who is ${esc(first)} in Gusto?</b> The Mac couldn’t tell whose Gusto pays them, so it doesn’t know which company to book this in.
+      <button type="button" class="selpick" data-qbo="link" style="margin-top:8px"><span class="pkph">Pick them from the Gusto list…</span></button>
+      ${person && person.problem ? `<div class="qbo-warn" style="margin-top:6px">${esc(person.problem)}</div>`:''}</div></div>`);
+  } else {
+    const cls=person.class && person.class.id!=null ? person.class.name : '';
+    const waiting=person.how==='picked' && !person.department && /^Getting their department/i.test(person.problem||'');
+    parts.push(`<div class="qbo-row"><div class="ic">👤</div><div class="grow small" style="min-width:0">Paid by <b>${esc(co)}</b>${person.gusto_name?` (${esc(person.gusto_name)} in Gusto${person.department?', '+esc(person.department):''})`:''}.
+      Class ${cls?`<b>${esc(cls)}</b>`:'<span class="qbo-warn">not set yet: pick one on the Book card</span>'}.
+      ${person.problem?`<div class="${waiting?'muted':'qbo-warn'}" style="margin-top:4px">${waiting?'<span class="spin" style="width:11px;height:11px;vertical-align:-1px"></span> ':''}${esc(person.problem)}</div>`:''}</div>
+      <button type="button" class="btn sm ghost" data-qbo="link">Change</button></div>`);
+    if(waiting) qboWaitPerson(ctx.baId);
+  }
+  // bookings: everything live, and the newest one if it ended without a JE (a failure, an expiry, an undo)
+  const bookings=ctx.bookings.slice().sort((a,b)=>String(b.requested_at).localeCompare(String(a.requested_at)));
+  const live=bookings.filter(b=>QBO_LIVE.has(b.status));
+  const show=bookings[0] && !QBO_LIVE.has(bookings[0].status) ? [bookings[0], ...live] : live;
+  const nItems=id=>ctx.bookingItems.filter(i=>i.booking_id===id && i.live!==false).length;
+  show.forEach(b=>parts.push(qboBookingRowHtml(b, nItems(b.id))));
+  bookings.filter(b=>QBO_WAIT.has(b.status)).forEach(b=>qboWatch(b.id,'after',qboAfterChange));
+  if(warns.length) parts.push(`<div class="qbo-row"><div class="ic qbo-warn">⚠</div><div class="grow small qbo-warn" style="min-width:0">QuickBooks has ${warns.length===1?'a JE':warns.length+' JEs'} for ${esc(first)} that the Mac couldn’t match to any items: ${warns.map(j=>`<b>JE ${esc(j.doc_number||j.je_id)}</b> on ${esc(fmtDate(j.txn_date))} for ${money(Number(j.total))}`).join('; ')}. Check before booking, so nothing goes in twice.</div></div>`);
+  // trips and expenses still waiting for approval, company-paid ones too (never the books' rows): Approve all takes them, or
+  // once the period is approved, Approve late items (both in the buttons at the bottom, for every admin)
+  const notYet=[...T.filter(t=>t.status==='draft'||t.status==='submitted'), ...E.filter(e=>(e.status==='draft'||e.status==='submitted') && !isBooks(e))];
+  if(notYet.length){
+    const late=ctx.subStatus==='approved';
+    const amt=notYet.filter(x=>!isCoPaid(x.payment)).reduce((s,x)=>s+qboCents(x.amount),0), coN=notYet.filter(x=>isCoPaid(x.payment)).length;
+    parts.push(`<div class="qbo-row"><div class="ic">⏳</div><div class="grow small" style="min-width:0">${qboPlural(notYet.length,'item')} not approved yet${amt?`: <b>${money(amt/100)}</b> to reimburse`:''}${coN?` (${coN} company-paid)`:''}.${late?' Approve late items, at the bottom, takes them.':' Approve all, at the bottom, takes them.'}</div></div>`);
+  }
+  if(plan.cents>0){
+    const what=`<b>${money(plan.cents/100)}</b> (${qboPlural(plan.items.length,'item')})`;
+    if(old) parts.push(`<div class="qbo-row"><div class="ic">🔒</div><div class="grow small">Approved and not in a booking here: ${what}. Older than the JEs the Mac reads from QuickBooks; book it by hand.</div></div>`);
+    else if(!person || !person.company) parts.push(`<div class="qbo-row"><div class="ic">💵</div><div class="grow small">Ready to book ${what} once ${esc(first)} is linked to Gusto.</div></div>`);
+    else if(!setup) parts.push(`<div class="qbo-row"><div class="ic">💵</div><div class="grow small">Ready to book ${what}, but ${esc(co)} isn’t set up for booking yet. The Mac sets it up on its next refresh.</div></div>`);
+    else if(!keys.size) parts.push(`<div class="qbo-row" id="qboNoKey"><div class="ic qbo-warn">⚠</div><div class="grow small qbo-warn" style="min-width:0">${QBO_NOKEY_WHY}, so ${what} can’t be booked here. The Mac looks for their JEs by their app name, their Name in Gusto and the names on their past JEs, and none of them has a letter. Add their name in the app first.</div></div>`);
+    else if(plan.docName && !qboNameKey(plan.docName)) parts.push(`<div class="qbo-row"><div class="ic qbo-warn">⚠</div><div class="grow small qbo-warn" style="min-width:0">${QBO_NONAME_WHY}, so ${what} can’t be booked here. Give them a first name with letters in the app first.</div></div>`);
+    else parts.push(`<div class="qbo-row" style="align-items:center"><div class="ic">💵</div><div class="grow small">Ready to book: ${what}${plan.full?'':'. The rest of the period is already in QuickBooks'}.</div>
+      <button type="button" class="btn sm primary" data-qbo="book">Book in QuickBooks</button></div>`);
+  } else if(!live.length) parts.push(`<div class="small muted" style="margin-top:8px">${notYet.length?'Nothing approved to book yet.':'Nothing to reimburse this period.'}</div>`);
+  host.innerHTML=card(parts.join(''));
+  host.querySelectorAll('[data-qbo]').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.qbo;
+    if(k==='refresh') return qboRefresh(b, ()=>qboSection(ctx.baId, per, prof, ctx.subStatus));
+    if(k==='link') return qboLinkPick(ctx);
+    if(k==='book') return flushGrid($('#admGrid')).then(()=>qboBookCard(ctx));
+  });
+  host.querySelectorAll('[data-qbb]').forEach(b=>b.onclick=()=>{
+    const bk=ctx.bookings.find(x=>String(x.id)===b.dataset.qbb); if(!bk) return;
+    const k=b.dataset.act; if(k==='undo') qboUndo(bk); else if(k==='cancel') qboCancel(bk); else if(k==='unlink') qboUnlink(bk);
+  });
+}
+// "Who is this in Gusto?": a typable picker over the three companies' Gusto people (the people still there first, then the
+// ones who left Gusto within the Mac's 400 days, marked "(left)"), then the Mac fills the department
+async function qboLinkPick(ctx){
+  const prof=ctx.prof||{}, name=prof.full_name||prof.email||'this person', first=qboFirst(prof);
+  const { data:all, error }=await supabase.from('ba_qbo_gusto_people').select('*').order('name');
+  if(error) return toast('Couldn’t read the Gusto list: '+error.message,'err',6000);
+  const data=[...(all||[]).filter(g=>g.active!==false), ...(all||[]).filter(g=>g.active===false)];
+  if(!data.length) return toast('The Mac hasn’t sent the Gusto list yet. Try Refresh in a minute.','err',6000);
+  const opts=data.map(g=>{ const co=qboCoName(g.company, ctx.setupBy), left=g.active===false;
+    return { id:g.company+'|'+g.gusto_uuid, name:`${g.name}${left?' (left)':''} · ${co}${g.department?' · '+g.department:''}`, search:`${g.name} ${co} ${g.department||''}${left?' left':''}` }; });
+  const cur=ctx.person && ctx.person.company && ctx.person.gusto_uuid ? ctx.person.company+'|'+ctx.person.gusto_uuid : '';
+  cellPickerSheet({ title:`Who is ${first} in Gusto?`, multi:false, options:opts, selected:cur?[cur]:[], onSave:async ids=>{
+    const v=ids && ids[0]; if(!v || v===cur) return;
+    const i=v.indexOf('|'), co=v.slice(0,i), uuid=v.slice(i+1);
+    const g=data.find(x=>x.company===co && x.gusto_uuid===uuid); if(!g) return;
+    const coName=qboCoName(co, ctx.setupBy);
+    if(!confirm(`${name} is ${g.name} in ${coName}’s Gusto${g.active===false?' (who has left Gusto)':''}?\n\nTheir reimbursements are then booked in ${coName}, with the class their Gusto department gives.`)) return;
+    const { error:e2 }=await supabase.rpc('ba_qbo_link_person',{ p_profile:ctx.baId, p_company:co, p_gusto_uuid:uuid });
+    if(e2) return toast(e2.message,'err',9000);
+    toast('Linked. The Mac reads their department from Gusto within about a minute.','ok',5000);
+    qboSection(ctx.baId, ctx.per, ctx.prof, ctx.subStatus);
+  } });
+}
+// after a link: wait for the Mac to read the person's Gusto department (and so their class), then redraw
+const QBO_PW=new Set();
+async function qboWaitPerson(baId){
+  if(QBO_PW.has(baId)) return; QBO_PW.add(baId);
+  const t0=Date.now();
+  try{
+    while(Date.now()-t0<15*60e3 && state.session){
+      await new Promise(r=>setTimeout(r, Date.now()-t0<3*60e3 ? 5000 : 20000));
+      const { data }=await supabase.from('ba_qbo_people').select('department,class,problem').eq('profile_id',baId).maybeSingle();
+      if(data && (data.department || (data.class && data.class.id!=null) || !/^Getting their department/i.test(data.problem||''))){
+        const h=document.getElementById('qboSec');
+        if(h && h.dataset.ba===String(baId)) qboSection(baId, state.period, state._admProf, h.dataset.sub);
+        return;
+      }
+    }
+  } finally { QBO_PW.delete(baId); }
+}
+// The Book card: the JE as it will be booked, with typable account and class pickers; Book asks the Mac and follows it
+function qboBookCard(ctx){
+  const per=ctx.per, prof=ctx.prof||{}, name=prof.full_name||prof.email||'', first=qboFirst(prof);
+  const person=ctx.person, setup=ctx.setupBy[person.company];
+  const { T, E }=qboArrays(ctx);
+  const taken=qboTaken(ctx.bookingItems);
+  const st={ ov:{ lines:{}, items:{} }, cls:null, open:new Set(), busy:false, err:'', sent:null, row:null };
+  const mk=()=>qboPlan({ T, E, taken, setup, person, overrides:st.ov, cls:st.cls, fullName:prof.full_name });
+  let P=mk();
+  const old=qboTooOld(per, todayISO());
+  const keys=qboCtxKeys(ctx);   // every name they have been booked under (the Mac's set)
+  const def=qboDefaultDate({ period:per, paydays:ctx.paydays, gustoUuid:person.gusto_uuid, cents:P.cents, today:todayISO(), jes:ctx.jes, company:person.company, keys });
+  st.date=(def && def.date) || '';
+  // the JEs to check: Book asks "Book anyway?" over them, and the plan names them (checked_jes) so the Mac lets them by
+  const warns=old ? [] : qboHandWarnings({ jes:ctx.jes, company:person.company, keys, periodEnd:per.end_date, held:ctx.held });
+  const accts=(setup.accounts||[]).filter(a=>a && a.id!=null).map(a=>({ id:String(a.id), name:String(a.name||a.id), search:`${a.name||''} ${a.id}` }))
+    .sort((a,b)=>a.name.localeCompare(b.name));
+  const classes=(setup.classes||[]).filter(c=>c && c.id!=null).map(c=>({ id:String(c.id), name:String(c.name||c.id) })).sort((a,b)=>a.name.localeCompare(b.name));
+  const today=todayISO(), minD=qboAddDays(today,-400), maxD=qboAddDays(today,60);   // what ba_qbo_request() accepts
+  const acctOf=id=>{ const a=accts.find(x=>x.id===id); return a ? { id:a.id, name:a.name } : null; };
+  const itemWords=l=>{ const t=l.items.filter(i=>i.kind==='trip').length, e=l.items.length-t;
+    return [t?qboPlural(t,'trip'):'', e?qboPlural(e,'expense'):''].filter(Boolean).join(' + '); };
+  const itemLabel=it=>{ if(it.kind==='trip'){ const d=it.disp ? dispName(it.disp) : ''; return (d && d!=='—') ? d : it.label; } return it.label+(it.category?' · '+it.category:''); };
+  const noAccts=()=>toast('The Mac hasn’t sent this company’s accounts yet. Try Refresh in a minute.','err',6000);
+  const blocker=()=>{
+    if(old) return 'This period is older than the JEs the Mac reads from QuickBooks, so book it by hand.';
+    if(!(P.items.length && P.cents>0)) return 'There is nothing to book.';
+    if(!keys.size) return QBO_NOKEY_WHY+'. Add their name in the app first.';
+    if(P.needsPick.length){ const n=P.lines.filter(l=>l.pick).length; return n===1 ? 'Pick an account for the line in red first.' : `Pick an account for the ${n} lines in red first.`; }
+    if(!P.cls) return 'Pick a class first.';
+    if(!P.credit) return 'The Mac hasn’t sent this company’s Reimbursements account yet. Try Refresh.';
+    if(!P.docName) return 'The Mac hasn’t sent a name for the JE number yet.';
+    if(!qboNameKey(P.docName)) return QBO_NONAME_WHY+'. Give them a first name with letters in the app first.';
+    if(!st.date) return 'Pick a date first.';
+    if(st.date<minD || st.date>maxD) return 'Pick a date within the last year or the next two months.';
+    return P.problems[0] || '';
+  };
+  state._sheetReturn=()=>adminBaDetail(ctx.baId);   // closing the card goes back to the person's sheet
+  openSheet(`<div id="qbCard"></div>`);
+  const follow=id=>qboWatch(id,'card',row=>{ st.row=row; if(document.getElementById('qbCard') && st.sent && String(st.sent.id)===String(row.id)) draw(); });
+  async function book(){
+    P=mk(); const why=blocker(); if(why){ st.err=why; return draw(); }
+    if(warns.length && !confirm(`QuickBooks already has ${warns.map(j=>`JE ${j.doc_number||j.je_id} (${fmtDate(j.txn_date)}, ${money(Number(j.total))})`).join(', ')} for ${first}, not matched to any items.\n\nIf it is this reimbursement, booking it again puts it in QuickBooks twice. Book anyway?`)) return;
+    const d=st.date===(def && def.date) ? def : { how:'typed', note:`Picked on the card${def?` (the default was ${def.note})`:''}` };
+    const p={ ba_id:ctx.baId, period_id:per.id, company:person.company, txn_date:st.date, plan:qboRequestPlan(P, d, warns.map(j=>j.je_id)) };
+    st.busy=true; st.err=''; draw();
+    const { data, error }=await supabase.rpc('ba_qbo_request',{ p });
+    st.busy=false;
+    if(error || !data){ st.err=(error && error.message) || 'The database didn’t take it. Try again.'; return draw(); }
+    st.sent={ id:data, at:new Date().toISOString() }; st.row=null; draw();
+    follow(data); qboWatch(data,'after',qboAfterChange);
+  }
+  function statusHtml(){
+    const r=st.row, s=r ? r.status : 'queued', je=r && r.doc_number ? 'JE '+esc(r.doc_number) : 'the JE';
+    const btn=(k,l)=>`<div style="margin-top:8px"><button type="button" class="btn sm ghost" data-qbs="${k}">${l}</button></div>`;
+    let cls='', html;
+    if(s==='queued') html=`⏳ <b>Waiting for the Mac.</b> It checks every minute and books it within about a minute after that (asked ${esc(qboWhen(st.sent.at))}).${btn('cancel','Cancel this booking')}`;
+    // working: the number the Mac took for it, and its note when QuickBooks didn't answer; booked: its note is a check to make
+    else if(s==='working') html=`⏳ <b>The Mac is booking it${r.doc_number?' as '+je:''}${r.detail?'…':' now…'}</b> ${r.detail?esc(r.detail):'Each receipt takes a second or two to attach.'}`;
+    else if(s==='booked'){ cls='ok'; html=`✓ <b>Booked: ${je}</b> on ${esc(fmtDate(r.txn_date))} for ${money(Number(r.total))}, ${qboPlural(Array.isArray(r.attachments)?r.attachments.length:0,'file')} attached.${r.detail?(qboNoteAsks(r.detail)?`<div class="qbo-warn" id="qbStatusNote" style="margin-top:6px">⚠ ${esc(r.detail)}</div>`:`<div class="muted" id="qbStatusNote" style="margin-top:6px">${esc(r.detail)}</div>`):''}${btn('undo','Undo')}`; }
+    else if(s==='failed'){ cls='bad'; html=`⚠ <b>Didn’t book.</b> ${esc(r.detail||'The Mac didn’t say why.')}`; }
+    else if(s==='expired'){ cls='bad'; html=`⚠ <b>Not booked:</b> the Mac didn’t pick it up in 15 minutes. ${esc(r.detail||'')}`; }
+    else if(s==='cancelled') html='Cancelled. Nothing was booked.';
+    else if(s==='undo_queued') html=`⏳ Taking ${je} out of QuickBooks: waiting for the Mac.`;
+    else if(s==='undoing') html=`⏳ Taking ${je} out of QuickBooks…`;
+    else if(s==='undone') html=`Undone: ${je} is out of QuickBooks.`;
+    else if(s==='undo_failed'){ cls='bad'; html=`⚠ <b>Couldn’t undo ${je}.</b> ${esc(r.detail||'')}${btn('undo','Try again')}`; }
+    else html=esc(s);
+    return `<div class="qbo-status ${cls}" id="qbStatus">${html}</div>`;
+  }
+  function draw(){
+    const host=document.getElementById('qbCard'); if(!host) return;
+    P=mk();
+    const locked=!!(st.sent || st.busy);
+    const gusto=qboGustoPaid({ period:per, paydays:ctx.paydays, gustoUuid:person.gusto_uuid, cents:P.cents });
+    const how=st.date===(def && def.date) ? (def ? def.note : '') : `Picked here${def?` (the default was ${def.note})`:''}`;
+    const why=blocker();
+    const ownCls=person.class && person.class.id!=null;
+    host.innerHTML=`
+      <h3>Book in QuickBooks</h3>
+      <div class="small muted">${esc(name)} · ${esc(per.label)}</div>
+      <div class="qbo-kv" style="margin-top:10px"><span class="muted">Company</span><span><b>${esc(qboCoName(person.company, ctx.setupBy))}</b></span></div>
+      <div class="qbo-kv" style="align-items:center"><span class="muted">Class</span><span>${ownCls?`<b>${esc(person.class.name)}</b>`
+        :`<button type="button" class="selpick${P.cls?'':' needs'}" id="qbCls" ${locked?'disabled':''} style="min-height:36px;padding:6px 10px;min-width:150px">${P.cls?esc(P.cls.name):'<span class="pkph">Pick a class…</span>'}</button>`}</span></div>
+      <div class="qbo-kv" style="align-items:center"><span class="muted">Date</span><span><input type="date" id="qbDate" value="${esc(st.date)}" min="${minD}" max="${maxD}" ${locked?'disabled':''} style="width:auto;padding:7px 9px"></span></div>
+      <div class="small muted" id="qbDateHow" style="margin:-3px 0 4px;text-align:right">${esc(how)}</div>
+      <div class="qbo-kv"><span class="muted">Number</span><span>${setup.next_doc!=null?`<b>${esc(String(setup.next_doc))} ${esc(P.docName)}</b> is the next number; it’s set when it’s booked.`:`The Mac sets it when it books it: its next number and ${esc(P.docName)}.`}</span></div>
+      <div class="qbo-head">Credit</div>
+      <div class="qbo-line"><div class="row" style="gap:10px"><b class="grow">${P.credit?esc(P.credit.name):'<span class="qbo-bad">No Reimbursements account from the Mac yet</span>'}</b><b style="flex:none">${money(P.cents/100)}</b></div>
+        <div class="small muted" style="margin-top:3px">No class, description or name on the credit line.</div></div>
+      <div class="qbo-head">Debits${P.cls?` · class ${esc(P.cls.name)}`:''}</div>
+      ${P.lines.map((l,i)=>{ const open=st.open.has(l.key);
+        return `<div class="qbo-line${l.pick?' pick':''}" data-line="${esc(l.key)}">
+          <div class="row" style="gap:10px"><button type="button" class="selpick grow${l.pick?' needs':''}" data-qbl="${i}" ${locked?'disabled':''}><span>${l.account?esc(l.account.name):'Pick an account…'}</span></button><b style="flex:none">${money(l.cents/100)}</b></div>
+          <div class="small muted" style="margin-top:5px">${l.description?`${esc(l.description)} · `:''}${itemWords(l)}${l.pick?` · <span class="qbo-bad">${esc(l.category)} has no default account</span>`:''}
+            · <button type="button" class="qbo-link" data-qbi="${i}">${open?'Hide':'Show'} items</button></div>
+          ${open?`<div class="qbo-items">${l.items.map(it=>`<div class="qbo-item"><span class="grow" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(fmtDate(it.date))} · ${esc(itemLabel(it))}</span><span style="flex:none">${money(it.cents/100)}</span>${locked?'':`<button type="button" class="btn sm ghost" data-qbm="${esc(it.key)}">Move</button>`}</div>`).join('')}</div>`:''}
+        </div>`; }).join('')}
+      <div class="qbo-kv" style="margin-top:12px"><span class="muted">Attachments</span><span>${qboReceiptWords(P.receipts.length)}</span></div>
+      <div class="small muted" style="margin:-3px 0 4px;text-align:right">${P.full?'Every approved expense’s receipt in the period, company-paid ones too':'Only these items’ receipts: the rest of the period is already in QuickBooks'}</div>
+      <div class="qbo-kv"><b>Total</b><b id="qbTotal">${money(P.cents/100)}</b></div>
+      ${gusto?`<div class="qbo-kv"><span class="muted">Gusto</span><span class="${gusto.same?'qbo-good':'qbo-warn'}" id="qbGusto">${gusto.same?'✓':'⚠'} ${gusto.cents||gusto.lines.length
+        ? `Paid ${money(gusto.cents/100)} on ${esc(qboMD(gusto.date))}${gusto.lines.length>1?` (${gusto.lines.map(c=>money(c/100)).join(' + ')})`:''}${gusto.same?'':`, not ${money(P.cents/100)}`}`
+        : `The ${esc(qboMD(gusto.date))} payroll paid ${esc(first)} no reimbursement`}</span></div>`:''}
+      ${warns.length?`<div class="small qbo-warn" id="qbWarn" style="margin-top:10px">⚠ QuickBooks already has ${warns.map(j=>`<b>JE ${esc(j.doc_number||j.je_id)}</b> (${esc(fmtDate(j.txn_date))}, ${money(Number(j.total))})`).join(', ')} for ${esc(first)}, not matched to any items. Check it isn’t this reimbursement before booking.</div>`:''}
+      ${st.sent ? statusHtml() : `
+        <div class="small" id="qbMsg" style="color:var(--red);min-height:1px;margin-top:10px">${esc(st.err||why)}</div>
+        <button type="button" class="btn primary block" id="qbBook" style="margin-top:8px" ${why||st.busy?'disabled':''}>${st.busy?'<span class="spin"></span>':'Book in QuickBooks'}</button>
+        <div class="small muted center" style="margin-top:6px">The Mac books it within about a minute.</div>`}
+      <button type="button" class="btn ghost block" id="qbClose" style="margin-top:8px">${st.sent?'Close':'Cancel'}</button>`;
+    host.querySelector('#qbClose').onclick=closeSheet;
+    const dt=host.querySelector('#qbDate'); if(dt) dt.onchange=()=>{ st.date=dt.value; st.err=''; draw(); };
+    const cb=host.querySelector('#qbCls'); if(cb) cb.onclick=()=>{ if(!classes.length) return toast('The Mac hasn’t sent this company’s classes yet. Try Refresh in a minute.','err',6000);
+      cellPickerSheet({ title:'Class', multi:false, options:classes, selected:P.cls?[String(P.cls.id)]:[],
+        onSave:ids=>{ const c=classes.find(x=>x.id===(ids && ids[0])); if(!c) return; st.cls={ id:c.id, name:c.name }; st.err=''; draw(); } }); };
+    host.querySelectorAll('[data-qbl]').forEach(b=>b.onclick=()=>{ const l=P.lines[Number(b.dataset.qbl)]; if(!l) return; if(!accts.length) return noAccts();
+      cellPickerSheet({ title:l.description?`Account for ${l.description}`:`Account for ${itemWords(l)}`, multi:false, options:accts,
+        selected:l.account?[String(l.account.id)]:[], onSave:ids=>{ const a=acctOf(ids && ids[0]); if(!a) return;
+          const was=st.open.has(l.key); l.items.forEach(it=>{ st.ov.items[it.key]=a; }); if(was) st.open.add('a'+a.id+'|'+l.description);
+          st.err=''; draw(); } }); });
+    host.querySelectorAll('[data-qbi]').forEach(b=>b.onclick=()=>{ const l=P.lines[Number(b.dataset.qbi)]; if(!l) return; if(st.open.has(l.key)) st.open.delete(l.key); else st.open.add(l.key); draw(); });
+    host.querySelectorAll('[data-qbm]').forEach(b=>b.onclick=()=>{ const it=P.items.find(x=>x.key===b.dataset.qbm); if(!it) return; if(!accts.length) return noAccts();
+      cellPickerSheet({ title:`Account for ${itemLabel(it)} (${money(it.cents/100)})`, multi:false, options:accts, selected:it.account?[String(it.account.id)]:[],
+        onSave:ids=>{ const a=acctOf(ids && ids[0]); if(!a) return; st.ov.items[it.key]=a; st.open.add('a'+a.id+'|'+it.description); st.err=''; draw(); } }); });
+    const bk=host.querySelector('#qbBook'); if(bk) bk.onclick=book;
+    host.querySelectorAll('[data-qbs]').forEach(b=>b.onclick=async()=>{
+      const r=st.row || { id:st.sent.id, status:'queued', ba_id:ctx.baId, period_id:per.id, total:P.cents/100 };
+      if(b.dataset.qbs==='cancel'){ if(await qboCancel(r)){ st.row={ ...r, status:'cancelled' }; draw(); } }
+      else if(b.dataset.qbs==='undo'){ if(await qboUndo(r)){ st.row={ ...r, status:'undo_queued' }; draw(); follow(r.id); } }
+    });
+  }
+  draw();
+}
+// The Review list (adminReview) for bookers: everyone's bookable items, bookings, paydays and JEs for the period, and the
+// JE numbers of everyone's bookings in any period (docsBy, for their name keys)
+async function qboLoadPeriod(per){
+  const ok=r=>{ if(r && r.error) throw r.error; return r ? r.data : null; };
+  const [st, pp, bk, wk, tr, ex, pd, je, docs]=await Promise.all([
+    supabase.from('ba_qbo_setup').select('*'),
+    supabase.from('ba_qbo_people').select('*'),
+    supabase.from('ba_qbo_bookings').select('*').eq('period_id',per.id).order('requested_at',{ascending:false}),
+    supabase.from('ba_qbo_worker').select('*').eq('id',1).maybeSingle(),
+    supabase.from('trips').select('id,ba_id,period_id,amount,status,trip_date,dest_label,start_label,dispensary_id').eq('period_id',per.id),
+    selectExpenses('id,ba_id,period_id,amount,status,payment,category,receipt_path,expense_date,vendor,dispensary_id', q=>q.eq('period_id',per.id)),
+    supabase.from('ba_qbo_paydays').select('*').gte('period_start',per.start_date).order('check_date'),
+    supabase.from('ba_qbo_jes').select('*').gt('txn_date',per.end_date).lte('txn_date',qboAddDays(per.end_date,120)),
+    qboLoadDocs(null),
+  ]);
+  const setupBy={}; (ok(st)||[]).forEach(s=>{ setupBy[s.company]=s; });
+  const people={}; (ok(pp)||[]).forEach(p=>{ people[p.profile_id]=p; });
+  const docsBy={}; (docs||[]).forEach(r=>{ (docsBy[r.ba_id]=docsBy[r.ba_id]||[]).push(r); });
+  const bookings=ok(bk)||[], ids=bookings.map(b=>b.id);
+  const it=ids.length ? await supabase.from('ba_qbo_booking_items').select('*').in('booking_id',ids) : { data:[] };
+  const jes=ok(je)||[];
+  // a JE any live booking holds, of this period or another, is matched: read the bookings that carry these JEs' ids
+  const jeIds=[...new Set(jes.map(j=>String(j.je_id)))];
+  const byJe=jeIds.length ? ok(await supabase.from('ba_qbo_bookings').select('id,company,je_id,status').in('je_id',jeIds))||[] : [];
+  return { setupBy, people, bookings, items:ok(it)||[], worker:ok(wk)||null, T:ok(tr)||[], E:ok(ex)||[], paydays:ok(pd)||[], jes, held:qboHeldJes([...bookings, ...byJe]), docsBy };
+}
+// one person's line in the Review list: what is bookable, its date, the JEs to check, why Book all ready would leave them
+// out (why), and the tag, which says "Ready to book" only when Book all ready takes them
+function qboPersonSummary(b, per, d, today){
+  const person=d.people[b.id]||null, co=person && person.company, setup=co ? d.setupBy[co]||null : null;
+  const T=d.T.filter(x=>x.ba_id===b.id), E=d.E.filter(x=>x.ba_id===b.id);
+  const bookings=d.bookings.filter(x=>x.ba_id===b.id), mine=new Set(bookings.map(x=>x.id));
+  const plan=qboPlan({ T, E, taken:qboTaken(d.items.filter(i=>mine.has(i.booking_id))), setup, person, fullName:b.full_name });
+  const tooOld=qboTooOld(per, today);
+  // every name they have been booked under, the Mac's set (an app rename can't hide an old JE; none: not ready)
+  const keys=qboPersonKeys({ fullName:b.full_name, person, bookings:(d.docsBy||{})[b.id]||[] });
+  const date=qboDefaultDate({ period:per, paydays:d.paydays.filter(r=>r.company===co), gustoUuid:person && person.gusto_uuid, cents:plan.cents, today,
+    jes:d.jes, company:co, keys });
+  const warnings=(co && !tooOld) ? qboHandWarnings({ jes:d.jes, company:co, keys, periodEnd:per.end_date, held:d.held }) : [];
+  const why=qboReadyWhy({ plan, person, setup, warnings, date, tooOld, keys });
+  // the newest booking, when it ended without a JE: Book all ready says so beside them
+  const newest=bookings.slice().sort((a,c)=>String(c.requested_at).localeCompare(String(a.requested_at)))[0];
+  const lastFail=newest && (newest.status==='failed' || newest.status==='expired') ? newest : null;
+  return { b, person, setup, plan, date, warnings, why, tooOld, bookings, lastFail, coName:co ? qboCoName(co, d.setupBy) : '',
+    badge:qboBadge({ bookings, cents:plan.cents, warnings, person, tooOld, ready:!why.length }) };
+}
+let qboRevGen=0;
+async function qboReviewExtras(m, per, rows){
+  const host=m && m.querySelector('#qboRev'); if(!host || !per || isAllPeriods(per)) return;
+  const gen=++qboRevGen;
+  let d;
+  try{ d=await qboLoadPeriod(per); }
+  catch(e){ if(gen===qboRevGen && host.isConnected) host.innerHTML=`<div class="small qbo-warn" style="margin-top:10px">Couldn’t read the QuickBooks tables: ${esc((e&&e.message)||e)}</div>`; return; }
+  if(gen!==qboRevGen || !host.isConnected || !state.period || state.period.id!==per.id) return;   // the list moved on
+  const today=todayISO(), ready=[], held=[];
+  rows.forEach(b=>{
+    const x=qboPersonSummary(b, per, d, today);
+    const el=m.querySelector(`.item[data-ba="${CSS.escape(String(b.id))}"] .s`);
+    if(el){ el.querySelectorAll('.qbo-tag').forEach(t=>t.remove()); if(x.badge) el.insertAdjacentHTML('beforeend',` <span class="qbo-tag ${x.badge.k}">${esc(x.badge.label)}</span>`); }
+    if(!(x.plan.cents>0)) return;
+    (x.why.length ? held : ready).push(x);
+  });
+  const sum=ready.reduce((s,x)=>s+x.plan.cents,0);
+  host.innerHTML=`<div style="border-top:1px solid var(--line);margin-top:12px;padding-top:10px">
+      <div class="row" style="gap:8px;align-items:center"><div class="grow" style="min-width:0"><b style="font-size:13px">QuickBooks</b>
+        <div class="small muted">${ready.length?`${qboPlural(ready.length,'person','people')} ready to book: ${money(sum/100)}`:'Nobody is ready to book.'}${held.length?` · ${held.length} need${held.length===1?'s':''} a look first`:''}</div></div>
+        ${ready.length?'<button type="button" class="btn sm primary" id="qboAll" style="flex:none">Book all ready</button>':''}</div>
+      ${qboFreshHtml(d.worker)}</div>`;
+  const all=host.querySelector('#qboAll'); if(all) all.onclick=()=>qboBookAllSheet(per, ready, held);
+  const rf=host.querySelector('[data-qbo="refresh"]'); if(rf) rf.onclick=()=>qboRefresh(rf, ()=>qboReviewExtras(m, per, rows));
+  d.bookings.filter(b=>QBO_WAIT.has(b.status)).forEach(b=>qboWatch(b.id,'after',qboAfterChange,{ quiet:true }));   // tags move on their own
+}
+// a Book all ready row's words for its booking; undo=false once its Undo was pressed (the row then only follows it). Working:
+// the number the Mac took and its note when QuickBooks didn't answer; booked: its note is a check to make in QuickBooks.
+function qboAllWords(row, undo=true){
+  const je=row.doc_number ? 'JE '+esc(row.doc_number) : 'the JE';
+  switch(row.status){
+    case 'queued': return '⏳ Waiting for the Mac…';
+    case 'working': return '⏳ Booking'+(row.doc_number?' as '+je:'')+(row.detail?'… '+esc(row.detail):' now…');
+    case 'booked': return `✓ Booked ${je}`+(undo?` <button type="button" class="qbo-link" data-qbau="${esc(row.id)}">Undo</button>`:'')
+      +(row.detail?(qboNoteAsks(row.detail)?`<div class="qbo-warn">⚠ ${esc(row.detail)}</div>`:`<div class="muted">${esc(row.detail)}</div>`):'');
+    case 'failed': return '⚠ Didn’t book: '+esc(row.detail||'the Mac didn’t say why.');
+    case 'expired': return '⚠ Not booked: the Mac didn’t pick it up in 15 minutes.';
+    case 'cancelled': return 'Cancelled. Nothing was booked.';
+    case 'undo_queued': case 'undoing': return `⏳ Taking ${je} out of QuickBooks…`;
+    case 'undone': return `Undone: ${je} is out of QuickBooks.`;
+    case 'undo_failed': return `⚠ Couldn’t undo ${je}: `+esc(row.detail||'');
+  }
+  return esc(row.status||'');
+}
+// "Book all ready": everyone with nothing to pick, a company and a class, no JE to check first and a date from Gusto, one
+// request at a time (none carries checked JEs: anyone with a JE to check is booked from their card)
+function qboBookAllSheet(per, ready, held){
+  const list=ready.slice().sort((a,b)=>String(a.b.full_name||'').localeCompare(String(b.b.full_name||'')));
+  const total=list.reduce((s,x)=>s+x.plan.cents,0);
+  state._sheetReturn=()=>drawAdmin();   // closing it redraws the Review list with the new tags
+  openSheet(`<h3>Book all ready</h3>
+    <div class="small muted">${esc(per.label)}</div>
+    <p class="small" style="margin:10px 0 4px">${qboPlural(list.length,'person','people')} with nothing to pick, a company and a class, no JE in QuickBooks to check first, and a date from Gusto. Each becomes its own JE, dated as shown.</p>
+    <div id="qbaList">${list.map((x,i)=>`<div class="qbo-row" style="align-items:flex-start"><div class="grow small" style="min-width:0">
+        <b>${esc(x.b.full_name||x.b.email)}</b> · ${esc(x.coName)} · ${esc(x.plan.cls.name)} · ${qboPlural(x.plan.items.length,'item')}
+        <div class="muted">${esc(fmtDate(x.date.date))}: ${esc(x.date.note)} · ${qboReceiptWords(x.plan.receipts.length)}</div>
+        ${x.lastFail?`<div class="qbo-warn">The last try didn’t book: ${esc(x.lastFail.status==='expired'?'the Mac didn’t pick it up in 15 minutes.':(x.lastFail.detail||'the Mac didn’t say why.'))}</div>`:''}
+        <div id="qbaSt${i}" class="muted" style="margin-top:2px"></div></div>
+      <b style="flex:none">${money(x.plan.cents/100)}</b></div>`).join('')}</div>
+    <div class="qbo-kv"><b>Total</b><b>${money(total/100)}</b></div>
+    ${held.length?`<div class="qbo-head">Not included</div>${held.map(x=>`<div class="small" style="padding:3px 0"><b>${esc(x.b.full_name||x.b.email)}</b> (${money(x.plan.cents/100)}): ${esc(x.why.join('; '))}</div>`).join('')}
+      <div class="small muted" style="margin-top:2px">Open them from the list to book them one by one.</div>`:''}
+    <div id="qbaMsg" class="small muted" style="margin-top:10px"></div>
+    <button type="button" class="btn primary block" id="qbaGo" style="margin-top:8px">Book ${list.length}</button>
+    <div class="small muted center" style="margin-top:6px">The Mac books them one at a time, each within about a minute.</div>
+    <button type="button" class="btn ghost block" id="qbaClose" style="margin-top:8px">Close</button>`);
+  $('#qbaClose').onclick=closeSheet;
+  const rowsBy={};   // booking id -> its latest row (for Undo)
+  let going=false, sent=0, answered=0, booked=0, notBooked=0;
+  const clsOf=row=>row.status==='booked' ? 'qbo-good' : (['failed','expired','cancelled','undo_failed'].includes(row.status) ? 'qbo-warn' : 'muted');
+  const setSt=(i,html,cls)=>{ const el=document.getElementById('qbaSt'+i); if(!el) return; el.className=cls||'muted'; el.innerHTML=html;
+    el.querySelectorAll('[data-qbau]').forEach(u=>u.onclick=async()=>{ const r=rowsBy[u.dataset.qbau]; if(!r || u.disabled) return;
+      u.disabled=true;
+      if(!(await qboUndo(r))){ u.disabled=false; return; }
+      // undo asked: it no longer counts as booked, and the row follows it (text only) to "Undone"; an undo the Mac couldn't
+      // do leaves the JE in QuickBooks, so it counts as booked again
+      booked=Math.max(0,booked-1); tally();
+      rowsBy[r.id]={ ...r, status:'undo_queued' }; setSt(i, qboAllWords(rowsBy[r.id], false), 'muted');
+      qboWatch(r.id,'allu',row=>{ rowsBy[row.id]=row; setSt(i, qboAllWords(row, false), clsOf(row)); if(row.status==='undo_failed'){ booked++; tally(); } }); }); };
+  const tally=()=>{
+    const words=going ? `Sent ${sent} of ${list.length}…` : (answered<sent ? `Sent ${sent}. ${answered} answered so far.`
+      : `Booked ${booked} of ${list.length}${notBooked?`; ${notBooked} not booked`:''}.`);
+    const el=document.getElementById('qbaMsg');
+    if(el) el.textContent=words;
+    else if(!going && sent && answered===sent) toast(words, notBooked?'err':'ok', 6000);   // the sheet was closed: say it once
+  };
+  $('#qbaGo').onclick=async()=>{
+    const go=$('#qbaGo'); if(going || !go || go.disabled) return;
+    going=true; go.disabled=true; go.textContent='Sending…';
+    for(let i=0;i<list.length;i++){
+      const x=list[i];
+      setSt(i,'Sending…');
+      const p={ ba_id:x.b.id, period_id:per.id, company:x.person.company, txn_date:x.date.date, plan:qboRequestPlan(x.plan, x.date, []) };
+      const { data, error }=await supabase.rpc('ba_qbo_request',{ p });
+      if(error || !data){ notBooked++; setSt(i,'⚠ Not sent: '+esc((error && error.message)||'no answer from the database'),'qbo-warn'); tally(); continue; }
+      sent++; setSt(i,'⏳ Waiting for the Mac…'); tally();
+      qboWatch(data,'all',row=>{
+        rowsBy[row.id]=row;
+        setSt(i, qboAllWords(row), clsOf(row));
+        if(QBO_DONE.has(row.status)){ answered++; if(row.status==='booked') booked++; else notBooked++; tally(); }   // once: the follow ends here
+      },{ quiet:true });
+      qboWatch(data,'after',qboAfterChange,{ quiet:true });
+    }
+    going=false; tally();
+    if(go.isConnected) go.textContent=sent ? `Sent ${sent}` : 'Nothing was sent';
+  };
+}
+
 /* ── Admin: review queue ── */
 async function adminReview(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
@@ -4600,6 +5547,7 @@ async function adminReview(m){
         <div class="tot"><div class="k">Not in yet</div><div class="v">${rows.length-inCount}</div></div>
         <div class="tot sum"><div class="k">Submitted</div><div class="v">${inCount}/${rows.length}</div></div>
       </div>
+      ${(state.qboCanBook && !allPer && per)?'<div id="qboRev"></div>':''}
     </div>
     <div class="card">
       <h3>BA submissions ${per?`<span class="muted small">· ${esc(per.label)}</span>`:''}</h3>
@@ -4622,6 +5570,8 @@ async function adminReview(m){
     </div>`;
   m.querySelectorAll('[data-ba]').forEach(el=>el.onclick=()=>adminBaDetail(el.dataset.ba));
   wireRegionButtons('regSelR', ()=>adminReview(m));
+  // Book in QuickBooks (bookers only): a tag per person and "Book all ready", drawn once the ba_qbo_* reads are in
+  if(state.qboCanBook && !allPer && per){ state._qboRevRows=rows; qboReviewExtras(m, per, rows); }
   { const rb=$('#reopenBtn'); if(rb) rb.onclick=async()=>{
     if(periodReopened(per)){
       if(!confirm(`Close “${per.label}” for BA edits now? They’ll be back to view-only.`)) return;
