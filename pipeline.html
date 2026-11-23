@@ -736,7 +736,7 @@
   body.b2f-dark #b2-pop{background:var(--panel);color:var(--text);box-shadow:0 14px 34px rgba(0,0,0,.6)}
   body.b2f-dark .b2-bl li,body.b2f-dark .b2-labl details{border-bottom-color:var(--wk-grid)}
   body.b2f-dark .b2-bl li code,body.b2f-dark .b2-labl summary code,body.b2f-dark .b2-txt p{color:#B6BECB}
-  body.b2f-dark .b2-note.warn,body.b2f-dark .b2-warn,body.b2f-dark .b2-bl li span.b2-warn{color:#FBBF24}
+  body.b2f-dark .b2-note.warn,body.b2f-dark .b2-warn,body.b2f-dark .b2-bl li span.b2-warn,body.b2f-dark .b2s-n.warn span{color:#FBBF24}
   body.b2f-dark .b2-act,body.b2f-dark .b2-lnk{color:#9DB4FF}
   body.b2f-dark .b2f-sf b{color:var(--text)}
   body.b2f-dark .b2f-sf button{border-color:#7AA2FF;background:rgba(122,162,255,.14);color:#C7D7FF}
@@ -849,6 +849,9 @@
   .b2c-end .b2s-gh{position:static;margin:9px 0 4px}
   .b2c-end .b2s-gh:first-child{margin-top:0;color:var(--s-ink)}
   .b2c-end .b2s-n{position:relative;width:100%;margin:0 0 4px}
+  .b2c-end .b2s-n.two{height:auto;min-height:44px;padding-top:6px;padding-bottom:6px}   /* Flower still ours: its lab split wraps */
+  .b2c-end .b2s-n.two u{white-space:normal;line-height:1.3}
+  .b2s-n.warn span{color:#8A4B00}   /* a planned pickup's lab risk (pickupCoa): amber words, never red */
   .b2c-end .b2s-note{width:auto}
   .b2c-end.tr .b2s-n:not(.sel):not(.up):not(.dn){opacity:.3}
   .b2c-end.tr .b2s-gh{opacity:.4}
@@ -6099,15 +6102,16 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
   // the To Nabis bubbles: one per pickup. lots: the flow rows (every lot, on the timeline or not); their went.nabis_by
   // added up by day, days in a row joined (by: what each lot sent). o.whole: the whole license's pickups by day [[day, lb,
   // units]] (the sales block's t.d, once the flow job sends it): then a day's pounds are the whole pickup and notLot the
-  // part no lot holds. Then the pipeline sheet's pickups (o.drops: [{ drop, date, coa }], coa: pickupCoa()'s state, from
+  // part no lot holds. Then the pipeline sheet's pickups (o.drops: [{ drop, date, coa, strains }], coa: pickupCoa()'s state,
+  // strains: the strains the drop's testing line names, from
   // the page) after the last day Metrc's copy read (o.reach; not known: after today) and not within 2 days of a pickup it
   // has, days in a row joined (the days after today apart from the rest): 'plan' after today (with the worst lab risk of
   // its drops: failed, late, tight), else 'sheet' (on the sheet, not in Metrc's copy yet).
   // -> [{ type 'pick', id 'n:<day>' | 'n:plan|<day>', state 'done'|'plan'|'sheet', day, dayTo, lb (null when planned),
   //      lot, notLot, sh (pounds of blend shares: a lot's part of a package made from several lots carries no units), wu
   //      (the whole pickup's units, once the job sends t.d; else null), u (units of packages wholly one lot's), by [[lot_id,
-  //      lb]], days [{ d, lb }], drops, coa }], by day
-  const RISK = { failed: 3, late: 2, tight: 1 };
+  //      lb]], days [{ d, lb }], drops, strains (a planned pickup's: its drops' strains), coa, chk (its whole lab check, or null) }], by day
+  const RISK = { failed: 3, late: 2, tight: 1 }, CHK_RANK = { failed: 5, late: 4, tight: 3, unknown: 2, ok: 1, in: 0 };
   function pickGroups(lots, o = {}) {
     const today = o.today || '', reach = FLOW_DAY.test(String(o.reach || '')) ? o.reach : '', byDay = new Map();
     const at = d => { if (!byDay.has(d)) byDay.set(d, { d, lb: 0, lot: 0, whole: null, wu: null, sh: 0, u: {}, by: new Map() }); return byDay.get(d); };
@@ -6129,7 +6133,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
       const lb = c.xs.reduce((a, x) => a + x.lb, 0), lot = c.xs.reduce((a, x) => a + x.lot, 0), sh = c.xs.reduce((a, x) => a + x.sh, 0);
       const wu = c.xs.every(x => x.wu != null) ? c.xs.reduce((a, x) => a + x.wu, 0) : null;
       return { type: 'pick', id: `n:${c.from}`, state: 'done', day: c.from, dayTo: c.to, lb, lot, notLot: Math.max(0, lb - lot), sh, wu, u,
-        by: [...by].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])), days: c.xs.map(x => ({ d: x.d, lb: x.lb })), drops: [], coa: null };
+        by: [...by].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])), days: c.xs.map(x => ({ d: x.d, lb: x.lb })), drops: [], strains: [], coa: null };
     });
     const lim = reach || today, has = d => out.some(g => gap(g.day, d) >= -PICK_NEAR && gap(g.dayTo, d) <= PICK_NEAR);
     const ds = (o.drops || []).filter(e => e && FLOW_DAY.test(String(e.date)) && !!lim && e.date > lim && !has(e.date));
@@ -6138,8 +6142,11 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     for (const [plan, xs] of [[false, ds.filter(e => !fut(e))], [true, ds.filter(fut)]])
       for (const c of chain(xs, e => e.date, PICK_JOIN)) {
         const coa = plan ? c.xs.map(e => e.coa).filter(s => RISK[s]).sort((a, b) => RISK[b] - RISK[a])[0] || null : null;
+        // chk: the whole lab check (pickupCoa's worst state over its drops; a drop not checked counts as unknown), null when
+        // no drop was checked, so a card never reads an all-clear the check didn't give
+        const chk = plan && c.xs.some(e => CHK_RANK[e.coa] != null) ? c.xs.map(e => CHK_RANK[e.coa] != null ? e.coa : 'unknown').sort((a, b) => CHK_RANK[b] - CHK_RANK[a])[0] : null;
         out.push({ type: 'pick', id: `n:plan|${c.from}`, state: plan ? 'plan' : 'sheet', day: c.from, dayTo: c.to, lb: null, lot: 0, notLot: 0, sh: 0, wu: null, u: {}, by: [], days: [],
-          drops: [...new Set(c.xs.map(e => String(e.drop || '')).filter(Boolean))], coa });
+          drops: [...new Set(c.xs.map(e => String(e.drop || '')).filter(Boolean))], strains: [...new Set(c.xs.flatMap(e => Array.isArray(e.strains) ? e.strains.map(String) : []).filter(Boolean))].sort(), coa, chk });
       }
     return out.sort((a, b) => a.day.localeCompare(b.day) || a.id.localeCompare(b.id));
   }
@@ -6438,7 +6445,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
   // in columns: Harvest, Trim, Bulk or distro, Test and COA, Pack, Out of the distro (Stores is a card of weeks, never a
   // hop: sales to stores are known by week for the whole company, never by lot). One row per grow unit (a harvest with
   // its trim), newest on top, so a lot that has only reached Trim stops there. M: build()'s; HB: hub()'s.
-  // o: { today, scope 'recent' (harvested within FLOW_DAYS days and planned no more than FLOW_AHEAD days ahead, or still
+  // o: { today, scope 'recent' (harvested within FLOW_DAYS days or planned (as far ahead as the sheet goes), or still
   // holding FLOW_KEEP lb or more) | 'all', wet: a harvest's wet pounds }. A node carries the Timeline's own id (h:, the trim's id, i:, l:, p:, n:), or one of Flow's:
   // 'fi:<unit>' (flower moved to a distro with no In drawn), 'fb:<buyer>' (sold in bulk), 'fx:grow' / 'fx:distro' (still
   // there today), 'fx:distru', 'fx:<end>' (FLOW_ENDS). Trim's number here is Metrc's flower pounds when the lots are
@@ -6448,8 +6455,8 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
   // data ties a pickup to a lot, not to a pack day; never to Jars packed after it). Nothing links to stores.
   // -> { nodes, links, rows: [{ key, site, room, unit, rows (the flow lots), fl, lg, ld, left, toD, age, old, over, ins,
   //      labs, packs, src, d, from, hold }], nrows, tot, look, hidden: { n, lb } (older lots with flower left that
-  //      'recent' leaves out), later (units planned further ahead than it shows) }
-  const FLOW_DAYS = 90, FLOW_KEEP = 5, FLOW_OLD = 30, FLOW_AHEAD = 21;
+  //      'recent' leaves out) }
+  const FLOW_DAYS = 90, FLOW_KEEP = 5, FLOW_OLD = 30;
   const FLOW_ENDS = [['labs', 'Lab samples'], ['finished', 'Written off'], ['in_transit', 'In transit'], ['moved_unread', 'Not read yet'], ['unexplained', 'Not accounted for']];
   const FLOW_COA = { failed: 'Failed test', late: 'COA not back', tight: 'COA tight' };
   // Find's strains, one name per strain however it was written (Gianni, 2026-11-17: "Merge the messy strain names"). Only
@@ -6491,12 +6498,14 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     for (const x of (HB && HB.units) || []) if (x.kind === 'own' && x.hid && unitOf.has(x.hid)) evOf.get(unitOf.get(x.hid)).push(...x.ev);
     const add = (rs, f) => rs.reduce((a, r) => a + flowNum(f(r)), 0);
     const day0 = u => (u.h && u.h.date) || (u.t && u.t.start) || '';
-    const cut = today ? PIPE.addDays(today, -FLOW_DAYS) : '', ahead = today ? PIPE.addDays(today, FLOW_AHEAD) : '';
-    const inScope = d => all || !cut || (d >= cut && d <= ahead);
+    // (planned work shows as far ahead as the sheet plans it: Gianni, 2026-11-23, "Tidy Canvas first"; it stopped at 21
+    // days, which hid half the planned trims and pickups)
+    const cut = today ? PIPE.addDays(today, -FLOW_DAYS) : '';
+    const inScope = d => all || !cut || d >= cut;
     const leftOf = u => add(lotsOf.get(u), r => r.left_lb);
     const shown = us.filter(u => inScope(day0(u)) || leftOf(u) >= FLOW_KEEP)
       .sort((a, b) => day0(b).localeCompare(day0(a)) || hubRank(a.site) - hubRank(b.site) || a.id.localeCompare(b.id));
-    const hid = us.filter(u => !shown.includes(u) && leftOf(u) >= 0.05), later = us.filter(u => !shown.includes(u) && !!ahead && day0(u) > ahead).length;
+    const hid = us.filter(u => !shown.includes(u) && leftOf(u) >= 0.05);
     const info = new Map(), buyers = new Map(), ends = new Map(), tot = { fl: 0, toD: 0, bulk: 0, grow: 0, nabis: 0, distru: 0, distro: 0 };
     const best = gs => gs.slice().sort((a, b) => (LAB_RANK[b.state] || 0) - (LAB_RANK[a.state] || 0) || String(b.sent || b.at || '').localeCompare(String(a.sent || a.at || '')))[0];
     // a send's words: back (passed, or how many failed), planned, sent with nothing back, else at the lab on its expected day
@@ -6634,7 +6643,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     for (const [k, c] of kept) if (k !== c && sIdx.has(c)) sIdx.get(c).also.push(k);
     const strains = [...sIdx.values()].sort((a, b) => a.key.localeCompare(b.key));
     strains.forEach(e => e.also.sort());
-    return { nodes, links, rows, nrows: shown.length, tot, look, hidden: { n: hid.length, lb: hid.reduce((a, u) => a + leftOf(u), 0) }, later, strains };
+    return { nodes, links, rows, nrows: shown.length, tot, look, hidden: { n: hid.length, lb: hid.reduce((a, u) => a + leftOf(u), 0) }, strains };
   }
   // what a click lights: the node, everything it came from and everything it went to (never its siblings). A lot's node
   // (one with a unit) follows that lot's links both ways, through its own nodes only; a shared node (a buyer, a pickup,
@@ -6662,15 +6671,22 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
   // F: flowView's result. HB: the hub. o.outs: Map(the batch's Metrc tag -> { type: { nabis: [[day, units]], distru,
   // left } }), the flow job's went.products (none: the products are listed with no lines out).
   // -> { lots: [{ key, site, room, I, h, t, lab, groups: [{ id, pre, day, fut, lb, items }] }], nodes, links: [{ a, b, n,
-  //      u: 'u' units | 'lb' | '' }], picks, buyers: [[name, lb]], end: { dz, hereP, hereF } }
+  //      u: 'u' units | 'lb' | '' }], picks, buyers: [[name, lb]], end: { dz, hereP, hereF, lab: { passed,
+  //      testing, untested, failed, unknown } (hereF by lab stage, from each lot's left_by_lab) } }
   const STAGE_UNITS = ['jar', 'pouch', '5pk', '1g', '1.5g'];
+  const LAB_STAGES = ['passed', 'testing', 'untested', 'failed'];
   function stageView(F, HB, o = {}) {
     const outs = o.outs || new Map(), nodes = [], links = [], fn = new Map(((F && F.nodes) || []).map(n => [n.id, n]));
     const N = n => { nodes.push(n); return n; }, E = (a, b, n, u) => { links.push({ a, b, n: n || 0, u: u || '' }); };
-    const picks = ((HB && HB.picks) || []).map(g => ({ id: g.id, d: g.day, d1: g.dayTo || g.day, lb: g.lb, fut: g.state === 'plan' || g.state === 'sheet', wait: !!o.waitPick && o.waitPick(g) }));
+    const picks = ((HB && HB.picks) || []).map(g => ({ id: g.id, d: g.day, d1: g.dayTo || g.day, lb: g.lb, fut: g.state === 'plan' || g.state === 'sheet', wait: !!o.waitPick && o.waitPick(g),
+      plan: g.state === 'plan', strains: g.strains || [], drops: g.drops || [], coa: g.state === 'plan' ? g.coa || null : null, chk: g.state === 'plan' ? g.chk || null : null }));
     const real = picks.filter(p => !p.fut), pickOf = d => real.find(p => d >= p.d && d <= p.d1) || null;
     const runs = ((HB && HB.units) || []).filter(x => x.kind === 'run').flatMap(x => x.ev.filter(g => g.type === 'pack'));
-    const end = { dz: 0, hereP: 0, hereF: 0 }, buyers = new Map(), lots = [], used = new Set();
+    const end = { dz: 0, hereP: 0, hereF: 0, lab: { passed: 0, testing: 0, untested: 0, failed: 0, unknown: 0 } }, buyers = new Map(), lots = [], used = new Set();
+    // flower still ours, split by lab stage: each lot's left_by_lab shared over the pounds it adds here (a lot with none: unknown)
+    const here = (I, lb) => { end.hereF += lb; const t = {}; let s = 0;
+      for (const r of I.rows || []) for (const k of LAB_STAGES) { const v = +((r && r.left_by_lab) || {})[k] || 0; t[k] = (t[k] || 0) + v; s += v; }
+      if (s >= 0.05) for (const k of LAB_STAGES) end.lab[k] += (t[k] || 0) * lb / s; else end.lab.unknown += lb; };
     // a packing day's rows -> one item per strain and unit type, the strain with most pounds first (pouches ride their jars' row)
     const layers = (rows, plan) => {
       const m = new Map();
@@ -6716,10 +6732,10 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
         const ins = I.ins || [], mv = ins.length ? [] : lotDays(I.rows || []).moves.filter(m => m.lb >= 0.05);
         const d = ins.length ? ins[0].day : mv.length ? mv[0].d : '', d1 = ins.length ? ins[ins.length - 1].dayTo || ins[ins.length - 1].day : mv.length ? mv[mv.length - 1].d : d;
         L.inn = N({ id: 's:i|' + key, col: 2, kind: 'i', lot: key, gid: ins.length ? ins[0].id : '', d, d1, lb: typeof fi.num === 'number' ? fi.num : null, wait: !!o.waitIn && ins.some(g => o.waitIn(g)) });
-        if (I.lg >= 0.5) { E(src, 's:hereF', I.lg, 'lb'); end.hereF += I.lg; }
+        if (I.lg >= 0.5) { E(src, 's:hereF', I.lg, 'lb'); here(I, I.lg); }
         E(src, L.inn.id, L.inn.lb || 0, 'lb'); src = L.inn.id;
-        if (I.ld >= 0.5) { E(src, 's:hereF', I.ld, 'lb'); end.hereF += I.ld; }
-      } else if (I.left >= 0.5) { E(src, 's:hereF', I.left, 'lb'); end.hereF += I.left; }
+        if (I.ld >= 0.5) { E(src, 's:hereF', I.ld, 'lb'); here(I, I.ld); }
+      } else if (I.left >= 0.5) { E(src, 's:hereF', I.left, 'lb'); here(I, I.left); }
       sell('distro', L.inn ? L.inn.id : growSrc);
       const ln = ((F && F.nodes) || []).find(n => n.kind === 'lab' && n.unit === key), g0 = ln ? (I.labs || []).find(g => g.id === ln.id) : null;
       if (g0) {
@@ -6748,10 +6764,9 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
       lots.push(L);
     }
     // the last column: the pickups something shown rode on and the ones still planned, newest first; then Distru, what is
-    // still here, and the bulk buyers (planned pickups: from today to FLOW_AHEAD days on)
-    const ahead = o.today ? PIPE.addDays(o.today, FLOW_AHEAD) : '';
-    const shown = picks.filter(p => used.has(p.id) || (p.fut && (!o.today || (p.d1 >= o.today && p.d <= ahead)))).sort((a, b) => b.d.localeCompare(a.d));
-    for (const p of shown) N({ id: p.id, col: 5, kind: 'pick', d: p.d, d1: p.d1, lb: p.lb, fut: p.fut, wait: p.wait });
+    // still here, and the bulk buyers (planned pickups: from today on, as far ahead as the sheet goes)
+    const shown = picks.filter(p => used.has(p.id) || (p.fut && (!o.today || p.d1 >= o.today))).sort((a, b) => b.d.localeCompare(a.d));
+    for (const p of shown) N({ id: p.id, col: 5, kind: 'pick', d: p.d, d1: p.d1, lb: p.lb, fut: p.fut, wait: p.wait, plan: p.plan, strains: p.strains, drops: p.drops, coa: p.coa, chk: p.chk });
     N({ id: 's:dz', col: 5, kind: 'end', end: 'dz' }); N({ id: 's:hereP', col: 5, kind: 'end', end: 'hereP' }); N({ id: 's:hereF', col: 5, kind: 'end', end: 'hereF' });
     const bs = [...buyers].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     for (const [who, lb] of bs) N({ id: 's:fb|' + who, col: 5, kind: 'end', end: 'bulk', name: who, lb });
@@ -6850,7 +6865,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     labItems, labGroups, labBubble, labClass, atLabText, row, uidN, LAB_DETACH, LAB_OUT, LAB_AHEAD, SHEET_DAYS,
     placeTag, packGroups, packBubble, packClass, evOrder, PACK_G, salesWeeks, salesBubble, salesClass, bandRows, bandEdge, band4w,
     HUB_ORDER, IN_MIN, IN_JOIN, PICK_JOIN, PR_JOIN, IN_ROWS, lotDays, hub, inGroups, pickGroups, inBubble, inClass, pickBubble, pickClass, runBubble,
-    hubRows, hub4w, edgeWords, flowView, flowTrace, strainMerge, stageView, stageTrace, canvasLay, canvasLab, FLOW_DAYS, FLOW_KEEP, FLOW_OLD, FLOW_AHEAD, FLOW_ENDS };
+    hubRows, hub4w, edgeWords, flowView, flowTrace, strainMerge, stageView, stageTrace, canvasLay, canvasLab, FLOW_DAYS, FLOW_KEEP, FLOW_OLD, FLOW_ENDS };
 })(PIPE, BAT, TRIMY, ACT);
 /* ===== BATCH V2 MODEL END ===== */
 
@@ -12488,7 +12503,7 @@ function b2Drops() {
     if (e.kind !== 'pickup') continue;
     let coa = null;
     try { const k = pickupCoa(d.name, e.date); coa = k ? k.state : null; } catch (err) { coa = null; }
-    out.push({ drop: d.name, date: e.date, coa });
+    out.push({ drop: d.name, date: e.date, coa, strains: [...d.strains].filter(s => PIPE.isStrain(s) && s !== 'BULK') });
   }
   return out;
 }
@@ -13416,13 +13431,27 @@ function b2sWords(n, L) {
   if (n.kind === 'l') return [n.state === 'planned' ? `planned ${n.sent ? md(n.sent) : ''}` : n.state === 'back' ? (n.nFail ? `${n.nFail} failed${n.back ? ' ' + md(n.back) : ''}` : `passed${n.back ? ' ' + md(n.back) : ''}`) : n.at ? `at lab, ≈${md(n.at)}` : `sent${n.sent ? ' ' + md(n.sent) : ''}, no result`, n.more > 0 ? `+${n.more}` : ''];
   if (n.kind === 'p') return [`${sLabel(n.strain)} · ${B2S_UNIT[n.t][0]}`, n.n ? fmtN(Math.round(n.n)) : 'plan'];
   if (n.kind === 'i') return [n.d ? `moved in ${b2Span(n.d, n.d1)}` : 'moved in', n.lb != null ? `${BT2.lbTxt(n.lb)} lb` : ''];
-  if (n.kind === 'pick') return [b2Span(n.d, n.d1), n.fut ? 'plan' : `${BT2.lbTxt(n.lb)} lb`];
+  if (n.kind === 'pick') return [b2Span(n.d, n.d1), n.fut ? b2PickPlan(n) : `${BT2.lbTxt(n.lb)} lb`];
   if (n.kind === 'b') return [`Bulk sold ${md(n.d)} · ${n.who}`, b2sBulkLb(n)];
   const E = B2.V.end;
   if (n.end === 'dz') return ['Distru deliveries', E.dz ? `${fmtN(Math.round(E.dz))} u` : ''];
   if (n.end === 'hereP') return ['Packaged', E.hereP ? `${fmtN(Math.round(E.hereP))} u` : ''];
-  if (n.end === 'hereF') return ['Loose flower', E.hereF >= 0.05 ? `${BT2.lbTxt(E.hereF)} lb` : ''];
+  if (n.end === 'hereF') return ['Flower still ours', E.hereF >= 0.05 ? `${BT2.lbTxt(E.hereF)} lb` : ''];
   return [n.name, `${BT2.lbTxt(n.lb)} lb`];
+}
+// a planned pickup (Gianni, 2026-11-23, "Tidy Canvas first"): the strains its drops' testing lines name, else its drop;
+// its lab risk (pickupCoa's) is the row's amber words, b2PickRisk
+const b2PickPlan = n => { const k = (n.strains || []).length, d = (n.drops || [])[0];
+  return k ? `${k} strain${k === 1 ? '' : 's'}` : d ? dropLabel(d) + ((n.drops || []).length > 1 ? ` +${n.drops.length - 1}` : '') : 'planned'; };
+const b2PickRisk = n => (n && n.plan && COA_WORD[n.coa]) || '';
+// flower still ours by lab stage (BT2.stageView's end.lab), whole pounds that add up to the total (largest remainders):
+// '129 passed · 148 in testing · 125 untested'; a number and its words never part at a line end
+function b2HereLab(E) {
+  const lab = (E && E.lab) || {}, w = [['passed', 'passed'], ['testing', 'in testing'], ['untested', 'untested'], ['failed', 'failed'], ['unknown', 'not read']];
+  const v = w.map(([k]) => Math.max(0, +lab[k] || 0)), r = v.map(Math.floor);
+  let more = Math.round(v.reduce((a, x) => a + x, 0)) - r.reduce((a, x) => a + x, 0);
+  v.map((x, i) => [x - Math.floor(x), i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).forEach(([, i]) => { if (more > 0) { r[i]++; more--; } });
+  return w.map(([, t], i) => [r[i], t]).filter(([n]) => n >= 1).map(([n, t]) => `${lb0(n)}\u00a0${t.replace(/ /g, '\u00a0')}`).join(' · ');
 }
 // a bulk sale's pounds: flower, and its trim apart
 const b2sBulkLb = n => n.fl >= 0.05 ? `${BT2.lbTxt(n.fl)} lb${n.tr >= 0.05 ? ` + ${BT2.lbTxt(n.tr)} trim` : ''}` : `${BT2.lbTxt(n.tr)} lb trim`;
@@ -13519,8 +13548,10 @@ function b2sCardHTML(n) {
       `<div class="b2-acts">${lnk(n.gid, `Open the ${n.pre ? 'Pre-rolls' : 'Jars'} card`)}</div>`;
   } else if (n.kind === 'pick') {
     k = 'Nabis pickup'; title = `To Nabis ${b2Span(n.d, n.d1)}`;
-    tiles = [['Flower', n.fut ? 'plan' : `${BT2.lbTxt(n.lb)} lb`], ['Products', String(ups.length)], ['Units', fmtN(Math.round(ups.reduce((a, l) => a + l.n, 0)))]];
+    tiles = n.fut ? [['Strains', (n.strains || []).length ? String(n.strains.length) : '-'], ['Lab', b2PickRisk(n) || (n.plan ? B2_COA[n.chk] || 'Not checked' : '-')], ['Drop', (n.drops || []).length ? n.drops.map(dropLabel).join(', ') : '-']]
+      : [['Flower', `${BT2.lbTxt(n.lb)} lb`], ['Products', String(ups.length)], ['Units', fmtN(Math.round(ups.reduce((a, l) => a + l.n, 0)))]];
     body = `<div class="b2-sec"><h4>Products on it</h4>${ups.length ? tbl(ups.slice().sort((a, b) => b.n - a.n).map(l => { const x = by.get(l.a); return [`${esc(name(x))}${lotSmall(x)}`, esc(val(l))]; })) : `<p class="b2-note">${n.fut ? 'Planned on the pipeline sheet; nothing is on it yet.' : 'No product shown here rode on it.'}</p>`}</div>` +
+      (n.fut && (n.strains || []).length ? `<div class="b2-sec"><h4>Strains its testing line names</h4><p class="b2-note">${esc(n.strains.map(sLabel).join(', '))}</p></div>` : '') +
       `<div class="b2-acts">${lnk(n.id, 'Open the pickup card')}</div>`;
   } else if (n.kind === 'b') {
     const same = (L.bulk || []).filter(b => b.id !== n.id);
@@ -13532,9 +13563,9 @@ function b2sCardHTML(n) {
   } else if (n.kind === 'end') {
     k = n.end === 'bulk' ? 'Sold in bulk' : 'Where it went';
     tiles = [['Total', b2sWords(n)[1] || '0'], ['From', String(ups.length)], ['Lots', String(new Set(ups.map(l => (by.get(l.a) || {}).lot)).size)]];
-    body = `<div class="b2-sec"><h4>From</h4>${ups.length ? tbl(ups.slice().sort((a, b) => b.n - a.n).slice(0, 18).map(l => { const x = by.get(l.a); return [`${x.kind === 'p' ? esc(name(x)) : x.kind === 't' ? 'Trim' : x.kind === 'b' ? esc(md(x.d)) : 'Harvest'}${lotSmall(x)}`, esc(val(l))]; })) : '<p class="b2-note">Nothing shown here went there.</p>'}` +
+    body = `<div class="b2-sec"><h4>From</h4>${ups.length ? tbl(ups.slice().sort((a, b) => b.n - a.n).slice(0, 18).map(l => { const x = by.get(l.a); return [`${x.kind === 'p' ? esc(name(x)) : x.kind === 't' ? (n.end === 'hereF' ? 'At the grow' : 'Trim') : x.kind === 'i' ? 'At the distro' : x.kind === 'b' ? esc(md(x.d)) : 'Harvest'}${lotSmall(x)}`, esc(val(l))]; })) : '<p class="b2-note">Nothing shown here went there.</p>'}` +
       (ups.length > 18 ? `<p class="b2-note">and ${ups.length - 18} more.</p>` : '') + `</div>` +
-      (n.end === 'bulk' ? '<p class="b2-note">A bulk buyer, not a store. Flower pounds; each sale is a bubble of its own on its day, beside its lot\'s trim.</p>' : n.end === 'dz' ? '<p class="b2-note">Our own deliveries to stores, in units. Store names are not shown.</p>' : n.end === 'hereP' ? '<p class="b2-note">Packaged units Metrc still shows at the distro today.</p>' : '<p class="b2-note">Flower of these lots still at our licenses today, in pounds (packaged or not).</p>');
+      (n.end === 'bulk' ? '<p class="b2-note">A bulk buyer, not a store. Flower pounds; each sale is a bubble of its own on its day, beside its lot\'s trim.</p>' : n.end === 'dz' ? '<p class="b2-note">Our own deliveries to stores, in units. Store names are not shown.</p>' : n.end === 'hereP' ? '<p class="b2-note">Packaged units Metrc still shows at the distro today.</p>' : (b2HereLab(V.end) ? `<p class="b2-note">By lab stage: ${esc(b2HereLab(V.end))}.</p>` : '') + '<p class="b2-note">Flower of these lots still at our licenses today, in pounds, packaged or not (jars and 5-packs count 3.5 g a unit, 1g 1 g, pouches and pre-rolls 1.5 g).</p>');
   } else {
     const I = L.I, T = BT2.stageTrace(V, L.h.id), prods = [...T.dn].map(id => by.get(id)).filter(x => x && x.kind === 'p');
     k = { h: 'Harvest', t: 'Trim', i: 'Into the 25th distro', l: 'Test and COA' }[n.kind];
@@ -13571,7 +13602,7 @@ function b2cWords(n, L, part) {
     if (BT2.canvasLab(n).length === 2) return part ? [res || 'COA', ''] : [who ? `${who}test` : 'Test', more];
     return [who + (n.state === 'planned' ? 'Test planned' : res || 'Test · no result'), more];
   }
-  if (n.kind === 'pick') return ['To Nabis', n.fut ? 'plan' : `${BT2.lbTxt(n.lb)} lb`];
+  if (n.kind === 'pick') { const r = b2PickRisk(n); return [r ? `To Nabis · ${r}` : 'To Nabis', n.fut ? b2PickPlan(n) : `${BT2.lbTxt(n.lb)} lb`]; }
   if (n.kind === 'b') return [`Bulk sold ${md(n.d)} · ${n.who}`, b2sBulkLb(n)];
   return b2sWords(n, L);
 }
@@ -13579,7 +13610,7 @@ function b2cBody(V, outs, keep, jump) {
   const box = $('b2-stage'), today = todayISO(), lotOf = new Map(V.lots.map(L => [L.key, L])), was = B2.clay;
   const btn = (n, o = {}) => { const L = lotOf.get(n.lot), [t, v] = b2cWords(n, L, o.part), [t0, v0] = b2sWords(n, L), tip = `${L && n.kind !== 'h' ? b2sLot(L) + ' · ' : ''}${n.kind === 'pick' ? 'To Nabis ' : n.kind === 't' ? 'trim ' : n.kind === 'l' ? 'test: ' : ''}${t0}${v0 ? ' · ' + v0 : ''}`;
     const row = `<i></i><span>${esc(t)}</span><b>${esc(v)}</b>`;
-    return `<button type="button" class="b2s-n${n.lot ? ' lotn' : ''}${n.kind === 'p' ? ' prod' : ''}${o.sub ? ' two' : ''}${o.fut ? ' fut' : ''}${o.wait ? ' wait' : ''}" data-b2s="${esc(n.id)}"${n.lot ? ` data-lot="${esc(n.lot)}"` : ''}${o.part != null ? ` data-part="${o.part}"` : ''} style="--c:${b2sDot(n, L)}" aria-pressed="false" title="${esc(tip)}${o.tip ? ' · ' + esc(o.tip) : ''}">${o.sub ? `<em>${row}</em><u>${esc(o.sub)}</u>` : row}</button>`; };
+    return `<button type="button" class="b2s-n${n.lot ? ' lotn' : ''}${n.kind === 'p' ? ' prod' : ''}${o.sub ? ' two' : ''}${o.fut ? ' fut' : ''}${o.wait ? ' wait' : ''}${b2PickRisk(n) ? ' warn' : ''}" data-b2s="${esc(n.id)}"${n.lot ? ` data-lot="${esc(n.lot)}"` : ''}${o.part != null ? ` data-part="${o.part}"` : ''} style="--c:${b2sDot(n, L)}" aria-pressed="false" title="${esc(tip)}${o.tip ? ' · ' + esc(o.tip) : ''}">${o.sub ? `<em>${row}</em><u>${esc(o.sub)}</u>` : row}</button>`; };
   // the rows, unplaced: their widths are measured, then BT2.canvasLay says where each sits
   const H = [], ghW = new Map();
   for (const L of V.lots) {
@@ -13593,13 +13624,13 @@ function b2cBody(V, outs, keep, jump) {
     for (const G of L.groups) { ghW.set(L.key + '|' + G.id, `<b>${G.pre ? 'Pre-rolls' : 'Jars'}</b> · ${G.fut ? 'planned' : esc(md(G.day))}${G.lb >= 0.05 ? ` · ${esc(BT2.lbTxt(G.lb))} lb` : ''}${L.inn || L.lab ? '' : ` · ${esc(b2sLot(L))}`}`); for (const n of G.items) H.push(btn(n, { fut: n.fut })); }
   }
   const by = k => V.nodes.filter(n => k === 'pick' ? n.kind === 'pick' : n.kind === 'end' && n.end === k);
-  const og = t => `<div class="b2s-gh">${esc(t)}</div>`, O = [og('Left, no day known'), og('Our deliveries'), ...by('dz').map(n => btn(n)), og('Still here'), ...by('hereP').map(n => btn(n)), ...by('hereF').map(n => btn(n))];
+  const og = t => `<div class="b2s-gh">${esc(t)}</div>`, O = [og('Left, no day known'), og('Our deliveries'), ...by('dz').map(n => btn(n)), og('Still here'), ...by('hereP').map(n => btn(n)), ...by('hereF').map(n => btn(n, { sub: b2HereLab(V.end) }))];
   if (by('bulk').length) O.push(og('Sold in bulk'), ...by('bulk').map(n => btn(n)));
   if (!outs.size) O.push(`<div class="b2s-gh b2s-note">${sb ? 'Where each product went is read hourly.' : 'Sign in to see where it went.'}</div>`);
   box.innerHTML = `<div class="b2s-bar"><div class="wk-seg2" role="group" aria-label="Lots shown">` +
     [['recent', `Last ${BT2.FLOW_DAYS} days`], ['all', 'All 2026']].map(([k, w]) => `<button type="button" class="${B2.fscope === k ? 'on' : ''}" data-b2f="scope" data-id="${k}" aria-pressed="${B2.fscope === k}">${w}</button>`).join('') + `</div>` +
     `<button class="btn" type="button" data-b2f="ctoday">Today</button>` +
-    `<span class="b2s-hint">${V.lots.length ? "Grows on top: harvest, trim and each bulk sale. A blue-green line is the move into the 25th distro, where every lot is tested, packed and shipped. Click anything to trace it; drag in any direction." : 'No lots to show yet.'}</span></div>` +
+    `${V.lots.length ? '' : '<span class="b2s-hint">No lots to show yet.</span>'}</div>` +
     `<div class="b2c-wrap"><div class="b2s-sc"><div class="b2s-cv b2c-cv"><div class="b2c-head"></div><div class="b2c-bg"></div><svg class="b2s-lk" aria-hidden="true"><g class="fx"></g><g class="dy"></g></svg>` +
     `<div class="b2c-body">${H.join('')}</div><div class="b2c-foot"><span><i></i>Out to Nabis <small>on the day of each pickup</small></span>${by('pick').map(n => btn(n, { fut: n.fut, wait: n.wait })).join('')}</div></div></div>` +
     `<div class="b2c-end">${O.join('')}</div><div class="b2c-mm" aria-hidden="true"></div></div>`;

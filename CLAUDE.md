@@ -411,13 +411,13 @@ launch. The check fails if one of the three pieces is missing.
     `BT2.stageView(F, HB, { outs, today, waitIn, waitPick })` over `BT2.flowView`'s lots and `BT2.stageTrace` give the
     Canvas its rows: a lot's harvest, trim, move in, test, and **a row for each packaged product** (a strain and a unit
     type: 3.5g jars, pouches, 5-packs, 1g and 1.5g pre-rolls; pouches ride their jars' row; jars follow the test,
-    pre-rolls come straight from the trim), and where it went (Nabis pickups by day, Distru deliveries, Packaged and Loose
-    flower still here, bulk buyers). **A click lights what the item came from in gold and where it went in blue** (gold
+    pre-rolls come straight from the trim), and where it went (Nabis pickups by day, Distru deliveries, Packaged and Flower
+    still ours, bulk buyers). **A click lights what the item came from in gold and where it went in blue** (gold
     is not a warning here). **Where each packaged product went is the flow job's `went.products`** (Gianni's Mac, hourly,
     since 2026-11-17): keyed by the batch's Metrc tag (the Batch Label Sheet's METRC UID), then by unit type, `{ nabis:
     [[day, units]], distru, left }`, counted from the packages made from that tag (a blend's units split equally). Units,
     never dollars; store names never shown. The card (`b2sCardHTML`) has three figures, came from, went to, and the other
-    cards one press away. Planned pickups shown: today to 21 days on. Default "Last 90 days", or "All 2026" (`B2.fscope`).
+    cards one press away. Planned pickups shown: from today as far ahead as the sheet plans them (21 days until 2026-11-23). Default "Last 90 days", or "All 2026" (`B2.fscope`).
   - **Canvas: Batch V2's one view** (beta, view only; Gianni, 2026-11-18, of the Stages view: "I think you
     misunderstood. I wanted view like this but combined with the timeline view in a sort of free floating space where the
     user can scroll in any direction", then "Yes, build it" to the mockup). No view buttons (`B2.mode` stays 'cv'); the
@@ -453,9 +453,10 @@ launch. The check fails if one of the three pieces is missing.
     a test and its COA stay on one line, and close pickups go on a second line of their row (`pickRows`); hover (or the pick) draws a band over its real day or days and rings those
     dates. **Three things stay put while it is dragged**: the dates on top (month, weekday letter, day; a month's name
     stays in view while any of its days is), the Nabis pickups on their days in the 25th distro's row at the window's
-    bottom, and what has no day (Distru deliveries, Packaged and Loose flower still here, bulk buyers) in a column docked
+    bottom, and what has no day (Distru deliveries, Packaged and Flower still ours, bulk buyers) in a column docked
     at the right, with a little map of the whole canvas under it (a press jumps there). It drags in any direction; Today
-    puts today's line three fifths across. Model: `BT2.stageView` (the Stages model, unchanged), laid out by the pure
+    puts today's line three fifths across. Model: `BT2.stageView` (the Stages model; since 2026-11-23 it also gives `end.lab` and each planned pickup's drops,
+    strains and lab check), laid out by the pure
     `BT2.canvasLay(V, { w, today, top })` from the rows' measured widths (its `sites` are the two sections, 'GROW' and
     'HUB'; each position carries its `band`). Page: `b2cBody`, `b2cFit`, `b2cLinks`,
     `b2cGuide`, `b2cMini`, `b2cToday`, `b2cSee`, `b2cWords`, classes `b2c-*`; it is drawn in the Stages box
@@ -467,6 +468,16 @@ launch. The check fails if one of the three pieces is missing.
     A change of the lots shown opens on today again (or on the item picked). Not on the Canvas, and so not shown anywhere
     in Batch V2 since the Timeline went: sales to stores by week as rows (the week cards still have them) and the On hand
     column (what is still ours is the docked column's Still here rows and each lot's card).
+    **Tidied 2026-11-23** (Gianni, "Tidy Canvas first", after a review of the planning views): no standing hint sentence
+    above it (only "No lots to show yet." when empty); planned trims, harvests and pickups show as far ahead as the sheet
+    plans them (the 21-day cut, `FLOW_AHEAD`, is gone: it hid half of them); a planned pickup reads "To Nabis" with "6
+    strains" as its number (the strains its drops' testing lines name, `b2Drops` to `pickGroups`, BULK left out; else its
+    drop; else "planned"), and pickupCoa's risk joins the title in amber words ("To Nabis · COA tight", `b2PickRisk`, the
+    page's `COA_WORD`); a pickup dated today or before that Metrc's copy doesn't have yet has none. Its card's Lab tile is
+    the whole check (`chk`: On track, COA back, Can't check yet, or Not checked when no drop could be checked), never an
+    all-clear the check didn't give. "Loose flower" is **"Flower still ours"** (it was never loose only: packaged flower
+    counts at its flower-equivalent weight), with its lab split under it in whole pounds that add up to the total ("129
+    passed · 148 in testing · 125 untested", `stageView`'s `end.lab` from each lot's `left_by_lab`, `b2HereLab`).
 - **On hand page** (beta, view only; Gianni, 2026-11-18: "I wand some way to see how much packaged product is on hand (for
   distu or Nabis) at any given time especially at future dates", then "we'll probably want to know the amount per unit type
   and strain type"; he turned down a line chart and a strain-by-type board with a day picker, and of four further mockups

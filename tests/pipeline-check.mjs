@@ -2874,7 +2874,7 @@ if (realPipe) {
     const MH = BT2.build(Object.assign({ lots: lotsH }, baseH));
     // the sheet's pickups (coa: pickupCoa()'s state, from the page); Metrc's copy reads through 11/14
     const dropsH = [{ drop: 'Nov drop 2', date: '2026-11-12', coa: null }, { drop: 'Nov drop 3', date: '2026-11-15', coa: null }, { drop: 'Nov drop 4', date: '2026-11-16', coa: null },
-      { drop: 'Dec drop 1', date: '2026-11-20', coa: 'tight' }, { drop: 'Dec drop 1b', date: '2026-11-21', coa: 'late' }, { drop: 'Dec drop 2', date: '2026-12-04', coa: 'ok' },
+      { drop: 'Dec drop 1', date: '2026-11-20', coa: 'tight', strains: ['TIDE', 'SMOOTHIE'] }, { drop: 'Dec drop 1b', date: '2026-11-21', coa: 'late' }, { drop: 'Dec drop 2', date: '2026-12-04', coa: 'ok' },
       { drop: 'Dec drop 3', date: '2026-12-10', coa: 'tight' }, { drop: 'Bad', date: 'soon', coa: 'late' }];
     const optH = { lots: lotsH, drops: dropsH, reach: '2026-11-14', today: T };
     const HB = BT2.hub(MH, optH);
@@ -3003,6 +3003,13 @@ if (realPipe) {
       .map(g => [g.id, g.state, g.day, g.dayTo, g.coa, BT2.pickBubble(g), BT2.pickClass(g)]),
       [['n:plan|2026-11-16', 'sheet', '2026-11-16', '2026-11-16', null, 'To Nabis', 'b2-np plan'], ['n:plan|2026-11-17', 'plan', '2026-11-17', '2026-11-17', 'late', 'To Nabis · COA not back', 'b2-np plan fut warn']],
       "a pickup today never takes tomorrow's glow and lab check");
+    // a planned pickup names the strains its drops' testing lines name (Gianni, 2026-11-23: "Tidy Canvas first"), sorted,
+    // each once, with the worst lab risk of its drops; a drop the sheet names no strains for adds none
+    assert.deepEqual(BT2.pickGroups([], { today: T, reach: '2026-11-14', drops: [{ drop: 'D1', date: '2026-11-20', coa: 'tight', strains: ['SMOOTHIE', 'TIDE'] },
+      { drop: 'D2', date: '2026-11-21', coa: null, strains: ['TIDE', 'NEBULA'] }, { drop: 'D3', date: '2026-11-25', coa: null }] }).map(g => [g.id, g.drops, g.strains, g.coa, g.chk]),
+      [['n:plan|2026-11-20', ['D1', 'D2'], ['NEBULA', 'SMOOTHIE', 'TIDE'], 'tight', 'tight'], ['n:plan|2026-11-25', ['D3'], [], null, null]], "a planned pickup's strains: its drops' testing lines, each once; chk is the whole check, null when no drop was checked");
+    assert.deepEqual(BT2.pickGroups([], { today: T, reach: '2026-11-14', drops: [{ drop: 'D1', date: '2026-11-20', coa: 'ok' }, { drop: 'D2', date: '2026-11-21', coa: null }, { drop: 'D3', date: '2026-11-25', coa: 'in' }] }).map(g => [g.coa, g.chk]),
+      [[null, 'unknown'], [null, 'in']], 'a drop not checked beside one that is: unknown, never On track');
     // a lot's share of a blend carries pounds and no units: the group says how much (its card's Units row says what it covers)
     const shG = BT2.pickGroups([{ lot_id: 'X', went: { nabis_by: [['2026-11-03', 6, { jar: 300 }, 1, 0], ['2026-11-04', 2.5, {}, 1, 2.5]] } }], { today: T })[0];
     assert.deepEqual([shG.id, shG.lb, shG.sh, shG.wu, shG.u], ['n:2026-11-03', 8.5, 2.5, null, { jar: 300 }]);
@@ -3093,11 +3100,11 @@ if (realPipe) {
       assert.equal(new Set(ids).size, ids.length, 'every Flow node has its own id');
       assert.ok(FA.links.every(e => ids.includes(e.a) && ids.includes(e.b) && FA.nodes.find(n => n.id === e.a).col < FA.nodes.find(n => n.id === e.b).col), 'every link joins two nodes and runs left to right');
       // rows: newest harvest on top; All 2026 has every grow unit; the default leaves out a finished lot older than 90 days
-      // and a pickup planned more than 21 days ahead, never a lot that still holds 5 lb or more
+      // never a lot that still holds 5 lb or more; planned work shows as far ahead as the sheet goes (no 21-day cut since 2026-11-23)
       assert.deepEqual(FA.rows.map(I => I.key), [hA, 't:15TH|B|2026-10-20', 'h:23RD|3|2026-10-07', hE, hC, hD, hG, hB, hF]);
       assert.deepEqual([FA.nrows, FR.nrows, FR.rows.some(I => I.key === hF), FR.rows.filter(I => I.left >= BT2.FLOW_KEEP).length, FA.rows.filter(I => I.left >= BT2.FLOW_KEEP).length], [9, 8, false, 6, 6]);
-      assert.deepEqual([ids.includes('n:plan|2026-12-10'), FR.nodes.some(n => n.id === 'n:plan|2026-12-10'), FR.nodes.some(n => n.id === 'n:plan|2026-12-04')], [true, false, true]);
-      assert.deepEqual([BT2.FLOW_DAYS, BT2.FLOW_KEEP, BT2.FLOW_OLD, BT2.FLOW_AHEAD], [90, 5, 30, 21]);
+      assert.deepEqual([ids.includes('n:plan|2026-12-10'), FR.nodes.some(n => n.id === 'n:plan|2026-12-10'), FR.nodes.some(n => n.id === 'n:plan|2026-12-04')], [true, true, true]);
+      assert.deepEqual([BT2.FLOW_DAYS, BT2.FLOW_KEEP, BT2.FLOW_OLD, 'FLOW_AHEAD' in BT2], [90, 5, 30, false]);
       // lot A's row: one node a step, on the same row; the Timeline's own ids (so its cards open as they are)
       assert.deepEqual([hA, tA, iA, lA, pA].map(id => { const n = nA(id); return [n.col, n.row, n.kind, n.label, typeof n.num === 'number' ? +n.num.toFixed(1) : n.num, n.pill || '', !!n.fut, n.unit]; }),
         [[0, 0, 'harvest', 'RM2 10/29', 700, '', false, hA], [1, 0, 'trim', 'RM2 11/8', 132, '', false, hA], [2, 0, 'in', 'RM2 11/8-10', 85, '85 left', false, hA],
@@ -3187,8 +3194,8 @@ if (realPipe) {
           const outOf = (W, id) => W.links.filter(l => l.a === id).map(l => [l.b, l.n, l.u]);
           assert.deepEqual([outOf(V, `s:h|${K}`), outOf(V, `s:l|${K}`)], [[[`s:t|${K}`, 0, '']], [[J, 0, ''], [Po, 0, '']]], 'harvest to trim, and the test to its jars');
           assert.deepEqual([outOf(V, J), outOf(V, Po)], [[['n:2026-10-27', 10, 'u'], ['n:2026-11-13', 300, 'u'], ['s:dz', 200, 'u'], ['s:hereP', 400, 'u']], [['n:2026-11-13', 50, 'u'], ['s:hereP', 50, 'u']]], 'lines out of each product: its pickups by day, Distru, what is still here');
-          assert.deepEqual([outOf(V0, J), V0.end.dz, V0.end.hereP, V0.picks.map(x => x.id)], [[], 0, 0, ['n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16']], "without the job's products: the rows, no lines out, only the pickups still planned");
-          assert.deepEqual([V.picks.map(x => x.id), V.end.dz, V.end.hereP, V.buyers], [['n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16', 'n:2026-11-13', 'n:2026-10-27'], 200, 450, [['Buyer X', 47]]], 'the last column: the pickups something rode on and the planned ones (3 weeks), Distru, still here, bulk buyers');
+          assert.deepEqual([outOf(V0, J), V0.end.dz, V0.end.hereP, V0.picks.map(x => x.id)], [[], 0, 0, ['n:plan|2026-12-10', 'n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16']], "without the job's products: the rows, no lines out, only the pickups still planned");
+          assert.deepEqual([V.picks.map(x => x.id), V.end.dz, V.end.hereP, V.buyers], [['n:plan|2026-12-10', 'n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16', 'n:2026-11-13', 'n:2026-10-27'], 200, 450, [['Buyer X', 47]]], 'the last column: the pickups something rode on and the planned ones (as far ahead as the sheet goes), Distru, still here, bulk buyers');
           // a trim's two numbers (Gianni, 2026-11-18: "on each trim I want the number of lbs trim (to the second decimal) and under it the what remains in METRC from that trim")
           assert.deepEqual([[L.t.lb, L.t.sheet, L.t.left], (x => [+x.sheet.toFixed(2), x.left])(V.lots[1].t)], [[132, null, 85], [55.12, null]], "a trim carries the trim sheet's pounds when a tab has it, and the flower Metrc still shows from it (no Metrc lot read: none)");
           // the move into the 25th distro (Gianni, 2026-11-18: "doesn't this get transferred to 25th first before being packaged?")
@@ -3196,6 +3203,29 @@ if (realPipe) {
           assert.deepEqual([outOf(V, `s:t|${K}`), outOf(V, `s:i|${K}`)], [[['s:fb|Buyer X', 47, 'lb'], [`s:i|${K}`, 85, 'lb']], [['s:hereF', 85, 'lb'], [`s:l|${K}`, 0, '']]], 'bulk leaves from the trim; the rest moves into the distro, where the loose flower sits and the test follows');
           { const W2 = BT2.stageView(FA, HBb, { today: T, outs, waitIn: g => g.day === '2026-11-08', waitPick: g => g.id === 'n:2026-11-13' });
             assert.deepEqual([W2.lots[0].inn.wait, W2.nodes.filter(n => n.wait && n.kind !== 'l').map(n => n.id)], [true, [`s:i|${K}`, 'n:2026-11-13']], "a move in or a pickup Metrc hasn't marked received is flagged"); }
+          // a planned pickup on the Canvas carries its drops, strains and lab risk; one on the sheet but not in Metrc yet
+          // (today or before) has no risk of its own (Gianni, 2026-11-23: "Tidy Canvas first")
+          { const pn = id => V.nodes.find(n => n.id === id);
+            assert.deepEqual([['n:plan|2026-11-20', 'n:plan|2026-11-16'].map(id => [pn(id).plan, pn(id).coa, pn(id).drops, pn(id).strains])],
+              [[[true, 'late', ['Dec drop 1', 'Dec drop 1b'], ['SMOOTHIE', 'TIDE']], [false, null, ['Nov drop 4'], []]]], 'a planned pickup row knows its drops, the strains they name and its lab risk');
+            assert.deepEqual([pn('n:plan|2026-11-20').chk, pn('n:plan|2026-12-04').chk, pn('n:plan|2026-11-16').chk], ['late', 'ok', null], 'and its whole lab check (none for one dated today or before)'); }
+          // flower still ours by lab stage: each lot's left_by_lab shared over the pounds it adds (none read: unknown)
+          { const sum = o => Object.values(o).reduce((a, v) => a + v, 0);
+            assert.deepEqual([+sum(V.end.lab).toFixed(2), +V.end.lab.unknown.toFixed(2)], [+V.end.hereF.toFixed(2), +V.end.hereF.toFixed(2)], 'no lab split read: all of it unknown');
+            const FL = Object.assign({}, FA, { rows: FA.rows.map(I => Object.assign({}, I, { rows: (I.rows || []).map(r => Object.assign({}, r, { left_by_lab: { passed: 60, testing: 20, untested: 0, failed: 0 } })) })) });
+            const V3 = BT2.stageView(FL, HBb, { today: T, outs }), lab = V3.end.lab;
+            assert.deepEqual([+sum(lab).toFixed(2), +(lab.passed / lab.testing).toFixed(2), lab.untested, lab.failed], [+V3.end.hereF.toFixed(2), 3, 0, 0], 'the split adds up to Flower still ours, in each lot\'s own proportions'); }
+          // the words (Gianni, 2026-11-23: "Tidy Canvas first"): no standing hint sentence; "Flower still ours" with its lab
+          // split under it; a planned pickup says its strains (else its drop), its lab risk in amber words
+          { const hl = new Function('lb0', fnH('b2HereLab') + 'return b2HereLab;')(n => String(Math.round(n)));
+            assert.equal(hl({ lab: { passed: 129.4, testing: 148, untested: 125, failed: 0, unknown: 0.2 } }).replace(/\u00a0/g, ' '), '130 passed · 148 in testing · 125 untested', 'whole pounds that add up to the total (403)');
+            assert.ok(/^\d+\u00a0passed · \d+\u00a0in\u00a0testing$/.test(hl({ lab: { passed: 3, testing: 4 } })), 'a number and its words never part at a line end');
+            const pr = new Function('COA_WORD', html.match(/const b2PickRisk = [^\n]*\n/)[0] + 'return b2PickRisk;')({ failed: 'Failed test', late: 'COA not back', tight: 'COA tight' });
+            assert.deepEqual([pr({ plan: true, coa: 'late' }), pr({ plan: false, coa: 'late' }), pr({ plan: true, coa: 'ok' }), pr({ kind: 't' })], ['COA not back', '', '', ''], 'amber words only on a planned pickup at risk, in the words the rest of the page uses');
+            const pp = new Function('dropLabel', html.match(/const b2PickPlan = [\s\S]*?\};\n/)[0] + 'return b2PickPlan;')(d => d.toLowerCase());
+            assert.deepEqual([pp({ strains: ['A', 'B', 'C'] }), pp({ strains: ['A'] }), pp({ strains: [], drops: ['DEC DROP 3', 'DEC DROP 4'] }), pp({})], ['3 strains', '1 strain', 'dec drop 3 +1', 'planned']);
+            assert.ok(!/Grows on top: harvest, trim and each bulk sale/.test(html) && /\['Flower still ours'/.test(html) && !/'Loose flower'/.test(html), 'the hint sentence is gone; Loose flower reads Flower still ours');
+            assert.ok(/by\('hereF'\)\.map\(n => btn\(n, \{ sub: b2HereLab\(V\.end\) \}\)\)/.test(html) && /b2PickRisk\(n\) \? ' warn' : ''/.test(html) && /\.b2s-n\.warn span\{color:#8A4B00\}/.test(html), 'the lab split under Flower still ours; a planned pickup\'s lab risk in amber'); }
           const tr = BT2.stageTrace(V, J), tp = BT2.stageTrace(V, 'n:2026-11-13');
           assert.deepEqual([[...tr.up].sort(), [...tr.dn].sort()], [[`s:h|${K}`, `s:i|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), ['n:2026-10-27', 'n:2026-11-13', 's:dz', 's:hereP'].sort()], 'a product lit: all it came from (the move into the distro too), all it went to');
           assert.deepEqual([[...tp.up].sort(), tp.dn.size], [[J, Po, `s:h|${K}`, `s:i|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), 0], 'a pickup lit: every product on it, back to the harvest');
@@ -3218,7 +3248,7 @@ if (realPipe) {
             assert.deepEqual([at(J).d, at(J).x, at(Po).x, at(Po).y - at(J).y, at(J).w], ['2026-11-14', X('2026-11-14'), at(J).x, 31, 232], 'the products stack on their packing day (under the rows in the way), never on a later one');
             assert.ok(at(J).y - 22 >= lab.y + 30, "a stack's heading clears the test's line above it");
             assert.deepEqual(C.heads, [{ id: G, lot: K, x: at(J).x, y: at(J).y - 17 }], 'a heading over each stack');
-            assert.deepEqual([C.picks.map(p => [p.id, p.x, p.row]), C.pickRows], [[['n:2026-10-27', X('2026-10-27'), 0], ['n:2026-11-13', X('2026-11-13'), 0], ['n:plan|2026-11-16', X('2026-11-16'), 1], ['n:plan|2026-11-20', X('2026-11-20'), 0], ['n:plan|2026-12-04', X('2026-12-04'), 0]], 2], 'each pickup on its day; one the pickup before is still in the way of goes on a second line, never to a later day');
+            assert.deepEqual([C.picks.map(p => [p.id, p.x, p.row]), C.pickRows], [[['n:2026-10-27', X('2026-10-27'), 0], ['n:2026-11-13', X('2026-11-13'), 0], ['n:plan|2026-11-16', X('2026-11-16'), 1], ['n:plan|2026-11-20', X('2026-11-20'), 0], ['n:plan|2026-12-04', X('2026-12-04'), 0], ['n:plan|2026-12-10', X('2026-12-10'), 0]], 2], 'each pickup on its day; one the pickup before is still in the way of goes on a second line, never to a later day');
             assert.ok(/e\.style\.top = \(7 \+ p\.row \* 32\) \+ 'px'/.test(fnH('b2cBody')) && /foot\.style\.height/.test(fnH('b2cBody')), "the pickups' row grows a line when two pickups are close");
             { const C2 = BT2.canvasLay(V, { w, h: new Map([[`s:t|${K}`, 44]]), today: T, top: 46 }); assert.deepEqual([C2.pos.get(`s:t|${K}`).h, C2.pos.get(`s:h|${K}`).h, C2.pos.get(`s:t|${K}`).x], [44, 28, gt.x], 'a trim with its second line is a taller row; the layout is told its height'); }
             assert.ok(/const b2cLb2 = v => Number\(v\)\.toLocaleString\('en-US', \{ minimumFractionDigits: 2, maximumFractionDigits: 2 \}\);/.test(html) && /n\.sheet != null \? n\.sheet : n\.lb/.test(fnH('b2cWords')) && /\$\{b2cLb2\(L\.t\.left\)\} left in Metrc/.test(fnH('b2cBody')) && /L\.t\.left != null && !L\.t\.fut/.test(fnH('b2cBody')) && /\.b2s-n\.two\{height:44px;/.test(hcss), "a trim row: its pounds to two decimals (the trim sheet's first), and under them what Metrc still shows; a planned trim has no second line");
