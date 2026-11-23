@@ -25,7 +25,7 @@ function app(ca = [], ny = []) {
   const context = vm.createContext({ console, location: { hash: '#weekly' }, localStorage: { getItem: () => null } });
   vm.runInContext(source, context);
   const api = vm.runInContext(`({state,buildModel,comingDueFor,dueDateOf,leadTimes,ledger,computeAdjust,payDates,
-    marketBalances,filteredRows,estimateCheckFor,orderEstimatesFor})`, context);
+    marketBalances,filteredRows,estimateCheckFor,orderEstimatesFor,weeklyReportData,wkRangeFor,weeklyEmailHtml,weeklySummaryText})`, context);
   api.state.asc = [];
   api.state.data.ca = api.buildModel(csv(ca));
   api.state.data.ny = api.buildModel(csv(ny));
@@ -266,4 +266,21 @@ test('"Seed Mylars" are mylar bags: a seeds mylar bag is priced from them', () =
     open('INV-2735', '26110401', 'Wizard Trees - Seeds Mylar Bag NY x 3k ( Zoap / Zangria / Black Magic x 1k each)', '3,000'),
   ]);
   assert.equal(est(a, 'INV-2735').amount, 390);
+});
+
+test('the weekly email shows not yet due with what is coming, month by month, per market and for vapes', () => {
+  const a = app([], [...sheet(),
+    { inv: 'INV-V', po: '26100501', desc: 'Wizard Trees 1.0g AIO Hardware and Packaging - Bundle NY x 20k', status: 'Delivered', ship: '9/1/2026', dueDate: '10/1/2026', qty: '20,000', product: 73000, total: 73000, paid: 73000 },
+    { inv: 'INV-V2', po: '26110201', desc: 'Wizard Trees 1.0g AIO Hardware and Packaging - Bundle NY x 20k', status: 'In Production', ship: '12/5/2026', dueDate: '1/4/2027', qty: '20,000' }]);
+  const f = a;
+  const d = f.weeklyReportData(f.wkRangeFor('7d', now, null), now);
+  // NY: 500 + 700 booked not yet due, 300 priced, 400 + 73,000 estimated
+  const ah = d.ny.coming.cols.filter(c => c.key !== 'now').reduce((s, c) => s + c.total, 0);
+  assert.equal(ah, 500 + 700 + 300 + 400 + 73000);
+  const email = f.weeklyEmailHtml(d, 'https://example.test/x');
+  assert.match(email, /Not yet due, with what is coming: <b[^>]*>≈ \$74,900\.00<\/b> · Nov 2026 \$500\.00 · Dec 2026 \$1,000\.00 · Jan 2027 ≈ \$73,400\.00/);
+  assert.match(email, /<b>NY vapes<\/b>.*?≈ \$73,000\.00<\/b><br><span[^>]*>Jan 2027 ≈ \$73,000\.00/);
+  assert.match(email, /Coming due by month/);
+  assert.doesNotMatch(email, /—/);
+  assert.match(f.weeklySummaryText(d), /Not yet due, with what is coming .*approximately \$74,900\.00/);
 });

@@ -125,7 +125,9 @@ test('the open balance and payment timing totals do not change; the order shows 
   assert.match(text, /Priced, not yet booked by the supplier: \$73,500\.00 \(1 order: NY \$73,500\.00\)\. Not in the open balance\./);
   const email = a.weeklyEmailHtml(a.report(), 'https://example.test/order-tracker.html#weekly');
   assert.match(email, /Priced, not yet booked/);
-  assert.match(email, /Not in that balance yet: <b[^>]*>\$73,500\.00<\/b> priced but not booked by the supplier \(1 order\)/);
+  assert.match(email, /Not yet due, with what is coming: <b[^>]*>\$73,500\.00<\/b> · Dec 2026 \$73,500\.00/);
+  assert.match(email, /\$0\.00 not yet due \+ \$73,500\.00 priced but not booked by the supplier \(1 order\)\. Only the first is in the balance owed\./);
+  assert.match(text, /Not yet due, with what is coming .*: \$73,500\.00 \(Dec 2026 \$73,500\.00\)/);
   assert.match(email, /INV-2639/);
 });
 

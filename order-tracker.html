@@ -2532,6 +2532,21 @@ function bindDueDet(el){
 /* the weekly report's numbers: one place, used by the page and by the Monday email.
    range = the window for "new orders" (orders dated by their PO number); nowTs anchors
    the due-date weeks. */
+/* several markets' Coming due months added together, by month */
+function mergeComing(list){
+  const by = new Map(), thisMonth = list[0] ? list[0].thisMonth : 0;
+  for(const cd of list) for(const c of cd.cols){
+    const x = by.get(c.key) || { key: c.key, ...dueColLabel(c.key, thisMonth), booked:0, priced:0, est:0, pending:0, total:0 };
+    for(const f of ['booked','priced','est','pending','total']) x[f] += c[f];
+    by.set(c.key, x);
+  }
+  return { thisMonth, cols: [...by.values()].sort((a,b) => dueKeyRank(a.key) - dueKeyRank(b.key)) };
+}
+/* not yet due with what is coming: everything after Due now (booked, priced, estimated) */
+const comingAhead = c => c.cols.filter(x => x.key !== 'now').reduce((a, x) => ({ total: a.total + x.total, est: a.est + x.est,
+  priced: a.priced + x.priced, pending: a.pending + x.pending }), { total:0, est:0, priced:0, pending:0 });
+const comingMonthsText = (c, money = fmtUSD) => c.cols.filter(x => x.key !== 'now' && Math.abs(x.total) > .005)
+  .map(x => `${x.label} ${x.est > .005 ? '\u2248 ' : ''}${money(x.total)}`);
 function weeklyReportData(range, nowTs){
   const now = nowTs ?? Date.now();
   range = range || wkRangeFor(state.wk.preset, now, state.wk.custom);
@@ -2630,7 +2645,9 @@ function weeklyReportData(range, nowTs){
       b.when = b.key === 'overdue' ? (dated.length ? `oldest ${fmtDayY(Math.min(...dated))}` : '')
              : b.key === 'nodate' ? 'not on the sheet' : b.key === 'credit' ? 'not yet applied to an invoice' : `${fmtDay(b.ord)} to ${fmtDay(b.ord + 6*DAY)}`;
     }
-    return { market, orders, vape: pick(mb.vape), nonvape: pick(mb.nonvape), all: pick(mb.all), inprod,
+    // what is coming due month by month: booked, priced but not booked, and our estimates
+    const coming = comingDueFor([market], { now }), comingVape = comingDueFor([market], { now, buckets: ['vape'] });
+    return { market, orders, vape: pick(mb.vape), nonvape: pick(mb.nonvape), all: pick(mb.all), inprod, coming, comingVape,
              newOrders, nsum, undated, unpricedOrders, forecast:estimateSummary(unpricedOrders),
              due: due.filter(b => b.n > 0 || b.nbN > 0), attributed, notBooked, nbSum };
   };
@@ -2639,6 +2656,7 @@ function weeklyReportData(range, nowTs){
   const nadd = f => blocks.reduce((a,x) => a + x.nsum[f], 0);
   const total = { vape: add('vape'), nonvape: add('nonvape'), all: add('all'),
                   vapeMarkets: vapeMarkets(),
+                  coming: mergeComing(blocks.map(x => x.coming)), comingVape: mergeComing(blocks.map(x => x.comingVape)),
                   forecast:estimateSummary(blocks.flatMap(x => x.unpricedOrders)),
                   notBooked: blocks.flatMap(x => x.notBooked),
                   nbSum: { all: blocks.reduce((a,x) => addOut(a, x.nbSum.all), zeroOut()),
@@ -2673,14 +2691,33 @@ function weeklyEmailHtml(d, link){
     `<div style="font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#6b6f80">${label}</div>` +
     `<div style="font-size:22px;font-weight:800;color:${color||'#1a1d26'};margin:4px 0 2px">${money(a.bal)}</div>` +
     `<div style="font-size:12px;color:#6b6f80"><span style="color:#b45309;font-weight:600">${money(a.due)}</span> due · <span style="color:#1d4ed8;font-weight:600">${money(a.nyd)}</span> not yet due</div></td>`;
-  const tiles = a => `<table cellpadding="0" cellspacing="6" style="border-collapse:separate;width:100%;margin:0 0 10px"><tr>${tile('Open balance', a.all)}${tile('Vape (AIO hardware)', a.vape, '#4b2fd6')}${tile('Non-vape', a.nonvape)}</tr></table>`;
+  const tiles = a => `<table cellpadding="0" cellspacing="6" style="border-collapse:separate;width:100%;margin:0 0 10px"><tr>${tile('Open balance', a.all)}${tile('Vape (AIO hardware)', a.vape, '#4b2fd6')}${tile('Non-vape', a.nonvape)}</tr></table>` +
+    (a.coming ? (() => { const ah = comingAhead(a.coming), months = comingMonthsText(a.coming);
+      return `<div style="font-size:13px;color:#6b6f80;margin:-4px 0 10px 6px">Not yet due, with what is coming: <b style="color:#1d4ed8">${ah.est > .005 ? '\u2248 ' : ''}${money(ah.total)}</b>${months.length ? ` · ${months.map(m => esc(m)).join(' · ')}` : ''}</div>`; })() : '');
   const h2 = (t, sub) => `<div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#6b6f80;margin:14px 0 4px;border-bottom:1px solid #e6e8ef;padding-bottom:4px">${t}${sub?` <span style="font-weight:500;text-transform:none;letter-spacing:0">${sub}</span>`:''}</div>`;
-  const comingDue = a => h2('Coming due', 'by the supplier’s due dates') +
-    `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px">` +
-    `<tr><th style="text-align:left;${TH}">When</th><th style="text-align:right;${TH}">Invoices</th><th style="text-align:right;${TH}">Vape</th><th style="text-align:right;${TH}">Non-vape</th><th style="text-align:right;${TH}">Total</th></tr>` +
-    a.due.filter(b => b.n > 0).map(b => `<tr><td style="${TD}"><b style="${b.key==='overdue'?'color:#b45309':''}">${esc(b.label)}</b><span style="color:#6b6f80;font-size:11px"> ${esc(b.when)}</span></td>` +
-      `<td style="${TD};text-align:right">${b.n}</td><td style="${TD};text-align:right;color:#4b2fd6">${b.vape>0.005?money(b.vape):''}</td><td style="${TD};text-align:right">${b.nonvape>0.005?money(b.nonvape):''}</td><td style="${TD};text-align:right;font-weight:700">${money(b.total)}</td></tr>`).join('') +
-    `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb" colspan="2">Balance</td><td style="${TD};text-align:right;font-weight:700;color:#4b2fd6;border-bottom:2px solid #c9cddb">${money(a.vape.bal)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(a.nonvape.bal)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(a.all.bal)}</td></tr></table>` +
+  // what is coming due month by month: the supplier's Due now, then each month's Not yet due,
+  // orders priced but not booked, and our estimates for orders with no price yet (\u2248)
+  const est = v => Math.abs(v) < .005 ? '' : '\u2248 ' + money(v);
+  const comingTable = (c, note) => {
+    const rows = c.cols.filter(x => x.key === 'now' || Math.abs(x.total) > .005 || x.pending);
+    const sum = f => rows.reduce((a, x) => a + x[f], 0);
+    const cell = (v, color, f = money) => `<td style="${TD};text-align:right;${color ? `color:${color}` : ''}">${Math.abs(v) < .005 ? '' : f(v)}</td>`;
+    return `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px">` +
+      `<tr><th style="text-align:left;${TH}">When</th><th style="text-align:right;${TH}">Booked</th><th style="text-align:right;${TH}">Priced, not booked</th><th style="text-align:right;${TH}">Our estimate</th><th style="text-align:right;${TH}">Total</th></tr>` +
+      rows.map(x => { const sub = x.key === 'now' ? 'the supplier\u2019s Due' : x.sub;
+        return `<tr><td style="${TD}"><b style="${x.key === 'now' ? 'color:#b45309' : ''}">${esc(x.label)}</b>${sub ? `<span style="color:#6b6f80;font-size:11px"> ${esc(sub)}</span>` : ''}</td>` +
+        cell(x.booked) + cell(x.priced, '#a16207') +
+        `<td style="${TD};text-align:right;color:#4b2fd6;font-style:italic">${est(x.est)}${x.pending ? `<br><span style="font-size:11px;color:#6b6f80;font-style:normal">+${x.pending} not estimated</span>` : ''}</td>` +
+        `<td style="${TD};text-align:right;font-weight:700">${x.est > .005 ? '\u2248 ' : ''}${money(x.total)}</td></tr>`; }).join('') +
+      `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb">All</td>` +
+      ['booked','priced'].map(f => `<td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(sum(f))}</td>`).join('') +
+      `<td style="${TD};text-align:right;font-weight:700;color:#4b2fd6;border-bottom:2px solid #c9cddb">${est(sum('est')) || money(0)}</td>` +
+      `<td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${sum('est') > .005 ? '\u2248 ' : ''}${money(sum('total'))}</td></tr></table>` +
+      (!note ? '' : `<div style="font-size:11px;color:#6b6f80;margin-top:4px">Booked = the supplier’s Due and Not yet due (the open balance). Priced, not booked = priced on the supplier’s sheet, not in Due or Not yet due yet. ` +
+      `Our estimate (\u2248) = orders with no price yet, priced from the most similar earlier orders; products only, freight and duty extra. ` +
+      `Each estimate is replaced by the supplier’s price once it is on the sheet. Past dates the supplier has not put in Due count in this month; orders with no due date yet use an expected one (ship date + 30 days, else the usual days to ship).</div>`);
+  };
+  const comingDue = a => h2('Coming due by month', 'booked, priced and estimated') + comingTable(a.coming) +
     (attributionNote(a) ? `<div style="font-size:11px;color:#6b6f80;margin-top:4px">${attributionNote(a)}</div>` : '');
   const newOrders = a => h2('New orders', `placed ${fmtRange(d.range)}`) +
     (a.newOrders.length
@@ -2712,16 +2749,24 @@ function weeklyEmailHtml(d, link){
       `<div style="font-size:24px;font-weight:800">${money(t.all.bal)} <span style="font-size:13px;font-weight:500;color:#6b6f80">owed</span></div>` +
       `<div style="font-size:13px;color:#6b6f80;margin-top:2px"><b style="color:#b45309">${money(t.all.due)}</b> due · <b style="color:#1d4ed8">${money(t.all.nyd)}</b> not yet due · ${wkMarkets(d).map(mk => `${MARKET_LABEL[mk]} <b style="color:#1a1d26">${money(d[mk].all.bal)}</b>`).join(' · ')} · vape <b style="color:#4b2fd6">${money(t.vape.bal)}</b> · non-vape <b style="color:#1a1d26">${money(t.nonvape.bal)}</b>` +
       ` · ${t.nsum.n} new order${t.nsum.n===1?'':'s'} ${fmtRange(d.range)}</div>` +
-      (t.nbSum.all.n || t.forecast.estimated ? `<div style="font-size:13px;color:#6b6f80;margin-top:4px">Not in that balance yet: ` +
-        [t.nbSum.all.n ? `<b style="color:#1a1d26">${money(t.nbSum.all.amt)}</b> priced but not booked by the supplier (${t.nbSum.all.n} order${t.nbSum.all.n===1?'':'s'})` : '',
-         t.forecast.estimated ? `est. <b style="color:#1a1d26">${money(t.forecast.amount)}</b> for ${t.forecast.estimated} order${t.forecast.estimated===1?'':'s'} awaiting pricing (products only)` : ''].filter(Boolean).join(' · ') +
-        `</div>` : '') + `</div>` +
+      (() => { const ah = comingAhead(t.coming), months = comingMonthsText(t.coming);
+        return `<div style="font-size:13px;color:#6b6f80;margin-top:6px">Not yet due, with what is coming: <b style="color:#1d4ed8">${ah.est > .005 ? '\u2248 ' : ''}${money(ah.total)}</b>` +
+          (months.length ? ` · ${months.map(m => esc(m)).join(' · ')}` : '') + `<br><span style="font-size:12px">` +
+          [`${money(t.all.nyd)} not yet due`,
+           ah.priced > .005 ? `${money(ah.priced)} priced but not booked by the supplier${t.nbSum.all.n ? ` (${t.nbSum.all.n} order${t.nbSum.all.n===1?'':'s'})` : ''}` : '',
+           ah.est > .005 ? `\u2248 ${money(ah.est)} estimated for ${t.forecast.estimated} order${t.forecast.estimated===1?'':'s'} with no price yet (products only)` : ''].filter(Boolean).join(' + ') +
+          `${ah.pending ? `; ${ah.pending} more not estimated` : ''}.${ah.priced > .005 || ah.est > .005 ? ' Only the first is in the balance owed.' : ''}</span></div>`; })() + `</div>` +
+    h2('Coming due by month', 'all markets · booked, priced and estimated') + comingTable(t.coming, true) + `<div style="height:14px"></div>` +
     h2('Vapes by market', 'AIO hardware') +
     `<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;margin:0 0 6px">` +
-    `<tr><th style="text-align:left;${TH}">Market</th><th style="text-align:right;${TH}">Open balance</th><th style="text-align:right;${TH}">Due</th><th style="text-align:right;${TH}">Not yet due</th></tr>` +
-    VAPE_MARKETS.filter(g => t.vapeMarkets[g]).map(g => { const v = t.vapeMarkets[g];
-      return `<tr><td style="${TD}"><b>${VAPE_MARKET_LABEL[g]} vapes</b>${g==='eu'?'<span style="color:#6b6f80;font-size:11px"> billed on the CA sheet</span>':''}</td><td style="${TD};text-align:right;font-weight:700;color:#4b2fd6">${money(v.bal)}</td><td style="${TD};text-align:right;color:#b45309">${money(v.due)}</td><td style="${TD};text-align:right;color:#1d4ed8">${money(v.nyd)}</td></tr>`; }).join('') +
-    `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb">All vapes</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.bal)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.due)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.nyd)}</td></tr></table>` +
+    `<tr><th style="text-align:left;${TH}">Market</th><th style="text-align:right;${TH}">Open balance</th><th style="text-align:right;${TH}">Due</th><th style="text-align:right;${TH}">Not yet due</th><th style="text-align:right;${TH}">Not yet due, with what is coming</th></tr>` +
+    VAPE_MARKETS.filter(g => t.vapeMarkets[g]).map(g => { const v = t.vapeMarkets[g], cv = d[g] && d[g].comingVape;
+      const ah = cv ? comingAhead(cv) : null, months = cv ? comingMonthsText(cv) : [];
+      return `<tr><td style="${TD}"><b>${VAPE_MARKET_LABEL[g]} vapes</b>${g==='eu'?'<span style="color:#6b6f80;font-size:11px"> billed on the CA sheet</span>':''}</td><td style="${TD};text-align:right;font-weight:700;color:#4b2fd6">${money(v.bal)}</td><td style="${TD};text-align:right;color:#b45309">${money(v.due)}</td><td style="${TD};text-align:right;color:#1d4ed8">${money(v.nyd)}</td>` +
+        `<td style="${TD};text-align:right;color:#1d4ed8">${ah ? `<b>${ah.est > .005 ? '\u2248 ' : ''}${money(ah.total)}</b>${months.length ? `<br><span style="font-size:11px;color:#6b6f80">${months.map(m => esc(m)).join(' · ')}</span>` : ''}` : ''}</td></tr>`; }).join('') +
+    (() => { const ah = comingAhead(t.comingVape), months = comingMonthsText(t.comingVape);
+      return `<tr><td style="${TD};font-weight:700;border-bottom:2px solid #c9cddb">All vapes</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.bal)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.due)}</td><td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${money(t.vape.nyd)}</td>` +
+        `<td style="${TD};text-align:right;font-weight:700;border-bottom:2px solid #c9cddb">${ah.est > .005 ? '\u2248 ' : ''}${money(ah.total)}${months.length ? `<br><span style="font-size:11px;color:#6b6f80;font-weight:500">${months.map(m => esc(m)).join(' · ')}</span>` : ''}</td></tr></table>`; })() +
     `<div style="font-size:11px;color:#6b6f80;margin:0 0 18px">${VAPE_MARKET_NOTE}</div>` +
     wkMarkets(d).map(mk => stateBlock(MARKET_NAME[mk] + (mk === 'eu' ? ' <span style="font-size:12px;font-weight:500;color:#6b6f80">billed on the California sheet; California excludes it</span>' : ''), d[mk])).join('') +
     `<p style="font-size:12px;color:#6b6f80;line-height:1.5">Vape is tracked as its own account per state; every payment counts toward non-vape unless it was attributed to vapes in the tracker. ` +
@@ -2748,6 +2793,8 @@ function weeklySummaryText(d){
     `Current balances as of ${fmtAsOf(d.asOf)}`,
     `Open balance: ${fmtUSD(d.total.all.bal)} (includes due and not yet due)`,
     `Due per supplier: ${fmtUSD(d.total.all.due)} | Not yet due: ${fmtUSD(d.total.all.nyd)}`,
+    ...(d.total.coming ? (() => { const ah = comingAhead(d.total.coming), months = comingMonthsText(d.total.coming);
+      return [`Not yet due, with what is coming (priced but not booked, and estimates for orders with no price yet): ${ah.est > .005 ? 'approximately ' : ''}${fmtUSD(ah.total)}${months.length ? ` (${months.join('; ')})` : ''}. Estimates are products only.`]; })() : []),
     ...(d.total.nbSum.all.n ? [`Priced, not yet booked by the supplier: ${fmtUSD(d.total.nbSum.all.amt)} (${d.total.nbSum.all.n} order${d.total.nbSum.all.n===1?'':'s'}: ` +
       wkMarkets(d).filter(k => d[k].nbSum.all.n).map(k => `${MARKET_LABEL[k]} ${fmtUSD(d[k].nbSum.all.amt)}`).join(', ') + `). Not in the open balance.`] : []),
     `California open balance: ${fmtUSD(d.ca.all.bal)} (${fmtUSD(d.ca.all.due)} due; ${fmtUSD(d.ca.all.nyd)} not yet due)`,
