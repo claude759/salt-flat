@@ -2654,7 +2654,7 @@ check('review: an update or delete sends p_expect (the waiting changes the edito
 });
 check('review: managers are offered only the kinds of change the worker has sent with a person watching (adding, deleting and New York wait for a supervised run)', () => {
   const app = block('ts-app');
-  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: true, nyMidnight: false, midnightEnd: false,[^}]*midnightDelete: false, nyMidnightDelete: false,[^}]*note: false, nyNote: false,[^}]*job: false, nyJob: false,[^}]*addJob: false, nyAddJob: false,[^}]*startAfterClockout: true, nyStartAfterClockout: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the first-day end fix proven in CA 2026-10-30 (not New York), its 11:59 PM end and whole-shift deletes not yet (2026-11-16), nor notes in either region (2026-10-29), nor job changes or adds on a picked job (2026-10-30), and a start moved once the shift ended proven in CA 2026-11-09 (not yet in New York)');
+  ok(/const EDIT_PROVEN = \{ add: true, delete: true, ny: true,[^}]*midnight: true, nyMidnight: false, midnightEnd: false,[^}]*midnightDelete: false, nyMidnightDelete: false,[^}]*note: false, nyNote: false,[^}]*job: true, nyJob: false,[^}]*addJob: true, nyAddJob: false,[^}]*startAfterClockout: true, nyStartAfterClockout: false \};/.test(app), 'adding and deleting shifts and New York days proven 2026-10-22/23; the first-day end fix proven in CA 2026-10-30 (not New York), its 11:59 PM end and whole-shift deletes not yet (2026-11-16), nor notes in either region (2026-10-29), nor job changes or adds on a picked job (2026-10-30), and a start moved once the shift ended proven in CA 2026-11-09 (not yet in New York)');
   ok(/function mayEdit\(what\) \{ const a = actor\(\); return !!\(a && a\.is_admin\) \|\| C\.fullViewer\(a\) \|\| !!EDIT_PROVEN\[what\]; \}/.test(app), 'admins and full viewers keep them all');
   const fv = { is_admin: false, active: true, grants: [{ company: '*', department: '*' }] }, mgr = { is_admin: false, active: true, grants: [{ company: 'filifera', department: 'Trim' }] };
   ok(C.fullViewer(fv) && !C.fullViewer(mgr), 'a full viewer (every CA company) gets add and delete; a department manager does not');
@@ -4216,10 +4216,13 @@ check('the Job pick: for a person with more than one job (loaded), on a shift th
   const me = { email: 'boss@wizardtrees.com', is_admin: true }, ctx = { today: '2026-10-07', now: NOW_N };
   const en = C.editorEntries(ca, ca, [], me, ctx)[0];
   const P = jobPage(mgr, PJ);
-  eq([P.EDIT_PROVEN.job, P.EDIT_PROVEN.nyJob, P.EDIT_PROVEN.addJob, P.EDIT_PROVEN.nyAddJob], [false, false, false, false], 'none proven yet');
-  eq([P.mayJob(ca), P.mayJob(ny), String(P.jobField(en, ca, 'Shift 1'))], [false, false, ''], 'a manager: no Job pick yet');
+  eq([P.EDIT_PROVEN.job, P.EDIT_PROVEN.nyJob, P.EDIT_PROVEN.addJob, P.EDIT_PROVEN.nyAddJob], [true, false, true, false], 'California proven (CA:job 11/4, CA:add-job 11/6; switched on 11/23), New York not yet');
+  eq([P.mayJob(ca), P.mayJob(ny)], [true, false], 'a California manager: the Job pick now; New York days wait for NY:job');
+  ok(/data-pick="job"/.test(String(P.jobField(en, ca, 'Shift 1'))), 'a California manager sees the pick');
+  const none = Object.assign({}, P.EDIT_PROVEN, { job: false, addJob: false });
+  eq([jobPage(mgr, PJ, none).mayJob(ca), jobPage(mgr, PJ, none).mayJob(ny), String(jobPage(mgr, PJ, none).jobField(en, ca, 'Shift 1'))], [false, false, ''], 'before a proof: a manager has no Job pick');
   eq([jobPage(admin, PJ).mayJob(ca), jobPage(admin, PJ).mayJob(ny), jobPage(fv, PJ).mayJob(ca)], [true, true, true], 'admins and full viewers: now');
-  const caOnly = Object.assign({}, P.EDIT_PROVEN, { job: true });
+  const caOnly = Object.assign({}, P.EDIT_PROVEN, { job: true, addJob: false });
   eq([jobPage(mgr, PJ, caOnly).mayJob(ca), jobPage(mgr, PJ, caOnly).mayJob(ny), jobPage(mgr, PJ, Object.assign({}, caOnly, { nyJob: true })).mayJob(ny)], [true, false, true], 'once CA:job is proven, California days; New York days wait for NY:job');
   eq([String(jobPage(admin, [PJ[0]]).jobField(en, ca, 'Shift 1')), String(jobPage(admin, null).jobField(en, ca, 'Shift 1'))], ['', ''], 'one job, or jobs not loaded: no pick');
   const html = String(jobPage(admin, PJ).jobField(en, ca, 'Shift 1'));
@@ -5889,7 +5892,7 @@ check('Job is right and Undo keep the table where it was scrolled sideways, and 
     const app = block('ts-app');
     const ep = new Function('return ' + app.match(/const EDIT_PROVEN = (\{[\s\S]*?\});/)[1])();
     eq(ep, { add: true, delete: true, ny: true, midnight: true, nyMidnight: false, midnightEnd: false, midnightDelete: false, nyMidnightDelete: false, midnightCross: false, nyMidnightCross: true, note: false, nyNote: false,
-      job: false, nyJob: false, addJob: false, nyAddJob: false, startAfterClockout: true, nyStartAfterClockout: false }, 'EDIT_PROVEN as decided');
+      job: true, nyJob: false, addJob: true, nyAddJob: false, startAfterClockout: true, nyStartAfterClockout: false }, 'EDIT_PROVEN as decided');
     ok(/function mayMidnight\(r\) \{ return mayEdit\('midnight'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnight'\)\); \}/.test(app), 'mayMidnight');
     ok(/function mayWhole\(r\) \{ return mayEdit\('midnightDelete'\) && \(rowRegion\(r\) !== 'NY' \|\| mayEdit\('nyMidnightDelete'\)\); \}/.test(app), 'mayWhole');
     eq((app.match(/mayEdit\('midnight'\)/g) || []).length, 1, "every gate goes through mayMidnight (the day's region)");
