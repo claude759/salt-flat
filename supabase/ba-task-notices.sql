@@ -136,11 +136,14 @@ revoke all on function public.schedule_task_digest(date) from public, anon, auth
 grant execute on function public.schedule_task_digest(date) to service_role;
 
 -- ── 4. the timer: every 5 minutes, and it calls the function only when someone has something new ────
+-- The call waits up to 30 seconds for the answer (pg_net's 5-second default gave up before an email was sent and
+-- logged a timeout; the function itself carried on), so net._http_response shows what each run did.
 select cron.schedule('ba-task-notices', '*/5 * * * *', $cron$
   select net.http_post(
     url := 'https://dhiqhgtmelxwelyoowle.supabase.co/functions/v1/ba-notify',
     headers := jsonb_build_object('Content-Type','application/json',
       'x-notify-secret',(select decrypted_secret from vault.decrypted_secrets where name='ba_notify_secret')),
-    body := jsonb_build_object('job','task-notices'))
+    body := jsonb_build_object('job','task-notices'),
+    timeout_milliseconds := 30000)
   where exists (select 1 from public.schedule_task_notices());
 $cron$);
