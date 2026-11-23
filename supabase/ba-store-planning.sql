@@ -347,6 +347,8 @@ revoke all on public.schedule_task_digest_log from anon, authenticated;
 -- here; past the last 30 days they're left out). Deliveries are left out. People already emailed today are
 -- left out. Only the notification function (service role) calls it. updated_at has no trigger: the page
 -- sets it on every change it saves, and so do the app's own functions.
+-- Replaced by supabase/ba-task-notices.sql (2026-11-23), which adds the new-task email's test to New for you.
+-- If this file is run again, run ba-task-notices.sql right after it.
 create or replace function public.schedule_task_digest(p_today date)
 returns table(person_id uuid, email text, full_name text, state text,
               new_tasks jsonb, today_tasks jsonb, overdue_tasks jsonb)

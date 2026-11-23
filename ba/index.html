@@ -438,7 +438,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-11-21.132';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-11-23.133';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -6038,6 +6038,7 @@ const SCHED_COLORS={
   // picked to be far apart in hue AND lightness (min CIEDE2000 distance 26.5; the first set had pink/red and
   // orange/yellow under 22): true red, deep orange, light lemon, green, violet, light pink, dark brown
   Carlos:'#e3121b', Jesse:'#ff8c00', Cesar:'#ffe14d', Ledy:'#2fbf71', Joanna:'#7c4dff', Makenna:'#ff9ed8',
+  Amanda:'#888800', Keelin:'#dd0088',   // 2026-11-23: the two names the board's people list adds (the most distinct left)
   Pickup:'#6d4c2e',                     // brown: Metrc driver who isn't one of ours, or a pickup on the sheet
   Al:'#4f9dff', AJ:'#22c6c6', Team:'#b98cff',
   'Driver needed':'#9ca3af',            // grey + ⚠: an upcoming delivery with no driver yet
@@ -6052,7 +6053,7 @@ function schedBoard(){
 // otherwise leaves the previous person's board cached in memory, and their last
 // board pinned in localStorage for whoever signs in next.
 function schedForget(){
-  state.sched=null; state.scheduleBoards=[]; state.schedState=null; state.scheduleWb=null;
+  state.sched=null; state.scheduleBoards=[]; state.schedState=null; state.scheduleWb=null; state.schedPeople=null;
   if(EMBED) return;   // the embed never touches what the BA app itself remembers on this device
   try{ localStorage.removeItem('ba.schedstate');
     Object.keys(localStorage).filter(k=>k.startsWith('ba.schedtab.')).forEach(k=>localStorage.removeItem(k));
@@ -6062,8 +6063,8 @@ function schedCanon(raw){
   const s=(raw||'').trim(); if(!s) return '';
   if(s.includes('/')||s.includes(',')) return 'Team';
   const k=s.toLowerCase().replace(/\s+/g,' ');
-  if(SCHED_ALIASES[k]) return SCHED_ALIASES[k];
-  return s.replace(/\w\S*/g,w=>w[0].toUpperCase()+w.slice(1).toLowerCase());
+  if(Object.prototype.hasOwnProperty.call(SCHED_ALIASES,k)) return SCHED_ALIASES[k];
+  return s.replace(/[\p{L}\p{N}_]\S*/gu,w=>w[0].toUpperCase()+w.slice(1).toLowerCase());
 }
 // '#rrggbb' → [r,g,b] (0-255), null for anything else; and its WCAG relative luminance
 const schedRgb=c=>{ const m=/^#([0-9a-f]{6})$/i.exec(String(c||'')); return m?[0,2,4].map(i=>parseInt(m[1].slice(i,i+2),16)):null; };
@@ -6072,7 +6073,7 @@ const schedLum=rgb=>{ const ch=v=>{ v/=255; return v<=0.03928?v/12.92:((v+0.055)
 // text colour that stays readable on a solid chip of colour c (phone month grid): white on dark colours
 function schedInk(c){ const rgb=schedRgb(c); return rgb && schedLum(rgb)<0.18 ? '#ffffff' : '#0b0d10'; }
 function schedColor(c){
-  let col=SCHED_COLORS[c];
+  let col=Object.prototype.hasOwnProperty.call(SCHED_COLORS,c)?SCHED_COLORS[c]:null;
   if(!col){ let h=0; for(const ch of c) h=(h*31+ch.charCodeAt(0))>>>0; col=`hsl(${h%360} 62% 62%)`; }
   return EMBED ? schedOnWhite(col) : col;
 }
@@ -6410,6 +6411,7 @@ async function schedLoadMonths(center){
     schedReloadTasks(),
     schedLoadActivity().catch(()=>{}),
     schedLoadOrders(bd).catch(()=>{}),
+    schedLoadPeople(),
   ]);
   // a month whose fetch never got an answer is UNTRIED, not empty: drop it from
   // S.tried so paging back to it (or ⟳) re-probes instead of showing a blank month
@@ -6592,7 +6594,7 @@ async function schedReloadTasks(){
         soNum:t.so_num||'', sheet:'app', dbId:t.id, canon, color:schedColor(canon),
         time:schedClock(t.task_time)||schedTime(t.notes||''), taskTime:t.task_time||'', booking:t.booking||null, title:t.title||'',
         kind:t.kind||null, doneAt:t.done_at||null, doneHow:t.done_how||null, doneNote:t.done_note||'', doneBy:t.done_by||null,
-        createdAt:t.created_at||null, doneOn:t.done_on||null };
+        createdAt:t.created_at||null, createdBy:t.created_by||null, doneOn:t.done_on||null };
     });
   }catch(e){ S.dbRows=S.dbRows||[];        // keep the last good rows rather than blanking
     toast('Couldn’t refresh tasks. Showing the last loaded copy.'); }
@@ -6766,6 +6768,10 @@ function schedKindOf(v){
 // BAs log at the end of the pay period, so a past one waits this many days before it counts as overdue
 const SCHED_VISIT_KINDS=new Set(['visit','pad','edu']);
 const SCHED_CONFIRM_DAYS=16;
+// Done on a visit, Demo / PAD or EDU means it happened, so it can't be marked before its day (Amanda 2026-11-23
+// asked what the check marks on visits still to come meant: BAs had ticked Done days ahead). Trainings and
+// follow-ups can be done early.
+function schedTooEarly(v, todayIso){ return !!(v && v.dbId && !v.doneAt && v.iso>todayIso && SCHED_VISIT_KINDS.has(schedKindOf(v))); }
 function schedKindLabel(k){ const x=SCHED_KINDS.find(o=>o.k===k); return x?x.label:''; }
 // other names the schedule knows a person by (SCHED_ALIASES: Leti and Leticia are Ledy), for the picker's search
 function schedAlsoKnown(name){ return Object.keys(SCHED_ALIASES).filter(k=>SCHED_ALIASES[k]===name).join(' '); }
@@ -6946,6 +6952,19 @@ function spFilter(rows, f){
     longest:(a,b)=>((b.daysSince??1e9)-(a.daysSince??1e9))||nm(a,b),
     recent:(a,b)=>((a.daysSince??1e9)-(b.daysSince??1e9))||nm(a,b), name:nm }[f.sort||'sales']||nm;
   return out.sort(cmp);
+}
+// A store's team after a bulk change: 'add' the names, make them the 'whole' team, 'remove' them, or 'swap'
+// (hand over): the names take the place of `from` on a team that has `from`, and a team without them is left
+// as it is. Always a new array, no name twice.
+function spTeamEdit(team, op, names, from){
+  const t=[...new Set((Array.isArray(team)?team:[]).filter(Boolean))], n=[...new Set((names||[]).filter(Boolean))];
+  if(op==='whole') return n;
+  if(op==='add') return [...new Set([...t, ...n])];
+  if(op==='remove') return t.filter(x=>!n.includes(x));
+  if(op==='swap'){ if(!t.includes(from)) return t;
+    const out=[]; for(const x of t) for(const y of (x===from?n:[x])) if(!out.includes(y)) out.push(y);
+    return out; }
+  return t;
 }
 // "14:30" -> {mins, label:"2:30 PM"} (a task's own time; older tasks only had one written in their notes)
 function schedClock(hhmm){
@@ -7222,7 +7241,7 @@ function schedDaySheet(iso){
       ${v.location?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(v.location)}" target="_blank" rel="noopener">📍 ${esc(v.location)}</a></div>`:''}
       ${(!v.location && pl && pl.address && !schedIsPickup(v))?`<div class="sb-addr"><a href="https://maps.google.com/?q=${encodeURIComponent(pl.address)}" target="_blank" rel="noopener">📍 ${esc(pl.address)}</a>${pl.mi!=null?` <span class="muted">· ~${Math.round(pl.mi)} mi from the office</span>`:''}</div>`:''}
       ${notes?`<div class="notes">${esc(notes)}</div>`:''}
-      ${v.dbId?`<div class="sb-done-row">${st==='done'
+      ${v.dbId&&!schedTooEarly(v, schedIso(new Date()))?`<div class="sb-done-row">${st==='done'
         ?`<span class="small muted">${esc(schedDoneTitle(v))}</span><button class="btn sm ghost" data-sbundone="${i}">Not done</button>`
         :`<button class="btn sm" data-sbdone="${i}">✓ Mark done</button>`}</div>`:''}
       ${review}</div>`;
@@ -7447,10 +7466,59 @@ async function schedBackupAfterRestore(){
 }
 // Each board's people: its BAs get a name tag even in a month with nothing on it yet, so they can be
 // picked and scheduled (Amanda 2026-11-09: "kenna is missing from the calendar"); drivers are only
-// offered in the task form.
+// offered in the task form. The BAs come from the database (schedule_people, 2026-11-23: the board's active
+// field people, so a new hire needs no change here and someone who has left drops off). The names below are used
+// until that answer is in, and whenever it can't be read.
 const SCHED_ROSTER={ CA:{ bas:['Cesar','Jesse','Joanna','Ledy','Makenna'], drivers:['Al','AJ'] },
   NY:{ bas:['Rachel','Terrance','Jackie','Chandler','Maddy'], drivers:[] } };
-const schedRoster=()=>SCHED_ROSTER[state.schedState==='NY'?'NY':'CA'];
+// the database's answer for a board, {names: the field people (the pick-lists), reach: every name that reaches one
+// active person of the board}, or null while it isn't known
+function schedPeopleOf(st){ const p=state.schedPeople&&state.schedPeople[st]; return (p&&p.names)?p:null; }
+const schedRoster=()=>{ const base=SCHED_ROSTER[state.schedState==='NY'?'NY':'CA'], live=schedPeopleOf(state.schedState||'CA');
+  return live?{ bas:live.names, drivers:base.drivers }:base; };
+// every schedule name that reaches one active person of the board, as a Set; null while the database's list isn't
+// known (nothing is flagged then: the built-in names may be out of date)
+function schedKnownPeople(){ const l=schedPeopleOf(state.schedState||'CA'); return l?new Set(l.reach):null; }
+// true for a name on a store's team or a task that reaches nobody: no active login on the board, or a first name
+// two active people share
+function schedGone(name, known){ return !!(known && name && name!=='Team' && !known.has(schedCanon(name))); }
+// Read the board's people with the calendar: again when the last answer is over 10 minutes old (⟳ asks at once),
+// keeping the last answer while it asks. Never throws.
+async function schedLoadPeople(){
+  const st=state.schedState||'CA', P=(state.schedPeople=state.schedPeople||{}), cur=P[st];
+  if(cur && Date.now()-cur.at<600000) return;
+  P[st]={ ...(cur||{ names:null, reach:null }), at:Date.now() };
+  try{
+    const { data, error }=await supabase.rpc('schedule_people',{ p_state:st });
+    if(error || !Array.isArray(data)) return;
+    const rows=data.filter(x=>x&&typeof x.name==='string').map(x=>({ n:schedCanon(x.name), field:x.field!==false }))
+      .filter(x=>x.n&&x.n!=='Team');
+    const reach=[...new Set(rows.map(x=>x.n))], names=[...new Set(rows.filter(x=>x.field).map(x=>x.n))];
+    if(names.length && state.schedPeople===P) P[st]={ at:Date.now(), names, reach };
+  }catch(_){}
+}
+// What the new-task email will do (ba-task-notices.sql), in words for the line after a save, or '' when it may not
+// go: an open task from today on (the board's day), not a delivery, given to someone the board can reach who isn't
+// the person saving it, and new to them (a new task, or one this person made and moved to them; the database never
+// tells people about tasks they made, and the page can't tell who made someone else's, so it says nothing then).
+// The emails go out from 7 AM to 9 PM on the board's clock; from 8:50 PM it may go tonight or at 7 AM: nothing said.
+function schedNoticeWords(rec, task, done){
+  const who=schedCanon(rec.driver||''), reach=schedKnownPeople();
+  if(done || !reach || !who || who==='Team' || !reach.has(who) || who===schedMyName()) return '';
+  if(task && (schedCanon(task.driver||'')===who || !task.createdBy || task.createdBy!==(state.session?.user?.id||null))) return '';
+  let day=schedIso(new Date()), mins=12*60;
+  try{ const p={};
+    new Intl.DateTimeFormat('en-US',{ timeZone:(rec.state==='NY'||rec.state==='FL')?'America/New_York':'America/Los_Angeles',
+      year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false })
+      .formatToParts(new Date()).forEach(x=>{ p[x.type]=x.value; });
+    const hh=Number(p.hour)%24, mm=Number(p.minute);
+    if(p.year && p.month && p.day && Number.isFinite(hh) && Number.isFinite(mm)){ day=`${p.year}-${p.month}-${p.day}`; mins=hh*60+mm; }
+  }catch(_){}
+  if(rec.kind==='delivery' || rec.task_date<day) return '';
+  if(mins>=7*60 && mins<20*60+50) return `${who} gets an email about it in a few minutes.`;
+  if(mins<7*60 || (mins>=21*60 && rec.task_date>day)) return `${who} gets an email about it at 7 AM.`;
+  return '';
+}
 function schedTaskSheet(iso, task, preset){
   const S=state.sched; preset=preset||{};
   const known=S.rows.concat(S.dbRows);
@@ -7499,6 +7567,7 @@ function schedTaskSheet(iso, task, preset){
     <datalist id="stRegionList">${regions.map(r=>`<option value="${esc(r)}">`).join('')}</datalist>
     <label class="fl">Driver / BA</label>
     <select id="stDriver" data-searchable><option value="">Nobody</option>${drivers.map(x=>`<option value="${esc(x)}" data-search="${esc((x+' '+alsoKnown(x)).trim())}"${pre===x?' selected':''}>${esc(x)}</option>`).join('')}</select>
+    <div id="stDrvHint" class="small" style="color:var(--orange);margin-top:4px" hidden></div>
     <label class="fl">SO #</label><input id="stSo" placeholder="#SO-0000123" value="${task?esc(task.soNum):''}">
     <label class="fl">Notes</label><textarea id="stNotes" placeholder="Store visit, demo 2–4pm…">${task?esc(task.soNotes):''}</textarea>
     <label class="fl">Status</label>
@@ -7543,6 +7612,17 @@ function schedTaskSheet(iso, task, preset){
     h.hidden=!a || !SCHED_VISIT_KINDS.has($('#stKind').value) || !!schedStoreFor(state.dispensaries, bdSt, a); };
   ['input','change'].forEach(ev=>$('#stAcct').addEventListener(ev, acctHint));
   $('#stKind').addEventListener('change', acctHint); acctHint();
+  // who it reaches: nobody, Team and a name that reaches no one (no active login on the board, or a first name
+  // two people share) are in no one's My tasks and no one's email (deliveries go to no one's, so nothing is said)
+  const drvHint=()=>{ const h=$('#stDrvHint'); if(!h) return;
+    const v=$('#stDriver').value;
+    const msg=$('#stKind').value==='delivery' ? ''
+      : !v ? 'Nobody is picked, so nobody will be told about this.'
+      : v==='Team' ? 'A task for Team is on nobody\'s list and in nobody\'s email. Pick one person for it to reach them.'
+      : schedGone(v, schedKnownPeople()) ? `${v} can't be reached on this board (no active login, or two people share that first name), so this won't be on anyone's list or in anyone's email.`
+      : '';
+    h.textContent=msg; h.hidden=!msg; };
+  $('#stDriver').addEventListener('change', drvHint); $('#stKind').addEventListener('change', drvHint); drvHint();
   // a booking only means something for a visit, Demo / PAD, EDU or training
   const bookShow=()=>{ const w=$('#stBookWrap'); if(w) w.style.display=['followup','delivery'].includes($('#stKind').value)?'none':''; };
   $('#stKind').addEventListener('change', bookShow); bookShow();
@@ -7561,8 +7641,16 @@ function schedTaskSheet(iso, task, preset){
     // Done: ticking it marks the task done by you now; unticking reopens it (and the automatic check then
     // leaves it alone); a done task's note can change on its own
     const wantDone=$('#stDone').checked, wasDone=!!(task&&task.doneAt), doneNote=$('#stDoneNote').value.trim()||null;
+    // Done on a visit still to come: refused when ticked now, and when a done visit is moved to a later day (a done
+    // mark from the BA's records is cleared on a move below, so that one can go)
+    const aheadNow=SCHED_VISIT_KINDS.has(kind) && rec.task_date>schedIso(new Date());
+    if(wantDone && aheadNow && (!wasDone || !SCHED_VISIT_KINDS.has(schedKindOf(task))
+        || (rec.task_date!==task.iso && !SCHED_AUTO_HOW.has(task.doneHow)))){
+      toast('A visit can be marked done on its day or after. Untick Done, or if it already happened, use the day it happened.');
+      return; }
     if(wantDone&&!wasDone) Object.assign(rec,{done_at:new Date().toISOString(), done_by:state.session?.user?.id||null, done_how:'marked', done_note:doneNote, done_on:null});
-    else if(!wantDone&&wasDone) Object.assign(rec,{done_at:null, done_by:null, done_how:'reopened', done_note:null, done_on:null});
+    // unticked: 'reopened' keeps the automatic check off it for good; a visit still to come is left to that check
+    else if(!wantDone&&wasDone) Object.assign(rec,{done_at:null, done_by:null, done_how:aheadNow?null:'reopened', done_note:null, done_on:null});
     else if(wantDone) rec.done_note=doneNote;
     // a task moved to another day, store or person is checked again: a done mark from the BA's records (or a
     // "not done") belonged to the old one; the database marks it again if the new one has a record
@@ -7587,10 +7675,12 @@ function schedTaskSheet(iso, task, preset){
         if(error) throw error;
       }
       if(moved) await schedAutocomplete(state.schedState||'CA', rec.task_date<task.iso?rec.task_date:task.iso, true);
+      const told=schedNoticeWords(rec, task, wantDone);   // done after this save: no email
+      const said=(task?'Saved':'Added to the schedule')+(told?'. '+told:'');
       // a slow save closes only its own form, never one opened since
-      if(preset.onSaved){ if($('#sheet')===formSh) closeSheet(); await schedReloadTasks(); if(!$('#sheet')||$('#sheet')===formSh) await preset.onSaved(rec); toast(task?'Saved':'Added to the schedule','ok'); }
-      else if(!$('#sheet')||$('#sheet')===formSh) await refresh(rec.task_date, rec.driver);
-      else { await schedReloadTasks(); const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m); toast(task?'Saved':'Added to the schedule','ok'); }
+      if(preset.onSaved){ if($('#sheet')===formSh) closeSheet(); await schedReloadTasks(); if(!$('#sheet')||$('#sheet')===formSh) await preset.onSaved(rec); toast(said,'ok'); }
+      else if(!$('#sheet')||$('#sheet')===formSh){ await refresh(rec.task_date, rec.driver); if(told) toast(said,'ok'); }
+      else { await schedReloadTasks(); const m=$('#main'); if(m&&m.querySelector('.sb-wrap,.loading')) schedRender(m); toast(said,'ok'); }
     }catch(e){ btn.disabled=false; btn.textContent=task?'Save changes':'Add to schedule'; toast('Could not save: '+(e.message||e)); }
   };
   if(task&&task.dbId) $('#stDel').onclick=async()=>{
@@ -7636,7 +7726,9 @@ async function schedMarkDone(v, done, after){
   const now=()=>new Date().toISOString();
   const before={done_at:v.doneAt||null, done_by:v.doneBy||null, done_how:v.doneHow||null, done_note:v.doneNote||null, done_on:v.doneOn||null};
   const patch=done?{done_at:now(), done_by:state.session?.user?.id||null, done_how:'marked', done_note:v.doneNote||null, done_on:null}
-                  :{done_at:null, done_by:null, done_how:'reopened', done_note:null, done_on:null};
+                  :{done_at:null, done_by:null, done_note:null, done_on:null,
+                    // a visit still to come, reopened, is left to the automatic check; anything else stays reopened
+                    done_how:(SCHED_VISIT_KINDS.has(schedKindOf(v))&&v.iso>schedIso(new Date()))?null:'reopened'};
   const { error }=await supabase.from('schedule_tasks').update({...patch, updated_at:now()}).eq('id',v.dbId);
   if(error){ toast('Could not save: '+error.message); return false; }
   if(after) await after();
@@ -7748,7 +7840,7 @@ function myTaskRowHtml(v, src, i, today){
       <div style="font-weight:650;overflow-wrap:anywhere">${v.title?esc(v.title)+' · ':''}${esc(v.account)}</div>
       ${v.soNotes?`<div class="small muted" style="overflow-wrap:anywhere">${esc(v.soNotes)}</div>`:''}
     </div>
-    <button class="btn sm" data-mtdone="${src}:${i}">✓ Done</button></div>`;
+    ${schedTooEarly(v,today)?'':`<button class="btn sm" data-mtdone="${src}:${i}">✓ Done</button>`}</div>`;
 }
 function myTasksHtml(mt){
   if(!mt||mt.error||(!mt.card.length&&!mt.rest.length&&!mt.waiting.length&&!mt.done7)) return '';
@@ -7800,6 +7892,9 @@ async function drawMyTasks(){
 // Done button back (the report covers it, and closing the report must not leave it greyed out).
 function schedDoneFlow(v, afterReport, afterDone){
   if(!v||!v.dbId) return Promise.resolve(false);
+  if(schedTooEarly(v, schedIso(new Date()))){ const d=new Date(v.iso+'T12:00:00');
+    toast(`This visit is on ${SCHED_MONL[d.getMonth()]} ${d.getDate()}. It can be marked done on that day or after, and it marks itself done when the trip or hours there are logged.`);
+    return Promise.resolve(false); }
   if(['visit','pad','edu','training'].includes(schedKindOf(v))){ schedReportSheet({ task:v, iso:v.iso, after:afterReport, afterSkip:afterDone }); return Promise.resolve(false); }
   return schedMarkDone(v, true, afterDone);
 }
@@ -7958,7 +8053,9 @@ async function storesRender(m){
   }else load.then(d=>{ if(d!==had && here() && $('#spList')) storesDrawList(m); }, ()=>{});
   const F=S.storesF, rows=storesRows();
   const terrs=[...new Set([...(SP_TERRITORIES[st]||[]), ...rows.map(r=>r.territory).filter(Boolean)])];
-  const people=storesPeople(rows);
+  const people=storesPeople(rows), known=schedKnownPeople();
+  // a person picked here who has since left every team and the board's list: show everyone again
+  if(F.person!=='all' && F.person!=='~none' && !people.includes(F.person)) F.person='all';
   const opt=(list,cur)=>list.map(o=>`<option value="${esc(o.k)}"${o.k===cur?' selected':''}>${esc(o.label)}</option>`).join('');
   const boards=state.scheduleBoards||[];
   const switcher=boards.length>1?`<div class="sb-states">${boards.map(b=>
@@ -7974,14 +8071,14 @@ async function storesRender(m){
     <div class="sp-filters">
       <input id="spQ" type="search" placeholder="Search stores or addresses…" value="${esc(F.q)}" autocomplete="off">
       <select id="spTerr" data-searchable>${opt([{k:'all',label:'All territories'},...terrs.map(t=>({k:t,label:t})),{k:'~none',label:'No territory set'}],F.territory)}</select>
-      <select id="spPerson" data-searchable>${opt([{k:'all',label:'Everyone'},...people.map(n=>({k:n,label:n})),{k:'~none',label:'Nobody assigned'}],F.person)}</select>
+      <select id="spPerson" data-searchable>${opt([{k:'all',label:'Everyone'},...people.map(n=>({k:n,label:schedGone(n,known)?n+' (can\'t be reached)':n})),{k:'~none',label:'Nobody assigned'}],F.person)}</select>
       <select id="spShow" data-searchable>${opt(SP_SHOW,F.show)}</select>
       <select id="spSort" data-searchable>${opt(mgr?SP_SORTS:SP_SORTS.filter(o=>o.k!=='sales'),F.sort)}</select>
     </div>
     <div class="small muted" id="spCount"></div>
     ${mgr?`<div class="sp-bulk"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="spAll"> Select the stores shown</label>
       <span id="spSelN" class="muted"></span><span class="grow" style="flex:1"></span>
-      <button class="btn sm" id="spAssign">Assign to…</button><button class="btn sm ghost" id="spClear">Clear</button></div>`:''}
+      <button class="btn sm" id="spAssign">Assign or take off…</button><button class="btn sm ghost" id="spClear">Clear</button></div>`:''}
     <div class="sp-list" id="spList"></div>
     <div id="spMoreWrap"></div>
   </div>`;
@@ -8013,7 +8110,7 @@ async function storesRender(m){
 function storesDrawList(m, trim){
   const S=state.sched, F=S.storesF, mgr=state.profile?.role==='admin', D=S.storesData||{};
   const list=$('#spList'); if(!list) return;
-  const rows=storesRows(), view=spFilter(rows, F), shown=view.slice(0, F.limit);
+  const rows=storesRows(), view=spFilter(rows, F), shown=view.slice(0, F.limit), known=schedKnownPeople();
   if(trim){ const ids=new Set(shown.map(r=>r.id)); [...S.storesSel].forEach(id=>{ if(!ids.has(id)) S.storesSel.delete(id); }); }
   const noEdu=rows.filter(r=>!r.edu).length, cold=rows.filter(r=>r.daysSince==null||r.daysSince>=30).length;
   const sw=mgr&&D.sales&&D.sales.length?D.sales[0]:null;
@@ -8025,7 +8122,8 @@ function storesDrawList(m, trim){
       r.edu?`<span class="sb-tag edu" title="Education talks logged here in the last year">${r.edu} EDU</span>`
         :'<span class="sb-tag opp" title="No education talk (staff training) logged here in the last year">Training opportunity</span>',
       r.pad?`<span class="sb-tag pad" title="Demos logged here in the last year">${r.pad} PAD</span>`:''].join('');
-    const team=r.team.length?r.team.map(n=>`<span class="sb-who" style="--dv:${schedColor(n)}">${esc(n)}</span>`).join('')
+    const team=r.team.length?r.team.map(n=>`<span class="sb-who" style="--dv:${schedColor(n)}">${esc(n)}${schedGone(n,known)?' ⚠':''}</span>`).join('')
+        +(r.team.some(n=>schedGone(n,known))?`<span class="small" style="color:var(--orange)">can't be reached: ${esc(r.team.filter(n=>schedGone(n,known)).join(', '))}</span>`:'')
       :'<span class="small muted">Nobody assigned</span>';
     const visit=r.lastVisit?`Last visit ${esc(spShort(r.lastVisit))} · ${spAgo(r.daysSince)}${r.lastBy?' · '+esc(r.lastBy.split(' ')[0]):''}`
       :'No visit logged in the last year';
@@ -8068,36 +8166,64 @@ async function storesSavePlan(rows){
   const { error }=await supabase.from('store_plan').upsert(rows.map(r=>({ ...r, updated_at:now, updated_by:me })),{ onConflict:'dispensary_id' });
   if(error) throw error;
 }
-// assign the ticked stores to people: add them to each store's team, or make them its whole team
+// assign the ticked stores to people: add them to each store's team, make them its whole team, take them off
+// it, or hand a person's stores over to them (the people picked take that person's place on each team)
 function storesAssignSheet(m){
   const S=state.sched, ids=[...S.storesSel]; if(!ids.length){ toast('Tick some stores first.'); return; }
-  const rows=storesRows(), byId=new Map(rows.map(r=>[r.id,r]));
-  cellPickerSheet({ title:`Assign ${ids.length} store${ids.length!==1?'s':''} to`, multi:true,
-    options:storesPeople(rows).map(n=>({ id:n, name:n, search:(n+' '+schedAlsoKnown(n)).trim() })), selected:[],
+  const rows=storesRows(), byId=new Map(rows.map(r=>[r.id,r])), known=schedKnownPeople();
+  const lab=n=>schedGone(n,known)?n+' (can\'t be reached)':n;
+  const nS=`${ids.length} store${ids.length!==1?'s':''}`;
+  cellPickerSheet({ title:`${nS}: who to add, hand over to or take off?`, multi:true,
+    options:storesPeople(rows).map(n=>({ id:n, name:lab(n), search:(n+' '+schedAlsoKnown(n)).trim() })), selected:[],
     onSave:names=>{ if(!names.length) return;
       // the teams "whole team" would replace: a store that has a team other than exactly these names
       const same=t=>t.length===names.length && t.every(n=>names.includes(n));
-      const nRep=ids.filter(id=>{ const t=(byId.get(id)||{}).team||[]; return t.length && !same(t); }).length;
-      openSheet(`<h3 style="margin:0 0 4px">Assign ${ids.length} store${ids.length!==1?'s':''}</h3>
-        <div class="small muted" style="margin-bottom:10px">To: <b>${esc(names.join(', '))}</b></div>
+      const teamOf=id=>(byId.get(id)||{}).team||[];
+      const nRep=ids.filter(id=>{ const t=teamOf(id); return t.length && !same(t); }).length;
+      const nOn=ids.filter(id=>teamOf(id).some(n=>names.includes(n))).length;
+      // who could hand their stores over: anyone on these stores' teams who is not one of the people picked
+      const others=[...new Set(ids.flatMap(teamOf))].filter(n=>!names.includes(n)).sort((a,b)=>a.localeCompare(b));
+      openSheet(`<h3 style="margin:0 0 4px">Assign ${nS}</h3>
+        <div class="small muted" style="margin-bottom:10px">People picked: <b>${esc(names.map(lab).join(', '))}</b></div>
         <button class="btn primary block" id="spAddT">Add to each store's team</button>
         <button class="btn block" id="spRepT" style="margin-top:8px">Make them each store's whole team</button>
-        <div class="small muted" style="margin-top:6px">${nRep?`Making them the whole team replaces the team ${nRep} of these stores already ${nRep!==1?'have':'has'}.`:'None of these stores has another team now, so nothing is replaced.'}</div>`);
+        <div class="small muted" style="margin-top:6px">${nRep?`Making them the whole team replaces the team ${nRep} of these stores already ${nRep!==1?'have':'has'}.`:'None of these stores has another team now, so nothing is replaced.'}</div>
+        <button class="btn block" id="spSwapT" style="margin-top:14px"${others.length?'':' disabled'}>Hand over to them from…</button>
+        <div class="small muted" style="margin-top:6px">${others.length?'They take one person\'s place on each of these stores that person is on. Pick the person next.':'Nobody else is on these stores\' teams, so there is nothing to hand over.'}</div>
+        <button class="btn block" id="spRemT" style="margin-top:14px;color:var(--red);border-color:var(--red)"${nOn?'':' disabled'}>Take them off each store's team</button>
+        <div class="small muted" style="margin-top:6px">${nOn?`${nOn} of these stores ${nOn!==1?'have':'has'} one of them on the team.`:'None of these stores has any of them on its team.'}</div>`);
       const sh=$('#sheet');
-      const go=async replace=>{
-        const bs=[$('#spAddT'),$('#spRepT')]; bs.forEach(b=>b.disabled=true);
+      const go=async(op, from)=>{
+        const bs=[...sh.querySelectorAll('button:not(.sheetx)')]; const was=bs.map(b=>b.disabled); bs.forEach(b=>b.disabled=true);
         try{
-          // Add merges into each store's team as it is now (someone may have changed it since this page read it)
+          // every change but "whole team" is made on each store's team as it is now (someone may have changed it
+          // since this page read it); a store whose team would not change is not written
           let cur=new Map();
-          if(!replace){ const { data, error }=await supabase.from('store_plan').select('dispensary_id,team').in('dispensary_id', ids);
+          if(op!=='whole'){ const { data, error }=await supabase.from('store_plan').select('dispensary_id,team').in('dispensary_id', ids);
             if(error) throw error;
             cur=new Map((data||[]).map(x=>[x.dispensary_id, Array.isArray(x.team)?x.team:[]])); }
-          await storesSavePlan(ids.map(id=>({ dispensary_id:id, team:replace?names.slice():[...new Set([...(cur.get(id)||[]), ...names])] })));
+          const out=[];
+          for(const id of ids){
+            const before=cur.get(id)||[], after=spTeamEdit(before, op, names, from);
+            if(op==='whole' || JSON.stringify(after)!==JSON.stringify(before)) out.push({ dispensary_id:id, team:after });
+          }
+          if(!out.length){ bs.forEach((b,i)=>b.disabled=was[i]);
+            toast(op==='swap'?`${from} is not on any of these stores' teams now.`:'Nothing to change on these stores.'); return; }
+          await storesSavePlan(out);
           if($('#sheet')===sh) closeSheet();
-          S.storesSel.clear(); toast(`Assigned ${ids.length} store${ids.length!==1?'s':''}`,'ok');
+          S.storesSel.clear();
+          toast(op==='remove'?`Taken off ${out.length} store${out.length!==1?'s':''}`
+            :op==='swap'?`Handed over ${out.length} store${out.length!==1?'s':''} from ${from}`
+            :`Assigned ${out.length} store${out.length!==1?'s':''}`,'ok');
           await storesLoad(true).catch(()=>{}); if(S.view==='stores') storesDrawList(m);
-        }catch(e){ bs.forEach(b=>b.disabled=false); toast('Couldn\'t save: '+(e.message||e),'err'); } };
-      $('#spAddT').onclick=()=>go(false); $('#spRepT').onclick=()=>go(true);
+        }catch(e){ bs.forEach((b,i)=>b.disabled=was[i]); toast('Couldn\'t save: '+(e.message||e),'err'); } };
+      $('#spAddT').onclick=()=>go('add'); $('#spRepT').onclick=()=>go('whole'); $('#spRemT').onclick=()=>go('remove');
+      // the list says how many of these stores each person is on, and the hand over is asked once more
+      const nWith=n=>ids.filter(id=>teamOf(id).includes(n)).length;
+      $('#spSwapT').onclick=()=>cellPickerSheet({ title:`Hand over to ${names.join(', ')} from`, multi:false,
+        options:others.map(n=>{ const k=nWith(n); return { id:n, name:`${lab(n)}: ${k} store${k!==1?'s':''}`, search:(n+' '+schedAlsoKnown(n)).trim() }; }), selected:[],
+        onSave:pick=>{ const f=pick&&pick[0], k=f?nWith(f):0;
+          if(f && $('#sheet')===sh && confirm(`Hand ${f}'s place on ${k} store${k!==1?'s':''} to ${names.join(', ')}?`)) go('swap', f); } });
     } });
 }
 // one store's profile: managers edit it, everyone else reads it
@@ -8132,7 +8258,8 @@ function storeProfileSheet(r, m){
     <label class="fl">Good to know</label><textarea id="spfNotes" rows="3" placeholder="Best times, who to ask for, parking…"${dis}>${esc(p.notes||'')}</textarea>
     ${mgr?'<button class="btn primary block" id="spfSave" style="margin-top:12px">Save</button>':''}
     <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" id="spfVisit" style="flex:1">＋ Plan a visit</button><button class="btn ghost" id="spfTask" style="flex:1">＋ Add task</button></div>`);
-  const drawTeam=()=>{ const t=$('#spfTeam'); if(t) t.innerHTML=team.length?team.map(n=>`<span class="sb-who" style="--dv:${schedColor(n)}">${esc(n)}</span>`).join(''):'<span class="small muted">Nobody assigned</span>'; };
+  const drawTeam=()=>{ const t=$('#spfTeam'), known=schedKnownPeople(), gone=team.filter(n=>schedGone(n,known)); if(t) t.innerHTML=team.length?team.map(n=>`<span class="sb-who" style="--dv:${schedColor(n)}">${esc(n)}${schedGone(n,known)?' ⚠':''}</span>`).join('')
+      +(gone.length?`<div class="small" style="color:var(--orange);flex-basis:100%">${esc(gone.join(', '))} can't be reached on this board now (no active login, or two people share that first name), so a visit or task for ${gone.length!==1?'them':'that name'} reaches nobody.</div>`:''):'<span class="small muted">Nobody assigned</span>'; };
   drawTeam();
   const today=schedIso(new Date()), sh=$('#sheet');
   const reopen=async()=>{ await storesLoad(true).catch(()=>{}); if(S.view==='stores') storesDrawList(m); };
@@ -8167,7 +8294,7 @@ function storeProfileSheet(r, m){
   $('#spfTask').onclick=plan('followup');
   if(!mgr) return;
   $('#spfTeamPick').onclick=()=>cellPickerSheet({ title:'Team for '+r.name, multi:true,
-    options:storesPeople(storesRows()).map(n=>({ id:n, name:n, search:(n+' '+schedAlsoKnown(n)).trim() })), selected:team.slice(),
+    options:storesPeople(storesRows()).map(n=>({ id:n, name:schedGone(n,schedKnownPeople())?n+' (can\'t be reached)':n, search:(n+' '+schedAlsoKnown(n)).trim() })), selected:team.slice(),
     onSave:names=>{ team=names.slice(); drawTeam(); } });
   $('#spfSave').onclick=async()=>{
     const had=Object.keys(changes()).length;
@@ -8271,7 +8398,8 @@ function schedRender(m){
   // ⟳ is the user's "this looks wrong, fetch it again" — it must also clear the
   // negative markers on disk, or a month that failed once stays blank for 6 hours
   // no matter how many times they tap it.
-  $('#sbReload').onclick=()=>{ schedClearMisses(state.schedState); state.sched=null; drawSchedule(m); };
+  $('#sbReload').onclick=()=>{ schedClearMisses(state.schedState); const pp=state.schedPeople&&state.schedPeople[state.schedState||'CA']; if(pp) pp.at=0;
+    state.sched=null; drawSchedule(m); };
   $('#sbExport').onclick=()=>schedExportSheet();
   $('#sbStores').onclick=()=>{ S.view='stores'; storesRender(m); };
   // switching board = a different workbook AND a different task set: drop the

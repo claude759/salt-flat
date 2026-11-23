@@ -113,6 +113,27 @@ test('days since a visit: never negative, and in words', () => {
   assert.equal(ago(-3), 'today'); assert.equal(ago(null), '');
 });
 
+test('a team after a bulk change: add, whole team, take off, hand over', () => {
+  const edit = (...a) => plain(get('spTeamEdit')(...a));
+  assert.deepEqual(edit(['Cesar', 'Jesse'], 'add', ['Jesse', 'Keelin']), ['Cesar', 'Jesse', 'Keelin']);
+  assert.deepEqual(edit(['Cesar', 'Jesse'], 'whole', ['Keelin']), ['Keelin']);
+  assert.deepEqual(edit(['Cesar', 'Jesse'], 'remove', ['Jesse', 'Nobody Here']), ['Cesar']);
+  assert.deepEqual(edit(['Jesse'], 'remove', ['Jesse']), []);
+  // hand over: the people picked take the place of the one handing over, in their spot, never twice
+  assert.deepEqual(edit(['Cesar', 'Jesse', 'Ledy'], 'swap', ['Keelin'], 'Jesse'), ['Cesar', 'Keelin', 'Ledy']);
+  assert.deepEqual(edit(['Cesar', 'Jesse', 'Ledy'], 'swap', ['Ledy', 'Keelin'], 'Jesse'), ['Cesar', 'Ledy', 'Keelin']);
+  assert.deepEqual(edit(['Jesse', 'Cesar'], 'swap', ['Cesar'], 'Jesse'), ['Cesar']);
+  // a team without that person is left exactly as it is
+  assert.deepEqual(edit(['Cesar', 'Ledy'], 'swap', ['Keelin'], 'Jesse'), ['Cesar', 'Ledy']);
+  assert.deepEqual(edit([], 'swap', ['Keelin'], 'Jesse'), []);
+  // odd input: no team yet, blanks, a name twice, an unknown change
+  assert.deepEqual(edit(null, 'add', ['Keelin', '', 'Keelin']), ['Keelin']);
+  assert.deepEqual(edit(['Cesar', 'Cesar', null], 'remove', []), ['Cesar']);
+  assert.deepEqual(edit(['Cesar'], 'nothing', ['Keelin']), ['Cesar']);
+  // the team handed in is never changed in place
+  const team = ['Cesar', 'Jesse']; get('spTeamEdit')(team, 'remove', ['Jesse']); assert.deepEqual(team, ['Cesar', 'Jesse']);
+});
+
 test('a task\'s own time reads like the calendar\'s', () => {
   const c = get('schedClock');
   assert.deepEqual(plain(c('14:30')), { mins: 870, label: '2:30 PM' });

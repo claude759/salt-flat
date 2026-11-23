@@ -6,6 +6,9 @@
 //                     "Your tasks" email per person with something on the Schedule: today's
 //                     tasks, ones assigned to them since their last email, and trainings and
 //                     follow-ups past their day (schedule_task_digest, ba-store-planning.sql).
+//   job:'task-notices' - cron-driven (ba-task-notices), every 5 minutes while someone has a new task: one
+//                     "New task" email per person a few minutes after a task is given to them
+//                     (schedule_task_notices, ba-task-notices.sql; Amanda 2026-11-23).
 //   job:'submitted' — DB-trigger-driven. The moment a BA's period flips to
 //                     'submitted', email the admin (gianni@wizardtrees.com).
 // Sends via Gmail SMTP (app password). Callers prove themselves with a shared
@@ -257,6 +260,28 @@ function tasksEmail(name: string, dateISO: string, lists: { today: any[]; added:
     + `\n\nOpen the app: ${APP_URL}\n\n${TASKS_FOOTER}`;
   return { subject: `Your tasks for ${day}`, html, text };
 }
+// A few minutes after a task is given to someone (job 'task-notices'): one email with the new tasks, each line
+// as in the morning email, with its day. One task: the subject says what, where and which day; several: how many.
+function noticeEmail(name: string, tasks: any[]) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  const n = list.length, t = list[0] || {};
+  const one = (v: unknown) => String(v ?? "").replace(/\s+/g, " ").trim();
+  const cut = (s: string, max: number) => (s.length <= max ? s : s.slice(0, max).replace(/\s+\S*$/, "") + "...");
+  const kind = TASK_KINDS[t?.kind] || "Task", title = one(t?.title), store = one(t?.account);
+  const what = title && title.toLowerCase() !== kind.toLowerCase() ? title : kind;
+  const subject = n === 1
+    ? `New task for ${taskDay(t?.date)}: ${cut(what, 50)}${store ? ` at ${cut(store, 50)}` : ""}`
+    : `${n} new tasks on your schedule`;
+  const lead = n === 1 ? "this was just added to your schedule" : "these were just added to your schedule";
+  const lines = list.map((x) => taskLine(x, true));
+  const html = mailShell(n === 1 ? "A new task for you" : `${n} new tasks for you`, `
+    <p style="margin:0 0 14px">Hi ${esc(name || "there")}, ${lead}.</p>
+    <ul style="margin:0 0 14px;padding-left:18px">${lines.map((x) => x.html).join("")}</ul>
+    <p style="margin:0 0 8px">${btn(APP_URL, "Open the app →")}</p>
+    <p style="margin:16px 0 0;color:#888;font-size:12px">${esc(TASKS_FOOTER)}</p>`);
+  const text = `Hi ${name || "there"}, ${lead}.\n\n${lines.map((x) => x.text).join("\n")}\n\nOpen the app: ${APP_URL}\n\n${TASKS_FOOTER}`;
+  return { subject, html, text };
+}
 // ── end "Your tasks" email ──
 
 Deno.serve(async (req) => {
@@ -421,6 +446,61 @@ Deno.serve(async (req) => {
       }
       return json({ ok: true, date, sent, failed, not_logged: notLogged, skipped_empty: skipped,
         ...(testTo ? { diverted: true } : {}), ...(problems.length ? { problems } : {}) });
+    }
+
+    if (job === "task-notices") {
+      // A few minutes after a task is given to someone (cron 'ba-task-notices', every 5 minutes while there is
+      // something to send; ba-task-notices.sql). One email per person, never CC'd. Each task is claimed BEFORE its
+      // email goes out (told = false) and only the tasks this run claimed are sent, so two runs never both send
+      // one and a claim that fails sends nothing. One try: an email that fails is never sent again by this job
+      // (no email every 5 minutes on a lasting error); its claim stays told = false, so the next 9 AM email lists
+      // the tasks under New for you. A good send marks them told. dry (or dry_run) builds the emails and sends
+      // and records nothing; test_to diverts and records nothing.
+      const preview = dry || body.dry === true;
+      const { data: rows, error } = await db.rpc("schedule_task_notices");
+      if (error) throw new Error(error.message);
+      const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+      const people = (rows || []).map((r: any) => ({ r, name: firstName(r.full_name), tasks: arr(r.tasks) }))
+        .filter((p: any) => p.tasks.length)
+        .sort((a: any, b: any) => String(a.r.full_name ?? "").localeCompare(String(b.r.full_name ?? "")));
+      // first names and counts only: no addresses in the response
+      if (preview) return json({ ok: true, dry: true, would_email: people.map((p: any) =>
+        ({ name: p.name, tasks: p.tasks.length, subject: noticeEmail(p.name, p.tasks).subject })) });
+
+      const problems: { name: string; error: string }[] = [];
+      const why = (e: unknown) => String((e as Error)?.message || e).replace(/[^\s<>()"',;:]+@[^\s<>()"',;:]+/g, "(address)");
+      let sent = 0, failed = 0;
+      for (const p of people) {
+        let tasks = p.tasks;
+        if (!testTo) {
+          const ids = [...new Set(tasks.map((t: any) => t?.id).filter(Boolean))] as string[];
+          const { data: got, error: cErr } = await db.from("schedule_task_notice_log")
+            .upsert(ids.map((id) => ({ task_id: id, person_id: p.r.person_id, sent_at: null, told: false })),
+              { onConflict: "task_id,person_id", ignoreDuplicates: true })
+            .select("task_id");
+          if (cErr) { failed++; problems.push({ name: p.name, error: `not recorded, so not sent: ${why(cErr.message)}` }); continue; }
+          const mine = new Set((got || []).map((x: any) => x.task_id));
+          tasks = tasks.filter((t: any) => mine.has(t?.id));
+          if (!tasks.length) continue;       // another run has already taken these
+        }
+        const mail = noticeEmail(p.name, tasks);
+        try {
+          await sendMail(testTo || p.r.email, mail.subject, mail.html, mail.text);
+        } catch (e) {
+          failed++;
+          problems.push({ name: p.name, error: `${why(e)} (left for the 9 AM email)` });
+          dropMail();
+          continue;
+        }
+        sent++;
+        if (!testTo) {
+          const { error: uErr } = await db.from("schedule_task_notice_log")
+            .update({ told: true, sent_at: new Date().toISOString() })
+            .eq("person_id", p.r.person_id).in("task_id", tasks.map((t: any) => t.id));
+          if (uErr) problems.push({ name: p.name, error: `sent, but not marked sent, so the 9 AM email lists it again: ${why(uErr.message)}` });
+        }
+      }
+      return json({ ok: true, sent, failed, ...(testTo ? { diverted: true } : {}), ...(problems.length ? { problems } : {}) });
     }
 
     if (job === "submitted_for") {

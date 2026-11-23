@@ -182,3 +182,19 @@ test('CSV: commas, quotes and line breaks are quoted; a formula is kept as text'
   const csv = get('schedCsv')([['a,b', 'say "hi"', 'two\nlines', '=HYPERLINK("x")', '-5', 'plain']]);
   assert.equal(csv, '"a,b","say ""hi""","two\nlines","\'=HYPERLINK(""x"")",\'-5,plain');
 });
+
+test('Done before a visit\'s day: not for a visit, Demo / PAD or EDU still to come; trainings and follow-ups any day', () => {
+  const early = (v) => get('schedTooEarly')({ dbId: 'x', iso: '2026-11-27', ...v }, '2026-11-23');
+  assert.equal(early({ kind: 'visit' }), true);
+  assert.equal(early({ kind: 'pad' }), true);
+  assert.equal(early({ kind: 'edu' }), true);
+  assert.equal(early({ kind: null, soNotes: 'store visit' }), true);        // an older task: a visit by its notes
+  assert.equal(early({ kind: null, soNotes: 'Demo 2-4pm PAD' }), true);
+  assert.equal(early({ kind: 'training' }), false);
+  assert.equal(early({ kind: 'followup' }), false);
+  assert.equal(early({ kind: null, soNum: 'SO-1' }), false);               // a delivery
+  assert.equal(early({ kind: 'visit', iso: '2026-11-23' }), false);        // its day
+  assert.equal(early({ kind: 'visit', iso: '2026-11-20' }), false);        // past
+  assert.equal(early({ kind: 'visit', doneAt: '2026-11-21T16:45:00Z' }), false);   // already done: Not done is still offered
+  assert.equal(get('schedTooEarly')({ iso: '2026-11-27', kind: 'visit' }, '2026-11-23'), false);   // a sheet row: no Done at all
+});

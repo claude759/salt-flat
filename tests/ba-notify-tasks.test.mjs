@@ -115,3 +115,41 @@ test('first names', () => {
   assert.equal(f('  Makenna   Smith '), 'Makenna');
   assert.equal(f(null), '');
 });
+
+// ── the "New task" email (job 'task-notices', 2026-11-23): a few minutes after a task is given to someone ──
+const notice = (name, tasks) => get('noticeEmail')(name, tasks);
+
+test('new task email: one task names what, where and the day; the line carries its day', () => {
+  const m = notice('Joanna', [T({ date: '2026-11-25', time: '14:00', kind: 'pad', account: 'A/0 Cannabis', notes: 'Demo 2-4pm' })]);
+  assert.equal(m.subject, 'New task for Wed Nov 25: Demo / PAD at A/0 Cannabis');
+  assert.match(m.html, /🌲 A new task for you</);
+  assert.match(m.html, /Hi Joanna, this was just added to your schedule\./);
+  assert.match(m.html, /<b>Wed Nov 25 · 2 PM · Demo \/ PAD<\/b> · A\/0 Cannabis/);
+  assert.match(m.text, /^Hi Joanna, this was just added to your schedule\.\n\n- Wed Nov 25 · 2 PM · Demo \/ PAD · A\/0 Cannabis · Demo 2-4pm\n\nOpen the app: /);
+  assert.ok(m.text.endsWith(FOOT));
+});
+
+test('new task email: a title stands for the type; several tasks are counted; Needs scheduling shows', () => {
+  const one = notice('Cesar', [T({ date: '2026-11-24', kind: 'followup', title: 'Order draft - Vapes', account: 'The Cake House San Jose' })]);
+  assert.equal(one.subject, 'New task for Tue Nov 24: Order draft - Vapes at The Cake House San Jose');
+  const same = notice('Cesar', [T({ date: '2026-11-24', kind: 'training', title: 'training', account: 'Goat Global Westwood' })]);
+  assert.equal(same.subject, 'New task for Tue Nov 24: Training at Goat Global Westwood');
+  const many = notice('Ledy', [T({ date: '2026-11-24', account: 'Kanna', booking: 'needs' }), T({ id: 'y', date: '2026-11-27', account: 'CBCB' })]);
+  assert.equal(many.subject, '2 new tasks on your schedule');
+  assert.match(many.html, /🌲 2 new tasks for you</);
+  assert.match(many.html, /these were just added to your schedule/);
+  assert.match(many.html, /Kanna[^]*Needs scheduling[^]*CBCB/);
+  assert.match(many.text, /- Tue Nov 24 · Visit · Kanna \(Needs scheduling\)\n- Fri Nov 27 · Visit · CBCB\n/);
+});
+
+test('new task email: long names are cut at a word, everything is escaped, the subject stays plain', () => {
+  const long = 'Very Long Store Name That Keeps Going Well Past Fifty Characters Of Text';
+  const m = notice('<b>x</b>', [T({ date: '2026-11-24', account: long, title: '<script>' })]);
+  assert.ok(m.subject.length < 130, m.subject);
+  assert.match(m.subject, /^New task for Tue Nov 24: <script> at Very Long Store Name That Keeps Going Well Past\.\.\.$/);
+  assert.doesNotMatch(m.html, /<script>|<b>x<\/b>/);
+  assert.match(m.html, /&lt;script&gt;/);
+  assert.doesNotMatch(m.subject + m.html + m.text, /—/);
+  const empty = notice('', []);
+  assert.equal(empty.subject, '0 new tasks on your schedule');
+});
