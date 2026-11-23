@@ -495,11 +495,26 @@ launch. The check fails if one of the three pieces is missing.
   jar line usually came to, its pouches too (marked ≈); what is in transit to Nabis arrives the next day; each Nabis
   pickup still to come on the sheet tops Nabis up to 3 weeks of that product's Nabis sales from what our distro has
   ready (`OH.COVER`); each working day Nabis sells a fifth of the product's weekly pace (its own weeks on hand; the
-  middle pace of its unit type when it has none) and Distru's own deliveries take a fifth of the unit type's weekly
+  middle pace of its unit type when it has none; when Nabis holds none of a unit type at all, a share of that type's Nabis
+  sales a week over the same 3 weeks, by what each strain holds: 2026-11-23, Nabis had no pre-rolls and the pickups sent none) and Distru's own deliveries take a fifth of the unit type's weekly
   pace over the last 3 full weeks of the sales block, shared by what each strain has ready. **These rules are Claude's
   assumptions, said on the page's note; Gianni has seen the mockup's numbers but not confirmed the rules (the 3 weeks
   above all): ask before leaning on them.** Page: `ohInput` (the inputs, from `S.inv`, `S.act`, `S.drops`,
-  `B2.sales`), `renderOnHand`. No past days: the stock copy keeps only today's counts (a daily saved count would be a
+  `B2.sales`), `renderOnHand`. **Step 1 of the planning views** (Gianni, 2026-11-23, "Yes, build step 1", after a
+  review that put the planning view here rather than on the Canvas): a **Runs out** column after the name (the first day
+  Nabis has none: "Today" when it has none now while our distro has some; a product not made yet, none anywhere, isn't
+  out; a unit type's soonest, with how many of its strains run out), a type's strains sorted soonest first; **no tint by
+  size** (amber is the only colour that draws the eye: "Nabis out" cells get a faint amber fill, and a week Nabis runs out
+  in but is refilled before its end a thin amber edge); **≈** on every week, and on a Runs out day, that rests on an
+  estimated packing line (a jar line with no pounds, and every planned pouch amount: `OH.project`'s row `est`); a purple
+  **+N** over the number in the week planned packing lands; a click on a strain's week opens **only that week** (start,
+  each change on its day, the days Nabis has none, what Nabis sells and our deliveries take from the model's per-day
+  `mv`, end, and a link to that week's Monday on the Production schedule), a click on its name still opens everything
+  that changes it; planned pre-roll work the sheet gives **no count** for (a pre-roll line with no number, unless it is
+  already in testing at Distru, or a block typed as other such as "PREROLLS FOR JAN", never a job for someone, `ACT.jobOf`,
+  or a supply or day-off line: `ohInput`'s `blind`) is said, never counted as nothing: a "Can't tell" button lists it and
+  the weeks it falls in (`OH.inWeek`) show a grey **+?** on the pre-roll rows. 1.5g pre-rolls are green, never the
+  purple that means planned. No past days: the stock copy keeps only today's counts (a daily saved count would be a
   new table, applied from Gianni's computer if it reaches outside `pipeline_*`). Units only, never dollars.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over

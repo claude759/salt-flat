@@ -3329,12 +3329,37 @@ if (realPipe) {
   const M2 = OH.project({ rows: [{ src: 'distru', strain: 'A', kind: 'jar', qty: 400 }, { src: 'nabis', strain: 'A', kind: 'jar', qty: 30, weeks_on_hand: 1 }], today: '2026-11-18', weeks: 1, picks: ['2026-11-19'] }).get('A', 'jar');
   assert.deepEqual([M2.ev.map(e => [e.day, e.what, e.qty]), M2.days[1]], [[['2026-11-19', 'pick', 60]], { dz: 340, ts: 0, nb: 84 }], "a planned pickup tops Nabis up to 3 weeks of the product's sales from what our distro has ready");
   assert.equal(OH.project({ rows: [], today: '2026-11-18' }).rows.length, 0, 'no stock: no rows');
+  // step 1 (Gianni, 2026-11-23, "Yes, build step 1"): what each day sold, so a week's card can say it; the first day a row
+  // rests on an estimated packing line, so its weeks from then on carry ≈
+  assert.deepEqual([sj.mv.length, sj.mv[0], sj.mv[1], sj.mv[3]], [M.n, { ns: 0, dd: 0 }, { ns: 20, dd: 100 }, { ns: 0, dd: 0 }], 'a day each: what Nabis sold and what Distru delivered (nothing on a weekend)');
+  { const e1 = OH.project({ rows: [{ src: 'distru', strain: 'A', kind: 'jar', qty: 10 }], today: '2026-11-18', weeks: 1, adds: [{ day: '2026-11-20', key: 'A', kind: 'jar', qty: 1000, est: true }, { day: '2026-11-22', key: 'A', kind: 'jar', qty: 5 }] }).get('A', 'jar');
+    assert.deepEqual([e1.est, sj.est, e1.ev.map(e => [e.day, e.est])], ['2026-11-20', '', [['2026-11-20', true], ['2026-11-22', false]]], 'the first estimated packing line marks the row from its day; a row with none has no mark'); }
+  assert.deepEqual(OH.ROLLED, ['5pk', '1g', '1.5g'], 'pre-roll kinds, for planned pre-roll work with no count');
+  // review fixes (2026-11-23): a pickup is a move, not a sale; Runs out counts a product Nabis has none of today while our
+  // distro has some, never one not made yet; planned work shows only in the weeks it falls in
+  { const M3 = OH.project({ rows: [{ src: 'distru', strain: 'A', kind: 'jar', qty: 400 }, { src: 'nabis', strain: 'A', kind: 'jar', qty: 30, weeks_on_hand: 1 }], today: '2026-11-18', weeks: 1, picks: ['2026-11-19'] }).get('A', 'jar');
+    assert.deepEqual(M3.mv[1], { ns: 6, dd: 0 }, 'the 60 a pickup moves is not counted as sold');
+    const M4 = OH.project({ rows: [{ src: 'distru', strain: 'A', kind: 'jar', qty: 500 }], today: '2026-11-18', weeks: 1, adds: [{ day: '2026-11-20', key: 'C', kind: 'jar', qty: 100 }] });
+    assert.deepEqual([M4.get('A', 'jar').out, M4.get('C', 'jar').out], ['2026-11-18', ''], 'out at Nabis today with stock at our distro: Runs out today; not made yet: not out'); }
+  { const M5 = OH.project({ rows: [{ src: 'distru', strain: 'A', kind: '5pk', qty: 300 }, { src: 'distru', strain: 'B', kind: '5pk', qty: 100 }], today: '2026-11-18', weeks: 1, picks: ['2026-11-19'], nz: { '5pk': 200 } });
+    assert.deepEqual([M5.get('A', '5pk').sell, M5.get('B', '5pk').sell, M5.get('A', '5pk').known, M5.get('A', '5pk').ev.map(e => [e.what, e.qty])], [150, 50, false, [['pick', 300]]],
+      "a type Nabis holds none of takes a share of Nabis's own sales of it a week, so a pickup sends some (3 weeks' worth, at most what is ready)"); }
+  assert.deepEqual([[{ day: '2026-12-08', to: '2026-12-16' }, '2026-12-14', '2026-12-21'], [{ day: '2026-12-08', to: '2026-12-16' }, '2026-12-21', '2026-12-28'], [{ day: '2026-12-21' }, '2026-12-14', '2026-12-21'], [{ day: '2026-12-14' }, '2026-12-14', '2026-12-21']].map(a => OH.inWeek(...a)),
+    [true, false, true, false], 'planned work falls in a week when any of its days does (the week runs from the day after `from` to `to`)');
   const fnH = name => { const i = html.indexOf('function ' + name + '('); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i) + 2); };
   const fI = fnH('ohInput'), fO = fnH('renderOnHand');
   assert.match(html, /<button[^>]*data-view="onhand"[^>]*data-beta/, 'the On hand tab keeps data-beta until its owner says it is ready');
   assert.ok(/STYLED_VIEWS = \[[^\]]*'onhand'/.test(html) && /onhand: \(\) => renderOnHand\(\)/.test(html) && /if \(S\.view === 'onhand' && sb\) \{ if \(!S\.invAt && !S\.invErr\) loadInventory\(true\);/.test(html), 'the page is wired: its look, its render, its reads');
   assert.ok(/testing\.has\(kind \+ '\|' \+ l\.strain\) && first <= PIPE\.addDays\(today, 7\)/.test(fI) && /e\.kind === 'pickup' && e\.date > today/.test(fI) && /k\.w < mon && k\.d && k\.d\.u\)\.slice\(-3\)/.test(fI) && /est: l\.lbs == null/.test(fI),
     "the projection's inputs: planned packing not already in testing at Distru (≈ when the sheet has no count), the sheet's pickups still to come, Distru's last 3 full weeks");
+  assert.ok(/<th class="ro">Runs out<small>at Nabis<\/small><\/th>/.test(fO) && /const byOut = /.test(fO) && /byOut\(a, b\) \|\|/.test(fO) && !/--h:/.test(fO) && !/--h\)/.test(html.slice(html.indexOf('.oh-t{'), html.indexOf('.oh-note{'))),
+    'a Runs out column, the soonest first; no tint by size (amber is the only colour that draws the eye)');
+  assert.ok(/<em class="oh-add">\+\$\{n0\(x\.add\)\}<\/em>/.test(fO) && /x\.est \? '≈ ' : ''/.test(fO) && /data-oh="wk" data-id="\$\{esc\(r\.id\)\}@\$\{j\}"/.test(fO) && /week\(r, sw\)/.test(fO) && /data-oh="cant"/.test(fO) && /blind\.push/.test(fI) && /PRE-\?ROLLS\?/.test(fI),
+    "a purple +N where planned packing lands, ≈ on weeks that rest on an estimate, a week's own card, and planned pre-roll work with no count said");
+  assert.ok(/data-go="\$\{esc\(weekOf\(d\)\)\}"/.test(fO) && /B\.some\(b => OH\.inWeek\(b, dayAt\(W\[j - 1\]\), dayAt\(W\[j\]\)\)/.test(fO) && /const notWork = t => !!ACT\.jobOf\(t\)/.test(fI) && /!notWork\(String\(it\.title\)\)/.test(fI) && /if \(kind && inTest\.has/.test(fI),
+    "the schedule link opens the week it names; +? only in the weeks the work falls in; one-off jobs and supply lines aren't planned work; a line already in testing isn't can't-tell");
+  assert.ok(ACT.jobOf('PREROLLS FOR CARLOS') && !ACT.jobOf('PREROLLS FOR JAN'), 'a job for someone in particular is told apart from a month');
+  assert.ok(/e\.target\.closest\('\[data-oh\]'\)\.click\(\)/.test(html) && /const id = c\.dataset\.oh === 'cant' \? 'cant' : c\.dataset\.id; S\.ohOpen = S\.ohOpen === id \? '' : id;/.test(html), 'a week cell opens by click or key, one card at a time');
   assert.ok(/OH\.project\(I\)/.test(fO) && /if \(!S\.inv \|\| !M\.rows\.length\)/.test(fO) && /data-oh="row"/.test(fO) && /data-oh="kind"/.test(fO) && /if \(on\) for \(const r of K\.rs\)/.test(fO) && /tabindex="0"/.test(fO) && !/<select/.test(fO) && !/price|dollar|revenue|\$\{?\s*usd/i.test(fO + fI), 'the table: nothing without the stock counts, rows open by click or key, no plain select, units only');
 }
 console.log('pipeline-check: all checks passed');
