@@ -482,7 +482,7 @@ launch. The check fails if one of the three pieces is missing.
   distu or Nabis) at any given time especially at future dates", then "we'll probably want to know the amount per unit type
   and strain type"; he turned down a line chart and a strain-by-type board with a day picker, and of four further mockups
   picked the weeks-across table: "I like this one the most"). `data-view="onhand"`, after Inventory, on the app's dark
-  base. One table: a row per unit type (3.5g jars, Pouches, 5-packs, 1g and 1.5g pre-rolls; no bulk, no vapes), summed over
+  base. One table: a row per unit type (3.5g jars, Pouches, 5-packs, 1g and 1.5g pre-rolls; no vapes; loose flower in its own row since step 3), summed over
   its strains; a click opens that type's strains with stock, most first (Gianni, same day: "I want this to just be the unit
   types available in Distru/Nabis but when clicked, it shows the available strains"),
   a column for today and each of the next 6 weeks; a cell reads "1,131 + 366 N": units at our distro (Distru) plus units
@@ -514,8 +514,37 @@ launch. The check fails if one of the three pieces is missing.
   already in testing at Distru, or a block typed as other such as "PREROLLS FOR JAN", never a job for someone, `ACT.jobOf`,
   or a supply or day-off line: `ohInput`'s `blind`) is said, never counted as nothing: a "Can't tell" button lists it and
   the weeks it falls in (`OH.inWeek`) show a grey **+?** on the pre-roll rows. 1.5g pre-rolls are green, never the
-  purple that means planned. No past days: the stock copy keeps only today's counts (a daily saved count would be a
-  new table, applied from Gianni's computer if it reaches outside `pipeline_*`). Units only, never dollars.
+  purple that means planned.
+  **Step 3: loose flower by strain** (Gianni, 2026-11-23, "Yes, build step 3", and his answers the same day). The page is
+  titled "On hand"; a "Loose flower, lb" row sits above the packed rows (not in the units total, "All packed units"), and
+  opens to its strains and "Other strains on trims to come". A cell is pounds that passed their lab test at our distro +
+  not passed yet ("69.2 + 94.3 not passed" on the total's Today; a faint 0 when there is none); a purple +N where flower
+  passes that week; a grey −? where planned pre-roll work with no count takes flower (on a strain's row only when it names
+  that strain); a thin amber edge on a week a planned job comes up short; Runs out is the first day a planned job comes up
+  short (amber ones only, ≈ when its need is estimated), the pounds under it all its short jobs together. Packed rows'
+  Runs out reads "N strains out". Model `OH.flower` (pure), inputs `ohInput`'s `fl`: today is Distru's bulk rows by
+  `lab_state` (every bulk row carries Distru's testing flag, so the flag is ignored; PASSED is ready, PENDING or SUBMITTED
+  passes `OH.TURN` days on, NOT_TESTED never passes by itself, FAILED is left out and said; a product named trim is not
+  flower). **Bulk sales come off each trim** (his answer: in 2026 about 3,100 lb of bulk left from the grows on trim days
+  and about 6 lb from the distro): a trim to come (`upcomingTrims`, TRIMY's estimate, each strain's part by its lights)
+  lands at the distro, not passed, on its last day (one ending today, tomorrow) as lb x the grow's usual moved share, less
+  what Metrc already moved from that site and room since the trim began. The share is went.to_distro / packaged flower
+  over the grow's last 3 settled Metrc lots (first packaged at least 2 weeks ago, nothing left at the grow), from
+  `B2.flow`, which On hand already reads. **On its landing day the share goes to the trim's strains the sheet plans to pack
+  or test** (his answer): soonest job or testing day first (ties by lights), each up to what its jobs that can still use it
+  need beyond what it already holds (a jar job only if it ends after the flower passes; a strain only tested: a usual job),
+  never more than its own lights' part; the rest is "Other strains", which don't pass (no testing line names them). A
+  strain's share passes `OH.TURN` days after the first testing line naming it on or after the trim, else `OH.LAG` (11)
+  days after the trim (≈). Planned jar and pre-roll lines not counted yet take flower from their first day to their last
+  (jars only passed flower; pre-rolls never-tested flower first, then flower waiting for its result, then passed): pounds
+  on the sheet, else a usual counted jar line's flower (≈ 8.7 lb); one that gets under 90% is short (hard, amber, when it
+  gets none or its need is the sheet's; soft, grey in its week card, when an estimated job got some: it may be sized to the
+  lot). **Names that differ only by a space are one strain on this page** (his answer, `OH.fkey`, loose flower and packed
+  rows both, shown as first written; every other page keeps them as written). Can't tell lists what it can't count:
+  never-tested and failed flower, flower still at a grow (`left_grow_lb`: sold in bulk or moved, not known), trims with no
+  estimate or no known share, and one line while the trim sheets or Metrc lots are still loading. On hand now also loads
+  the trim sheets (`loadTrims`). These rules are Claude's assumptions apart from his three answers. No past days: the stock copy keeps only today's counts (a daily saved count would be a
+  new table, applied from Gianni's computer if it reaches outside `pipeline_*`). Units and pounds only, never dollars.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until

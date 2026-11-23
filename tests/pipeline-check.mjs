@@ -3344,6 +3344,41 @@ if (realPipe) {
   { const M5 = OH.project({ rows: [{ src: 'distru', strain: 'A', kind: '5pk', qty: 300 }, { src: 'distru', strain: 'B', kind: '5pk', qty: 100 }], today: '2026-11-18', weeks: 1, picks: ['2026-11-19'], nz: { '5pk': 200 } });
     assert.deepEqual([M5.get('A', '5pk').sell, M5.get('B', '5pk').sell, M5.get('A', '5pk').known, M5.get('A', '5pk').ev.map(e => [e.what, e.qty])], [150, 50, false, [['pick', 300]]],
       "a type Nabis holds none of takes a share of Nabis's own sales of it a week, so a pickup sends some (3 weeks' worth, at most what is ready)"); }
+  // step 3 (Gianni, 2026-11-23, "Yes, build step 3", and his answers: bulk sales come off each trim, its share goes to the
+  // strains planned to pack or test, names that differ only by a space are one): loose flower by strain, a day at a time
+  { const T0 = '2026-11-18', FL = OH.flower({ today: T0, weeks: 2, turn: 5, unit: 8.7, share: { X: 0.5 },
+      stock: [{ key: 'A', lb: 5, lab: 'pass' }, { key: 'A', lb: 10, lab: 'pend' }, { key: 'B', lb: 2, lab: 'nt' }, { key: 'C', lb: 6, lab: 'pass' }],
+      jobs: [{ id: 'a', day: '2026-11-20', to: '2026-11-21', key: 'A', lb: 8, est: false, kind: 'jar', what: 'Jars A' }, { id: 'c', day: '2026-11-20', to: '2026-11-20', key: 'C', lb: 8, est: true, kind: 'jar', what: 'Jars C' },
+        { id: 'd', day: '2026-11-25', to: '2026-11-26', key: 'D', lb: 20, est: false, kind: 'jar', what: 'Jars D' }],
+      trims: [{ site: 'X', end: '2026-11-19', lb: 100, strains: ['D', 'E E'], what: 'X trim' }, { site: 'X', end: '2026-11-22', lb: null, strains: ['D'], what: 'X trim 2' }, { site: 'Y', end: '2026-11-22', lb: 50, strains: ['D'], what: 'Y trim' }],
+      tests: { EE: ['2026-11-21'] } });
+    const fr = k => FL.rows.find(r => r.key === k), ev = (r, w) => r.ev.filter(e => e.what === w).map(e => [e.day, +e.lb.toFixed(2)]);
+    assert.deepEqual([fr('A').days[0], fr('B').days[0], fr('B').days[14], fr('A').days[5]], [{ p: 5, w: 10 }, { p: 0, w: 2 }, { p: 0, w: 2 }, { p: 10, w: 0 }],
+      'today is Distru by lab state; pending passes after the turn; never tested never passes by itself');
+    assert.deepEqual([ev(fr('A'), 'take'), fr('A').out, +fr('A').shortLb.toFixed(2), fr('A').ev.find(e => e.what === 'short').hard], [[['2026-11-20', 5]], '2026-11-20', 3, true],
+      "a jar job takes only passed flower; one sized on the sheet that gets under 90% is short from its first day");
+    assert.deepEqual([fr('C').out, fr('C').soft, fr('C').ev.find(e => e.what === 'short').hard], ['', true, false], 'an estimated job that got some is a soft short, never the amber Runs out');
+    assert.deepEqual([ev(fr('EE'), 'land'), ev(fr('D'), 'land'), ev(FL.rows.find(r => !r.key), 'land'), fr('EE').show, ev(fr('EE'), 'pass'), ev(FL.rows.find(r => !r.key), 'pass'), fr('D').out],
+      [[['2026-11-19', 8.7]], [], [['2026-11-19', 41.3]], 'E E', [['2026-11-26', 8.7]], [], '2026-11-25'],
+      "a trim's share (lb x the site's share) goes to its strains planned to test or pack: a strain only tested gets a usual job and passes the turn after its testing day; a jar job that ends before the flower could pass gets none (and comes up short); the rest is other strains, never passed; one name across spaces");
+    assert.deepEqual(FL.cant.map(c => c.what), ["X trim 2: no pound estimate yet", "Y trim: how much of its trims usually reaches the distro isn't read"], "a trim without an estimate or a known share is said, never counted"); }
+  { const FN = OH.flower({ today: '2026-11-18', weeks: 2, turn: 5, unit: 8.7, share: { X: 0.5 }, stock: [{ key: 'F', lb: 6, lab: 'pass' }],
+      jobs: [{ id: 'f', day: '2026-11-28', to: '2026-11-29', key: 'F', lb: 5, kind: 'jar', what: 'Jars F' }, { id: 'g', day: '2026-11-28', to: '2026-11-29', key: 'G', lb: 5, kind: 'jar', what: 'Jars G' }],
+      trims: [{ site: 'X', end: '2026-11-18', lb: 40, moved: 4, strains: [{ key: 'F', lights: 2, lb: 13 }, { key: 'G', lights: 4, lb: 27 }], what: 'X trim' }], tests: { F: ['2026-11-20'], G: ['2026-11-20'] } });
+    const fn = k => FN.rows.find(r => r.key === k), lands = r => r ? r.ev.filter(e => e.what === 'land').map(e => [e.day, +e.lb.toFixed(2)]) : null;
+    assert.deepEqual([lands(fn('F')), lands(fn('G')), lands(FN.rows.find(r => !r.key)), fn('F').out, fn('G').out], [[], [['2026-11-19', 5]], [['2026-11-19', 11]], '', ''],
+      "a strain that already holds what its jobs need gets none; a trim ending today lands tomorrow, less what Metrc already moved from it (40 x 0.5 - 4 = 16: 5 to G, 11 other)"); }
+  { const FP = OH.flower({ today: '2026-11-18', weeks: 2, stock: [{ key: 'P', lb: 10, lab: 'nt' }, { key: 'P', lb: 10, lab: 'pend' }],
+      jobs: [{ id: 'r', day: '2026-11-19', to: '2026-11-19', key: 'P', lb: 10, kind: 'pre', what: 'Pre-rolls' }, { id: 'j', day: '2026-11-30', to: '2026-12-01', key: 'P', lb: 10, kind: 'jar', what: 'Jars P' }] }).rows[0];
+    assert.deepEqual([FP.out, FP.days[14]], ['', { p: 0, w: 0 }], 'pre-rolls take never-tested flower first, so the pending flower passes for the jars');
+    { const g = (o, k) => OH.flower(Object.assign({ today: '2026-11-18', weeks: 2, turn: 5, lag: 11, unit: 8.7, share: { X: 1 } }, o)).rows.find(r => r.key === k);
+      const two = g({ stock: [{ key: 'B', lb: 2, lab: 'nt' }], jobs: [{ id: 'b', day: '2026-11-21', to: '2026-11-21', key: 'B', lb: 2, kind: 'pre', what: 'Pre B' }, { id: 'c', day: '2026-11-28', to: '2026-11-29', key: 'C', lb: 9, kind: 'jar', what: 'Jars C' }],
+        trims: [{ site: 'X', end: '2026-11-20', lb: 10, strains: [{ key: 'B', lb: 10, lights: 5 }, { key: 'C', lb: 10, lights: 5 }], what: 'T' }], tests: { C: ['2026-11-22'] } }, 'C');
+      const tst = g({ jobs: [{ id: 'a', day: '2026-11-20', to: '2026-11-22', key: 'A', lb: 5, kind: 'jar', what: 'Jars A' }], trims: [{ site: 'X', end: '2026-11-20', lb: 10, strains: [{ key: 'A', lb: 10, lights: 5 }], what: 'T' }], tests: { A: ['2026-11-21'] } }, 'A');
+      assert.deepEqual([two.out, tst.ev.filter(e => e.what === 'land').map(e => +e.lb.toFixed(2)), tst.ev.filter(e => e.what === 'pass').map(e => e.day)], ['', [8.7], ['2026-11-26']],
+        "a strain's never-tested flower covers its pre-roll job, so the trim goes where it's needed; a tested strain with only an earlier job still gets a usual job"); }
+    assert.deepEqual(OH.flower({ today: '2026-11-18', weeks: 2, tests: { 'FLASH BANG': ['2026-11-25'], FLASHBANG: ['2026-12-05'] }, share: { X: 1 }, unit: 5,
+      trims: [{ site: 'X', end: '2026-11-19', lb: 5, strains: ['FLASH BANG'], what: 'X' }] }).rows[0].ev.filter(e => e.what === 'pass').map(e => e.day), ['2026-11-30'], 'testing days of spellings that differ by a space are kept together'); }
   assert.deepEqual([[{ day: '2026-12-08', to: '2026-12-16' }, '2026-12-14', '2026-12-21'], [{ day: '2026-12-08', to: '2026-12-16' }, '2026-12-21', '2026-12-28'], [{ day: '2026-12-21' }, '2026-12-14', '2026-12-21'], [{ day: '2026-12-14' }, '2026-12-14', '2026-12-21']].map(a => OH.inWeek(...a)),
     [true, false, true, false], 'planned work falls in a week when any of its days does (the week runs from the day after `from` to `to`)');
   const fnH = name => { const i = html.indexOf('function ' + name + '('); assert.ok(i >= 0, name); return html.slice(i, html.indexOf('\n}\n', i) + 2); };
@@ -3352,14 +3387,17 @@ if (realPipe) {
   assert.ok(/STYLED_VIEWS = \[[^\]]*'onhand'/.test(html) && /onhand: \(\) => renderOnHand\(\)/.test(html) && /if \(S\.view === 'onhand' && sb\) \{ if \(!S\.invAt && !S\.invErr\) loadInventory\(true\);/.test(html), 'the page is wired: its look, its render, its reads');
   assert.ok(/testing\.has\(kind \+ '\|' \+ l\.strain\) && first <= PIPE\.addDays\(today, 7\)/.test(fI) && /e\.kind === 'pickup' && e\.date > today/.test(fI) && /k\.w < mon && k\.d && k\.d\.u\)\.slice\(-3\)/.test(fI) && /est: l\.lbs == null/.test(fI),
     "the projection's inputs: planned packing not already in testing at Distru (≈ when the sheet has no count), the sheet's pickups still to come, Distru's last 3 full weeks");
-  assert.ok(/<th class="ro">Runs out<small>at Nabis<\/small><\/th>/.test(fO) && /const byOut = /.test(fO) && /byOut\(a, b\) \|\|/.test(fO) && !/--h:/.test(fO) && !/--h\)/.test(html.slice(html.indexOf('.oh-t{'), html.indexOf('.oh-note{'))),
+  assert.ok(/<th class="ro">Runs out<\/th>/.test(fO) && /const byOut = /.test(fO) && /byOut\(a, b\) \|\|/.test(fO) && !/--h:/.test(fO) && !/--h\)/.test(html.slice(html.indexOf('.oh-t{'), html.indexOf('.oh-note{'))),
     'a Runs out column, the soonest first; no tint by size (amber is the only colour that draws the eye)');
-  assert.ok(/<em class="oh-add">\+\$\{n0\(x\.add\)\}<\/em>/.test(fO) && /x\.est \? '≈ ' : ''/.test(fO) && /data-oh="wk" data-id="\$\{esc\(r\.id\)\}@\$\{j\}"/.test(fO) && /week\(r, sw\)/.test(fO) && /data-oh="cant"/.test(fO) && /blind\.push/.test(fI) && /PRE-\?ROLLS\?/.test(fI),
+  assert.ok(/<em class="oh-add">\$\{x\.add >= 0\.5 \? '\+' \+ n0\(x\.add\) : ''\}/.test(fO) && /x\.est \? '≈ ' : ''/.test(fO) && /data-oh="wk" data-id="\$\{esc\(r\.id\)\}@\$\{j\}"/.test(fO) && /week\(r, sw\)/.test(fO) && /data-oh="cant"/.test(fO) && /blind\.push/.test(fI) && /PRE-\?ROLLS\?/.test(fI),
     "a purple +N where planned packing lands, ≈ on weeks that rest on an estimate, a week's own card, and planned pre-roll work with no count said");
   assert.ok(/data-go="\$\{esc\(weekOf\(d\)\)\}"/.test(fO) && /B\.some\(b => OH\.inWeek\(b, dayAt\(W\[j - 1\]\), dayAt\(W\[j\]\)\)/.test(fO) && /const notWork = t => !!ACT\.jobOf\(t\)/.test(fI) && /!notWork\(String\(it\.title\)\)/.test(fI) && /if \(kind && inTest\.has/.test(fI),
     "the schedule link opens the week it names; +? only in the weeks the work falls in; one-off jobs and supply lines aren't planned work; a line already in testing isn't can't-tell");
   assert.ok(ACT.jobOf('PREROLLS FOR CARLOS') && !ACT.jobOf('PREROLLS FOR JAN'), 'a job for someone in particular is told apart from a month');
   assert.ok(/e\.target\.closest\('\[data-oh\]'\)\.click\(\)/.test(html) && /const id = c\.dataset\.oh === 'cant' \? 'cant' : c\.dataset\.id; S\.ohOpen = S\.ohOpen === id \? '' : id;/.test(html), 'a week cell opens by click or key, one card at a time');
+  assert.ok(/I\.fl/.test(fO) && /OH\.flower\(Object\.assign\(\{ today, weeks: OH\.WEEKS \}, I\.fl\)\)/.test(fO) && /data-id="flower"/.test(fO) && /lab: \/\^PASS\/\.test\(st\) \? 'pass' : \/\^\(PENDING\|SUBMITTED\)\/\.test\(st\) \? 'pend' : 'nt'/.test(fI) && /\\btrim\\b\/i\.test/.test(fI) && /to_distro/.test(fI),
+    "the flower rows: Distru's bulk by lab state (NOT_TESTED is not pending; trim is not flower), the grow's moved share from the Metrc lots, drawn above the packed rows");
+  assert.equal(/^(PENDING|SUBMITTED)/.test('NOT_TESTED'), false, 'NOT_TESTED never reads as pending');
   assert.ok(/OH\.project\(I\)/.test(fO) && /if \(!S\.inv \|\| !M\.rows\.length\)/.test(fO) && /data-oh="row"/.test(fO) && /data-oh="kind"/.test(fO) && /if \(on\) for \(const r of K\.rs\)/.test(fO) && /tabindex="0"/.test(fO) && !/<select/.test(fO) && !/price|dollar|revenue|\$\{?\s*usd/i.test(fO + fI), 'the table: nothing without the stock counts, rows open by click or key, no plain select, units only');
 }
 console.log('pipeline-check: all checks passed');
