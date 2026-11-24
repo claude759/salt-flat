@@ -1,0 +1,1144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#f6f7f4">
+<title>Cultivation</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232f7d4f'/%3E%3Cpath d='M16 6c-3 5-3 10 0 14 3-4 3-9 0-14zM8 13c2 4 5 6 8 7-1-4-4-6-8-7zm16 0c-4 1-7 3-8 7 3-1 6-3 8-7zM16 20v6' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<!--
+  Cultivation app: the flower rooms of the four grows, one page per room, replacing the [Location] Room # tabs of the
+  cultivation sheet. What Metrc says is in each room (plants, strains, the days they went into flower) comes from
+  cult_metrc_plants, copied every 3 hours by ~/ar-automation/cult-metrc-sync.mjs on Gianni's Mac. The rooms, their
+  zones, their weekly targets and task calendars, and the room maps traced from the premises / lighting diagrams live
+  in cult_rooms and cult_zones (supabase/cultivation.sql). Nothing private is in this file: every number and name is
+  read from the database after a Wizard Trees sign-in. Check before every push: node tests/cult-check.mjs
+-->
+<style>
+  :root{
+    --bg:#f6f7f4; --panel:#ffffff; --panel2:#f1f3ef; --line:#dfe3dc; --line2:#c9cfc6;
+    --text:#1d2420; --muted:#5d6862; --faint:#636d67;
+    --accent:#2f7d4f; --accent-ink:#ffffff; --accent-soft:#e3f1e8;
+    --amber:#9c5d09; --amber-soft:#fff3dc; --blue:#2453a6; --blue-soft:#e6eefc;
+    --room-floor:#fbfbf8; --room-wall:#3c4640; --table-line:#6f7a73; --light:#e2b007; --light-hps:#e0782b;
+    --shadow:0 1px 2px rgba(20,30,25,.06),0 4px 14px rgba(20,30,25,.05);
+  }
+  :root[data-look="dark"]{
+    color-scheme:dark;
+    --bg:#121614; --panel:#1a201d; --panel2:#212825; --line:#2d3631; --line2:#3b4640;
+    --text:#e6ece8; --muted:#a3aea8; --faint:#8f9a94;
+    --accent:#4fb07a; --accent-ink:#0d130f; --accent-soft:#1f3328;
+    --amber:#f0b14a; --amber-soft:#3a2e16; --blue:#8fb2f5; --blue-soft:#1c2740;
+    --room-floor:#161b18; --room-wall:#c7d0ca; --table-line:#8b968f; --light:#f3cd47; --light-hps:#f3965a;
+    --shadow:none;
+  }
+  iframe{color-scheme:light}
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  html,body{margin:0}
+  html{-webkit-text-size-adjust:100%}
+  body{background:var(--bg);color:var(--text);min-height:100vh;
+    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  button,input{font:inherit;color:inherit}
+  a{color:var(--accent)}
+  .btn{background:var(--panel);border:1px solid var(--line2);border-radius:8px;padding:6px 11px;cursor:pointer;line-height:1.2}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  .btn.ghost{background:none;border-color:transparent;color:var(--muted)}
+  .btn.ghost:hover{color:var(--text);border-color:var(--line2)}
+  .btn:disabled{opacity:.5;cursor:default}
+  input[type=text],input[type=number],input[type=date]{background:var(--panel);border:1px solid var(--line2);border-radius:7px;padding:5px 8px;min-width:0}
+  input:focus,.btn:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+  #top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .bar{max-width:1500px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:10px;min-width:0;cursor:pointer}
+  .logo{width:30px;height:30px;border-radius:8px;background:var(--accent);display:grid;place-items:center;flex:none}
+  .brand b{font-size:15px;display:block;white-space:nowrap}
+  .brand span{font-size:11.5px;color:var(--muted);display:block}
+  .crumbs{display:flex;align-items:center;gap:6px;color:var(--muted);min-width:0}
+  .crumbs b{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bar .grow{flex:1}
+  .seg{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
+  .seg button{background:none;border:0;padding:5px 10px;cursor:pointer;color:var(--muted)}
+  .seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--text)}
+  #fresh{font-size:12px;color:var(--muted)}
+  #fresh.stale{color:var(--amber)}
+
+  main{max-width:1500px;margin:0 auto;padding:16px}
+  .gate{max-width:420px;margin:12vh auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:28px;text-align:center;box-shadow:var(--shadow)}
+  .gate h1{font-size:20px;margin:0 0 6px}
+  .gate p{color:var(--muted);margin:6px 0 18px}
+  #gsi{display:flex;justify-content:center;min-height:44px}
+  .err{color:var(--amber);font-size:13px;margin-top:10px}
+
+  /* rooms overview */
+  .site{margin:6px 0 22px}
+  .site h2{font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0 0 8px;display:flex;gap:10px;align-items:baseline}
+  .site h2 span{font-weight:400;letter-spacing:0;text-transform:none;font-size:12px;color:var(--faint)}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+  .rc{padding:12px 14px 12px;cursor:pointer;display:flex;flex-direction:column;gap:8px;text-align:left;width:100%;font:inherit;color:inherit}
+  .rc:hover{border-color:var(--accent)}
+  .rc .h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .rc .h b{font-size:15.5px}
+  .rc .h small{color:var(--faint);font-size:12px;white-space:nowrap}
+  .rc .day{display:flex;align-items:baseline;gap:8px}
+  .rc .day big{font-size:26px;font-weight:650;letter-spacing:-.01em}
+  .rc .day span{color:var(--muted)}
+  .prog{height:6px;background:var(--panel2);border-radius:4px;overflow:hidden}
+  .prog i{display:block;height:100%;background:var(--accent);border-radius:4px}
+  .rc .facts{display:flex;flex-wrap:wrap;gap:4px 12px;color:var(--muted);font-size:12.5px}
+  .rc .facts b{color:var(--text);font-weight:600}
+  .rc .mini{height:92px;border-radius:8px;background:var(--panel2);border:1px solid var(--line);overflow:hidden}
+  .rc .mini svg{width:100%;height:100%;display:block}
+  .rc .next{font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rc .next b{color:var(--text);font-weight:600}
+  .flag{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--amber);background:var(--amber-soft);border-radius:6px;padding:2px 7px;align-self:flex-start}
+  .flag.blue{color:var(--blue);background:var(--blue-soft)}
+  .flag.muted{color:var(--muted);background:var(--panel2)}
+
+  /* room page */
+  .rhead{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 18px;margin:2px 0 14px}
+  .rhead h1{font-size:22px;margin:0;line-height:1.15}
+  .rhead .sub{color:var(--muted);font-size:13px}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 12px}
+  .stat small{display:block;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+  .stat b{display:block;font-size:18px;font-weight:650;margin-top:1px}
+  .stat span{display:block;color:var(--muted);font-size:12px;margin-top:1px}
+  .stat button{margin-top:6px}
+  .grid2{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:14px;align-items:start}
+  @media (max-width:1050px){.grid2{grid-template-columns:minmax(0,1fr)}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);margin-bottom:14px;min-width:0}
+  .panel>h3{font-size:14px;margin:0;padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .panel>h3 .grow{flex:1}
+  .panel>h3 small{color:var(--faint);font-weight:400;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pbody{padding:12px 14px}
+  .note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
+  .notes{display:flex;flex-direction:column;gap:6px;margin:0 0 14px}
+
+  .map{position:relative;background:var(--panel2);border-radius:10px;border:1px solid var(--line);overflow:hidden}
+  .map svg{display:block;width:100%;height:auto;max-height:68vh}
+  .map .tbl{cursor:pointer}
+  .map .tbl:focus{outline:none}
+  .map .tbl:focus-visible .tbl-edge{stroke:var(--accent);stroke-width:.4}
+  .map .tbl:hover .tbl-edge,.map .tbl.sel .tbl-edge{stroke:var(--text);stroke-width:.35}
+  .legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:10px;font-size:12.5px}
+  .legend span{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+  .legend i{width:12px;height:12px;border-radius:3px;display:inline-block;border:1px solid rgba(0,0,0,.15)}
+  .legend b{color:var(--text);font-weight:600}
+  .legend .lt{width:9px;height:9px;border-radius:50%;background:var(--light);border:0}
+  .legend .lt.hps{background:var(--light-hps)}
+
+  table.t{width:100%;border-collapse:collapse;font-size:13px}
+  table.t th{text-align:left;font-weight:600;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding:6px 8px;border-bottom:1px solid var(--line)}
+  table.t td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t tr:last-child td{border-bottom:0}
+  table.t td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  table.t tr.now td{background:var(--accent-soft)}
+  table.t tr.now td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px;border:1px solid rgba(0,0,0,.15)}
+  .wrapx{overflow-x:auto}
+
+  .tasks{list-style:none;margin:0;padding:0}
+  .tasks li{display:grid;grid-template-columns:22px 74px 1fr;gap:8px;align-items:start;padding:7px 2px;border-bottom:1px solid var(--line)}
+  .tasks li:last-child{border-bottom:0}
+  .tasks li .d{color:var(--muted);font-size:12.5px;line-height:1.3}
+  .tasks li .d b{display:block;color:var(--text);font-weight:600}
+  .tasks li .x{font-size:13.5px}
+  .tasks li .x small{display:block;color:var(--faint);font-size:12px}
+  .tasks li.past{opacity:.55}
+  .tasks li.done .x span{text-decoration:line-through;text-decoration-color:var(--faint)}
+  .tasks li.today{background:var(--blue-soft);border-radius:8px}
+  .tasks li.late .d b{color:var(--amber)}
+  .kind{display:inline-block;font-size:10.5px;font-weight:650;letter-spacing:.05em;text-transform:uppercase;border-radius:4px;padding:1px 5px;margin-right:6px;vertical-align:1px;background:var(--panel2);color:var(--muted)}
+  .kind.spray{background:var(--blue-soft);color:var(--blue)}
+  .tick{width:18px;height:18px;margin:1px 0 0;accent-color:var(--accent);cursor:pointer}
+  .tick:disabled{cursor:default}
+
+  #pop{position:fixed;z-index:40;max-width:340px;background:var(--panel);border:1px solid var(--line2);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:12px 14px;font-size:13px}
+  #pop h4{margin:0 0 6px;font-size:14px;display:flex;justify-content:space-between;gap:10px}
+  #pop .rows{display:grid;grid-template-columns:auto 1fr;gap:3px 12px}
+  #pop .rows span{color:var(--muted)}
+  @media (max-width:640px){#pop{left:8px!important;right:8px!important;bottom:8px!important;top:auto!important;max-width:none}}
+
+  .ed{display:grid;gap:6px}
+  .ed .row{display:grid;grid-template-columns:62px minmax(0,1fr) 74px minmax(0,90px) 30px;gap:6px;align-items:center}
+  .ed .row.h{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+  .ed .row input{width:100%}
+  .ed.act{display:flex;gap:8px;justify-content:flex-end;margin-top:6px;flex-wrap:wrap}
+  .ed.act .grow{flex:1}
+  .pickmsg{font-size:12px;color:var(--amber);min-height:16px}
+  .codebtn{background:none;border:0;padding:0 2px;color:var(--faint);cursor:pointer;font-size:12.5px;text-decoration:underline dotted;text-underline-offset:3px}
+  .codebtn:hover{color:var(--accent)}
+  .muted{color:var(--muted)}
+  .faint{color:var(--faint)}
+  .empty{color:var(--muted);padding:24px;text-align:center}
+  @media (max-width:640px){
+    main{padding:12px}
+    .bar{padding:8px 12px}
+    .brand span{display:none}
+    .tasks li{grid-template-columns:22px 64px 1fr}
+    .ed .row{grid-template-columns:52px minmax(0,1fr) 60px 30px}
+    .ed .row .pk{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="top">
+  <div class="bar">
+    <div class="brand" id="home" role="link" tabindex="0" title="All rooms">
+      <div class="logo"><svg width="18" height="18" viewBox="0 0 32 32" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M16 6c-3 5-3 10 0 14 3-4 3-9 0-14zM8 13c2 4 5 6 8 7-1-4-4-6-8-7zm16 0c-4 1-7 3-8 7 3-1 6-3 8-7zM16 20v6"/></svg></div>
+      <div><b>Cultivation</b><span>Wizard Trees grows</span></div>
+    </div>
+    <div class="crumbs" id="crumbs" hidden><span>/</span><b id="crumb-room"></b></div>
+    <div class="grow"></div>
+    <span id="fresh" aria-live="polite"></span>
+    <button class="btn ghost" id="refresh" type="button" hidden>Refresh</button>
+    <div class="seg" role="group" aria-label="Look"><button type="button" data-look="light">Light</button><button type="button" data-look="dark">Dark</button></div>
+    <button class="btn ghost" id="signout" type="button" hidden>Sign out</button>
+  </div>
+</div>
+
+<main>
+  <div id="gate" class="gate">
+    <h1>Cultivation</h1>
+    <div id="gate-loading"><p>Loading...</p></div>
+    <div id="gate-signin"><p>Sign in with your Wizard Trees Google account.</p><div id="gsi"></div></div>
+    <div id="gate-noaccess" hidden><p>This account can't open the cultivation rooms. Ask Gianni.</p><p class="faint" id="gate-email"></p>
+      <button class="btn" type="button" id="gate-out">Use another account</button></div>
+    <div class="err" id="gate-err"></div>
+  </div>
+  <section id="view-rooms" hidden></section>
+  <section id="view-room" hidden></section>
+</main>
+<div id="pop" hidden role="dialog" aria-label="Details"></div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js" integrity="sha384-BWcjm9OdFth9TbhCxZPdm+gAOUMAzQy9nmTs12ioXdCcbVnJaPMn+fMUoQCLt60R" crossorigin="anonymous"></script>
+<script>
+'use strict';
+/* ===== CULT MODEL START =====
+   Pure parts (no DOM, no network), tested by tests/cult-check.mjs: dates as YYYY-MM-DD strings (never shifted through a
+   time zone), Metrc strain names (codes like 2504 named through cult_strain_codes), a room's plants from Metrc, its
+   cycle (flip date, day of flower, harvest), its task calendar and environment weeks, where Metrc's plants sit on the
+   room's zones, and the room map's shapes in feet.
+*/
+const CM = (() => {
+  const DAY = 864e5;
+  const isDay = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const ms = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10));
+  const iso = t => new Date(t).toISOString().slice(0, 10);
+  const addDays = (s, n) => iso(ms(s) + n * DAY);
+  const diff = (a, b) => Math.round((ms(b) - ms(a)) / DAY);          // days from a to b
+  // today on the grows' clock (Los Angeles), as YYYY-MM-DD
+  const todayLA = (now = new Date()) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(now).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  };
+  const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const short = s => isDay(s) ? `${+s.slice(5, 7)}/${+s.slice(8, 10)}` : '';
+  const wday = s => isDay(s) ? `${WD[new Date(ms(s)).getUTCDay()]} ${short(s)}` : '';
+  const key = s => String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // "BLUE BANGER" -> "Blue Banger", "BB X TB #2" -> "BB x TB #2" (two-letter abbreviations stay in capitals); names
+  // already in mixed case are kept
+  const nice = s => {
+    const t = String(s == null ? '' : s).replace(/\s+/g, ' ').replace(/\s+,/g, ',').trim();
+    if (/[a-z]/.test(t)) return t;
+    return t.split(' ').map(w => w === 'X' ? 'x' : (/^[A-Z0-9]{1,2}$/.test(w.replace(/[^A-Z0-9]/g, '')) && !w.startsWith('#')) || w === 'OG' ? w
+      : w.charAt(0) + w.slice(1).toLowerCase()).join(' ');
+  };
+
+  // Metrc strain (a code like 2504 at 23rd, 15th and Olympic; a name at 25th) -> what to call it
+  function strainOf(license, metrc, codes) {
+    const s = String(metrc == null ? '' : metrc).trim();
+    if (/^\d{3,6}$/.test(s)) {
+      const c = codes && codes[`${license}|${s}`];
+      return { name: c ? c.name : `#${s}`, code: s, named: !!c, sure: !!c && c.source !== 'inferred' };
+    }
+    return { name: s || '(none)', code: null, named: true, sure: true };
+  }
+
+  // the room's rows of cult_metrc_plants -> strains in flower now, the days they went in, and what left recently.
+  // 'left' rows are plants harvested or destroyed in the last 120 days, by the day they went into flower. With the plants
+  // still in flower they make up each crop, so a harvest (part of the room or all of it) never moves the crop's flip.
+  function roomPlants(room, rows, codes) {
+    const mine = (rows || []).filter(r => r && r.license === room.license && r.location === room.metrc_location && isDay(r.day) && +r.plants > 0);
+    const by = new Map(), days = {}, all = {};
+    let total = 0;
+    for (const r of mine) {
+      const n = +r.plants;
+      if (r.state === 'flowering' || r.state === 'left') all[r.day] = (all[r.day] || 0) + n;
+      if (r.state !== 'flowering') continue;
+      let e = by.get(r.strain);
+      if (!e) { const st = strainOf(room.license, r.strain, codes); by.set(r.strain, e = { metrc: r.strain, ...st, plants: 0, days: {} }); }
+      e.plants += n; e.days[r.day] = (e.days[r.day] || 0) + n; days[r.day] = (days[r.day] || 0) + n; total += n;
+    }
+    const strains = [...by.values()].sort((a, b) => b.plants - a.plants || a.name.localeCompare(b.name));
+    const dayList = Object.keys(days).sort().map(d => ({ day: d, plants: days[d] }));
+    // crops: every day plants went into flower here, cut where more than 3 weeks pass with none; the newest is the room's
+    const crops = [];
+    for (const d of Object.keys(all).sort()) {
+      const c = crops[crops.length - 1];
+      if (c && diff(c.last, d) <= 21) { c.days.push(d); c.last = d; c.plants += all[d]; } else crops.push({ days: [d], last: d, plants: all[d] });
+    }
+    const crop = crops.length ? crops[crops.length - 1] : null;
+    // the flip as Metrc saw it: the crop's first day that moved a real share (10%) of it into flower, so one stray plant
+    // moved early does not set it
+    const first = crop ? (crop.days.find(d => all[d] >= Math.max(1, crop.plants * 0.1)) || crop.days[0]) : null;
+    const gone = state => {
+      const m = new Map();
+      for (const r of mine) if (r.state === state) {
+        const e = m.get(r.day) || { day: r.day, plants: 0, strains: 0 };
+        e.plants += +r.plants; e.strains++; m.set(r.day, e);
+      }
+      return [...m.values()].sort((a, b) => (a.day < b.day ? 1 : -1));
+    };
+    return { strains, total, dayList, first, cropDays: crop ? crop.days.map(d => ({ day: d, plants: all[d] })) : [],
+      harvested: gone('harvested'), destroyed: gone('destroyed') };
+  }
+
+  // the room's current cycle. A flip typed in the app wins when it is within 3 weeks of Metrc's (the crew's day, often a
+  // day or two before the plants are moved in Metrc). Further off: before Metrc's it is from an earlier cycle; after it,
+  // it is the next cycle's flip, used once Metrc has nothing left in flower here. Meanwhile Metrc's day is used. With no
+  // crop in Metrc, a typed flip counts until two weeks past its harvest day. A harvested room stays "harvested" for three
+  // weeks (trim and the last tasks), then "empty".
+  function cycle(room, P, today) {
+    const H = +room.harvest_day || 63;
+    const typed = isDay(room.flip_date) ? room.flip_date : null;
+    const mf = P.first;
+    const notes = [];
+    let flip = null, source = 'none';
+    if (typed && mf && Math.abs(diff(typed, mf)) <= 21) {
+      flip = typed; source = 'typed';
+      if (typed !== mf) notes.push({ k: 'metrc-day', text: `Metrc has the plants going into flower on ${P.cropDays.map(d => `${short(d.day)} (${d.plants})`).join(', ')}.` });
+    } else if (typed && (mf ? typed > mf && !P.total : diff(typed, today) <= H + 14)) {
+      flip = typed; source = 'typed';
+    } else if (mf) {
+      flip = mf; source = 'metrc';
+      if (typed) notes.push(typed < mf
+        ? { k: 'old-typed', text: `The flip date typed for this room (${short(typed)}) is from an earlier cycle, so Metrc's first flowering day is used.` }
+        : { k: 'next-typed', text: `The flip date typed for this room (${short(typed)}) is for the next cycle: Metrc still has plants in flower here from ${short(mf)}, so that day is used until they are harvested.` });
+    }
+    const lastHarvest = P.harvested[0] || null;
+    if (!flip) return { state: 'empty', flip: null, source, typed, metrcFirst: mf, H, day: null, week: null, lastHarvest, notes };
+    const day = diff(flip, today) + 1;
+    const harvestDate = addDays(flip, H - 1);
+    let state = day < 1 ? 'upcoming' : 'flower';
+    if (state === 'flower' && !P.total) {
+      if (lastHarvest && lastHarvest.day >= addDays(flip, 21)) state = diff(lastHarvest.day, today) > 21 ? 'empty' : 'harvested';
+      else notes.push({ k: 'no-metrc', warn: true, text: `Metrc shows no flowering plants in ${room.metrc_location || 'this room'} yet.` });
+    }
+    if (state === 'flower' && day > H + 3 && P.total) notes.push({ k: 'past-harvest', warn: true, text: `Day ${day}: past the planned harvest (day ${H}) and Metrc still has ${P.total} plants in flower here.` });
+    if (state === 'empty') return { state, flip: null, source, typed, metrcFirst: mf, H, day: null, week: null, lastHarvest, notes };
+    return { state, flip, source, typed, metrcFirst: mf, H, day, week: day >= 1 ? Math.ceil(day / 7) : 0,
+      harvestDate, daysLeft: diff(today, harvestDate), lastHarvest, notes };
+  }
+
+  const taskKey = t => `${t.day}|${String(t.text || '').replace(/\s+/g, ' ').trim().toUpperCase()}`.slice(0, 200);
+  // day N of a cycle is flip + N - 1 (day 1 = the flip), as the sheet counts. A tick belongs to the cycle it was made in
+  // and still counts after the flip is corrected by up to 3 weeks (cycles in a room are at least 30 days apart); the
+  // nearest cycle's tick wins, and cycles lists every date the task is ticked under (an untick clears them all). Past tasks
+  // not ticked are "late" for three days, then just past (the crew did not tick in the sheet).
+  function tasks(room, C, done, today) {
+    if (!C || !C.flip) return [];
+    const ticks = new Map();
+    for (const d of done || []) {
+      if (!d || d.room_id !== room.id || !isDay(d.cycle) || Math.abs(diff(C.flip, d.cycle)) > 21) continue;
+      const e = ticks.get(d.task_key);
+      if (!e) ticks.set(d.task_key, { d, cycles: [d.cycle] });
+      else { e.cycles.push(d.cycle); if (Math.abs(diff(C.flip, d.cycle)) < Math.abs(diff(C.flip, e.d.cycle))) e.d = d; }
+    }
+    return (Array.isArray(room.tasks) ? room.tasks : []).filter(t => t && +t.day > 0).map(t => {
+      const date = addDays(C.flip, +t.day - 1), k = taskKey(t), e = ticks.get(k), d = e ? e.d : null;
+      const status = d ? 'done' : date === today ? 'today' : date > today ? 'next' : diff(date, today) <= 3 ? 'late' : 'past';
+      return { day: +t.day, kind: String(t.kind || '').toUpperCase(), text: String(t.text || ''), key: k, date, status,
+        doneBy: d ? d.done_by : null, doneAt: d ? d.done_at : null, cycles: e ? e.cycles : [] };
+    }).sort((a, b) => a.day - b.day || a.text.localeCompare(b.text));
+  }
+
+  // weekly targets; week k covers days 7k-6 .. 7k
+  function envRows(room, C) {
+    return (Array.isArray(room.env) ? room.env : []).filter(e => e && +e.week > 0).map(e => ({ ...e, week: +e.week,
+      from: C && C.flip ? addDays(C.flip, (e.week - 1) * 7) : null, to: C && C.flip ? addDays(C.flip, e.week * 7 - 1) : null,
+      now: !!(C && C.week === +e.week) })).sort((a, b) => a.week - b.week);
+  }
+
+  // zone strains (as the crew typed them) <-> Metrc's strains in the room, on letters and digits only. Metrc strains with
+  // the same letters (a strain under its name and its number, "Flash Bang" and "Flashbang") are one strain here. Exact
+  // first; else the longest Metrc name the zone's name extends by a number only ("RIPTIDE X TB #6" is Riptide x TB,
+  // "KINGTIDE #3" is King Tide, but "TIDEBANGER" is never Tide); else the one Metrc name that extends the zone's by a
+  // number ("KINGTIDE" is King Tide 23 when it is the only one). A strain on several zones is split between them by lights
+  // (evenly when none are set), in whole plants that add up to its count.
+  function place(zones, P) {
+    const ms_ = [];
+    for (const s of (P && P.strains || [])) {
+      const k = key(s.name), x = ms_.find(y => y.k === k);
+      if (!x) ms_.push({ s, k, slots: [] });
+      else x.s = { ...x.s, plants: x.s.plants + s.plants, code: [x.s.code, s.code].filter(Boolean).join(', ') || null };
+    }
+    const byNumber = (longer, shorter) => longer.length > shorter.length && longer.startsWith(shorter) && /[A-Z]$/.test(shorter) && /^\d/.test(longer.slice(shorter.length));
+    const matchOf = name => {
+      const k = key(name);
+      if (!k) return null;
+      const exact = ms_.find(x => x.k === k);
+      if (exact) return exact;
+      if (k.length < 3) return null;
+      const pre = ms_.filter(x => x.k.length >= 3 && byNumber(k, x.k)).sort((a, b) => b.k.length - a.k.length);
+      if (pre.length) return pre.length === 1 || pre[0].k.length > pre[1].k.length ? pre[0] : null;
+      const ext = ms_.filter(x => byNumber(x.k, k));
+      return ext.length === 1 ? ext[0] : null;
+    };
+    const slots = (Array.isArray(zones) ? zones : []).filter(z => z && +z.zone > 0).slice().sort((a, b) => a.zone - b.zone || (a.slot || 1) - (b.slot || 1))
+      .map(z => ({ zone: +z.zone, slot: +(z.slot || 1), strain: z.strain || null, lights: z.lights == null || z.lights === '' ? null : +z.lights, pack: z.pack || null, m: null, plants: 0 }));
+    for (const z of slots) { z.m = z.strain ? matchOf(z.strain) : null; if (z.m) z.m.slots.push(z); }
+    for (const x of ms_) {
+      if (!x.slots.length) continue;
+      const L = x.slots.reduce((a, z) => a + (z.lights > 0 ? z.lights : 0), 0), n = x.s.plants;
+      const share = x.slots.map(z => L > 0 ? n * (z.lights > 0 ? z.lights : 0) / L : n / x.slots.length);
+      x.slots.forEach((z, i) => { z.plants = Math.floor(share[i]); });
+      let rest = n - x.slots.reduce((a, z) => a + z.plants, 0);
+      const order = share.map((v, i) => i).sort((a, b) => (share[b] - Math.floor(share[b])) - (share[a] - Math.floor(share[a])) || a - b);
+      for (const i of order) { if (rest <= 0) break; x.slots[i].plants++; rest--; }
+    }
+    for (const z of slots) { z.name = z.m ? z.m.s.name : (z.strain ? nice(z.strain) : null); z.metrc = z.m ? z.m.s : null; delete z.m; }
+    return { slots, unplaced: ms_.filter(x => !x.slots.length).map(x => x.s), missing: slots.filter(z => z.strain && !z.metrc) };
+  }
+
+  // colours: one per strain in the room, in the order the zones list them, then the unplaced Metrc strains; past the 14
+  // set colours each further strain gets its own hue
+  const PALETTE = ['#5b8fd9', '#e8833a', '#4fa86a', '#d85a5f', '#8a6fd1', '#3bb0b0', '#d9b23c', '#c86aa8', '#8c7a5c', '#6fa83b', '#d07b5f', '#5d7fa8', '#a8a83b', '#b05fd9'];
+  function colors(placed) {
+    const out = {}, order = [];
+    for (const z of placed.slots) { const k = key(z.name); if (k && !(k in out)) { out[k] = null; order.push(k); } }
+    for (const s of placed.unplaced) { const k = key(s.name); if (k && !(k in out)) { out[k] = null; order.push(k); } }
+    order.forEach((k, i) => { out[k] = i < PALETTE.length ? PALETTE[i] : `hsl(${((i - PALETTE.length) * 137.508 % 360).toFixed(1)}, 45%, 40%)`; });
+    return out;
+  }
+
+  // the table numbers a room map has (zone n is drawn on table n)
+  const tableNs = layout => new Set((layout && Array.isArray(layout.tables) ? layout.tables : []).filter(t => t && typeof t === 'object').map((t, i) => +t.n || i + 1));
+
+  // the room map in feet: walls, doors, tables (zone n = table n), each table split between its strains by lights (a
+  // strain with no lights set takes what its plants need at its table-mates' plants per light), plant dots per strain from
+  // Metrc's count, and the lights (the fixtures traced from the lighting diagram when it shows them, else each strain's
+  // lights over its own part of the table). rotate: turn a tall room on its side for a wide screen. Never throws on a
+  // malformed layout: what it can't read it leaves out.
+  function mapModel(layout, placed, col, opts) {
+    if (!layout || typeof layout !== 'object' || !(+layout.w > 0) || !(+layout.h > 0) || !Array.isArray(layout.tables)) return null;
+    const W = +layout.w, Hh = +layout.h, rot = !!(opts && opts.rotate);
+    const R = rot ? (x, y) => [Hh - y, x] : (x, y) => [x, y];
+    const rect = (x, y, w, h) => rot ? { x: Hh - (y + h), y: x, w: h, h: w } : { x, y, w, h };
+    const pts = Array.isArray(layout.outline) ? layout.outline.filter(p => Array.isArray(p) && isFinite(p[0]) && isFinite(p[1])) : [];
+    const out = { w: rot ? Hh : W, h: rot ? W : Hh, rot, outline: pts.map(p => R(+p[0], +p[1])), doors: [], tables: [] };
+    // doors: the gap runs along the wall the door sits on (walls can slant); its swing goes into the room
+    const poly = out.outline.length >= 3 ? out.outline : [[0, 0], [out.w, 0], [out.w, out.h], [0, out.h]];
+    const cw = poly.reduce((t, p, i) => { const q = poly[(i + 1) % poly.length]; return t + p[0] * q[1] - q[0] * p[1]; }, 0) > 0 ? 1 : -1;
+    const TURN = { n: 'e', e: 's', s: 'w', w: 'n' };   // a quarter turn clockwise moves each wall one side round
+    for (const d of Array.isArray(layout.doors) ? layout.doors : []) {
+      if (!d || !isFinite(d.x) || !isFinite(d.y)) continue;
+      const [x, y] = R(+d.x, +d.y), s0 = /^[nsew]$/i.test(String(d.side || '')) ? String(d.side).toLowerCase() : null;
+      const side = s0 ? (rot ? TURN[s0] : s0) : null;
+      let a = side === 'n' || side === 's' ? [1, 0] : [0, 1], nv = side ? { n: [0, 1], s: [0, -1], e: [-1, 0], w: [1, 0] }[side] : null, near = 0.5;
+      poly.forEach((p, i) => {
+        const q = poly[(i + 1) % poly.length], dx = q[0] - p[0], dy = q[1] - p[1], len = Math.hypot(dx, dy);
+        if (!len) return;
+        const t = Math.max(0, Math.min(1, ((x - p[0]) * dx + (y - p[1]) * dy) / (len * len)));
+        const off = Math.hypot(p[0] + t * dx - x, p[1] + t * dy - y);
+        if (off < near) { near = off; nv = [-dy / len * cw, dx / len * cw]; a = (Math.abs(dx) >= Math.abs(dy) ? dx < 0 : dy < 0) ? [-dx / len, -dy / len] : [dx / len, dy / len]; }
+      });
+      if (nv) out.doors.push({ x, y, wd: Math.min(8, Math.max(1, +d.width || 3)), a, nv });
+    }
+    const bySlot = new Map();
+    for (const z of placed.slots) { if (!bySlot.has(z.zone)) bySlot.set(z.zone, []); bySlot.get(z.zone).push(z); }
+    layout.tables.forEach((t, i) => {
+      if (!t || typeof t !== 'object' || ![t.x, t.y, t.w, t.h].every(v => isFinite(v)) || !(+t.w > 0) || !(+t.h > 0)) return;
+      const n = +t.n || i + 1;
+      const T = { n, ...rect(+t.x, +t.y, +t.w, +t.h), zone: bySlot.get(n) || [], segs: [], dots: [], lights: [] };
+      const long = T.w >= T.h;   // the table's long side, in the drawn (maybe turned) frame
+      // turned, a table that ran north-south runs right to left: lay its parts and dots from the far end so each strain
+      // keeps its end of the table
+      const rev = rot && long;
+      const parts0 = T.zone.length ? T.zone : [{ zone: n, slot: 1, name: null, plants: 0, lights: null }];
+      const parts = rev ? parts0.slice().reverse() : parts0;
+      const lit = parts.filter(z => z.lights > 0), litL = lit.reduce((a, z) => a + z.lights, 0), litP = lit.reduce((a, z) => a + (z.plants || 0), 0);
+      const wt = z => z.lights > 0 ? z.lights : !lit.length ? 1 : z.plants > 0 && litP > 0 ? litL * z.plants / litP : litL / lit.length;
+      const wsum = parts.reduce((a, z) => a + wt(z), 0) || 1;
+      const Lt = long ? T.w : T.h;
+      let at = 0;
+      for (const z of parts) {
+        const len = Lt * wt(z) / wsum;
+        const s = long ? { x: T.x + at, y: T.y, w: len, h: T.h } : { x: T.x, y: T.y + at, w: T.w, h: len };
+        at += len;
+        const c = z.name ? col[key(z.name)] || '#9aa39d' : null;
+        T.segs.push({ ...s, color: c, name: z.name, plants: z.plants || 0, slot: z.slot, lights: z.lights, len });
+        // dots: rows of plants along the table, 2 across a 4-5 ft table
+        const n0 = Math.min(z.plants || 0, 400);
+        if (n0 > 0 && len > 0) {
+          const across = Math.max(1, Math.min(3, Math.round((long ? s.h : s.w) / 2.2)));
+          const along = Math.ceil(n0 / across), A = long ? s.h : s.w;
+          for (let q = 0; q < n0; q++) {
+            const u = (Math.floor(q / across) + 0.5) * (len / along), v = (q % across + 0.5) * (A / across);
+            T.dots.push(long ? { x: rev ? s.x + s.w - u : s.x + u, y: s.y + v, c } : { x: s.x + v, y: s.y + u, c });
+          }
+        }
+      }
+      if (Array.isArray(t.light_spots) && t.light_spots.length) {
+        t.light_spots.slice(0, 400).forEach((p, k) => {
+          if (!Array.isArray(p) || !isFinite(p[0]) || !isFinite(p[1])) return;
+          const [x, y] = R(+p[0], +p[1]);
+          T.lights.push({ x, y, kind: Array.isArray(t.light_kinds) && /^[VDM]$/.test(t.light_kinds[k]) ? t.light_kinds[k] : null });
+        });
+      } else {
+        // each strain's lights over its own part of the table (half lights share the line between two strains)
+        const tot = T.segs.reduce((a, g) => a + (g.lights > 0 ? g.lights : 0), 0);
+        const cnt = Math.min(400, Math.round(tot || (+t.lights > 0 ? +t.lights : 0)));
+        for (let k = 0; k < cnt; k++) {
+          let u;
+          if (tot > 0) {
+            let lp = (k + 0.5) * tot / cnt, pos = 0;
+            u = Lt;
+            for (const g of T.segs) {
+              const gl = g.lights > 0 ? g.lights : 0;
+              if (gl && lp <= gl) { u = pos + g.len * lp / gl; break; }
+              lp -= gl; pos += g.len;
+            }
+          } else u = (k + 0.5) * (Lt / cnt);
+          T.lights.push(long ? { x: T.x + u, y: T.y + T.h / 2, kind: null } : { x: T.x + T.w / 2, y: T.y + u, kind: null });
+        }
+      }
+      out.tables.push(T);
+    });
+    return out;
+  }
+
+  return { isDay, addDays, diff, todayLA, short, wday, key, nice, strainOf, roomPlants, cycle, taskKey, tasks, envRows, place, colors, tableNs, mapModel, PALETTE };
+})();
+/* ===== CULT MODEL END ===== */
+
+/* ---------------- page ---------------- */
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const num = n => (n == null || !isFinite(n)) ? '' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 1 });
+const SB_URL = 'https://dhiqhgtmelxwelyoowle.supabase.co';
+const SB_KEY = 'sb_publishable_FtScmtn1C0tE1bwUsavJFg_koiVEu14';   // publishable anon key (RLS does the guarding)
+const GOOGLE_CLIENT_ID = '168134930971-2au6foq8njul8tjja6a2v306mt10r45i.apps.googleusercontent.com';
+const SITES = [
+  { id: 'S', name: '23rd St', sub: 'Slane' }, { id: 'F', name: '25th St', sub: 'Filifera' },
+  { id: 'I', name: '15th St', sub: 'Imperial Project' }, { id: 'O', name: 'Olympic', sub: 'Rio Verde' },
+];
+const S = { me: null, rooms: [], zones: [], codes: {}, codeRows: [], plants: [], plantsSig: null, meta: [], done: [], loadedAt: 0, room: null, editZones: false };
+let sb = null, rawNonce = null, pollTimer = null;
+
+/* ----- look ----- */
+function setLook(v) {
+  const look = v === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-look', look);
+  document.querySelector('meta[name=theme-color]').setAttribute('content', look === 'dark' ? '#121614' : '#f6f7f4');
+  for (const b of document.querySelectorAll('[data-look]')) if (b.tagName === 'BUTTON') b.setAttribute('aria-pressed', String(b.dataset.look === look));
+  try { localStorage.setItem('cult.look', look); } catch (e) { /* private window: the look is just not kept */ }
+}
+(function () {
+  let v = null;
+  try { v = localStorage.getItem('cult.look'); } catch (e) { /* ignore */ }
+  setLook(v || (window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  for (const b of document.querySelectorAll('button[data-look]')) b.addEventListener('click', () => setLook(b.dataset.look));
+})();
+
+/* ----- data ----- */
+// Reads name their columns (egress). only: the tables a save changed (else everything). Metrc's rows are read again
+// only when the job changed them since the last read (cult_metrc_meta.changed_at), or on Refresh (force).
+const READS = {
+  rooms: () => sb.from('cult_rooms').select('id,site,name,license,metrc_location,harvest_day,flip_date,env,tasks,layout,layout_source').eq('active', true).order('sort'),
+  zones: () => sb.from('cult_zones').select('room_id,zone,slot,strain,lights,pack'),
+  codes: () => sb.from('cult_strain_codes').select('license,code,name,source'),
+  meta: () => sb.from('cult_metrc_meta').select('license,synced_at,changed_at,note'),
+  done: () => sb.from('cult_task_done').select('room_id,cycle,task_key,done_at,done_by').gte('cycle', CM.addDays(CM.todayLA(), -200)),
+  plants: () => sb.from('cult_metrc_plants').select('license,location,strain,state,day,plants'),
+};
+const metaSig = meta => (meta || []).map(m => `${m.license}|${m.changed_at || ''}`).sort().join();
+async function loadAll(quiet, only, force) {
+  const want = only || ['rooms', 'zones', 'codes', 'meta', 'done'];
+  const got = {};
+  const res = await Promise.all(want.map(k => READS[k]()));
+  want.forEach((k, i) => { got[k] = res[i]; });
+  let bad = res.find(x => x.error);
+  if (!bad && !only && (force || !S.plantsSig || metaSig(got.meta.data) !== S.plantsSig)) {
+    got.plants = await READS.plants();
+    if (got.plants.error) bad = got.plants;
+  }
+  if (bad) {
+    if (!quiet) throw new Error(/does not exist|schema cache|relation/i.test(bad.error.message) ? "The cultivation tables aren't on the server yet. Ask Gianni." : "Couldn't reach the database. Check your connection and refresh.");
+    setFresh();
+    if (S.loadedAt) { $('fresh').textContent = "Couldn't read the rooms again: showing the last copy. Press Refresh."; $('fresh').className = 'stale'; }
+    return false;
+  }
+  if (got.rooms) S.rooms = got.rooms.data || [];
+  if (got.zones) S.zones = got.zones.data || [];
+  if (got.codes) { S.codeRows = got.codes.data || []; S.codes = Object.fromEntries(S.codeRows.map(x => [`${x.license}|${x.code}`, x])); }
+  if (got.meta) S.meta = got.meta.data || [];
+  if (got.done) S.done = got.done.data || [];
+  if (got.plants) { S.plants = got.plants.data || []; S.plantsSig = metaSig(S.meta); }
+  S.loadedAt = Date.now();
+  setFresh();
+  return true;
+}
+function setFresh() {
+  const el = $('fresh');
+  const synced = S.meta.map(m => Date.parse(m.synced_at)).filter(isFinite);
+  if (!synced.length) { el.textContent = S.loadedAt ? 'Metrc: not read yet' : ''; el.className = S.loadedAt ? 'stale' : ''; return; }
+  const oldest = Math.min(...synced), h = (Date.now() - oldest) / 36e5;
+  el.textContent = `Metrc read ${h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : Math.round(h) + ' h'} ago`;
+  el.className = h > 7 ? 'stale' : '';
+  el.title = S.meta.map(m => `${m.license}: ${m.synced_at ? new Date(m.synced_at).toLocaleString() : 'never'}${m.note ? ' (' + m.note + ')' : ''}`).join('\n');
+}
+function roomView(room, today) {
+  const P = CM.roomPlants(room, S.plants, S.codes);
+  const C = CM.cycle(room, P, today);
+  const zones = S.zones.filter(z => z.room_id === room.id);
+  const placed = CM.place(zones, P);
+  const col = CM.colors(placed);
+  const T = CM.tasks(room, C, S.done, today);
+  return { room, P, C, zones, placed, col, T, lights: zones.reduce((a, z) => a + (+z.lights || 0), 0) };
+}
+
+/* ----- routing: #room=S1 opens a room, nothing = all rooms ----- */
+function route() {
+  const m = location.hash.match(/room=([A-Z][A-Z0-9]{1,3})/);
+  const id = m ? m[1] : null;
+  S.room = id && S.rooms.some(r => r.id === id) ? id : null;
+  if (!S.room && S.rooms.length === 1) S.room = S.rooms[0].id;   // one room switched on: open it, there is nothing to pick
+  S.editZones = false;
+  closePop();
+  render();
+}
+function go(id) { location.hash = id ? `room=${id}` : ''; }
+$('home').addEventListener('click', () => go(null));
+$('home').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(null); } });
+window.addEventListener('hashchange', route);
+
+function render() {
+  const one = S.room && S.rooms.find(r => r.id === S.room);
+  $('view-rooms').hidden = !!one; $('view-room').hidden = !one;
+  $('crumbs').hidden = !one; $('crumb-room').textContent = one ? one.name : '';
+  $('home').title = S.rooms.length > 1 ? 'All rooms' : '';
+  document.title = one ? `${one.name} · Cultivation` : 'Cultivation';
+  if (one) renderRoom(one); else renderRooms();
+}
+
+/* ----- the map as SVG ----- */
+function mapSVG(V, opts) {
+  try { return mapSVG0(V, opts); }
+  catch (e) { return opts && opts.mini ? '<svg viewBox="0 0 10 4"><text x="5" y="2.3" font-size=".7" text-anchor="middle" fill="currentColor" opacity=".45">No map yet</text></svg>' : '<div class="empty">This room\'s map could not be drawn.</div>'; }
+}
+function mapSVG0(V, opts) {
+  const mini = !!(opts && opts.mini);
+  const L = V.room.layout;
+  const rotate = !!L && (+L.h > +L.w * 1.25) && (mini || window.innerWidth > 700);
+  const M = CM.mapModel(L, V.placed, V.col, { rotate });
+  if (!M) return mini ? '<svg viewBox="0 0 10 4"><text x="5" y="2.3" font-size=".7" text-anchor="middle" fill="currentColor" opacity=".45">No map yet</text></svg>' : '';
+  const pad = mini ? 1 : 2.5, vw = M.w + pad * 2, vh = M.h + pad * 2;
+  const f = v => Math.round(v * 100) / 100;
+  let s = `<svg viewBox="${f(-pad)} ${f(-pad)} ${f(vw)} ${f(vh)}" role="img" aria-label="${esc(V.room.name)} map" preserveAspectRatio="xMidYMid meet">`;
+  const poly = M.outline.length >= 3 ? M.outline : [[0, 0], [M.w, 0], [M.w, M.h], [0, M.h]];
+  s += `<polygon points="${poly.map(p => `${f(p[0])},${f(p[1])}`).join(' ')}" fill="var(--room-floor)" stroke="var(--room-wall)" stroke-width="${mini ? .5 : .45}" stroke-linejoin="round"/>`;
+  // doors: a gap in the wall and the leaf's swing into the room
+  if (!mini) for (const d of M.doors) {
+    const a = d.a, nv = d.nv, w = d.wd;
+    const H = [d.x - a[0] * w / 2, d.y - a[1] * w / 2], L = [H[0] + nv[0] * w, H[1] + nv[1] * w], E = [H[0] + a[0] * w, H[1] + a[1] * w];
+    const sweep = nv[0] * a[1] - nv[1] * a[0] > 0 ? 1 : 0;
+    s += `<line x1="${f(H[0])}" y1="${f(H[1])}" x2="${f(E[0])}" y2="${f(E[1])}" stroke="var(--room-floor)" stroke-width=".8"/>`;
+    s += `<path d="M${f(H[0])} ${f(H[1])}L${f(L[0])} ${f(L[1])}A${f(w)} ${f(w)} 0 0 ${sweep} ${f(E[0])} ${f(E[1])}" fill="none" stroke="var(--faint)" stroke-width=".14"/>`;
+  }
+  for (const T of M.tables) {
+    s += `<g class="tbl" data-zone="${T.n}" tabindex="${mini ? -1 : 0}" role="${mini ? 'presentation' : 'button'}" aria-label="Zone ${T.n}">`;
+    for (const g of T.segs) {
+      s += `<rect x="${f(g.x)}" y="${f(g.y)}" width="${f(g.w)}" height="${f(g.h)}" fill="${g.color || 'var(--panel2)'}" fill-opacity="${g.color ? .26 : 1}" stroke="none"/>`;
+    }
+    s += `<rect class="tbl-edge" x="${f(T.x)}" y="${f(T.y)}" width="${f(T.w)}" height="${f(T.h)}" rx=".25" fill="none" stroke="var(--table-line)" stroke-width="${mini ? .3 : .16}"/>`;
+    if (!mini) {
+      for (const g of T.segs.slice(1)) {
+        const long = T.w >= T.h;
+        s += long ? `<line x1="${f(g.x)}" y1="${f(g.y)}" x2="${f(g.x)}" y2="${f(g.y + g.h)}" stroke="var(--table-line)" stroke-width=".12" stroke-dasharray=".4 .3"/>`
+          : `<line x1="${f(g.x)}" y1="${f(g.y)}" x2="${f(g.x + g.w)}" y2="${f(g.y)}" stroke="var(--table-line)" stroke-width=".12" stroke-dasharray=".4 .3"/>`;
+      }
+      const r = T.dots.length > 140 ? .2 : .26;
+      for (const d of T.dots) s += `<circle cx="${f(d.x)}" cy="${f(d.y)}" r="${r}" fill="${d.c || 'var(--faint)'}"/>`;
+      for (const l of T.lights) s += l.kind === 'D'
+        ? `<rect x="${f(l.x - .32)}" y="${f(l.y - .32)}" width=".64" height=".64" fill="var(--light-hps)" opacity=".9"/>`
+        : `<circle cx="${f(l.x)}" cy="${f(l.y)}" r=".34" fill="var(--light)" stroke="rgba(0,0,0,.25)" stroke-width=".05" opacity=".95"/>`;
+      // zone label at the table's start, outside it when there is room
+      const long = T.w >= T.h;
+      const lx = long ? T.x - .5 : T.x + T.w / 2, ly = long ? T.y + T.h / 2 + .45 : T.y - .55;
+      s += `<text x="${f(lx)}" y="${f(ly)}" font-size="1.25" font-weight="700" text-anchor="${long ? 'end' : 'middle'}" fill="var(--muted)">${T.n}</text>`;
+    } else {
+      for (const g of T.segs) if (g.color) s += `<rect x="${f(g.x)}" y="${f(g.y)}" width="${f(g.w)}" height="${f(g.h)}" fill="${g.color}" fill-opacity=".75"/>`;
+    }
+    s += '</g>';
+  }
+  return s + '</svg>';
+}
+
+/* ----- all rooms ----- */
+function renderRooms() {
+  const today = CM.todayLA();
+  const el = $('view-rooms');
+  if (!S.rooms.length) { el.innerHTML = '<div class="empty">No rooms are set up yet.</div>'; return; }
+  let h = '';
+  for (const site of SITES) {
+    const rooms = S.rooms.filter(r => r.site === site.id);
+    if (!rooms.length) continue;
+    h += `<div class="site"><h2>${esc(site.name)} <span>${esc(site.sub)}</span></h2><div class="cards">`;
+    for (const room of rooms) h += roomCard(roomView(room, today), today);
+    h += '</div></div>';
+  }
+  el.innerHTML = h;
+  for (const b of el.querySelectorAll('[data-room]')) b.addEventListener('click', () => go(b.dataset.room));
+}
+function roomCard(V, today) {
+  const { room, P, C, T } = V;
+  let day = '', prog = 0, facts = [];
+  if (C.state === 'flower') { day = `<big>Day ${C.day}</big><span>of ${C.H} · week ${C.week}</span>`; prog = Math.min(100, Math.max(0, C.day / C.H * 100)); }
+  else if (C.state === 'upcoming') day = `<big>Flips ${esc(CM.wday(C.flip))}</big>`;
+  else if (C.state === 'harvested') day = `<big>Harvested</big><span>${esc(CM.short(C.lastHarvest.day))}</span>`;
+  else day = '<big>Empty</big><span>waiting for the next flip</span>';
+  if (C.flip && C.state !== 'empty') facts.push(`Flip <b>${esc(CM.short(C.flip))}</b>`);
+  if (C.state === 'flower' || C.state === 'upcoming') facts.push(`Harvest <b>${esc(CM.wday(C.harvestDate))}</b>`);
+  facts.push(`<b>${num(P.total)}</b> plants`);
+  if (P.strains.length) facts.push(`<b>${P.strains.length}</b> strain${P.strains.length === 1 ? '' : 's'}`);
+  const next = T.find(t => t.status === 'today') || T.find(t => t.status === 'late') || T.find(t => t.status === 'next');
+  const nextTxt = next ? `${next.status === 'today' ? 'Today' : next.status === 'late' ? 'Not ticked' : esc(CM.wday(next.date))}: <b>${esc(CM.nice(tidy(next.text)))}</b>` : '';
+  const warn = C.notes.find(n => n.warn);
+  const unnamed = P.strains.filter(s => !s.named).length;
+  return `<button type="button" class="card rc" data-room="${esc(room.id)}">
+    <div class="h"><b>${esc(room.name)}</b><small>Metrc: ${esc(room.metrc_location || '-')}</small></div>
+    <div class="day">${day}</div>
+    ${C.state === 'flower' ? `<div class="prog"><i style="width:${prog.toFixed(1)}%"></i></div>` : ''}
+    <div class="mini">${mapSVG(V, { mini: true })}</div>
+    <div class="facts">${facts.map(f => `<span>${f}</span>`).join('')}</div>
+    ${nextTxt ? `<div class="next">${nextTxt}</div>` : ''}
+    ${warn ? `<span class="flag">${esc(warn.text)}</span>` : ''}
+    ${unnamed ? `<span class="flag muted">${unnamed} strain code${unnamed === 1 ? '' : 's'} without a name</span>` : ''}
+  </button>`;
+}
+
+/* ----- one room ----- */
+function renderRoom(room) {
+  const today = CM.todayLA();
+  const V = roomView(room, today);
+  const { P, C, T, placed, col } = V;
+  const canEdit = !!(S.me && S.me.edit);
+  const site = SITES.find(s => s.id === room.site) || { name: '', sub: '' };
+  let h = `<div class="rhead"><div><h1>${esc(room.name)}</h1><div class="sub">${esc(site.name)} · ${esc(site.sub)} · Metrc ${esc(room.metrc_location || '-')} (${esc(room.license)})</div></div></div>`;
+  // stats
+  const st = [];
+  if (C.state === 'flower') st.push(['Day of flower', `${C.day} of ${C.H}`, `Week ${C.week}${C.daysLeft >= 0 ? ` · ${C.daysLeft} days to harvest` : ''}`]);
+  else if (C.state === 'upcoming') st.push(['Flip', CM.wday(C.flip), `in ${-C.day + 1} day${-C.day + 1 === 1 ? '' : 's'}`]);
+  else if (C.state === 'harvested') st.push(['Harvested', CM.wday(C.lastHarvest.day), `${num(C.lastHarvest.plants)} plants`]);
+  else st.push(['Room', 'Empty', 'waiting for the next flip']);
+  st.push(['Flip date', C.flip ? CM.wday(C.flip) : '-', C.source === 'typed' ? 'as typed' : C.source === 'metrc' ? "Metrc's first flowering day" : '', 'flip']);
+  if (C.flip) st.push(['Harvest', CM.wday(C.harvestDate), `day ${C.H}`]);
+  st.push(['Plants in Metrc', num(P.total), `${P.strains.length} strain${P.strains.length === 1 ? '' : 's'}`]);
+  const drawn = room.layout ? (room.layout.tables || []).reduce((a, t) => a + (Array.isArray(t.light_spots) ? t.light_spots.length : 0), 0) : 0;
+  st.push(['Lights', V.lights ? num(V.lights) : '-', drawn && drawn !== V.lights ? `on the zones; ${drawn} fixtures on the diagram` : 'on the zones']);
+  h += '<div class="stats">' + st.map(([a, b, c, k]) => `<div class="stat"><small>${esc(a)}</small><b>${esc(b)}</b>${c ? `<span>${esc(c)}</span>` : ''}${k === 'flip' && canEdit ? '<button class="btn" type="button" id="flip-edit">Change</button>' : ''}</div>`).join('') + '</div>';
+  const notes = C.notes.slice();
+  if (placed.unplaced.length) notes.push({ warn: true, text: `In Metrc but on no zone: ${placed.unplaced.map(s => `${s.name} (${s.plants})`).join(', ')}.` });
+  if (placed.missing.length) notes.push({ text: `On a zone but not in Metrc's flowering plants here: ${[...new Set(placed.missing.map(z => z.name))].join(', ')}.` });
+  const tn = CM.tableNs(room.layout);
+  const offMap = tn.size ? placed.slots.filter(z => z.name && !tn.has(z.zone)) : [];
+  if (offMap.length) notes.push({ warn: true, text: `On a zone with no table on the map, so not drawn: ${offMap.map(z => `zone ${z.zone} ${z.name}${z.metrc ? ` (${num(z.plants)})` : ''}`).join(', ')}.` });
+  if (notes.length) h += '<div class="notes">' + notes.map(n => `<span class="flag ${n.warn ? '' : 'blue'}">${esc(n.text)}</span>`).join('') + '</div>';
+  h += '<div class="grid2"><div>';
+  // map
+  h += `<div class="panel"><h3>Room map <span class="grow"></span><small>${room.layout ? esc(room.layout_source || '') : ''}</small></h3><div class="pbody">`;
+  h += room.layout ? `<div class="map" id="map">${mapSVG(V)}</div>` : '<div class="empty">No map traced for this room yet.</div>';
+  const leg = [];
+  const seen = new Set();
+  for (const z of placed.slots) { if (!z.name || seen.has(CM.key(z.name))) continue; seen.add(CM.key(z.name)); const pl = placed.slots.filter(y => CM.key(y.name) === CM.key(z.name)).reduce((a, y) => a + (y.plants || 0), 0); leg.push(`<span><i style="background:${col[CM.key(z.name)]}"></i>${esc(z.name)} <b>${pl ? num(pl) : ''}</b></span>`); }
+  for (const s of placed.unplaced) leg.push(`<span><i style="background:${col[CM.key(s.name)]}"></i>${esc(s.name)} <b>${num(s.plants)}</b> <span class="faint">no zone</span></span>`);
+  const kinds = room.layout && (room.layout.tables || []).some(t => (t.light_kinds || []).includes('D'));
+  leg.push(`<span><i class="lt"></i>${kinds ? 'LED' : 'Light'}</span>`);
+  if (kinds) leg.push('<span><i class="lt hps" style="border-radius:1px"></i>HPS</span>');
+  leg.push('<span class="faint">Dots: plants in Metrc, placed on their zone</span>');
+  h += `<div class="legend">${leg.join('')}</div>`;
+  h += '</div></div>';
+  // zones
+  h += `<div class="panel"><h3>Zones <span class="grow"></span>${canEdit && !S.editZones ? '<button class="btn" type="button" id="zones-edit">Edit</button>' : ''}</h3><div class="pbody">`;
+  h += S.editZones ? zonesEditor(V) : zonesTable(V);
+  h += '</div></div>';
+  // Metrc
+  h += `<div class="panel"><h3>In Metrc <span class="grow"></span><small>${esc(room.metrc_location || '')}</small></h3><div class="pbody">${metrcPanel(V, canEdit)}</div></div>`;
+  h += '</div><div>';
+  // tasks
+  const doneN = T.filter(t => t.status === 'done').length;
+  h += `<div class="panel"><h3>Tasks <span class="grow"></span><small>${C.flip ? `cycle from ${esc(CM.short(C.flip))}${doneN ? ` · ${doneN} done` : ''}` : ''}</small></h3><div class="pbody">`;
+  h += C.flip ? `<ul class="tasks">${T.map(t => taskRow(t, canEdit)).join('')}</ul>` : '<div class="empty">The task calendar starts at the next flip.</div>';
+  h += '</div></div>';
+  // environment
+  const E = CM.envRows(room, C);
+  h += `<div class="panel"><h3>Environment targets <span class="grow"></span>${C.week ? `<small>week ${C.week} now</small>` : ''}</h3><div class="pbody wrapx">`;
+  if (E.length) {
+    h += '<table class="t"><thead><tr><th>Week</th><th>Dates</th><th>Day / night temp</th><th>Humidity</th><th class="n">VPD</th><th class="n">CO2</th></tr></thead><tbody>';
+    for (const e of E) h += `<tr class="${e.now ? 'now' : ''}"><td><b>${e.week}</b></td><td class="faint">${e.from ? esc(CM.short(e.from) + ' - ' + CM.short(e.to)) : ''}</td><td>${esc(fmtTemp(e.temp))}</td><td>${esc(e.hum || '')}</td><td class="n">${e.vpd == null ? '' : esc(Number(e.vpd).toFixed(1))}</td><td class="n">${esc(fmtCO2(e.co2))}</td></tr>`;
+    h += '</tbody></table>';
+    const light = E.find(e => e.light);
+    if (light) h += `<p class="note">Lights: ${esc(light.light)}.</p>`;
+    h += '<p class="note">Live readings from Growlink are not connected yet.</p>';
+  } else h += '<div class="empty">No targets set for this room.</div>';
+  h += '</div></div>';
+  h += '</div></div>';
+  $('view-room').innerHTML = h;
+  wireRoom(V, canEdit);
+}
+// the sheet's task text as typed, minus its stray spaces: "CAL 58 - ( @8GR PER GALLON )" -> "CAL 58 (@8GR PER GALLON)"
+function tidy(t) { return String(t || '').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').replace(/\s+-\s*\(/g, ' (').replace(/\s*-\s*$/, '').replace(/\s+/g, ' ').trim(); }
+function fmtTemp(t) { const m = String(t || '').match(/(\d+)\s*f?\s*-\s*(\d+)/i); return m ? `${m[1]}°F / ${m[2]}°F` : String(t || ''); }
+function fmtCO2(c) { if (c == null || c === '') return ''; const n = Number(c); return isFinite(n) && n > 0 ? `${n.toLocaleString('en-US')} ppm` : /n\/?co2/i.test(String(c)) ? 'off' : String(c); }
+function taskRow(t, canEdit) {
+  const k = /SPRAY/.test(t.kind) ? 'spray' : '';
+  const by = t.status === 'done' && t.doneBy ? `<small>Done${t.doneAt ? ' ' + esc(new Date(t.doneAt).toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: 'numeric', day: 'numeric' })) : ''} by ${esc(String(t.doneBy).split('@')[0])}</small>` : '';
+  return `<li class="${t.status}"><input class="tick" type="checkbox" data-task="${esc(t.key)}" data-cycles="${esc((t.cycles || []).join(','))}" ${t.status === 'done' ? 'checked' : ''} ${canEdit ? '' : 'disabled'} aria-label="Done: ${esc(t.text)}">
+    <div class="d"><b>${esc(CM.wday(t.date))}</b>Day ${t.day}</div>
+    <div class="x"><span><span class="kind ${k}">${esc(CM.nice(t.kind || 'Task'))}</span>${esc(tidy(t.text))}</span>${by}${t.status === 'today' ? '<small>Today</small>' : t.status === 'late' ? '<small style="color:var(--amber)">Not ticked yet</small>' : ''}</div></li>`;
+}
+function zonesTable(V) {
+  const { placed, col } = V;
+  if (!placed.slots.length) return '<div class="empty">No zones set for this room.</div>';
+  let h = '<div class="wrapx"><table class="t"><thead><tr><th>Zone</th><th>Strain</th><th class="n">Lights</th><th class="n">Plants (Metrc)</th><th>For</th></tr></thead><tbody>';
+  for (const z of placed.slots) {
+    const c = z.name ? col[CM.key(z.name)] : null;
+    h += `<tr><td><b>${z.zone}</b></td><td>${c ? `<i class="sw" style="background:${c}"></i>` : ''}${esc(z.name || '')}${z.strain && !z.metrc ? ' <span class="faint">not in Metrc</span>' : ''}</td><td class="n">${num(z.lights)}</td><td class="n">${z.metrc ? num(z.plants) : ''}</td><td class="muted">${esc(z.pack || '')}</td></tr>`;
+  }
+  return h + '</tbody></table></div>';
+}
+function metrcPanel(V, canEdit) {
+  const { room, P, C } = V;
+  let h = '';
+  if (P.strains.length) {
+    h += '<div class="wrapx"><table class="t"><thead><tr><th>Strain</th><th class="n">Plants</th><th>Into flower</th></tr></thead><tbody>';
+    for (const s of P.strains) {
+      const days = Object.keys(s.days).sort().map(d => `${CM.short(d)}${Object.keys(s.days).length > 1 ? ` (${s.days[d]})` : ''}`).join(', ');
+      const codeTxt = s.code ? `${esc(s.code)}${s.named && !s.sure ? ' · inferred' : ''}` : '';
+      const label = s.code ? (canEdit ? `${esc(s.name)} <button class="codebtn" type="button" data-code="${esc(s.code)}" title="Name this Metrc strain number">${codeTxt}</button>`
+        : `${esc(s.name)} <span class="faint">${codeTxt}</span>`) : esc(s.name);
+      h += `<tr><td>${label}${canEdit && s.code && !s.named ? ` <button class="btn" type="button" data-code="${esc(s.code)}" style="padding:1px 7px;font-size:12px">Name it</button>` : ''}</td><td class="n">${num(s.plants)}</td><td class="muted">${esc(days)}</td></tr>`;
+    }
+    h += '</tbody></table></div>';
+  } else h += `<p class="muted" style="margin:0">No flowering plants in ${esc(room.metrc_location || 'this room')} in Metrc right now.</p>`;
+  if (P.harvested.length) h += `<p class="note">Harvested here lately: ${P.harvested.slice(0, 4).map(x => `${esc(CM.short(x.day))} (${num(x.plants)} plants)`).join(', ')}.</p>`;
+  if (P.destroyed.length) h += `<p class="note">Destroyed lately: ${P.destroyed.slice(0, 4).map(x => `${esc(CM.short(x.day))} (${num(x.plants)})`).join(', ')}.</p>`;
+  const m = S.meta.find(x => x.license === room.license);
+  h += `<p class="note">${m && m.synced_at ? `Read from Metrc ${esc(new Date(m.synced_at).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}` : 'Not read from Metrc yet'}${m && m.note ? ` · ${esc(m.note)}` : ''}. ${P.strains.some(x => x.code) ? " Metrc names strains by number here; the names come from the sheet's GENETICS 3.0 list unless someone renamed one." : ''}</p>`;
+  return h;
+}
+
+/* ----- zone editor (typable strain picker: only names from the list) ----- */
+function strainChoices(V) {
+  const names = new Map();
+  const add = n => { const t = CM.nice(n); if (t && !t.startsWith('#') && !names.has(CM.key(t))) names.set(CM.key(t), t); };
+  for (const s of V.P.strains) add(s.name);
+  for (const z of S.zones) add(z.strain);
+  for (const c of S.codeRows) add(c.name);
+  return [...names.values()].sort((a, b) => a.localeCompare(b));
+}
+// what was typed -> the one entry it names: the exact entry in any case, else the one entry that contains it
+function pickFrom(list, typed) {
+  const t = String(typed || '').trim();
+  if (!t) return '';
+  const k = CM.key(t);
+  const exact = list.filter(x => CM.key(x) === k);
+  if (exact.length === 1) return exact[0];
+  const part = list.filter(x => CM.key(x).includes(k));
+  return part.length === 1 ? part[0] : null;
+}
+function zonesEditor(V) {
+  const box = $('zed');   // already open: a redraw (a tick, Refresh, another save) keeps what was typed and not saved yet
+  const draft = box && [...box.querySelectorAll('.row:not(.h)')].map(r => { const [zi, si, li, pi] = r.querySelectorAll('input');
+    return { zone: zi.value, name: si.value, ok: si.dataset.ok || '', shown: si.dataset.shown || '', strain: si.dataset.orig || null, lights: li.value === '' ? null : li.value, pack: pi.value }; });
+  const rows = draft || (V.placed.slots.length ? V.placed.slots : [{ zone: 1, slot: 1, name: '', lights: null, pack: '' }]);
+  const list = strainChoices(V);
+  let h = `<datalist id="strain-list">${list.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist><div class="ed" id="zed">
+    <div class="row h"><span>Zone</span><span>Strain</span><span>Lights</span><span class="pk">For</span><span></span></div>`;
+  for (const z of rows) h += zoneRow(z);
+  h += `</div><div class="pickmsg" id="zed-msg"></div><div class="ed act"><button class="btn" type="button" id="zed-add">Add a row</button><span class="grow"></span>
+    <button class="btn ghost" type="button" id="zed-cancel">Cancel</button><button class="btn primary" type="button" id="zed-save">Save zones</button></div>
+    <p class="note">Strain: start typing and pick from the list (the room's Metrc strains and every strain already named). Zone numbers match the tables on the map${CM.tableNs(V.room.layout).size ? ` (1 to ${Math.max(...CM.tableNs(V.room.layout))})` : ''}.</p>`;
+  return h;
+}
+function zoneRow(z) {
+  return `<div class="row"><input type="number" min="1" max="20" step="1" value="${esc(z.zone || '')}" aria-label="Zone">
+    <input type="text" list="strain-list" value="${esc(z.name || '')}" data-ok="${esc(z.ok != null ? z.ok : z.name || '')}" data-shown="${esc(z.shown != null ? z.shown : z.name || '')}" data-orig="${esc(z.strain || '')}" aria-label="Strain" autocomplete="off">
+    <input type="number" min="0" max="100" step="0.5" value="${z.lights == null ? '' : esc(z.lights)}" aria-label="Lights">
+    <input class="pk" type="text" value="${esc(z.pack || '')}" maxlength="40" aria-label="Grown for" placeholder="jar, mylars">
+    <button class="btn ghost" type="button" data-del aria-label="Remove row">×</button></div>`;
+}
+
+/* ----- the room page's clicks ----- */
+function wireRoom(V, canEdit) {
+  const room = V.room;
+  const map = $('map');
+  if (map) {
+    const open = g => { for (const x of map.querySelectorAll('.tbl.sel')) x.classList.remove('sel'); g.classList.add('sel'); zonePop(V, +g.dataset.zone, g); };
+    for (const g of map.querySelectorAll('.tbl')) {
+      g.addEventListener('click', e => { e.stopPropagation(); open(g); });
+      g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(g); } });
+    }
+  }
+  for (const cb of document.querySelectorAll('#view-room .tick')) cb.addEventListener('change', () => markTask(V, cb));
+  const fe = $('flip-edit'); if (fe) fe.addEventListener('click', e => { e.stopPropagation(); flipPop(V, fe); });
+  const ze = $('zones-edit'); if (ze) ze.addEventListener('click', () => { S.editZones = true; renderRoom(room); });
+  if (S.editZones) wireZoneEditor(V);
+  for (const b of document.querySelectorAll('#view-room [data-code]')) b.addEventListener('click', e => { e.stopPropagation(); codePop(V, b.dataset.code, b); });
+}
+// a tick is saved under this cycle's flip; an untick clears the task under every date it is ticked under (a tick made
+// before the flip was corrected is stored under the old date)
+async function markTask(V, cb) {
+  cb.disabled = true;
+  const done = cb.checked, task = cb.dataset.task;
+  const cycles = done || !cb.dataset.cycles ? [V.C.flip] : cb.dataset.cycles.split(',').filter(CM.isDay);
+  for (const cy of cycles) {
+    const { error } = await sb.rpc('cult_task_mark', { p_room: V.room.id, p_cycle: cy, p_task: task, p_done: done });
+    if (error) { cb.checked = !done; cb.disabled = false; alert("Couldn't save that: " + error.message); await loadAll(true, ['done']); render(); return; }
+  }
+  // what was saved, kept even if the re-read below fails
+  S.done = S.done.filter(d => !(d.room_id === V.room.id && cycles.includes(d.cycle) && d.task_key === task));
+  if (done) S.done.push({ room_id: V.room.id, cycle: V.C.flip, task_key: task, done_at: new Date().toISOString(), done_by: S.me && S.me.email || '' });
+  await loadAll(true, ['done']); render();   // the room object is new after a reload
+}
+function wireZoneEditor(V) {
+  const box = $('zed'), msg = $('zed-msg'), list = strainChoices(V), tn = CM.tableNs(V.room.layout);
+  let pressing = false, refusedNow = false;   // a press on Save zones, and a strain box refusing its text during it
+  // a box still showing the strain it opened with keeps that strain's stored text (pheno numbers and spelling included)
+  const same = inp => !!inp.dataset.orig && CM.key(inp.value) === CM.key(inp.dataset.shown);
+  const check = inp => {
+    const t = inp.value.trim();
+    if (!t) { inp.dataset.ok = ''; return true; }
+    if (same(inp)) return true;
+    const p = pickFrom(list, t);
+    if (p) { inp.value = p; inp.dataset.ok = p; msg.textContent = ''; return true; }
+    msg.textContent = `"${t}" isn't one strain on the list${list.some(x => CM.key(x).includes(CM.key(t))) ? ' (it matches several: type more)' : ''}. Kept "${inp.dataset.ok || 'blank'}".`;
+    inp.value = inp.dataset.ok || '';
+    if (pressing) refusedNow = true;
+    return false;
+  };
+  const wire = row => {
+    const s = row.querySelector('input[list]');
+    s.addEventListener('change', () => check(s));
+    s.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); check(s); } });
+    row.querySelector('[data-del]').addEventListener('click', () => row.remove());
+  };
+  for (const r of box.querySelectorAll('.row:not(.h)')) wire(r);
+  $('zed-add').addEventListener('click', () => {
+    const rows = [...box.querySelectorAll('.row:not(.h)')];
+    const last = rows.length ? +rows[rows.length - 1].querySelector('input').value || 0 : 0;
+    const nx = tn.size && !tn.has(last + 1) ? (last || 1) : last + 1;   // never start a row past the last table
+    box.insertAdjacentHTML('beforeend', zoneRow({ zone: nx, slot: 1, name: '', lights: null, pack: '' }));
+    wire(box.lastElementChild);
+  });
+  $('zed-cancel').addEventListener('click', () => { S.editZones = false; renderRoom(V.room); });
+  $('zed-save').addEventListener('pointerdown', () => { pressing = true; refusedNow = false; });
+  $('zed-save').addEventListener('click', async () => {
+    const stop = refusedNow; pressing = refusedNow = false;
+    if (stop) return;   // Save pressed straight from a strain box that refused its text: the reason stays on screen, nothing is saved
+    const out = [], slots = {};
+    for (const r of box.querySelectorAll('.row:not(.h)')) {
+      const [zi, si, li, pi] = r.querySelectorAll('input');
+      if (!check(si)) return;
+      const zone = Math.round(+zi.value);
+      if (!(zone >= 1 && zone <= 20)) { msg.textContent = 'Each row needs a zone number from 1 to 20.'; zi.focus(); return; }
+      if (tn.size && !tn.has(zone)) { msg.textContent = `Zone ${zone} has no table on the map (tables ${[...tn].sort((a, b) => a - b).join(', ')}).`; zi.focus(); return; }
+      const lights = li.value === '' ? null : +li.value;
+      if (lights != null && !(lights >= 0 && lights <= 100)) { msg.textContent = 'Lights must be a number from 0 to 100.'; li.focus(); return; }
+      if (!si.value.trim() && lights == null && !pi.value.trim()) continue;
+      slots[zone] = (slots[zone] || 0) + 1;
+      if (slots[zone] > 9) { msg.textContent = `Zone ${zone} has more than 9 rows.`; return; }
+      out.push({ zone, slot: slots[zone], strain: same(si) ? si.dataset.orig : (si.value.trim() || null), lights, pack: pi.value.trim() || null });
+    }
+    $('zed-save').disabled = true;
+    const { error } = await sb.rpc('cult_zones_set', { p_room: V.room.id, p_zones: out });
+    if (error) { $('zed-save').disabled = false; msg.textContent = "Couldn't save: " + error.message; return; }
+    S.editZones = false;
+    S.zones = S.zones.filter(z => z.room_id !== V.room.id).concat(out.map(z => ({ room_id: V.room.id, ...z })));   // kept if the re-read fails
+    await loadAll(true, ['zones']); render();   // the room object is new after a reload
+  });
+}
+
+/* ----- small cards (one at a time, only what was clicked) ----- */
+function closePop() { const p = $('pop'); p.hidden = true; p.innerHTML = ''; for (const x of document.querySelectorAll('.tbl.sel')) x.classList.remove('sel'); }
+function showPop(html, anchor) {
+  const p = $('pop');
+  p.innerHTML = html; p.hidden = false;
+  const r = anchor.getBoundingClientRect(), pw = Math.min(340, window.innerWidth - 16), ph = p.offsetHeight;
+  let x = Math.min(window.innerWidth - pw - 8, Math.max(8, r.left));
+  let y = r.bottom + 8; if (y + ph > window.innerHeight - 8) y = Math.max(8, r.top - ph - 8);
+  p.style.left = x + 'px'; p.style.top = y + 'px'; p.style.right = 'auto'; p.style.bottom = 'auto';
+  const c = p.querySelector('[data-close]'); if (c) c.addEventListener('click', closePop);
+}
+document.addEventListener('click', e => { const p = $('pop'); if (!p.hidden && !p.contains(e.target)) closePop(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePop(); });
+function zonePop(V, n, anchor) {
+  const slots = V.placed.slots.filter(z => z.zone === n);
+  const t = ((V.room.layout || {}).tables || []).find((x, i) => (+x.n || i + 1) === n) || {};
+  const size = t.w && t.h ? `${num(Math.max(t.w, t.h))} x ${num(Math.min(t.w, t.h))} ft` : '';
+  const lightsDrawn = Array.isArray(t.light_spots) ? t.light_spots.length : 0;
+  let h = `<h4><span>Zone ${n}</span><button class="btn ghost" type="button" data-close aria-label="Close">×</button></h4><div class="rows">`;
+  if (size) h += `<span>Table</span><b>${esc(size)}</b>`;
+  if (!slots.length) h += '<span>Strain</span><b class="muted">none set</b>';
+  for (const z of slots) h += `<span>${z.slot > 1 ? '' : 'Strain'}</span><b>${esc(z.name || '-')}${z.metrc ? ` · ${num(z.plants)} plants` : z.strain ? ' · not in Metrc' : ''}${z.lights != null ? ` · ${num(z.lights)} lights` : ''}${z.pack ? ` · ${esc(z.pack)}` : ''}</b>`;
+  if (lightsDrawn) h += `<span>Fixtures</span><b>${lightsDrawn} on the lighting diagram</b>`;
+  h += '</div>';
+  if (slots.some(z => z.metrc && z.metrc.code)) h += `<p class="note">Metrc ${slots.filter(z => z.metrc && z.metrc.code).map(z => esc(z.metrc.code)).join(', ')}</p>`;
+  showPop(h, anchor);
+}
+function flipPop(V, anchor) {
+  const { C, P } = V;
+  let h = `<h4><span>Flip date</span><button class="btn ghost" type="button" data-close aria-label="Close">×</button></h4>
+    <p class="note" style="margin-top:0">Metrc: ${P.dayList.length ? P.dayList.map(d => `${esc(CM.short(d.day))} (${d.plants})`).join(', ') : 'no flowering plants'}.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="date" id="flip-in" value="${esc(C.typed || C.flip || '')}"><button class="btn primary" type="button" id="flip-save">Save</button></div>
+    ${C.typed ? '<button class="btn ghost" type="button" id="flip-clear" style="margin-top:6px;padding-left:0">Use Metrc\'s date instead</button>' : ''}
+    <div class="pickmsg" id="flip-msg"></div>`;
+  showPop(h, anchor);
+  const save = async v => {
+    const { error } = await sb.rpc('cult_room_set', { p_room: V.room.id, p_set: { flip_date: v } });
+    if (error) { $('flip-msg').textContent = "Couldn't save: " + error.message; return; }
+    closePop();
+    const r = S.rooms.find(x => x.id === V.room.id); if (r) r.flip_date = v;   // kept if the re-read fails
+    await loadAll(true, ['rooms']); render();   // the room object is new after a reload
+  };
+  $('flip-save').addEventListener('click', () => { const v = $('flip-in').value; if (!CM.isDay(v)) { $('flip-msg').textContent = 'Pick a date.'; return; } save(v); });
+  const c = $('flip-clear'); if (c) c.addEventListener('click', () => save(null));
+}
+function codePop(V, code, anchor) {
+  const list = strainChoices(V);
+  const s = V.P.strains.find(x => x.code === code) || {};
+  let h = `<h4><span>Strain ${esc(code)}</span><button class="btn ghost" type="button" data-close aria-label="Close">×</button></h4>
+    <p class="note" style="margin-top:0">${s.named ? `Now: ${esc(s.name)}${s.sure ? '' : ' (inferred from the sheet)'}.` : 'No name yet.'} What does Metrc's ${esc(code)} mean at ${esc(V.room.license)}?</p>
+    <datalist id="code-list">${list.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><input type="text" id="code-in" list="code-list" value="${esc(s.named ? s.name : '')}" autocomplete="off" style="flex:1"><button class="btn primary" type="button" id="code-save">Save</button></div>
+    <div class="pickmsg" id="code-msg"></div>`;
+  showPop(h, anchor);
+  const inp = $('code-in');
+  const resolve = () => { const p = pickFrom(list, inp.value); if (p) { inp.value = p; $('code-msg').textContent = ''; } else if (inp.value.trim()) $('code-msg').textContent = `"${inp.value.trim()}" isn't one strain on the list.`; return p; };
+  inp.addEventListener('change', resolve);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); resolve(); } });
+  $('code-save').addEventListener('click', async () => {
+    const p = resolve(); if (!p) return;
+    const { error } = await sb.rpc('cult_strain_code_set', { p_license: V.room.license, p_code: code, p_name: p });
+    if (error) { $('code-msg').textContent = "Couldn't save: " + error.message; return; }
+    closePop();
+    S.codes[`${V.room.license}|${code}`] = { license: V.room.license, code, name: p, source: 'confirmed' };   // kept if the re-read fails
+    await loadAll(true, ['codes']); render();   // the room object is new after a reload
+  });
+}
+
+/* ----- start ----- */
+async function startApp() {
+  $('gate').hidden = true; gateErr('');
+  $('signout').hidden = false; $('refresh').hidden = false;
+  try { await loadAll(false); }
+  catch (e) { $('gate').hidden = false; $('gate-loading').hidden = true; $('gate-signin').hidden = true; gateErr(e.message); return; }
+  route();
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => { if (document.visibilityState === 'visible' && !S.editZones && $('pop').hidden) { if (await loadAll(true)) render(); } }, 15 * 60e3);
+}
+$('refresh').addEventListener('click', async () => {
+  $('refresh').disabled = true;
+  try { if (!S.loadedAt) await startApp(); else if (await loadAll(true, null, true)) render(); }
+  finally { $('refresh').disabled = false; }
+});
+window.addEventListener('resize', (() => { let t = 0; return () => { clearTimeout(t); t = setTimeout(() => { if (S.loadedAt && S.room && !S.editZones) renderRoom(S.rooms.find(r => r.id === S.room)); }, 250); }; })());
+
+/* ---------------- sign-in: Google -> Supabase session (same flow as the pipeline and timesheets apps) ---------------- */
+const gateErr = m => { $('gate-err').textContent = m || ''; };
+async function sha256hex(s) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function openApp() {
+  const { data, error } = await sb.rpc('cult_whoami');
+  if (error) { $('gate-loading').hidden = true; gateErr(/function|does not exist|schema cache/i.test(error.message) ? "The cultivation app isn't set up on the server yet. Ask Gianni." : "Couldn't reach the database. Check your connection and refresh."); return; }
+  if (!data || !data.view) {
+    const { data: { user } } = await sb.auth.getUser();
+    $('gate-loading').hidden = true; $('gate-signin').hidden = true; $('gate-noaccess').hidden = false;
+    $('gate-email').textContent = user && user.email ? 'Signed in as ' + user.email : '';
+    return;
+  }
+  S.me = data;
+  startApp();
+}
+async function onCredential(resp) {
+  gateErr('');
+  const { error } = await sb.auth.signInWithIdToken({ provider: 'google', token: resp && resp.credential, nonce: rawNonce });
+  if (error) { gateErr('Sign-in failed: ' + error.message); return; }
+  openApp();
+}
+async function showGoogleButton() {
+  rawNonce = crypto.randomUUID() + crypto.randomUUID();
+  const hashed = await sha256hex(rawNonce);
+  let tries = 0;
+  (function ready() {
+    if (window.google && google.accounts && google.accounts.id) {
+      $('gate-loading').hidden = true;
+      google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: onCredential, hd: 'wizardtrees.com', nonce: hashed, auto_select: true, cancel_on_tap_outside: false });
+      google.accounts.id.renderButton($('gsi'), { theme: 'filled_blue', size: 'large', text: 'signin_with', shape: 'pill', width: 260 });
+      google.accounts.id.prompt();
+    } else if (tries++ < 60) setTimeout(ready, 150);
+    else gateErr('Could not load Google sign-in. Check your connection and refresh.');
+  })();
+}
+function signOut() {
+  if (!sb) { location.reload(); return; }
+  sb.auth.signOut({ scope: 'local' }).finally(() => {   // this device only
+    if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+    location.reload();
+  });
+}
+$('signout').addEventListener('click', signOut);
+$('gate-out').addEventListener('click', signOut);
+// local preview only: on localhost, ?demo=<file>.json reads the rooms from that file beside the page, with no sign-in and no
+// database (saves change the copy in memory). Ignored anywhere else.
+function demoClient(D) {
+  const T = { cult_rooms: D.rooms || [], cult_zones: D.zones || [], cult_strain_codes: D.codes || [], cult_metrc_plants: D.plants || [],
+    cult_metrc_meta: D.meta || [], cult_task_done: D.done || [] };
+  const q = rows => {
+    let r = rows.slice();
+    const b = { select: () => b, order: k => { r.sort((x, y) => (x[k] > y[k] ? 1 : -1)); return b; }, eq: (k, v) => { r = r.filter(x => x[k] === v); return b; },
+      gte: (k, v) => { r = r.filter(x => x[k] >= v); return b; }, then: (f, g) => Promise.resolve({ data: r, error: null }).then(f, g) };
+    return b;
+  };
+  const RPC = {
+    cult_whoami: () => ({ view: true, edit: true, email: 'preview' }),
+    cult_task_mark: a => { T.cult_task_done = T.cult_task_done.filter(d => !(d.room_id === a.p_room && d.cycle === a.p_cycle && d.task_key === a.p_task));
+      if (a.p_done) T.cult_task_done.push({ room_id: a.p_room, cycle: a.p_cycle, task_key: a.p_task, done_at: new Date().toISOString(), done_by: 'preview' }); return { ok: true }; },
+    cult_zones_set: a => { T.cult_zones = T.cult_zones.filter(z => z.room_id !== a.p_room).concat(a.p_zones.map(z => ({ room_id: a.p_room, ...z }))); return { ok: true }; },
+    cult_room_set: a => { const r = T.cult_rooms.find(x => x.id === a.p_room); Object.assign(r, a.p_set); return r; },
+    cult_strain_code_set: a => { T.cult_strain_codes = T.cult_strain_codes.filter(c => !(c.license === a.p_license && c.code === a.p_code))
+      .concat({ license: a.p_license, code: a.p_code, name: a.p_name, source: 'confirmed' }); return { ok: true }; },
+  };
+  return { from: t => q(T[t] || []), rpc: async (n, a) => ({ data: RPC[n] ? RPC[n](a || {}) : null, error: RPC[n] ? null : { message: 'unknown ' + n } }),
+    auth: { signOut: async () => ({}), getUser: async () => ({ data: { user: null } }) } };
+}
+async function initGate() {
+  const demo = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && new URLSearchParams(location.search).get('demo');
+  if (demo && /^[\w.-]+\.json$/.test(demo)) {
+    try { sb = demoClient(await (await fetch(demo, { cache: 'no-store' })).json()); }
+    catch (e) { $('gate-loading').hidden = true; gateErr('Could not read ' + demo + ': ' + e.message); return; }
+    S.me = { view: true, edit: true }; startApp(); return;
+  }
+  if (!window.supabase || !window.supabase.createClient) { $('gate-loading').hidden = true; gateErr('Could not load the page. Check your connection and refresh.'); return; }
+  sb = window.supabase.createClient(SB_URL, SB_KEY, { auth: { persistSession: true, autoRefreshToken: true } });
+  sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT' && S.loadedAt) location.reload(); });
+  $('gate-signin').hidden = true;
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) { openApp(); return; }
+  $('gate-signin').hidden = false;
+  showGoogleButton();
+}
+initGate();
+</script>
+</body>
+</html>

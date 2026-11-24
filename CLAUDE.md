@@ -15,7 +15,8 @@ person asking for a change should never have to touch git. These rules keep that
 2. **Make only the requested change.** Edit only the files the request needs.
 3. **Check it.** Run the check for the app you changed: NY Packaging `node tests/ny-check.mjs`,
    Production Pipeline `node tests/pipeline-check.mjs`, `node tests/pipeline-write-check.mjs`,
-   `node tests/pipeline-sync-check.mjs` and `node scripts/pipeline-ci/check-sql.mjs`.
+   `node tests/pipeline-sync-check.mjs` and `node scripts/pipeline-ci/check-sql.mjs`,
+   Cultivation `node tests/cult-check.mjs`.
    If anything fails, fix it before pushing.
    Never push a failing check.
 4. **Commit only your files, by name.** `git add <file> <file>`, never `git add -A` or `git add .`:
@@ -653,3 +654,58 @@ launch. The check fails if one of the three pieces is missing.
   when the tab opens and `{source:'pipeline', type:'refresh'}` for Refresh. The frame shows only
   after it has answered; with no answer in 12 seconds (an old BA build) the page drops it and offers
   a link to the BA app, so the whole BA app never shows inside the pipeline.
+
+## Cultivation app
+
+- **File:** `cultivation.html` (one self-contained page).
+- **Live:** https://claude759.github.io/salt-flat/cultivation.html (beta: not on the app list until Gianni says so).
+- **One room first** (Gianni, 2026-11-24: "start with a single room from a single company ... Let's start with filifera
+  room 1"): only 25th Room 1 (Filifera, Metrc "Flower 1") is switched on (`cult_rooms.active`); the other 11 rooms keep
+  their seed and maps, switched off, until he likes this one. With one room switched on the page opens straight into it.
+- **Merging later:** the current cultivation app is Antonio's Lovable project "Cultivation Command" (Gianni: "Once we have
+  something working, we'll probably want to merge it into this app"). Keep the feeds in database tables and the room
+  logic in the pure CULT MODEL block, so both can move.
+- **What it is:** the flower rooms of the four grows (23rd St, 25th St, 15th St, Olympic), one page per room, replacing
+  the [Location] Room # tabs of the cultivation sheet: day of flower, flip and harvest dates, a room map traced from the
+  premises / lighting diagrams with Metrc's plants placed on their zones, the task calendar with ticks, the weekly
+  environment targets, and what Metrc holds in the room.
+- **Who changes it:** Gianni, through his Claude. Its check: `node tests/cult-check.mjs`.
+- **Data** (`supabase/cultivation.sql`; not `pipeline_*` tables, so it is applied from Gianni's Mac with
+  `node ~/claude-sql/run-sql-ca.mjs supabase/cultivation.sql`, never by the Pipeline deploy):
+  - `cult_rooms` (a row per flower room: site, Metrc license and location, harvest day, typed flip date, weekly targets,
+    task calendar, map), `cult_zones` (strain, lights and what it is grown for, per table), `cult_task_done` and
+    `cult_strain_codes`. Any Wizard Trees account can open the page (`is_staff()`); only `cult_editors` (seeded out of
+    band) and the universal admins can change anything, and only through the `cult_*` functions.
+  - `cult_metrc_plants` and `cult_metrc_meta`: Metrc's flowering plants per license, location, strain and flowering day,
+    plus what was harvested or destroyed in the last 120 days (by that day, and again as `left` by the day those plants
+    went into flower, so a harvest never moves a crop's flip). Written every 3 hours by
+    `~/ar-automation/cult-metrc-sync.mjs` (launchd `com.wizardtrees.cult-metrc`; read-only, the shared Metrc lock and
+    monthly ledger) through the token-gated `cult_metrc_save()`; each send replaces that license's rows. Metrc lists
+    plants only by LastModified window, so the job keeps its own copy of every plant (`data/cult/`).
+  - The seed (rooms, targets, tasks and zones from the sheet's room tabs, strain names from its GENETICS 3.0 tab) and the
+    traced maps live in `~/claude-sql/pending/cult-seed.sql` and `cult-layouts.sql`, never in this repo: no floor plans,
+    emails or tokens in the public repo or page.
+
+### Decisions already made (add new ones here)
+
+- **Metrc numbers strains at 23rd, 15th and Olympic** (2504 = Zangbanger). Names come from the sheet's GENETICS 3.0 list
+  (source `sheet`); an editor can name or rename a number in the app (`confirmed`). 25th uses names in Metrc.
+- **Metrc has no zones.** Sublocations are switched off at all four licenses (checked 2026-11-24). A plant's zone is its
+  strain's zone as set in the app; a strain on two zones is split by their lights. Zone n is table n on the map.
+- **Flip date.** A crop is every day plants went into flower in the room (in flower now, or harvested since), cut where
+  more than 3 weeks pass with none; Metrc's flip is the crop's first day that moved at least 10% of it. The date typed in
+  the app (seeded from the sheet) wins while it is within 3 weeks of Metrc's. Further off: before it, it is from an
+  earlier cycle; after it, it is the next cycle's flip, used once Metrc has nothing left in flower there. Day N is
+  flip + N - 1 (the sheet's count); harvest is day `harvest_day` (63, 58 or 56 by room); environment week k is days
+  7k-6 to 7k. A harvested room shows Harvested for 3 weeks (trim and the last tasks), then Empty.
+- **Room maps** are in feet, as drawn: 23rd from the 12/5/25 premises and lighting diagram, Olympic from lighting sheet
+  E4.12 (11/10/26, each fixture LED or HPS), 15th from the 10/30/26 premises diagram, 25th from the 10/30/26 approved
+  diagram's canopy notes (its tables are not drawn, so they are placed to scale). Dots are Metrc's plants on their zone.
+- **Tasks.** A tick belongs to the cycle it was made in and still counts after the flip is corrected by up to 3 weeks;
+  an untick clears it under every date it is stored under. A past task not ticked shows as not ticked for 3 days, then
+  just past.
+- **Every pick-list is typable** (input + datalist, resolved with `pickFrom`; anything else is refused and the last good
+  value stays). The check fails on a `<select>`.
+- **Growlink is not connected yet.** It needs the API key of the claude@ Growlink login (app.growlink.io, Apps, Developer
+  Docs), kept in a local .env; read endpoints only (allow-list in `~/Documents/Cultivation Automation/src/growlink.js`).
+- **Local preview:** on localhost only, `?demo=<file>.json` beside the page reads data from that file with no sign-in.
