@@ -3233,7 +3233,14 @@ if (realPipe) {
           assert.ok(html.includes('<div class="b2s" id="b2-stage"></div>') && /BT2\.stageView\(F, HB, \{ outs, today, waitIn, waitPick \}\)/.test(fR) && /r\.went\.products/.test(fR) && /BT2\.stageTrace\(V, id\)/.test(fDr) && /b2cBody\(V, outs, keep, jump\);\n\}/.test(fR), 'the page draws the model, through the Canvas');
           assert.ok(/b2cFit\(\)/.test(fFt) && !/B2S_HEAD|B2S_RH|b2s-heads|b2s-out|B2\.sstick|B2\.spos/.test(html), "the step columns' own code is gone with the Stages button");
           assert.ok(/data-b2s="\$\{esc\(n\.id\)\}"/.test(fnH('b2cBody')) && /b2sSelect\(n\.dataset\.b2s === B2\.ssel \? '' : n\.dataset\.b2s/.test(fnH('b2sInit')) && /Date\.now\(\) - \(B2\.dragged \|\| 0\) < 80/.test(fnH('b2sInit')), 'a click traces, the same click clears, the end of a drag is neither');
-          assert.ok(/class="b2-lnk" data-b2="/.test(fC) && /I\.rows\.map\(b2FlowHTML\)/.test(fC) && /Metrc's packages account for/.test(fC), "the card: figures, came from, went to, and the Timeline's own cards one press away");
+          assert.ok(/class="b2-lnk" data-b2="/.test(fC) && /body = b2sLotHTML\(n, L, prods, name, lnk\);/.test(fC) && /Metrc's packages account for/.test(fC), "the card: figures, came from, went to, and the Timeline's own cards one press away");
+          // a lot's card (Gianni, 2026-11-24: "this looks really messy on the right, can you do a better job of summarizing
+          // over there?"): its steps (each opens its own card), one bar of where the flower went whose rows add up, products
+          // in a line, the rest folded under Details
+          { const fL = fnH('b2sLotHTML');
+            assert.ok(/class="b2s-st\$\{n\.kind === kind \? ' on' : ''\}/.test(fL) && /data-b2="\$\{esc\(id\)\}"/.test(fL) && /class="b2s-wbar"/.test(fL) && (html.match(/^\s*\.b2s-bar\{/gm) || []).length === 1 && /more went out than Metrc shows packaged/.test(fL) && /'Not harvested yet\.'/.test(fL) && /By lab: /.test(fL) && /\['left', 'Still ours', left/.test(fL) && /Math\.abs\(shown - tot\) >= 0\.5/.test(fL) &&
+              /<details class="b2s-det"><summary>Details<\/summary>/.test(fL) && /Planned \$\{esc\(w\)\}/.test(fL) && !/b2FlowHTML/.test(fL) && !/<select|\$\s*\d|dollar|price/i.test(fL),
+              "a lot's card: its steps (the clicked one lit, each opening its card), where the flower went in rows that add up, products in a line, Details folded; no money"); }
           // Canvas (Gianni, 2026-11-18, of the Stages view: "I wanted view like this but combined with the timeline view in a sort
           // of free floating space where the user can scroll in any direction", then "Yes, build it"): the Stages rows, each on its day
           {

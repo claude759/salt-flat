@@ -479,6 +479,13 @@ launch. The check fails if one of the three pieces is missing.
     all-clear the check didn't give. "Loose flower" is **"Flower still ours"** (it was never loose only: packaged flower
     counts at its flower-equivalent weight), with its lab split under it in whole pounds that add up to the total ("129
     passed · 148 in testing · 125 untested", `stageView`'s `end.lab` from each lot's `left_by_lab`, `b2HereLab`).
+    **A lot's card is a summary** (Gianni, 2026-11-24, of the docked card: "this looks really messy on the right, can you
+    do a better job of summarizing over there?"; `b2sLotHTML`): whichever of a lot's rows was clicked, the three figures,
+    then its steps in one short list (harvest, trim, into the 25th distro, test, products; the clicked one lit; each opens
+    its own card, which keeps the full detail), "Where the N lb went" as one bar and rows that add up to the flower
+    packaged (still ours with where and lab stage, then the flow job's went keys; amber when they don't add up or a part
+    isn't accounted for), products (packed with units, planned as one line per unit type), and the rest folded under
+    Details (trim leaf, the move between our licenses, Metrc's harvest names, what "still ours" counts).
 - **On hand page** (beta, view only; Gianni, 2026-11-18: "I wand some way to see how much packaged product is on hand (for
   distu or Nabis) at any given time especially at future dates", then "we'll probably want to know the amount per unit type
   and strain type"; he turned down a line chart and a strain-by-type board with a day picker, and of four further mockups
