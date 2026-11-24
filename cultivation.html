@@ -120,6 +120,8 @@
   .pbody{padding:12px 14px}
   .note{color:var(--muted);font-size:12.5px;margin:6px 0 0}
   .gl{margin-bottom:12px}
+  .gl-top{margin:0 0 14px}
+  .gl-top .gl-tiles{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
   .gl-msg{margin:0 0 4px;font-size:13px}
   .gl-head{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12.5px;color:var(--muted);margin:0 0 8px}
   .gl-head .warn{color:var(--amber)}
@@ -1295,8 +1297,9 @@ function glHTML(room, V) {
     const em = t.stale ? (t.at ? `at ${CM.glClock(t.at, now)}` : 'no reading')
       : t.state === 'high' ? `above plan${since}` : t.state === 'low' ? `below plan${since}`
       : t.odd === 'dark' ? `lights should be on${since}` : t.odd === 'lit' ? `light in the dark period${since}` : '';
-    // the last day's line, once there are 2 hours of it (less is a tick at the right edge)
-    const d = t.spark.length > 1 && t.spark[t.spark.length - 1][0] - t.spark[0][0] >= 2 * 3600e3 ? CM.glSpark(t.spark, 100, 22, t0, now) : '';
+    // the line over the readings it has (the last day at most), once there is an hour of them
+    const first = t.spark.length ? Math.max(t0, t.spark[0][0]) : now;
+    const d = t.spark.length > 1 && t.spark[t.spark.length - 1][0] - t.spark[0][0] >= 3600e3 ? CM.glSpark(t.spark, 100, 22, first, now) : '';
     return `<button type="button" class="gl-t${off ? ' off' : ''}${t.stale ? ' old' : ''}" data-gl="${t.m}" aria-expanded="${S.glOpen === t.m}">`
       + `<small>${esc(t.label)}</small><b>${esc(CM.glVal(t.m, t.v, t.unit))}</b>${sub.map(x => `<span>${esc(x)}</span>`).join('')}${em ? `<em>${esc(em)}</em>` : ''}`
       + (d ? `<svg viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>` : '')
@@ -1308,7 +1311,7 @@ function glHTML(room, V) {
   if (o) {
     h += `<div class="gl-d"><b>${esc(o.label)}</b>: ${o.n} of ${o.sensors.length} sensor${o.sensors.length === 1 ? '' : 's'} reading${o.n > 1 ? ', averaged' : ''}`;
     h += `<ul>${o.sensors.map(x => `<li>${esc(x.name)}${x.module ? ` <span class="faint">${esc(x.module)}</span>` : ''}: ${esc(CM.glVal(o.m, x.v, o.unit))}${x.at && now - x.at > G.STALE * 6e4 ? ` <span class="faint">at ${esc(CM.glClock(x.at, now))}</span>` : ''}</li>`).join('')}</ul>`;
-    if (o.lo != null) h += `<p>Last 24 hours: ${esc(CM.glVal(o.m, o.lo, o.unit))} to ${esc(CM.glVal(o.m, o.hi, o.unit))}.</p>`;
+    if (o.lo != null) h += `<p>${now - o.spark[0][0] >= 23.5 * 3600e3 ? 'Last 24 hours' : `Since ${esc(CM.glClock(o.spark[0][0], now))}`}: ${esc(CM.glVal(o.m, o.lo, o.unit))} to ${esc(CM.glVal(o.m, o.hi, o.unit))}.</p>`;
     if (o.plan != null) h += `<p>This week's ${o.when} plan is ${esc(CM.glVal(o.m, o.plan, o.unit))}; within ${esc(CM.glVal(o.m, G.TOL[o.m], o.unit))} of it counts as on plan.${o.state === 'high' || o.state === 'low' ? ` ${o.state === 'high' ? 'Above' : 'Below'} it${o.since != null ? ` ${o.open ? 'since at least' : 'since'} ${esc(CM.glClock(o.since, now))}` : ''}.` : ''}</p>`;
     else if (o.m === 'co2' && V.lights && !V.lights.on) h += '<p>CO2 is held to the plan only while the lights are on.</p>';
     else if (G.TOL[o.m] && !V.hasPlan) h += '<p>The room has no plan for this week, so nothing is compared.</p>';
@@ -1680,6 +1683,12 @@ function renderRoom(room) {
     const nx = CM.comingUp(C, T, today, 400)[0];
     h += `<div class="nowbar"><div class="prog"><i style="width:${pct.toFixed(1)}%"></i></div><span>${C.state === 'flower' ? `Flowering · day ${C.day} of ${C.H} · harvest ${esc(CM.wday(C.harvestDate))}` : `Flips ${esc(CM.wday(C.flip))}`}${nx ? ` · <b>Next:</b> ${esc(nx.date === today ? 'today' : CM.wday(nx.date))}, ${esc(CM.nice(tidy(nx.text)))}` : ''}</span></div>`;
   }
+  // Growlink's live readings: at the top, under the status line (Gianni, 2026-11-24: "can we put this real time growlink
+  // stuff up at the top of the page?")
+  const E = CM.envRows(room, C);
+  S.envE = E; S.envState = C.state;
+  const GV = glCompute(room);
+  h += `<div id="gl" class="gl gl-top">${glHTML(room, GV)}</div>`;
   const notes = C.notes.slice();
   if (placed.unplaced.length) notes.push({ warn: true, text: `In Metrc but on no zone: ${placed.unplaced.map(s => `${s.name} (${s.plants})`).join(', ')}.` });
   if (placed.missing.length) notes.push({ text: `On a zone but not in Metrc's flowering plants here: ${[...new Set(placed.missing.map(z => z.name))].join(', ')}.` });
@@ -1693,9 +1702,7 @@ function renderRoom(room) {
   if (info.length) h += '<div class="notes">' + info.map(n => `<span class="flag blue">${esc(n.text)}</span>`).join('') + '</div>';
   const cap = CM.capacity(room.layout, placed);
   const att = CM.attention(C, T, today, cap, notes.filter(n => n.warn).map(n => n.text)).concat(HV.R ? CM.trimWait(HV.R.crops, today) : []);
-  const E = CM.envRows(room, C);
-  S.attBase = att; S.envE = E; S.envState = C.state;
-  const GV = glCompute(room);
+  S.attBase = att;
   const attAll = att.concat(glAtt(GV));
   h += '<div class="grid2"><div>';
   // map
@@ -1742,9 +1749,8 @@ function renderRoom(room) {
   h += `<div class="panel"><h3>Tasks <span class="grow"></span><small>${C.flip ? `cycle from ${esc(CM.short(C.flip))}${doneN ? ` · ${doneN} done` : ''}` : ''}</small>${canWork ? '<button class="btn" type="button" id="task-add">Add a task</button>' : ''}</h3><div class="pbody">`;
   h += T.length ? `<ul class="tasks">${T.map(t => taskRow(t, canWork)).join('')}</ul>` : '<div class="empty">The task calendar starts at the next flip.</div>';
   h += '</div></div>';
-  // environment: Growlink's live readings, then the weekly targets
-  h += `<div class="panel"><h3>Environment <span class="grow"></span>${C.week ? `<small>week ${C.week} now</small>` : ''}</h3><div class="pbody wrapx">`;
-  h += `<div id="gl" class="gl">${glHTML(room, GV)}</div>`;
+  // environment targets by week (the live readings are at the top)
+  h += `<div class="panel"><h3>Environment targets <span class="grow"></span>${C.week ? `<small>week ${C.week} now</small>` : ''}</h3><div class="pbody wrapx">`;
   if (E.length) {
     h += '<table class="t"><thead><tr><th>Week</th><th>Dates</th><th>Day / night temp</th><th>Humidity</th><th class="n">VPD</th><th class="n">CO2</th></tr></thead><tbody>';
     for (const e of E) h += `<tr class="${e.now ? 'now' : ''}"><td><b>${e.week}</b></td><td class="faint">${e.from ? esc(CM.short(e.from) + ' - ' + CM.short(e.to)) : ''}</td><td>${esc(fmtTemp(e.temp))}</td><td>${esc(e.hum || '')}</td><td class="n">${e.vpd == null ? '' : esc(Number(e.vpd).toFixed(1))}</td><td class="n">${esc(fmtCO2(e.co2))}</td></tr>`;

@@ -821,7 +821,9 @@ launch. The check fails if one of the three pieces is missing.
   schedule and set points are not used where plainly not kept up (a lights-on day under 10 hours, a Growlink run 14 or
   more days past its length, a CO2 set point under 300 ppm): on 2026-11-24 that is 23rd Rooms 1-3 and Olympic Room 3,
   whose Growlink profile reads 08:00-16:00 and 75 ppm. Confirm their real light hours before switching those rooms on.
-- **Live readings beside the plan** (Environment panel, 2026-11-24): a tile per kind of reading (temp, humidity, VPD, CO2,
+- **Live readings beside the plan** (2026-11-24; at the top of the room page under the status line since Gianni asked the
+  same day: "can we put this real time growlink stuff up at the top of the page?"; the Environment targets panel keeps
+  only the weekly table; each tile's line covers the readings it has, up to a day): a tile per kind of reading (temp, humidity, VPD, CO2,
   light, and substrate water content, EC and temperature where a room has probes), Growlink's own average sensor where it
   has one, else the mean of the sensors still reading. Each shows the sheet's plan for the week (DAY/NIGHT TEMP and HUM:
   the day number while Growlink's schedule has the lights on, the night one while off; VPD; CO2 only with the lights on)

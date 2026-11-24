@@ -577,6 +577,13 @@ ok(/timeZone: 'America\/Los_Angeles', month: 'numeric'/.test(html), "a tick's da
 ok(/sb\.from\('cult_growlink_now'\)\.select\('room_id,growlink,read_at,reading_at,lights,setpoints,sensors,alerts,note'\)\.eq\('room_id', roomId\)/.test(html), "the page reads only the open room's Growlink row, by name");
 ok(!/rpc\('cult_growlink/.test(html) && !/api\.developer\.growlink|Gl-Api-Key/i.test(html), 'the page never writes Growlink data or calls Growlink');
 ok(/glTimer = setInterval\([\s\S]{0,160}5 \* 60e3\)/.test(html), 'the readings are read again every 5 minutes');
+{   // Gianni, 2026-11-24: "can we put this real time growlink stuff up at the top of the page?"
+  const i0 = html.indexOf('function renderRoom(');
+  const rr = html.slice(i0, html.indexOf('\n}\n', i0));
+  const g = rr.indexOf('<div id="gl"');
+  ok(g > 0 && g > rr.indexOf('class="nowbar"') && g < rr.indexOf('class="notes"') && g < rr.indexOf('<div class="grid2">') && rr.split('id="gl"').length === 2,
+    'the live Growlink tiles sit once, at the top of the room page under the status line');
+}
 ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-connected note is gone');
 {
   const sql = readFileSync(new URL('../supabase/cult-growlink.sql', import.meta.url), 'utf8');
