@@ -258,6 +258,23 @@ assert.deepEqual(MA.tables.map(t => t.z), [1, 0], 'a zone is drawn on one table 
 assert.deepEqual([...CM.tableNs({ tables: [{ n: 1, zone: 0 }, { n: 2 }] })], [2], 'a table with no zone adds none'); n++;
 ok(/id="arrange"/.test(html) && /list="zone-list"/.test(html) && /p_set: \{ layout: L \}/.test(html), 'Arrange zones saves the table-to-zone map through cult_room_set');
 
+// step 1 of parity with Cultivation Command: lights per table, coming up, needs attention, the door sheet
+const capL = { tables: [{ n: 1, x: 0, y: 0, w: 4, h: 30, light_spots: [[1, 1], [1, 5], [1, 9]] }, { n: 2, x: 6, y: 0, w: 4, h: 30, lights: 8, zone: 1 }, { n: 3, x: 12, y: 0, w: 4, h: 30 }] };
+const capZ = CM.place([{ zone: 1, strain: 'A', lights: 9 }, { zone: 2, strain: 'B', lights: 2 }], { strains: [] });
+const cap = CM.capacity(capL, capZ);
+assert.deepEqual(cap.map(c => [c.letter, c.zone, c.has, c.used, c.over]), [['A', 1, 3, 9, true], ['B', 0, 8, 0, false], ['C', 3, null, 0, false]],
+  'traced fixtures, else typed lights; zone 1 sits on its first table (A), as the map draws it; over when given more than it has'); n++;
+const Cn = CM.cycle(room, P, today), Tn = CM.tasks(room, Cn, [], today);
+assert.deepEqual(CM.comingUp(Cn, Tn, today, 30).map(x => [x.date, x.text]), [['2026-11-24', 'FINAL LEAF PULL'], ['2026-12-08', 'HARVEST'], ['2026-12-18', 'TRIM']].filter(x => x[0] <= CM.addDays(today, 30))); n++;
+assert.deepEqual(CM.comingUp(Cn, Tn, today, 0).map(x => x.text), ['FINAL LEAF PULL'], 'Today: only today'); n++;
+const att = CM.attention(Cn, CM.tasks(room, Cn, [], '2026-11-27'), '2026-11-27', cap, ['a warning']);
+assert.deepEqual(att.map(a => a.k), ['missed', 'over', 'warn'], 'a task not ticked in the last 7 days, an over-full table, the warnings'); n++;
+const harvestedC = CM.cycle(roomM, Pc, '2026-12-14');
+assert.ok(CM.attention(harvestedC, [], '2026-12-14', [], []).some(a => a.k === 'empty' && /3 days ago/.test(a.text)), 'days since the harvest with no next flip'); n++;
+ok(/function buildPrint\(/.test(html) && /Runoff log · week/.test(html) && /&#9744;/.test(html) && /@page\{size:letter portrait/.test(html), 'the door sheet and the weekly runoff log pages print');
+ok(/data-range="\$\{d\}"/.test(html) && /cult\.range/.test(html), 'Coming up has Today / 7 days / 30 days, remembered on the device');
+ok(/\[#&\]zone=/.test(html), 'a zone in the address opens its card');
+
 // page wiring the review asked for
 ok(!/loadAll\(true\);\s*renderRoom\(V\.room\)/.test(html), 'after a save the room is redrawn from the reloaded rooms');
 ok(!/\.select\('\*'\)/.test(html), 'every read names its columns (egress)');

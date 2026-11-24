@@ -739,6 +739,15 @@ launch. The check fails if one of the three pieces is missing.
 - **Room maps** are in feet, as drawn: 23rd from the 12/5/25 premises and lighting diagram, Olympic from lighting sheet
   E4.12 (11/10/26, each fixture LED or HPS), 15th from the 10/30/26 premises diagram, 25th from the 10/30/26 approved
   diagram's canopy notes (its tables are not drawn, so they are placed to scale). Dots are Metrc's plants on their zone.
+- **Parity with Cultivation Command** (Gianni, 2026-11-24: "we need to make sure every Room pages has all the functionality
+  of the loveable app"; its code was read, never run). A 5-step plan; step 1 shipped 11/24: a progress bar and Next line,
+  Coming up (Today / 7 / 30 days from the room's calendar, remembered on the device), Needs attention (tasks not ticked
+  in the last 7 days, days empty after a harvest with no next flip, a table given more lights than it has, the room's
+  warnings), lights per table (the diagram's fixtures, else typed under Arrange zones), `&zone=N` links, and Print door
+  sheet (dates, map, zones with their table, weekly targets, the task calendar with tick boxes, note lines) with weekly
+  runoff log pages (each day x zone, blank columns), like its flower run sheet. Strain names print as the page shows them.
+  Steps 2-5 (runoff log and one-off tasks typed in the app; harvest lots and trim reports from the pipeline tables; run
+  planning; veg and dry rooms, Growlink, labels) wait on Gianni's answers.
 - **Tasks.** A tick belongs to the cycle it was made in and still counts after the flip is corrected by up to 3 weeks;
   an untick clears it under every date it is stored under. A past task not ticked shows as not ticked for 3 days, then
   just past.
