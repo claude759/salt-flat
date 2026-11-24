@@ -233,6 +233,17 @@ assert.ok(Math.abs(dm.a[0] / dm.a[1] - (42.3 - 46.0) / 23.8) < 0.01 && dm.nv[0] 
 assert.doesNotThrow(() => CM.mapModel({ w: 20, h: 10, outline: {}, doors: {}, tables: [null, 7, { n: 1, x: 0, y: 0, w: 4, h: 4, lights: 1e9, light_spots: [null, [1]] }] }, { slots: [] }, {}, {})); n++;
 assert.ok(CM.mapModel({ w: 20, h: 10, tables: [{ n: 1, x: 0, y: 0, w: 4, h: 4, lights: 1e9 }] }, { slots: [] }, {}, {}).tables[0].lights.length <= 400); n++;
 assert.deepEqual([...CM.tableNs({ tables: [{ n: 1 }, { n: 2 }, null] })], [1, 2]); n++;
+// a zone strain recorded in Metrc under another name (25th Room 1: Metrc's Cream is zone 1's Pool Party and King Tide 23)
+const plC = CM.place([{ zone: 1, slot: 1, strain: 'Pool Party', lights: 4.5, metrc_strain: 'Cream' }, { zone: 1, slot: 2, strain: 'King Tide 23', lights: 4.5, metrc_strain: 'Cream' },
+  { zone: 2, slot: 1, strain: 'Tidebanger', lights: 4 }], { strains: [{ name: 'Cream', plants: 81 }, { name: 'Tidebanger', plants: 42 }] });
+assert.deepEqual(plC.slots.map(z => [z.zone, z.name, z.plants, z.metrc && z.metrc.name]), [[1, 'Pool Party', 41, 'Cream'], [1, 'King Tide 23', 40, 'Cream'], [2, 'Tidebanger', 42, 'Tidebanger']],
+  "Cream's plants go to zone 1, split by lights, under the zone's own names"); n++;
+assert.deepEqual(plC.unplaced, [], 'nothing left over'); assert.deepEqual(plC.missing, []); n += 2;
+const colC = CM.colors(plC);
+assert.notEqual(colC[CM.key('Pool Party')], colC[CM.key('King Tide 23')], 'each keeps its own colour'); n++;
+assert.equal(CM.place([{ zone: 1, strain: 'Pool Party', metrc_strain: 'Cream' }], { strains: [] }).missing.length, 1, 'a Metrc name Metrc does not have here is reported'); n++;
+ok(/select\('room_id,zone,slot,strain,lights,pack,metrc_strain'\)/.test(html) && /list="metrc-list"/.test(html), 'the zones read and the editor carry "in Metrc as"');
+
 // page wiring the review asked for
 ok(!/loadAll\(true\);\s*renderRoom\(V\.room\)/.test(html), 'after a save the room is redrawn from the reloaded rooms');
 ok(!/\.select\('\*'\)/.test(html), 'every read names its columns (egress)');

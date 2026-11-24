@@ -165,7 +165,7 @@
   @media (max-width:640px){#pop{left:8px!important;right:8px!important;bottom:8px!important;top:auto!important;max-width:none}}
 
   .ed{display:grid;gap:6px}
-  .ed .row{display:grid;grid-template-columns:62px minmax(0,1fr) 74px minmax(0,90px) 30px;gap:6px;align-items:center}
+  .ed .row{display:grid;grid-template-columns:56px minmax(0,1fr) 66px minmax(0,84px) minmax(0,110px) 30px;gap:6px;align-items:center}
   .ed .row.h{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
   .ed .row input{width:100%}
   .ed.act{display:flex;gap:8px;justify-content:flex-end;margin-top:6px;flex-wrap:wrap}
@@ -371,8 +371,10 @@ const CM = (() => {
   // the same letters (a strain under its name and its number, "Flash Bang" and "Flashbang") are one strain here. Exact
   // first; else the longest Metrc name the zone's name extends by a number only ("RIPTIDE X TB #6" is Riptide x TB,
   // "KINGTIDE #3" is King Tide, but "TIDEBANGER" is never Tide); else the one Metrc name that extends the zone's by a
-  // number ("KINGTIDE" is King Tide 23 when it is the only one). A strain on several zones is split between them by lights
-  // (evenly when none are set), in whole plants that add up to its count.
+  // number ("KINGTIDE" is King Tide 23 when it is the only one). A zone strain can name the Metrc strain its plants are
+  // recorded under when that isn't its own name (metrc_strain: 25th Room 1's Pool Party and King Tide 23 are "Cream" in
+  // Metrc); it then takes those plants and keeps its own name. A strain on several zones (or several zone strains on one
+  // Metrc strain) is split between them by lights (evenly when none are set), in whole plants that add up to its count.
   function place(zones, P) {
     const ms_ = [];
     for (const s of (P && P.strains || [])) {
@@ -393,8 +395,9 @@ const CM = (() => {
       return ext.length === 1 ? ext[0] : null;
     };
     const slots = (Array.isArray(zones) ? zones : []).filter(z => z && +z.zone > 0).slice().sort((a, b) => a.zone - b.zone || (a.slot || 1) - (b.slot || 1))
-      .map(z => ({ zone: +z.zone, slot: +(z.slot || 1), strain: z.strain || null, lights: z.lights == null || z.lights === '' ? null : +z.lights, pack: z.pack || null, m: null, plants: 0 }));
-    for (const z of slots) { z.m = z.strain ? matchOf(z.strain) : null; if (z.m) z.m.slots.push(z); }
+      .map(z => ({ zone: +z.zone, slot: +(z.slot || 1), strain: z.strain || null, lights: z.lights == null || z.lights === '' ? null : +z.lights,
+        pack: z.pack || null, metrcAs: z.metrc_strain || null, m: null, plants: 0 }));
+    for (const z of slots) { const look = z.metrcAs || z.strain; z.m = look ? matchOf(look) : null; if (z.m) z.m.slots.push(z); }
     for (const x of ms_) {
       if (!x.slots.length) continue;
       const L = x.slots.reduce((a, z) => a + (z.lights > 0 ? z.lights : 0), 0), n = x.s.plants;
@@ -404,8 +407,11 @@ const CM = (() => {
       const order = share.map((v, i) => i).sort((a, b) => (share[b] - Math.floor(share[b])) - (share[a] - Math.floor(share[a])) || a - b);
       for (const i of order) { if (rest <= 0) break; x.slots[i].plants++; rest--; }
     }
-    for (const z of slots) { z.name = z.m ? z.m.s.name : (z.strain ? nice(z.strain) : null); z.metrc = z.m ? z.m.s : null; delete z.m; }
-    return { slots, unplaced: ms_.filter(x => !x.slots.length).map(x => x.s), missing: slots.filter(z => z.strain && !z.metrc) };
+    for (const z of slots) {
+      z.name = z.metrcAs ? nice(z.strain || z.metrcAs) : z.m ? z.m.s.name : (z.strain ? nice(z.strain) : null);
+      z.metrc = z.m ? z.m.s : null; delete z.m;
+    }
+    return { slots, unplaced: ms_.filter(x => !x.slots.length).map(x => x.s), missing: slots.filter(z => (z.strain || z.metrcAs) && !z.metrc) };
   }
 
   // colours: one per strain in the room, in the order the zones list them, then the unplaced Metrc strains; past the 14
@@ -553,7 +559,7 @@ function setLook(v) {
 // only when the job changed them since the last read (cult_metrc_meta.changed_at), or on Refresh (force).
 const READS = {
   rooms: () => sb.from('cult_rooms').select('id,site,name,license,metrc_location,harvest_day,flip_date,env,tasks,layout,layout_source').eq('active', true).order('sort'),
-  zones: () => sb.from('cult_zones').select('room_id,zone,slot,strain,lights,pack'),
+  zones: () => sb.from('cult_zones').select('room_id,zone,slot,strain,lights,pack,metrc_strain'),
   codes: () => sb.from('cult_strain_codes').select('license,code,name,source'),
   meta: () => sb.from('cult_metrc_meta').select('license,synced_at,changed_at,note'),
   done: () => sb.from('cult_task_done').select('room_id,cycle,task_key,done_at,done_by').gte('cycle', CM.addDays(CM.todayLA(), -200)),
@@ -748,6 +754,9 @@ function renderRoom(room) {
   const notes = C.notes.slice();
   if (placed.unplaced.length) notes.push({ warn: true, text: `In Metrc but on no zone: ${placed.unplaced.map(s => `${s.name} (${s.plants})`).join(', ')}.` });
   if (placed.missing.length) notes.push({ text: `On a zone but not in Metrc's flowering plants here: ${[...new Set(placed.missing.map(z => z.name))].join(', ')}.` });
+  const as = new Map();
+  for (const z of placed.slots) if (z.metrcAs && z.metrc) { const k = z.metrc.name; if (!as.has(k)) as.set(k, []); as.get(k).push(z); }
+  for (const [mname, zs] of as) notes.push({ text: `Metrc records ${zs.map(z => z.name).join(' and ')} (zone ${[...new Set(zs.map(z => z.zone))].join(', ')}) as ${mname}${zs.length > 1 ? ', so its plants are split between them by lights' : ''}.` });
   const tn = CM.tableNs(room.layout);
   const offMap = tn.size ? placed.slots.filter(z => z.name && !tn.has(z.zone)) : [];
   if (offMap.length) notes.push({ warn: true, text: `On a zone with no table on the map, so not drawn: ${offMap.map(z => `zone ${z.zone} ${z.name}${z.metrc ? ` (${num(z.plants)})` : ''}`).join(', ')}.` });
@@ -811,7 +820,7 @@ function zonesTable(V) {
   let h = '<div class="wrapx"><table class="t"><thead><tr><th>Zone</th><th>Strain</th><th class="n">Lights</th><th class="n">Plants (Metrc)</th><th>For</th></tr></thead><tbody>';
   for (const z of placed.slots) {
     const c = z.name ? col[CM.key(z.name)] : null;
-    h += `<tr><td><b>${z.zone}</b></td><td>${c ? `<i class="sw" style="background:${c}"></i>` : ''}${esc(z.name || '')}${z.strain && !z.metrc ? ' <span class="faint">not in Metrc</span>' : ''}</td><td class="n">${num(z.lights)}</td><td class="n">${z.metrc ? num(z.plants) : ''}</td><td class="muted">${esc(z.pack || '')}</td></tr>`;
+    h += `<tr><td><b>${z.zone}</b></td><td>${c ? `<i class="sw" style="background:${c}"></i>` : ''}${esc(z.name || '')}${z.metrcAs ? ` <span class="faint">in Metrc as ${esc(z.metrcAs)}</span>` : ''}${(z.strain || z.metrcAs) && !z.metrc ? ' <span class="faint">not in Metrc</span>' : ''}</td><td class="n">${num(z.lights)}</td><td class="n">${z.metrc ? num(z.plants) : ''}</td><td class="muted">${esc(z.pack || '')}</td></tr>`;
   }
   return h + '</tbody></table></div>';
 }
@@ -825,7 +834,9 @@ function metrcPanel(V, canEdit) {
       const codeTxt = s.code ? `${esc(s.code)}${s.named && !s.sure ? ' · inferred' : ''}` : '';
       const label = s.code ? (canEdit ? `${esc(s.name)} <button class="codebtn" type="button" data-code="${esc(s.code)}" title="Name this Metrc strain number">${codeTxt}</button>`
         : `${esc(s.name)} <span class="faint">${codeTxt}</span>`) : esc(s.name);
-      h += `<tr><td>${label}${canEdit && s.code && !s.named ? ` <button class="btn" type="button" data-code="${esc(s.code)}" style="padding:1px 7px;font-size:12px">Name it</button>` : ''}</td><td class="n">${num(s.plants)}</td><td class="muted">${esc(days)}</td></tr>`;
+      const onAs = V.placed.slots.filter(z => z.metrcAs && z.metrc && CM.key(z.metrc.name) === CM.key(s.name));
+      const asTxt = onAs.length ? ` <span class="faint">on zone ${[...new Set(onAs.map(z => z.zone))].join(', ')} as ${esc(onAs.map(z => z.name).join(', '))}</span>` : '';
+      h += `<tr><td>${label}${asTxt}${canEdit && s.code && !s.named ? ` <button class="btn" type="button" data-code="${esc(s.code)}" style="padding:1px 7px;font-size:12px">Name it</button>` : ''}</td><td class="n">${num(s.plants)}</td><td class="muted">${esc(days)}</td></tr>`;
     }
     h += '</tbody></table></div>';
   } else h += `<p class="muted" style="margin:0">No flowering plants in ${esc(room.metrc_location || 'this room')} in Metrc right now.</p>`;
@@ -858,15 +869,19 @@ function pickFrom(list, typed) {
 function zonesEditor(V) {
   const box = $('zed');   // already open: a redraw (a tick, Refresh, another save) keeps what was typed and not saved yet
   const draft = box && [...box.querySelectorAll('.row:not(.h)')].map(r => { const [zi, si, li, pi] = r.querySelectorAll('input');
-    return { zone: zi.value, name: si.value, ok: si.dataset.ok || '', shown: si.dataset.shown || '', strain: si.dataset.orig || null, lights: li.value === '' ? null : li.value, pack: pi.value }; });
+    const mi = r.querySelector('input[list="metrc-list"]');
+    return { zone: zi.value, name: si.value, ok: si.dataset.ok || '', shown: si.dataset.shown || '', strain: si.dataset.orig || null, lights: li.value === '' ? null : li.value, pack: pi.value,
+      metrcAs: mi ? mi.value : null, metrcOk: mi ? mi.dataset.ok || '' : '' }; });
   const rows = draft || (V.placed.slots.length ? V.placed.slots : [{ zone: 1, slot: 1, name: '', lights: null, pack: '' }]);
   const list = strainChoices(V);
-  let h = `<datalist id="strain-list">${list.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist><div class="ed" id="zed">
-    <div class="row h"><span>Zone</span><span>Strain</span><span>Lights</span><span class="pk">For</span><span></span></div>`;
+  const mlist = [...new Set(V.P.strains.map(x => x.name))].sort((a, b) => a.localeCompare(b));
+  let h = `<datalist id="strain-list">${list.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>
+    <datalist id="metrc-list">${mlist.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist><div class="ed" id="zed">
+    <div class="row h"><span>Zone</span><span>Strain</span><span>Lights</span><span class="pk">For</span><span class="pk">In Metrc as</span><span></span></div>`;
   for (const z of rows) h += zoneRow(z);
   h += `</div><div class="pickmsg" id="zed-msg"></div><div class="ed act"><button class="btn" type="button" id="zed-add">Add a row</button><span class="grow"></span>
     <button class="btn ghost" type="button" id="zed-cancel">Cancel</button><button class="btn primary" type="button" id="zed-save">Save zones</button></div>
-    <p class="note">Strain: start typing and pick from the list (the room's Metrc strains and every strain already named). Zone numbers match the tables on the map${CM.tableNs(V.room.layout).size ? ` (1 to ${Math.max(...CM.tableNs(V.room.layout))})` : ''}.</p>`;
+    <p class="note">Strain: start typing and pick from the list (the room's Metrc strains and every strain already named). In Metrc as: only when Metrc records the plants under another strain (leave it empty otherwise). Zone numbers match the tables on the map${CM.tableNs(V.room.layout).size ? ` (1 to ${Math.max(...CM.tableNs(V.room.layout))})` : ''}.</p>`;
   return h;
 }
 function zoneRow(z) {
@@ -874,6 +889,7 @@ function zoneRow(z) {
     <input type="text" list="strain-list" value="${esc(z.name || '')}" data-ok="${esc(z.ok != null ? z.ok : z.name || '')}" data-shown="${esc(z.shown != null ? z.shown : z.name || '')}" data-orig="${esc(z.strain || '')}" aria-label="Strain" autocomplete="off">
     <input type="number" min="0" max="100" step="0.5" value="${z.lights == null ? '' : esc(z.lights)}" aria-label="Lights">
     <input class="pk" type="text" value="${esc(z.pack || '')}" maxlength="40" aria-label="Grown for" placeholder="jar, mylars">
+    <input class="pk" type="text" list="metrc-list" value="${esc(z.metrcAs || '')}" data-ok="${esc(z.metrcOk != null ? z.metrcOk : z.metrcAs || '')}" aria-label="In Metrc as" autocomplete="off" placeholder="same">
     <button class="btn ghost" type="button" data-del aria-label="Remove row">×</button></div>`;
 }
 
@@ -925,10 +941,26 @@ function wireZoneEditor(V) {
     if (pressing) refusedNow = true;
     return false;
   };
+  // In Metrc as: empty, or exactly one of the room's Metrc strains (same rule as the strain box)
+  const mlist = [...new Set(V.P.strains.map(x => x.name))];
+  const checkM = inp => {
+    const t = inp.value.trim();
+    if (!t) { inp.dataset.ok = ''; return true; }
+    const p = pickFrom(mlist, t);
+    if (p) { inp.value = p; inp.dataset.ok = p; msg.textContent = ''; return true; }
+    msg.textContent = `"${t}" isn't one of the strains Metrc has in this room. Kept "${inp.dataset.ok || 'empty'}".`;
+    inp.value = inp.dataset.ok || '';
+    if (pressing) refusedNow = true;
+    return false;
+  };
   const wire = row => {
-    const s = row.querySelector('input[list]');
+    const s = row.querySelector('input[list="strain-list"]'), m = row.querySelector('input[list="metrc-list"]');
     s.addEventListener('change', () => check(s));
     s.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); check(s); } });
+    if (m) {
+      m.addEventListener('change', () => checkM(m));
+      m.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); checkM(m); } });
+    }
     row.querySelector('[data-del]').addEventListener('click', () => row.remove());
   };
   for (const r of box.querySelectorAll('.row:not(.h)')) wire(r);
@@ -946,8 +978,8 @@ function wireZoneEditor(V) {
     if (stop) return;   // Save pressed straight from a strain box that refused its text: the reason stays on screen, nothing is saved
     const out = [], slots = {};
     for (const r of box.querySelectorAll('.row:not(.h)')) {
-      const [zi, si, li, pi] = r.querySelectorAll('input');
-      if (!check(si)) return;
+      const [zi, si, li, pi, mi] = r.querySelectorAll('input');
+      if (!check(si) || (mi && !checkM(mi))) return;
       const zone = Math.round(+zi.value);
       if (!(zone >= 1 && zone <= 20)) { msg.textContent = 'Each row needs a zone number from 1 to 20.'; zi.focus(); return; }
       if (tn.size && !tn.has(zone)) { msg.textContent = `Zone ${zone} has no table on the map (tables ${[...tn].sort((a, b) => a - b).join(', ')}).`; zi.focus(); return; }
@@ -956,13 +988,14 @@ function wireZoneEditor(V) {
       if (!si.value.trim() && lights == null && !pi.value.trim()) continue;
       slots[zone] = (slots[zone] || 0) + 1;
       if (slots[zone] > 9) { msg.textContent = `Zone ${zone} has more than 9 rows.`; return; }
-      out.push({ zone, slot: slots[zone], strain: same(si) ? si.dataset.orig : (si.value.trim() || null), lights, pack: pi.value.trim() || null });
+      out.push({ zone, slot: slots[zone], strain: same(si) ? si.dataset.orig : (si.value.trim() || null), lights, pack: pi.value.trim() || null,
+        metrc: mi && mi.value.trim() ? mi.value.trim() : null });
     }
     $('zed-save').disabled = true;
     const { error } = await sb.rpc('cult_zones_set', { p_room: V.room.id, p_zones: out });
     if (error) { $('zed-save').disabled = false; msg.textContent = "Couldn't save: " + error.message; return; }
     S.editZones = false;
-    S.zones = S.zones.filter(z => z.room_id !== V.room.id).concat(out.map(z => ({ room_id: V.room.id, ...z })));   // kept if the re-read fails
+    S.zones = S.zones.filter(z => z.room_id !== V.room.id).concat(out.map(({ metrc, ...z }) => ({ room_id: V.room.id, ...z, metrc_strain: metrc })));   // kept if the re-read fails
     await loadAll(true, ['zones']); render();   // the room object is new after a reload
   });
 }
@@ -1114,7 +1147,7 @@ function demoClient(D) {
     cult_whoami: () => ({ view: true, edit: true, email: 'preview' }),
     cult_task_mark: a => { T.cult_task_done = T.cult_task_done.filter(d => !(d.room_id === a.p_room && d.cycle === a.p_cycle && d.task_key === a.p_task));
       if (a.p_done) T.cult_task_done.push({ room_id: a.p_room, cycle: a.p_cycle, task_key: a.p_task, done_at: new Date().toISOString(), done_by: 'preview' }); return { ok: true }; },
-    cult_zones_set: a => { T.cult_zones = T.cult_zones.filter(z => z.room_id !== a.p_room).concat(a.p_zones.map(z => ({ room_id: a.p_room, ...z }))); return { ok: true }; },
+    cult_zones_set: a => { T.cult_zones = T.cult_zones.filter(z => z.room_id !== a.p_room).concat(a.p_zones.map(({ metrc, ...z }) => ({ room_id: a.p_room, ...z, metrc_strain: metrc || null }))); return { ok: true }; },
     cult_room_set: a => { const r = T.cult_rooms.find(x => x.id === a.p_room); Object.assign(r, a.p_set); return r; },
     cult_strain_code_set: a => { T.cult_strain_codes = T.cult_strain_codes.filter(c => !(c.license === a.p_license && c.code === a.p_code))
       .concat({ license: a.p_license, code: a.p_code, name: a.p_name, source: 'confirmed' }); return { ok: true }; },

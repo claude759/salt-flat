@@ -692,6 +692,9 @@ launch. The check fails if one of the three pieces is missing.
   (source `sheet`); an editor can name or rename a number in the app (`confirmed`). 25th uses names in Metrc.
 - **Metrc has no zones.** Sublocations are switched off at all four licenses (checked 2026-11-24). A plant's zone is its
   strain's zone as set in the app; a strain on two zones is split by their lights. Zone n is table n on the map.
+- **"In Metrc as"** (`cult_zones.metrc_strain`): when Metrc records a zone's plants under another strain, the zone names
+  that Metrc strain and takes its plants under its own name (Gianni, 2026-11-24: 25th Room 1's 81 "Cream" plants are zone
+  1's Pool Party and King Tide 23, split between them by lights). The fix in Metrc is the crew's; the app only reads it.
 - **Flip date.** A crop is every day plants went into flower in the room (in flower now, or harvested since), cut where
   more than 3 weeks pass with none; Metrc's flip is the crop's first day that moved at least 10% of it. The date typed in
   the app (seeded from the sheet) wins while it is within 3 weeks of Metrc's. Further off: before it, it is from an

@@ -76,10 +76,13 @@ create table if not exists public.cult_zones (
   strain      text check (length(strain) <= 80),
   lights      numeric check (lights >= 0 and lights <= 100),
   pack        text check (length(pack) <= 40),   -- what the strain is grown for, as the crew writes it: mylars, jar
+  metrc_strain text check (length(metrc_strain) <= 80),   -- the strain Metrc records these plants under, when it isn't this one
   updated_at  timestamptz not null default now(),
   updated_by  text,
   primary key (room_id, zone, slot)
 );
+-- a table made before metrc_strain (Gianni 2026-11-24: Metrc's "Cream" in 25th Room 1 is zone 1's Pool Party and King Tide 23)
+alter table public.cult_zones add column if not exists metrc_strain text check (length(metrc_strain) <= 80);
 alter table public.cult_zones enable row level security;
 drop policy if exists cult_zones_select on public.cult_zones;
 create policy cult_zones_select on public.cult_zones for select to authenticated using (public.cult_can_view());
@@ -275,7 +278,8 @@ end $$;
 revoke all on function public.cult_room_set(text, jsonb) from public, anon;
 grant execute on function public.cult_room_set(text, jsonb) to authenticated;
 
--- a room's zones become exactly p_zones: [{zone, slot, strain, lights, pack}]
+-- a room's zones become exactly p_zones: [{zone, slot, strain, lights, pack, metrc}] (metrc: the strain Metrc records
+-- the plants under, when it isn't the zone's strain)
 create or replace function public.cult_zones_set(p_room text, p_zones jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 begin
@@ -284,14 +288,15 @@ begin
   if jsonb_typeof(p_zones) is distinct from 'array' then raise exception 'p_zones must be a list'; end if;
   if exists (select 1 from jsonb_array_elements(p_zones) z
              where coalesce(z->>'zone', '') !~ '^[1-9][0-9]?$' or coalesce(z->>'slot', '1') !~ '^[1-9]$'
-                or length(coalesce(z->>'strain', '')) > 80 or length(coalesce(z->>'pack', '')) > 40
+                or length(coalesce(z->>'strain', '')) > 80 or length(coalesce(z->>'pack', '')) > 40 or length(coalesce(z->>'metrc', '')) > 80
                 or (z ? 'lights' and jsonb_typeof(z->'lights') not in ('number', 'null'))) then
     raise exception 'each zone needs a zone number, a slot, and a short strain name';
   end if;
   delete from public.cult_zones where room_id = p_room;
-  insert into public.cult_zones (room_id, zone, slot, strain, lights, pack, updated_at, updated_by)
+  insert into public.cult_zones (room_id, zone, slot, strain, lights, pack, metrc_strain, updated_at, updated_by)
   select p_room, (z->>'zone')::int, coalesce((z->>'slot')::int, 1), nullif(btrim(coalesce(z->>'strain', '')), ''),
-         (z->>'lights')::numeric, nullif(btrim(coalesce(z->>'pack', '')), ''), now(), public.cult_jwt_email()
+         (z->>'lights')::numeric, nullif(btrim(coalesce(z->>'pack', '')), ''), nullif(btrim(coalesce(z->>'metrc', '')), ''),
+         now(), public.cult_jwt_email()
     from jsonb_array_elements(p_zones) z;
   return jsonb_build_object('ok', true, 'zones', (select count(*) from public.cult_zones where room_id = p_room));
 end $$;
