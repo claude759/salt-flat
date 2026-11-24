@@ -609,12 +609,12 @@ test('wiring: the key set wherever one name key was used, the numbers read with 
   assert.ok(sec.indexOf('else if(!keys.size)') < sec.indexOf('data-qbo="book"'));
   const card = fnSrc('function qboBookCard(');
   assert.match(card, /const keys=qboCtxKeys\(ctx\);/);
-  assert.match(card, /qboDefaultDate\(\{ period:per, paydays:ctx\.paydays, gustoUuid:person\.gusto_uuid, cents:P\.cents, today:todayISO\(\), jes:ctx\.jes, company:person\.company, keys \}\)/);
+  assert.match(card, /qboDefaultDate\(\{ period:per, paydays:ctx\.paydays, gustoUuid:person\.gusto_uuid, cents:P\.cents, today:todayISO\(\), jes:ctx\.jes, company:person\.company, keys, adjustments:ctx\.adjustments \}\)/);
   assert.match(card, /qboHandWarnings\(\{ jes:ctx\.jes, company:person\.company, keys, periodEnd:per\.end_date, held:ctx\.held \}\)/);
   assert.match(card, /if\(!keys\.size\) return QBO_NOKEY_WHY\+'\. Add their name in the app first\.';/);
   const sum = fnSrc('function qboPersonSummary(');
   assert.match(sum, /const keys=qboPersonKeys\(\{ fullName:b\.full_name, person, bookings:\(d\.docsBy\|\|\{\}\)\[b\.id\]\|\|\[\] \}\);/);
-  assert.match(sum, /jes:d\.jes, company:co, keys \}\);/);
+  assert.match(sum, /jes:d\.jes, company:co, keys, adjustments:\(d\.adjBy\|\|\{\}\)\[b\.id\]\|\|\[\] \}\);/);
   assert.match(sum, /qboHandWarnings\(\{ jes:d\.jes, company:co, keys, periodEnd:per\.end_date, held:d\.held \}\)/);
   assert.match(sum, /qboReadyWhy\(\{ plan, person, setup, warnings, date, tooOld, keys \}\)/);
   assert.match(html, /const qboCtxKeys=ctx=>qboPersonKeys\(\{ fullName:\(ctx\.prof\|\|\{\}\)\.full_name, person:ctx\.person, bookings:ctx\.docs \}\);/);
