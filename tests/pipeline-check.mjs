@@ -3399,5 +3399,123 @@ if (realPipe) {
     "the flower rows: Distru's bulk by lab state (NOT_TESTED is not pending; trim is not flower), the grow's moved share from the Metrc lots, drawn above the packed rows");
   assert.equal(/^(PENDING|SUBMITTED)/.test('NOT_TESTED'), false, 'NOT_TESTED never reads as pending');
   assert.ok(/OH\.project\(I\)/.test(fO) && /if \(!S\.inv \|\| !M\.rows\.length\)/.test(fO) && /data-oh="row"/.test(fO) && /data-oh="kind"/.test(fO) && /if \(on\) for \(const r of K\.rs\)/.test(fO) && /tabindex="0"/.test(fO) && !/<select/.test(fO) && !/price|dollar|revenue|\$\{?\s*usd/i.test(fO + fI), 'the table: nothing without the stock counts, rows open by click or key, no plain select, units only');
+  // step 4 (Gianni, 2026-11-24, "Yes, start step 4", and his answers: part counts may show, never prices; parts on the way
+  // come from the Order Tracker, on the ship date plus the supplier's usual days for that transport; parts the supply tab
+  // can't place are left out and listed): packaging, units the parts on hand can pack
+  { const ordSrc = html.split('/* ===== ORDER TRACKER PARSER START =====')[1].split('/* ===== ORDER TRACKER PARSER END ===== */')[0];
+    const ORD = new Function('PIPE', '/*' + ordSrc + '; return ORD;')(PIPE), T0 = '2026-11-24', q = s => '"' + s.replace(/"/g, '""') + '"';
+    const line = (inv, desc, st, ship, deliv, tr, qty) => [inv, '', '', q(desc), st, '', ship, deliv, '', tr, q(qty), q('$1,234.00'), q('$99.00')].join(',');
+    const csv = ['Order Tracker - CA,,,,,,,,,,,,', 'Invoice No.,PO Number,Category,Desc.,Order Status,Freight Status,Ship Date,Delivery Date,Due Date,Transportation,QTY in Unit,Total Price,Paid to Date',
+      line('INV-A1', 'Wizard Trees - Pound Bag x 1k', 'Delivered', '9/1/2026', '9/25/2026', 'By Ocean', '1,000'), line('INV-A2', 'Mylar x 1k', 'Delivered and Full Paid', '9/2/2026', '9/27/2026', 'By Ocean', '1,000'),
+      line('INV-A3', 'Mylar x 1k', 'Delivered', '9/3/2026', '10/3/2026', 'By Ocean', '1,000'), line('INV-A4', 'Labels x 1k', 'Delivered', '10/1/2026', '10/3/2026', 'By Express', '1,000'),
+      line('INV-A5', 'Labels x 1k', 'Delivered', '10/2/2026', '10/6/2026', 'By Express', '1,000'),
+      line('INV-1', 'Wizard Trees - 3.5g Flower Jar Purple CA * 16ct x 32k', 'Shipped - In Transit', '11/14/2026', '', 'By Ocean', '32,000'),
+      line('INV-2', 'Wizard Trees 0.7g x 5 Multipack Preroll Bundle CA x 20k\n(Jar / Insert  / Cap / Seal / 10CT Master Case / Cone x 5)', 'In Production', '11/20/2026', '', '', '20,000'),
+      line('INV-3', 'Wizard Trees - 3.5g Flower Label for Jar x 25k (Wizzy / Tide x 10k each, Gravitude x 5k)', 'Shipped - In Transit', '11/22/2026', '', 'By Express', '25,000'),
+      line('INV-4', 'Wizard Trees - 3.5g Flower Label - Master Case Label x 3k (Wizzy / Tide / Zoza)', 'Shipped - In Transit', '10/1/2026', '', 'By Ocean', '3,000'),
+      line('INV-5', 'Wizard Trees 1.0g Single Preroll Tube Purple Bundle CA x 30k\n(Tube / Insert  / Cap / Seal / 10CT Master Case / Cone x 1)', 'In Production', '', '', '', '30,000'),
+      line('INV-6', 'Wizard Trees - 3.5g (0.7g * 5) Multipack Preroll Label Jar Label CA x 80k (16 flavours x 5k)', 'Shipped - In Transit', '11/20/2026', '', 'By Air', '80,000'),
+      line('INV-7', 'Wizard Trees - QR Label Security Sticker All States x 250k', 'Shipped - In Transit', '11/23/2026', '', 'By Express', '250,000'),
+      line('INV-8', 'Wizard Trees Security Labels - 150k', 'Ready to Ship', '11/30/2026', '', 'By Air', '150,000'),
+      line('INV-9', 'Wizard Trees - 3.5g Flower Mylar Bag - Tide CA x 20k', 'In Production', '12/1/2026', '', '', '20,000'),
+      line('INV-10', 'Wizard Trees - 3.5g Flower Jar Purple CA * 16ct x 16k', 'Delivered', '11/1/2026', '', 'By Ocean', '16,000')].join('\n');
+    const R = ORD.parse(csv), tr = ORD.transit(R, T0), A = ORD.arrivals(R, T0, tr), it = inv => A.items.filter(x => x.inv === inv).map(x => [x.kind, x.part, x.key, x.n, x.day, x.est, x.ct]);
+    assert.deepEqual([R.length, Object.keys(R[0]).sort(), R.some(r => JSON.stringify(r).includes('1,234') || JSON.stringify(r).includes('99'))], [15, ['deliv', 'delivText', 'desc', 'inv', 'mode', 'po', 'qty', 'ship', 'status'], false],
+      "the tracker keeps an order's invoice and PO, words, status, dates, transport and quantity, never its money");
+    assert.deepEqual([tr.by.ocean, tr.by.express, tr.all, tr.days('ocean'), tr.days('express'), tr.days('')], [{ days: 25, late: 30, n: 3 }, { days: 3, late: 4, n: 2 }, { days: 24, late: 30, n: 5 }, 25, 24, 24],
+      "the usual days from ship to delivery (the middle) and the day 9 in 10 are here by, of a transport's delivered orders (3 or more), else of every transport's");
+    assert.deepEqual(it('INV-1'), [['jar', 'jar', '', 32000, '2026-12-09', false, 0], ['jar', 'lid', '', 32000, '2026-12-09', false, 0], ['jar', 'case', '', 2000, '2026-12-09', false, 16]], 'a jar order brings jars, lids and its master cases, on its ship date plus the usual days');
+    assert.deepEqual(it('INV-2'), [['5pk', 'jar5', '', 20000, '2026-12-18', true, 0], ['5pk', 'lid5', '', 20000, '2026-12-18', true, 0], ['5pk', 'case', '', 2000, '2026-12-18', true, 10], ['5pk', 'cones', '', 100000, '2026-12-18', true, 0]],
+      "a 5-pack bundle: jars, caps, 10ct cases and five cones each; still being made with its ship date past: from today, marked ≈");
+    assert.deepEqual(it('INV-3').map(x => [x[2], x[3], x[4]]), [['WIZZY', 10000, '2026-12-16'], ['TIDE', 10000, '2026-12-16'], ['GRAVITIDE', 5000, '2026-12-16']], "a label order's strains, each with its own count (the tracker's Gravitude is Gravitide)");
+    assert.deepEqual([it('INV-8'), it('INV-7'), it('INV-9'), it('INV-10')], [[['jar', 'verify', '', 150000, '2026-12-24', true, 0]], [], [], []], 'security labels are the verification stickers (ready to ship is not shipped: ≈; a transport with too few delivered orders takes every transport\'s days); the QR sticker, mylars and delivered orders bring nothing counted');
+    assert.deepEqual([A.cant.map(c => [c.why, c.inv]), A.late.map(L => [L.inv, L.due, L.items.length])], [[['noship', 'INV-5'], ['odd', 'INV-6']], [['INV-4', '2026-10-26', 3]]],
+      "an order past the day 9 in 10 are here by, not delivered, is late (the parts model decides); one with no ship date, or whose strains aren't named, is said");
+    // review fixes (2026-11-24): the supplier's real wordings
+    const pp = (dsc, q) => { const p = ORD.parts(dsc, q); return [p.items.map(x => [x.kind, x.part, x.key, Math.round(x.n), x.ct]), p.odd.length, p.away.length]; };
+    assert.deepEqual(pp('Wizard Trees 0.7g x 5 Multipack Preroll Bundle CA x 20k\n(Jar / Insert / Cap / Seal / 10CT Master Case / Cone x 5)\nWizard Trees 1.0g Single Preroll Tube Purple Bundle CA x 20k\n(Tube / Insert / Cap / Seal / 10CT Master Case / Cone x 1)', 40000),
+      [[['5pk', 'jar5', '', 20000, 0], ['5pk', 'lid5', '', 20000, 0], ['5pk', 'case', '', 2000, 10], ['5pk', 'cones', '', 100000, 0], ['1g', 'case', '', 2000, 10], ['1g', 'cones', '', 20000, 0]], 0, 0], 'a two-bundle order: each line its own count (never the "x 5" of "0.7g x 5")');
+    assert.deepEqual([pp('Wizard Trees - 3.5g Flower Jar Purple CA * 16ct x 50k (Verification stickers required)', 50000)[0].map(x => x[1]), pp('Wizard Trees - 3.5g Flower Jar and Cap Purple with 16ct Master Cases - 10K (Ship to Israel)', 10000), pp('Wizard Trees - 3.5g Flower Jars - White FL', 9000)[2],
+      pp('Wizard Trees AIO Case-Security Labels - Roll Pack (The Small One) - 50K pcs', 50000), pp('Wizard Trees Custom Seal for 0.7g Multipack Preroll Jar and 1.0g Preroll Tube - 200K ea', 400000)],
+      [['jar', 'lid', 'case'], [[], 0, 1], 1, [[], 0, 0], [[], 0, 0]], 'a note in brackets is not the order; another state or destination is said, never counted; vape case labels and seals are not jar parts');
+    assert.deepEqual([pp('Wizard Trees CA 10ct Master Cases for 0.7g Multipack Prerolls & 1.5g Prerolls - 1K ea', 2000)[0], pp('Wizard Trees 1.0g Preroll - 10ct Master Case  and Case Insert -1000pcs ea', 1000)[0], pp('Wizard Trees - 3.5g Flower Master Case 32ct All States x 1.1k', 1100)[0]],
+      [[['5pk', 'case', '', 1000, 10]], [['1g', 'case', '', 1000, 10], ['1g', 'insert', '', 1000, 10]], [['jar', 'case', '', 1100, 32]]], 'a master-case order brings cases (and case inserts) for each unit type it names, never jars');
+    assert.deepEqual([pp('Wizard Trees - 3.5g Flower Label for Jar x 20k (Wizzy / Tide x 10k each) (CA)', 20000)[0].map(x => x[2]), pp('Wizard Trees - 3.5g Flower Jar Purple (AZ) * 16ct x 50k', 50000),
+      pp('Wizard Trees - 3.5g Flower Label Jar Label CA x 10k (New Yorker / Wizzy x 5k each)', 10000)[0].map(x => x[2]), pp('Wizard Trees CA 1.0g Preroll Labels + Compliance Labels - 10k ea (Wizzy / Tide x 5k each)', 20000)[1],
+      pp('Wizard Trees CA 1.5g budtender bags 3.8x4.5 inch - 10k\nWizard Trees - Pound Bag x 1k', 11000)[0], pp('Wizard Trees - 3.5g Flower Label for Jar x 20k (Wizzy / Tide x 10k each）', 20000)[0].length,
+      pp('Wizard Trees - 3.5g Flower Label - Master Case Label x 2k (Zangbanger V2 x 1k, Smoothie #6 / Black Light 27 x 0.5k each)', 2000)[0].map(x => [x[2], x[3]]), pp('Wizard Trees - 3.5g Flower Label for Jar x 5k (Wizzy x 2.5kpcs, Tide x 2,500pcs)', 5000)[0].map(x => x[3])],
+      [['WIZZY', 'TIDE'], [[], 0, 1], ['NEW YORKER', 'WIZZY'], 1, [['bud', 'bag', '', 10000, 0]], 2, [['ZANGBANGER', 1000], ['SMOOTHIE #6', 500], ['BLACK LIGHT 27', 500]], [2500, 2500]],
+      "a destination in brackets is a note (or away, on a jar order); New Yorker is a strain; labels joined with compliance stickers are said; a size like 3.8x4.5 inch or 2.5kpcs reads right; full-width brackets pair; V2 is the strain's");
+    assert.deepEqual([pp('Wizard Trees - 3.5g (0.7g * 5) Multipack Preroll Label Jar Label CA x 10k (Zoza / Wizzy x 5k each)', 10000)[0], pp('Wizard Trees CA 0.7g Preroll Tube Labels x 8k (Zoza / Wizzy x 4k each)', 8000)[1]],
+      [[['5pk', 'label', 'ZOZA', 5000, 0], ['5pk', 'label', 'WIZZY', 5000, 0]], 1], "5-pack labels read the strains' bracket, not the size's; 0.7g tube labels aren't placed, so they are said");
+    { const sp = (st, po, q, ship) => ({ inv: 'S', po, desc: 'Wizard Trees - 3.5g Flower Jar Purple CA * 16ct x 1k', status: st, ship, mode: 'ocean', qty: q });
+      const A3 = ORD.arrivals([sp('Partial Ship', '26112001', 50000, '2026-11-20'), sp('Shipped - In Transit', '26112001-1', 30000, '2026-11-20'), sp('In Production', '26112001-2', 20000, '2026-12-05')], T0, tr);
+      const A4 = ORD.arrivals([sp('Partial Ship', '26112001', 50000, '2026-11-20'), sp('Shipped - In Transit', '26112001-1', 30000, '2026-11-20')], T0, tr);
+      const A5 = ORD.arrivals([sp('Shipped - In Transit', '', 1000, '2026-10-27'), Object.assign(sp('Shipped - In Transit', '', 1000, '2026-11-14'), { deliv: '2026-11-21' }), Object.assign(sp('In Transit', '', 1000, ''), { status: 'Shipped', delivText: 'Partially Delivered' })], T0, tr);
+      assert.deepEqual([A3.items.filter(x => x.part === 'jar').map(x => [x.how, x.from || '']), A5.items.filter(x => x.part === 'jar').map(x => [x.how, x.due, x.lateDay]), A5.late.map(L => L.by)], [[['ship', ''], ['made', '2026-12-05']], [['past', '2026-11-21', '2026-11-26']], ['deliv']],
+        'each order says how it lands: shipped, still being made (from its ship date or today), past its usual day (until the day 9 in 10 are here by), or late by its delivery date');
+      assert.deepEqual([A3.items.filter(x => x.part === 'jar').map(x => [x.n, x.day]), A4.cant.map(c => c.why), A5.items.filter(x => x.part === 'jar').map(x => [x.day, x.est]), A5.late.map(L => L.due), A5.cant.map(c => c.why)],
+        [[[30000, '2026-12-15'], [20000, '2026-12-30']], ['split'], [['2026-11-25', true]], ['2026-11-21'], ['part']],
+        "a split order counts its shipments, not the whole too (the rest is said); past its usual day it lands tomorrow (≈) until the day 9 in 10 are here by; a past delivery date not marked delivered is late; partly delivered is said"); }
+    assert.deepEqual(ORD.parts('Wizard Trees - 3.5g Flower Label - Master Case Label x 3k (Wizzy / Tide / Zoza)', 3000).items.map(x => [x.part, x.key, x.n, x.est]), [['clabel', 'WIZZY', 1000, true], ['clabel', 'TIDE', 1000, true], ['clabel', 'ZOZA', 1000, true]], 'strains with no counts share the order equally, marked ≈');
+    const sup = [['Jar - 3.5g', 'JAR', 1000], ['Lid - 3.5g', 'LID', 900], ['Verification Stickers', 'LABEL', 500], ['Case Pack - 3.5g Jar (16ct)', 'CASE PACK', 10], ['Case Pack - 3.5g Jar (32ct)', 'CASE PACK', 5],
+      ['Insert - 3.5g Jar (16ct)', 'INSERT', 100], ['Wizzy - 3.5g - Jar Label', 'LABEL', 300], ['Wizzy - Case Label', 'LABEL', 100], ['Antidote - 3.5g - Label', 'LABEL', 50], ['Black Light - 3.5g - Jar Label', 'LABEL', 70],
+      ['Black Light - 3.5g - Label', 'LABEL', 9999], ['Black Light - Case Label', 'LABEL', 10], ['Antidote - Case Label', 'LABEL', 10], ['Jungle Juice - 5pk - Preroll Label', 'PRE-ROLL LABEL', 40], ['Preroll Jar - 5pk', 'JAR', 100], ['Preroll Lid - 5pk', 'LID', 100],
+      ['Preroll Papers - 5pk', 'PREROLL', 1000], ['Case Pack - 5pk Preroll (10ct, Purple)', 'CASE PACK', 5], ['Insert - 5pk Preroll (10ct)', 'INSERT', 20], ['Black Light - 3.5g - Mylar V2', 'MYLAR', 5000]].map(([name, cat, total]) => ({ name, cat, total }));
+    const d = k => PIPE.addDays(T0, k), PK = OH.packaging({ today: T0, weeks: 1, sup,
+      adds: [{ day: d(1), key: 'WIZZY', kind: 'jar', qty: 200, what: 'Jars A' }, { day: d(2), key: 'WIZZY', kind: 'jar', qty: 200, est: true, what: 'Jars B' }, { day: d(3), key: 'ANTIDOTE', kind: 'jar', qty: 40, what: 'Jars C' },
+        { day: d(3), key: 'SUNSTONE', kind: 'jar', qty: 10, what: 'Jars C' }, { day: d(4), key: 'BLACK LIGHT', kind: 'jar', qty: 10, what: 'Jars D' }, { day: d(2), key: 'ANTIDOTE', kind: '5pk', qty: 60, what: 'Pre-rolls' },
+        { day: d(1), key: 'X', kind: '1.5g', qty: 100, what: 'Pre-rolls' }, { day: T0, key: 'WIZZY', kind: 'jar', qty: 999, what: 'Jars today' }],
+      orders: [{ kind: 'jar', part: 'verify', n: 1000, day: d(2), inv: 'INV-8' }, { kind: 'jar', part: 'label', key: 'WIZZY', n: 500, day: d(5), inv: 'INV-3' }, { kind: 'jar', part: 'case', ct: 32, n: 2, day: d(1), inv: 'INV-1' }] });
+    const K = k => PK.kinds.find(x => x.kind === k), pt = (k, id) => K(k).parts.find(p => p.id === id), st = (k, key) => K(k).strains.find(s => s.key === key);
+    assert.deepEqual([PK.kinds.map(x => x.kind), K('jar').parts.map(p => p.id), K('jar').days[0], pt('jar', 'case').days[0], pt('5pk', 'cones').days[0], pt('5pk', 'case').days[0]], [['jar', '5pk'], ['jar', 'lid', 'verify', 'case', 'insert'], 320, 320, 200, 50],
+      "a unit type's parts by the tab's own rows (a 16ct case covers 16 jars, a 32ct 32, a cone a fifth of a 5-pack); its row is the least of them; no row for 1g or pouch parts: no row for them");
+    assert.deepEqual([pt('jar', 'verify').days.slice(0, 4), pt('jar', 'verify').ev.map(e => [e.day, e.what, e.n])], [[500, 300, 1100, 1050], [[d(1), 'take', 200], [d(2), 'in', 1000], [d(2), 'take', 200], [d(3), 'take', 40], [d(3), 'take', 10], [d(4), 'take', 10]]],
+      "orders land first, then the day's planned packing takes a part per unit; packing dated today or before is not counted again");
+    assert.deepEqual([pt('jar', 'case').days[1], pt('jar', 'case').out, pt('jar', 'case').outEst, pt('jar', 'case').ev.filter(e => e.what === 'short').map(e => [e.day, e.need, e.got])], [184, d(2), true, [[d(2), 200, 184], [d(3), 40, 0], [d(3), 10, 0], [d(4), 10, 0]]],
+      "an order's 32ct cases land on the 32ct row; a part with too few is short that day (≈ when the packing line is an estimate), and every line after it");
+    assert.deepEqual([st('jar', 'WIZZY').parts.map(p => [p.id, p.rows.map(r => r.name), p.days[0]]), st('jar', 'WIZZY').out, st('jar', 'WIZZY').days.slice(0, 3), st('jar', 'WIZZY').parts[0].ev.filter(e => e.what === 'in')[0].day],
+      [[['label', ['Wizzy - 3.5g - Jar Label'], 300], ['clabel', ['Wizzy - Case Label'], 1600]], d(2), [300, 100, 0], d(5)], "a planned strain's own jar and case labels (one case label a 16ct case); short when a line needs more; an order's labels land on its strain");
+    assert.deepEqual([st('jar', 'ANTIDOTE').parts[0].rows.map(r => r.name), st('jar', 'BLACKLIGHT').parts[0].rows.map(r => r.name), st('5pk', 'ANTIDOTE').parts[0].rows.map(r => r.name), st('5pk', 'ANTIDOTE').out, pt('5pk', 'case').out],
+      [['Antidote - 3.5g - Label'], ['Black Light - 3.5g - Jar Label'], ['Jungle Juice - 5pk - Preroll Label'], d(2), d(2)], "a strain's Jar Label rows, else its Label rows (never its mylar's); Jungle Juice is Antidote");
+    assert.deepEqual([K('jar').out, K('jar').outEst, K('jar').outPart, K('jar').outShow, K('jar').nShort], [d(2), true, 'Master cases', '', 2], "the unit type's Runs short is its first short part (a strain's labels too)");
+    assert.deepEqual(PK.cant.map(c => [c.kind, c.why, c.part || '', c.show || '', c.n || 0]).filter(c => c[1] !== 'norow'), [['1.5g', 'noparts', '', '', 100], ['jar', 'nolabel', 'jar labels', 'SUNSTONE', 0], ['jar', 'nolabel', 'case labels', 'SUNSTONE', 0],
+      ['jar', 'uncounted', 'its QR sticker', '', 0], ['5pk', 'uncounted', 'its second sticker and its seal', '', 0]], "what isn't counted is said: 1.5g pre-rolls, a strain with no label row, the parts the tab has no row for");
+    assert.deepEqual(OH.packaging({ today: T0, sup: [] }).kinds, [], 'no supply tab rows: no packaging rows');
+    // review fixes (2026-11-24): a late order the tab can't hold yet lands tomorrow; pre-labeled pre-roll jars go first; ≈
+    // carries to a short that rests on an earlier estimate; the pouches' case pack is said
+    { const sup2 = [['Jar - 3.5g', 'JAR', 1000], ['Lid - 3.5g', 'LID', 1000], ['Verification Stickers', 'LABEL', 1000], ['Case Pack - 3.5g Jar (16ct)', 'CASE PACK', 100], ['Insert - 3.5g Jar (16ct)', 'INSERT', 100],
+        ['Wizzy - 3.5g - Jar Label', 'LABEL', 400], ['Wizzy - Case Label', 'LABEL', 100], ['Tide - 3.5g - Jar Label', 'LABEL', 9000], ['Tide - Case Label', 'LABEL', 100],
+        ['Preroll Jar - 5pk', 'JAR', 100], ['Preroll Lid - 5pk', 'LID', 1000], ['Preroll Papers - 5pk', 'PREROLL', 10000], ['Case Pack - 5pk Preroll (10ct, Purple)', 'CASE PACK', 100], ['Insert - 5pk Preroll (10ct)', 'INSERT', 100],
+        ['Black Magic - 5pk - Preroll Jar', 'PRE-LABELED JAR', 300], ['Black Magic - 5pk - Preroll Label', 'PRE-ROLL LABEL', 50], ['Budtender Sample - 1.5g', 'POUCH', 100], ['Label - 2.1 x 1 (STIIIZY Case/Budtender Batch)', 'LABEL', 100], ['Case Pack - 1.5g Budtender Sample', 'CASE PACK', 10]].map(([name, cat, total]) => ({ name, cat, total }));
+      const lab = (key, n) => ({ kind: 'jar', part: 'label', key, n, inv: 'INV-L', what: 'jar labels' });
+      const PK2 = OH.packaging({ today: T0, weeks: 1, sup: sup2,
+        adds: [{ day: d(2), key: 'WIZZY', kind: 'jar', qty: 900, est: true, what: 'Jars E' }, { day: d(3), key: 'TIDE', kind: 'jar', qty: 300, what: 'Jars F' }, { day: d(2), key: 'BLACK MAGIC', kind: '5pk', qty: 380, what: 'Pre-rolls' }, { day: d(2), key: 'WIZZY', kind: 'bud', qty: 10, est: true, what: 'Jars E' }],
+        late: [{ inv: 'INV-L', what: 'jar labels', ship: '2026-11-10', due: '2026-11-14', mode: 'express', items: [lab('WIZZY', 5000), lab('TIDE', 5000)] }, { inv: 'INV-M', what: 'jar labels', ship: '2026-11-10', due: '2026-11-14', mode: 'express', items: [lab('TIDE', 5000)] }] });
+      const K2 = k => PK2.kinds.find(x => x.kind === k), s2 = (k, key) => K2(k).strains.find(s => s.key === key), p2 = (k, id) => K2(k).parts.find(p => p.id === id);
+      assert.deepEqual([PK2.cant.filter(c => c.inv).map(c => [c.why, c.inv]), s2('jar', 'WIZZY').parts[0].ev.filter(e => e.what === 'in').map(e => [e.day, e.n, e.est, e.how === 'overdue'])],
+        [[['overdue', 'INV-L'], ['late', 'INV-M']], [[d(1), 5000, true, true]]], "a late order the tab holds less of (Wizzy's 400 jar labels against 5,000) isn't counted there yet: it lands tomorrow (≈); one the tab could hold may already be counted, and isn't added");
+      assert.deepEqual([s2('5pk', 'BLACKMAGIC').parts.map(p => [p.id, p.days[0], p.days[2]]), p2('5pk', 'jar5').days[2], p2('5pk', 'lid5').days[2], s2('5pk', 'BLACKMAGIC').days[0], s2('5pk', 'BLACKMAGIC').out],
+        [[['prejar', 300, 0], ['label', 50, 0]], 20, 620, 350, d(2)], "a strain's pre-labeled jars go first, for the jar and its label; the rest (80) takes plain jars and labels, and 50 labels come up short; lids and cones take all 380; the row adds the two");
+      assert.deepEqual([p2('jar', 'jar').out, p2('jar', 'verify').out, p2('jar', 'verify').outEst, K2('jar').outEst], [d(3), d(3), true, true], "a firm line short only because an estimated line used the part first carries ≈");
+      assert.deepEqual(PK2.cant.filter(c => c.why === 'nosize').map(c => c.part), ['Case Pack - 1.5g Budtender Sample'], "the pouches' case pack is on the tab, but not how many a case holds: said");
+      // round two (2026-11-24): a late order the tab took in and has since used isn't added again; a strain whose
+      // pre-labeled jars cover its line isn't said to miss a label row
+      const lateW = used => OH.packaging({ today: T0, weeks: 1, sup: sup2, used, late: [{ inv: 'INV-U', what: 'jar labels', due: '2026-11-16', by: 'p90', items: [lab('TIDE', 9500)] }] }).cant.filter(c => c.inv).map(c => c.why);
+      assert.deepEqual([lateW([]), lateW([{ day: '2026-11-20', kind: 'jar', key: 'TIDE', n: 600 }]), lateW([{ day: '2026-11-10', kind: 'jar', key: 'TIDE', n: 600 }])], [['overdue'], ['late'], ['overdue']],
+        "Tide's 9,000 jar labels against an order of 9,500: not counted yet; with 600 used since its due day, the tab could have held it (9,600), so it may already be counted");
+      const nl = qty => OH.packaging({ today: T0, weeks: 1, sup: sup2.concat([{ name: 'Orange Magic - 5pk - Preroll Jar', cat: 'PRE-LABELED JAR', total: 500 }]), adds: [{ day: d(2), key: 'ORANGE MAGIC', kind: '5pk', qty, what: 'Pre-rolls' }] }).cant.filter(c => c.why === 'nolabel').map(c => c.show);
+      assert.deepEqual([nl(400), nl(600)], [[], ['ORANGE MAGIC']], "no label row is said only once a line needs more than the strain's pre-labeled jars"); }
+    // the page: the Order Tracker's address comes from the database, never this file; its money is never kept or cached
+    const fL = fnH('loadOrders'), fA = fnH('adOrders'), fAO = fnH('adminOrders'), fC = fnH('ohPkCant');
+    assert.ok(/sb\.rpc\('pipeline_order_tracker'\)/.test(fL) && /ORD\.parse\(t\)/.test(fL) && !/localStorage/.test(fL) && !/17dD4Y/.test(html) && /Date\.now\(\) - S\.ordAt < 10 \* 60 \* 1000/.test(fL),
+      "the tracker's address is asked of the database; only ORD's columns are kept, never cached; read at most every 10 minutes");
+    assert.ok(/I\.pk\.sup \? OH\.packaging\(\{ today, weeks: OH\.WEEKS, sup: I\.pk\.sup, adds: I\.adds, orders: I\.pk\.orders, late: I\.pk\.late, used: I\.pk\.used \}\)/.test(fO) && /pk\.late = A\.late/.test(fI) && /pk\.used\.push\(\{ day, kind: lane === 'jars' \? 'jar' : l\.size, key: l\.strain, n: l\.counted \}\)/.test(fI) && /ORD\.arrivals\(S\.ord, today, pk\.tr\)/.test(fI) && /data-id="\$\{esc\(id\)\}"/.test(fO) && /'pk\|' \+ K\.kind/.test(fO) && /PC\.length/.test(fO),
+      "the packaging rows: the supply tab, planned packing and the orders' parts; each unit type opens; what they can't tell is listed");
+    assert.ok(/if \(!S\.supAt && !S\.supErr\) loadSupplies\(true\); if \(!S\.ordAt\) loadOrders\(\);/.test(html) && /S\.view === 'supplies' \|\| S\.view === 'onhand'\) render\(\);/.test(html) && /pipeline_admin_order_tracker_set/.test(fAO) && /data-ad-form="ord"/.test(fA) && /\$\{adSync\(\)\}\$\{adOrders\(\)\}/.test(html),
+      "On hand reads the supply tab and the tracker; an admin pastes the tracker's address on the Admin page");
+    assert.ok(/'late'/.test(fC) && /'overdue'/.test(fC) && /may already be counted there/.test(fC) && /counted as landing tomorrow/.test(fC) && /isn't set on the Admin page yet/.test(fC) && /the orders counted are from the copy read/.test(fC) && !/<select/.test(fA), "the can't-tell list says what isn't counted, and why; no plain select");
+    console.log(`on hand packaging: ${PK.kinds.length} unit types from the supply tab's rows, ${A.items.length} parts on the way from ${new Set(A.items.map(x => x.inv)).size} orders (ocean ${tr.days('ocean')} days, every transport ${tr.all.days}); ${PK.cant.length} things it can't count are said`);
+  }
 }
 console.log('pipeline-check: all checks passed');

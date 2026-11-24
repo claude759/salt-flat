@@ -1337,7 +1337,9 @@
   .oh-t td.v .oh-add{display:block;margin:0 0 1px;line-height:1}   /* +N sits over its number (never read as "1,078 is about 0"), so the weeks fit a laptop */
   .oh-t td.v.dip{box-shadow:inset 2px 0 0 #F5B041}
   .oh-t tr.sep td{height:8px;padding:0;border-bottom:1px solid #3a4558}   /* loose flower above, packed units below */
-  .oh-t td.ro small{display:block;margin:2px 0 0;line-height:1.1}   /* its words under its day, so the column stays narrow */
+  .oh-t tr.sec td{height:auto;text-align:left;white-space:normal;padding:16px 9px 6px;font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#9aa6bb;border-bottom:1px solid #1d2636}   /* packaging below the packed units (step 4) */
+  .oh-t tr.sec td small{font-size:11.5px;font-weight:600;letter-spacing:0;text-transform:none;margin-left:8px}
+  .oh-t td.ro small{display:block;margin:2px 0 0;line-height:1.1;white-space:normal}   /* its words under its day, so the column stays narrow */
   .oh-t th,.oh-t td{padding-left:9px;padding-right:9px}
   .oh-t th.ro,.oh-t td.ro{text-align:left;width:92px}
   .oh-t td.ro{color:#F5B041;font-weight:700}
@@ -1351,6 +1353,7 @@
   .oh-t tr.d .oh-wkc td:first-child{color:#9aa6bb;min-width:96px}
   .oh-t tr.d .oh-wkc td small{color:#9aa6bb;font-size:11px}
   .oh-t tr.d .oh-wkc tr.end td{border-top:1px solid #3a4558;padding-top:5px}
+  .oh-t tr.d .oh-wkc table.wrap td:last-child{white-space:normal;min-width:300px}   /* packaging's long order words wrap, so the table keeps its width */
   .oh-wkc p{margin:6px 0 0;font-size:12px}
   .oh-go{background:none;border:1px solid #3a4558;color:#7AA2FF;border-radius:7px;padding:3px 10px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;margin-top:4px}
   .oh-t td.v small{color:#9aa6bb;font-size:10.5px;margin-left:6px}
@@ -2295,6 +2298,187 @@ const SUP = (() => {
   return { parse, status };
 })();
 /* ===== SUPPLY PARSER END ===== */
+
+/* ===== ORDER TRACKER PARSER START =====
+   The supplier's Order Tracker, its CA tab: the China orders (On hand step 4, Gianni 2026-11-24: parts on the way come
+   from the tracker, landing on the ship date plus the supplier's usual days for that transport). Columns are found by
+   header name. Only what On hand needs is kept: the invoice and PO numbers, the words, the status, the ship and delivery
+   dates, the transport and the quantity. Never the money columns (the browser downloads the whole tab; they are dropped
+   here and never shown or cached). Pure.
+   - parse(csv) -> [{ inv, po, desc, status, ship, deliv, delivText, mode ('ocean' | 'air' | 'mixed' | 'express' | ''), qty }]
+   - transit(rows, today) -> { days(mode), late(mode), by: { mode: { days, late, n } }, all }: the supplier's own days from
+     ship to delivery over the delivered orders shipped in the last 365 days: the middle (days) and the day 9 in 10 are
+     here by (late); 3 or more of that transport, else every transport's, else 25 and 35
+   - parts(desc, qty) -> { items: [{ kind, part, ct, key, show, n (items), est }], odd: [words it couldn't place], away:
+     [words for another state or destination] }: what one order brings, in OH.PARTS' parts (a strain's labels carry its
+     key; ct is a master case's count)
+   - arrivals(rows, today, transit) -> { items: [... + { day, est, inv, what, status, ship, mode, transit }], cant: [{ why:
+     'odd' | 'away' | 'noship' | 'split' | 'part', inv, what, words, status }], late: [{ inv, what, status, ship, due,
+     mode, items }] }: the open orders' parts on their day. An order still being made lands its ship date (today at the
+     earliest) plus the usual days, marked ≈. A shipped one past its usual day lands tomorrow (≈) until the day 9 in 10
+     are here by; past that (or past a delivery date not marked delivered) it is late, and OH.packaging decides from the
+     supply tab whether it may already be counted there. A split order (its shipments on rows of their own, PO -1, -2)
+     counts its shipments, not the whole as well. */
+const ORD = (() => {
+  const clean = s => String(s == null ? '' : s).replace(/（/g, '(').replace(/）/g, ')').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  const iso = s => { const m = clean(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})$/); if (!m) return ''; return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`; };
+  const num = s => { const t = clean(s).replace(/,/g, ''); return /^\d+(?:\.\d+)?$/.test(t) ? +t : null; };
+  const mode = s => { const t = clean(s).toLowerCase(); return /express|courier|dhl|fedex|\bups\b/.test(t) ? 'express' : /air/.test(t) && /ocean|sea/.test(t) ? 'mixed' : /air/.test(t) ? 'air' : /ocean|sea/.test(t) ? 'ocean' : ''; };
+  const diff = (a, b) => Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5);
+  const sorted = v => v.slice().sort((a, b) => a - b);
+  const mid = v => { const s = sorted(v), k = s.length >> 1; return s.length % 2 ? s[k] : Math.round((s[k - 1] + s[k]) / 2); };
+  const p90 = v => { const s = sorted(v); return s[Math.min(s.length - 1, Math.max(0, Math.ceil(s.length * 0.9) - 1))]; };
+  // delivered: the status says so (never "Partially Delivered"), or the delivery date column says just "Delivered"
+  const partly = r => /partial/i.test(r.delivText || '') || (/partial/i.test(r.status || '') && /deliver/i.test(r.status || ''));
+  const done = r => /cancel/i.test(r.status || '') || (/deliver/i.test(r.status || '') && !partly(r)) || /^delivered$/i.test(r.delivText || '');
+  function parse(text) {
+    const grid = typeof text === 'string' ? PIPE.parseCSV(text) : text;
+    const h = (grid || []).findIndex(r => r.some(c => /^desc\.?$/i.test(clean(c))) && r.some(c => /^order status$/i.test(clean(c))));
+    if (h < 0) return null;
+    const H = grid[h].map(c => clean(c).toLowerCase()), col = re => H.findIndex(c => re.test(c));
+    const c = { inv: col(/^invoice/), po: col(/^po\b/), desc: col(/^desc/), st: col(/^order status$/), ship: col(/^ship date$/), deliv: col(/^delivery date$/), tr: col(/^transportation$/), qty: col(/^qty/) };
+    if (c.ship < 0 || c.qty < 0) return null;
+    const at = (g, i) => (i >= 0 && g[i] != null ? g[i] : '');
+    const rows = [];
+    for (let r = h + 1; r < grid.length; r++) {
+      const g = grid[r], desc = String(at(g, c.desc)).replace(/\u00a0/g, ' ').replace(/（/g, '(').replace(/）/g, ')').trim();
+      if (!desc) continue;
+      rows.push({ inv: clean(at(g, c.inv)), po: clean(at(g, c.po)), desc, status: clean(at(g, c.st)), ship: iso(at(g, c.ship)), deliv: iso(at(g, c.deliv)), delivText: clean(at(g, c.deliv)), mode: mode(at(g, c.tr)), qty: num(at(g, c.qty)) });
+    }
+    return rows;
+  }
+  function transit(rows, today) {
+    const from = PIPE.addDays(today, -365), by = {}, all = [];
+    for (const r of rows || []) if (/deliver/i.test(r.status || '') && !partly(r) && r.ship && r.deliv && r.deliv >= r.ship && r.ship >= from && r.deliv <= today && !awayRow(r)) {   // (orders for elsewhere don't set our usual days)
+      const d = diff(r.ship, r.deliv); all.push(d); if (r.mode) (by[r.mode] = by[r.mode] || []).push(d); }
+    const B = {}; for (const [k, v] of Object.entries(by)) B[k] = { days: mid(v), late: p90(v), n: v.length };
+    const A = all.length >= 3 ? { days: mid(all), late: p90(all), n: all.length } : { days: 25, late: 35, n: all.length };
+    const of = m => (B[m] && B[m].n >= 3 ? B[m] : A);
+    return { by: B, all: A, days: m => of(m).days, late: m => of(m).late };
+  }
+  // the count in words: "x 82.5k", "x 20K", "x 7,500" (never the "x 5" of "0.7g x 5"), else a trailing "- 10K"
+  const qOf = (a, k) => Math.round(parseFloat(String(a).replace(/,/g, '')) * (k ? 1000 : 1));
+  const count = s => { const t = String(s), m = t.match(/(?<![\d.]\s*g\s*|\d)[x×*]\s*(\d[\d,]*(?:\.\d+)?)\s*(k(?=pcs|\b))?(?=pcs|[^\w.,]|$)(?!\s*(?:inch|in\b|mm|cm|"))/i); if (m) return qOf(m[1], m[2]);
+    const e = t.match(/[-–]\s*([\d.,]+)\s*(k)?\s*(?:pcs)?\s*$/i); return e ? qOf(e[1], e[2]) : null; };
+  const strainOf = nm => PIPE.strainKey(String(nm).replace(/\bgravitude\b/i, 'Gravitide').replace(/\s+v\d+$/i, ''));
+  // a strain's name, never a note in brackets ("Verification stickers required", "with Label", "16 flavours")
+  const DEST = /^(?:CA|CE|EU|AZ|FL|NY|MI|US|USA|all states)$/i;
+  const okName = nm => /^[A-Za-z][A-Za-z0-9 '#.&-]{1,30}$/.test(nm) && !DEST.test(nm) && !/\b(?:flavou?rs?|strains?|designs?|total|each|ea|pcs|required|needed|need|with|ship|labels?|stickers?|only|new(?!\s*york)|inserts?|cases?|version|sets?|packs?)\b/i.test(nm);
+  // the strains a label order names: the last bracket group that starts with a word ("(0.7g * 5)" is a size), "(A / B x 10k
+  // each, C x 7.5k)", each with its own count; with no counts at all, the order's count shared equally (≈); else
+  // "Jar Label - Smoothie CA x 10k"
+  function strainsIn(t, total) {
+    // (a group that is only a destination, "(CA)", is a note; of the rest, the last with a "/" or a count, else the only one)
+    const gs = [...t.matchAll(/\(([^()]*)\)/g)].map(m => m[1].trim()).filter(g => /^[A-Za-z]/.test(g) && !DEST.test(g)), lists = gs.filter(g => /\//.test(g) || count(g) != null);
+    const g0 = lists.length ? lists[lists.length - 1] : gs.length === 1 ? gs[0] : null, out = [];
+    if (gs.length && !g0) return null;
+    if (g0) for (const g of g0.split(/;|,(?!\d)/).map(x => x.trim()).filter(Boolean)) {
+      const q = count(g), names = g.replace(/[x×*]\s*[\d.,]+\s*k?\b.*$/i, '').split('/').map(x => x.trim()).filter(Boolean);
+      for (const nm of names) { if (!okName(nm)) return null; out.push({ show: nm, key: strainOf(nm), n: q }); }
+    }
+    else { const s = t.match(/label\s*-\s*([A-Za-z][A-Za-z '#.&-]{1,30}?)\s+(?:CA|All States)\b/i); if (s && okName(s[1].trim())) out.push({ show: s[1].trim(), key: strainOf(s[1].trim()), n: total }); }
+    if (!out.length) return null;
+    if (out.every(x => x.n == null)) { if (!(total > 0)) return null; for (const x of out) { x.n = Math.round(total / out.length); x.est = true; } }
+    else if (out.some(x => x.n == null)) return null;
+    return out;
+  }
+  // words that look like a packaging part (so one this can't place is said, not dropped); sticker packs are merch
+  const LOOKS = /\blabels?\b|\bjars?\b|pre-?roll|\bcones?\b|\binserts?\b|master case|\btubes?\b|budtender|security sticker/i;
+  // another state or destination: the CA tab carries a few (AZ, FL, "Ship to Israel"); never this distro's parts
+  const AWAY = (own, all) => ((/\b(?:AZ|FL|NY|MI|EU|CE)\b/.test(own) || /\b(?:arizona|florida|new york|michigan|israel|europe)\b/i.test(own)) && !/\bCA\b|all states|california/i.test(own)) ||
+    /\(\s*(?:AZ|FL|NY|MI|EU|CE)\s*\)/.test(all) || /\(\s*(?:arizona|florida|new york|michigan|israel|europe)\s*\)/i.test(all) || /ship to (?!ca\b|california)/i.test(all);
+  const awayRow = r => String(r.desc || '').split(/\n+/).map(clean).some(l => AWAY(l.replace(/\([^()]*\)/g, ' '), l));
+  function parts(desc, qty) {
+    const its = [];
+    for (const l of String(desc || '').split(/\n+/).map(clean).filter(Boolean)) {
+      // a line in brackets lists what a bundle holds: it belongs to the line above
+      if (/^\(/.test(l) && its.length) its[its.length - 1].has += ' ' + l; else its.push({ t: l, has: '' });
+    }
+    const items = [], odd = [], away = [], one = its.length === 1;
+    for (const { t, has } of its) {
+      const all = t + ' ' + has, own = t.replace(/\([^()]*\)/g, ' '), q = one && qty > 0 ? qty : count(own);
+      const add = (kind, part, n, x) => { if (n > 0) items.push(Object.assign({ kind, part, ct: 0, key: '', n }, x || {})); };
+      const cones = n => { const c = all.match(/cones?\s*[x×*]\s*(\d+)/i); return c ? n * +c[1] : 0; };
+      const looks = LOOKS.test(t) && !/sticker (?:pack|set)/i.test(t);
+      const isLabel = /\blabels?\b|\bstickers?\b/i.test(own);   // (a note in brackets, "(Verification stickers required)", is not what the line is)
+      if (AWAY(own, all)) { if (looks) away.push(t); continue; }
+      if (!(q > 0)) { if (looks) odd.push(t); continue; }
+      if (/\bseals?\b/i.test(own) && !/bundle/i.test(own)) continue;   // (seals aren't counted: Gianni, left out and listed)
+      // a master-case order: cases (and case inserts) for each unit type it names, "1K ea"
+      if (!isLabel && /master cases?/i.test(own) && !/bundle|flower jars?\b|glass jar|preroll jar|preroll tube|tube purple|jar and cap/i.test(own)) {
+        const ct = +((own.match(/(\d+)\s*(?:ct|pc|pk)\b/i) || [])[1]) || 0, ks = [];
+        if (/0\.[57]\s*g|multipack|5\s*pk|5\s*x\s*0\.7/i.test(own)) ks.push('5pk');
+        if (/1\.0\s*g|single pre-?roll/i.test(own)) ks.push('1g');
+        if (/3\.5\s*g|\bflower\b/i.test(own)) ks.push('jar');
+        const ea = own.match(/([\d.,]+)\s*(k)?\s*(?:pcs\s*)?\bea(?:ch)?\b/i), other = /1\.5\s*g/i.test(own) ? 1 : 0;
+        const n = ea ? qOf(ea[1], ea[2]) : ks.length ? q / (ks.length + other) : 0;
+        if (!ct || !ks.length || !(n > 0)) { odd.push(t); continue; }
+        for (const k of ks) { add(k, 'case', n, { ct }); if (/case insert/i.test(own)) add(k, 'insert', n, { ct }); }
+        continue;
+      }
+      if (/ceramic tip|\bcones?\b/i.test(own) && !/bundle/i.test(own)) { add(/0\.[57]\s*g/i.test(own) ? '5pk' : '1g', 'cones', q); continue; }
+      if (!isLabel && /0\.[57]\s*g\s*[x×*]\s*5|multipack|5\s*x\s*0\.7/i.test(own) && /\bjars?\b|bundle/i.test(own)) {
+        add('5pk', 'jar5', q); if (/\bcaps?\b|bundle/i.test(all)) add('5pk', 'lid5', q);
+        if (/10\s*ct|master case|bundle/i.test(all)) add('5pk', 'case', q / 10, { ct: 10 }); add('5pk', 'cones', cones(q)); continue; }
+      if (!isLabel && /1\.0\s*g/i.test(own) && /preroll tube/i.test(own) && !/ceramic/i.test(own)) {   // (the tube and its cap aren't on the supply tab)
+        if (/10\s*ct|master case|bundle/i.test(all)) add('1g', 'case', q / 10, { ct: 10 }); add('1g', 'cones', cones(q)); continue; }
+      if (!isLabel && /\b3\.5\s*g\b/i.test(own) && /flower jars?\b|jar and cap/i.test(own) && !/mylar|\bbag/i.test(own)) {
+        const ct = (all.match(/(\d+)\s*(?:ct|pc|pk)\b/i) || [])[1];
+        add('jar', 'jar', q); add('jar', 'lid', q); add('jar', 'case', q / (+ct || 16), { ct: +ct || 16 }); continue; }
+      if (isLabel) {
+        if (/security labels?/i.test(own) && !/\bqrl?\b|\baio\b|all.?in.?one|vape|\bcarts?\b|case-security/i.test(own)) { add('jar', 'verify', q); continue; }
+        if (/compliance/i.test(own) && /labels?\s*[+&]|[+&]\s*compliance/i.test(own)) { odd.push(t); continue; }   // (labels joined with compliance stickers: said, not dropped)
+        if (/\bqrl?\b|compliance|sticker (?:pack|set)|stickers? set|\baio\b|all.?in.?one|vape/i.test(own)) continue;   // (the QR sticker, the 5-pack's second sticker and vape labels aren't counted; sticker packs are merch)
+        const cl = /case label|box label/i.test(own), kind = cl ? 'jar' : /multipack|5\s*pk/i.test(own) ? '5pk' : /1\.0\s*g/i.test(own) ? '1g' : /3\.5\s*g/i.test(own) && !/0\.[57]\s*g/i.test(own) ? 'jar' : '';
+        const ss = kind ? strainsIn(t, q) : null;
+        if (!ss) { odd.push(t); continue; }
+        for (const s of ss) add(kind, cl ? 'clabel' : 'label', s.n, { key: s.key, show: s.show, est: !!s.est });
+        continue;
+      }
+      if (/budtender (?:bags?|pouch)/i.test(own) && /1\.5\s*g/i.test(own)) { add('bud', 'bag', q); continue; }
+      if (looks && !/mylar|\bbags?\b|display|tray|merch|machine/i.test(t)) odd.push(t);
+    }
+    return { items, odd, away };
+  }
+  // the order's words, its first line, cut at a word (never mid-name), its bracket closed
+  const what = r => { let t = clean(String(r.desc || '').split(/\n/)[0]).replace(/^wizard trees\s*(?:ca\s*)?-?\s*/i, '');
+    if (t.length > 90) { t = t.slice(0, 90).replace(/\s+\S*$/, '').replace(/[\s/,(-]+$/, ''); t += (t.split('(').length > t.split(')').length ? ' …)' : ' …'); }
+    return t; };
+  function arrivals(rows, today, tr) {
+    rows = rows || []; tr = tr || transit(rows, today);
+    const items = [], cant = [], late = [];
+    // a split order: the whole order on one row and each shipment on a row of its own, its PO with -1, -2 (PO 26102605,
+    // 2026-11): the shipments count, not the whole as well
+    const kids = new Map();
+    for (const r of rows) { const m = String(r.po || '').match(/^(.+?)-\d+$/); if (m) kids.set(m[1], (kids.get(m[1]) || 0) + (+r.qty || 0)); }
+    for (const r of rows) {
+      if (done(r)) continue;
+      const p = parts(r.desc, r.qty), w = what(r), base = { inv: r.inv, what: w, status: r.status };
+      if (r.po && kids.has(r.po)) { if (p.items.length && kids.get(r.po) < (+r.qty || 0) - 0.5) cant.push(Object.assign({ why: 'split' }, base)); continue; }
+      for (const t of p.odd) cant.push(Object.assign({ why: 'odd', words: t }, base));
+      for (const t of p.away) cant.push(Object.assign({ why: 'away', words: t }, base));
+      if (!p.items.length) continue;
+      if (partly(r)) { cant.push(Object.assign({ why: 'part' }, base)); continue; }
+      const days = tr.days(r.mode), shipped = /shipped|in transit|partial ship/i.test(r.status || '');
+      // how: 'eta' (the tracker's delivery date), 'made' (still being made: from its ship date, today at the earliest),
+      // 'ship' (shipped: its ship date plus the usual days), 'past' (past those: tomorrow until the day 9 in 10 are here by)
+      const lateDay = r.ship ? PIPE.addDays(r.ship, tr.late(r.mode)) : '';
+      const put = (day, est, how, x2) => { for (const x of p.items) items.push(Object.assign({}, x, { day, est: est || !!x.est, inv: r.inv, what: w, status: r.status, ship: r.ship, mode: r.mode, transit: days, how }, x2 || {})); };
+      const lateOf = (due, by) => late.push(Object.assign({ ship: r.ship, due, by, lateDay, mode: r.mode, items: p.items.map(x => Object.assign({}, x, { inv: r.inv, what: w, status: r.status, ship: r.ship, mode: r.mode, transit: days })) }, base));
+      if (r.deliv && r.deliv > today) { put(r.deliv, !shipped, 'eta'); continue; }
+      if (r.deliv) { lateOf(r.deliv, 'deliv'); continue; }   // (a delivery date that has passed, not marked delivered)
+      if (!r.ship) { cant.push(Object.assign({ why: 'noship' }, base)); continue; }
+      if (!shipped) { const from = r.ship > today ? r.ship : today; put(PIPE.addDays(from, days), true, 'made', { from }); continue; }
+      const due = PIPE.addDays(r.ship, days);
+      if (due > today) put(due, /partial/i.test(r.status || ''), 'ship');
+      else if (lateDay > today) put(PIPE.addDays(today, 1), true, 'past', { due, lateDay });
+      else lateOf(due, 'p90');
+    }
+    return { items, cant, late };
+  }
+  return { parse, transit, parts, arrivals };
+})();
+/* ===== ORDER TRACKER PARSER END ===== */
 
 /* ===== EDIT MODEL START =====
    Turns an edit asked for on the board ("VOODOO 1g to 450, every day of the run") into the exact cells to rewrite,
@@ -7006,6 +7190,7 @@ const ADMIN = (() => {
     if (kOff.length) out.push('switched off ' + list(kOff.map(kindGerund)));
     if (!!b.test_copy !== !!a.test_copy) out.push(a.test_copy ? 'set the test copy' : 'cleared the test copy');
     else if (a.test_copy_changed) out.push('changed the test copy');
+    if ('order_tracker' in a) { if (!!b.order_tracker !== !!a.order_tracker) out.push(a.order_tracker ? "set the Order Tracker's address" : "cleared the Order Tracker's address"); else if (a.order_tracker_changed) out.push("changed the Order Tracker's address"); else if (!a.order_tracker) out.push("cleared the Order Tracker's address (it was already clear)"); else out.push("saved the Order Tracker's address again"); }
     return out;
   }
   // one line of the change log, as a sentence
@@ -7344,9 +7529,150 @@ const OH = (function (PIPE) {
     if (keep(other)) rows.push(out(other));
     return { n, rows, cant };
   }
+  // ---- Packaging parts (step 4, Gianni 2026-11-24, "Yes, start step 4", and his answers the same day: part counts may
+  // show, never prices; parts on the way come from the supplier's Order Tracker (ORD), landing on the ship date plus the
+  // supplier's usual days for that transport; a part the supply tab has no row for is left out and said). What one unit
+  // takes, by the DISTRO SUPPLY tab's own rows: [part, words, [[row, u (units one item covers), ct]]]: a 16ct master
+  // case covers 16 jars, a cone a fifth of a 5-pack. Each row's TOTAL QTY counts, wherever it sits.
+  const PARTS = {
+    jar: [['jar', 'Jars', [[/^jar - 3\.5\s*g$/i, 1]]], ['lid', 'Lids', [[/^lid - 3\.5\s*g$/i, 1]]], ['verify', 'Verification stickers', [[/^verification stickers?$/i, 1]]],
+      ['case', 'Master cases', [[/^case pack - 3\.5\s*g jar \(16\s*ct/i, 16, 16], [/^case pack - 3\.5\s*g jar \(32\s*ct/i, 32, 32]]],
+      ['insert', 'Case inserts', [[/^insert - 3\.5\s*g jar \(16\s*ct/i, 16, 16], [/^insert - 3\.5\s*g jar \(32\s*ct/i, 32, 32]]]],
+    bud: [['bag', 'Budtender bags', [[/^budtender sample - 1\.5\s*g$/i, 1]]], ['blabel', 'Batch labels (2.1 x 1)', [[/^label - 2\.1\s*x\s*1\b/i, 1]]]],
+    '5pk': [['jar5', 'Pre-roll jars', [[/^preroll jar - 5\s*pk$/i, 1]]], ['lid5', 'Lids', [[/^preroll lid - 5\s*pk$/i, 1]]], ['cones', 'Cones', [[/^preroll papers - 5\s*pk$/i, 0.2]]],
+      ['case', 'Master cases', [[/^case pack - 5\s*pk preroll \(10\s*ct/i, 10, 10], [/^case pack - 5\s*pk preroll \(16\s*ct/i, 16, 16], [/^case pack - 5\s*pk preroll \(32\s*ct/i, 32, 32]]],
+      ['insert', 'Case inserts', [[/^insert - 5\s*pk preroll \(10\s*ct/i, 10, 10], [/^insert - 5\s*pk preroll \(16\s*ct/i, 16, 16], [/^insert - 5\s*pk preroll \(32\s*ct/i, 32, 32]]]],
+    '1g': [['cones', 'Cones', [[/^preroll papers - 1\s*g$/i, 1]]], ['case', 'Master cases', [[/^case pack - single preroll \(10\s*ct/i, 10, 10], [/^case pack - single preroll \(16\s*ct/i, 16, 16]]],
+      ['insert', 'Case inserts', [[/^insert - single preroll \(10\s*ct/i, 10, 10], [/^insert - single preroll \(16\s*ct/i, 16, 16]]]],
+  };
+  // a strain's own parts: [part, words, its rows' size, u]. Jar labels are the strain's "3.5g - Jar Label" rows, else its
+  // "3.5g - Label" rows; one case label covers a 16ct case. A pre-labeled pre-roll jar ("Black Magic - 5pk - Preroll Jar",
+  // the last of an order no longer made) stands for the jar and its label (PRE_FOR), and goes first
+  const SPARTS = { jar: [['label', 'jar labels', '3.5g', 1], ['clabel', 'case labels', '', 16]], '5pk': [['prejar', 'pre-labeled jars', '5pk', 1], ['label', '5-pack labels', '5pk', 1]],
+    '1g': [['prejar', 'pre-labeled jars', '1g', 1], ['label', '1g labels', '1g', 1]] };
+  const PRE_FOR = { '5pk': ['jar5', 'label'], '1g': ['label'] };
+  // what each unit takes that the supply tab has no row for (Gianni: leave out, list them)
+  const UNCOUNTED = { jar: 'its QR sticker', '5pk': 'its second sticker and its seal', '1g': 'its tube, cap and seal' };
+  const SIZE = /^(?:3\.5\s*g|5\s*pk|1\s*g|1\.5\s*g|1\s*lb)$/i, GENERIC = /^(?:labels?|pre-?roll|brother|stiiizy|verification|case pack|insert|jars?|lids?|ribbon|stickers?)\b/i;
+  // a strain's own row on the tab, a label or a pre-labeled pre-roll jar: { key, show, size, what, k: 'label' | 'prejar' }
+  function strainRow(it) {
+    const ps = String(it && it.name || '').split(/\s+-\s+/).map(s => s.trim()).filter(Boolean);
+    if (ps.length < 2 || GENERIC.test(ps[0])) return null;
+    const sz = ps.slice(1).find(p => SIZE.test(p)) || '', what = ps.slice(1).filter(p => p !== sz).join(' - ');
+    const k = /^pre-?roll jar$/i.test(what) ? 'prejar' : /label/i.test(what) ? 'label' : '';
+    if (!k) return null;
+    return { key: fkey(PIPE.strainKey(ps[0].replace(/\bgravitude\b/i, 'Gravitide'))), show: ps[0], size: sz.replace(/\s+/g, '').toLowerCase(), what, k };
+  }
+  // o: { today, weeks, sup: [{ name, cat, total }] (the DISTRO SUPPLY tab), adds: On hand's planned packing [{ day, key,
+  //      kind, qty, est, what }], orders: ORD.arrivals(...).items, late: ORD.arrivals(...).late, used: packing counted
+  //      lately [{ day, kind, key, n }] (so a late order the tab took in and has since used isn't added again) }
+  // -> { n, kinds: [{ kind, label, parts: [P], strains: [{ key, show, parts: [P], days, out, outEst }], days (units the
+  //      shared parts cover, their least), out, outEst, outPart, outShow (the first short part, and its strain), nShort }],
+  //      cant: [{ kind, why: 'norow' | 'nolabel' | 'noparts' | 'uncounted' | 'nosize' | 'late' | 'overdue', part, show, n,
+  //      inv, what, ship, due, mode }] }
+  //    P: { id, label, rows: [{ name, have0 (items on the tab today), have (after the last day), u, ct }], days: [units
+  //      covered], ev: [{ day, what: 'in' | 'take' | 'short', n (units), items, est, name, inv, status, ship, mode,
+  //      transit, how ('eta' | 'made' | 'ship' | 'past' | 'overdue'), from, due, lateDay, by, key, need, got }], out, outEst }
+  // Each day the orders land first, then the day's planned packing takes one unit's parts per unit (a strain's
+  // pre-labeled jars first, for the jar and the label); a part with too few is short that day, ≈ when that rests on an
+  // estimate (the line itself, or an estimated line or order that touched the part before). Only planned packing takes
+  // parts. A late order (ORD) that the tab can't hold yet (one of its parts on the tab, plus what packing counted since
+  // its due day used of it, is less than it brings) lands tomorrow, ≈; else it may already be counted and isn't added.
+  function packaging(o = {}) {
+    const today = o.today || '', n = (o.weeks || WEEKS) * 7 + 1, end = PIPE.addDays(today, n - 1), sup = o.sup || [], cant = [];
+    const nm = s => String(s || '').replace(/\s+/g, ' ').trim(), have = it => Math.max(0, +it.total || 0);
+    const P = (id, label, rows) => ({ id, label, rows, days: [], ev: [], out: '', outEst: false, estAt: '' });
+    const cov = p => p.rows.reduce((a, r) => a + r.have * r.u, 0);
+    const srows = sup.map(it => ({ it, l: strainRow(it) })).filter(x => x.l);
+    // the tab's rows for a part: a shared part by PARTS, a strain's by its own rows
+    const rowsFor = (kind, id, key) => {
+      if (!key) { const d = (PARTS[kind] || []).find(x => x[0] === id); return d ? d[2].flatMap(([re, u, ct]) => sup.filter(it => re.test(nm(it.name))).map(it => ({ it, u, ct: ct || 0 }))) : []; }
+      const sp = (SPARTS[kind] || []).find(x => x[0] === id); if (!sp) return [];
+      let rs = id === 'clabel' ? srows.filter(x => x.l.key === key && !x.l.size && x.l.k === 'label' && /^case label/i.test(x.l.what))
+        : srows.filter(x => x.l.key === key && x.l.size === sp[2] && x.l.k === (id === 'prejar' ? 'prejar' : 'label'));
+      if (id === 'label' && kind === 'jar') { const jl = rs.filter(x => /jar label/i.test(x.l.what)); rs = jl.length ? jl : rs.filter(x => /^label$/i.test(x.l.what)); }
+      return rs.map(x => ({ it: x.it, u: sp[3], ct: 0 }));
+    };
+    const mk = rs => rs.map(x => { const h = have(x.it); return { name: nm(x.it.name), have: h, have0: h, u: x.u, ct: x.ct }; });
+    const orders = (o.orders || []).filter(x => x && x.n > 0 && x.day > today && x.day <= end);
+    for (const L of o.late || []) {
+      // (a part with no row on the tab says nothing either way; an order none of whose parts has a row isn't on the tab)
+      const ev = (L.items || []).map(x => { const rs = rowsFor(x.kind, x.part, x.key ? fkey(x.key) : '').filter(r => !x.ct || !r.ct || r.ct === x.ct); if (!rs.length) return null;
+        const used = (o.used || []).filter(y => y && y.kind === x.kind && y.day >= (L.due || '') && y.day <= today && (!x.key || fkey(y.key) === fkey(x.key))).reduce((a, y) => a + (+y.n || 0), 0);
+        return rs.reduce((a, r) => a + have(r.it), 0) + used / rs[0].u < x.n; }).filter(v => v != null);
+      const notYet = !ev.length || ev.some(Boolean);
+      cant.push({ kind: '', why: notYet ? 'overdue' : 'late', inv: L.inv, what: L.what, ship: L.ship, due: L.due, by: L.by || '', lateDay: L.lateDay || '', mode: L.mode });
+      if (notYet) for (const x of L.items || []) orders.push(Object.assign({}, x, { day: PIPE.addDays(today, 1), est: true, how: 'overdue', by: L.by || '', due: L.due, lateDay: L.lateDay || '' }));
+    }
+    const kinds = [], allAdds = (o.adds || []).filter(a => a && a.qty > 0 && a.day > today && a.day <= end);
+    if (allAdds.some(a => a.kind === '1.5g')) cant.push({ kind: '1.5g', why: 'noparts', n: allAdds.filter(a => a.kind === '1.5g').reduce((s, a) => s + a.qty, 0) });
+    for (const kind of Object.keys(PARTS)) {
+      const adds = allAdds.filter(a => a.kind === kind).sort((a, b) => a.day.localeCompare(b.day)), sub = PRE_FOR[kind] || [];
+      const shared = PARTS[kind].map(([id, label]) => P(id, label, mk(rowsFor(kind, id, ''))));
+      for (const p of shared) if (!p.rows.length) cant.push({ kind, why: 'norow', part: p.label });
+      const live = shared.filter(p => p.rows.length);
+      // the strains planned in the window, each with its own labels (and pre-labeled jars)
+      const S = new Map();
+      for (const a of adds) { const k = fkey(a.key); if (!k || S.has(k)) continue;
+        const ps = [], miss = [];
+        for (const [id, words] of SPARTS[kind] || []) { const rs = rowsFor(kind, id, k); if (rs.length) ps.push(P(id, words, mk(rs))); else if (id !== 'prejar') miss.push([id, words]); }
+        // (a label row a strain's pre-labeled jars stand in for is missed only once a line needs more than those jars)
+        const hasPre = ps.some(p => p.id === 'prejar'), later = ([id]) => hasPre && sub.includes(id);
+        for (const m of miss) if (!later(m)) cant.push({ kind, why: 'nolabel', part: m[1], show: a.key, key: k });
+        S.set(k, { key: k, show: String(a.key), parts: ps, days: [], out: '', outEst: false, noLab: miss.filter(later).map(m => m[1]), noLabSaid: false });
+      }
+      const all = [...live, ...[...S.values()].flatMap(s => s.parts)];
+      const take = (p, want) => { let got = 0; for (const r of p.rows) { const t = Math.min(want - got, r.have * r.u); if (t > 0) { r.have = Math.max(0, r.have - t / r.u); got += t; } } return got; };
+      const touch = (p, d, est) => { if (est && !p.estAt) p.estAt = d; };
+      for (const p of all) p.days.push(cov(p));
+      for (let i = 1; i < n; i++) {
+        const d = PIPE.addDays(today, i);
+        for (const x of orders) { if (x.kind !== kind || x.day !== d) continue;
+          const p = x.key ? (S.get(fkey(x.key)) || { parts: [] }).parts.find(q => q.id === x.part) : live.find(q => q.id === x.part);
+          const r = p && ((x.ct && p.rows.find(r => r.ct === x.ct)) || p.rows[0]);
+          if (!r) continue;
+          const units = x.ct ? x.n * x.ct : x.n * r.u;   // (a case order lands on its own size's row, else as the units it covers)
+          r.have += units / r.u; touch(p, d, x.est);
+          p.ev.push({ day: d, what: 'in', n: units, items: x.n, est: !!x.est, inv: x.inv || '', name: x.what || '', status: x.status || '', ship: x.ship || '', mode: x.mode || '', transit: x.transit || 0,
+            how: x.how || '', from: x.from || '', due: x.due || '', lateDay: x.lateDay || '', by: x.by || '' }); }
+        for (const a of adds) { if (a.day !== d) continue;
+          const s = S.get(fkey(a.key)), pre = s ? s.parts.find(p => p.id === 'prejar') : null;
+          let pj = 0;
+          if (pre) { pj = take(pre, a.qty); if (pj >= 0.5) { pre.ev.push({ day: d, what: 'take', n: pj, est: !!a.est, name: a.what || '', key: a.key }); touch(pre, d, a.est); } }
+          if (s && s.noLab.length && !s.noLabSaid && a.qty - pj >= 0.5) { s.noLabSaid = true; for (const w of s.noLab) cant.push({ kind, why: 'nolabel', part: w, show: a.key, key: s.key }); }
+          for (const p of [...live, ...(s ? s.parts.filter(p => p !== pre) : [])]) {
+            const need = pre && sub.includes(p.id) ? a.qty - pj : a.qty;   // (a pre-labeled jar was its jar and its label)
+            if (need < 0.5) continue;
+            const got = take(p, need);
+            if (got >= 0.5) p.ev.push({ day: d, what: 'take', n: got, est: !!a.est, name: a.what || '', key: a.key });
+            if (got < need - 0.5) { p.ev.push({ day: d, what: 'short', n: need - got, need, got, est: !!a.est, name: a.what || '', key: a.key });
+              if (!p.out) { p.out = d; p.outEst = !!a.est || (!!p.estAt && p.estAt <= d); } }
+            touch(p, d, a.est);
+          }
+        }
+        for (const p of all) p.days.push(cov(p));
+      }
+      // a strain's row: what its parts can pack together (its pre-labeled jars and its labels add up; the rest, the least)
+      const sval = (s, i) => { const pre = s.parts.find(p => p.id === 'prejar'), lab = s.parts.find(p => p.id === 'label'), rest = s.parts.filter(p => p !== pre && p !== lab).map(p => p.days[i]);
+        return Math.min(...(pre || lab ? [(pre ? pre.days[i] : 0) + (lab ? lab.days[i] : 0)] : []), ...rest); };
+      const strains = [...S.values()].filter(s => s.parts.length).map(s => {
+        const o1 = s.parts.filter(p => p.out).sort((a, b) => a.out.localeCompare(b.out))[0];
+        return Object.assign(s, { days: s.parts[0].days.map((_, i) => sval(s, i)), out: o1 ? o1.out : '', outEst: !!(o1 && o1.outEst) });
+      }).sort((a, b) => (a.out || '9999').localeCompare(b.out || '9999') || a.days[0] - b.days[0] || a.show.localeCompare(b.show));
+      const shorts = [...live.filter(p => p.out).map(p => ({ day: p.out, est: p.outEst, part: p.label, show: '' })), ...strains.flatMap(s => s.parts.filter(p => p.out).map(p => ({ day: p.out, est: p.outEst, part: p.label, show: s.show })))].sort((a, b) => a.day.localeCompare(b.day));
+      if (!live.length && !strains.length) continue;
+      cant.push({ kind, why: 'uncounted', part: UNCOUNTED[kind] || '' });
+      // (the pouches' case pack is on the tab, but not how many pouches a case holds)
+      if (kind === 'bud') for (const it of sup.filter(it => /^case pack - 1\.5\s*g budtender/i.test(nm(it.name)))) cant.push({ kind, why: 'nosize', part: nm(it.name) });
+      kinds.push({ kind, label: (KINDS.find(k => k[0] === kind) || [, kind])[1], parts: live, strains,
+        days: Array.from({ length: n }, (_, i) => live.length ? Math.min(...live.map(p => p.days[i])) : 0),
+        out: shorts.length ? shorts[0].day : '', outEst: !!(shorts.length && shorts[0].est), outPart: shorts.length ? shorts[0].part : '', outShow: shorts.length ? shorts[0].show : '', nShort: shorts.length });
+    }
+    return { n, kinds, cant: cant.filter(x => x.why !== 'uncounted' || x.part) };
+  }
   // planned work { day, to } that falls in a week: from (the day before it) to its last day, any day of it
   const inWeek = (x, from, to) => !!x && x.day <= to && (x.to || x.day) > from;
-  return { KINDS, COVER, TURN, WEEKS, ROLLED, LAG, project, inWeek, flower, fkey };
+  return { KINDS, COVER, TURN, WEEKS, ROLLED, LAG, PARTS, SPARTS, PRE_FOR, project, inWeek, flower, fkey, strainRow, packaging };
 })(PIPE);
 /* ===== ON HAND MODEL END ===== */
 
@@ -10430,7 +10756,55 @@ function ohInput() {
       fl.trims.push({ site, end: r.end, lb: r.lb, moved, strains: st, what: `${siteName(site)} room ${r.room} trim ${md(r.start)}${r.end > r.start ? '-' + md(r.end).replace(/^[A-Za-z]+ /, '') : ''}` }); }
   }
   fl.turn = OH.TURN;   // (the packed rows' turn: the page never waits on the lab rows)
-  return { rows: S.inv ? S.inv.rows : [], adds, picks: picks.sort(), dz, nz, today, est, pace: wks.length, fl, blind: blind.sort((a, b) => a.day.localeCompare(b.day)) };
+  // packaging (step 4, Gianni 2026-11-24): the DISTRO SUPPLY tab's rows, and the parts the open China orders bring
+  const pk = { sup: null, orders: [], late: [], used: [], cant: [], tr: null }, dt = S.sup && S.sup.tabs.find(t => t.id === 'distro');
+  if (dt) pk.sup = dt.items;
+  if (S.ord) { pk.tr = ORD.transit(S.ord, today); const A = ORD.arrivals(S.ord, today, pk.tr); pk.orders = A.items; pk.late = A.late; pk.cant = A.cant; }
+  // packing counted in the last 60 days, by its last day (a late order the tab took in and has since used isn't added again)
+  pk.used = [];
+  if (S.act) for (const lane of ['prerolls', 'jars']) for (const run of S.act.runs[lane]) for (const l of run.act.lines) {
+    const day = l.last || run.end; if (!(l.counted > 0) || !day || day < PIPE.addDays(today, -60) || day > today) continue;
+    pk.used.push({ day, kind: lane === 'jars' ? 'jar' : l.size, key: l.strain, n: l.counted }); if (lane === 'jars' && l.buds > 0) pk.used.push({ day, kind: 'bud', key: l.strain, n: l.buds }); }
+  return { rows: S.inv ? S.inv.rows : [], adds, picks: picks.sort(), dz, nz, today, est, pace: wks.length, fl, pk, blind: blind.sort((a, b) => a.day.localeCompare(b.day)) };
+}
+// what On hand's packaging rows can't tell (step 4; Gianni: leave out what can't be placed, and list it): the Order
+// Tracker itself when it isn't read, parts the supply tab has no row for, planned strains with no label row, and orders
+// it can't place or date, or that may already be counted
+// the supplier's usual days by transport, for On hand's note: " (ocean 25, air 7, air and ocean 28, express 4; 24 with no transport yet)"
+function pkDays(tr) {
+  if (!tr) return '';
+  const W = { ocean: 'ocean', air: 'air', mixed: 'air and ocean', express: 'express' }, xs = Object.keys(W).filter(m => tr.by[m] && tr.by[m].n >= 3).map(m => `${W[m]} ${tr.by[m].days}`);
+  return ` (${xs.join(', ')}${xs.length ? '; ' : ''}${tr.all.days} with no transport yet)`;
+}
+function ohPkCant(I, PK) {
+  const out = [], KL = k => (OH.KINDS.find(x => x[0] === k) || [, k])[1], up = s => s.charAt(0).toUpperCase() + s.slice(1);
+  const MODE = { express: 'by express', air: 'by air', ocean: 'by ocean', mixed: 'by air and ocean' };
+  const at = t => new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  if (S.ordErr && S.ord) out.push({ head: 'China orders', what: `Couldn't read the Order Tracker again (${S.ordErr}): the orders counted are from the copy read ${S.ordReadAt ? at(S.ordReadAt) : 'earlier'}.` });
+  else if (S.ordErr) out.push({ head: 'China orders', what: `Couldn't read the Order Tracker (${S.ordErr}), so nothing on the way is counted.` });
+  else if (S.ordUnset) out.push({ head: 'China orders', what: "The Order Tracker's address isn't set on the Admin page yet, so nothing on the way is counted." });
+  else if (!S.ord) out.push({ head: 'China orders', what: sb ? 'Reading the Order Tracker...' : 'Sign in on the live page to read the Order Tracker.' });
+  // why a late order is late: its delivery date has passed, or the day 9 in 10 of the supplier's orders are here by
+  const lateW = x => x.by === 'deliv' ? `its delivery date on the tracker, ${md(x.due)}, has passed`
+    : `${x.ship ? `shipped ${md(x.ship)}${MODE[x.mode] ? ' ' + MODE[x.mode] : ''}, ` : ''}past ${x.lateDay ? md(x.lateDay) + ', ' : ''}the day 9 in 10 of the supplier's orders are here by`;
+  for (const x of PK ? PK.cant : []) {
+    if (x.why === 'norow') out.push({ head: KL(x.kind), what: `No "${x.part}" row found on the DISTRO SUPPLY tab, so that part isn't counted.` });
+    else if (x.why === 'nolabel') out.push({ head: KL(x.kind), what: `${sLabel(x.show)}: the DISTRO SUPPLY tab has no row for its ${x.part}, so they aren't counted.` });
+    else if (x.why === 'noparts') out.push({ head: KL(x.kind), what: `${fmtN(x.n)} planned, but which parts they take isn't settled, so they aren't counted.` });
+    else if (x.why === 'uncounted') out.push({ head: KL(x.kind), what: `${up(x.part)} ${/ and /.test(x.part) ? "aren't" : "isn't"} on the supply tab, so ${/ and /.test(x.part) ? "they aren't" : "it isn't"} counted.` });
+    else if (x.why === 'nosize') out.push({ head: KL(x.kind), what: `${x.part} is on the supply tab, but how many pouches a case holds isn't known, so it isn't counted.` });
+    else if (x.why === 'overdue') out.push({ head: x.inv || 'An order', what: `${x.what}: ${lateW(x)}, and it isn't marked delivered. The supply tab doesn't show it yet, so it is counted as landing tomorrow (≈).` });
+    else if (x.why === 'late') out.push({ head: x.inv || 'An order', what: `${x.what}: ${lateW(x)}, and it isn't marked delivered. The supply tab already holds as much as it brings, so it may already be counted there and isn't added.` });
+  }
+  for (const x of I.pk.cant) {
+    const h = x.inv || 'An order';
+    if (x.why === 'noship') out.push({ head: h, what: `${x.what}: ${x.status ? x.status.toLowerCase() : 'no status'}, with no ship date yet, so it isn't counted.` });
+    else if (x.why === 'split') out.push({ head: h, what: `${x.what}: its shipments are on rows of their own and don't add up to the whole order, so the rest isn't counted.` });
+    else if (x.why === 'part') out.push({ head: h, what: `${x.what}: partly delivered, and the tracker doesn't say how much is left, so it isn't counted.` });
+    else if (x.why === 'away') out.push({ head: h, what: `"${x.words}" is for another state or destination, so it isn't counted for our distro.` });
+    else out.push({ head: h, what: `Couldn't tell which supply-tab parts "${x.words}" brings, so it isn't counted.` });
+  }
+  return out;
 }
 function renderOnHand() {
   const al = [], today = todayISO();
@@ -10453,9 +10827,12 @@ function renderOnHand() {
   const W = Array.from({ length: Math.floor((M.n - 1) / 7) + 1 }, (_, i) => i * 7), n0 = v => fmtN(Math.max(0, Math.round(v))), dayAt = i => PIPE.addDays(today, i);
   B = B.filter(b => b.day <= dayAt(W[W.length - 1]));   // (only the planned work that falls in the table's weeks)
   const FC = [...(I.fl.cant || []), ...F.cant];   // what the flower rows can't tell (step 3)
+  // packaging (step 4): the parts model, once the supply tab is read, and what it can't tell
+  const PK = I.pk.sup ? OH.packaging({ today, weeks: OH.WEEKS, sup: I.pk.sup, adds: I.adds, orders: I.pk.orders, late: I.pk.late, used: I.pk.used }) : null, PC = ohPkCant(I, PK);
   $('oh-key').innerHTML = '<span>each cell: units at our distro <b>+ at Nabis (N)</b></span><span><em class="oh-add">+N</em> planned packing lands, or loose flower passes its test, that week</span><span>loose flower: <b>lb passed + not passed</b></span><span><b>≈</b> rests on an estimate</span><span><i></i>out at Nabis</span>' +
     (B.length ? '<span><em class="oh-add q">+? −?</em>planned pre-roll work with no count</span>' : '') + '<span><i class="edge"></i>a planned job comes up short, or Nabis runs out mid-week</span>' +
-    (B.length + FC.length ? `<button type="button" class="oh-cant${S.ohOpen === 'cant' ? ' on' : ''}" data-oh="cant" aria-expanded="${S.ohOpen === 'cant'}">Can't tell: ${B.length + FC.length} item${B.length + FC.length === 1 ? '' : 's'}</button>` : '');
+    (PK && PK.kinds.length ? '<span>packaging: <b>units the parts can pack</b>, <em class="oh-add">+N</em> a China order lands</span>' : '') +
+    (B.length + FC.length + PC.length ? `<button type="button" class="oh-cant${S.ohOpen === 'cant' ? ' on' : ''}" data-oh="cant" aria-expanded="${S.ohOpen === 'cant'}">Can't tell: ${B.length + FC.length + PC.length} item${B.length + FC.length + PC.length === 1 ? '' : 's'}</button>` : '');
   const outOn = (r, i) => !!r.out && r.out <= dayAt(i) && r.days[i].nb < 1;
   // a column's planned packing (what lands after the column before it, up to its day), whether it rests on an estimate,
   // and whether planned pre-roll work with no count falls in it; dipOf: Nabis ran out some day of the week but not on its last
@@ -10495,9 +10872,10 @@ function renderOnHand() {
       `${estOf(r, j) ? `<p class="q">${r.kind === 'bud' ? '≈ the sheet gives no pouch count: each planned jar line\'s pouches are counted at what a counted line\'s pouches usually come to.' : '≈ rests on a planned jar line with no pounds on the sheet, counted at what a counted line usually comes to.'}</p>` : ''}${go(PIPE.addDays(from, 1))}</div></td></tr>`; };
   const roTd = (d, n, e) => d ? `<td class="ro">${e ? '≈ ' : ''}${d <= today ? 'Today' : esc(md(d))}${n ? `<small>${n} strain${n === 1 ? '' : 's'} out</small>` : ''}</td>` : '<td class="ro z"></td>';
   let h = `<thead><tr><th class="l">Unit type</th><th class="ro">Runs out</th>${W.map(i => `<th>${i ? esc(md(dayAt(i))) + '<small>projected</small>' : 'Today'}</th>`).join('')}</tr></thead><tbody>`;
-  if (S.ohOpen === 'cant' && B.length + FC.length) h += `<tr class="d"><td colspan="${cols}"><div class="oh-wkc">` +
+  if (S.ohOpen === 'cant' && B.length + FC.length + PC.length) h += `<tr class="d"><td colspan="${cols}"><div class="oh-wkc">` +
     (B.length ? `<h5>Planned pre-roll work with no count</h5><table>${B.map(b => wrow(`${esc(md(b.day))}${b.to > b.day ? ' to ' + esc(md(b.to)) : ''}`, esc(b.what))).join('')}</table><p class="q">The weeks it falls in show <b>+?</b> on the pre-roll rows and <b>−?</b> on loose flower; their numbers leave it out.</p>${go(B[0].day)}` : '') +
-    (FC.length ? `<h5${B.length ? ' style="margin-top:12px"' : ''}>Loose flower</h5><table>${FC.map(x => wrow(x.day > today ? esc(md(x.day)) : 'Today', esc(x.what))).join('')}</table>` : '') + `</div></td></tr>`;
+    (FC.length ? `<h5${B.length ? ' style="margin-top:12px"' : ''}>Loose flower</h5><table>${FC.map(x => wrow(x.day > today ? esc(md(x.day)) : 'Today', esc(x.what))).join('')}</table>` : '') +
+    (PC.length ? `<h5${B.length + FC.length ? ' style="margin-top:12px"' : ''}>Packaging</h5><table class="wrap">${PC.map(x => wrow(esc(x.head), esc(x.what))).join('')}</table>` : '') + `</div></td></tr>`;
   // loose flower first (step 3, Gianni 2026-11-23): pounds that passed their lab test at our distro + not passed yet; a
   // purple +N where flower passes that week; −? where planned pre-roll work with no count takes flower; a thin amber edge
   // on a week a planned job comes up short; Runs out is the first job that comes up short. Not in the units total
@@ -10534,14 +10912,66 @@ function renderOnHand() {
       h += `<tr class="r st${so || sw >= 0 ? ' on' : ''}" data-oh="row" data-id="${esc(r.id)}" tabindex="0" aria-expanded="${so}"><td class="k">${T(sLabel(r.show || r.sname))}</td>${roTd(r.out, 0, !!r.est && r.est < r.out)}` +
         W.map((i, j) => cell({ dz: r.days[i].dz, nb: r.days[i].nb, add: addOf(r, j), est: estOf(r, j), q: blindOf(r.kind, r.key, j), dip: dipOf(r, j) }, outOn(r, i), ` data-oh="wk" data-id="${esc(r.id)}@${j}" tabindex="0" aria-expanded="${sw === j}"${sw === j ? ' aria-current="true"' : ''}`)).join('') + `</tr>` +
         (so ? detail(r) : sw >= 0 ? week(r, sw) : ''); } }
-  h += `<tr class="tot"><td class="k">All packed units</td><td class="ro z"></td>${W.map((i, j) => `<td>${n0(kinds.reduce((a, K) => a + K.days[j].dz, 0))}<small style="color:#9aa6bb;font-size:10.5px;margin-left:6px">+ ${n0(kinds.reduce((a, K) => a + K.days[j].nb, 0))} N</small></td>`).join('')}</tr></tbody>`;
+  h += `<tr class="tot"><td class="k">All packed units</td><td class="ro z"></td>${W.map((i, j) => `<td>${n0(kinds.reduce((a, K) => a + K.days[j].dz, 0))}<small style="color:#9aa6bb;font-size:10.5px;margin-left:6px">+ ${n0(kinds.reduce((a, K) => a + K.days[j].nb, 0))} N</small></td>`).join('')}</tr>`;
+  // packaging (step 4, Gianni 2026-11-24): how many units the parts on hand can pack, a row per unit type (its shared
+  // parts' least); a click opens its parts and the labels of the strains planned to pack, a part's name everything that
+  // changes it, a week only that week. Planned packing takes the parts; China orders land them (purple +N)
+  const supWhen = S.supAt ? new Date(S.supAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  h += `<tr class="sec"><td colspan="${cols}">Packaging <small>how many units the parts on hand can pack, as planned packing takes them and China orders land${supWhen ? ` · DISTRO SUPPLY read ${esc(supWhen)}` : ''}${S.supErr && S.sup ? " · couldn't read it again, so this is that copy" : ''}${S.supDistroPartial ? " · only the rows not hidden on the tab: the full export couldn't be read" : ''}</small></td></tr>`;
+  if (!PK || !PK.kinds.length) h += `<tr><td class="k" colspan="${cols}"><small>${S.supErr && !S.sup ? (/^Couldn't/.test(S.supErr) ? esc(S.supErr) : "Couldn't read the DISTRO SUPPLY tab: " + esc(S.supErr)) : PK ? 'No packaging parts found on the DISTRO SUPPLY tab.' : 'Reading the DISTRO SUPPLY tab...'}</small></td></tr>`;
+  else {
+    const NOUN = { jar: 'jars', bud: 'pouches', '5pk': '5-packs', '1g': 'pre-rolls' }, PKW = { jar: '3.5g jar parts', bud: 'Pouch parts', '5pk': '5-pack parts', '1g': '1g pre-roll parts' };
+    const pkEst = (ps, j) => ps.some(p => p.ev.some(e => e.est && e.what !== 'short' && e.day <= dayAt(W[j])));
+    const pkCell = (x, at) => `<td class="v${x.sh ? ' dip' : ''}"${x.sh ? ' title="planned packing comes up short on a part this week"' : ''}${at || ''}>${x.add || x.q ? `<em class="oh-add">${x.add || ''}${x.q ? `${x.add ? ' ' : ''}<i class="q" title="planned pre-roll work with no count">+?</i>` : ''}</em>` : ''}${x.est ? '≈ ' : ''}${n0(x.v)}</td>`;
+    const pkX = (ps, j, v, kind, key, word) => ({ v, est: pkEst(ps, j), sh: ps.some(p => p.ev.some(e => e.what === 'short' && inW(e, j))), q: OH.ROLLED.includes(kind) && blindOf(kind, key, j),
+      add: (n => n >= 0.5 ? (word ? '+ order' : '+' + n0(n)) : '')(ps.reduce((a, p) => a + p.ev.filter(e => e.what === 'in' && inW(e, j)).reduce((x, e) => x + e.n, 0), 0)) });
+    const pkRo = (d, e, small) => d ? `<td class="ro">${e ? '≈ ' : ''}${d <= today ? 'Today' : esc(md(d))}${small ? `<small>${esc(small)}</small>` : ''}</td>` : '<td class="ro z"></td>';
+    const one1 = noun => noun === 'pouches' ? 'pouch' : noun.replace(/s$/, '');
+    const rowsTxt = (p, noun) => p.rows.map(r => `${esc(r.name)}: <b>${n0(r.have0)}</b>${r.u !== 1 ? ` <small>(${r.u < 1 ? Math.round(1 / r.u) + ' per ' + one1(noun) : 'one covers ' + r.u + ' ' + noun})</small>` : ''}`).join('<br>');
+    const MODEW = { express: 'by express', air: 'by air', ocean: 'by ocean', mixed: 'by air and ocean' };
+    const sent = e => /shipped|in transit|partial ship/i.test(e.status || ''), shipW = e => e.ship && sent(e) ? `shipped ${md(e.ship)}${MODEW[e.mode] ? ' ' + MODEW[e.mode] : ''}` : '';
+    const whenTxt = e => e.how === 'overdue' ? [shipW(e), e.by === 'deliv' ? `its delivery date on the tracker, ${md(e.due)}, has passed` : e.lateDay ? `past ${md(e.lateDay)}, the day 9 in 10 are here by` : '', 'not marked delivered and not on the supply tab yet: counted as landing tomorrow'].filter(Boolean).join(', ')
+      : e.how === 'past' ? `${shipW(e)}, past its usual ${e.transit} days (${md(e.due)}): counted as landing tomorrow until ${md(e.lateDay)}, the day 9 in 10 are here by`
+      : e.how === 'made' ? (e.ship && e.from && e.from !== e.ship ? `was to ship ${md(e.ship)}, still being made: counted from today, usually ${e.transit} days` : e.ship ? `planned to ship ${md(e.ship)}, usually ${e.transit} days` : '')
+      : e.how === 'eta' ? `due ${md(e.day)}, the tracker's delivery date${shipW(e) ? ' · ' + shipW(e) : e.ship ? ' · planned to ship ' + md(e.ship) : ''}`
+      : shipW(e) ? `${shipW(e)}, usually ${e.transit} days` : '';
+    const pkEvTxt = (e, p, noun) => e.what === 'in' ? `${esc(e.inv)} <small>${esc(e.name)}</small> lands: <b>${e.est ? '≈ ' : ''}+${n0(e.items)}</b>${e.items !== e.n ? ` <small>(${n0(e.n)} ${noun})</small>` : ''}${whenTxt(e) ? ` <small>· ${esc(whenTxt(e))}</small>` : ''}`
+      : e.what === 'take' ? `${esc(e.name)}${e.key ? ' · ' + T(sLabel(e.key)) : ''} takes <b>${e.est ? '≈ ' : ''}${n0(e.n)}</b> ${noun}' worth`
+      : `<b class="o">${esc(e.name)}${e.key ? ' · ' + T(sLabel(e.key)) : ''} comes up short: ${e.est ? '≈ ' : ''}${n0(e.need)} ${noun} planned, parts for ${n0(e.got)}</b>`;
+    const pkCard = (title, ps, noun, j, kind) => {
+      const one = ps.length === 1, sec = p => one ? '' : `<tr class="end"><td colspan="2"><b>${esc(p.label)}</b></td></tr>`;
+      if (j == null) return `<tr class="d"><td colspan="${cols}"><div class="oh-wkc"><h5>${title}</h5><table class="wrap">${ps.map(p => sec(p) + wrow('On the tab', rowsTxt(p, noun)) + (p.ev.map(e => wrow(esc(md(e.day)), pkEvTxt(e, p, noun))).join('') || wrow('', 'Nothing planned takes it, and no order brings it.'))).join('')}</table>` +
+        `${ps.some(p => p.ev.some(e => e.est)) ? '<p class="q">≈ rests on an estimate: a planned jar line with no pounds (a usual line), the pouches a jar line brings, an order still being made or past its usual day, or labels an order shares out evenly.</p>' : ''}</div></td></tr>`;
+      const i = W[j];
+      if (!j) return `<tr class="d"><td colspan="${cols}"><div class="oh-wkc"><h5>${title} · today</h5><table class="wrap">${ps.map(p => sec(p) + wrow('On the tab', rowsTxt(p, noun)) + wrow('Today', `parts for <b>${n0(p.days[0])}</b> ${noun}`)).join('')}</table><p class="q">From the DISTRO SUPPLY tab's TOTAL QTY, every site together.</p></div></td></tr>`;
+      const from = dayAt(W[j - 1]);
+      return `<tr class="d wk"><td colspan="${cols}"><div class="oh-wkc"><h5>${title} · ${esc(md(PIPE.addDays(from, 1)))} to ${esc(md(dayAt(i)))}</h5><table class="wrap">` + ps.map(p => sec(p) + wrow(`Start <small>${esc(md(from))}</small>`, `parts for <b>${n0(p.days[W[j - 1]])}</b> ${noun}`) +
+        p.ev.filter(e => inW(e, j)).map(e => wrow(esc(md(e.day)), pkEvTxt(e, p, noun))).join('') + wrow(`End <small>${esc(md(dayAt(i)))}</small>`, `parts for <b>${n0(p.days[i])}</b> ${noun}`, 'end')).join('') + `</table>` +
+        `${OH.ROLLED.includes(kind) && blindOf(kind, '', j) ? '<p class="q">Planned pre-roll work with no count falls in this week: it will take parts too (see Can\'t tell).</p>' : ''}${go(PIPE.addDays(from, 1))}</div></td></tr>`; };
+    for (const K of PK.kinds) {
+      const id = 'pk|' + K.kind, on = open.has(id), noun = NOUN[K.kind] || 'units', allP = [...K.parts, ...K.strains.flatMap(s => s.parts)];
+      h += `<tr class="r t${on ? ' on' : ''}" data-oh="kind" data-id="${esc(id)}" tabindex="0" aria-expanded="${on}"><td class="k" style="--c:${OH_C[K.kind] || '#8A93A3'}"><span class="ar">${on ? '▾' : '▸'}</span><i></i>${esc(PKW[K.kind] || K.label)} <small>${K.parts.length} part${K.parts.length === 1 ? '' : 's'}${K.strains.length ? ` · ${K.strains.length} strain${K.strains.length === 1 ? '' : 's'}` : ''}</small></td>` +
+        pkRo(K.out, K.outEst, K.out ? `${K.outShow ? sLabel(K.outShow) + ' ' : ''}${K.outPart}${K.nShort > 1 ? ` · ${K.nShort - 1} more` : ''}` : '') +
+        W.map((i, j) => pkCell(Object.assign(pkX(K.parts, j, K.days[i], K.kind, '', true), { sh: allP.some(p => p.ev.some(e => e.what === 'short' && inW(e, j))) }))).join('') + '</tr>';   // (the edge, like Runs short, counts the strains' labels too)
+      if (!on) continue;
+      const line = (rid, name, ps, days, out, outEst, key) => { const so = S.ohOpen === rid, sw = String(S.ohOpen || '').startsWith(rid + '@') ? +String(S.ohOpen).slice(rid.length + 1) : -1;
+        h += `<tr class="r st${so || sw >= 0 ? ' on' : ''}" data-oh="row" data-id="${esc(rid)}" tabindex="0" aria-expanded="${so}"><td class="k">${name}</td>${pkRo(out, outEst, '')}` +
+          W.map((i, j) => pkCell(pkX(ps, j, days[i], K.kind, key, ps.length > 1), ` data-oh="wk" data-id="${esc(rid)}@${j}" tabindex="0" aria-expanded="${sw === j}"${sw === j ? ' aria-current="true"' : ''}`)).join('') + '</tr>';
+        const title = `${esc(PKW[K.kind] || K.label)} · ${name.replace(/<small>.*<\/small>/, '').trim()}`;
+        if (so) h += pkCard(title, ps, noun, null, K.kind); else if (sw >= 0) h += pkCard(title, ps, noun, sw, K.kind); };
+      for (const p of K.parts) line(`${id}|${p.id}`, esc(p.label), [p], p.days, p.out, p.outEst, '');
+      for (const s of K.strains) line(`${id}|s|${s.key}`, `${T(sLabel(s.show))} <small>labels</small>`, s.parts, s.days, s.out, s.outEst, s.key);
+    }
+  }
+  h += '</tbody>';
   box.innerHTML = `<table class="oh-t">${h}</table>`;
   const at = x => x ? new Date(x).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
   $('oh-note').innerHTML = [
     `Today: Distru's count${meta.distru_as_of ? ' (' + esc(at(meta.distru_as_of)) + ')' : ''} and Nabis's (available plus on orders${meta.nabis_as_of ? ', ' + esc(at(meta.nabis_as_of)) : ''}).`,
     `Ahead is projected: packing planned on the sheets${I.est.jar ? ` (≈ ${fmtN(I.est.jar)} jars${I.est.bud ? ' and ' + fmtN(I.est.bud) + ' pouches' : ''} a strain when the sheet has no count)` : ''}, ${I.picks.length ? `the ${I.picks.length} planned Nabis pickup${I.picks.length === 1 ? '' : 's'} (${I.picks.map(d => esc(md(d))).join(', ')})` : 'no Nabis pickup planned on the sheet'} each topping Nabis up to ${OH.COVER} weeks of a product's sales from what our distro has ready, stock in testing shipping after its results (about ${OH.TURN} days), then Nabis's sales at each product's own pace and ${I.pace ? "Distru's deliveries at their last " + I.pace + " weeks' pace" : "no Distru deliveries (their pace isn't read yet)"}.`,
+    PK && PK.kinds.length ? `Packaging: the DISTRO SUPPLY tab's TOTAL QTY (every site), less one unit's parts for each unit of planned packing; China orders on the supplier's Order Tracker${S.ord && S.ordReadAt ? ' (read ' + esc(at(S.ordReadAt)) + ')' : ''} land on their ship date (today, for one still being made whose ship date has passed) plus the supplier's usual days for that transport${pkDays(I.pk.tr)}, ≈ while still being made; a shipped one past its usual day lands the next day (≈) until the day 9 in 10 are here by, and after that only when the tab can't already hold it.` : '',
     `Loose flower: Distru's bulk at our distro by lab result; each trim to come adds the share of a trim that usually reaches the distro (the rest is sold in bulk from the grow), to the strains planned to pack or test, passing its lab test after the sheet's testing day (else about ${OH.LAG} days after the trim); planned jobs take it, jars only once passed.`,
-    'Click a row for its strains, a strain for everything that changes it, and a week for just that week. Units and pounds only.'].join(' ');
+    'Click a row for its strains, a strain for everything that changes it, and a week for just that week. Units and pounds only.'].filter(Boolean).join(' ');
 }
 document.addEventListener('click', e => { if (S.view !== 'onhand') return; const c = e.target.closest ? e.target.closest('[data-oh]') : null; if (!c) return;
   if (c.dataset.oh === 'kind') { const o = S.ohKinds || (S.ohKinds = new Set()); if (o.has(c.dataset.id)) o.delete(c.dataset.id); else o.add(c.dataset.id); }
@@ -10549,6 +10979,31 @@ document.addEventListener('click', e => { if (S.view !== 'onhand') return; const
   renderOnHand();
   const el = document.querySelector(c.dataset.oh === 'cant' ? '#oh-key .oh-cant' : `#oh-box [data-oh="${c.dataset.oh}"][data-id="${CSS.escape(c.dataset.id || '')}"]`); if (el) el.focus({ preventScroll: true }); });
 document.addEventListener('keydown', e => { if (S.view === 'onhand' && (e.key === 'Enter' || e.key === ' ') && e.target.closest && e.target.closest('[data-oh]')) { e.preventDefault(); e.target.closest('[data-oh]').click(); } });
+// the China Order Tracker (On hand step 4): its CA tab's address comes from pipeline_order_tracker() (an admin pastes it
+// on the Admin page; it never ships in this page), read on opening On hand and again at most every 10 minutes. Only the
+// columns ORD keeps are held, in memory only (the tab has money columns: never cached, never shown)
+let ordLoading = false;
+async function loadOrders(force) {
+  if (ordLoading || !sb || (!force && S.ordAt && Date.now() - S.ordAt < 10 * 60 * 1000)) return;
+  ordLoading = true;
+  try {
+    const { data, error } = await sb.rpc('pipeline_order_tracker');
+    if (error) throw new Error(/function|does not exist|schema cache/i.test(error.message) ? "it isn't set up on the server yet" : error.message);
+    if (!data || !data.id || !data.gid) { S.ord = null; S.ordUnset = true; S.ordReadAt = 0; }
+    else {
+      const base = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(data.id)}`, gid = encodeURIComponent(data.gid);
+      let rows = null;
+      for (const u of [`${base}/export?format=csv&gid=${gid}`, `${base}/gviz/tq?tqx=out:csv&gid=${gid}`]) {
+        try { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) continue; const t = await r.text(); if (/^\s*</.test(t)) continue; rows = ORD.parse(t); if (rows) break; } catch (_) { /* next */ }
+      }
+      if (!rows) throw new Error('check that it is still shared by link and still has its Desc., Order Status, Ship Date and QTY columns');
+      S.ord = rows; S.ordUnset = false; S.ordReadAt = Date.now();
+    }
+    S.ordErr = '';
+  } catch (e) { S.ordErr = e.message || String(e); }
+  finally { S.ordAt = Date.now(); ordLoading = false; }
+  if (S.view === 'onhand') render();
+}
 // the stock copy: check the one-row meta, reload the rows only when a run changed them
 const INV_CACHE = 'pipeline.inventory.v1';
 let invLoading = false;
@@ -11933,8 +12388,8 @@ function edDecorate() {
    own Edit and Add follow new switches at once (edStatus). The body is redrawn only when what it shows changes, so a
    sheet reload in the background never wipes what an admin is typing. */
 const AD = { admin: null, me: '', editors: null, settings: null, log: null, sync: null, syncErr: '', at: 0, seq: 0, loading: false,
-  busy: '', busyWord: '', err: '', msg: null, edit: '', copyOpen: false, syncOpen: '', logAll: false, drawn: '',
-  draft: { email: '', scope: 'plan', scopeText: null, admin: false, copy: '', editScope: 'plan', editScopeText: null, editAdmin: false, src_trims: '', src_batches: '' } };
+  busy: '', busyWord: '', err: '', msg: null, edit: '', copyOpen: false, syncOpen: '', logAll: false, drawn: '', ord: null, ordErr: '', ordOpen: false,
+  draft: { email: '', scope: 'plan', scopeText: null, admin: false, copy: '', editScope: 'plan', editScopeText: null, editAdmin: false, src_trims: '', src_batches: '', ord: '' } };
 const AD_SAY = {
   notSetUp: "The admin settings aren't set up on the server yet. Ask Gianni to apply them.",
   syncNotSetUp: "The cloud sync jobs aren't set up on the server yet.",
@@ -11946,6 +12401,7 @@ const AD_SAY = {
   liveMoved: 'Nothing was changed. Someone else had changed the switches a moment ago; they show here as they are now.',
   noCopyId: "Paste the test copy's address from the browser's address bar (it has /spreadsheets/d/ in it).",
   realSheet: "That's the real sheet the crew works from, not a test copy. Make a copy of it in Google Sheets and paste the copy's address.",
+  ordNotSetUp: "The Order Tracker setting isn't on the server yet: it arrives with the Pipeline deploy run. Look again in a few minutes.",
 };
 // what to tell the admin when a call fails: the server's own words when it refused on purpose, plain words otherwise
 function adMessage(e) {
@@ -11991,7 +12447,7 @@ async function loadAdmin() {
   try {
     // the sync jobs' status comes from pipeline-sync.sql, a file of its own: if it fails, only that card says so
     res = await Promise.all([sb.rpc('pipeline_admin_editors'), sb.rpc('pipeline_admin_settings'), sb.rpc('pipeline_admin_log_list', { p_limit: 100 }),
-      sb.rpc('pipeline_sync_status')]);
+      sb.rpc('pipeline_sync_status'), sb.rpc('pipeline_admin_order_tracker')]);
     const bad = res.slice(0, 3).find(r => r.error); if (bad) err = bad.error;
   } catch (e) { err = e; }
   AD.loading = false;
@@ -11999,13 +12455,15 @@ async function loadAdmin() {
   if (err && err.code === '42501') { adminCheck(); return; }   // no longer an admin: the tab goes away
   if (err) AD.err = adMessage(err);
   else {
-    const [ed, st, lg, sy] = res;
+    const [ed, st, lg, sy, od] = res;
     AD.editors = Array.isArray(ed.data) ? ed.data : [];
     AD.settings = st.data && typeof st.data === 'object' ? st.data : null;
     AD.log = Array.isArray(lg.data) ? lg.data : [];
     AD.err = '';
     if (sy.error) { AD.sync = null; AD.syncErr = adSyncMessage(sy.error); }
     else { AD.sync = Array.isArray(sy.data) ? sy.data : []; AD.syncErr = ''; }
+    // the Order Tracker's address (pipeline-orders.sql, a file of its own): if it fails, only its card says so
+    if (od.error) { AD.ord = null; AD.ordErr = String(od.error.code || '') === 'PGRST202' || /could not find the function|schema cache|does not exist/i.test(String(od.error.message || '')) ? AD_SAY.ordNotSetUp : adMessage(od.error); } else { AD.ord = od.data && typeof od.data === 'object' ? od.data : null; AD.ordErr = ''; }
   }
   if (S.view === 'admin') { renderAdmin(); renderStatus(); }
 }
@@ -12333,6 +12791,48 @@ function adSync() {
     ${body}
   </div>`;
 }
+// the China Order Tracker that On hand reads for packaging on the way (step 4, Gianni 2026-11-24: its address is pasted
+// here, so its id never ships in this public page): pipeline_admin_order_tracker() and ..._set() (pipeline-orders.sql)
+function adOrders() {
+  const o = AD.ord, dis = AD.busy ? ' disabled' : '';
+  let body;
+  if (!o) body = `<p class="ad-help">${esc(AD.ordErr || 'Loading...')}</p>`;
+  else {
+    const now = o.set ? `Set (its id ends in ${esc(o.end || '')})${o.updated_by ? `, by ${esc(ADMIN.nameOf(o.updated_by))} ${esc(edWhen(o.updated_at))}` : ''}.` : 'Not set yet: On hand counts nothing on the way.';
+    body = AD.ordOpen ? `<div>${now}</div>
+      <form class="ad-form in-row" data-ad-form="ord">
+        <input class="ad-in" type="text" data-ad-in="ord" value="${esc(AD.draft.ord || '')}" placeholder="Paste the CA tab's address" aria-label="The Order Tracker's CA tab address" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button class="btn ad-go" type="submit"${dis}>Save</button>
+        ${o.set ? `<button class="btn ad-no" type="button" data-ad="ord-clear"${dis}>Clear</button>` : ''}
+        <button class="btn ghost" type="button" data-ad="ord-cancel">Cancel</button>
+      </form>
+      <div class="ad-sub">Open the Order Tracker, click its CA tab, and copy the address from the browser's address bar (it ends in gid= and a number).</div>`
+      : `<div>${now}</div><div class="ad-acts under"><button class="btn" type="button" data-ad="ord-open"${dis}>${o.set ? 'Change' : "Paste the CA tab's address"}</button></div>`;
+  }
+  return `<div class="ad-card">
+    <h3>China Order Tracker</h3>
+    <p class="ad-help">On hand reads the supplier's Order Tracker for packaging parts on the way: each open order's parts land on its ship date plus the supplier's usual days for its transport. The app downloads the CA tab and keeps only each order's invoice and PO numbers, words, status, dates, transport and quantity; it never shows or keeps the money. Everyone who can open the pipeline gets this address through the app, and the tracker itself is shared by link (its address is also in the public Order Tracker page).</p>
+    ${body}
+    ${adMsg('ord')}
+  </div>`;
+}
+function adminOrders(clear) {
+  if (AD.busy || !AD.ord) return;
+  let link = '';
+  if (clear) { if (!confirm("Clear the Order Tracker's address? On hand then counts nothing on the way.")) return; }
+  else {
+    link = String(AD.draft.ord || '').trim();
+    const id = (link.match(/\/d\/([A-Za-z0-9_-]{20,200})/) || [])[1];
+    if (!id) { AD.msg = { card: 'ord', bad: true, text: "Open the Order Tracker's CA tab and paste the address from the browser's address bar (it has /d/ in it)." }; AD.drawn = ''; renderAdmin(); return; }
+    if (!/[#?&]gid=\d+/.test(link)) { AD.msg = { card: 'ord', bad: true, text: "That address doesn't name a tab. Click the CA tab first, then copy the address (it ends in gid= and a number)." }; AD.drawn = ''; renderAdmin(); return; }
+    if (id === S.wb) { AD.msg = { card: 'ord', bad: true, text: "That's the WIZARD TREES workbook, not the Order Tracker." }; AD.drawn = ''; renderAdmin(); return; }
+  }
+  adminRun('ord', () => sb.rpc('pipeline_admin_order_tracker_set', { p_link: link }), d => {
+    AD.ordOpen = false; AD.draft.ord = ''; if (d && typeof d === 'object') AD.ord = d;
+    AD.msg = { card: 'ord', text: clear ? 'Cleared.' : 'Saved. On hand reads the Order Tracker from the next time it opens.' };
+    S.ordAt = 0;   // (this page reads it again next time On hand opens)
+  });
+}
 function adLog() {
   const rows = AD.log || [], shown = AD.logAll ? rows : rows.slice(0, 12);
   const body = shown.length ? `<div class="ad-logs">${shown.map(r => `<div class="ad-log"><span>${esc(edWhen(r.at))}</span><b>${esc(ADMIN.nameOf(r.email))}</b><div>${esc(ADMIN.describe(r))}</div></div>`).join('')}</div>`
@@ -12344,7 +12844,7 @@ function renderAdmin() {
   const host = $('ad-body'); if (!host) return;
   if (AD.admin && !AD.loading && Date.now() - AD.at > 60 * 1000) loadAdmin();   // opened, or back after a while: read again
   const key = JSON.stringify([AD.admin, AD.me, AD.editors, AD.settings, AD.log, AD.sync, AD.syncErr, AD.err, AD.busy, AD.busyWord, AD.msg, AD.edit,
-    AD.copyOpen, AD.syncOpen, AD.logAll, !AD.settings && AD.loading]);
+    AD.copyOpen, AD.syncOpen, AD.logAll, !AD.settings && AD.loading, AD.ord, AD.ordErr, AD.ordOpen]);
   if (key === AD.drawn && host.firstChild) return;   // nothing new: leave the page (and whatever is being typed) alone
   AD.drawn = key;
   if (AD.admin === null) { host.innerHTML = '<p class="bt-foot">Checking your access...</p>'; return; }
@@ -12353,7 +12853,7 @@ function renderAdmin() {
   if (!AD.settings || !AD.editors) { host.innerHTML = err || '<p class="bt-foot">Loading...</p>'; return; }
   // what is open in a <details> survives the redraw
   const open = [...host.querySelectorAll('details[data-k][open]')].map(d => d.dataset.k);
-  host.innerHTML = err + `<div class="ad-grid">${adSwitches()}${adEditors()}</div>${adSync()}${adLog()}`;
+  host.innerHTML = err + `<div class="ad-grid">${adSwitches()}${adEditors()}</div>${adSync()}${adOrders()}${adLog()}`;
   for (const k of open) { const d = host.querySelector(`details[data-k="${k}"]`); if (d) d.open = true; }
 }
 (() => {
@@ -12392,6 +12892,9 @@ function renderAdmin() {
       case 'sync-src-cancel': AD.syncOpen = ''; renderAdmin(); break;
       case 'sync-src-clear': adminSyncSource(b.dataset.job, true); break;
       case 'sync-compare': adminSyncCompare(b.dataset.job); break;
+      case 'ord-open': { AD.ordOpen = true; AD.draft.ord = ''; AD.msg = null; renderAdmin(); const i = root.querySelector('[data-ad-in="ord"]'); if (i) i.focus(); break; }
+      case 'ord-cancel': AD.ordOpen = false; renderAdmin(); break;
+      case 'ord-clear': adminOrders(true); break;
     }
   });
   // what is typed or picked lives in AD.draft, so a redraw puts it back
@@ -12408,6 +12911,7 @@ function renderAdmin() {
     const f = e.target.dataset.adForm;
     if (f === 'add') adminAdd(); else if (f === 'copy') adminSaveCopy(); else if (f === 'edit') adminSaveEditor(e.target.dataset.email || '');
     else if (f === 'src') adminSyncSource(e.target.dataset.job || '', false);
+    else if (f === 'ord') adminOrders(false);
   });
 })();
 
@@ -14648,7 +15152,8 @@ function render() {
   if (S.view === 'batches' && sb) { if (!S.labsAt && !S.labsErr) loadLabs(true); if (!S.trimsAt && !S.trimsErr) loadTrims(true); if (S.bat && !S.hvAt && !S.hvErr) loadHarvests(true); }
   if (S.view === 'week' && sb && S.batAt && !S.labsAt && !S.labsErr) loadLabs(true);   // the pickup check (batches already in from another page)
   if (S.view === 'inventory' && sb) { if (!S.invAt && !S.invErr) loadInventory(true); if (!S.batAt && !S.batErr) loadBatches(true); if (!S.trkAt && !S.trkErr) loadTracker(true); if (!S.trimsAt && !S.trimsErr) loadTrims(true); }
-  if (S.view === 'onhand' && sb) { if (!S.invAt && !S.invErr) loadInventory(true); if (!S.batAt && !S.batErr) loadBatches(true); if (!S.trkAt && !S.trkErr) loadTracker(true); if (!B2.flowAt && !b2FlowLoading) b2LoadFlow(true); if (!S.trimsAt && !S.trimsErr) loadTrims(true); }
+  if (S.view === 'onhand' && sb) { if (!S.invAt && !S.invErr) loadInventory(true); if (!S.batAt && !S.batErr) loadBatches(true); if (!S.trkAt && !S.trkErr) loadTracker(true); if (!B2.flowAt && !b2FlowLoading) b2LoadFlow(true); if (!S.trimsAt && !S.trimsErr) loadTrims(true);
+    if (!S.supAt && !S.supErr) loadSupplies(true); if (!S.ordAt) loadOrders(); }   // (packaging, step 4: the supply tab and the China orders)
   if (S.view === 'cogs' && sb && CG.ok && !CG.at) loadCogs(true);
   renderStatus();
   S.renderOk = true;
@@ -14801,12 +15306,13 @@ async function loadSupplies(quiet) {
   try {
     const got = await Promise.all(SUP_TABS.map(t => fetchCSV(t.gid, t.name, x => /TOTAL\s*QTY/i.test(x), '&headers=1')));
     ingestSupplies(got.map(g => g && g.text), Date.now(), got.some(g => g && g.partial));
+    S.supDistroPartial = !!(got[0] && got[0].partial);   // (On hand's packaging says when the DISTRO SUPPLY tab's hidden rows are missing)
     ED.readAt.supply = Date.now(); read = true;
     try { if (!S.sup.partial) localStorage.setItem(SUP_CACHE, JSON.stringify({ at: S.supAt, wb: S.wb, texts: got.map(g => g && g.text) })); } catch (_) {}
   } catch (e) {
     S.supErr = e.message || String(e);
   } finally { supLoading = false; }
-  if (S.view === 'supplies') render();
+  if (S.view === 'supplies' || S.view === 'onhand') render();
   if (read) edRead('supply', S.view === 'supplies');
 }
 // pipeline_batches is filled hourly; the page polls its one-row meta and reloads the rows only when a run changed them
@@ -15068,6 +15574,7 @@ function startApp() {
   if (S.view === 'week' || S.view === 'actuals') { loadTracker(true); loadBatches(true); }
   if (S.view === 'week') { loadTrims(true); loadMarks(true); }
   if (S.view === 'inventory') { loadInventory(true); loadTracker(true); loadBatches(true); loadTrims(true); }
+  if (S.view === 'onhand') loadSupplies(true);   // (packaging: a cached copy of the supply tab shows until this read)
   load(false);
   edStatus();
   adminCheck();   // the Admin tab (beta) shows only for pipeline admins
@@ -15079,6 +15586,7 @@ function startApp() {
     if (S.view === 'week' || S.view === 'actuals') { loadTracker(true); loadBatches(true); }
     if (S.view === 'week') { loadTrims(true); loadMarks(true); }
     if (S.view === 'inventory') { loadInventory(true); loadTracker(true); loadBatches(true); loadTrims(true); }
+    if (S.view === 'onhand') { loadSupplies(true); loadOrders(); }   // (the tracker at most every 10 minutes)
   }, 5 * 60 * 1000);
   setInterval(() => {
     renderStatus();
@@ -15102,7 +15610,8 @@ function startApp() {
       S.sel = todayISO(); S.week = nearestWeek(weekOf(S.sel)); if (S.view === 'week') render();
     }
     if (Date.now() - S.loadedAt > 2 * 60 * 1000) load(true);
-    if (S.view === 'supplies' && Date.now() - S.supAt > 2 * 60 * 1000) loadSupplies(true);
+    if ((S.view === 'supplies' || S.view === 'onhand') && Date.now() - S.supAt > 2 * 60 * 1000) loadSupplies(true);
+    if (S.view === 'onhand') loadOrders();   // (at most every 10 minutes)
     if (S.view === 'batches' && Date.now() - S.batAt > 2 * 60 * 1000) loadBatches(true);
     if (S.view === 'batches2' && Date.now() - S.batAt > 2 * 60 * 1000) { loadBatches(true); loadTrims(true); b2Labs(true); b2LoadMetrc(true); b2LoadFlow(true); }
     if ((S.view === 'week' || S.view === 'actuals') && Date.now() - S.trkAt > 2 * 60 * 1000) { loadTracker(true); loadBatches(true); }
@@ -15210,6 +15719,8 @@ document.addEventListener('click', e => {
     if (S.view === 'batches2' && S.batAt && Date.now() - S.batAt > 2 * 60 * 1000) loadBatches(true);
     if ((S.view === 'week' || S.view === 'actuals') && S.trkAt && Date.now() - S.trkAt > 2 * 60 * 1000) { loadTracker(true); loadBatches(true); }
     if (S.view === 'inventory' && S.invAt && Date.now() - S.invAt > 2 * 60 * 1000) loadInventory(true);
+    if (S.view === 'onhand' && S.supAt && Date.now() - S.supAt > 2 * 60 * 1000) loadSupplies(true);
+    if (S.view === 'onhand') loadOrders();   // (at most every 10 minutes)
     return;
   }
   if (b.dataset.sf) {
@@ -15260,6 +15771,7 @@ document.addEventListener('click', e => {
       if (S.view === 'week' || S.view === 'actuals') { loadTracker(false); loadBatches(true); }
       if (S.view === 'week') { loadTrims(false); loadMarks(false); }
       if (S.view === 'inventory') { loadInventory(false); loadTracker(false); loadBatches(true); loadTrims(false); }
+      if (S.view === 'onhand') { loadSupplies(true); loadOrders(true); }   // (packaging, step 4)
       break;
     case 'bt-fin': S.batFin = !S.batFin; savePref('pipeline.batches.fin', S.batFin ? '1' : ''); render(); break;
     case 'bt-vp': S.vpAll = !S.vpAll; savePref('pipeline.batches.vapes', S.vpAll ? '1' : ''); render(); break;

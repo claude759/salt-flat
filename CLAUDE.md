@@ -546,6 +546,37 @@ launch. The check fails if one of the three pieces is missing.
   estimate or no known share, and one line while the trim sheets or Metrc lots are still loading. On hand now also loads
   the trim sheets (`loadTrims`). These rules are Claude's assumptions apart from his three answers. No past days: the stock copy keeps only today's counts (a daily saved count would be a
   new table, applied from Gianni's computer if it reaches outside `pipeline_*`). Units and pounds only, never dollars.
+  **Step 4: packaging parts** (Gianni, 2026-11-24, "Yes, start step 4", and his answers the same day: part counts may show
+  on the page, never prices; parts on the way come from the supplier's Order Tracker, landing on the ship date plus the
+  supplier's usual days; parts the supply tab can't place are left out and listed). A Packaging section under "All packed
+  units": a row per unit type (3.5g jar, pouch, 5-pack and 1g pre-roll parts) with how many units the parts on the DISTRO
+  SUPPLY tab can pack (TOTAL QTY, every site together), today and each week; it opens to each part and, for the strains
+  planned to pack, their own labels. What one unit takes is `OH.PARTS` / `OH.SPARTS` (the tab's own row names): a jar takes
+  a jar, a lid, a verification sticker, a 16th of a 16ct master case (or a 32nd of a 32ct), its insert, its strain's jar label
+  (the "3.5g - Jar Label" rows, else "3.5g - Label") and a 16th of its case label; a pouch a budtender bag and a 2.1 x 1
+  batch label; a 5-pack a pre-roll jar, a lid, 5 cones, a tenth of a case and insert, and its strain's 5pk label; a 1g a cone,
+  a tenth of a case and insert, and its strain's 1g label. A strain's pre-labeled pre-roll jars ("Black Magic - 5pk -
+  Preroll Jar", the last of an order no longer made) go first and stand for the jar and its label (`OH.PRE_FOR`). Not
+  counted, said under Can't tell: the 1g tube, cap and seal, the jar's QR sticker, the 5-pack's second sticker and seal,
+  1.5g pre-rolls (their parts aren't settled), how many pouches a budtender case pack holds, a planned strain with no label
+  row. Planned packing (On hand's own planned lines, ≈ when estimated) takes one unit's parts on its day; a part with too
+  few is short that day (Runs short, ≈ when it rests on an earlier estimate too). Orders: `ORD` (ORDER TRACKER PARSER
+  block, pure) reads the tracker's CA tab (it downloads the whole tab, keeps only invoice, PO, words, status, ship and
+  delivery dates, transport and quantity: never shows or caches the money), maps each open order's words to parts (jar
+  bundles, 5-pack and 1g bundles, cones, master-case orders, strain label orders split by the strains they name, security
+  labels as verification stickers; never the "x 5" of "0.7g x 5", a note in brackets, an AIO or QR label, seals, or a line
+  for another state or "Ship to" somewhere else, which is listed), counts a split order's shipments (PO -1, -2) and not the
+  whole as well, and lands them on the ship date plus the median days the supplier's delivered orders took for that
+  transport (ocean 25, air 7, express 4 on 2026-11-24; 3 or more needed, else every transport's). An order still being
+  made is ≈ and ships today at the earliest; one shipped past its usual day lands tomorrow (≈) until the day 9 in 10 are
+  here by; past that (or past a delivery date) and not marked delivered, it lands tomorrow (≈) only when the supply tab
+  holds less of one of its parts than it brings (so it can't be counted there yet), else it may already be counted and
+  isn't added; both are listed, as are orders with no ship date or words it can't place. The tracker's address is pasted
+  on the Admin page (China Order Tracker card, the CA tab's address with its gid), kept in `pipeline_order_source`
+  (`supabase/pipeline-orders.sql`, via the deploy) and handed by `pipeline_order_tracker()` only to accounts that may open
+  the pipeline, so pipeline.html never carries the id. That doesn't make the tracker private: the same id is in the
+  public order-tracker.html. Other uses of parts (STIIIZY cases, mylars) aren't known, so only planned packing takes them.
+  These rules are Claude's assumptions apart from his answers.
 - **COGS page** (beta; Gianni, 2026-11-17: "can we have a page for COGS? Let's start with flower COGS for each facility
   ... track non-packaging costs over the grow cycle up to harvest and divide things like labor, utilities, rent ect over
   the number of rooms", "I want this to be a page on the production pipeline app"). `data-view="cogs"`, hidden until
