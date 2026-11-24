@@ -1,9 +1,10 @@
 -- Cultivation app (cultivation.html): the flower rooms of the four grows (23rd St, 25th St, 15th St, Olympic), each
 -- room's zones (strain and lights per table), the task calendar check-offs, and what Metrc says is in each room.
 --
--- Who:  any signed-in Wizard Trees account may OPEN the page (is_staff()); only accounts on cult_editors (and the
---       universal admins) may CHANGE anything (zones, a room's flip date, its map, strain names, ticking a task).
---       The editors list is seeded out-of-band (no email addresses in this public repo).
+-- Who:  any signed-in Wizard Trees account (is_staff()) may open the page and change anything on it (Gianni,
+--       2026-11-24: "My app doesn't really need login stuff yet"). The one Google sign-in stays: the page and this repo
+--       are public, and the sign-in is what keeps the room maps and Metrc's numbers private. cult_can_edit() and
+--       cult_can_work() stay as the place roles come back; cult_editors and cult_crew are kept, unused.
 -- Metrc: a job on Gianni's Mac (~/ar-automation/cult-metrc-sync.mjs, every 3 hours, read-only on Metrc) sends the
 --       flowering plants of each license, one row per room (Metrc location), strain and flowering day, plus the
 --       plants harvested or destroyed in the last 120 days, through cult_metrc_save() (token-gated; the token hash
@@ -34,16 +35,15 @@ $$;
 revoke all on function public.cult_can_view() from public, anon;
 grant execute on function public.cult_can_view() to authenticated;
 
+-- no roles yet (Gianni 2026-11-24): everyone who can open the page can change it. Was: universal admins + cult_editors.
 create or replace function public.cult_can_edit()
 returns boolean language sql stable security definer set search_path = public as $$
-  select public.is_staff() and (public.is_universal_admin()
-      or exists (select 1 from public.cult_editors e where e.email = public.cult_jwt_email()));
+  select public.cult_can_view();
 $$;
 revoke all on function public.cult_can_edit() from public, anon;
 grant execute on function public.cult_can_edit() to authenticated;
 
--- the crew (growers): they tick, skip, note and move tasks, add one-off tasks and log runoff. Editors keep everything
--- else and manage this list in the app (Access). Gianni 2026-11-24: the growers have Wizard Trees Google logins.
+-- the crew (growers) list from step 2, unused since roles were dropped the same day (kept so roles can come back).
 create table if not exists public.cult_crew (
   email     text primary key check (email = lower(email) and email like '%@wizardtrees.com'),
   added_at  timestamptz not null default now(),
@@ -54,8 +54,7 @@ revoke all on table public.cult_crew from public, anon, authenticated;
 
 create or replace function public.cult_can_work()
 returns boolean language sql stable security definer set search_path = public as $$
-  select public.cult_can_edit()
-      or (public.is_staff() and exists (select 1 from public.cult_crew c where c.email = public.cult_jwt_email()));
+  select public.cult_can_view();
 $$;
 revoke all on function public.cult_can_work() from public, anon;
 grant execute on function public.cult_can_work() to authenticated;
@@ -555,32 +554,7 @@ end $$;
 revoke all on function public.cult_runoff_delete(bigint) from public, anon;
 grant execute on function public.cult_runoff_delete(bigint) to authenticated;
 
--- Access (editors): the crew list, the editors, and the Wizard Trees accounts to pick from
-create or replace function public.cult_crew_list()
-returns jsonb language plpgsql stable security definer set search_path = public as $$
-begin
-  if not public.cult_can_edit() then raise exception 'not allowed'; end if;
-  return jsonb_build_object(
-    'crew', coalesce((select jsonb_agg(jsonb_build_object('email', c.email, 'added_at', c.added_at, 'added_by', c.added_by) order by c.email) from public.cult_crew c), '[]'::jsonb),
-    'editors', coalesce((select jsonb_agg(e.email order by e.email) from public.cult_editors e), '[]'::jsonb),
-    'staff', coalesce((select jsonb_agg(jsonb_build_object('email', lower(u.email), 'name', coalesce(u.raw_user_meta_data->>'full_name', u.raw_user_meta_data->>'name')) order by lower(u.email))
-                         from auth.users u where u.email_confirmed_at is not null and lower(u.email) like '%@wizardtrees.com'), '[]'::jsonb));
-end $$;
-revoke all on function public.cult_crew_list() from public, anon;
-grant execute on function public.cult_crew_list() to authenticated;
-
-create or replace function public.cult_crew_set(p_email text, p_on boolean)
-returns jsonb language plpgsql security definer set search_path = public as $$
-declare e text := lower(btrim(coalesce(p_email, '')));
-begin
-  if not public.cult_can_edit() then raise exception 'not allowed'; end if;
-  if e !~ '^[a-z0-9._%+-]+@wizardtrees\.com$' then raise exception 'a Wizard Trees email address'; end if;
-  if p_on then
-    insert into public.cult_crew (email, added_by) values (e, public.cult_jwt_email()) on conflict (email) do nothing;
-  else
-    delete from public.cult_crew where email = e;
-  end if;
-  return jsonb_build_object('ok', true);
-end $$;
-revoke all on function public.cult_crew_set(text, boolean) from public, anon;
-grant execute on function public.cult_crew_set(text, boolean) to authenticated;
+-- The Access list (the crew and the editors, picked from the Wizard Trees accounts) was dropped 2026-11-24 with the
+-- roles: anyone who can open the page can do everything on it (see cult_can_edit above).
+drop function if exists public.cult_crew_list();
+drop function if exists public.cult_crew_set(text, boolean);

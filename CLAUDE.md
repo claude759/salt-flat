@@ -705,8 +705,8 @@ launch. The check fails if one of the three pieces is missing.
   `node ~/claude-sql/run-sql-ca.mjs supabase/cultivation.sql`, never by the Pipeline deploy):
   - `cult_rooms` (a row per flower room: site, Metrc license and location, harvest day, typed flip date, weekly targets,
     task calendar, map), `cult_zones` (strain, lights and what it is grown for, per table), `cult_task_done` and
-    `cult_strain_codes`. Any Wizard Trees account can open the page (`is_staff()`); only `cult_editors` (seeded out of
-    band) and the universal admins can change anything, and only through the `cult_*` functions.
+    `cult_strain_codes`. Any Wizard Trees account can open the page and change anything on it (`is_staff()`; no roles
+    yet, below), only through the `cult_*` functions.
   - `cult_metrc_plants` and `cult_metrc_meta`: Metrc's flowering plants per license, location, strain and flowering day,
     plus what was harvested or destroyed in the last 120 days (by that day, and again as `left` by the day those plants
     went into flower, so a harvest never moves a crop's flip). Written every 3 hours by
@@ -720,7 +720,7 @@ launch. The check fails if one of the three pieces is missing.
 ### Decisions already made (add new ones here)
 
 - **Metrc numbers strains at 23rd, 15th and Olympic** (2504 = Zangbanger). Names come from the sheet's GENETICS 3.0 list
-  (source `sheet`); an editor can name or rename a number in the app (`confirmed`). 25th uses names in Metrc.
+  (source `sheet`); anyone can name or rename a number in the app (`confirmed`). 25th uses names in Metrc.
 - **Metrc has no zones.** Sublocations are switched off at all four licenses (checked 2026-11-24). A plant's zone is its
   strain's zone as set in the app; a strain on two zones is split by their lights.
 - **Zones are remappable** (Gianni, 2026-11-24: "I'm not actually sure about Zones. Let's make the zones remappable"):
@@ -746,14 +746,17 @@ launch. The check fails if one of the three pieces is missing.
   warnings), lights per table (the diagram's fixtures, else typed under Arrange zones), `&zone=N` links, and Print door
   sheet (dates, map, zones with their table, weekly targets, the task calendar with tick boxes, note lines) with weekly
   runoff log pages (each day x zone, blank columns), like its flower run sheet. Strain names print as the page shows them.
-  Step 2 shipped 11/24 (Gianni: the growers have Wizard Trees logins): the **crew** (`cult_crew`, picked by an editor
-  under Access from the Wizard Trees accounts) tick tasks, skip them, add a note or move one to another day
-  (`cult_task_done.status` open / done / skipped, `note`, `moved_to`), add one-off tasks (`cult_room_tasks`, deleted by
-  whoever added them or an editor) and log runoff (`cult_runoff`: day, zone, cup ml, feed pH and EC, tray ml, runoff pH
-  and EC; runoff % = tray / cup, worked out by the database; no future days; removed by an editor, or by whoever logged
-  it within a day). Editors keep zones, flips, maps, strain names and room notes (`cult_rooms.notes`). Steps 3-5
-  (harvest lots and trim reports from the pipeline tables; run planning; veg and dry rooms, Growlink, labels) wait on
-  Gianni's answers.
+  Step 2 shipped 11/24: tick tasks, skip them, add a note or move one to another day (`cult_task_done.status` open /
+  done / skipped, `note`, `moved_to`), add one-off tasks (`cult_room_tasks`) and log runoff (`cult_runoff`: day, zone,
+  cup ml, feed pH and EC, tray ml, runoff pH and EC; runoff % = tray / cup, worked out by the database; no future days),
+  and room notes (`cult_rooms.notes`). Step 3 (harvests and trims from the pipeline tables) is being built; steps 4-5
+  (run planning; veg and dry rooms, Growlink, labels) wait on Gianni's answers.
+- **No roles yet** (Gianni, 2026-11-24: "My app doesn't really need login stuff yet. I'm just trying to create cleaner
+  more automated Room pages"): one Google sign-in, then anyone at Wizard Trees can do everything on the page. The
+  sign-in stays because the page and this repo are public and it keeps the room maps and Metrc's numbers private. Step
+  2's crew list and Access were dropped the same day (`cult_editors` and `cult_crew` kept, unused; `cult_can_edit()` and
+  `cult_can_work()` are where roles would come back). Build no login, role or team features until he asks; aim each
+  change at cleaner, more automated room pages.
 - **Tasks.** A tick belongs to the cycle it was made in and still counts after the flip is corrected by up to 3 weeks;
   an untick clears it under every date it is stored under. A past task not ticked shows as not ticked for 3 days, then
   just past.

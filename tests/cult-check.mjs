@@ -291,10 +291,18 @@ assert.ok(!CM.comingUp(CM.cycle(room, P, today), T3, '2026-10-15', 7).some(t => 
 assert.ok(!CM.attention(CM.cycle(room, P, today), T3, '2026-10-17', [], []).some(a => /CAL 58/.test(a.text)), 'nor missed'); n++;
 assert.equal(CM.runoffPct({ cup_ml: 500, tray_ml: 100 }), 20); assert.equal(CM.runoffPct({ cup_ml: 0, tray_ml: 5 }), null); n += 2;
 assert.deepEqual(CM.latestRunoff([{ zone: 2, day: '2026-11-24' }, { zone: 1, day: '2026-11-24' }, { zone: 2, day: '2026-11-20' }]).map(r => [r.zone, r.day]), [[1, '2026-11-24'], [2, '2026-11-24']]); n++;
-for (const f of ['cult_task_set', 'cult_room_task_add', 'cult_room_task_set', 'cult_runoff_add', 'cult_runoff_delete', 'cult_crew_list', 'cult_crew_set'])
+for (const f of ['cult_task_set', 'cult_room_task_add', 'cult_room_task_set', 'cult_runoff_add', 'cult_runoff_delete'])
   ok(html.includes(`sb.rpc('${f}'`), `the page uses ${f}`);
 ok(/canWork = !!\(S\.me && \(S\.me\.work \|\| S\.me\.edit\)\)/.test(html), 'the crew (work) can tick, the editors too');
-ok(/list="staff-list"/.test(html) && /list="kind-list"/.test(html) && /list="ro-zones"/.test(html), 'the new pick-lists are typable');
+ok(/list="kind-list"/.test(html) && /list="ro-zones"/.test(html), 'the new pick-lists are typable');
+// no roles yet (Gianni 2026-11-24: "My app doesn't really need login stuff yet"): one sign-in, then everyone can do everything
+ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the page');
+{
+  const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
+  const body = f => (sql.match(new RegExp(`function public\\.${f}\\(\\)[\\s\\S]*?\\$\\$([\\s\\S]*?)\\$\\$`)) || [])[1] || '';
+  ok(/^\s*select public\.cult_can_view\(\);\s*$/.test(body('cult_can_edit')) && /^\s*select public\.cult_can_view\(\);\s*$/.test(body('cult_can_work')), 'editing and ticking are open to whoever can open the page');
+  ok(/drop function if exists public\.cult_crew_list\(\)/.test(sql) && !/create or replace function public\.cult_crew_list/.test(sql), 'the list of Wizard Trees accounts is no longer handed out');
+}
 
 // page wiring the review asked for
 ok(!/loadAll\(true\);\s*renderRoom\(V\.room\)/.test(html), 'after a save the room is redrawn from the reloaded rooms');
