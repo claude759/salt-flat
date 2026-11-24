@@ -49,4 +49,6 @@ language sql stable security definer set search_path=public as $$
   where visit_date >= current_date - 400
   order by visit_date desc;
 $$;
-grant execute on function public.ba_activity_feed() to anon, authenticated;
+-- 2026-11-24: no longer public (supabase/ba-close-report-feed.sql); a re-run must not open it again
+revoke all on function public.ba_activity_feed() from public, anon, authenticated;
+grant execute on function public.ba_activity_feed() to service_role;
