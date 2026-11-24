@@ -795,7 +795,8 @@ launch. The check fails if one of the three pieces is missing.
   and Growlink's set point; a click lists its sensors and the last day's range. A tile goes amber more than 2°F, 5%
   humidity, 0.2 kPa or 200 ppm CO2 off the plan, or when the light level is at odds with the schedule 30 minutes after a
   switch (under 1,000 lux with the lights on, over 500 off); 30 minutes of that, or readings that stop, go to Needs
-  attention. These tolerances are Claude's assumptions, not confirmed by Gianni. Readings are judged only while the room
+  attention. Gianni confirmed the 2°F / 5% / 0.2 kPa / 200 ppm margins (2026-11-24: "Those are fine"); the light-level
+  limits are still Claude's assumption. Readings are judged only while the room
   is in flower; over 20 minutes old they show as old and are never judged. Needs attention names what stopped: the
   page's own reads, the job on Gianni's Mac, or Growlink. The page reads the open room's row every 5 minutes (only the
   log rows since its last read), and again when a room is reopened with an older copy.
