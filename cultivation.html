@@ -10,7 +10,9 @@
 <!--
   Cultivation app: the flower rooms of the four grows, one page per room, replacing the [Location] Room # tabs of the
   cultivation sheet. What Metrc says is in each room (plants, strains, the days they went into flower) comes from
-  cult_metrc_plants, copied every 3 hours by ~/ar-automation/cult-metrc-sync.mjs on Gianni's Mac. The rooms, their
+  cult_metrc_plants, copied every 3 hours by ~/ar-automation/cult-metrc-sync.mjs on Gianni's Mac. Each room's harvests
+  and trims come from the Production Pipeline's copies of Metrc's harvests and the trim sheets, through
+  cult_room_history() (pounds only). The rooms, their
   zones, their weekly targets and task calendars, and the room maps traced from the premises / lighting diagrams live
   in cult_rooms and cult_zones (supabase/cultivation.sql). Nothing private is in this file: every number and name is
   read from the database after a Wizard Trees sign-in. Check before every push: node tests/cult-check.mjs
@@ -262,6 +264,37 @@
   .muted{color:var(--muted)}
   .faint{color:var(--faint)}
   .empty{color:var(--muted);padding:24px;text-align:center}
+  /* harvests: a row per crop (a button), a click opens its trim report under it, at the panel's width */
+  table.t th.n{text-align:right}
+  .hvl{font-size:13px}
+  .hvh,.hvr{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,.8fr) minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) minmax(0,.8fr);gap:8px;align-items:center;padding:7px 8px;border-bottom:1px solid var(--line)}
+  .hvh{font-weight:600;color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;padding-top:2px}
+  .hvl .n{text-align:right;font-variant-numeric:tabular-nums}
+  button.hvr{width:100%;background:none;border:0;border-bottom:1px solid var(--line);border-radius:0;text-align:left;font:inherit;color:inherit;cursor:pointer}
+  button.hvr:hover,button.hvr[aria-expanded="true"]{background:var(--panel2)}
+  button.hvr[aria-expanded="true"]{box-shadow:inset 3px 0 0 var(--accent)}
+  .hvr.plan{color:var(--muted);border-bottom-style:dashed}
+  .hvl .warn{color:var(--amber)}
+  .yb{display:block;height:3px;width:56px;max-width:100%;margin:3px 0 0 auto;border-radius:2px;background:var(--line)}
+  .yb i{display:block;height:100%;border-radius:2px;background:var(--accent)}
+  .hvr.plan .yb i{background:var(--line2)}
+  .hvd{padding:8px 8px 12px;background:var(--panel2);border-bottom:1px solid var(--line)}
+  .kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 8px}
+  .kpis div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 9px;min-width:0}
+  .kpis small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .kpis b{display:block;font-size:16px;font-weight:650}
+  .kpis span{display:block;color:var(--muted);font-size:12px}
+  .hvd .up{color:var(--accent)} .hvd .down{color:var(--amber)} .hvd .flat{color:var(--muted)}
+  .hvd .wrapx{background:var(--panel);border-radius:8px;margin-top:6px}
+  .hvl .ph{display:none}   /* a crop's state in the Flower cell, on phones only (before the phone rules, which show it) */
+  @media (max-width:560px){
+    .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .hvh,.hvr{grid-template-columns:minmax(0,1.6fr) minmax(0,.9fr) minmax(0,1.1fr) minmax(0,1fr)}
+    .hvl .hc3,.hvl .hc6,.hvd .hcb,.hvd .hct{display:none}
+    .hvl .ph{display:inline}
+    .hvl .st{grid-column:span 2}
+    .hvl .hl0{display:none}
+  }
   @media (max-width:640px){
     main{padding:12px}
     .bar{padding:8px 12px}
@@ -837,8 +870,264 @@ const CM = (() => {
     return d;
   }
 
+  // ----- harvests and trims (step 3). One room's Metrc harvests (the pipeline's copy, pipeline_harvests) and trim sheet
+  // lines (pipeline_trims), read through cult_room_history(), put together crop by crop. Flower is bigs + littles (Wizard
+  // Trees' pounds trimmed); trim leaf is its own number. Pounds and grams only, never dollars.
+  const LB = 453.59237;
+  const lbs = g => g / LB;
+  const numCode = c => { const s = String(c == null ? '' : c).trim(); return /^\d{3,6}$/.test(s) ? s : null; };
+  // a strain as written on a trim sheet or in Metrc -> one key: "Zang Banger" = "ZANGBANGER", "#17" and "(...)" dropped,
+  // the short names Metrc harvests carry, the trim sheets' M8 and Medusa = Voodoo, Jungle Juice = Antidote, and in a cross
+  // ("Smoothie x Zan") each parent's short name (the pipeline's: ZB Zangbanger, DM Dark Matter, Zang or Zan Zangria ...)
+  const WORD = { ZB: 'ZANGBANGER', DM: 'DARKMATTER', LL: 'LIMELIGHT', NY: 'NEWYORKER', BM: 'BLACKMAGIC', SM: 'SMOOTHIE', ZANG: 'ZANGRIA', ZAN: 'ZANGRIA',
+    BL: 'BLACKLIGHT', BD: 'BRITISHDELIGHT', TP: 'TEAPARTY', M8: 'VOODOO', MEDUSA: 'VOODOO', JUNGLEJUICE: 'ANTIDOTE' };
+  const WHOLE = { ...WORD, SMOZANG: 'SMOOTHIEXZANGRIA' };
+  const ROOMRE = /\(?\s*\broom\s*([0-9a-z])\b\s*\)?/i;   // "Phenos (Room C)", "Room C Phenos": a line the sheet files under another room
+  const skey = s => {
+    const t = String(s == null ? '' : s).replace(ROOMRE, ' ').replace(/\([^)]*\)/g, ' ').replace(/#\s*\d+/g, ' ').trim();
+    if (/\s[x×]\s/i.test(t)) return t.split(/\s+[x×]\s+/i).map(p => { const k = key(p); return WORD[k] || k; }).join('X');
+    const k = key(t); return WHOLE[k] || k;
+  };
+  const roomLine = k => /^(PHENOS?|FLOOR[A-Z]*)$/.test(k);   // Phenos, Floorbuds (and "Floordbuds"): the room's, no strain
+  const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+  const pctOf = (a, b) => a == null || b == null || !b ? null : (a - b) / Math.abs(b) * 100;
+  const DRYING = 14, WAITING = 45, PARTIAL = 1.2, DRY_USUAL = 10;
+  // H: { harvests, trims, trims_from, site_harvests } from cult_room_history(); opts: { license, codes, today, room, site }
+  // (room: the room's key, "1" or "A"). Which room a trim belongs to: the sheet's ROOM, except at Olympic, whose sheets
+  // number the trims, not the rooms: there a tab goes to the room whose harvest 3 to 30 days before it shares the most of
+  // its strain numbers (more than the sheet's room, and at least half of them). A line that names a room ("Phenos (Room
+  // C)") goes to that room when it had a harvest 3 to 30 days before (its lights stay with the tab's room).
+  // A tab whose every line shows again, the same, on a later tab of the room within 3 weeks is a copy and counts once (the
+  // later one). A line with no bigs or littles that repeats the trim of the same strain on an earlier tab within 3 weeks
+  // (a tab that carries on a partial one) counts once too. Each tab goes to the room's latest harvest day 3 to 30 days
+  // before it starts (else 0 to 2 days). A tab under 1.2 lb per light is partial. A crop is the room's harvest days, cut
+  // where more than 3 weeks pass; it is trimmed once a full tab of its last harvest day is on the sheets; two full tabs
+  // for one harvest day are a mix-up to check and give no numbers.
+  function history(H, opts) {
+    const o = opts || {}, today = isDay(o.today) ? o.today : null;
+    const myRoom = o.room == null ? null : String(o.room).toUpperCase();
+    // a harvest's strain: Metrc's strain number (a name at 25th), or a list of them for a harvest of several strains
+    const nameOf = c => strainOf(o.license, c, o.codes).name;
+    const hvs = [];
+    for (const h of (H && H.harvests) || []) {
+      if (!h || !isDay(h.day) || !(+h.wet_g > 0)) continue;
+      const name = String(h.name || ''), parts = name.split('-');
+      const list = String(h.code == null ? '' : h.code).split(',').map(x => x.trim()).filter(Boolean);
+      const codes = list.map(numCode).filter(Boolean), names = list.filter(x => !numCode(x));
+      const x = { name, day: h.day, code: list.length === 1 ? codes[0] || null : null, codes, rawAll: list.join(','), rawCode: list.length === 1 && !codes.length ? list[0] : null,
+        strain: h.strain, mid: parts.length > 2 ? parts.slice(1, -1).join('-') : '', plants: +h.plants > 0 ? +h.plants : 0, wet: +h.wet_g,
+        packaged: +h.packaged_g > 0 ? +h.packaged_g : 0, finished: isDay(h.finished) ? h.finished : null, dry: h.dry_room ? String(h.dry_room) : null };
+      x.label = list.length > 1 ? (String(h.strain || '').trim() || list.map(v => numCode(v) ? nameOf(v) : v).join(', '))
+        : x.code ? nameOf(x.code) : x.rawCode || String(h.strain || '').trim() || x.mid || name;
+      x.keys = [...new Set([list.length > 1 ? null : x.label, x.rawCode, x.mid, ...names, ...codes.map(nameOf)].filter(Boolean).map(skey).filter(Boolean))];
+      const v = x.strain ? skey(x.strain) : '';
+      x.vkey = v && !x.keys.includes(v) ? v : null;   // the pipeline job's name for it, from the names on its packages
+      hvs.push(x);
+    }
+    // the license's harvest days by room (this room's and, from site_harvests, the others'), for placing tabs
+    const roomDays = new Map();
+    const addDay = (rm, day, code) => {
+      if (!isDay(day)) return;
+      if (!roomDays.has(rm)) roomDays.set(rm, new Map());
+      const m = roomDays.get(rm); if (!m.has(day)) m.set(day, new Set());
+      for (const c of String(code == null ? '' : code).split(',')) { const n = numCode(c); if (n) m.get(day).add(n); }
+    };
+    if (myRoom != null) for (const h of hvs) addDay(myRoom, h.day, h.rawAll);
+    for (const r of (H && H.site_harvests) || []) if (Array.isArray(r)) addDay(String(r[0] == null ? '' : r[0]).toUpperCase(), r[1], r[2]);
+    const lastBefore = (rm, start, lo, hi) => { const m = roomDays.get(rm); if (!m) return null; let best = null; for (const d of m.keys()) { const n = diff(d, start); if (n >= lo && n <= hi && (!best || d > best)) best = d; } return best; };
+    // tabs: lines of one tab and room block
+    const blocks = new Map();
+    for (const t of (H && H.trims) || []) {
+      if (!t || !isDay(t.start)) continue;
+      const id = `${t.file}|${t.tab}|${t.block}`;
+      let B = blocks.get(id);
+      if (!B) blocks.set(id, B = { id, tab: String(t.tab || '').trim(), start: t.start, end: isDay(t.end) ? t.end : t.start, lights: 0, sheetRoom: String(t.room == null ? '' : t.room).trim().toUpperCase(), raw: [] });
+      if (t.start < B.start) B.start = t.start;
+      if (isDay(t.end) && t.end > B.end) B.end = t.end;
+      if (+t.lights > B.lights) B.lights = +t.lights;
+      B.raw.push(t);
+    }
+    const tabs = [];
+    for (const B of blocks.values()) {
+      let room = B.sheetRoom;
+      if (myRoom != null && o.site === 'O') {   // Olympic: by strain numbers
+        const codes = new Set(B.raw.map(t => numCode(t.code)).filter(Boolean));
+        const score = rm => { const d = lastBefore(rm, B.start, 3, 30); return d ? [...codes].filter(c => roomDays.get(rm).get(d).has(c)).length : -1; };
+        const sc = [...roomDays.keys()].map(rm => [rm, score(rm)]), bs = Math.max(-1, ...sc.map(x => x[1]));
+        const tops = sc.filter(x => x[1] === bs).map(x => x[0]);
+        // one clear best, better than the sheet's room and holding at least half its numbers; a tie stays where the sheet
+        // put it, so every room's page gives the same answer
+        if (tops.length === 1 && tops[0] !== room && bs > 0 && bs > score(room) && bs * 2 >= codes.size) { B.movedFrom = room; room = tops[0]; }
+      }
+      const T = { id: B.id, tab: B.tab, start: B.start, end: B.end, lights: 0, lines: [], movedFrom: B.movedFrom || null };
+      for (const t of B.raw) {
+        const typed = String(t.strain == null ? '' : t.strain).replace(/\s+/g, ' ').trim();
+        const m = ROOMRE.exec(typed);
+        let lineRoom = room, moved = false;
+        if (m && myRoom != null) { const nr = m[1].toUpperCase(); if (nr !== room && lastBefore(nr, B.start, 3, 30)) { lineRoom = nr; moved = true; } }
+        if (myRoom != null && lineRoom !== myRoom) continue;
+        const b = +t.bigs_g > 0 ? +t.bigs_g : 0, l = +t.littles_g > 0 ? +t.littles_g : 0, tr = +t.trim_g > 0 ? +t.trim_g : 0;
+        if (!moved && +t.lights > T.lights) T.lights = +t.lights;
+        if (b + l + tr <= 0) continue;
+        const strain = m && (moved || m[1].toUpperCase() === room) ? typed.replace(ROOMRE, ' ').replace(/\s+/g, ' ').trim() || typed : typed;
+        T.lines.push({ strain, code: numCode(t.code), bigs: b, littles: l, trim: tr, k: key(strain), sk: skey(strain), counted: true, movedIn: moved ? B.sheetRoom : null });
+      }
+      if (T.lines.length) tabs.push(T);
+    }
+    tabs.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const same = (x, y) => x.k === y.k && Math.abs(x.bigs - y.bigs) < 0.5 && Math.abs(x.littles - y.littles) < 0.5 && Math.abs(x.trim - y.trim) < 0.5;
+    tabs.forEach((T, i) => {
+      const U = tabs.slice(i + 1).find(U => diff(T.start, U.start) <= 21 && T.lines.every(x => U.lines.some(y => same(x, y))));
+      if (U) { T.repeatOf = U.tab; T.repeatOfId = U.id; }
+    });
+    tabs.forEach((U, j) => {
+      if (U.repeatOf) return;
+      for (const y of U.lines) {
+        if (y.bigs > 0 || y.littles > 0) continue;
+        const P = tabs.slice(0, j).find(T => !T.repeatOf && diff(T.start, U.start) <= 21 && T.lines.some(x => x.k === y.k && x.bigs + x.littles > 0 && Math.abs(x.trim - y.trim) < 0.5));
+        if (P) { y.counted = false; y.dupOf = P.tab; }
+      }
+    });
+    for (const T of tabs) {
+      const L = T.lines.filter(x => x.counted);
+      T.bigs = L.reduce((a, x) => a + x.bigs, 0); T.littles = L.reduce((a, x) => a + x.littles, 0); T.trim = L.reduce((a, x) => a + x.trim, 0);
+      T.flower = T.bigs + T.littles;
+      T.perLight = T.lights > 0 ? lbs(T.flower) / T.lights : null;
+      T.partial = T.perLight != null && T.perLight < PARTIAL;
+      T.full = T.perLight != null && T.perLight >= PARTIAL;
+    }
+    // crops
+    const days = [...new Set(hvs.map(h => h.day))].sort();
+    const crops = [];
+    for (const d of days) {
+      const c = crops[crops.length - 1];
+      if (c && diff(c.last, d) <= 21) { c.days.push(d); c.last = d; } else crops.push({ days: [d], first: d, last: d, tabs: [] });
+    }
+    const loose = [];
+    for (const T of tabs) {
+      if (T.repeatOf) continue;
+      const pick = (lo, hi) => days.filter(x => diff(x, T.start) >= lo && diff(x, T.start) <= hi).pop();
+      const d = pick(3, 30) || pick(0, 2);
+      if (!d) { loose.push(T); continue; }
+      T.harvestDay = d; T.dryDays = diff(d, T.start);
+      crops.find(c => c.days.includes(d)).tabs.push(T);
+    }
+    for (const T of loose) crops.push({ days: [], first: T.start, last: null, tabs: [T], noHarvest: true });
+    crops.sort((a, b) => (a.first < b.first ? -1 : a.first > b.first ? 1 : 0));
+    const from = isDay(H && H.trims_from) ? H.trims_from : null;
+    for (const c of crops) {
+      c.harvests = hvs.filter(h => c.days.includes(h.day)).sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : b.wet - a.wet));
+      c.plants = c.harvests.reduce((a, h) => a + h.plants, 0);
+      c.wet = c.harvests.reduce((a, h) => a + h.wet, 0);
+      c.packaged = c.harvests.reduce((a, h) => a + h.packaged, 0);
+      c.finished = c.harvests.length && c.harvests.every(h => h.finished) ? c.harvests.map(h => h.finished).sort().pop() : null;
+      c.dryRooms = [...new Set(c.harvests.map(h => h.dry).filter(Boolean))];
+      c.wetSuspect = c.harvests.filter(h => h.packaged > h.wet * 0.5).map(h => h.name);
+      const L = c.tabs.flatMap(T => T.lines.filter(x => x.counted));
+      c.bigs = L.reduce((a, x) => a + x.bigs, 0); c.littles = L.reduce((a, x) => a + x.littles, 0); c.trim = L.reduce((a, x) => a + x.trim, 0);
+      c.flower = c.bigs + c.littles;
+      c.lights = c.tabs.reduce((a, T) => Math.max(a, T.lights || 0), 0) || null;
+      // two full tabs of one harvest day that share a strain are a mix-up (a copy, or another room's); two that split the
+      // strains between them are one trim
+      const fulls = new Map();
+      for (const T of c.tabs) if (T.full && T.harvestDay) fulls.set(T.harvestDay, (fulls.get(T.harvestDay) || []).concat(T));
+      c.double = null;
+      for (const v of fulls.values()) for (let i = 0; i < v.length && !c.double; i++) for (let j = i + 1; j < v.length && !c.double; j++)
+        if (v[i].lines.some(x => x.bigs + x.littles > 0 && !roomLine(x.sk) && v[j].lines.some(y => y.k === x.k && y.bigs + y.littles > 0))) c.double = [v[i].tab, v[j].tab];
+      // trimmed: a tab on or after the crop's last harvest day that matters (the latest holding a tenth of its plants, so a
+      // few plants cut late don't hold it back), and enough on the sheets: 1.2 lb per light, else no new tab for 3 weeks
+      let keyDay = c.last;
+      if (c.plants > 0) for (const d of c.days) if (c.harvests.filter(h => h.day === d).reduce((a, h) => a + h.plants, 0) >= c.plants * 0.1) keyDay = d;
+      const after = keyDay ? c.tabs.filter(T => T.start >= keyDay) : [];
+      const enough = c.lights ? lbs(c.flower) / c.lights >= PARTIAL : c.flower > 0;
+      const newest = c.tabs.length ? c.tabs.map(T => T.start).sort().pop() : null;
+      const settled = !!(newest && today && diff(newest, today) >= 21);
+      const main = after.length && (enough || settled) ? after.slice().sort((x, y) => (y.full - x.full) || Math.abs(diff(keyDay, x.start) - DRY_USUAL) - Math.abs(diff(keyDay, y.start) - DRY_USUAL))[0] : null;
+      c.mainTab = main;
+      c.trimStart = c.tabs.length ? c.tabs.map(T => T.start).sort()[0] : null;
+      c.trimEnd = c.tabs.length ? c.tabs.map(T => T.end).sort().pop() : null;
+      const ago = today && c.last ? diff(c.last, today) : null;
+      const byDate = ago == null || ago < 0 ? 'none' : ago <= DRYING ? 'drying' : ago <= WAITING ? 'waiting' : from && addDays(c.last, DRYING) < from ? 'before' : 'none';
+      c.state = c.noHarvest ? 'trimmed' : c.double ? 'check' : main ? 'trimmed' : byDate === 'none' && c.tabs.length ? 'partly' : byDate;
+      c.partly = !c.noHarvest && !c.double && !main && c.tabs.length > 0;   // some of it on the trim sheets, not its last harvest
+      c.full = c.state === 'trimmed' && !c.noHarvest;
+      c.soFar = c.partly ? c.flower : null;
+      c.dryDay = c.state === 'drying' ? ago + 1 : null;
+      c.waitDays = c.state === 'waiting' ? ago : null;
+      const has = c.full && c.flower > 0;
+      c.lbPerLight = has && c.lights ? lbs(c.flower) / c.lights : null;
+      c.bigsPct = has ? c.bigs / c.flower * 100 : null;
+      c.gPerPlant = has && c.plants > 0 ? c.flower / c.plants : null;
+      c.dryPct = has && c.wet > 0 ? c.flower / c.wet * 100 : null;
+      // per strain: the sheet's lines (by name as typed, with the strain number when it has one) and the Metrc harvests
+      // they are: by strain number, else by name; a line nothing names takes a harvest no line took whose packages carry
+      // its name. A harvest two lines claim (two phenos of one Metrc harvest) gives neither plants, and so do plants
+      // that make a strain's g per plant over 3 times, or under a third of, the crop's. Phenos and Floorbuds are the room's.
+      const groups = new Map();
+      for (const x of L) {
+        let g = groups.get(x.k);
+        if (!g) groups.set(x.k, g = { k: x.k, sk: x.sk, typed: x.strain, code: null, bigs: 0, littles: 0, trim: 0, room: roomLine(x.sk), movedIn: x.movedIn });
+        if (!g.code && x.code) g.code = x.code;
+        g.bigs += x.bigs; g.littles += x.littles; g.trim += x.trim;
+      }
+      const G = [...groups.values()];
+      const claims = new Map();
+      for (const g of G) {
+        g.name = g.code && o.codes && o.codes[`${o.license}|${g.code}`] ? o.codes[`${o.license}|${g.code}`].name : nice(g.typed);
+        g.hv = g.room ? [] : c.harvests.filter(h => (g.code && h.codes.length) ? h.codes.includes(g.code) : h.keys.includes(g.sk));
+        for (const h of g.hv) claims.set(h.name, (claims.get(h.name) || 0) + 1);
+      }
+      for (const g of G) if (!g.room && !g.hv.length) {
+        g.hv = c.harvests.filter(h => !claims.has(h.name) && h.vkey && h.vkey === g.sk);
+        if (g.hv.length) g.byVote = true;
+      }
+      for (const g of G) if (g.byVote) for (const h of g.hv) claims.set(h.name, (claims.get(h.name) || 0) + 1);
+      c.strains = G.map(g => {
+        const shared = g.hv.some(h => claims.get(h.name) > 1);
+        let plants = g.hv.length && !shared ? g.hv.reduce((a, h) => a + h.plants, 0) : null;
+        const flower = g.bigs + g.littles;
+        let gpp = plants > 0 && flower > 0 ? flower / plants : null, doubt = false;
+        const ref = c.gPerPlant;
+        if (gpp != null && ref && (gpp > ref * 3 || gpp < ref / 3)) { doubt = true; plants = null; gpp = null; }
+        return { name: g.name, code: g.code, room: g.room, bigs: g.bigs, littles: g.littles, trim: g.trim, flower, plants, shared, doubt, byVote: !!g.byVote && !shared && !doubt,
+          movedIn: g.movedIn || null, harvests: g.hv.map(h => h.name), harvestLabels: g.hv.map(h => h.label), gPerPlant: gpp, bigsPct: flower > 0 ? g.bigs / flower * 100 : null };
+      }).sort((a, b) => (a.room - b.room) || b.flower - a.flower || a.name.localeCompare(b.name));
+      const kept = new Set(c.strains.filter(x => !x.doubt).flatMap(x => x.harvests));
+      c.metrcOnly = c.harvests.filter(h => !kept.has(h.name)).map(h => ({ name: h.name, label: h.label, plants: h.plants, wet: h.wet }));
+      c.toTrim = c.partly ? c.harvests.filter(h => !c.tabs.some(T => T.harvestDay === h.day)).map(h => ({ label: h.label, plants: h.plants })) : [];
+      c.sheetOnly = c.strains.filter(x => !x.room && !x.harvests.length).map(x => x.name);
+    }
+    // each trimmed crop against the trimmed one before it and the three before it (lb per light, g per plant; bigs % in
+    // points). A crop under 1.2 lb per light is a partial one and is left out, as from the estimate.
+    const done = crops.filter(c => c.full && c.lbPerLight != null && c.lbPerLight >= PARTIAL);
+    done.forEach((c, i) => {
+      const prev = done[i - 1], last3 = done.slice(Math.max(0, i - 3), i);
+      c.vsLast = prev ? { lbPerLight: pctOf(c.lbPerLight, prev.lbPerLight), gPerPlant: pctOf(c.gPerPlant, prev.gPerPlant), bigsPts: c.bigsPct != null && prev.bigsPct != null ? c.bigsPct - prev.bigsPct : null } : null;
+      const g3 = last3.map(x => x.gPerPlant).filter(v => v != null), b3 = last3.map(x => x.bigsPct).filter(v => v != null);
+      c.vsAvg3 = last3.length ? { n: last3.length, lbPerLight: pctOf(c.lbPerLight, mean(last3.map(x => x.lbPerLight))),
+        gPerPlant: g3.length ? pctOf(c.gPerPlant, mean(g3)) : null, bigsPts: b3.length && c.bigsPct != null ? c.bigsPct - mean(b3) : null } : null;
+    });
+    return { crops, tabs, harvests: hvs };
+  }
+  // the coming harvest: this room's average lb per light over its last 3 trimmed crops (a crop under 1.2 lb per light is
+  // a partial one and left out) x the lights those crops were counted on (the last one's trim sheet). The zones' lights
+  // are only shown beside it: a zone with no lights typed would count as none.
+  function estimate(crops, zoneLights) {
+    const done = (crops || []).filter(c => c.full && c.lbPerLight != null && c.lbPerLight >= PARTIAL).slice(-3);
+    if (!done.length) return null;
+    const rate = mean(done.map(c => c.lbPerLight));
+    const lights = done[done.length - 1].lights;
+    if (!(lights > 0)) return null;
+    return { lb: rate * lights, rate, lights, n: done.length, zoneLights: zoneLights > 0 ? zoneLights : null };
+  }
+  // a crop harvested 15 to 45 days ago whose trim (or the trim of its last harvest) isn't on the trim sheets yet
+  function trimWait(crops, today) {
+    return (crops || []).filter(c => c.state === 'waiting').map(c => ({ k: 'trim', date: c.last,
+      text: `Harvested ${wday(c.last)} (${c.waitDays} days ago) and ${c.partly ? 'only partly on' : 'not on'} the trim sheets yet` }));
+  }
+
   return { isDay, addDays, diff, todayLA, short, wday, key, nice, strainOf, roomPlants, cycle, taskKey, tasks, envRows, place, colors, tableZone, letter, tableNs, tableLights, capacity, comingUp, attention, runoffPct, latestRunoff, mapModel, PALETTE,
-    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark };
+    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, LB, skey, history, estimate, trimWait };
 })();
 /* ===== CULT MODEL END ===== */
 
@@ -853,7 +1142,7 @@ const SITES = [
   { id: 'S', name: '23rd St', sub: 'Slane' }, { id: 'F', name: '25th St', sub: 'Filifera' },
   { id: 'I', name: '15th St', sub: 'Imperial Project' }, { id: 'O', name: 'Olympic', sub: 'Rio Verde' },
 ];
-const S = { me: null, rooms: [], zones: [], codes: {}, codeRows: [], plants: [], plantsSig: null, meta: [], done: [], oneoffs: [], runoff: [], loadedAt: 0, room: null, editZones: false, arrange: false, range: 7 };
+const S = { me: null, rooms: [], zones: [], codes: {}, codeRows: [], plants: [], plantsSig: null, meta: [], done: [], oneoffs: [], runoff: [], loadedAt: 0, room: null, editZones: false, arrange: false, range: 7, hist: {}, hvOpen: null, hvAll: false };
 try { const r = +localStorage.getItem('cult.range'); if ([0, 7, 30].includes(r) && localStorage.getItem('cult.range') !== null) S.range = r; } catch (e) { /* default 7 days */ }
 let sb = null, rawNonce = null, pollTimer = null, glTimer = null;
 S.gl = { room: null, now: null, log: [], meta: null, err: null, at: 0 }; S.glOpen = null; S.attBase = []; S.envE = []; S.envState = null;
@@ -1054,13 +1343,194 @@ function roomView(room, today) {
   return { room, P, C, zones, placed, col, T, runoff, lights: zones.reduce((a, z) => a + (+z.lights || 0), 0) };
 }
 
+/* ----- step 3: the room's harvests, crop by crop, from the pipeline's copies of Metrc's harvests and the trim sheets,
+   read through cult_room_history() when the room opens, again after an hour, and on Refresh. The crops and the trim
+   report are CM.history's; this part only draws them. A click on a crop opens its trim report under it (one at a time).
+   ----- */
+const HIST_TTL = 60 * 60e3;
+// a form or card is open: a redraw would lose what is typed in it (the poll, a resize and a late answer wait)
+const formOpen = () => !!(S.editZones || S.arrange || S.runoffForm || S.editNotes || !$('pop').hidden);
+function histOf(room, today) {
+  const e = S.hist[room.id];
+  if (!e || !e.data) return { e: e || null, R: null };
+  if (!e.R || e.Rday !== today || e.Rcodes !== S.codeRows) {
+    e.R = CM.history(e.data, { license: room.license, codes: S.codes, today, room: room.id.slice(1), site: room.site });
+    e.Rday = today; e.Rcodes = S.codeRows;
+  }
+  return { e, R: e.R };
+}
+async function loadHistory(id, force) {
+  const e = S.hist[id] || (S.hist[id] = { at: 0, data: null, err: null, errAt: 0, busy: false });
+  if (e.busy || (!force && e.data && Date.now() - e.at < HIST_TTL) || (!force && e.err && Date.now() - e.errAt < 60e3)) return;
+  e.busy = true;
+  if (force && S.room === id && $('hv-fresh')) $('hv-fresh').textContent = 'Reading...';
+  let res;
+  try { res = await sb.rpc('cult_room_history', { p_room: id }); } catch (x) { res = { error: { message: x.message || String(x) } }; }
+  e.busy = false;
+  if (res.error || !res.data) { e.err = res.error ? res.error.message : 'no answer'; e.errAt = Date.now(); }   // the last good copy stays
+  else { e.data = res.data; e.at = Date.now(); e.err = null; e.R = null; }
+  const room = S.room === id && S.rooms.find(r => r.id === id);
+  if (room) paintHv(room);   // only the parts the history feeds: never a whole redraw under the reader
+}
+// the Harvests panel, the Harvest tile and Needs attention, from the history now in hand
+function paintHv(room, focusKey) {
+  const b = $('hv-body');
+  if (!b) return;
+  const a = document.activeElement;
+  if (!focusKey && a && b.contains(a) && a.dataset && a.dataset.crop) focusKey = a.dataset.crop;   // keep a focused crop focused
+  const today = CM.todayLA(), V = roomView(room, today), { R } = histOf(room, today);
+  b.innerHTML = hvBody(V, today);
+  const f = $('hv-fresh'); if (f) f.outerHTML = hvFresh(S.hist[room.id]);
+  const est = R && (V.C.state === 'flower' || V.C.state === 'upcoming') ? CM.estimate(R.crops, V.lights) : null;
+  const t = $('hv-est'); if (t) t.textContent = hvTile(V.C, est);
+  S.attBase = (S.attBase || []).filter(x => x.k !== 'trim').concat(R ? CM.trimWait(R.crops, today) : []);
+  const all = S.attBase.concat(glAtt(glCompute(room)));   // Growlink's items, as glRefresh adds them
+  if ($('att')) { $('att').innerHTML = attHTML(all); $('att-n').textContent = all.length || 'nothing'; }
+  if (focusKey) { const r = [...b.querySelectorAll('button.hvr')].find(x => x.dataset.crop === focusKey); if (r) r.focus(); }
+}
+const hvTile = (C, est) => `day ${C.H}${est ? ` · about ${num(Math.round(est.lb))} lb` : ''}`;
+function hvFresh(e) {
+  const f = e && e.data && e.data.fresh || {};
+  const age = t => { const ms = Date.parse(t); return isFinite(ms) ? (Date.now() - ms) / 36e5 : null; };
+  const hh = age(f.harvests), th = age(f.trims);
+  const title = `Metrc harvests read ${f.harvests ? new Date(f.harvests).toLocaleString() : 'never'}; trim sheets read ${f.trims ? new Date(f.trims).toLocaleString() : 'never'}`;
+  const old = e && e.err && e.data ? [`Couldn't read them again: showing the copy from ${new Date(e.at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`]
+    : [hh > 8 ? `Metrc harvests read ${Math.round(hh)} h ago` : '', th > 8 ? `trim sheets read ${Math.round(th)} h ago` : ''].filter(Boolean);
+  return `<small id="hv-fresh" title="${esc(title)}"${old.length ? ' style="color:var(--amber)"' : ''}>${esc(old.length ? old.join(', ') : 'Metrc and the trim sheets')}</small>`;
+}
+const hvKey = c => c.days.length ? c.days[0] : 't:' + (c.tabs[0] ? c.tabs[0].id : '');
+function hvDates(today) {
+  const yr = today.slice(0, 4);
+  const md = s => CM.isDay(s) ? `${+s.slice(5, 7)}/${+s.slice(8, 10)}` : '';
+  const dl = (list, sep) => list.map((s, i) => md(s) + (i === list.length - 1 && s.slice(0, 4) !== yr ? '/' + s.slice(2, 4) : '')).join(sep);
+  return { md, dl, days: c => c.days.length <= 2 ? dl(c.days, ' + ') : dl([c.days[0], c.last], ' to ') };
+}
+function hvBody(V, today) {
+  const { room, C, P } = V;
+  const { e, R } = histOf(room, today);
+  if (!R) return e && e.err ? `<p class="pickmsg" style="margin:0" title="${esc(e.err)}">${/schema cache|does not exist|permission denied/i.test(e.err) ? "The harvest history isn't on the server yet. Ask Gianni." : "Couldn't read the harvests. Press Refresh to try again."}</p>` : '<p class="muted" style="margin:0">Reading the harvests...</p>';
+  if (!R.crops.length) return '<p class="muted" style="margin:0">No harvests from this room in Metrc\'s copy yet.</p>';
+  const est = (C.state === 'flower' || C.state === 'upcoming') ? CM.estimate(R.crops, V.lights) : null;
+  const D = hvDates(today);
+  const maxL = Math.max(est ? est.rate : 0, ...R.crops.map(c => c.lbPerLight || 0)) || 1;
+  const bar = v => `<span class="yb" aria-hidden="true"><i style="width:${Math.max(4, Math.min(100, v / maxL * 100)).toFixed(0)}%"></i></span>`;
+  const all = R.crops.slice().reverse();
+  const shown = S.hvAll || all.length <= 7 ? all : all.slice(0, 6);
+  let h = `<div class="hvl"><div class="hvh" aria-hidden="true"><span>Harvested</span><span class="n">Plants</span><span class="hc3">Trimmed</span><span class="n">Flower lb</span><span class="n">lb / light</span><span class="n hc6">g / plant</span></div>`;
+  if (est) h += `<div class="hvr plan"><span>${esc(D.dl([C.harvestDate], ''))} <span class="faint">expected</span></span><span class="n">${P.total ? num(P.total) : ''}</span><span class="hc3"></span><span class="n">about ${num(Math.round(est.lb))}</span><span class="n">${est.rate.toFixed(2)}${bar(est.rate)}</span><span class="n hc6"></span></div>`;
+  for (const c of shown) {
+    const k = hvKey(c), open = S.hvOpen === k;
+    const trimmed = c.state === 'trimmed' ? esc(D.md((c.mainTab || c.tabs[0]).start)) : c.state === 'check' ? '<span class="warn">check the sheets</span>'
+      : c.state === 'drying' ? `<span class="muted">drying, day ${c.dryDay}</span>` : c.state === 'waiting' ? `<span class="warn">${c.partly ? 'part trimmed' : 'not trimmed yet'}</span>`
+      : c.state === 'partly' ? '<span class="warn">part trimmed</span>' : c.state === 'before' ? '<span class="faint">before the trim sheets</span>' : '<span class="faint">not on the trim sheets</span>';
+    const flower = c.full || c.noHarvest ? (c.flower / CM.LB).toFixed(1) : `<span class="ph">${trimmed}</span>`;
+    const said = [c.noHarvest ? 'A trim with no Metrc harvest' : `Harvested ${D.days(c)}`, c.plants ? `${num(c.plants)} plants` : '',
+      c.state === 'trimmed' ? `trimmed ${D.md((c.mainTab || c.tabs[0]).start)}` : trimmed.replace(/<[^>]+>/g, ''),
+      c.full || c.noHarvest ? `${(c.flower / CM.LB).toFixed(1)} lb of flower` : '', c.lbPerLight != null ? `${c.lbPerLight.toFixed(2)} lb per light` : '',
+      c.gPerPlant != null ? `${Math.round(c.gPerPlant)} g per plant` : ''].filter(Boolean).join(', ');
+    h += `<button type="button" class="hvr" data-crop="${esc(k)}" aria-expanded="${open}" aria-label="${esc(said + '. Its trim report.')}"><span>${c.noHarvest ? '<span class="faint">no Metrc harvest</span>' : esc(D.days(c))}</span><span class="n">${c.plants ? num(c.plants) : ''}</span><span class="hc3">${trimmed}</span>`
+      + `<span class="n${c.full || c.noHarvest ? '' : ' st'}">${flower}</span><span class="n${c.lbPerLight != null ? '' : ' hl0'}">${c.lbPerLight != null ? c.lbPerLight.toFixed(2) + bar(c.lbPerLight) : ''}</span><span class="n hc6">${c.gPerPlant != null ? Math.round(c.gPerPlant) : ''}</span></button>`;
+    if (open) h += hvDetail(c, R, today);
+  }
+  h += '</div>';
+  if (all.length > shown.length) h += `<button class="btn ghost" type="button" id="hv-more" style="margin-top:6px">Show ${all.length - shown.length} older</button>`;
+  const notes = [];
+  if (est) notes.push(`Expected: ${est.rate.toFixed(2)} lb per light (this room's last ${est.n === 1 ? 'crop' : est.n + ' crops'}) x ${num(est.lights)} lights (its last trim sheet${est.zoneLights && est.zoneLights !== est.lights ? `; the zones add up to ${num(est.zoneLights)}` : ''}).`);
+  notes.push('Flower is bigs + littles on the trim sheets; plants are Metrc\'s. A crop opens its trim report.');
+  return h + notes.map(n => `<p class="note">${esc(n)}</p>`).join('');
+}
+function hvDetail(c, R, today) {
+  const f2 = g => (g / CM.LB).toFixed(2);
+  const arrow = (v, unit) => {
+    if (v == null || !isFinite(v)) return '-';
+    const r = +Math.abs(v).toFixed(unit === '%' ? 0 : 1);
+    return r === 0 ? `<span class="flat">no change</span>` : `<span class="${v > 0 ? 'up' : 'down'}">${v > 0 ? '&#9650;' : '&#9660;'} ${r}${unit}</span>`;
+  };
+  const kpi = (a, b, x) => `<div><small>${esc(a)}</small><b>${esc(b)}</b>${x ? `<span>${esc(x)}</span>` : ''}</div>`;
+  const { md } = hvDates(today);
+  let h = '<div class="hvd">';
+  // when: harvest, dry, trim
+  const when = [];
+  if (c.harvests.length) when.push(`Harvested ${c.days.map(md).join(' and ')}: ${c.harvests.length} Metrc harvest${c.harvests.length === 1 ? '' : 's'}, ${num(c.plants)} plants, ${num(Math.round(c.wet / CM.LB))} lb wet`);
+  if (c.tabs.length) {
+    const dd = c.tabs.map(T => T.dryDays).filter(v => v != null);
+    if (dd.length && c.mainTab) when.push(`dried${c.dryRooms.length ? ' in ' + c.dryRooms.join(', ') : ''} ${c.mainTab.dryDays} days`);
+    when.push(`trimmed ${c.tabs.map(T => `${md(T.start)}${T.end !== T.start ? ' to ' + md(T.end) : ''}`).join(' and ')}`);
+  }
+  if (when.length) h += `<p class="note" style="margin:0 0 8px">${esc(when.join('; '))}.</p>`;
+  if (c.full && c.flower > 0) {
+    h += '<div class="kpis">'
+      + kpi('Flower', `${f2(c.flower)} lb`, `${f2(c.bigs)} bigs, ${f2(c.littles)} littles`)
+      + kpi('lb / light', c.lbPerLight != null ? c.lbPerLight.toFixed(2) : '-', c.lights ? `${num(c.lights)} lights on the trim sheet` : 'no lights on the trim sheet')
+      + kpi('Bigs', `${Math.round(c.bigsPct)}%`, 'of the flower')
+      + kpi('g / plant', c.gPerPlant != null ? String(Math.round(c.gPerPlant)) : '-', c.plants ? `${num(c.plants)} plants in Metrc` : 'no plant count')
+      + kpi('Trim leaf', `${f2(c.trim)} lb`, c.lights ? `${(c.trim / CM.LB / c.lights).toFixed(2)} lb per light` : '')
+      + (c.wetSuspect.length ? kpi('Dry / wet', '-', "Metrc's wet weight looks wrong") : kpi('Dry / wet', c.dryPct != null ? `${c.dryPct.toFixed(1)}%` : '-', `of ${num(Math.round(c.wet / CM.LB))} lb wet`))
+      + '</div>';
+    const line = (lbl, x) => `${lbl}: lb / light ${arrow(x.lbPerLight, '%')}, g / plant ${arrow(x.gPerPlant, '%')}, bigs ${arrow(x.bigsPts, ' points')}`;
+    const cmp = [];
+    if (c.vsLast) cmp.push(line('Against the crop before', c.vsLast));
+    if (c.vsAvg3 && c.vsAvg3.n > 1) cmp.push(line(`Against the average of the ${c.vsAvg3.n} before it`, c.vsAvg3));
+    if (cmp.length) h += `<p class="note" style="margin:0 0 6px">${cmp.join('. ')}.</p>`;
+  } else if (c.soFar > 0) h += `<p class="note" style="margin:0 0 6px">On the trim sheets so far: ${f2(c.soFar)} lb of flower. Its numbers show once the trim of its last harvest is on them.</p>`;
+  if (c.double) {
+    h += '<div class="wrapx"><table class="t"><thead><tr><th>Tab on the trim sheets</th><th class="n">Flower lb</th><th class="n">Trim lb</th></tr></thead><tbody>';
+    for (const T of c.tabs) h += `<tr><td>${esc(T.tab)} <span class="faint">${esc(md(T.start))}</span></td><td class="n">${f2(T.flower)}</td><td class="n">${f2(T.trim)}</td></tr>`;
+    h += '</tbody></table></div>';
+  } else if (c.strains.length) {
+    h += '<div class="wrapx"><table class="t"><thead><tr><th>Strain</th><th class="n">Plants</th><th class="n">Flower lb</th><th class="n hcb">Bigs</th><th class="n hct">Trim lb</th><th class="n">g / plant</th></tr></thead><tbody>';
+    for (const s of c.strains) h += `<tr${s.room ? ' class="faint"' : ''}><td>${esc(s.name)}</td><td class="n">${s.plants != null ? num(s.plants) : s.shared ? '<span class="faint">shared</span>' : ''}</td><td class="n">${f2(s.flower)}</td><td class="n hcb">${s.bigsPct != null && s.flower > 0 ? Math.round(s.bigsPct) + '%' : ''}</td><td class="n hct">${f2(s.trim)}</td><td class="n">${s.gPerPlant != null ? Math.round(s.gPerPlant) : ''}</td></tr>`;
+    h += '</tbody></table></div>';
+  }
+  const notes = [];
+  if (c.double) notes.push(`Two full trims on the trim sheets for one harvest (${c.double.join(' and ')}): one may belong to another room or be a copy, so this crop's numbers aren't worked out. Check the sheets.`);
+  if (c.toTrim && c.toTrim.length) notes.push(`Still to trim: ${c.toTrim.map(x => `${x.label} (${num(x.plants)} plants)`).join(', ')}.`);
+  if (c.full) {
+    const nm = [];
+    if (c.metrcOnly.length) nm.push(`in Metrc, ${c.metrcOnly.map(x => `${x.label} (${num(x.plants)} plants)`).join(', ')}`);
+    if (c.sheetOnly.length) nm.push(`on the trim sheet, ${c.sheetOnly.join(', ')}`);
+    if (nm.length) notes.push(`Not matched between Metrc and the trim sheet: ${nm.join('; ')}.`);
+    const vote = c.strains.filter(s => s.byVote);
+    if (vote.length) notes.push(`Matched through the names on Metrc's packages: ${vote.map(s => `${s.name} (${s.harvestLabels.join(', ')})`).join(', ')}.`);
+    const sh = c.strains.filter(s => s.shared);
+    if (sh.length) notes.push(`${sh.map(s => s.name).join(' and ')} share Metrc's harvests, so their plants can't be split.`);
+    const dbt = c.strains.filter(s => s.doubt);
+    if (dbt.length) notes.push(`${dbt.map(s => s.name).join(' and ')}: the Metrc plants matched don't fit the pounds, so they aren't shown.`);
+    const copies = R.tabs.filter(T => T.repeatOfId && c.tabs.some(U => U.id === T.repeatOfId)).map(T => `"${T.tab}" is a copy of "${T.repeatOf}" and counts once`);
+    const dups = c.tabs.flatMap(T => T.lines.filter(x => !x.counted).map(x => `${CM.nice(x.strain)}'s trim is on "${x.dupOf}" and again on "${T.tab}" and counts once`));
+    const moved = c.tabs.filter(T => T.movedFrom).map(T => `"${T.tab}" is filed under Room ${T.movedFrom} on the trim sheet, but its strains are this room's harvest`);
+    const lineIn = c.strains.filter(s => s.movedIn).map(s => `${s.name} is a line in Room ${s.movedIn}'s tab that names this room`);
+    if (copies.length || dups.length || moved.length || lineIn.length) notes.push(copies.concat(dups, moved, lineIn).join('; ') + '.');
+    if (c.wetSuspect.length) notes.push(`Metrc's wet weight looks too low on ${c.wetSuspect.length === 1 ? 'one of its harvests' : c.wetSuspect.length + ' of its harvests'} (more than half of it was packaged), so dry / wet isn't shown.`);
+  }
+  if (c.state === 'drying') notes.push(`Drying${c.dryRooms.length ? ' in ' + c.dryRooms.join(', ') : ''}, day ${c.dryDay}. Its trim report fills in once the trim is on the trim sheets.`);
+  else if (c.state === 'waiting') notes.push(`Harvested ${c.waitDays} days ago and ${c.partly ? 'only partly' : 'not'} on the trim sheets yet.`);
+  else if (!c.tabs.length) notes.push(c.state === 'before' ? 'Trimmed before the trim sheets this page reads (this year\'s workbooks).' : 'No tab on the trim sheets for this harvest.');
+  if (!c.tabs.length && c.packaged > 0) notes.push(`Metrc packaged ${(c.packaged / CM.LB).toFixed(1)} lb from it, flower and trim together.`);
+  if (c.noHarvest) notes.push('No Metrc harvest of this room 3 to 30 days before this trim.');
+  h += notes.map(n => `<p class="note">${esc(n)}</p>`).join('');
+  return h + '</div>';
+}
+function wireHv(room) {
+  const b = $('hv-body');
+  if (!b) return;
+  b.addEventListener('click', ev => {
+    if (ev.target.closest('#hv-more')) {   // focus goes to the first crop just shown
+      const n = b.querySelectorAll('button.hvr').length; S.hvAll = true; paintHv(room);
+      const r = b.querySelectorAll('button.hvr')[n]; if (r) r.focus(); return;
+    }
+    const r = ev.target.closest('button.hvr');
+    if (r) { const k = r.dataset.crop; S.hvOpen = S.hvOpen === k ? null : k; paintHv(room, k); }
+  });
+}
+
 /* ----- routing: #room=S1 opens a room, nothing = all rooms ----- */
 function route() {
   const m = location.hash.match(/room=([A-Z][A-Z0-9]{1,3})/);
   const id = m ? m[1] : null;
   S.room = id && S.rooms.some(r => r.id === id) ? id : null;
   if (!S.room && S.rooms.length === 1) S.room = S.rooms[0].id;   // one room switched on: open it, there is nothing to pick
-  S.editZones = false; S.arrange = false; S.zoneOpened = false; S.runoffForm = false; S.editNotes = false;
+  S.editZones = false; S.arrange = false; S.zoneOpened = false; S.runoffForm = false; S.editNotes = false; S.hvOpen = null; S.hvAll = false;
   closePop();
   render();
 }
@@ -1189,6 +1659,8 @@ function renderRoom(room) {
   const { P, C, T, placed, col } = V;
   const canEdit = !!(S.me && S.me.edit), canWork = !!(S.me && (S.me.work || S.me.edit));
   const site = SITES.find(s => s.id === room.site) || { name: '', sub: '' };
+  const HV = histOf(room, today);
+  const est = HV.R && (C.state === 'flower' || C.state === 'upcoming') ? CM.estimate(HV.R.crops, V.lights) : null;
   let h = `<div class="rhead"><div><h1>${esc(room.name)}</h1><div class="sub">${esc(site.name)} · ${esc(site.sub)} · Metrc ${esc(room.metrc_location || '-')} (${esc(room.license)})</div></div>
     <span class="grow"></span><button class="btn" type="button" id="print-btn">Print door sheet</button></div>`;
   // stats
@@ -1198,11 +1670,11 @@ function renderRoom(room) {
   else if (C.state === 'harvested') st.push(['Harvested', CM.wday(C.lastHarvest.day), `${num(C.lastHarvest.plants)} plants`]);
   else st.push(['Room', 'Empty', 'waiting for the next flip']);
   st.push(['Flip date', C.flip ? CM.wday(C.flip) : '-', C.source === 'typed' ? 'as typed' : C.source === 'metrc' ? "Metrc's first flowering day" : '', 'flip']);
-  if (C.flip) st.push(['Harvest', CM.wday(C.harvestDate), `day ${C.H}`]);
+  if (C.flip) st.push(['Harvest', CM.wday(C.harvestDate), hvTile(C, est), 'harvest']);
   st.push(['Plants in Metrc', num(P.total), `${P.strains.length} strain${P.strains.length === 1 ? '' : 's'}`]);
   const drawn = room.layout ? (room.layout.tables || []).reduce((a, t) => a + (Array.isArray(t.light_spots) ? t.light_spots.length : 0), 0) : 0;
   st.push(['Lights', V.lights ? num(V.lights) : '-', drawn && drawn !== V.lights ? `on the zones; ${drawn} fixtures on the diagram` : 'on the zones']);
-  h += '<div class="stats">' + st.map(([a, b, c, k]) => `<div class="stat"><small>${esc(a)}</small><b>${esc(b)}</b>${c ? `<span>${esc(c)}</span>` : ''}${k === 'flip' && canEdit ? '<button class="btn" type="button" id="flip-edit">Change</button>' : ''}</div>`).join('') + '</div>';
+  h += '<div class="stats">' + st.map(([a, b, c, k]) => `<div class="stat"><small>${esc(a)}</small><b>${esc(b)}</b>${c ? `<span${k === 'harvest' ? ' id="hv-est"' : ''}>${esc(c)}</span>` : ''}${k === 'flip' && canEdit ? '<button class="btn" type="button" id="flip-edit">Change</button>' : ''}</div>`).join('') + '</div>';
   if (C.state === 'flower' || C.state === 'upcoming') {
     const pct = C.state === 'flower' ? Math.min(100, Math.max(0, C.day / C.H * 100)) : 0;
     const nx = CM.comingUp(C, T, today, 400)[0];
@@ -1220,7 +1692,7 @@ function renderRoom(room) {
   const info = notes.filter(n => !n.warn);
   if (info.length) h += '<div class="notes">' + info.map(n => `<span class="flag blue">${esc(n.text)}</span>`).join('') + '</div>';
   const cap = CM.capacity(room.layout, placed);
-  const att = CM.attention(C, T, today, cap, notes.filter(n => n.warn).map(n => n.text));
+  const att = CM.attention(C, T, today, cap, notes.filter(n => n.warn).map(n => n.text)).concat(HV.R ? CM.trimWait(HV.R.crops, today) : []);
   const E = CM.envRows(room, C);
   S.attBase = att; S.envE = E; S.envState = C.state;
   const GV = glCompute(room);
@@ -1248,6 +1720,8 @@ function renderRoom(room) {
   h += '</div></div>';
   // Metrc
   h += `<div class="panel"><h3>In Metrc <span class="grow"></span><small>${esc(room.metrc_location || '')}</small></h3><div class="pbody">${metrcPanel(V, canEdit)}</div></div>`;
+  // harvests, crop by crop (Metrc and the trim sheets)
+  h += `<div class="panel" id="hv-panel"><h3>Harvests <span class="grow"></span>${hvFresh(HV.e)}</h3><div class="pbody" id="hv-body">${hvBody(V, today)}</div></div>`;
   // room notes
   h += `<div class="panel"><h3>Room notes <span class="grow"></span>${canEdit && !S.editNotes ? `<button class="btn" type="button" id="notes-edit">${room.notes ? 'Edit' : 'Add'}</button>` : ''}</h3><div class="pbody">`;
   h += S.editNotes ? `<textarea id="notes-in" rows="5" maxlength="2000" class="ta">${esc(room.notes || '')}</textarea><div class="pickmsg" id="notes-msg"></div>
@@ -1283,6 +1757,8 @@ function renderRoom(room) {
   h += '</div></div>';
   $('view-room').innerHTML = h;
   wireRoom(V, canEdit);
+  wireHv(room);
+  loadHistory(room.id);
   $('gl').addEventListener('click', e => {
     const b = e.target.closest('[data-gl]');
     if (!b) return;
@@ -1857,14 +2333,14 @@ async function startApp() {
   catch (e) { $('gate').hidden = false; $('gate-loading').hidden = true; $('gate-signin').hidden = true; gateErr(e.message); return; }
   route();
   clearInterval(pollTimer);
-  pollTimer = setInterval(async () => { if (document.visibilityState === 'visible' && !S.editZones && $('pop').hidden) { if (await loadAll(true)) render(); } }, 15 * 60e3);
+  pollTimer = setInterval(async () => { if (document.visibilityState === 'visible' && !formOpen()) { if (await loadAll(true) && !formOpen()) render(); } }, 15 * 60e3);
   clearInterval(glTimer);
   glTimer = setInterval(async () => { if (document.visibilityState === 'visible' && S.room && await loadGrowlink(S.room)) glRefresh(); }, 5 * 60e3);
 }
 $('refresh').addEventListener('click', async () => {
   $('refresh').disabled = true;
   try {
-    if (!S.loadedAt) await startApp(); else if (await loadAll(true, null, true)) render();
+    if (!S.loadedAt) await startApp(); else if (await loadAll(true, null, true)) { render(); if (S.room) loadHistory(S.room, true); }
     if (S.room && await loadGrowlink(S.room, true)) glRefresh();
   }
   finally { $('refresh').disabled = false; }
@@ -1873,7 +2349,7 @@ $('refresh').addEventListener('click', async () => {
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && S.loadedAt && S.room && Date.now() - S.gl.at > 5 * 60e3 && await loadGrowlink(S.room)) glRefresh();
 });
-window.addEventListener('resize', (() => { let t = 0; return () => { clearTimeout(t); t = setTimeout(() => { if (S.loadedAt && S.room && !S.editZones) renderRoom(S.rooms.find(r => r.id === S.room)); }, 250); }; })());
+window.addEventListener('resize', (() => { let t = 0, w = window.innerWidth; return () => { clearTimeout(t); t = setTimeout(() => { if (window.innerWidth === w) return; w = window.innerWidth; if (S.loadedAt && S.room && !formOpen()) renderRoom(S.rooms.find(r => r.id === S.room)); }, 250); }; })());
 
 /* ---------------- sign-in: Google -> Supabase session (same flow as the pipeline and timesheets apps) ---------------- */
 const gateErr = m => { $('gate-err').textContent = m || ''; };
@@ -1945,6 +2421,7 @@ function demoClient(D) {
     cult_room_task_add: a => { T.cult_room_tasks.push({ id: ++seq, room_id: a.p_room, due: a.p_due, kind: a.p_kind, text: a.p_text, status: 'open', created_by: PV }); return { ok: true, id: seq }; },
     cult_room_task_set: a => { const t = T.cult_room_tasks.find(x => x.id === a.p_id); if (a.p_set.delete) t.deleted_at = 'now'; else Object.assign(t, a.p_set, a.p_set.status ? { done_by: PV, done_at: new Date().toISOString() } : {}); return { ok: true }; },
     cult_runoff_add: a => { const r = { id: ++seq, room_id: a.p_room, ...a.p_row, created_by: PV, created_at: new Date().toISOString() }; r.runoff_pct = CM.runoffPct(r); T.cult_runoff.unshift(r); return { ok: true, id: seq }; },
+    cult_room_history: a => (D.history && D.history[a.p_room]) || { v: 1, harvests: [], trims: [], fresh: {} },
     cult_runoff_delete: a => { const r = T.cult_runoff.find(x => x.id === a.p_id); r.deleted_at = 'now'; return { ok: true }; },
     cult_task_mark: a => { T.cult_task_done = T.cult_task_done.filter(d => !(d.room_id === a.p_room && d.cycle === a.p_cycle && d.task_key === a.p_task));
       if (a.p_done) T.cult_task_done.push({ room_id: a.p_room, cycle: a.p_cycle, task_key: a.p_task, done_at: new Date().toISOString(), done_by: 'preview' }); return { ok: true }; },

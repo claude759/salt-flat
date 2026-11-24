@@ -558,3 +558,53 @@ grant execute on function public.cult_runoff_delete(bigint) to authenticated;
 -- roles: anyone who can open the page can do everything on it (see cult_can_edit above).
 drop function if exists public.cult_crew_list();
 drop function if exists public.cult_crew_set(text, boolean);
+
+-- ---------------------------------------------------------------- harvest history (step 3)
+-- One room's Metrc harvests (pipeline_harvests, every 3 hours from Gianni's Mac) and trim sheet lines (pipeline_trims,
+-- hourly), for the room page's Harvests panel. Weights in grams, never dollars. Whoever can open the page may read them
+-- (Gianni 2026-11-24, of each room's harvest and trim pounds for every Wizard Trees login: "Yes, show them"); the
+-- pipeline tables themselves stay pipeline_can_view(): this function, owned by postgres and applied from Gianni's Mac,
+-- hands out only these columns of only this room. Not Metrc's packages, buyers or anything sold.
+-- A harvest is the room's when its license is the room's and its name starts with the room's key ("F1-2504-10292026"
+-- and "FA-..." / "A-..." are rooms 1 and A). Trim lines: the site's lines filed under the room, plus, at Olympic (whose
+-- trim sheets number the trims, not the rooms), every line of the site, and anywhere a line that names the room ("Phenos
+-- (Room C)" inside another room's tab); site_harvests gives the license's other rooms' harvest days and strain numbers
+-- (no weights), so the page can tell which room such a line or tab belongs to. The crops, the copied-tab rules, the
+-- rooms and the strain matching are worked out on the page (CULT MODEL: CM.history), where they are tested.
+create or replace function public.cult_room_history(p_room text)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+declare r public.cult_rooms; rk text; ts text;
+begin
+  if not public.cult_can_view() then raise exception 'not allowed'; end if;
+  select * into r from public.cult_rooms where id = p_room;
+  if not found then raise exception 'unknown room'; end if;
+  rk := upper(substr(r.id, 2));
+  ts := case r.site when 'S' then '23RD' when 'F' then '25TH' when 'I' then '15TH' when 'O' then 'OLYMPIC' end;
+  return jsonb_build_object(
+    'v', 1,
+    'harvests', coalesce((select jsonb_agg(jsonb_build_object(
+        'name', h.name, 'day', h.start_date, 'code', h.strain_code, 'strain', h.strain, 'plants', h.plant_count,
+        'wet_g', round(h.wet_weight, 1), 'packaged_g', round(h.packaged_weight, 1), 'finished', h.finished_date,
+        'dry_room', h.drying_location) order by h.start_date, h.name)
+      from public.pipeline_harvests h
+      where h.license = r.license and h.archived_date is null and coalesce(h.wet_weight, 0) > 0 and h.start_date is not null
+        and regexp_replace(upper(btrim(split_part(h.name, '-', 1))), '^F([0-9A-Z])$', '\1') = rk), '[]'::jsonb),
+    'trims', coalesce((select jsonb_agg(jsonb_build_object(
+        'file', t.file, 'tab', t.tab, 'block', t.block, 'line', t.line, 'room', upper(btrim(t.room)), 'start', t.start_date, 'end', t.end_date,
+        'lights', t.lights, 'strain', t.strain, 'code', t.code,
+        'bigs_g', round(t.bigs_g, 1), 'littles_g', round(t.littles_g, 1), 'trim_g', round(t.trim_g, 1))
+        order by t.start_date, t.file, t.tab, t.block, t.line)
+      from public.pipeline_trims t
+      where t.site = ts and (upper(btrim(t.room)) = rk or r.site = 'O' or t.strain ~* ('\mroom\s*' || rk || '\M'))), '[]'::jsonb),
+    'site_harvests', coalesce((select jsonb_agg(jsonb_build_array(k.rm, k.start_date, k.strain_code) order by k.start_date, k.rm)
+      from (select regexp_replace(upper(btrim(split_part(h.name, '-', 1))), '^F([0-9A-Z])$', '\1') rm, h.start_date, h.strain_code
+              from public.pipeline_harvests h
+             where h.license = r.license and h.archived_date is null and coalesce(h.wet_weight, 0) > 0 and h.start_date is not null) k
+     where k.rm <> rk), '[]'::jsonb),
+    'trims_from', (select min(t.start_date) from public.pipeline_trims t where t.site = ts),
+    'fresh', jsonb_build_object(
+      'harvests', (select max(m.synced_at) from public.pipeline_harvests_meta m),
+      'trims', (select max(m.synced_at) from public.pipeline_trims_meta m)));
+end $$;
+revoke all on function public.cult_room_history(text) from public, anon;
+grant execute on function public.cult_room_history(text) to authenticated;

@@ -720,6 +720,11 @@ launch. The check fails if one of the three pieces is missing.
     `~/ar-automation/cult-metrc-sync.mjs` (launchd `com.wizardtrees.cult-metrc`; read-only, the shared Metrc lock and
     monthly ledger) through the token-gated `cult_metrc_save()`; each send replaces that license's rows. Metrc lists
     plants only by LastModified window, so the job keeps its own copy of every plant (`data/cult/`).
+  - Each room's harvests and trims come through `cult_room_history(p_room)` (end of `supabase/cultivation.sql`, owned by
+    postgres): the room's Metrc harvests from `pipeline_harvests` (the pipeline's 3-hourly copy) and its trim sheet lines
+    from `pipeline_trims` (hourly), plus what places lines (Olympic's other lines, lines that name the room, the license's
+    other rooms' harvest days and strain numbers). Weights in grams for any Wizard Trees sign-in; never buyers, packages
+    or money. The pipeline tables themselves stay pipeline-only.
   - `cult_growlink_now`, `cult_growlink_log` and `cult_growlink_meta` (`supabase/cult-growlink.sql`, applied the same
     way): each room's newest Growlink readings, light schedule, set points and Growlink's own alerts; its averages at
     every run, kept 35 days; when the job last ran and what went wrong. Written every 5 minutes by
@@ -762,14 +767,31 @@ launch. The check fails if one of the three pieces is missing.
   Step 2 shipped 11/24: tick tasks, skip them, add a note or move one to another day (`cult_task_done.status` open /
   done / skipped, `note`, `moved_to`), add one-off tasks (`cult_room_tasks`) and log runoff (`cult_runoff`: day, zone,
   cup ml, feed pH and EC, tray ml, runoff pH and EC; runoff % = tray / cup, worked out by the database; no future days),
-  and room notes (`cult_rooms.notes`). Step 3 (harvests and trims from the pipeline tables) is being built; steps 4-5
-  (run planning; veg and dry rooms, Growlink, labels) wait on Gianni's answers.
+  and room notes (`cult_rooms.notes`). Step 3 shipped 11/24: the Harvests panel (below). Steps 4-5 (run planning; veg
+  and dry rooms, labels) wait on Gianni's answers.
 - **No roles yet** (Gianni, 2026-11-24: "My app doesn't really need login stuff yet. I'm just trying to create cleaner
   more automated Room pages"): one Google sign-in, then anyone at Wizard Trees can do everything on the page. The
   sign-in stays because the page and this repo are public and it keeps the room maps and Metrc's numbers private. Step
   2's crew list and Access were dropped the same day (`cult_editors` and `cult_crew` kept, unused; `cult_can_edit()` and
   `cult_can_work()` are where roles would come back). Build no login, role or team features until he asks; aim each
   change at cleaner, more automated room pages.
+- **Harvests, crop by crop** (step 3, 2026-11-24; Gianni, of every Wizard Trees login seeing each room's harvest and trim
+  pounds: "Yes, show them"). A Harvests panel after In Metrc: a row per crop (a button), newest first, the expected
+  harvest on top; a click opens its trim report under it (flower = bigs + littles, lb per light, bigs %, g per plant, trim
+  leaf, dry / wet, against the crop before and the 3 before it, a strain table). The Harvest tile says "about N lb";
+  Needs attention says "not on the trim sheets yet" 15 to 45 days after a harvest. No room timeline (the progress bar is
+  it). Rules (`CM.history`, tested): a crop is the room's Metrc harvest days cut at 3 weeks; a tab goes to the latest
+  harvest day 3 to 30 days before it (else 0 to 2); a copied tab and a no-bigs line repeating an earlier tab's trim count
+  once; a tab under 1.2 lb per light is partial; a crop is trimmed only once a full tab starts on or after its last
+  harvest day (before that it is drying or waiting, "partly", with no numbers); two full tabs for one harvest day read
+  "check the sheets", with no numbers. lb per light uses the trim sheet's lights. Expected = the room's last 3 trimmed
+  crops' average lb per light x the last trim sheet's lights (the zones' sum only beside it: a zone with no lights counts
+  as none). Strains meet Metrc's harvests by strain number, else by name (ZB, DM, LL, NY, BM, BL, BD, TP; M8 and Medusa =
+  Voodoo; Jungle Juice = Antidote; Zan or Zang = Zangria in a cross); the names on Metrc's packages only for a line nothing
+  else matched, said on the page; a shared harvest, or plants that put a strain's g per plant over 3 times or under a
+  third of the crop's, show no plants. Olympic's trim sheets number the trims, not the rooms: there a tab goes to the room
+  whose harvest 3 to 30 days before shares the most of its strain numbers. A line that names a room ("Phenos (Room C)",
+  15th's 6 Lighter) goes to that room when it had a harvest then. Pounds only, never dollars.
 - **Tasks.** A tick belongs to the cycle it was made in and still counts after the flip is corrected by up to 3 weeks;
   an untick clears it under every date it is stored under. A past task not ticked shows as not ticked for 3 days, then
   just past.

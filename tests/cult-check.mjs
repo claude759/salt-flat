@@ -304,6 +304,166 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   ok(/drop function if exists public\.cult_crew_list\(\)/.test(sql) && !/create or replace function public\.cult_crew_list/.test(sql), 'the list of Wizard Trees accounts is no longer handed out');
 }
 
+// ---- step 3: harvests and trims, crop by crop (made-up rooms and weights; grams in, pounds out)
+{
+  const codes = { 'L1|2504': { name: 'Zangbanger', source: 'sheet' }, 'L1|2912': { name: 'Voodoo', source: 'sheet' }, 'L1|2559': { name: 'King Tide 23', source: 'sheet' } };
+  const hv = (name, day, code, plants, wet, packaged, extra) => ({ name, day, code, strain: null, plants, wet_g: wet, packaged_g: packaged || 0, finished: null, dry_room: 'Dry Room', ...(extra || {}) });
+  const tl = (tab, start, end, lights, strain, code, b, l, t, line, room) => ({ file: 'GROW 2026.xlsx', tab, block: 0, line: line || 0, room: room || '1', start, end, lights, strain, code, bigs_g: b, littles_g: l, trim_g: t });
+  const H = {
+    trims_from: '2026-01-16',
+    harvests: [
+      hv('F1-ZB-12012025', '2025-12-01', 'ZB', 25, 25000, 4000),
+      hv('F1-Zoza-04062026', '2026-04-06', 'Zoza', 10, 5000, 4000),
+      hv('F1-2504-04202026', '2026-04-20', '2504', 20, 20000, 3000), hv('F1-2912-04202026', '2026-04-20', '2912', 15, 15000, 2000),
+      hv('F1-Cream-04202026', '2026-04-20', 'Cream', 5, 4000, 500), hv('F1-Void-04202026', '2026-04-20', 'Void', 9, 0, 0),
+      hv('F1-2504-06222026', '2026-06-22', '2504', 30, 30000, 0), hv('F1-SmoZang-06222026', '2026-06-22', 'SmoZang', 8, 8000, 0),
+      hv('F1-2559-11102026', '2026-11-10', '2559', 12, 12000, 0),
+    ],
+    trims: [
+      tl('Jan 20', '2026-01-20', '2026-01-20', 0, 'Wizzy', null, 2000, 300, 500),
+      tl('April 16', '2026-04-16', '2026-04-16', 20, 'Zoza', null, 3000, 500, 1500),
+      tl('April 30', '2026-04-30', '2026-05-01', 20, 'Zoza', null, 0, 0, 1500, 0), tl('April 30', '2026-04-30', '2026-05-01', 20, 'Zangbanger', '2504', 9000, 1000, 3000, 1),
+      tl('April 30', '2026-04-30', '2026-05-01', 20, 'M8', '2912', 6000, 1500, 2500, 2), tl('April 30', '2026-04-30', '2026-05-01', 20, 'Phenos', null, 1000, 200, 300, 3),
+      tl('April 30', '2026-04-30', '2026-05-01', 20, 'Floorbuds', null, 0, 100, 0, 4),
+      tl('June 30 (early)', '2026-06-30', '2026-06-30', 20, 'Smoothie x Zang #5', null, 1500, 400, 600),
+      tl('July 2', '2026-07-02', '2026-07-03', 20, 'Zangbanger', '2504', 12000, 2000, 4000, 0), tl('July 2', '2026-07-02', '2026-07-03', 20, 'Smoothie x Zang #6', null, 2000, 500, 700, 1),
+      tl('July 2', '2026-07-02', '2026-07-03', 20, 'Smoothie x Zang #5', null, 1500, 400, 600, 2),
+    ],
+  };
+  const O = { license: 'L1', codes, today: '2026-11-20', room: '1', site: 'F' };
+  const R = CM.history(H, O);
+  const by = (R0, d) => R0.crops.find(c => c.days.includes(d));
+  const A = by(R, '2026-04-20'), B = by(R, '2026-06-22'), Cc = by(R, '2026-11-10'), D = by(R, '2025-12-01'), Lz = R.crops.find(c => c.noHarvest);
+  assert.deepEqual(R.crops.map(c => c.days.join('+') || 'none'), ['2025-12-01', 'none', '2026-04-06+2026-04-20', '2026-06-22', '2026-11-10'], 'crops are the harvest days cut at 3 weeks, a trim with no harvest is its own, oldest first'); n++;
+  assert.ok(!R.harvests.some(h => h.name === 'F1-Void-04202026'), 'a harvest with no wet weight is left out'); n++;
+  assert.deepEqual(A.tabs.map(T => T.tab), ['April 16', 'April 30'], 'each tab goes to the latest harvest day 3 to 30 days before it'); n++;
+  assert.deepEqual([A.tabs[0].partial, A.state, A.mainTab.tab], [true, 'trimmed', 'April 30'], 'a crop is trimmed by the full tab after its last harvest, not by a small early one'); n++;
+  assert.equal(A.tabs[1].lines.find(x => x.strain === 'Zoza').counted, false, "a no-bigs line repeating an earlier tab's trim counts once"); n++;
+  assert.deepEqual([A.bigs, A.littles, A.trim, A.flower, A.plants, A.lights], [19000, 3300, 7300, 22300, 50, 20], "the crop's grams, plants and lights"); n++;
+  assert.equal(+A.lbPerLight.toFixed(4), +(22300 / CM.LB / 20).toFixed(4), 'lb per light = (bigs + littles) in pounds / lights'); n++;
+  assert.equal(+A.bigsPct.toFixed(2), +(19000 / 22300 * 100).toFixed(2), 'bigs % of the flower'); n++;
+  assert.equal(+A.gPerPlant.toFixed(2), +(22300 / 50).toFixed(2), 'g per plant over all its Metrc plants'); n++;
+  assert.deepEqual(A.wetSuspect, ['F1-Zoza-04062026'], 'a harvest that packaged more than half its wet weight is flagged'); n++;
+  const st = Object.fromEntries(A.strains.map(x => [x.name, x]));
+  assert.deepEqual([st.Zoza.plants, st.Zangbanger.plants, st.Voodoo.plants], [10, 20, 15], 'sheet lines meet their Metrc harvests by strain number, else by name; M8 2912 is Voodoo'); n++;
+  assert.ok(st.Phenos.room && st.Floorbuds.room && st.Phenos.plants == null && A.strains[A.strains.length - 1].room, "Phenos and Floorbuds are the room's, last"); n++;
+  assert.deepEqual([A.metrcOnly.map(x => x.label), A.sheetOnly], [['Cream'], []], 'a Metrc harvest no line names is listed'); n++;
+  const copy = R.tabs.find(T => T.tab === 'June 30 (early)');
+  assert.ok(copy.repeatOf === 'July 2' && !B.tabs.includes(copy) && B.flower === 12000 + 2000 + 2000 + 500 + 1500 + 400, 'a tab shown again, the same, on a later tab within 3 weeks is a copy and counts once'); n++;
+  const s5 = B.strains.find(x => x.name === 'Smoothie x Zang #5'), s6 = B.strains.find(x => x.name === 'Smoothie x Zang #6');
+  assert.ok(s5.shared && s6.shared && s5.plants == null && B.metrcOnly.length === 0, 'two lines sharing one Metrc harvest get no plants, and the harvest is not missing'); n++;
+  assert.equal(+B.vsLast.lbPerLight.toFixed(2), +((B.lbPerLight - A.lbPerLight) / A.lbPerLight * 100).toFixed(2), 'against the crop before'); n++;
+  assert.deepEqual([Cc.state, Cc.dryDay, D.state, Lz.state, Lz.full], ['drying', 11, 'before', 'trimmed', false], 'drying (day 11), trimmed before the trim sheets, a trim with no harvest'); n++;
+  const w = CM.trimWait(CM.history(H, { ...O, today: '2026-12-05' }).crops, '2026-12-05');
+  assert.ok(w.length === 1 && /25 days ago/.test(w[0].text) && /not on the trim sheets yet/.test(w[0].text) && CM.trimWait(R.crops, '2026-11-20').length === 0, 'harvested 15 to 45 days ago with no trim: needs attention (drying is not)'); n++;
+  assert.equal(CM.trimWait(CM.history(H, { ...O, today: '2027-02-01' }).crops, '2027-02-01').length, 0, 'not after 45 days'); n++;
+  // the estimate: the room's rate x the lights it was counted on; the zones' lights only beside it
+  const e1 = CM.estimate(R.crops, 30);
+  assert.deepEqual([+e1.rate.toFixed(4), e1.lights, e1.zoneLights, +e1.lb.toFixed(2)], [+((A.lbPerLight + B.lbPerLight) / 2).toFixed(4), 20, 30, +(e1.rate * 20).toFixed(2)], "the estimate: the last 3 trimmed crops' rate x their trim sheet's lights"); n++;
+  assert.equal(CM.estimate([{ full: true, lbPerLight: 0.5, lights: 20 }, { full: true, lbPerLight: 3, lights: 20 }], 10).rate, 3, 'a crop under 1.2 lb per light is left out'); n++;
+  assert.ok(CM.estimate([], 30) === null && CM.history({}, {}).crops.length === 0, 'no history, no crops, no estimate'); n++;
+  // a small early tab: the crop is drying, partly on the sheets, with no numbers until its last harvest's trim lands
+  const Hp = { ...H, trims: H.trims.filter(t => t.tab === 'April 16') };
+  const Ap = by(CM.history(Hp, { ...O, today: '2026-04-27' }), '2026-04-20');
+  assert.deepEqual([Ap.state, Ap.partly, Ap.lbPerLight, Ap.gPerPlant, Ap.soFar], ['drying', true, null, null, 3500], 'an early partial tab leaves the crop drying, with what is on the sheets so far'); n++;
+  assert.ok(/only partly on the trim sheets/.test(CM.trimWait(CM.history(Hp, { ...O, today: '2026-05-10' }).crops, '2026-05-10')[0].text), 'and waiting says "only partly"'); n++;
+  // a tab 0 to 2 days after a harvest is its trim; two full tabs for one harvest are a mix-up with no numbers
+  const H2 = { harvests: [hv('F2-2504-10052026', '2026-10-05', '2504', 40, 40000)], trims: [tl('Oct 6', '2026-10-06', '2026-10-06', 20, 'Zangbanger', '2504', 20000, 2000, 5000)] };
+  const R2 = CM.history(H2, { ...O, today: '2026-11-20' });
+  assert.deepEqual([R2.crops.length, R2.crops[0].state], [1, 'trimmed'], 'a tab the day after a harvest is its trim'); n++;
+  const H3 = { harvests: [hv('F1-2504-09282026', '2026-09-28', '2504', 40, 40000)], trims: [tl('Oct 8', '2026-10-08', '2026-10-08', 20, 'Zangbanger', '2504', 20000, 2000, 5000), tl('Oct 20', '2026-10-20', '2026-10-20', 20, 'Zangbanger', '2504', 21000, 2500, 5000)] };
+  const C3 = CM.history(H3, { ...O, today: '2026-11-20' }).crops[0];
+  assert.deepEqual([C3.state, C3.double, C3.lbPerLight], ['check', ['Oct 8', 'Oct 20'], null], 'two full tabs for one harvest: check the sheets, no numbers'); n++;
+  // per strain: the packages' names only when nothing else matched; plants that don't fit the pounds are not shown
+  const H4 = { harvests: [hv('F1-2504-08242026', '2026-08-24', '2504', 50, 60000), hv('F1-Wizzy X Tide-08242026', '2026-08-24', 'Wizzy X Tide', 10, 9000, 0, { strain: 'King Tide' }),
+    hv('F1-Cream-08242026', '2026-08-24', 'Cream', 4, 5000, 0, { strain: 'Zangbanger' })],
+    trims: [tl('Sep 3', '2026-09-03', '2026-09-04', 20, 'Zangbanger', '2504', 6000, 1000, 2000, 0), tl('Sep 3', '2026-09-03', '2026-09-04', 20, 'KINGTIDE', '2559', 1000, 100, 300, 1),
+      tl('Sep 3', '2026-09-03', '2026-09-04', 20, 'Floorbuds', null, 0, 50, 0, 2)] };
+  const C4 = CM.history(H4, { ...O, today: '2026-11-20' }).crops[0], s4 = Object.fromEntries(C4.strains.map(x => [x.name, x]));
+  assert.deepEqual([s4['King Tide 23'].plants, s4['King Tide 23'].byVote, C4.metrcOnly.map(x => x.label)], [10, true, ['Cream']], "a line nothing names takes a harvest no line took whose packages carry its name, said as such"); n++;
+  const H5 = { harvests: [hv('B-2546-03172026', '2026-03-17', '2546', 87, 90000), hv('B-BlueMagXZB-03172026', '2026-03-17', 'BlueMagXZB', 5, 3000, 0, { strain: 'Jungle Juice' })],
+    trims: [tl('March 27', '2026-03-27', '2026-03-28', 30, 'Antidote', null, 40000, 5000, 9000, 0), tl('March 27', '2026-03-27', '2026-03-28', 30, 'Blue', null, 300, 50, 80, 1)] };
+  const s5b = CM.history(H5, { ...O, today: '2026-11-20' }).crops[0].strains.find(x => x.name === 'Antidote');
+  assert.deepEqual([s5b.plants, s5b.gPerPlant, s5b.doubt], [null, null, true], "plants that make a strain's g per plant over 3 times the crop's are not shown"); n++;
+  assert.ok(CM.skey('Smoothie x Zan #5') === CM.skey('Smoothie X Zangria') && CM.skey('Zang Banger') === 'ZANGBANGER' && CM.skey('ZB') === 'ZANGBANGER', 'Zan and Zang are Zangria in a cross; Zang Banger and ZB are Zangbanger'); n++;
+  assert.ok(CM.skey('Black Light #27') === CM.skey('BL') && CM.skey('M8') === CM.skey('Medusa') && CM.skey('Phenos (Room C)') === 'PHENOS', 'BL, M8 and Medusa, and a room named on a line'); n++;
+  // Olympic: its sheets number the trims, not the rooms, so a tab goes to the room whose harvest has its strain numbers
+  const hvO = (name, day, code, plants) => hv(name, day, code, plants, plants * 1000);
+  const HO = { harvests: [hvO('F2-07232026', '2026-07-23', '2507, 2509, 2510, 2513, 2522, 2697', 485), hvO('F2-2502-09282026', '2026-09-28', '2502', 69)],
+    site_harvests: [['1', '2026-07-29', '2501'], ['1', '2026-07-29', '2502'], ['1', '2026-07-29', '2508'], ['1', '2026-10-10', '2554'], ['1', '2026-10-10', '2550']],
+    trims: [tl('Aug 2', '2026-08-02', '2026-08-02', 54, 'Dark Matter', '2507', 20000, 3000, 6000, 0, '1'), tl('Aug 2', '2026-08-02', '2026-08-02', 54, 'Tea Party', '2509', 20000, 3000, 6000, 1, '1'),
+      tl('Aug 2', '2026-08-02', '2026-08-02', 54, 'British Delight', '2510', 10000, 1000, 3000, 2, '1'), tl('Aug 2', '2026-08-02', '2026-08-02', 54, 'Black Light', '2513', 9000, 1000, 2000, 3, '1'),
+      tl('Aug 2', '2026-08-02', '2026-08-02', 54, 'Black Magic', '2502', 2000, 300, 600, 4, '1'),
+      tl('Aug 8-9', '2026-08-08', '2026-08-09', 54, 'Bruce Banner', '2501', 30000, 4000, 9000, 0, '1'), tl('Aug 8-9', '2026-08-08', '2026-08-09', 54, 'Black Magic', '2502', 25000, 3000, 8000, 1, '1'),
+      tl('Oct 8-9', '2026-10-08', '2026-10-09', 54, 'Black Magic', '2502', 30000, 4000, 9000, 0, '2'),
+      tl('Oct 20-21', '2026-10-20', '2026-10-21', 54, 'Antidote', '2554', 30000, 4000, 9000, 0, '2'), tl('Oct 20-21', '2026-10-20', '2026-10-21', 54, 'Nebula', '2550', 20000, 3000, 6000, 1, '2')] };
+  const RO = CM.history(HO, { license: 'L9', codes: {}, today: '2026-11-24', room: '2', site: 'O' });
+  assert.deepEqual(RO.crops.map(c => [c.first, c.tabs.map(T => T.tab + (T.movedFrom ? ' from ' + T.movedFrom : ''))]), [['2026-07-23', ['Aug 2 from 1']], ['2026-09-28', ['Oct 8-9']]], "Olympic: Aug 2 (filed under 1) is room 2's; Oct 20-21 (filed under 2) is room 1's"); n++;
+  assert.deepEqual(RO.harvests[0].codes, ['2507', '2509', '2510', '2513', '2522', '2697'], 'a harvest of several strains keeps every strain number'); n++;
+  const RF = CM.history({ ...HO, harvests: [hvO('F2-2502-09282026', '2026-09-28', '2502', 69)] }, { license: 'L9', codes: {}, today: '2026-11-24', room: '2', site: 'F' });
+  assert.deepEqual([RF.crops.map(c => c.tabs.map(T => T.tab)), RF.crops[0].state], [[['Oct 8-9', 'Oct 20-21']], 'trimmed'], "elsewhere a tab stays in the sheet's room (two that share no strain are one trim, added up)"); n++;
+  // a tie between two rooms stays in the sheet's room, the same from every room's page
+  const tie = { harvests: [hvO('F2-2502-09282026', '2026-09-28', '2502', 69)], site_harvests: [['1', '2026-10-10', '2550']],
+    trims: [tl('Oct 23 cont.', '2026-10-23', '2026-10-23', 54, 'Black Magic', '2502', 5000, 500, 900, 0, '3'), tl('Oct 23 cont.', '2026-10-23', '2026-10-23', 54, 'Nebula', '2550', 4000, 500, 900, 1, '3')] };
+  const t2 = CM.history(tie, { license: 'L9', codes: {}, today: '2026-11-24', room: '2', site: 'O' });
+  assert.equal(t2.tabs.length, 0, "Olympic: a tab two rooms tie for stays in the sheet's room (3), so neither room counts it"); n++;
+  // a line that names another room goes there when that room had a harvest 3 to 30 days before (its lights stay behind)
+  const HI = (room, hvs, others) => ({ harvests: hvs, site_harvests: others, trims: [tl('June 16-18', '2026-06-16', '2026-06-18', 40, 'Zangbanger', '2504', 40000, 5000, 9000, 0, 'A'),
+    tl('June 16-18', '2026-06-16', '2026-06-18', 40, 'Phenos (Room C)', null, 4300, 0, 1000, 1, 'A'), tl('March 27-28', '2026-03-27', '2026-03-28', 33, 'Room C Phenos', null, 0, 0, 3000, 0, 'B')] });
+  const RC = CM.history(HI('C', [hv('FC-06062026', '2026-06-06', '2424', 124, 90000)], [['A', '2026-06-06', '2504'], ['B', '2026-03-17', '2546']]), { license: 'L1', codes, today: '2026-11-24', room: 'C', site: 'I' });
+  assert.deepEqual([RC.crops.length, RC.crops[0].flower, RC.crops[0].lights, RC.crops[0].strains[0].movedIn], [1, 4300, null, 'A'], "Room C's line in Room A's tab is Room C's, without A's lights"); n++;
+  const RA = CM.history(HI('A', [hv('FA-2504-06062026', '2026-06-06', '2504', 300, 300000)], [['C', '2026-06-06', '2424'], ['B', '2026-03-17', '2546']]), { license: 'L1', codes, today: '2026-11-24', room: 'A', site: 'I' });
+  assert.equal(RA.crops[0].flower, 45000, "and leaves Room A's crop"); n++;
+  const RB = CM.history(HI('B', [hv('FB-2546-03172026', '2026-03-17', '2546', 80, 80000)], [['C', '2026-06-06', '2424'], ['A', '2026-06-06', '2504']]), { license: 'L1', codes, today: '2026-11-24', room: 'B', site: 'I' });
+  assert.equal(RB.crops[0].trim, 3000, "a line naming a room with no harvest then stays where the sheet put it"); n++;
+  // trimmed by what is on the sheets: a poor crop under 1.2 lb per light counts once no tab has come for 3 weeks; a
+  // harvest trimmed over two tabs that split its strains adds up; a few plants cut late don't hold the crop back
+  const Hpoor = { harvests: [hv('F1-2504-10292026', '2026-10-29', '2504', 300, 300000)], trims: [tl('Nov 6', '2026-11-06', '2026-11-07', 37, 'Zangbanger', '2504', 15000, 3000, 6000)] };
+  assert.deepEqual(['2026-11-12', '2026-11-30'].map(d => CM.history(Hpoor, { ...O, today: d }).crops[0].state), ['drying', 'trimmed'], 'a poor crop (under 1.2 lb per light) counts as trimmed once no tab has come for 3 weeks'); n++;
+  const Hsplit = { harvests: [hv('F1-2504-10292026', '2026-10-29', '2504', 150, 150000), hv('F1-2548-10292026', '2026-10-29', '2548', 150, 150000)],
+    trims: [tl('Nov 6', '2026-11-06', '2026-11-06', 37, 'Zangbanger', '2504', 15000, 2000, 6000, 0), tl('Nov 7', '2026-11-07', '2026-11-07', 37, 'Bluebanger', '2548', 14000, 2000, 6000, 0)] };
+  const Cs = CM.history(Hsplit, { ...O, today: '2026-11-12' }).crops[0];
+  assert.deepEqual([Cs.state, Cs.flower, Cs.double], ['trimmed', 33000, null], 'two tabs that split one harvest between them, each under 1.2 lb per light, add up to the trim'); n++;
+  const Hlate = { harvests: [hv('F1-2504-10292026', '2026-10-29', '2504', 300, 300000), hv('F1-2504-11092026', '2026-11-09', '2504', 4, 4000)],
+    trims: [tl('Nov 6-7', '2026-11-06', '2026-11-07', 37, 'Zangbanger', '2504', 45000, 5000, 15000)] };
+  assert.equal(CM.history(Hlate, { ...O, today: '2026-11-24' }).crops[0].state, 'trimmed', 'a few plants cut after the trim began (under a tenth) leave the crop trimmed'); n++;
+  // a tab with no lights is of unknown size: never one of "two full trims"
+  const Hnl = { harvests: [hv('FC-2424-06062026', '2026-06-06', '2424', 124, 90000)], site_harvests: [['A', '2026-06-06', '2504']],
+    trims: [tl('June 16-18', '2026-06-16', '2026-06-18', 40, 'Phenos (Room C)', null, 4300, 0, 1000, 1, 'A'), tl('June 19 (6L)', '2026-06-19', '2026-06-19', 6, 'Phenos', null, 5000, 400, 900, 0, 'C')] };
+  assert.equal(CM.history(Hnl, { license: 'L1', codes, today: '2026-11-24', room: 'C', site: 'I' }).crops[0].state, 'trimmed', 'a moved line with no lights does not make two full trims'); n++;
+  // a doubted strain's harvest is listed as not matched; a line naming another room that stays keeps its name
+  const C5 = CM.history(H5, { ...O, today: '2026-11-20' }).crops[0];
+  assert.ok(C5.metrcOnly.some(x => x.name === 'B-BlueMagXZB-03172026'), "a doubted strain's harvest shows as not matched"); n++;
+  const RB2 = CM.history(HI('B', [hv('FB-2546-03172026', '2026-03-17', '2546', 80, 80000)], [['C', '2026-06-06', '2424']]), { license: 'L1', codes, today: '2026-11-24', room: 'B', site: 'I' });
+  assert.deepEqual(RB2.crops[0].strains.map(x => x.name), ['Room C Phenos'], 'a line naming another room that stays keeps its name'); n++;
+  // a partly trimmed crop lists what is still to trim
+  assert.deepEqual(Ap.toTrim.map(x => x.label).sort(), ['Cream', 'Voodoo', 'Zangbanger'], 'a partly trimmed crop lists the harvests still to trim'); n++;
+  // the database side
+  const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
+  const fn = (sql.match(/create or replace function public\.cult_room_history\(p_room text\)[\s\S]*?end \$\$;/) || [''])[0];
+  ok(/security definer set search_path = public/.test(fn) && /if not public\.cult_can_view\(\) then raise exception 'not allowed'/.test(fn), 'the history is read only by whoever can open the page');
+  ok(/revoke all on function public\.cult_room_history\(text\) from public, anon;/.test(sql) && /grant execute on function public\.cult_room_history\(text\) to authenticated;/.test(sql), 'not by anon');
+  ok(/archived_date is null/.test(fn) && /coalesce\(h\.wet_weight, 0\) > 0/.test(fn) && /'\^F\(\[0-9A-Z\]\)\$'/.test(fn), "voided and weightless harvests are left out; 'F1-' and 'FA-' are rooms 1 and A");
+  ok(/r\.site = 'O'/.test(fn) && /\\mroom\\s\*' \|\| rk/.test(fn) && /'site_harvests'/.test(fn) && /'room', upper\(btrim\(t\.room\)\)/.test(fn), "Olympic's lines, lines naming the room, and the other rooms' harvest days go to the page");
+  ok(!/dollar|price|cost|went|buyer|package_count/i.test(fn.replace(/^--.*$/gm, '')), 'pounds only: no money, buyers or packages');
+  // the page side
+  ok(html.includes("sb.rpc('cult_room_history', { p_room: id })") && /id="hv-panel"/.test(html) && /id="hv-body"/.test(html), 'the room page reads and shows its harvests');
+  ok(/CM\.trimWait\(HV\.R\.crops, today\)/.test(html) && /CM\.estimate\(HV\.R\.crops, V\.lights\)/.test(html) && /id="hv-est"/.test(html), 'the wait goes to Needs attention, the estimate to the Harvest tile');
+  ok(/loadHistory\(S\.room, true\)/.test(html) && /HIST_TTL = 60 \* 60e3/.test(html) && /e\.busy/.test(html), 'read on open, after an hour, and on Refresh; one read at a time');
+  const lh = (html.match(/async function loadHistory[\s\S]*?\n\}/) || [''])[0];
+  ok(/if \(room\) paintHv\(room\);/.test(lh) && !/renderRoom/.test(lh), 'a late answer repaints only the parts it feeds, never the whole page');
+  ok(/pollTimer = setInterval\(async \(\) => \{ if \(document\.visibilityState === 'visible' && !formOpen\(\)\)/.test(html) && /S\.room && !formOpen\(\)\) renderRoom/.test(html), 'the poll and a resize wait while a form is open');
+  ok(/<button type="button" class="hvr"/.test(html) && /\.hvl \.hc3,\.hvl \.hc6,\.hvd \.hcb,\.hvd \.hct\{display:none\}/.test(html) && /table\.t th\.n\{text-align:right\}/.test(html), 'crops are buttons; a phone hides two columns of the list and two of the strain table; number headers sit over their numbers');
+  ok(/cult_room_history: a =>/.test(html), 'the local preview answers it too');
+  ok(/class="ph"/.test(html) && /\.hvl \.ph\{display:inline\}/.test(html) && html.indexOf('.hvl .ph{display:none}') < html.indexOf('.hvl .ph{display:inline}') && /aria-label="\$\{esc\(said \+ '\. Its trim report\.'\)\}"/.test(html), "on a phone a crop's state shows in the list; each crop says what its numbers are");
+  ok(/if \(window\.innerWidth === w\) return;/.test(html), 'a resize that only changes the height (a phone\'s address bar) redraws nothing');
+  ok(/if \(!focusKey && a && b\.contains\(a\) && a\.dataset && a\.dataset\.crop\) focusKey = a\.dataset\.crop;/.test(html) && /const r = b\.querySelectorAll\('button\.hvr'\)\[n\]; if \(r\) r\.focus\(\);/.test(html), 'focus stays on its crop through a repaint, and Show older moves it to the first crop shown');
+  ok(/The harvest history isn't on the server yet\. Ask Gianni\./.test(html) && /Couldn't read them again: showing the copy from/.test(html), 'a failed read says what can help, and a failed re-read says the copy is the last one');
+  ok(/if \(c\.double\) \{\s*h \+= '<div class="wrapx"><table class="t"><thead><tr><th>Tab on the trim sheets<\/th>/.test(html), "a crop to check shows each tab's pounds, never the two added up");
+  ok(/Still to trim: /.test(html) && /if \(c\.full\) \{\s*const nm = \[\];/.test(html), "a partly trimmed crop lists what is still to trim; 'not matched' is said only of a trimmed crop");
+  ok(/S\.attBase = \(S\.attBase \|\| \[\]\)\.filter\(x => x\.k !== 'trim'\)/.test(html) && /S\.attBase\.concat\(glAtt\(glCompute\(room\)\)\)/.test(html), "a late history answer redraws Needs attention with Growlink's items, as glRefresh does");
+}
+
 // page wiring the review asked for
 ok(!/loadAll\(true\);\s*renderRoom\(V\.room\)/.test(html), 'after a save the room is redrawn from the reloaded rooms');
 ok(!/\.select\('\*'\)/.test(html), 'every read names its columns (egress)');
