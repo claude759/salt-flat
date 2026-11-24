@@ -746,8 +746,14 @@ launch. The check fails if one of the three pieces is missing.
   warnings), lights per table (the diagram's fixtures, else typed under Arrange zones), `&zone=N` links, and Print door
   sheet (dates, map, zones with their table, weekly targets, the task calendar with tick boxes, note lines) with weekly
   runoff log pages (each day x zone, blank columns), like its flower run sheet. Strain names print as the page shows them.
-  Steps 2-5 (runoff log and one-off tasks typed in the app; harvest lots and trim reports from the pipeline tables; run
-  planning; veg and dry rooms, Growlink, labels) wait on Gianni's answers.
+  Step 2 shipped 11/24 (Gianni: the growers have Wizard Trees logins): the **crew** (`cult_crew`, picked by an editor
+  under Access from the Wizard Trees accounts) tick tasks, skip them, add a note or move one to another day
+  (`cult_task_done.status` open / done / skipped, `note`, `moved_to`), add one-off tasks (`cult_room_tasks`, deleted by
+  whoever added them or an editor) and log runoff (`cult_runoff`: day, zone, cup ml, feed pH and EC, tray ml, runoff pH
+  and EC; runoff % = tray / cup, worked out by the database; no future days; removed by an editor, or by whoever logged
+  it within a day). Editors keep zones, flips, maps, strain names and room notes (`cult_rooms.notes`). Steps 3-5
+  (harvest lots and trim reports from the pipeline tables; run planning; veg and dry rooms, Growlink, labels) wait on
+  Gianni's answers.
 - **Tasks.** A tick belongs to the cycle it was made in and still counts after the flip is corrected by up to 3 weeks;
   an untick clears it under every date it is stored under. A past task not ticked shows as not ticked for 3 days, then
   just past.

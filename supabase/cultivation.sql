@@ -42,6 +42,24 @@ $$;
 revoke all on function public.cult_can_edit() from public, anon;
 grant execute on function public.cult_can_edit() to authenticated;
 
+-- the crew (growers): they tick, skip, note and move tasks, add one-off tasks and log runoff. Editors keep everything
+-- else and manage this list in the app (Access). Gianni 2026-11-24: the growers have Wizard Trees Google logins.
+create table if not exists public.cult_crew (
+  email     text primary key check (email = lower(email) and email like '%@wizardtrees.com'),
+  added_at  timestamptz not null default now(),
+  added_by  text
+);
+alter table public.cult_crew enable row level security;   -- no policies: read through cult_can_work() and cult_crew_list()
+revoke all on table public.cult_crew from public, anon, authenticated;
+
+create or replace function public.cult_can_work()
+returns boolean language sql stable security definer set search_path = public as $$
+  select public.cult_can_edit()
+      or (public.is_staff() and exists (select 1 from public.cult_crew c where c.email = public.cult_jwt_email()));
+$$;
+revoke all on function public.cult_can_work() from public, anon;
+grant execute on function public.cult_can_work() to authenticated;
+
 -- ---------------------------------------------------------------- rooms
 -- One row per flower room. id: site letter + room (S1 = 23rd Room 1, F2 = 25th Room 2, IA = 15th Room A,
 -- IC = 15th 6 lighter, O3 = Olympic Room 3). license + metrc_location tie the room to Metrc's plants.
@@ -62,6 +80,7 @@ create table if not exists public.cult_rooms (
   updated_at      timestamptz not null default now(),
   updated_by      text
 );
+alter table public.cult_rooms add column if not exists notes text check (length(notes) <= 2000);   -- room notes (editors)
 alter table public.cult_rooms enable row level security;
 drop policy if exists cult_rooms_select on public.cult_rooms;
 create policy cult_rooms_select on public.cult_rooms for select to authenticated using (public.cult_can_view());
@@ -97,6 +116,12 @@ create table if not exists public.cult_task_done (
   done_by   text,
   primary key (room_id, cycle, task_key)
 );
+-- step 2 (crew work): a task can be done, skipped, or left open with a note or a new date (moved_to)
+alter table public.cult_task_done add column if not exists status text not null default 'done';
+alter table public.cult_task_done drop constraint if exists cult_task_done_status_check;
+alter table public.cult_task_done add constraint cult_task_done_status_check check (status in ('open', 'done', 'skipped'));
+alter table public.cult_task_done add column if not exists note text check (length(note) <= 500);
+alter table public.cult_task_done add column if not exists moved_to date;
 alter table public.cult_task_done enable row level security;
 drop policy if exists cult_task_done_select on public.cult_task_done;
 create policy cult_task_done_select on public.cult_task_done for select to authenticated using (public.cult_can_view());
@@ -240,10 +265,10 @@ revoke all on function public.cult_metrc_touch(text, jsonb) from public;
 grant execute on function public.cult_metrc_touch(text, jsonb) to anon, authenticated;
 
 -- ---------------------------------------------------------------- edits from the page (editors only)
--- What the page can say about the caller: {view, edit, email}
+-- What the page can say about the caller: {view, work (crew), edit, email}
 create or replace function public.cult_whoami()
 returns jsonb language sql stable security definer set search_path = public as $$
-  select jsonb_build_object('view', public.cult_can_view(), 'edit', public.cult_can_edit(), 'email', public.cult_jwt_email());
+  select jsonb_build_object('view', public.cult_can_view(), 'work', public.cult_can_work(), 'edit', public.cult_can_edit(), 'email', public.cult_jwt_email());
 $$;
 revoke all on function public.cult_whoami() from public, anon;
 grant execute on function public.cult_whoami() to authenticated;
@@ -255,8 +280,11 @@ declare r public.cult_rooms;
 begin
   if not public.cult_can_edit() then raise exception 'not allowed'; end if;
   if jsonb_typeof(p_set) is distinct from 'object' then raise exception 'p_set must be an object'; end if;
-  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout')) then
-    raise exception 'only flip_date, harvest_day and layout can be changed here';
+  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout', 'notes')) then
+    raise exception 'only flip_date, harvest_day, layout and notes can be changed here';
+  end if;
+  if p_set ? 'notes' and (jsonb_typeof(p_set->'notes') not in ('string', 'null') or length(coalesce(p_set->>'notes', '')) > 2000) then
+    raise exception 'notes must be text of up to 2000 characters';
   end if;
   if p_set ? 'flip_date' and jsonb_typeof(p_set->'flip_date') <> 'null'
      and coalesce(p_set->>'flip_date', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'flip_date must be a date'; end if;
@@ -282,6 +310,7 @@ begin
     flip_date = case when p_set ? 'flip_date' then (p_set->>'flip_date')::date else flip_date end,
     harvest_day = case when p_set ? 'harvest_day' then (p_set->>'harvest_day')::int else harvest_day end,
     layout = case when p_set ? 'layout' then p_set->'layout' else layout end,
+    notes = case when p_set ? 'notes' then nullif(btrim(coalesce(p_set->>'notes', '')), '') else notes end,
     updated_at = now(), updated_by = public.cult_jwt_email()
    where id = p_room returning * into r;
   if r.id is null then raise exception 'no such room'; end if;
@@ -319,15 +348,20 @@ grant execute on function public.cult_zones_set(text, jsonb) to authenticated;
 create or replace function public.cult_task_mark(p_room text, p_cycle date, p_task text, p_done boolean)
 returns jsonb language plpgsql security definer set search_path = public as $$
 begin
-  if not public.cult_can_edit() then raise exception 'not allowed'; end if;
+  if not public.cult_can_work() then raise exception 'not allowed'; end if;
   if not exists (select 1 from public.cult_rooms where id = p_room) then raise exception 'no such room'; end if;
   if p_cycle is null or coalesce(length(p_task), 0) not between 1 and 200 then raise exception 'cycle and task needed'; end if;
   if p_done then
-    insert into public.cult_task_done (room_id, cycle, task_key, done_at, done_by)
-    values (p_room, p_cycle, p_task, now(), public.cult_jwt_email())
-    on conflict (room_id, cycle, task_key) do nothing;
+    insert into public.cult_task_done as d (room_id, cycle, task_key, status, done_at, done_by)
+    values (p_room, p_cycle, p_task, 'done', now(), public.cult_jwt_email())
+    on conflict (room_id, cycle, task_key) do update set status = 'done', done_at = now(), done_by = excluded.done_by
+      where d.status <> 'done';
   else
-    delete from public.cult_task_done where room_id = p_room and cycle = p_cycle and task_key = p_task;
+    -- unticked: a note or a new date stays (the task is open again); nothing else to keep: the row goes
+    update public.cult_task_done set status = 'open', done_at = now(), done_by = public.cult_jwt_email()
+     where room_id = p_room and cycle = p_cycle and task_key = p_task and (note is not null or moved_to is not null);
+    delete from public.cult_task_done
+     where room_id = p_room and cycle = p_cycle and task_key = p_task and note is null and moved_to is null;
   end if;
   return jsonb_build_object('ok', true);
 end $$;
@@ -349,3 +383,204 @@ begin
 end $$;
 revoke all on function public.cult_strain_code_set(text, text, text) from public, anon;
 grant execute on function public.cult_strain_code_set(text, text, text) to authenticated;
+
+-- ---------------------------------------------------------------- step 2: crew work (Gianni 2026-11-24)
+-- a calendar task of one cycle: status (open / done / skipped), a note, a new date. Only the keys present in p_set
+-- change; a row left open with no note and no new date goes.
+create or replace function public.cult_task_set(p_room text, p_cycle date, p_task text, p_set jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare who text := public.cult_jwt_email();
+begin
+  if not public.cult_can_work() then raise exception 'not allowed'; end if;
+  if not exists (select 1 from public.cult_rooms where id = p_room) then raise exception 'no such room'; end if;
+  if p_cycle is null or coalesce(length(p_task), 0) not between 1 and 200 then raise exception 'cycle and task needed'; end if;
+  if jsonb_typeof(p_set) is distinct from 'object' then raise exception 'p_set must be an object'; end if;
+  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('status', 'note', 'moved_to')) then raise exception 'only status, note and moved_to'; end if;
+  if p_set ? 'status' and coalesce(p_set->>'status', '') not in ('open', 'done', 'skipped') then raise exception 'status must be open, done or skipped'; end if;
+  if p_set ? 'note' and (jsonb_typeof(p_set->'note') not in ('string', 'null') or length(coalesce(p_set->>'note', '')) > 500) then raise exception 'a note is up to 500 characters'; end if;
+  if p_set ? 'moved_to' and jsonb_typeof(p_set->'moved_to') <> 'null' and coalesce(p_set->>'moved_to', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'moved_to must be a date'; end if;
+  insert into public.cult_task_done as d (room_id, cycle, task_key, status, note, moved_to, done_at, done_by)
+  values (p_room, p_cycle, p_task, coalesce(p_set->>'status', 'open'), nullif(btrim(coalesce(p_set->>'note', '')), ''),
+          (p_set->>'moved_to')::date, now(), who)
+  on conflict (room_id, cycle, task_key) do update set
+    status = case when p_set ? 'status' then excluded.status else d.status end,
+    note = case when p_set ? 'note' then excluded.note else d.note end,
+    moved_to = case when p_set ? 'moved_to' then excluded.moved_to else d.moved_to end,
+    done_at = now(), done_by = who;
+  delete from public.cult_task_done
+   where room_id = p_room and cycle = p_cycle and task_key = p_task and status = 'open' and note is null and moved_to is null;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function public.cult_task_set(text, date, text, jsonb) from public, anon;
+grant execute on function public.cult_task_set(text, date, text, jsonb) to authenticated;
+
+-- one-off tasks of a room (not on its calendar): added and ticked by the crew; deleted by whoever added them, or editors
+create table if not exists public.cult_room_tasks (
+  id          bigint generated always as identity primary key,
+  room_id     text not null references public.cult_rooms(id) on delete cascade,
+  due         date not null,
+  kind        text not null default 'ACTION' check (kind ~ '^[A-Z]{2,12}$'),
+  text        text not null check (length(text) between 1 and 300),
+  status      text not null default 'open' check (status in ('open', 'done', 'skipped')),
+  note        text check (length(note) <= 500),
+  created_at  timestamptz not null default now(),
+  created_by  text,
+  done_at     timestamptz,
+  done_by     text,
+  deleted_at  timestamptz,
+  deleted_by  text
+);
+create index if not exists cult_room_tasks_room on public.cult_room_tasks (room_id, due);
+alter table public.cult_room_tasks enable row level security;
+drop policy if exists cult_room_tasks_select on public.cult_room_tasks;
+create policy cult_room_tasks_select on public.cult_room_tasks for select to authenticated using (public.cult_can_view() and deleted_at is null);
+revoke insert, update, delete on table public.cult_room_tasks from anon, authenticated;
+
+create or replace function public.cult_room_task_add(p_room text, p_due date, p_kind text, p_text text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare nid bigint;
+begin
+  if not public.cult_can_work() then raise exception 'not allowed'; end if;
+  if not exists (select 1 from public.cult_rooms where id = p_room) then raise exception 'no such room'; end if;
+  if p_due is null or p_due < current_date - 400 or p_due > current_date + 400 then raise exception 'a due date within a year'; end if;
+  if coalesce(p_kind, '') !~ '^[A-Z]{2,12}$' then raise exception 'kind must be a word in capitals'; end if;
+  if coalesce(btrim(p_text), '') = '' or length(p_text) > 300 then raise exception 'say what the task is (up to 300 characters)'; end if;
+  insert into public.cult_room_tasks (room_id, due, kind, text, created_by) values (p_room, p_due, p_kind, btrim(p_text), public.cult_jwt_email())
+  returning id into nid;
+  return jsonb_build_object('ok', true, 'id', nid);
+end $$;
+revoke all on function public.cult_room_task_add(text, date, text, text) from public, anon;
+grant execute on function public.cult_room_task_add(text, date, text, text) to authenticated;
+
+-- status (open / done / skipped), a note, a new due date; delete: true removes it (whoever added it, or an editor)
+create or replace function public.cult_room_task_set(p_id bigint, p_set jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare t public.cult_room_tasks; who text := public.cult_jwt_email();
+begin
+  if not public.cult_can_work() then raise exception 'not allowed'; end if;
+  select * into t from public.cult_room_tasks where id = p_id and deleted_at is null;
+  if t.id is null then raise exception 'no such task'; end if;
+  if jsonb_typeof(p_set) is distinct from 'object' then raise exception 'p_set must be an object'; end if;
+  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('status', 'note', 'due', 'delete')) then raise exception 'only status, note, due and delete'; end if;
+  if p_set ? 'delete' then
+    if not (public.cult_can_edit() or t.created_by = who) then raise exception 'only whoever added it, or an editor, can delete it'; end if;
+    update public.cult_room_tasks set deleted_at = now(), deleted_by = who where id = p_id;
+    return jsonb_build_object('ok', true);
+  end if;
+  if p_set ? 'status' and coalesce(p_set->>'status', '') not in ('open', 'done', 'skipped') then raise exception 'status must be open, done or skipped'; end if;
+  if p_set ? 'note' and (jsonb_typeof(p_set->'note') not in ('string', 'null') or length(coalesce(p_set->>'note', '')) > 500) then raise exception 'a note is up to 500 characters'; end if;
+  if p_set ? 'due' and coalesce(p_set->>'due', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'due must be a date'; end if;
+  update public.cult_room_tasks set
+    status = case when p_set ? 'status' then p_set->>'status' else status end,
+    done_at = case when p_set ? 'status' then case when p_set->>'status' = 'open' then null else now() end else done_at end,
+    done_by = case when p_set ? 'status' then case when p_set->>'status' = 'open' then null else who end else done_by end,
+    note = case when p_set ? 'note' then nullif(btrim(coalesce(p_set->>'note', '')), '') else note end,
+    due = case when p_set ? 'due' then (p_set->>'due')::date else due end
+   where id = p_id;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function public.cult_room_task_set(bigint, jsonb) from public, anon;
+grant execute on function public.cult_room_task_set(bigint, jsonb) to authenticated;
+
+-- the runoff log: what went in (cup ml, feed pH, EC) and what came out (tray ml, runoff pH, EC) for a zone on a day;
+-- runoff % = tray / cup. The crew log it; editors (or whoever logged it, within a day) remove a row.
+create table if not exists public.cult_runoff (
+  id          bigint generated always as identity primary key,
+  room_id     text not null references public.cult_rooms(id) on delete cascade,
+  day         date not null,
+  zone        int check (zone between 1 and 20),
+  cup_ml      numeric check (cup_ml > 0 and cup_ml <= 100000),
+  feed_ph     numeric check (feed_ph between 0 and 14),
+  feed_ec     numeric check (feed_ec between 0 and 30),
+  tray_ml     numeric check (tray_ml >= 0 and tray_ml <= 100000),
+  runoff_ph   numeric check (runoff_ph between 0 and 14),
+  runoff_ec   numeric check (runoff_ec between 0 and 30),
+  runoff_pct  numeric generated always as (case when cup_ml > 0 and tray_ml is not null then round(tray_ml / cup_ml * 100, 1) end) stored,
+  note        text check (length(note) <= 500),
+  created_at  timestamptz not null default now(),
+  created_by  text,
+  deleted_at  timestamptz,
+  deleted_by  text
+);
+create index if not exists cult_runoff_room on public.cult_runoff (room_id, day);
+alter table public.cult_runoff enable row level security;
+drop policy if exists cult_runoff_select on public.cult_runoff;
+create policy cult_runoff_select on public.cult_runoff for select to authenticated using (public.cult_can_view() and deleted_at is null);
+revoke insert, update, delete on table public.cult_runoff from anon, authenticated;
+
+create or replace function public.cult_runoff_add(p_room text, p_row jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare nid bigint; la date := (now() at time zone 'America/Los_Angeles')::date; k text;
+begin
+  if not public.cult_can_work() then raise exception 'not allowed'; end if;
+  if not exists (select 1 from public.cult_rooms where id = p_room) then raise exception 'no such room'; end if;
+  if jsonb_typeof(p_row) is distinct from 'object' then raise exception 'p_row must be an object'; end if;
+  if exists (select 1 from jsonb_object_keys(p_row) x where x not in ('day', 'zone', 'cup_ml', 'feed_ph', 'feed_ec', 'tray_ml', 'runoff_ph', 'runoff_ec', 'note')) then
+    raise exception 'unknown field';
+  end if;
+  if coalesce(p_row->>'day', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'day must be a date'; end if;
+  if (p_row->>'day')::date > la then raise exception 'no future days'; end if;
+  if (p_row->>'day')::date < la - 400 then raise exception 'too far back'; end if;
+  foreach k in array array['zone', 'cup_ml', 'feed_ph', 'feed_ec', 'tray_ml', 'runoff_ph', 'runoff_ec'] loop
+    if p_row ? k and jsonb_typeof(p_row->k) not in ('number', 'null') then raise exception '% must be a number', k; end if;
+  end loop;
+  if (p_row->>'zone') is not null and (p_row->>'zone') !~ '^[0-9]{1,2}$' then raise exception 'zone must be a whole number'; end if;
+  if coalesce(p_row->>'cup_ml', p_row->>'feed_ph', p_row->>'feed_ec', p_row->>'tray_ml', p_row->>'runoff_ph', p_row->>'runoff_ec') is null then
+    raise exception 'log at least one reading';
+  end if;
+  if p_row ? 'note' and (jsonb_typeof(p_row->'note') not in ('string', 'null') or length(coalesce(p_row->>'note', '')) > 500) then raise exception 'a note is up to 500 characters'; end if;
+  insert into public.cult_runoff (room_id, day, zone, cup_ml, feed_ph, feed_ec, tray_ml, runoff_ph, runoff_ec, note, created_by)
+  values (p_room, (p_row->>'day')::date, (p_row->>'zone')::int, (p_row->>'cup_ml')::numeric, (p_row->>'feed_ph')::numeric,
+          (p_row->>'feed_ec')::numeric, (p_row->>'tray_ml')::numeric, (p_row->>'runoff_ph')::numeric, (p_row->>'runoff_ec')::numeric,
+          nullif(btrim(coalesce(p_row->>'note', '')), ''), public.cult_jwt_email())
+  returning id into nid;
+  return jsonb_build_object('ok', true, 'id', nid);
+end $$;
+revoke all on function public.cult_runoff_add(text, jsonb) from public, anon;
+grant execute on function public.cult_runoff_add(text, jsonb) to authenticated;
+
+create or replace function public.cult_runoff_delete(p_id bigint)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare r public.cult_runoff; who text := public.cult_jwt_email();
+begin
+  if not public.cult_can_work() then raise exception 'not allowed'; end if;
+  select * into r from public.cult_runoff where id = p_id and deleted_at is null;
+  if r.id is null then raise exception 'no such row'; end if;
+  if not (public.cult_can_edit() or (r.created_by = who and r.created_at > now() - interval '1 day')) then
+    raise exception 'only an editor, or whoever logged it within a day, can remove it';
+  end if;
+  update public.cult_runoff set deleted_at = now(), deleted_by = who where id = p_id;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function public.cult_runoff_delete(bigint) from public, anon;
+grant execute on function public.cult_runoff_delete(bigint) to authenticated;
+
+-- Access (editors): the crew list, the editors, and the Wizard Trees accounts to pick from
+create or replace function public.cult_crew_list()
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.cult_can_edit() then raise exception 'not allowed'; end if;
+  return jsonb_build_object(
+    'crew', coalesce((select jsonb_agg(jsonb_build_object('email', c.email, 'added_at', c.added_at, 'added_by', c.added_by) order by c.email) from public.cult_crew c), '[]'::jsonb),
+    'editors', coalesce((select jsonb_agg(e.email order by e.email) from public.cult_editors e), '[]'::jsonb),
+    'staff', coalesce((select jsonb_agg(jsonb_build_object('email', lower(u.email), 'name', coalesce(u.raw_user_meta_data->>'full_name', u.raw_user_meta_data->>'name')) order by lower(u.email))
+                         from auth.users u where u.email_confirmed_at is not null and lower(u.email) like '%@wizardtrees.com'), '[]'::jsonb));
+end $$;
+revoke all on function public.cult_crew_list() from public, anon;
+grant execute on function public.cult_crew_list() to authenticated;
+
+create or replace function public.cult_crew_set(p_email text, p_on boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare e text := lower(btrim(coalesce(p_email, '')));
+begin
+  if not public.cult_can_edit() then raise exception 'not allowed'; end if;
+  if e !~ '^[a-z0-9._%+-]+@wizardtrees\.com$' then raise exception 'a Wizard Trees email address'; end if;
+  if p_on then
+    insert into public.cult_crew (email, added_by) values (e, public.cult_jwt_email()) on conflict (email) do nothing;
+  else
+    delete from public.cult_crew where email = e;
+  end if;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function public.cult_crew_set(text, boolean) from public, anon;
+grant execute on function public.cult_crew_set(text, boolean) to authenticated;

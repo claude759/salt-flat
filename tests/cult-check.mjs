@@ -275,6 +275,27 @@ ok(/function buildPrint\(/.test(html) && /Runoff log · week/.test(html) && /&#9
 ok(/data-range="\$\{d\}"/.test(html) && /cult\.range/.test(html), 'Coming up has Today / 7 days / 30 days, remembered on the device');
 ok(/\[#&\]zone=/.test(html), 'a zone in the address opens its card');
 
+// step 2: tasks done, skipped or moved, with notes; one-off tasks; the runoff log
+const done3 = [{ room_id: 'S3', cycle: '2026-10-14', task_key: CM.taskKey({ day: 3, text: 'CAL 58' }), status: 'skipped', note: 'rain' },
+  { room_id: 'S3', cycle: '2026-10-14', task_key: CM.taskKey({ day: 42, text: 'FINAL LEAF PULL' }), status: 'open', moved_to: '2026-11-26' }];
+const one = [{ id: 7, room_id: 'S3', due: '2026-11-25', kind: 'IPM', text: 'Mites on zone 4', status: 'open', created_by: 'a@wizardtrees.com' },
+  { id: 8, room_id: 'S3', due: '2026-01-01', kind: 'NOTE', text: 'Old and done', status: 'done' }, { id: 9, room_id: 'S1', due: '2026-11-25', text: 'Another room' }];
+const T3 = CM.tasks(room, CM.cycle(room, P, today), done3, today, one);
+const cal3 = T3.find(t => t.day === 3), leaf = T3.find(t => t.text === 'FINAL LEAF PULL'), mites = T3.find(t => t.src === 'one');
+assert.equal(cal3.status, 'skipped'); assert.equal(cal3.note, 'rain'); n += 2;
+assert.deepEqual([leaf.date, leaf.planned, leaf.moved, leaf.status], ['2026-11-26', '2026-11-24', true, 'next'], 'a moved task sits on its new day, still open'); n++;
+assert.deepEqual([mites.date, mites.kind, mites.day, mites.status], ['2026-11-25', 'IPM', 43, 'next'], "a one-off task joins the room's list on its due day"); n++;
+assert.equal(T3.filter(t => t.src === 'one').length, 1, "an old closed one-off and another room's are left out"); n++;
+assert.deepEqual(T3.map(t => t.date), [...T3.map(t => t.date)].sort(), 'tasks run by date'); n++;
+assert.ok(!CM.comingUp(CM.cycle(room, P, today), T3, '2026-10-15', 7).some(t => t.text === 'CAL 58'), 'a skipped task is not coming up'); n++;
+assert.ok(!CM.attention(CM.cycle(room, P, today), T3, '2026-10-17', [], []).some(a => /CAL 58/.test(a.text)), 'nor missed'); n++;
+assert.equal(CM.runoffPct({ cup_ml: 500, tray_ml: 100 }), 20); assert.equal(CM.runoffPct({ cup_ml: 0, tray_ml: 5 }), null); n += 2;
+assert.deepEqual(CM.latestRunoff([{ zone: 2, day: '2026-11-24' }, { zone: 1, day: '2026-11-24' }, { zone: 2, day: '2026-11-20' }]).map(r => [r.zone, r.day]), [[1, '2026-11-24'], [2, '2026-11-24']]); n++;
+for (const f of ['cult_task_set', 'cult_room_task_add', 'cult_room_task_set', 'cult_runoff_add', 'cult_runoff_delete', 'cult_crew_list', 'cult_crew_set'])
+  ok(html.includes(`sb.rpc('${f}'`), `the page uses ${f}`);
+ok(/canWork = !!\(S\.me && \(S\.me\.work \|\| S\.me\.edit\)\)/.test(html), 'the crew (work) can tick, the editors too');
+ok(/list="staff-list"/.test(html) && /list="kind-list"/.test(html) && /list="ro-zones"/.test(html), 'the new pick-lists are typable');
+
 // page wiring the review asked for
 ok(!/loadAll\(true\);\s*renderRoom\(V\.room\)/.test(html), 'after a save the room is redrawn from the reloaded rooms');
 ok(!/\.select\('\*'\)/.test(html), 'every read names its columns (egress)');
