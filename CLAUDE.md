@@ -713,6 +713,12 @@ launch. The check fails if one of the three pieces is missing.
     `~/ar-automation/cult-metrc-sync.mjs` (launchd `com.wizardtrees.cult-metrc`; read-only, the shared Metrc lock and
     monthly ledger) through the token-gated `cult_metrc_save()`; each send replaces that license's rows. Metrc lists
     plants only by LastModified window, so the job keeps its own copy of every plant (`data/cult/`).
+  - `cult_growlink_now`, `cult_growlink_log` and `cult_growlink_meta` (`supabase/cult-growlink.sql`, applied the same
+    way): each room's newest Growlink readings, light schedule, set points and Growlink's own alerts; its averages at
+    every run, kept 35 days; when the job last ran and what went wrong. Written every 5 minutes by
+    `~/ar-automation/cult-growlink-sync.mjs` (launchd `com.wizardtrees.cult-growlink`, tests `test-cult-growlink.mjs`)
+    through the token-gated `cult_growlink_save()`, which files each Growlink room under the app room of the same name
+    ("25th Room 1"); Growlink's veg and dry rooms are listed as unmatched. No Growlink ids are stored.
   - The seed (rooms, targets, tasks and zones from the sheet's room tabs, strain names from its GENETICS 3.0 tab) and the
     traced maps live in `~/claude-sql/pending/cult-seed.sql` and `cult-layouts.sql`, never in this repo: no floor plans,
     emails or tokens in the public repo or page.
@@ -762,6 +768,18 @@ launch. The check fails if one of the three pieces is missing.
   just past.
 - **Every pick-list is typable** (input + datalist, resolved with `pickFrom`; anything else is refused and the last good
   value stays). The check fails on a `<select>`.
-- **Growlink is not connected yet.** It needs the API key of the claude@ Growlink login (app.growlink.io, Apps, Developer
-  Docs), kept in a local .env; read endpoints only (allow-list in `~/Documents/Cultivation Automation/src/growlink.js`).
+- **Growlink is read only** (Gianni, 2026-11-24: "this api should be used for read only no writes"). The job uses the API
+  key of the view-only claude@ Growlink login (`GROWLINK_API_KEY` and `GROWLINK_ORG_ID` in `~/ar-automation/.env`; never
+  press Rotate on that key), and `lib/growlink.mjs` refuses any call off its read-only allow-list (organizations, rooms,
+  sensors, set points, live readings, active alerts). The page reads only the database's copy. Growlink's live readings
+  carry UTC times with no zone. 23rd, 25th and Olympic Room 3 have Growlink; 15th has none.
+- **Live readings beside the plan** (Environment panel, 2026-11-24): a tile per kind of reading (temp, humidity, VPD, CO2,
+  light, and substrate water content, EC and temperature where a room has probes), Growlink's own average sensor where it
+  has one, else the mean of the sensors still reading. Each shows the sheet's plan for the week (DAY/NIGHT TEMP and HUM:
+  the day number while Growlink's schedule has the lights on, the night one while off; VPD; CO2 only with the lights on)
+  and Growlink's set point; a click lists its sensors and the last day's range. A tile goes amber more than 2°F, 5%
+  humidity, 0.2 kPa or 200 ppm CO2 off the plan, or when the light level is at odds with the schedule 30 minutes after a
+  switch (under 1,000 lux with the lights on, over 500 off); 30 minutes of that, or readings that stop, go to Needs
+  attention. These tolerances are Claude's assumptions, not confirmed by Gianni. Readings over 20 minutes old show as
+  old and are never judged. The page reads the open room's row every 5 minutes (only the log rows since its last read).
 - **Local preview:** on localhost only, `?demo=<file>.json` beside the page reads data from that file with no sign-in.

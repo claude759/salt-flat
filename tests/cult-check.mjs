@@ -312,4 +312,89 @@ ok(/:root\[data-look="dark"\]\{\s*color-scheme:dark;/.test(html), 'the dark look
 ok(/refusedNow/.test(html) && /pointerdown/.test(html), 'Save zones pressed straight from a refused strain box saves nothing');
 ok(/timeZone: 'America\/Los_Angeles', month: 'numeric'/.test(html), "a tick's date is the grows' day");
 
+// ---- Growlink: live readings beside the week's plan (the job only reads Growlink; the page only reads the copy)
+{
+  const at = x => Date.parse(x), iso = t => new Date(t).toISOString();
+  assert.deepEqual(CM.glPlan({ week: 9, temp: '68f - 66f', hum: '47% - 45%', vpd: 1.4, co2: 'n/CO2' }),
+    { temp: { day: 68, night: 66 }, hum: { day: 47, night: 45 }, vpd: { day: 1.4, night: 1.4 }, co2: null }, 'the plan: DAY/NIGHT TEMP and HUM, VPD, no CO2'); n++;
+  assert.deepEqual(CM.glPlan({ temp: '82f', hum: '70%', vpd: null, co2: 1000 }),
+    { temp: { day: 82, night: 82 }, hum: { day: 70, night: 70 }, vpd: null, co2: { day: 1000, night: null } }, 'one number is day and night; CO2 is lights-on only'); n++;
+  // Growlink's light schedule on the room's clock (this check runs at UTC+14; Los Angeles is UTC-8 in late November)
+  const L = { on: '13:00', off: '01:00', tz: 'America/Los_Angeles' };
+  assert.deepEqual(CM.glLights(L, at('2026-11-24T20:26:00Z')), { on: false, since: 686 }, '12:26 PM: off since 1 AM'); n++;
+  assert.deepEqual(CM.glLights(L, at('2026-11-24T21:10:00Z')), { on: true, since: 10 }, '1:10 PM: on 10 minutes'); n++;
+  assert.deepEqual(CM.glLights(L, at('2026-11-25T08:30:00Z')), { on: true, since: 690 }, '12:30 AM: still on, across midnight'); n++;
+  assert.deepEqual(CM.glLights({ on: '08:00', off: '16:00', tz: 'America/Los_Angeles' }, at('2026-11-24T15:59:00Z')), { on: false, since: 959 }, '7:59 AM: off'); n++;
+  assert.equal(CM.glLights({ on: '08:00', off: '08:00' }, at('2026-11-24T15:59:00Z')), null); assert.equal(CM.glLights(null, 0), null); n += 2;
+  assert.deepEqual(CM.glLights({ ...L, tz: 'Not/AZone' }, at('2026-11-24T21:10:00Z')), { on: true, since: 10 }, 'a zone the browser does not know falls back to Los Angeles'); n++;
+  const plan = CM.glPlan({ temp: '70f - 68f', hum: '55% - 48%', vpd: 1.3, co2: 1500 });
+  assert.deepEqual([CM.glJudge('temp', 72, plan, true).state, CM.glJudge('temp', 72.1, plan, true).state, CM.glJudge('temp', 65.9, plan, false).state], ['ok', 'high', 'low'], 'within 2°F of the plan is on it'); n++;
+  assert.equal(CM.glJudge('co2', 400, plan, false), null, 'CO2 is not judged with the lights off'); assert.equal(CM.glJudge('co2', 1200, plan, true).state, 'low'); n += 2;
+  assert.equal(CM.glJudge('temp', 90, plan, null), null, 'no schedule: nothing judged'); assert.equal(CM.glJudge('light', 0, plan, true), null); assert.equal(CM.glJudge('temp', 90, null, true), null); n += 3;
+  assert.equal(CM.glLightOdd(0, 'lux', { on: true, since: 20 }), null, 'the lights settle for 30 minutes after a switch'); n++;
+  assert.deepEqual([CM.glLightOdd(0, 'lux', { on: true, since: 45 }), CM.glLightOdd(52000, 'lux', { on: false, since: 45 }), CM.glLightOdd(52000, 'lux', { on: true, since: 45 }), CM.glLightOdd(5, 'PPFD', { on: true, since: 45 })],
+    ['dark', 'lit', null, null], 'a light level at odds with the schedule (lux sensors only)'); n++;
+  // a room as the job saves it: week 2 of a cycle that flipped 11/14 (night: 78°F, 68%), read at 12:29 PM with the lights off
+  const room = { env: [{ week: 1, temp: '82f - 82f', hum: '70%', vpd: 1.0, co2: 1000 }, { week: 2, temp: '80f - 78f', hum: '68%', vpd: 1.1, co2: 1300 }] };
+  const E = CM.envRows(room, { flip: '2026-11-14', week: 2 });
+  const NOW = at('2026-11-24T20:30:00Z'), r1 = iso(NOW - 6e4);
+  const G = { growlink: '25th Room 1', reading_at: r1, lights: L, setpoints: { temp: { day: 70, night: 70 }, hum: { day: 55, night: 48 }, co2: { day: 1500, night: null }, use_vpd: false },
+    sensors: [
+      { m: 'temp', name: 'Room Temp Average', module: 'Climate Sensor Average', v: 82.4, unit: '°F', at: r1,
+        parts: [{ name: 'Room Temp', module: 'Climate Sensor 1', v: 82, at: r1 }, { name: 'Room Temp', module: 'Climate Sensor 2', v: 82.8, at: r1 }] },
+      { m: 'hum', name: 'Room Humidity Average', module: '', v: 66, unit: '%', at: r1, parts: [{ name: 'Room Humidity', module: 'Climate Sensor 1', v: 66, at: r1 }] },
+      { m: 'co2', name: 'Room CO2', module: 'Climate Sensor 1', v: 450, unit: 'ppm', at: r1 },
+      { m: 'light', name: 'Room Light Level', module: 'Climate Sensor 1', v: 52000, unit: 'lux', at: r1 },
+      { m: 'vwc', name: 'Substrate Moisture 1', module: 'PIC', v: 20, unit: '%', at: r1 },
+      { m: 'vwc', name: 'Substrate Moisture 2', module: 'PIC', v: 30, unit: '%', at: iso(NOW - 3 * 3600e3) },
+      { m: 'pH', name: 'Tank pH', v: 6 },
+    ], alerts: [{ sensor: 'Substrate Moisture 3', dir: 'below', limit: 22 }, { dir: 'above' }] };
+  // the log every 5 minutes: temp over the night plan from 11:40 AM, the light on in the dark period from 11:50 AM
+  const log = [];
+  for (let t = NOW - 3 * 3600e3; t <= NOW - 6e4; t += 5 * 6e4) log.push({ at: iso(t), temp: t >= at('2026-11-24T19:40:00Z') ? 82 : 77, hum: 66, light: t >= at('2026-11-24T19:50:00Z') ? 50000 : 0 });
+  const V = CM.glView(G, log, E, NOW);
+  assert.deepEqual(V.tiles.map(t => t.m), ['temp', 'hum', 'co2', 'light', 'vwc'], "one tile per kind of reading, in order; Growlink's other sensors are left out"); n++;
+  const [tT, tH, tC, tL, tW] = V.tiles;
+  assert.deepEqual([tT.v, tT.plan, tT.when, tT.set, tT.state, tT.since, tT.open, tT.n, tT.sensors.length], [82.4, 78, 'night', 70, 'high', at('2026-11-24T19:40:00Z'), false, 2, 2],
+    "temp: Growlink's average, the night plan, its set point, above the plan since 11:40 AM"); n++;
+  assert.deepEqual([tH.state, tH.plan, tC.state, tC.plan, tC.set], ['ok', 68, null, null, null], 'humidity on plan; CO2 not judged or set at night'); n++;
+  assert.deepEqual([tL.odd, tL.since], ['lit', at('2026-11-24T19:50:00Z')], 'light in the dark period since 11:50 AM'); n++;
+  assert.deepEqual([tW.v, tW.n, tW.sensors.length, tW.stale], [20, 1, 2, false], 'a probe that stopped is listed but not averaged'); n++;
+  assert.deepEqual([V.stale, V.lights.on, V.hasPlan, V.alerts.length], [false, false, true, 1], 'fresh, lights off, a plan, the one named Growlink alert'); n++;
+  assert.deepEqual([tT.lo, tT.hi], [77, 82], "the last day's range"); n++;
+  const A = CM.glAttention(V, NOW);
+  assert.deepEqual(A, ["Temp 82.4°F is above this week's night plan of 78°F since 11:40 AM", "Light reads 52,000 lux but Growlink's schedule has the lights off since 11:50 AM"],
+    'Needs attention: 30 minutes or more off the plan or at odds with the schedule'); n++;
+  assert.equal(CM.glAttention(CM.glView(G, log, E, at('2026-11-24T20:05:00Z')), at('2026-11-24T20:05:00Z')).length, 0, 'not yet at 25 minutes (and the reading counts as current)'); n++;
+  const gap = log.filter(r => at(r.at) < at('2026-11-24T19:50:00Z') || at(r.at) >= at('2026-11-24T20:15:00Z'));
+  assert.equal(CM.glView(G, gap, E, NOW).tiles[0].since, at('2026-11-24T20:15:00Z'), 'a gap in the log over 20 minutes ends the run'); n++;
+  assert.equal(CM.glView(G, log.filter(r => at(r.at) >= at('2026-11-24T19:45:00Z')), E, NOW).tiles[0].open, true, 'a run reaching the oldest row read is "since at least"'); n++;
+  assert.equal(CM.glView(G, [], E, NOW).tiles[0].since, null, 'no log: no since'); n++;
+  const old = CM.glView({ ...G, reading_at: iso(NOW - 45 * 6e4), sensors: G.sensors.map(s => ({ ...s, at: iso(NOW - 45 * 6e4), parts: s.parts && s.parts.map(x => ({ ...x, at: iso(NOW - 45 * 6e4) })) })) }, log, E, NOW);
+  assert.deepEqual([old.stale, old.tiles[0].stale, old.tiles[0].state], [true, true, null], 'readings over 20 minutes old are old and not judged'); n++;
+  assert.deepEqual(CM.glAttention(old, NOW), ["Growlink hasn't sent a reading for this room since 11:45 AM"], 'readings that stopped coming'); n++;
+  assert.equal(CM.glView({ ...G, lights: null }, log, E, NOW).tiles[0].state, null, 'no light schedule: shown, not judged'); n++;
+  assert.equal(CM.glView(G, log, [], NOW).hasPlan, false); assert.equal(CM.glView(null, log, E, NOW), null); n += 2;
+  assert.equal(CM.glClock(at('2026-11-23T19:40:00Z'), NOW), 'Mon 11/23 11:40 AM', 'another day carries its day'); n++;
+  assert.deepEqual([CM.glVal('co2', 1224, 'ppm'), CM.glVal('temp', 75.14, '°F'), CM.glVal('vpd', 0.934, 'kPa'), CM.glVal('hum', 70, '%'), CM.glVal('temp', null, '°F')],
+    ['1,224 ppm', '75.1°F', '0.93 kPa', '70%', '--']); n++;
+  assert.equal(CM.glSpark([[0, 1], [10, 3]], 100, 22, 0, 10), 'M0.0 21.0L100.0 1.0'); assert.equal(CM.glSpark([[0, 5], [10, 5]], 100, 22, 0, 10), 'M0.0 11.0L100.0 11.0'); n += 2;
+  assert.equal(CM.glSpark([[0, 1], [6e4, 2], [40 * 6e4, 3]], 100, 22, 0, 40 * 6e4).split('M').length - 1, 2, 'readings that stopped break the line'); n++;
+  assert.equal(CM.glSpark([[0, 1]], 100, 22, 0, 10), ''); n++;
+}
+// the page reads Growlink's copy and never writes it; the job alone writes, through a token
+ok(/sb\.from\('cult_growlink_now'\)\.select\('room_id,growlink,read_at,reading_at,lights,setpoints,sensors,alerts'\)\.eq\('room_id', roomId\)/.test(html), "the page reads only the open room's Growlink row, by name");
+ok(!/rpc\('cult_growlink/.test(html) && !/api\.developer\.growlink|Gl-Api-Key/i.test(html), 'the page never writes Growlink data or calls Growlink');
+ok(/glTimer = setInterval\([\s\S]{0,160}5 \* 60e3\)/.test(html), 'the readings are read again every 5 minutes');
+ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-connected note is gone');
+{
+  const sql = readFileSync(new URL('../supabase/cult-growlink.sql', import.meta.url), 'utf8');
+  for (const t of ['cult_growlink_now', 'cult_growlink_log', 'cult_growlink_meta']) {
+    ok(new RegExp(`create policy ${t}_select on public\\.${t} for select to authenticated using \\(public\\.cult_can_view\\(\\)\\)`).test(sql), `${t}: any Wizard Trees login reads it`);
+    ok(new RegExp(`revoke insert, update, delete on table public\\.${t} from anon, authenticated`).test(sql), `${t}: nobody writes it but the job`);
+  }
+  ok(/function public\.cult_growlink_save\(p_token text[\s\S]*?raise exception 'bad token'/.test(sql), 'the save checks the job token first');
+  ok(!/drop table|truncate/i.test(sql), 'the Growlink SQL drops and truncates nothing');
+}
+
 console.log(`cultivation page: ${n} checks passed (TZ ${process.env.TZ})`);
