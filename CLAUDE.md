@@ -778,8 +778,16 @@ launch. The check fails if one of the three pieces is missing.
 - **Growlink is read only** (Gianni, 2026-11-24: "this api should be used for read only no writes"). The job uses the API
   key of the view-only claude@ Growlink login (`GROWLINK_API_KEY` and `GROWLINK_ORG_ID` in `~/ar-automation/.env`; never
   press Rotate on that key), and `lib/growlink.mjs` refuses any call off its read-only allow-list (organizations, rooms,
-  sensors, set points, live readings, active alerts). The page reads only the database's copy. Growlink's live readings
-  carry UTC times with no zone. 23rd, 25th and Olympic Room 3 have Growlink; 15th has none.
+  sensors, set points, live readings, active alerts), never follows a redirect, and pins the units (°F, kPa, lux). The
+  page reads only the database's copy. Growlink's live readings carry UTC times with no zone. 23rd, 25th and Olympic
+  Room 3 have Growlink; 15th has none.
+- **What the Growlink job keeps when something fails:** a room Growlink sends no readings for keeps its last reading (so
+  the page can say since when); a room whose sensor list or set points can't be read keeps its last ones (said in the
+  room's note); a failed hourly room list is used for up to a day and tried again after 15 minutes; a room whose Growlink
+  name stops matching an app room loses its row (the page then says Growlink has no room of that name). Growlink's light
+  schedule and set points are not used where plainly not kept up (a lights-on day under 10 hours, a Growlink run 14 or
+  more days past its length, a CO2 set point under 300 ppm): on 2026-11-24 that is 23rd Rooms 1-3 and Olympic Room 3,
+  whose Growlink profile reads 08:00-16:00 and 75 ppm. Confirm their real light hours before switching those rooms on.
 - **Live readings beside the plan** (Environment panel, 2026-11-24): a tile per kind of reading (temp, humidity, VPD, CO2,
   light, and substrate water content, EC and temperature where a room has probes), Growlink's own average sensor where it
   has one, else the mean of the sensors still reading. Each shows the sheet's plan for the week (DAY/NIGHT TEMP and HUM:
@@ -787,6 +795,8 @@ launch. The check fails if one of the three pieces is missing.
   and Growlink's set point; a click lists its sensors and the last day's range. A tile goes amber more than 2°F, 5%
   humidity, 0.2 kPa or 200 ppm CO2 off the plan, or when the light level is at odds with the schedule 30 minutes after a
   switch (under 1,000 lux with the lights on, over 500 off); 30 minutes of that, or readings that stop, go to Needs
-  attention. These tolerances are Claude's assumptions, not confirmed by Gianni. Readings over 20 minutes old show as
-  old and are never judged. The page reads the open room's row every 5 minutes (only the log rows since its last read).
+  attention. These tolerances are Claude's assumptions, not confirmed by Gianni. Readings are judged only while the room
+  is in flower; over 20 minutes old they show as old and are never judged. Needs attention names what stopped: the
+  page's own reads, the job on Gianni's Mac, or Growlink. The page reads the open room's row every 5 minutes (only the
+  log rows since its last read), and again when a room is reopened with an older copy.
 - **Local preview:** on localhost only, `?demo=<file>.json` beside the page reads data from that file with no sign-in.

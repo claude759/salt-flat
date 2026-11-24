@@ -130,6 +130,7 @@
   .gl-t span{display:block;color:var(--muted);font-size:11.5px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .gl-t em{display:block;font-style:normal;font-size:11.5px;margin-top:1px;color:var(--faint)}
   .gl-t.off{border-color:var(--amber);background:var(--amber-soft)}
+  .gl-t[aria-expanded="true"]{box-shadow:0 0 0 2px var(--accent)}
   .gl-t.off em{color:var(--amber)}
   .gl-t.old b{color:var(--faint)}
   .gl-t svg{display:block;width:100%;height:22px;margin-top:5px;color:var(--faint);overflow:visible}
@@ -320,9 +321,9 @@ const CM = (() => {
   const addDays = (s, n) => iso(ms(s) + n * DAY);
   const diff = (a, b) => Math.round((ms(b) - ms(a)) / DAY);          // days from a to b
   // today on the grows' clock (Los Angeles), as YYYY-MM-DD
+  const LA_DAY = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' });
   const todayLA = (now = new Date()) => {
-    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' })
-      .formatToParts(now).map(x => [x.type, x.value]));
+    const p = Object.fromEntries(LA_DAY.formatToParts(now).map(x => [x.type, x.value]));
     return `${p.year}-${p.month}-${p.day}`;
   };
   const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -704,12 +705,15 @@ const CM = (() => {
   // the plan of the week a moment falls in (E: envRows, which carry each week's dates)
   const glPlanAt = (E, t) => { const d = todayLA(new Date(t)); return glPlan((E || []).find(e => e.from && e.from <= d && d <= e.to)); };
   const hmOf = s => { const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(s || '')); return m ? +m[1] * 60 + +m[2] : null; };
+  const CLOCKS = new Map();   // one formatter per time zone (a zone the browser doesn't know throws, and is never kept)
   const clockOf = (t, tz) => {
-    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' })
-      .formatToParts(new Date(t)).map(x => [x.type, x.value]));
+    let f = CLOCKS.get(tz);
+    if (!f) { f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }); CLOCKS.set(tz, f); }
+    const p = Object.fromEntries(f.formatToParts(new Date(t)).map(x => [x.type, x.value]));
     return (+p.hour % 24) * 60 + +p.minute;
   };
   // lights on or off at a moment by Growlink's schedule ({on:'13:00', off:'01:00', tz}), and minutes since they switched
+  // (wall-clock minutes: on the fall-back night a switch between 1 and 2 AM settles twice, an hour late once a year)
   function glLights(L, t) {
     const on = L ? hmOf(L.on) : null, off = L ? hmOf(L.off) : null;
     if (on == null || off == null || on === off || !isFinite(t)) return null;
@@ -733,21 +737,23 @@ const CM = (() => {
   // the start of the run of log rows, newest back, that `test` holds for (a gap over GL.GAP minutes ends it); open: it
   // reaches the oldest row read, so it may have started earlier
   function glRun(rows, upTo, test) {
-    let since = null, prev = null, i = rows.length - 1;
+    let since = null, prev = null, i = rows.length - 1, gap = false;
     for (; i >= 0; i--) {
       const r = rows[i];
       if (r.t > upTo + 6e4) continue;
-      if ((prev == null ? upTo : prev) - r.t > GL.GAP * 6e4) break;
+      if ((prev == null ? upTo : prev) - r.t > GL.GAP * 6e4) { gap = true; break; }   // readings stopped: it began before
       if (!test(r)) break;
       since = r.t; prev = r.t;
     }
-    return since == null ? null : { since, open: i < 0 };
+    return since == null ? null : { since, open: i < 0 || gap };
   }
   // the room's tiles: one per kind of reading (Growlink's own average sensor where it has one, else the mean of its
   // sensors, as the substrate probes), with the plan for now, Growlink's set point, the last day's values and how long
-  // it has been off the plan. G: the room's cult_growlink_now row; log: its cult_growlink_log rows; E: envRows.
-  function glView(G, log, E, now) {
+  // it has been off the plan. G: the room's cult_growlink_now row; log: its cult_growlink_log rows; E: envRows; state:
+  // the room's cycle state (readings are judged only while it is 'flower': an empty room keeps Growlink's schedule).
+  function glView(G, log, E, now, state) {
     if (!G) return null;
+    const flower = state === 'flower';
     const at = G.reading_at ? Date.parse(G.reading_at) : null;
     const li = glLights(G.lights, now);
     const plan = glPlanAt(E, now);
@@ -769,37 +775,44 @@ const CM = (() => {
       const sensors = use.flatMap(s => Array.isArray(s.parts) && s.parts.length ? s.parts : [s])
         .map(s => ({ name: s.name || '', module: s.module || '', v: typeof s.v === 'number' && isFinite(s.v) ? s.v : null, at: s.at && isFinite(Date.parse(s.at)) ? Date.parse(s.at) : null }));
       const reading = sensors.filter(x => x.v != null && x.at != null && vat != null && vat - x.at <= GL.STALE * 6e4).length;
-      const j = stale ? null : glJudge(m, v, plan, li ? li.on : null);
+      const j = stale || !flower ? null : glJudge(m, v, plan, li ? li.on : null);
       const sp = li && G.setpoints && G.setpoints[m] && typeof G.setpoints[m] === 'object' ? G.setpoints[m][li.on ? 'day' : 'night'] : null;
-      const odd = m === 'light' && !stale ? glLightOdd(v, unit, li) : null;
+      const odd = m === 'light' && !stale && flower ? glLightOdd(v, unit, li) : null;
+      // the run, over the rows that have this reading (a row without it is a gap, not a return to the plan)
+      const rm = rows.filter(r => r[m] != null && isFinite(+r[m]));
       let run = null;
       if (j && j.state !== 'ok') {
-        run = glRun(rows, vat, r => { const x = r[m] == null ? null : +r[m]; const l = glLights(G.lights, r.t); const k = glJudge(m, x, glPlanAt(E, r.t), l ? l.on : null); return !!k && k.state === j.state; });
+        run = glRun(rm, vat, r => { const x = r[m] == null ? null : +r[m]; const l = glLights(G.lights, r.t); const k = glJudge(m, x, glPlanAt(E, r.t), l ? l.on : null); return !!k && k.state === j.state; });
       } else if (odd) {
-        run = glRun(rows, vat, r => glLightOdd(r[m] == null ? null : +r[m], unit, glLights(G.lights, r.t)) === odd);
+        run = glRun(rm, vat, r => glLightOdd(r[m] == null ? null : +r[m], unit, glLights(G.lights, r.t)) === odd);
       }
-      const spark = rows.filter(r => r[m] != null && isFinite(+r[m]) && r.t > now - DAY && r.t <= now).map(r => [r.t, +r[m]]);
+      const spark = rm.filter(r => r.t > now - DAY && r.t <= now).map(r => [r.t, +r[m]]);
       tiles.push({ m, label: GL.LABEL[m], v, unit, at: vat, stale, sensors, n: reading, plan: j ? j.target : null, when: li ? (li.on ? 'day' : 'night') : null,
         set: typeof sp === 'number' && isFinite(sp) ? sp : null, state: j ? j.state : null, odd, since: run ? run.since : null, open: run ? run.open : false,
         spark, lo: spark.length ? Math.min(...spark.map(p => p[1])) : null, hi: spark.length ? Math.max(...spark.map(p => p[1])) : null });
     }
     const alerts = Array.isArray(G.alerts) ? G.alerts.filter(a => a && a.sensor) : [];
-    return { at, stale: at == null || now - at > GL.STALE * 6e4, lights: li, schedule: G.lights || null, hasPlan: !!plan, tiles, alerts };
+    return { at, stale: at == null || now - at > GL.STALE * 6e4, lights: li, schedule: G.lights || null, hasPlan: !!plan, flower, tiles, alerts, note: G.note || null };
   }
   const glNum = (m, v) => v == null || !isFinite(v) ? '--' : Number(v).toLocaleString('en-US', { maximumFractionDigits: GL.DEC[m] == null ? 1 : GL.DEC[m], minimumFractionDigits: 0 });
   const glVal = (m, v, unit) => v == null ? '--' : `${glNum(m, v)}${unit === '%' || unit === '°F' ? '' : ' '}${unit}`;
   // a time on the grows' clock: "1:05 PM", or "Mon 11/23 1:05 PM" on another day than `now`
+  const LA_HM = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' });
   function glClock(t, now) {
-    const f = o => new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', ...o }).format(new Date(t));
-    const hm = f({ hour: 'numeric', minute: '2-digit' });
+    const hm = LA_HM.format(new Date(t));
     return todayLA(new Date(t)) === todayLA(new Date(now)) ? hm : `${wday(todayLA(new Date(t)))} ${hm}`;
   }
   // what Needs attention lists from Growlink: a reading off the plan, or a light level at odds with the schedule, for
-  // GL.ATTN minutes; readings that stopped coming
-  function glAttention(V, now) {
+  // GL.ATTN minutes; readings that stopped coming, blamed on what stopped: this page's reads (src.readErr, last good read
+  // src.readAt), the job on Gianni's Mac (its last run src.jobAt), or Growlink
+  function glAttention(V, now, src) {
     const out = [];
     if (!V) return out;
-    if (V.at != null && now - V.at > GL.ATTN * 6e4) out.push(`Growlink hasn't sent a reading for this room since ${glClock(V.at, now)}`);
+    const s = src || {}, old = t => t != null && t > 0 && now - t > GL.ATTN * 6e4;
+    if (s.readErr && old(s.readAt)) out.push(`This page hasn't been able to read the room's Growlink readings since ${glClock(s.readAt, now)}`);
+    else if (old(s.jobAt)) out.push(`The Growlink job on Gianni's Mac last ran ${glClock(s.jobAt, now)}`);
+    else if (V.at == null) { if (V.tiles.length) out.push('Growlink has no recent readings for this room'); }
+    else if (old(V.at)) out.push(`Growlink hasn't sent a reading for this room since ${glClock(V.at, now)}`);
     for (const t of V.tiles) {
       if (t.since == null || now - t.since < GL.ATTN * 6e4 || t.stale) continue;
       const from = `${t.open ? 'since at least' : 'since'} ${glClock(t.since, now)}`;
@@ -843,7 +856,8 @@ const SITES = [
 const S = { me: null, rooms: [], zones: [], codes: {}, codeRows: [], plants: [], plantsSig: null, meta: [], done: [], oneoffs: [], runoff: [], loadedAt: 0, room: null, editZones: false, arrange: false, range: 7 };
 try { const r = +localStorage.getItem('cult.range'); if ([0, 7, 30].includes(r) && localStorage.getItem('cult.range') !== null) S.range = r; } catch (e) { /* default 7 days */ }
 let sb = null, rawNonce = null, pollTimer = null, glTimer = null;
-S.gl = { room: null, now: null, log: [], meta: null, err: null, at: 0 }; S.glOpen = null; S.attBase = []; S.envE = [];
+S.gl = { room: null, now: null, log: [], meta: null, err: null, at: 0 }; S.glOpen = null; S.attBase = []; S.envE = []; S.envState = null;
+let glSeq = 0, glDone = 0, glTried = 0;   // reads numbered: one that lands after a later one is dropped
 
 /* ----- look ----- */
 function setLook(v) {
@@ -917,16 +931,20 @@ function setFresh() {
 const GL_BACK = 26 * 3600e3;   // the log is read back this far (the tiles' lines show the last 24 hours)
 async function loadGrowlink(roomId, full) {
   if (!roomId || !sb) return false;
-  const same = !full && S.gl.room === roomId;
+  const seq = ++glSeq, base = S.gl;
+  glTried = Date.now();
+  const same = !full && base.room === roomId;
   const from = new Date(Date.now() - GL_BACK).toISOString();
   const last = same && S.gl.log.length ? S.gl.log[S.gl.log.length - 1].at : null;
   const res = await Promise.all([
-    sb.from('cult_growlink_now').select('room_id,growlink,read_at,reading_at,lights,setpoints,sensors,alerts').eq('room_id', roomId),
+    sb.from('cult_growlink_now').select('room_id,growlink,read_at,reading_at,lights,setpoints,sensors,alerts,note').eq('room_id', roomId),
     sb.from('cult_growlink_log').select('at,temp,hum,vpd,co2,light,vwc,ec,sub_temp').eq('room_id', roomId)
       .gt('at', last && Date.parse(last) > Date.parse(from) ? last : from).order('at').limit(1000),
     sb.from('cult_growlink_meta').select('synced_at,changed_at,rooms,unmatched,note'),
   ]).catch(e => [{ error: { message: String(e && e.message || e) } }]);
-  if (S.room !== roomId) return false;   // another room was opened meanwhile
+  if (S.room !== roomId || seq < glDone) return false;   // another room was opened, or a later read already landed
+  if (same && S.gl !== base) return false;               // the copy this read adds to was replaced meanwhile
+  glDone = seq;
   const bad = res.find(x => !x || x.error);
   if (bad) {   // keep the room's last readings (the tiles say how old they are) and say the read failed
     const msg = bad && bad.error ? bad.error.message : '';
@@ -940,19 +958,25 @@ async function loadGrowlink(roomId, full) {
   return true;
 }
 const glHM = s => { const m = /^(\d{2}):(\d{2})$/.exec(s || ''); if (!m) return ''; const h = +m[1] % 12 || 12; return `${h}${m[2] === '00' ? '' : ':' + m[2]} ${+m[1] < 12 ? 'AM' : 'PM'}`; };
-function glAtt(room) {
-  if (S.gl.room !== room.id || !S.gl.now) return [];
-  const now = Date.now();
-  return CM.glAttention(CM.glView(S.gl.now, S.gl.log, S.envE, now), now).map(text => ({ k: 'warn', text }));
+// the open room's Growlink view, worked out once per redraw (null until its readings are read)
+function glCompute(room) {
+  return room && S.gl.room === room.id && S.gl.now ? CM.glView(S.gl.now, S.gl.log, S.envE, Date.now(), S.envState) : null;
+}
+function glAtt(V) {
+  if (!V) return [];
+  const m = S.gl.meta;
+  return CM.glAttention(V, Date.now(), { readErr: !!S.gl.err, readAt: S.gl.at || null, jobAt: m && m.synced_at ? Date.parse(m.synced_at) : null })
+    .map(text => ({ k: 'warn', text }));
 }
 function attHTML(list) {
   return list.length ? `<ul class="alist">${list.map(a => `<li class="${a.k}">${esc(a.text)}</li>`).join('')}</ul>` : '<p class="muted" style="margin:0">Nothing needs attention.</p>';
 }
-function glHTML(room, E) {
+function glHTML(room, V) {
   const now = Date.now(), G = CM.GL;
   if (S.gl.room !== room.id) return '<p class="muted gl-msg">Reading Growlink…</p>';
   const meta = S.gl.meta;
-  const jobOld = meta && meta.synced_at && now - Date.parse(meta.synced_at) > G.STALE * 6e4;
+  // the job's age only from a fresh copy: while this page can't read, the copy it has says nothing about the job
+  const jobOld = !S.gl.err && meta && meta.synced_at && now - Date.parse(meta.synced_at) > G.STALE * 6e4;
   const jobLine = jobOld ? `<span class="warn">The Growlink job last ran ${esc(CM.glClock(Date.parse(meta.synced_at), now))}${meta.note ? `: ${esc(meta.note)}` : ''}</span>`
     : meta && meta.note ? `<span class="warn">Growlink: ${esc(meta.note)}</span>` : '';
   if (!S.gl.now) {
@@ -961,13 +985,14 @@ function glHTML(room, E) {
       : meta ? `Growlink has no room named “${esc(room.name)}”, so there are no live readings here.` : 'No readings from Growlink yet.';
     return `<p class="muted gl-msg">${why}</p>${jobLine ? `<div class="gl-head">${jobLine}</div>` : ''}`;
   }
-  const V = CM.glView(S.gl.now, S.gl.log, E, now);
   const head = [];
   if (V.at == null) head.push(`<span class="warn">Growlink hasn't sent readings for this room</span>`);
   else if (V.stale) head.push(`<span class="warn">Growlink's last reading was ${esc(CM.glClock(V.at, now))}</span>`);
   else head.push(`<span>Growlink · read ${esc(CM.glClock(V.at, now))}</span>`);
   if (V.lights && V.schedule) head.push(`<span>Lights ${V.lights.on ? `on, off at ${esc(glHM(V.schedule.off))}` : `off, on at ${esc(glHM(V.schedule.on))}`}</span>`);
-  if (!V.hasPlan) head.push('<span>No plan for this week</span>');
+  if (!V.flower) head.push("<span>Not in flower: readings are shown, not held to a plan</span>");
+  else if (!V.hasPlan) head.push('<span>No plan for this week</span>');
+  if (V.note) head.push(`<span class="warn">${esc(V.note)}</span>`);
   if (S.gl.err) head.push("<span class=\"warn\">Couldn't read Growlink just now: showing the last readings</span>");
   if (jobLine) head.push(jobLine);
   const t0 = now - 864e5;
@@ -1010,8 +1035,11 @@ function glRefresh(focus) {
   const room = S.room && S.rooms.find(r => r.id === S.room);
   const el = $('gl');
   if (!room || !el) return;
-  el.innerHTML = glHTML(room, S.envE);
-  const all = S.attBase.concat(glAtt(room));
+  const a = document.activeElement;
+  if (!focus && a && el.contains(a) && a.dataset && a.dataset.gl) focus = a.dataset.gl;   // keep a focused tile focused
+  const V = glCompute(room);
+  el.innerHTML = glHTML(room, V);
+  const all = S.attBase.concat(glAtt(V));
   if ($('att')) { $('att').innerHTML = attHTML(all); $('att-n').textContent = all.length || 'nothing'; }
   if (focus) { const b = el.querySelector(`[data-gl="${focus}"]`); if (b) b.focus(); }
 }
@@ -1048,7 +1076,13 @@ function render() {
   $('home').title = S.rooms.length > 1 ? 'All rooms' : '';
   document.title = one ? `${one.name} · Cultivation` : 'Cultivation';
   if (one) renderRoom(one); else renderRooms();
-  if (one && S.gl.room !== one.id) { S.glOpen = null; loadGrowlink(one.id, true).then(ok => { if (ok) glRefresh(); }); }
+  if (one) {   // a room opened, or reopened with its copy over 5 minutes old (the timer doesn't run on All rooms)
+    const moved = S.gl.room !== one.id;
+    if (moved || (Date.now() - S.gl.at > 5 * 60e3 && Date.now() - glTried > 60e3)) {
+      if (moved) S.glOpen = null;
+      loadGrowlink(one.id, moved).then(ok => { if (ok) glRefresh(); });
+    }
+  }
 }
 
 /* ----- the map as SVG ----- */
@@ -1188,8 +1222,9 @@ function renderRoom(room) {
   const cap = CM.capacity(room.layout, placed);
   const att = CM.attention(C, T, today, cap, notes.filter(n => n.warn).map(n => n.text));
   const E = CM.envRows(room, C);
-  S.attBase = att; S.envE = E;
-  const attAll = att.concat(glAtt(room));
+  S.attBase = att; S.envE = E; S.envState = C.state;
+  const GV = glCompute(room);
+  const attAll = att.concat(glAtt(GV));
   h += '<div class="grid2"><div>';
   // map
   h += `<div class="panel"><h3>Room map <span class="grow"></span><small>${room.layout ? esc(room.layout_source || '') : ''}</small>${canEdit && room.layout && !S.arrange ? '<button class="btn" type="button" id="arrange">Arrange zones</button>' : ''}</h3><div class="pbody">`;
@@ -1235,7 +1270,7 @@ function renderRoom(room) {
   h += '</div></div>';
   // environment: Growlink's live readings, then the weekly targets
   h += `<div class="panel"><h3>Environment <span class="grow"></span>${C.week ? `<small>week ${C.week} now</small>` : ''}</h3><div class="pbody wrapx">`;
-  h += `<div id="gl" class="gl">${glHTML(room, E)}</div>`;
+  h += `<div id="gl" class="gl">${glHTML(room, GV)}</div>`;
   if (E.length) {
     h += '<table class="t"><thead><tr><th>Week</th><th>Dates</th><th>Day / night temp</th><th>Humidity</th><th class="n">VPD</th><th class="n">CO2</th></tr></thead><tbody>';
     for (const e of E) h += `<tr class="${e.now ? 'now' : ''}"><td><b>${e.week}</b></td><td class="faint">${e.from ? esc(CM.short(e.from) + ' - ' + CM.short(e.to)) : ''}</td><td>${esc(fmtTemp(e.temp))}</td><td>${esc(e.hum || '')}</td><td class="n">${e.vpd == null ? '' : esc(Number(e.vpd).toFixed(1))}</td><td class="n">${esc(fmtCO2(e.co2))}</td></tr>`;

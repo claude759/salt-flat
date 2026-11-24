@@ -20,8 +20,10 @@ create table if not exists public.cult_growlink_now (
   lights      jsonb,                            -- Growlink's light schedule {"on":"13:00","off":"01:00","tz":"America/Los_Angeles"}
   setpoints   jsonb,                            -- Growlink's climate set points {"temp":{"day":70,"night":70},"hum":{..},"vpd":{..},"co2":{"day":1500}}
   sensors     jsonb not null default '[]',      -- [{"m":"temp","name","module","v","unit","at","parts":[{"name","module","v","at"}]}]
-  alerts      jsonb not null default '[]'       -- Growlink's own active alerts [{"sensor","dir":"above"|"below","limit"}]
+  alerts      jsonb not null default '[]',      -- Growlink's own active alerts [{"sensor","dir":"above"|"below","limit"}]
+  note        text                              -- what the job couldn't read or use for this room on its last run
 );
+alter table public.cult_growlink_now add column if not exists note text;   -- a table made before the room note
 alter table public.cult_growlink_now enable row level security;
 drop policy if exists cult_growlink_now_select on public.cult_growlink_now;
 create policy cult_growlink_now_select on public.cult_growlink_now for select to authenticated using (public.cult_can_view());
@@ -42,6 +44,7 @@ create table if not exists public.cult_growlink_log (
   sub_temp  numeric,      -- substrate °F
   primary key (room_id, at)
 );
+create index if not exists cult_growlink_log_at on public.cult_growlink_log (at);   -- the 35-day prune
 alter table public.cult_growlink_log enable row level security;
 drop policy if exists cult_growlink_log_select on public.cult_growlink_log;
 create policy cult_growlink_log_select on public.cult_growlink_log for select to authenticated using (public.cult_can_view());
@@ -61,10 +64,13 @@ drop policy if exists cult_growlink_meta_select on public.cult_growlink_meta;
 create policy cult_growlink_meta_select on public.cult_growlink_meta for select to authenticated using (public.cult_can_view());
 revoke insert, update, delete on table public.cult_growlink_meta from anon, authenticated;
 
--- p_rooms: [{growlink, reading_at, lights, setpoints, sensors, alerts, log:{temp, hum, ...}}], one per Growlink room
+-- p_rooms: [{growlink, reading_at, lights, setpoints, sensors, alerts, log:{temp, hum, ...}, note}], one per Growlink room
 -- read this run. A Growlink room is saved under the app room of the same name (case and spaces aside); the others are
--- listed in the meta's unmatched. p_note: what went wrong this run. A run that could not read Growlink sends no rooms
--- and a note, so each room keeps its last reading (the page says how old it is) and the page can say why.
+-- listed in the meta's unmatched, and an app room no Growlink room matched on a run that sent rooms loses its row (the
+-- page then says Growlink has no room of that name). p_note: what went wrong this run. A run that could not read
+-- Growlink sends no rooms and a note, so each room keeps its last reading (the page says how old it is) and why.
+-- A room sent with no reading keeps its last reading and sensors (so the page can say since when); one sent without
+-- lights, setpoints or alerts (they couldn't be read) keeps its last ones.
 create or replace function public.cult_growlink_save(p_token text, p_rooms jsonb, p_note text)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare r jsonb; lg jsonb; ids text[]; rid text; at_ timestamptz; n int := 0; um text[] := '{}'; seen text[] := '{}';
@@ -100,12 +106,17 @@ begin
     rid := ids[1];
     if rid = any(seen) then um := um || (btrim(r->>'growlink') || ' (a second room of that name)'); continue; end if;
     seen := seen || rid;
-    insert into public.cult_growlink_now as g (room_id, growlink, read_at, reading_at, lights, setpoints, sensors, alerts)
+    insert into public.cult_growlink_now as g (room_id, growlink, read_at, reading_at, lights, setpoints, sensors, alerts, note)
     values (rid, btrim(r->>'growlink'), now(), at_, nullif(r->'lights', 'null'::jsonb), nullif(r->'setpoints', 'null'::jsonb),
-            coalesce(r->'sensors', '[]'::jsonb), coalesce(r->'alerts', '[]'::jsonb))
-    on conflict (room_id) do update set growlink = excluded.growlink, read_at = excluded.read_at, reading_at = excluded.reading_at,
-      lights = excluded.lights, setpoints = excluded.setpoints, sensors = excluded.sensors,
-      alerts = case when r ? 'alerts' then excluded.alerts else g.alerts end;   -- no list sent: it couldn't be read
+            coalesce(r->'sensors', '[]'::jsonb), coalesce(r->'alerts', '[]'::jsonb),
+            nullif(left(btrim(coalesce(case when jsonb_typeof(r->'note') = 'string' then r->>'note' end, '')), 300), ''))
+    on conflict (room_id) do update set growlink = excluded.growlink, read_at = excluded.read_at,
+      reading_at = coalesce(excluded.reading_at, g.reading_at),
+      sensors = case when excluded.reading_at is null and g.reading_at is not null then g.sensors else excluded.sensors end,
+      lights = case when r ? 'lights' then excluded.lights else g.lights end,            -- not sent: couldn't be read
+      setpoints = case when r ? 'setpoints' then excluded.setpoints else g.setpoints end,
+      alerts = case when r ? 'alerts' then excluded.alerts else g.alerts end,
+      note = excluded.note;
     lg := r->'log';
     if at_ is not null and jsonb_typeof(lg) = 'object' then
       insert into public.cult_growlink_log (room_id, at, temp, hum, vpd, co2, light, vwc, ec, sub_temp)
@@ -113,9 +124,12 @@ begin
               cult_gl_num(lg->>'light'), cult_gl_num(lg->>'vwc'), cult_gl_num(lg->>'ec'), cult_gl_num(lg->>'sub_temp'))
       on conflict (room_id, at) do nothing;
     end if;
-    delete from public.cult_growlink_log l where l.room_id = rid and l.at < now() - interval '35 days';
     n := n + 1;
   end loop;
+  if jsonb_array_length(p_rooms) > 0 then
+    delete from public.cult_growlink_now g where not (g.room_id = any(seen));   -- its Growlink name no longer matches
+  end if;
+  delete from public.cult_growlink_log l where l.at < now() - interval '35 days';
   insert into public.cult_growlink_meta as m (id, synced_at, changed_at, rooms, unmatched, note)
   values (1, now(), case when n > 0 then now() end, n, um, nullif(left(btrim(coalesce(p_note, '')), 500), ''))
   on conflict (id) do update set synced_at = now(), changed_at = coalesce(excluded.changed_at, m.changed_at),
