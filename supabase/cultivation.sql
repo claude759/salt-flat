@@ -266,6 +266,18 @@ begin
   if jsonb_typeof(p_set->'layout') = 'object' and jsonb_typeof(p_set->'layout'->'tables') is distinct from 'array' then
     raise exception 'layout needs a list of tables';
   end if;
+  -- Arrange zones: each table's zone is a number (0 = none), and a zone sits on one table
+  if jsonb_typeof(p_set->'layout') = 'object' then
+    if exists (select 1 from jsonb_array_elements(p_set->'layout'->'tables') t
+               where jsonb_typeof(t) = 'object' and t ? 'zone' and coalesce(t->>'zone', '') !~ '^[0-9]{1,2}$') then
+      raise exception 'a table''s zone must be a number (0 for none)';
+    end if;
+    if exists (select 1 from jsonb_array_elements(p_set->'layout'->'tables') t
+               where jsonb_typeof(t) = 'object' and t ? 'zone' and (t->>'zone')::int > 0
+               group by (t->>'zone')::int having count(*) > 1) then
+      raise exception 'a zone is on two tables';
+    end if;
+  end if;
   update public.cult_rooms set
     flip_date = case when p_set ? 'flip_date' then (p_set->>'flip_date')::date else flip_date end,
     harvest_day = case when p_set ? 'harvest_day' then (p_set->>'harvest_day')::int else harvest_day end,

@@ -244,6 +244,20 @@ assert.notEqual(colC[CM.key('Pool Party')], colC[CM.key('King Tide 23')], 'each 
 assert.equal(CM.place([{ zone: 1, strain: 'Pool Party', metrc_strain: 'Cream' }], { strains: [] }).missing.length, 1, 'a Metrc name Metrc does not have here is reported'); n++;
 ok(/select\('room_id,zone,slot,strain,lights,pack,metrc_strain'\)/.test(html) && /list="metrc-list"/.test(html), 'the zones read and the editor carry "in Metrc as"');
 
+// Arrange zones: each table holds a zone (default zone n = table n; 0 = none); a zone repeated on a second table is not
+// drawn twice
+assert.equal(CM.tableZone({ n: 3 }, 0), 3); assert.equal(CM.tableZone({ n: 3, zone: 1 }, 0), 1); assert.equal(CM.tableZone({ zone: 0 }, 4), 0); n += 3;
+assert.equal(CM.letter(0), 'A'); assert.equal(CM.letter(3), 'D'); n += 2;
+const two = { w: 20, h: 12, outline: [[0, 0], [20, 0], [20, 12], [0, 12]], tables: [{ n: 1, x: 1, y: 1, w: 18, h: 4, zone: 2 }, { n: 2, x: 1, y: 7, w: 18, h: 4, zone: 1 }] };
+const plA = CM.place([{ zone: 1, strain: 'Tide', lights: 2 }, { zone: 2, strain: 'Nebula', lights: 2 }], { strains: [{ name: 'Tide', plants: 10 }, { name: 'Nebula', plants: 4 }] });
+let MA = CM.mapModel(two, plA, CM.colors(plA), {});
+assert.deepEqual(MA.tables.map(t => [t.letter, t.z, t.dots.length]), [['A', 2, 4], ['B', 1, 10]], "zone 1's plants are on table B once it holds zone 1"); n++;
+assert.deepEqual([...CM.tableNs(two)].sort(), [1, 2]); n++;
+MA = CM.mapModel({ ...two, tables: [{ ...two.tables[0], zone: 1 }, { ...two.tables[1], zone: 1 }] }, plA, CM.colors(plA), {});
+assert.deepEqual(MA.tables.map(t => t.z), [1, 0], 'a zone is drawn on one table only'); n++;
+assert.deepEqual([...CM.tableNs({ tables: [{ n: 1, zone: 0 }, { n: 2 }] })], [2], 'a table with no zone adds none'); n++;
+ok(/id="arrange"/.test(html) && /list="zone-list"/.test(html) && /p_set: \{ layout: L \}/.test(html), 'Arrange zones saves the table-to-zone map through cult_room_set');
+
 // page wiring the review asked for
 ok(!/loadAll\(true\);\s*renderRoom\(V\.room\)/.test(html), 'after a save the room is redrawn from the reloaded rooms');
 ok(!/\.select\('\*'\)/.test(html), 'every read names its columns (egress)');

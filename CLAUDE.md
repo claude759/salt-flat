@@ -722,7 +722,11 @@ launch. The check fails if one of the three pieces is missing.
 - **Metrc numbers strains at 23rd, 15th and Olympic** (2504 = Zangbanger). Names come from the sheet's GENETICS 3.0 list
   (source `sheet`); an editor can name or rename a number in the app (`confirmed`). 25th uses names in Metrc.
 - **Metrc has no zones.** Sublocations are switched off at all four licenses (checked 2026-11-24). A plant's zone is its
-  strain's zone as set in the app; a strain on two zones is split by their lights. Zone n is table n on the map.
+  strain's zone as set in the app; a strain on two zones is split by their lights.
+- **Zones are remappable** (Gianni, 2026-11-24: "I'm not actually sure about Zones. Let's make the zones remappable"):
+  Arrange zones on the room map sets which zone each table holds (`layout.tables[i].zone`, 0 = none; with none set,
+  zone n is table n). Tables are lettered (A, B, C ...) while arranging; a zone sits on one table (picking a taken zone
+  swaps the two; the database refuses a zone on two tables).
 - **"In Metrc as"** (`cult_zones.metrc_strain`): when Metrc records a zone's plants under another strain, the zone names
   that Metrc strain and takes its plants under its own name (Gianni, 2026-11-24: 25th Room 1's 81 "Cream" plants are zone
   1's Pool Party and King Tide 23, split between them by lights). The fix in Metrc is the crew's; the app only reads it.
