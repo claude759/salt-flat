@@ -6722,6 +6722,23 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     const best = new Map([...use].map(([q, m]) => [q, [...m].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length || a[0].localeCompare(b[0]))[0][0]]));
     return new Map([...one].map(([k, ps]) => [k, ps.map(p => best.get(sq(p.n)) + p.c).join(' X ')]));
   }
+  // for the estimated harvests (Gianni, 2026-11-24, "Yes, draw them"), from every grow unit (a harvest with the trim it
+  // dried for, a harvest alone, a trim alone):
+  // - dry: each grow's usual drying, the middle of the days from harvest to trim start over its last 5 lots with a trim
+  //   sheet tab (3 to 30 days; never Metrc's "first packaged" day, which is no trim), 2 or more needed
+  // - noEst: the planned trims with no harvest that get no estimate, because a harvest of the same grow 3 to 30 days before
+  //   dried to no trim or to a later one, so it may be this trim's (Metrc puts Olympic's harvests in rooms the sheet
+  //   doesn't: Oct 10's F1 harvest was the Oct 20 room 2 trim's)
+  function harvestEst(us) {
+    const dry = {}, noEst = new Set();
+    for (const site of new Set(us.map(u => u.site))) {
+      const v = us.filter(u => u.site === site && u.h && u.t && u.t.done && !u.t.part && !u.t.metrc).sort((a, b) => b.h.date.localeCompare(a.h.date))
+        .map(u => gap(u.h.date, u.t.start)).filter(g => g >= DRY_MIN && g <= DRY_MAX).slice(0, 5).sort((a, b) => a - b);
+      if (v.length >= 2) dry[site] = { days: v.length % 2 ? v[v.length >> 1] : Math.round((v[v.length / 2 - 1] + v[v.length / 2]) / 2), n: v.length };
+    }
+    for (const u of us) if (!u.h && u.t && !u.t.done && us.some(x => x !== u && x.site === u.site && x.h && gap(x.h.date, u.t.start) >= DRY_MIN && gap(x.h.date, u.t.start) <= DRY_MAX && (!x.t || x.t.start > u.t.start))) noEst.add(u.id);
+    return { dry, noEst };
+  }
   function flowView(M, HB, o = {}) {
     const today = o.today || '', all = o.scope === 'all', wet = typeof o.wet === 'function' ? o.wet : () => null;
     const fmd = d => `${+d.slice(5, 7)}/${+d.slice(8, 10)}`;
@@ -6737,6 +6754,8 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     for (const x of (HB && HB.units) || []) if (x.kind === 'own' && x.hid && unitOf.has(x.hid)) evOf.get(unitOf.get(x.hid)).push(...x.ev);
     const add = (rs, f) => rs.reduce((a, r) => a + flowNum(f(r)), 0);
     const day0 = u => (u.h && u.h.date) || (u.t && u.t.start) || '';
+    // (the estimated harvests' usual drying and the trims that get none: from every lot, so they don't move with the lots shown)
+    const { dry, noEst } = harvestEst(us);
     // (planned work shows as far ahead as the sheet plans it: Gianni, 2026-11-23, "Tidy Canvas first"; it stopped at 21
     // days, which hid half the planned trims and pickups)
     const cut = today ? PIPE.addDays(today, -FLOW_DAYS) : '';
@@ -6882,7 +6901,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     for (const [k, c] of kept) if (k !== c && sIdx.has(c)) sIdx.get(c).also.push(k);
     const strains = [...sIdx.values()].sort((a, b) => a.key.localeCompare(b.key));
     strains.forEach(e => e.also.sort());
-    return { nodes, links, rows, nrows: shown.length, tot, look, hidden: { n: hid.length, lb: hid.reduce((a, u) => a + leftOf(u), 0) }, strains };
+    return { nodes, links, rows, nrows: shown.length, tot, look, hidden: { n: hid.length, lb: hid.reduce((a, u) => a + leftOf(u), 0) }, strains, dry, noEst };
   }
   // what a click lights: the node, everything it came from and everything it went to (never its siblings). A lot's node
   // (one with a unit) follows that lot's links both ways, through its own nodes only; a shared node (a buyer, a pickup,
@@ -6941,7 +6960,13 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     for (const I of ((F && F.rows) || []).filter(I => I.src).slice().sort((a, b) => day0(b).localeCompare(day0(a)) || a.key.localeCompare(b.key))) {
       const u = I.unit, key = I.key, L = { key, site: I.site, room: I.room, I, h: null, t: null, inn: null, lab: null, bulk: [], groups: [] };
       const hn = u.h ? fn.get(u.h.id) : null, tn = u.t ? fn.get(u.t.id) : null;
-      L.h = N({ id: 's:h|' + key, col: 0, kind: 'h', lot: key, d: u.h ? u.h.date : '', lb: hn && typeof hn.num === 'number' ? hn.num : null, none: !u.h, fut: u.h ? !!(hn && hn.fut) : !!(tn && tn.fut) });
+      // (a planned trim with no harvest: an estimated harvest, its grow's usual drying before the trim, drawn as planned;
+      // est, with the days and how many of the grow's lots they come from; none stays true: no harvest is known)
+      // (none while Metrc's harvests aren't read, o.est false, and none where a harvest of the grow may already be this
+      // trim's, noEst: Metrc writes Olympic's rooms its own way)
+      const est = !u.h && u.t && tn && tn.fut && o.est !== false && !(F && F.noEst && F.noEst.has(u.id)) ? ((F && F.dry && F.dry[I.site]) || { days: DRY_USUAL, n: 0 }) : null;
+      L.h = N({ id: 's:h|' + key, col: 0, kind: 'h', lot: key, d: u.h ? u.h.date : est ? PIPE.addDays(u.t.start, -est.days) : '', lb: hn && typeof hn.num === 'number' ? hn.num : null, none: !u.h, fut: u.h ? !!(hn && hn.fut) : !!(tn && tn.fut),
+        est: !!est, estDays: est ? est.days : 0, estN: est ? est.n : 0 });
       let src = L.h.id;
       if (u.t) { L.t = N({ id: 's:t|' + key, col: 1, kind: 't', lot: key, d: u.t.start, lb: tn && typeof tn.num === 'number' ? tn.num : null, approx: !!(tn && tn.approx), fut: !!(tn && tn.fut),
         // (sheet: the trim sheet's pounds, bigs + littles; left: the flower Metrc still shows at our licenses from it)
@@ -7032,8 +7057,8 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
   function canvasLay(V, o = {}) {
     const px = o.px || CV_PX, gw = o.gw || CV_GW, rh = o.rh || CV_RH, top = o.top || 0, w = o.w || new Map(), hh = o.h || new Map();   // o.h: Map(id -> px tall) for rows taller than 28 (a trim with its two lines)
     const wid = (id, i) => { const v = w.get(id); return (Array.isArray(v) ? v[i || 0] : v) || 96; };
-    const ds = [];
-    for (const L of (V && V.lots) || []) for (const d of [L.h && !L.h.none ? L.h.d : '', L.t ? L.t.d : '', L.inn ? L.inn.d : '', ...(L.lab ? canvasLab(L.lab) : []), ...(L.bulk || []).map(b => b.d), ...L.groups.map(G => G.day)]) if (d) ds.push(d);
+    const ds = [], hDay = L => (L.h && (!L.h.none || L.h.est) && L.h.d) || '';   // (a harvest that is known, or estimated)
+    for (const L of (V && V.lots) || []) for (const d of [hDay(L), L.t ? L.t.d : '', L.inn ? L.inn.d : '', ...(L.lab ? canvasLab(L.lab) : []), ...(L.bulk || []).map(b => b.d), ...L.groups.map(G => G.day)]) if (d) ds.push(d);
     for (const p of (V && V.picks) || []) { ds.push(p.d); ds.push(p.d1 || p.d); }
     if (o.today) { ds.push(o.today); ds.push(PIPE.addDays(o.today, 14)); }
     ds.sort();
@@ -7069,7 +7094,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     };
     for (const L of V.lots) {
       const g = [], d = [];
-      if (L.h && !L.h.none && L.h.d) g.push({ id: L.h.id, d: L.h.d, w: wid(L.h.id) });
+      if (hDay(L)) g.push({ id: L.h.id, d: L.h.d, w: wid(L.h.id) });
       if (L.t) g.push({ id: L.t.id, d: L.t.d || '', w: wid(L.t.id) });
       if (L.inn) d.push({ id: L.inn.id, d: L.inn.d || '', w: wid(L.inn.id) });
       if (L.lab) canvasLab(L.lab).forEach((dd, i) => d.push({ id: L.lab.id, d: dd, w: wid(L.lab.id, i), coa: i === 1 }));
@@ -7077,7 +7102,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
       const sg = [], sd = [];
       for (const b of L.bulk || []) (b.from === 'distro' ? sd : sg).push({ id: b.id, d: b.d, w: wid(b.id) });
       unit(L, 'GROW', g, [], '', sg);
-      unit(L, 'HUB', d, L.groups, (L.t && L.t.d) || (L.h && !L.h.none && L.h.d) || '', sd);
+      unit(L, 'HUB', d, L.groups, (L.t && L.t.d) || hDay(L), sd);
     }
     // the two sections one under the other; in each, a row as high as it fits
     const hit = (A, ay, B, by) => A.some(a => B.some(b => a[0] < b[1] + 34 && b[0] < a[1] + 34 && ay + a[2] < by + b[3] + 14 && by + b[2] < ay + a[3] + 14));
@@ -7104,7 +7129,7 @@ const BT2 = ((PIPE, BAT, TRIMY, ACT) => {
     labItems, labGroups, labBubble, labClass, atLabText, row, uidN, LAB_DETACH, LAB_OUT, LAB_AHEAD, SHEET_DAYS,
     placeTag, packGroups, packBubble, packClass, evOrder, PACK_G, salesWeeks, salesBubble, salesClass, bandRows, bandEdge, band4w,
     HUB_ORDER, IN_MIN, IN_JOIN, PICK_JOIN, PR_JOIN, IN_ROWS, lotDays, hub, inGroups, pickGroups, inBubble, inClass, pickBubble, pickClass, runBubble,
-    hubRows, hub4w, edgeWords, flowView, flowTrace, strainMerge, stageView, stageTrace, canvasLay, canvasLab, FLOW_DAYS, FLOW_KEEP, FLOW_OLD, FLOW_ENDS };
+    hubRows, hub4w, edgeWords, harvestEst, flowView, flowTrace, strainMerge, stageView, stageTrace, canvasLay, canvasLab, FLOW_DAYS, FLOW_KEEP, FLOW_OLD, FLOW_ENDS };
 })(PIPE, BAT, TRIMY, ACT);
 /* ===== BATCH V2 MODEL END ===== */
 
@@ -14221,8 +14246,11 @@ function b2sInit() {
 }
 // the words on a row
 const b2sLot = L => `${b2fBadge(L.site)} RM${L.room || '?'}`;
+// an estimated harvest's why (Gianni, 2026-11-24, "Yes, draw them"): its grow's usual drying before the planned trim
+const b2sEstWhy = L => { const h = L.h || {};
+  return `Expected about ${md(h.d)}: ${h.estDays} days before its planned trim, ${h.estN ? `the middle of ${b2fBadge(L.site)}'s last ${h.estN} harvests to trim` : 'the usual drying'}. Metrc will have the real day`; };
 function b2sWords(n, L) {
-  if (n.kind === 'h') return [n.none ? `${b2sLot(L)} · ${n.fut ? 'planned' : 'no harvest read'}` : `${b2sLot(L)} · ${md(n.d)}`, n.lb != null ? lb0(n.lb) : ''];
+  if (n.kind === 'h') return [n.est ? `${b2sLot(L)} · ≈ ${md(n.d)}` : n.none ? `${b2sLot(L)} · ${n.fut ? 'planned' : 'no harvest read'}` : `${b2sLot(L)} · ${md(n.d)}`, n.lb != null ? lb0(n.lb) : ''];
   if (n.kind === 't') return [md(n.d), n.lb != null ? (n.approx ? '≈' : '') + BT2.lbTxt(n.lb) : ''];
   // (the result and its day; the day the sample went out is in the card)
   if (n.kind === 'l') return [n.state === 'planned' ? `planned ${n.sent ? md(n.sent) : ''}` : n.state === 'back' ? (n.nFail ? `${n.nFail} failed${n.back ? ' ' + md(n.back) : ''}` : `passed${n.back ? ' ' + md(n.back) : ''}`) : n.at ? `at lab, ≈${md(n.at)}` : `sent${n.sent ? ' ' + md(n.sent) : ''}, no result`, n.more > 0 ? `+${n.more}` : ''];
@@ -14270,7 +14298,7 @@ function b2sRender(M, HB) {
   const waitPick = g => g.state !== 'plan' && g.state !== 'sheet' && daysOf(g.day, g.dayTo).some(d => openN.has(d));
   const outs = new Map();
   for (const r of (B2.flow && B2.flow.rows) || []) for (const [uid, o] of Object.entries((r.went && r.went.products) || {})) outs.set(uid, o);
-  const V = B2.V = BT2.stageView(F, HB, { outs, today, waitIn, waitPick });
+  const V = B2.V = BT2.stageView(F, HB, { outs, today, waitIn, waitPick, est: !!B2.hv });   // (estimated harvests once Metrc's harvests are read)
   let jump = false;
   if (B2.fwant && V.nodes.some(n => n.id === B2.fwant)) { B2.ssel = B2.fwant; B2.fwant = ''; jump = true; }
   if (B2.ssel && !V.nodes.some(n => n.id === B2.ssel)) B2.ssel = '';
@@ -14348,7 +14376,8 @@ function b2sLotHTML(n, L, prods, name, lnk) {
   const packedDays = prods.filter(x => !x.fut).map(x => x.day).filter(Boolean).sort(), d0 = packedDays[0] || '';
   const rolled = d0 && prods.filter(x => !x.fut && x.day === d0).every(x => x.pre);
   const steps = [
-    step('h', h && h.fut && !(h.d && !h.none) ? 'Harvest planned' : 'Harvest', h && !h.none && h.d ? md(h.d) : h && h.fut ? '' : 'not read', h && h.lb != null ? `${lb0(h.lb)} lb wet` : '', u.h ? u.h.id : ''),
+    h && h.est ? step('h', 'Harvest expected', `≈ ${md(h.d)}`, '', '')
+      : step('h', h && h.fut && !(h.d && !h.none) ? 'Harvest planned' : 'Harvest', h && !h.none && h.d ? md(h.d) : h && h.fut ? '' : 'not read', h && h.lb != null ? `${lb0(h.lb)} lb wet` : '', u.h ? u.h.id : ''),
     t ? step('t', t.fut ? 'Trim planned' : u.t && u.t.metrc ? 'First packaged' : 'Trim', b2Span(t.d, tEnd), t.sheet != null ? `${b2cLb2(t.sheet)} lb` : t.lb != null ? `${t.approx ? '≈' : ''}${BT2.lbTxt(t.lb)} lb` : '', u.t ? u.t.id : '') : '',
     i ? step('i', 'Into the 25th distro', i.d ? b2Span(i.d, i.d1) : '', i.wait ? 'not received yet' : i.lb != null ? `${BT2.lbTxt(i.lb)} lb` : '', i.gid, '', i.wait) : '',
     l ? (l.state === 'planned' ? step('l', 'Test planned', l.sent ? md(l.sent) : '', '', l.gid, l.k)
@@ -14383,7 +14412,7 @@ function b2sLotHTML(n, L, prods, name, lnk) {
       (rows.length ? `<table class="b2s-t b2s-w">${rows.map(r => `<tr${r[0] === 'unexplained' ? ' class="warn"' : ''}><td><i style="--c:${r[3]}"></i>${esc(r[1])}${r[4].map(s => `<small>${esc(s)}</small>`).join('')}</td><td>${esc(lb1(r[2]))}</td></tr>`).join('')}</table>`
         : `<p class="b2-note">Metrc shows no flower packaged from this lot${trimLb >= 0.05 ? `; ${esc(lb1(trimLb))} lb of trim` : ''}.</p>`) +
       (warnTxt ? `<p class="b2-note warn">${esc(warnTxt)}${notesShown ? ' ' + notes.map(esc).join(' ') : ''}</p>` : '') + '</div>';
-  } else went = `<p class="b2-note">${!sb ? 'Sign in to see where the pounds went.' : h && h.fut && (h.none || !h.d) ? 'Not harvested yet.' : 'The Metrc lots are not read yet, so where the pounds went is not shown.'}</p>`;
+  } else went = `<p class="b2-note">${h && h.est ? esc(`${h.d > todayISO() ? 'Not harvested yet' : B2.hv ? "Metrc doesn't show this harvest yet" : B2.hvErr ? "Metrc's harvests couldn't be read" : "Metrc's harvests aren't read yet"}. ${b2sEstWhy(L)}.`) : !sb ? 'Sign in to see where the pounds went.' : h && h.fut && (h.none || !h.d) ? 'Not harvested yet.' : 'The Metrc lots are not read yet, so where the pounds went is not shown.'}</p>`;
   // its products: packed ones with their units, planned ones as one line per unit type (units when the sheet gives them)
   const packed = prods.filter(x => !x.fut), plan = prods.filter(x => x.fut), types = new Map();
   for (const x of plan) { const w = B2S_UNIT[x.t][0], m = types.get(w) || new Map(); m.set(sLabel(x.strain), (m.get(sLabel(x.strain)) || 0) + (+x.n || 0)); types.set(w, m); }
@@ -14448,8 +14477,8 @@ function b2sCardHTML(n) {
       (n.end === 'bulk' ? '<p class="b2-note">A bulk buyer, not a store. Flower pounds; each sale is a bubble of its own on its day, beside its lot\'s trim.</p>' : n.end === 'dz' ? '<p class="b2-note">Our own deliveries to stores, in units. Store names are not shown.</p>' : n.end === 'hereP' ? '<p class="b2-note">Packaged units Metrc still shows at the distro today.</p>' : (b2HereLab(V.end) ? `<p class="b2-note">By lab stage: ${esc(b2HereLab(V.end))}.</p>` : '') + '<p class="b2-note">Flower of these lots still at our licenses today, in pounds, packaged or not (jars and 5-packs count 3.5 g a unit, 1g 1 g, pouches and pre-rolls 1.5 g).</p>');
   } else {
     const I = L.I, T = BT2.stageTrace(V, L.h.id), prods = [...T.dn].map(id => by.get(id)).filter(x => x && x.kind === 'p');
-    k = { h: 'Harvest', t: 'Trim', i: 'Into the 25th distro', l: 'Test and COA' }[n.kind];
-    title = `${b2sLot(L)}${L.h && L.h.d ? ` · harvested ${md(L.h.d)}` : ''}`;
+    k = n.kind === 'h' && n.est ? 'Expected harvest' : { h: 'Harvest', t: 'Trim', i: 'Into the 25th distro', l: 'Test and COA' }[n.kind];
+    title = `${b2sLot(L)}${L.h && L.h.d ? (L.h.est ? ` · harvest ≈ ${md(L.h.d)}` : ` · harvested ${md(L.h.d)}`) : ''}`;
     tiles = [['Flower', I.fl ? `${lb0(I.fl)} lb` : L.t && L.t.lb != null ? `${L.t.approx ? '≈' : ''}${BT2.lbTxt(L.t.lb)} lb` : '-'], ['Still ours', I.rows.length ? `${BT2.lbTxt(I.left || 0)} lb` : '-'], ['Since trim', I.age ? `${I.age} d` : '-']];
     body = b2sLotHTML(n, L, prods, name, lnk);
   }
@@ -14467,11 +14496,11 @@ const B2C_HEAD = 46;
 // the words on a row: its day is its place, so the row says what it is
 const b2cLb2 = v => Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function b2cWords(n, L, part) {
-  if (n.kind === 'h') return [`${b2sLot(L)} · harvest`, n.lb != null ? lb0(n.lb) : ''];
+  if (n.kind === 'h') return n.est ? [`${b2sLot(L)} · ≈ harvest`, ''] : [`${b2sLot(L)} · harvest`, n.lb != null ? lb0(n.lb) : ''];
   // a trim (Gianni, 2026-11-18: "on each trim I want the number of lbs trim (to the second decimal) and under it the what
   // remains in METRC from that trim"): the trim sheet's pounds (Metrc's flower when no tab has it, an estimate while it
   // is planned), to the cent; the second line is drawn by b2cBody
-  if (n.kind === 't') { const v = n.sheet != null ? n.sheet : n.lb; return [!L.h || L.h.none || !L.h.d ? `${b2sLot(L)} · trim` : 'Trim', v != null ? (n.sheet == null && n.approx ? '≈' : '') + b2cLb2(v) : '']; }
+  if (n.kind === 't') { const v = n.sheet != null ? n.sheet : n.lb; return [!L.h || (L.h.none && !L.h.est) || !L.h.d ? `${b2sLot(L)} · trim` : 'Trim', v != null ? (n.sheet == null && n.approx ? '≈' : '') + b2cLb2(v) : '']; }
   if (n.kind === 'i') return [`${b2sLot(L)} · in`, n.lb != null ? `${BT2.lbTxt(n.lb)} lb` : ''];
   if (n.kind === 'l') {
     // (with no move read, the test is the first row of the lot in the distro's section: it names the lot)
@@ -14491,7 +14520,7 @@ function b2cBody(V, outs, keep, jump) {
   // the rows, unplaced: their widths are measured, then BT2.canvasLay says where each sits
   const H = [], ghW = new Map();
   for (const L of V.lots) {
-    if (L.h && !L.h.none && L.h.d) H.push(btn(L.h, { fut: L.h.fut }));
+    if (L.h && L.h.d && (!L.h.none || L.h.est)) H.push(btn(L.h, { fut: L.h.fut || L.h.est, tip: L.h.est ? b2sEstWhy(L) : '' }));
     // a trim's second line: the flower Metrc still shows at our licenses from it (not for a trim still planned)
     if (L.t) H.push(btn(L.t, { fut: L.t.fut, sub: L.t.left != null && !L.t.fut ? `${b2cLb2(L.t.left)} left in Metrc` : '', tip: L.t.sheet != null ? 'pounds from the trim sheet (bigs + littles)' : L.t.approx ? 'estimated pounds' : L.t.lb != null ? "Metrc's flower pounds (no trim sheet tab has this trim)" : '' }));
     if (L.inn) H.push(btn(L.inn, { wait: L.inn.wait }));

@@ -3196,6 +3196,28 @@ if (realPipe) {
           assert.deepEqual([outOf(V, J), outOf(V, Po)], [[['n:2026-10-27', 10, 'u'], ['n:2026-11-13', 300, 'u'], ['s:dz', 200, 'u'], ['s:hereP', 400, 'u']], [['n:2026-11-13', 50, 'u'], ['s:hereP', 50, 'u']]], 'lines out of each product: its pickups by day, Distru, what is still here');
           assert.deepEqual([outOf(V0, J), V0.end.dz, V0.end.hereP, V0.picks.map(x => x.id)], [[], 0, 0, ['n:plan|2026-12-10', 'n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16']], "without the job's products: the rows, no lines out, only the pickups still planned");
           assert.deepEqual([V.picks.map(x => x.id), V.end.dz, V.end.hereP, V.buyers], [['n:plan|2026-12-10', 'n:plan|2026-12-04', 'n:plan|2026-11-20', 'n:plan|2026-11-16', 'n:2026-11-13', 'n:2026-10-27'], 200, 450, [['Buyer X', 47]]], 'the last column: the pickups something rode on and the planned ones (as far ahead as the sheet goes), Distru, still here, bulk buyers');
+          // an estimated harvest (Gianni, 2026-11-24, "Yes, draw them"): a planned trim with no harvest gets one, its grow's
+          // usual drying before it (the middle of its last 5 lots' harvest to trim, else 9 days); a trim no longer planned doesn't
+          { const Fs = { rows: [{ key: 'u1', site: 'OLYMPIC', room: '3', src: 's', unit: { id: 'u1', site: 'OLYMPIC', h: null, t: { id: 't:x', start: '2026-12-10', end: '2026-12-12' } }, rows: [] }],
+              nodes: [{ id: 't:x', kind: 'trim', unit: 'u1', fut: true, num: 111.9, approx: true }], links: [], dry: { OLYMPIC: { days: 10, n: 4 } }, strains: [] }, HB0 = { picks: [], units: [] };
+            const Ls = BT2.stageView(Fs, HB0, { today: '2026-11-24' }).lots[0], Ln = BT2.stageView(Object.assign({}, Fs, { dry: {} }), HB0, { today: '2026-11-24' }).lots[0];
+            const Ld = BT2.stageView(Object.assign({}, Fs, { nodes: [Object.assign({}, Fs.nodes[0], { fut: false })] }), HB0, { today: '2026-11-24' }).lots[0];
+            const Cs = BT2.canvasLay({ lots: [Ls], picks: [] }, { w: new Map([[Ls.h.id, 100], [Ls.t.id, 90]]) });
+            assert.deepEqual([Ls.h.est, Ls.h.none, Ls.h.d, Ls.h.estDays, Ls.h.estN, Ln.h.d, Ln.h.estDays, Ld.h.est, Ld.h.d, !!Cs.pos.get(Ls.h.id) && Cs.pos.get(Ls.h.id).x < Cs.pos.get(Ls.t.id).x],
+              [true, true, '2026-11-30', 10, 4, '2026-12-01', 9, false, '', true], "a planned trim with no harvest gets an estimated one, its grow's usual drying before it (else 9 days), drawn on that day; a trim not planned gets none");
+            const Ln0 = BT2.stageView(Fs, HB0, { today: '2026-11-24', est: false }).lots[0], Lb = BT2.stageView(Object.assign({}, Fs, { noEst: new Set(['u1']) }), HB0, { today: '2026-11-24' }).lots[0];
+            assert.deepEqual([Ln0.h.est, Ln0.h.d, Lb.h.est], [false, '', false], "no estimate before Metrc's harvests are read, nor where a harvest of the grow may already be the trim's");
+            // (review fixes, 2026-11-24: a Metrc "first packaged" day is no trim; a harvest of the grow that dried to no trim, or
+            // to a later one, may be this trim's: Metrc put Olympic's Oct 10 harvest in room 1, its trim was room 2's)
+            const U = (id, site, h, t) => ({ id, site, h: h ? { date: h } : null, t: t ? Object.assign({ start: t[0], done: !!t[1] }, t[2] ? { metrc: true } : {}) : null });
+            const HE = BT2.harvestEst([U('a', '23RD', '2026-10-01', ['2026-10-11', 1]), U('b', '23RD', '2026-09-01', ['2026-09-11', 1]), U('c', '23RD', '2026-08-01', ['2026-08-14', 1, 1]),
+              U('d', '25TH', '2026-07-01', ['2026-07-14', 1, 1]), U('e', '25TH', '2026-06-01', ['2026-06-12', 1, 1]),
+              U('p1', 'OLYMPIC', null, ['2026-10-20', 0]), U('h1', 'OLYMPIC', '2026-10-10', null), U('p2', '23RD', null, ['2026-12-18', 0]), U('h2', '23RD', '2026-11-21', ['2026-12-01', 0])]);
+            assert.deepEqual([HE.dry, [...HE.noEst]], [{ '23RD': { days: 10, n: 2 } }, ['p1']],
+              "each grow's usual drying from its lots with a trim sheet tab (never Metrc's first packaged day); a planned trim another room's lone harvest may be gets no estimate, one after a harvest that has its own trim does");
+            const fW = fnH('b2cWords'), fB = fnH('b2cBody');
+            assert.ok(/n\.est \? \[`\$\{b2sLot\(L\)\} · ≈ harvest`, ''\]/.test(fW) && /fut: L\.h\.fut \|\| L\.h\.est, tip: L\.h\.est \? b2sEstWhy\(L\)/.test(fB) && /'Expected harvest'/.test(fnH('b2sCardHTML')) && /Metrc doesn't show this harvest yet/.test(fnH('b2sLotHTML')),
+              "an estimated harvest reads '≈ harvest', looks planned, and its tip and card say why and that Metrc will have the real day"); }
           // a trim's two numbers (Gianni, 2026-11-18: "on each trim I want the number of lbs trim (to the second decimal) and under it the what remains in METRC from that trim")
           assert.deepEqual([[L.t.lb, L.t.sheet, L.t.left], (x => [+x.sheet.toFixed(2), x.left])(V.lots[1].t)], [[132, null, 85], [55.12, null]], "a trim carries the trim sheet's pounds when a tab has it, and the flower Metrc still shows from it (no Metrc lot read: none)");
           // the move into the 25th distro (Gianni, 2026-11-18: "doesn't this get transferred to 25th first before being packaged?")
@@ -3230,7 +3252,7 @@ if (realPipe) {
           assert.deepEqual([[...tr.up].sort(), [...tr.dn].sort()], [[`s:h|${K}`, `s:i|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), ['n:2026-10-27', 'n:2026-11-13', 's:dz', 's:hereP'].sort()], 'a product lit: all it came from (the move into the distro too), all it went to');
           assert.deepEqual([[...tp.up].sort(), tp.dn.size], [[J, Po, `s:h|${K}`, `s:i|${K}`, `s:l|${K}`, `s:t|${K}`].sort(), 0], 'a pickup lit: every product on it, back to the harvest');
           const fR = fnH('b2sRender'), fDr = fnH('b2sDraw'), fC = fnH('b2sCardHTML'), fFt = fnH('b2sFit');
-          assert.ok(html.includes('<div class="b2s" id="b2-stage"></div>') && /BT2\.stageView\(F, HB, \{ outs, today, waitIn, waitPick \}\)/.test(fR) && /r\.went\.products/.test(fR) && /BT2\.stageTrace\(V, id\)/.test(fDr) && /b2cBody\(V, outs, keep, jump\);\n\}/.test(fR), 'the page draws the model, through the Canvas');
+          assert.ok(html.includes('<div class="b2s" id="b2-stage"></div>') && /BT2\.stageView\(F, HB, \{ outs, today, waitIn, waitPick, est: !!B2\.hv \}\)/.test(fR) && /r\.went\.products/.test(fR) && /BT2\.stageTrace\(V, id\)/.test(fDr) && /b2cBody\(V, outs, keep, jump\);\n\}/.test(fR), 'the page draws the model, through the Canvas');
           assert.ok(/b2cFit\(\)/.test(fFt) && !/B2S_HEAD|B2S_RH|b2s-heads|b2s-out|B2\.sstick|B2\.spos/.test(html), "the step columns' own code is gone with the Stages button");
           assert.ok(/data-b2s="\$\{esc\(n\.id\)\}"/.test(fnH('b2cBody')) && /b2sSelect\(n\.dataset\.b2s === B2\.ssel \? '' : n\.dataset\.b2s/.test(fnH('b2sInit')) && /Date\.now\(\) - \(B2\.dragged \|\| 0\) < 80/.test(fnH('b2sInit')), 'a click traces, the same click clears, the end of a drag is neither');
           assert.ok(/class="b2-lnk" data-b2="/.test(fC) && /body = b2sLotHTML\(n, L, prods, name, lnk\);/.test(fC) && /Metrc's packages account for/.test(fC), "the card: figures, came from, went to, and the Timeline's own cards one press away");

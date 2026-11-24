@@ -486,6 +486,17 @@ launch. The check fails if one of the three pieces is missing.
     packaged (still ours with where and lab stage, then the flow job's went keys; amber when they don't add up or a part
     isn't accounted for), products (packed with units, planned as one line per unit type), and the rest folded under
     Details (trim leaf, the move between our licenses, Metrc's harvest names, what "still ours" counts).
+    **An estimated harvest before each planned trim that has none** (Gianni, 2026-11-24, "Yes, draw them", after asking
+    "why do some of these projected trims not have a harvest?": the pipeline sheet has carried no harvest lines since
+    March 2026, so a harvest shows only once Metrc or the Batch Label Sheet has it). It sits its grow's usual drying before
+    the trim (`BT2.harvestEst`'s `dry`: the middle of the grow's last 5 lots' harvest to trim start with a trim sheet tab,
+    3 to 30 days, from every lot, never Metrc's "first packaged" day; 9 days with fewer than 2), drawn as planned ("Oly RM3
+    · ≈ harvest", dashed purple), and its tip and card say why and that Metrc will have the real day (`b2sEstWhy`; a day
+    passed says whether Metrc shows no harvest yet or its harvests aren't read). None until Metrc's harvests are read
+    (`stageView`'s `est: !!B2.hv`), and none where a harvest of the same grow 3 to 30 days before dried to no trim or a
+    later one (`noEst`: Metrc writes Olympic's rooms its own way; its Oct 10 room 1 harvest was the Oct 20 room 2 trim's).
+    Two planned trims of one room each get one, as the sheet plans them. Model: `stageView`'s `L.h.est`, `estDays`,
+    `estN` (`none` stays true: no harvest is known).
 - **On hand page** (beta, view only; Gianni, 2026-11-18: "I wand some way to see how much packaged product is on hand (for
   distu or Nabis) at any given time especially at future dates", then "we'll probably want to know the amount per unit type
   and strain type"; he turned down a line chart and a strain-by-type board with a day picker, and of four further mockups
