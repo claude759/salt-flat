@@ -786,6 +786,15 @@ launch. The check fails if one of the three pieces is missing.
   2's crew list and Access were dropped the same day (`cult_editors` and `cult_crew` kept, unused; `cult_can_edit()` and
   `cult_can_work()` are where roles would come back). Build no login, role or team features until he asks; aim each
   change at cleaner, more automated room pages.
+- **Room pages read in one screen** (Gianni, 2026-11-24: "Yes, tidy it", to folding the panels down so a room page reads
+  in one screen). Needs attention never folds, and a press on an item opens what it is about (the task's row, the crop's
+  trim report, the zones, the map, the flip date, the Growlink tile it names). Tasks opens on what is late and the Today /
+  7 days / 30 days range, with ticks (Coming up merged in; the cycle's earlier and later tasks behind a line each). The
+  progress bar runs along the Day of flower tile; Change is a link on the Flip date tile. Growlink's live tiles sit above
+  the panels, never folded (Growlink's own rule, below). Tasks and the map stay open; Room notes, Environment targets
+  (this week's plan), Runoff log, In Metrc, Harvests and Zones fold to one live line each. A press on a panel's title folds or opens it with no redraw, remembered on the device
+  (`cult.fold`); a zone link, a Needs attention item or an open form opens its panel for that visit only. Laptops:
+  warnings, tasks and the air on the left, Metrc, harvests, zones and the map on the right; phones in that order.
 - **Harvests, crop by crop** (step 3, 2026-11-24; Gianni, of every Wizard Trees login seeing each room's harvest and trim
   pounds: "Yes, show them"). A Harvests panel after In Metrc: a row per crop (a button), newest first, the expected
   harvest on top; a click opens its trim report under it (flower = bigs + littles, lb per light, bigs %, g per plant, trim

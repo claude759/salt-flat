@@ -272,7 +272,7 @@ assert.deepEqual(att.map(a => a.k), ['missed', 'over', 'warn'], 'a task not tick
 const harvestedC = CM.cycle(roomM, Pc, '2026-12-14');
 assert.ok(CM.attention(harvestedC, [], '2026-12-14', [], []).some(a => a.k === 'empty' && /3 days ago/.test(a.text)), 'days since the harvest with no next flip'); n++;
 ok(/function buildPrint\(/.test(html) && /Runoff log · week/.test(html) && /&#9744;/.test(html) && /@page\{size:letter portrait/.test(html), 'the door sheet and the weekly runoff log pages print');
-ok(/data-range="\$\{d\}"/.test(html) && /cult\.range/.test(html), 'Coming up has Today / 7 days / 30 days, remembered on the device');
+ok(/data-range="\$\{d\}"/.test(html) && /cult\.range/.test(html), 'Tasks has Today / 7 days / 30 days, remembered on the device');
 ok(/\[#&\]zone=/.test(html), 'a zone in the address opens its card');
 
 // step 2: tasks done, skipped or moved, with notes; one-off tasks; the runoff log
@@ -447,7 +447,7 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   ok(/r\.site = 'O'/.test(fn) && /\\mroom\\s\*' \|\| rk/.test(fn) && /'site_harvests'/.test(fn) && /'room', upper\(btrim\(t\.room\)\)/.test(fn), "Olympic's lines, lines naming the room, and the other rooms' harvest days go to the page");
   ok(!/dollar|price|cost|went|buyer|package_count/i.test(fn.replace(/^--.*$/gm, '')), 'pounds only: no money, buyers or packages');
   // the page side
-  ok(html.includes("sb.rpc('cult_room_history', { p_room: id })") && /id="hv-panel"/.test(html) && /id="hv-body"/.test(html), 'the room page reads and shows its harvests');
+  ok(html.includes("sb.rpc('cult_room_history', { p_room: id })") && html.includes("{ id: 'hv-panel', bodyId: 'hv-body' }"), 'the room page reads and shows its harvests');
   ok(/CM\.trimWait\(HV\.R\.crops, today\)/.test(html) && /CM\.estimate\(HV\.R\.crops, V\.lights\)/.test(html) && /id="hv-est"/.test(html), 'the wait goes to Needs attention, the estimate to the Harvest tile');
   ok(/loadHistory\(S\.room, true\)/.test(html) && /HIST_TTL = 60 \* 60e3/.test(html) && /e\.busy/.test(html), 'read on open, after an hour, and on Refresh; one read at a time');
   const lh = (html.match(/async function loadHistory[\s\S]*?\n\}/) || [''])[0];
@@ -462,6 +462,48 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   ok(/if \(c\.double\) \{\s*h \+= '<div class="wrapx"><table class="t"><thead><tr><th>Tab on the trim sheets<\/th>/.test(html), "a crop to check shows each tab's pounds, never the two added up");
   ok(/Still to trim: /.test(html) && /if \(c\.full\) \{\s*const nm = \[\];/.test(html), "a partly trimmed crop lists what is still to trim; 'not matched' is said only of a trimmed crop");
   ok(/S\.attBase = \(S\.attBase \|\| \[\]\)\.filter\(x => x\.k !== 'trim'\)/.test(html) && /S\.attBase\.concat\(glAtt\(glCompute\(room\)\)\)/.test(html), "a late history answer redraws Needs attention with Growlink's items, as glRefresh does");
+}
+
+// ---- the room page reads in one screen (Gianni 2026-11-24: "Tidy the room page next, folding the panels down so it reads in one screen")
+{
+  const T = [
+    { key: 'a', date: '2026-11-10', status: 'done', day: 13 }, { key: 'b', date: '2026-11-15', status: 'past', day: 18 },
+    { key: 'c', date: '2026-11-22', status: 'late', day: 25 }, { key: 'd', date: '2026-11-24', status: 'today', day: 27 },
+    { key: 'e', date: '2026-11-26', status: 'skipped', day: 29 }, { key: 'f', date: '2026-11-30', status: 'next', day: 33 },
+    { key: 'g', date: '2026-12-20', status: 'next', day: 53 },
+  ];
+  const C = { flip: '2026-10-29', typed: '2026-12-28' };
+  const G7 = CM.taskGroups(C, T, '2026-11-24', 7);
+  assert.deepEqual([G7.earlier.map(t => t.key), G7.now.map(t => t.key), G7.later.map(t => t.key)], [['a', 'b'], ['c', 'd', 'e', 'f'], ['g']],
+    'Tasks: late and the range in now (done and skipped ones too), older earlier, past the range later'); n++;
+  const G30 = CM.taskGroups({ flip: '2026-10-29', typed: '2026-12-01' }, T, '2026-11-24', 30);
+  assert.ok(G30.now.some(t => t.src === 'flip' && t.date === '2026-12-01') && G30.now.map(t => t.date).join() === [...G30.now.map(t => t.date)].sort().join(), 'a typed next flip in the range is a plain row, in date order'); n++;
+  assert.deepEqual(CM.taskGroups(null, [], 'nope', 7), { earlier: [], now: [], later: [] }, 'no tasks, no groups'); n++;
+  const att = CM.attention({ state: 'flower' }, [{ key: 'k1', date: '2026-11-22', status: 'late', text: 'CUT CLONES', day: 25 }], '2026-11-24', [], []);
+  assert.equal(att[0].key, 'k1', "a Not ticked item knows its task, so a press can find the row"); n++;
+  const rr = (html.match(/function renderRoom\(room\) \{[\s\S]*?\n\}/) || [''])[0];
+  ok(!/Coming up <span/.test(html) && !/class="nowbar"/.test(rr), 'Coming up is in Tasks and the progress row is in the Day of flower tile');
+  ok(/const FOLD_DEFAULT = \{ tasks: 1, map: 1 \};/.test(html), 'Tasks and the map open by default; the rest fold (Growlink\'s live tiles sit above them, never folded)');
+  ok(/try \{ const f = JSON\.parse\(localStorage\.getItem\('cult\.fold'\)/.test(html) && /try \{ localStorage\.setItem\('cult\.fold', JSON\.stringify\(S\.fold\)\); \}/.test(html), 'what is open is remembered on the device, safely');
+  ok(/class="ptog" data-fold="\$\{k\}" aria-expanded="\$\{open\}" aria-controls="\$\{bid\}"/.test(html), 'every fold is a button saying whether it is open and what it opens');
+  ok(['id="gl"', 'id="att"', 'id="att-n"'].every(x => html.split(x).length === 2), "Growlink's #gl, #att and #att-n are drawn once each");
+  ok(/paintSums\(room\);/.test((html.match(/function paintHv[\s\S]*?\n\}/) || [''])[0]) && !/paintSums/.test((html.match(/function glRefresh[\s\S]*?\n\}/) || [''])[0]), "the folded Harvests line follows the history as it lands; Growlink's refresh is left as it was");
+  ok(!/<details/.test(html), 'no <details> (the page redraws whole)');
+  ok(!/\$\('view-room'\)\.addEventListener/.test(rr) && /\$\('view-room'\)\.addEventListener\('click'/.test(html), "the room page's one listener is bound once, not in renderRoom");
+  ok(!/renderRoom/.test((html.match(/function foldToggle[\s\S]*?\n\}/) || [''])[0]), 'a fold never redraws the page (nothing typed is lost)');
+  ok(/S\.peek = \/\[#&\]zone=\\d\/\.test\(location\.hash\) \? \{ map: 1 \} : \{\}/.test(html), 'a zone link opens the map for the visit');
+  ok(/<button type="button" class="ago" data-ai="\$\{i\}">/.test(html) && /function attGo\(i\)/.test(html), 'a Needs attention item opens what it is about');
+  ok(/const formIn = k => \(k === 'map' && !!S\.arrange\) \|\| \(k === 'zones' && !!S\.editZones\) \|\| \(k === 'runoff' && !!S\.runoffForm\) \|\| \(k === 'notes' && !!S\.editNotes\);/.test(html), 'a panel with a form open stays open');
+  // from the review of the folded page
+  ok(/\.ptog \.ptt\{white-space:nowrap\}/.test(html) && !/^\s*\.pt\{white-space:nowrap\}/m.test(html), "a panel title's no-wrap rule leaves the door sheet's tables (table.pt) alone");
+  ok(/if \(a\) \{ e\.stopPropagation\(\); closePop\(\); attGo\(\+a\.dataset\.ai\); \}/.test(html), 'a Needs attention press keeps the card it opens open');
+  ok(['S.editZones = true; S.peek.zones = 1;', 'S.arrange = true; S.peek.map = 1;', 'S.runoffForm = true; S.peek.runoff = 1;', 'S.editNotes = true; S.peek.notes = 1;'].every(x => html.includes(x)), 'a form keeps its panel open for the rest of the visit, after Save or Cancel too');
+  ok(/\.panel\[data-p="att"\]:not\(:has\(\.alist\)\)>h3\{border-bottom:0\}/.test(html) && !/:has\([^)]*:has\(/.test(html), 'no :has() inside :has() (browsers drop the rule)');
+  ok(/@media \(max-width:900px\)\{\.grid2\{grid-template-columns:minmax\(0,1fr\)\}\}/.test(html) && !/max-width:1050px\)\{\.grid2/.test(html), 'two columns down to 900px wide');
+  ok(/\$\{i \? '' : 'Zones '\}\$\{z\}: \$\{ns\.join\(', '\)\}/.test(html), "the Zones line labels each zone ('Zones 1: ... · 2: ...')");
+  ok(/function paintAtt\(list\)/.test(html) && /paintAtt\(all\);/.test((html.match(/function glRefresh[\s\S]*?\n\}/) || [''])[0]) && /paintAtt\(all\);/.test((html.match(/function paintHv[\s\S]*?\n\}/) || [''])[0]), 'Needs attention drawn again keeps a focused item focused');
+  ok(/daysLeft\}\\u00a0days to harvest/.test(html) && /est\.lb\)\)\}\\u00a0lb/.test(html), 'a tile never breaks a figure from its unit');
+  ok(/nothing open still to do in the range/.test(html), 'Tasks says what comes next when nothing open is due in its range');
 }
 
 // page wiring the review asked for
@@ -581,8 +623,8 @@ ok(/glTimer = setInterval\([\s\S]{0,160}5 \* 60e3\)/.test(html), 'the readings a
   const i0 = html.indexOf('function renderRoom(');
   const rr = html.slice(i0, html.indexOf('\n}\n', i0));
   const g = rr.indexOf('<div id="gl"');
-  ok(g > 0 && g > rr.indexOf('class="nowbar"') && g < rr.indexOf('class="notes"') && g < rr.indexOf('<div class="grid2">') && rr.split('id="gl"').length === 2,
-    'the live Growlink tiles sit once, at the top of the room page under the status line');
+  ok(g > 0 && g > rr.indexOf('class="stats"') && rr.indexOf('class="stats"') > 0 && g < rr.indexOf('<div class="grid2">') && rr.split('id="gl"').length === 2,
+    'the live Growlink tiles sit once, at the top of the room page, under the tiles row and above the panels');
 }
 ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-connected note is gone');
 {
