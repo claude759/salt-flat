@@ -840,6 +840,19 @@ launch. The check fails if one of the three pieces is missing.
   day pushes the next run's flip to its harvest; clones ticked early count from the tick day; with no TRANSPLANT task a
   run is in veg once its worked-out transplant day passes. When the plans read lands, or after Refresh, the whole page
   is drawn again unless a form or card is open.
+- **The simpler room page** (Gianni, 2026-11-25: "This still feels cluttered", then "Maybe we should start with something a
+  bit simpler like the google sheet rooms", "this data should be merged into the room map and timeline visualizer" of the
+  Now box, a task schedule "under week by week environment", "a "mark complete" button that will track who marked it's
+  complete and when", this crop's charts "expandable under the growlink section", "yes build it"). Top to bottom: Needs
+  attention (drawn only when something needs it), Growlink's live tiles with "This crop's temperature and humidity"
+  folded under them (`fpanel('chart')`), the room timeline with the run's line over it (`runLineHTML`: day, week, flip
+  with Change, harvest with the expected pounds) and the next run under it (`nowNextHTML`), the room map beside the
+  Strains (`.pair`, the map's line says what Metrc holds), Environment targets (the sheet's weeks with Growlink's
+  actuals), Tasks (the sheet's whole cycle by default; each with Mark complete, then "Completed by <name> · <day, time>"
+  and Undo, from `cult_task_done.done_by` / `done_at`), then More: Runs and plans, Harvests, Runoff log, Room notes, all
+  folded. The Now box is gone. The timeline is a column a day (26 px) under month, weekday and date rows like a calendar,
+  today marked in blue, scrolling sideways. Fold choices are kept under `cult.fold2` and the task range under
+  `cult.range2`, so each device starts from the new defaults.
 - **Zone hint on the map:** the legend says zones count left to right from the main entrance (the rule above).
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it

@@ -272,7 +272,7 @@ assert.deepEqual(att.map(a => a.k), ['missed', 'over', 'warn'], 'a task not tick
 const harvestedC = CM.cycle(roomM, Pc, '2026-12-14');
 assert.ok(CM.attention(harvestedC, [], '2026-12-14', [], []).some(a => a.k === 'empty' && /3 days ago/.test(a.text)), 'days since the harvest with no next flip'); n++;
 ok(/function buildPrint\(/.test(html) && /Runoff log · week/.test(html) && /&#9744;/.test(html) && /@page\{size:letter portrait/.test(html), 'the door sheet and the weekly runoff log pages print');
-ok(/data-range="\$\{d\}"/.test(html) && /cult\.range/.test(html), 'Tasks has Today / 7 days / 30 days, remembered on the device');
+ok(/data-range="\$\{d\}"/.test(html) && /cult\.range2/.test(html) && /\[-1, 'Whole cycle'\]/.test(html), 'Tasks has Whole cycle (the default, like the sheet) / Today / 7 days / 30 days, remembered on the device');
 ok(/\[#&\]zone=/.test(html), 'a zone in the address opens its card');
 
 // step 2: tasks done, skipped or moved, with notes; one-off tasks; the runoff log
@@ -483,8 +483,8 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   assert.equal(att[0].key, 'k1', "a Not ticked item knows its task, so a press can find the row"); n++;
   const rr = (html.match(/function renderRoom\(room\) \{[\s\S]*?\n\}/) || [''])[0];
   ok(!/Coming up <span/.test(html) && !/class="nowbar"/.test(rr), 'Coming up is in Tasks and the progress row is in the Day of flower tile');
-  ok(/const FOLD_DEFAULT = \{ tasks: 1, map: 1 \};/.test(html), 'Tasks and the map open by default; the rest fold (Growlink\'s live tiles sit above them, never folded)');
-  ok(/try \{ const f = JSON\.parse\(localStorage\.getItem\('cult\.fold'\)/.test(html) && /try \{ localStorage\.setItem\('cult\.fold', JSON\.stringify\(S\.fold\)\); \}/.test(html), 'what is open is remembered on the device, safely');
+  ok(/const FOLD_DEFAULT = \{ tasks: 1, map: 1, zones: 1, env: 1 \};/.test(html), 'the simpler page: the map, strains, targets and tasks open by default; the rest fold (Growlink\'s live tiles sit above them, never folded)');
+  ok(/try \{ const f = JSON\.parse\(localStorage\.getItem\('cult\.fold2'\)/.test(html) && /try \{ localStorage\.setItem\('cult\.fold2', JSON\.stringify\(S\.fold\)\); \}/.test(html), 'what is open is remembered on the device, safely');
   ok(/class="ptog" data-fold="\$\{k\}" aria-expanded="\$\{open\}" aria-controls="\$\{bid\}"/.test(html), 'every fold is a button saying whether it is open and what it opens');
   ok(['id="gl"', 'id="att"', 'id="att-n"'].every(x => html.split(x).length === 2), "Growlink's #gl, #att and #att-n are drawn once each");
   ok(/paintSums\(room\);/.test((html.match(/function paintHv[\s\S]*?\n\}/) || [''])[0]) && !/paintSums/.test((html.match(/function glRefresh[\s\S]*?\n\}/) || [''])[0]), "the folded Harvests line follows the history as it lands; Growlink's refresh is left as it was");
@@ -493,7 +493,7 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   ok(!/renderRoom/.test((html.match(/function foldToggle[\s\S]*?\n\}/) || [''])[0]), 'a fold never redraws the page (nothing typed is lost)');
   ok(/S\.peek = \/\[#&\]zone=\\d\/\.test\(location\.hash\) \? \{ map: 1 \} : \{\}/.test(html), 'a zone link opens the map for the visit');
   ok(/<button type="button" class="ago" data-ai="\$\{i\}">/.test(html) && /function attGo\(i\)/.test(html), 'a Needs attention item opens what it is about');
-  ok(/const formIn = k => \(k === 'map' && !!S\.arrange\) \|\| \(k === 'zones' && !!S\.editZones\) \|\| \(k === 'runoff' && !!S\.runoffForm\) \|\| \(k === 'notes' && !!S\.editNotes\);/.test(html), 'a panel with a form open stays open');
+  ok(/const formIn = k => \(k === 'map' && !!S\.arrange\) \|\| \(k === 'zones' && !!S\.editZones\) \|\| \(k === 'runoff' && !!S\.runoffForm\) \|\| \(k === 'notes' && !!S\.editNotes\) \|\| \(k === 'runs' && !!S\.planEdit\);/.test(html), 'a panel with a form open stays open');
   // from the review of the folded page
   ok(/\.ptog \.ptt\{white-space:nowrap\}/.test(html) && !/^\s*\.pt\{white-space:nowrap\}/m.test(html), "a panel title's no-wrap rule leaves the door sheet's tables (table.pt) alone");
   ok(/if \(a\) \{ e\.stopPropagation\(\); closePop\(\); attGo\(\+a\.dataset\.ai\); \}/.test(html), 'a Needs attention press keeps the card it opens open');
@@ -529,7 +529,7 @@ ok(!/\.select\('\*'\)/.test(html), 'every read names its columns (egress)');
 ok(/supabase-js@2\.\d+\.\d+\/dist\/umd\/supabase\.js" integrity="sha384-/.test(html), 'the Supabase library is pinned with an integrity hash');
 ok(/:root\[data-look="dark"\]\{\s*color-scheme:dark;/.test(html), 'the dark look sets color-scheme for form controls');
 ok(/refusedNow/.test(html) && /pointerdown/.test(html), 'Save zones pressed straight from a refused strain box saves nothing');
-ok(/timeZone: 'America\/Los_Angeles', month: 'numeric'/.test(html), "a tick's date is the grows' day");
+ok(/timeZone: 'America\/Los_Angeles', weekday: 'short', month: 'numeric'/.test(html), "a task's completed day and time are the grows' clock");
 
 // ---- Growlink: live readings beside the week's plan (the job only reads Growlink; the page only reads the copy)
 {
@@ -695,7 +695,7 @@ ok(/glTimer = setInterval\([\s\S]{0,400}5 \* 60e3\)/.test(html), 'the readings a
   const i0 = html.indexOf('function renderRoom(');
   const rr = html.slice(i0, html.indexOf('\n}\n', i0));
   const g = rr.indexOf('<div id="gl"');
-  ok(g > 0 && g > rr.indexOf('nowBoxHTML(') && rr.indexOf('nowBoxHTML(') > 0 && g < rr.indexOf('<div class="grid2">') && rr.split('id="gl"').length === 2,
+  ok(g > 0 && g < rr.indexOf('data-p="tl"') && g < rr.indexOf("fpanel('env'") && rr.split('id="gl"').length === 2,
     'the live Growlink tiles sit once, at the top of the room page, under the Now box and above the panels');
 }
 ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-connected note is gone');
@@ -843,11 +843,14 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   const i0 = html.indexOf('function renderRoom(');
   const rr = html.slice(i0, html.indexOf('\n}\n', i0));
   const at = x => rr.indexOf(x);
-  ok(at('nowBoxHTML(') > 0 && at('nowBoxHTML(') < at('<div id="gl"') && at('<div id="gl"') < at("fpanel('map'") && at("fpanel('map'") < at('data-p="tl"')
-    && at('data-p="tl"') < at('runsPanelHTML(') && at('runsPanelHTML(') < at('<div class="grid2">'), 'the Now box, Growlink, the map, the room timeline, the runs, then the panels');
-  ok(at("fpanel('notes'") > at("fpanel('hv'") && at("fpanel('env'") > at("fpanel('hv'") && at('data-p="att"') < at('tasksPanel('), 'Needs attention and the tasks on the left; strains, harvests, the air, runoff and notes on the right');
-  const nb = (html.match(/function nowBoxHTML[\s\S]*?\n\}/) || [''])[0];
-  ok(/id="flip-edit"/.test(nb) && /id="hv-est"/.test(nb) && !/class="nowbar"/.test(nb) && !/href="#/.test(html.match(/function nowNextHTML[\s\S]*?\n\}/)[0]), "the Now box keeps the flip's Change and the harvest's estimate; its link never changes the room's address");
+  ok(at('data-p="att"') < at('<div id="gl"') && at('<div id="gl"') < at("fpanel('chart'") && at("fpanel('chart'") < at('data-p="tl"') && at('data-p="tl"') < at('<div class="pair">')
+    && at('<div class="pair">') < at("fpanel('map'") && at("fpanel('map'") < at("fpanel('zones'") && at("fpanel('zones'") < at("fpanel('env'") && at("fpanel('env'") < at('tasksPanel(')
+    && at('tasksPanel(') < at('more-h') && at('more-h') < at('runsPanelHTML('), 'the simpler page: attention, Growlink and its charts, the timeline, the map beside the strains, targets, tasks, then More');
+  const rl = (html.match(/function runLineHTML[\s\S]*?\n\}/) || [''])[0];
+  ok(/id="flip-edit"/.test(rl) && /id="hv-est"/.test(rl) && !/class="nowbar"/.test(html) && !/href="#/.test(html.match(/function nowNextHTML[\s\S]*?\n\}/)[0]), "the run's line over the timeline keeps the flip's Change and the harvest's estimate");
+  ok(/\$\{d === today \? 'td'/.test(html) && /TL_MON\[/.test(html) && /const TL_BACK = 63, TL_DAYS = 200, TL_DW = 26/.test(html), 'the timeline: a column a day under month, weekday and date rows, today marked');
+  ok(/data-done="1" \$\{data\}>Mark complete<\/button>/.test(html) && /'Completed' : 'Skipped'\}\$\{t\.doneBy \? ` by \$\{esc\(whoName\(t\.doneBy\)\)\}`/.test(html) && /whenSaid\(t\.doneAt\)/.test(html), 'Mark complete, then who completed it and when');
+  ok(/isOpen\('env'\) \|\| isOpen\('chart'\)/.test(html) && /if \(pc\) pc\.innerHTML = glChartsHTML\(D\);/.test(html) && !/h \+= glChartsHTML\(D\);/.test(html), "this crop's charts fold under Growlink; the weekly table keeps the actuals");
   ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
   ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');
   ok(!/READS = \{[\s\S]*?cult_runs[\s\S]*?\};/.test(html.match(/const READS = \{[\s\S]*?\n\};/)[0]) && /async function loadRuns\(room, force\)/.test(html), "the runs are read apart from loadAll: the page works while they can't be read");
