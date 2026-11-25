@@ -500,7 +500,24 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   ok(['S.editZones = true; S.peek.zones = 1;', 'S.arrange = true; S.peek.map = 1;', 'S.runoffForm = true; S.peek.runoff = 1;', 'S.editNotes = true; S.peek.notes = 1;'].every(x => html.includes(x)), 'a form keeps its panel open for the rest of the visit, after Save or Cancel too');
   ok(/\.panel\[data-p="att"\]:not\(:has\(\.alist\)\)>h3\{border-bottom:0\}/.test(html) && !/:has\([^)]*:has\(/.test(html), 'no :has() inside :has() (browsers drop the rule)');
   ok(/@media \(max-width:900px\)\{\.grid2\{grid-template-columns:minmax\(0,1fr\)\}\}/.test(html) && !/max-width:1050px\)\{\.grid2/.test(html), 'two columns down to 900px wide');
-  ok(/\$\{i \? '' : 'Zones '\}\$\{z\}: \$\{ns\.join\(', '\)\}/.test(html), "the Zones line labels each zone ('Zones 1: ... · 2: ...')");
+  // In Metrc and Zones are one Strains panel (Gianni 2026-11-24: "the in metrc and zones section seem like they're doing the exact same thing?", then "Yes, merge them")
+  ok(/fpanel\('zones', 'Strains', strainsSum\(V, cap\)/.test(html) && !/fpanel\('metrc'/.test(html) && !/'In Metrc'/.test(html), 'one Strains panel, no In Metrc panel beside it');
+  ok(!/'metrc'/.test((html.match(/const FOLD_KEYS = \[[^\]]*\]/) || [''])[0]) && /n\.text, 'zones'\]/.test(html), "a Metrc warning opens Strains; an old 'metrc' fold choice is ignored");
+  ok(/strainsBody\(V, cap, flags\(metrcNotes\.concat\(zoneNotes\)\), canEdit\)/.test(html) && /class="codebtn" type="button" data-code=/.test(html) && /on no zone<\/span>/.test(html),
+    "the Strains table carries Metrc's notes, the strain-number naming and Metrc's strains on no zone");
+  ok(!/function (metrcPanel|metrcSum|zonesSum|zonesBody|zonesTable)\(/.test(html), 'the two old panels are gone');
+  // a strain Metrc holds under its name and its number: both records' days and each record's own number button
+  {
+    const P2 = { strains: [{ name: 'Tidebanger', code: null, named: true, sure: true, plants: 42, days: { '2026-10-31': 42 } }, { name: 'Tidebanger', code: '5324', named: true, sure: true, plants: 10, days: { '2026-11-03': 10 } }] };
+    const pl = CM.place([{ zone: 2, slot: 1, strain: 'Tidebanger', lights: 4 }], P2);
+    assert.deepEqual([pl.slots[0].plants, pl.slots[0].metrc.days, pl.slots[0].metrc.parts.map(x => x.code)], [52, { '2026-10-31': 42, '2026-11-03': 10 }, [null, '5324']], "a merged strain keeps both records' days and each record"); n++;
+  }
+  ok(/\(x\.parts \|\| \[x\]\)\.filter\(r => r\.code && !shown\.has\(r\.code\)\)/.test(html), 'each strain number gets its own button, never a joined one');
+  ok(/C\.notes\.find\(n => n\.k === 'old-typed' \|\| n\.k === 'next-typed'\)/.test(html), "the folded line says a typed flip's cycle as the note does");
+  ok(/read && \(z\.strain \|\| z\.metrcAs\) && !z\.metrc/.test(html) && /placed\.missing\.length && S\.meta\.some\(x => x\.license === room\.license && x\.synced_at\)/.test(html), "nothing is called 'not in Metrc' before Metrc is read");
+  ok(/const withFor = placed\.slots\.some\(z => z\.pack\);/.test(html) && /<small class="sph">/.test(html), 'For shows only when a zone has one; on phones a row keeps its lights and For under its name');
+  // the map: lights are hollow rings and no strain is yellow (Gianni 2026-11-24: "are yellow dots lights?")
+  ok(/fill="none" stroke="var\(--light\)"/.test(html) && !/#d9b23c|#a8a83b/i.test((html.match(/const PALETTE = \[[^\]]*\]/) || [''])[0]), 'lights are hollow rings; no strain colour is yellow');
   ok(/function paintAtt\(list\)/.test(html) && /paintAtt\(all\);/.test((html.match(/function glRefresh[\s\S]*?\n\}/) || [''])[0]) && /paintAtt\(all\);/.test((html.match(/function paintHv[\s\S]*?\n\}/) || [''])[0]), 'Needs attention drawn again keeps a focused item focused');
   ok(/daysLeft\}\\u00a0days to harvest/.test(html) && /est\.lb\)\)\}\\u00a0lb/.test(html), 'a tile never breaks a figure from its unit');
   ok(/nothing open still to do in the range/.test(html), 'Tasks says what comes next when nothing open is due in its range');

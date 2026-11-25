@@ -792,11 +792,21 @@ launch. The check fails if one of the three pieces is missing.
   7 days / 30 days range, with ticks (Coming up merged in; the cycle's earlier and later tasks behind a line each). The
   progress bar runs along the Day of flower tile; Change is a link on the Flip date tile. Growlink's live tiles sit above
   the panels, never folded (Growlink's own rule, below). Tasks and the map stay open; Room notes, Environment targets
-  (this week's plan), Runoff log, In Metrc, Harvests and Zones fold to one live line each. A press on a panel's title folds or opens it with no redraw, remembered on the device
-  (`cult.fold`); a zone link, a Needs attention item or an open form opens its panel for that visit only. Laptops:
-  warnings, tasks and the air on the left, Metrc, harvests, zones and the map on the right; phones in that order.
+  (this week's plan), Runoff log, Strains and Harvests fold to one live line each. A press on a panel's title bar folds
+  or opens it with no redraw, remembered on the device (`cult.fold`); a zone link, a Needs attention item or an open form
+  opens its panel for that visit only. Laptops: warnings, tasks, notes, targets and runoff on the left, Strains,
+  Harvests and the map on the right; phones in that order.
+- **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
+  doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
+  when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went
+  into flower, and For; then Metrc's strains on no zone. Above it Metrc's and the zones' notes and each table's lights;
+  under it what Metrc shows lately and when it was read. Edit zones swaps the table for the zone editor. Its line: what
+  is wrong first, then "266 plants · 9 strains on 4 zones · into flower 10/31 (176), 11/3 (90)". Phones move a row's
+  lights and For under its name. Nothing is called "not in Metrc" before Metrc is read.
+- **The room map's lights are hollow yellow rings** and no strain colour is yellow (Gianni, 2026-11-24: "are yellow dots
+  lights?": a mustard strain's plant dots looked like the lights). Plants are small filled dots in their strain's colour.
 - **Harvests, crop by crop** (step 3, 2026-11-24; Gianni, of every Wizard Trees login seeing each room's harvest and trim
-  pounds: "Yes, show them"). A Harvests panel after In Metrc: a row per crop (a button), newest first, the expected
+  pounds: "Yes, show them"). A Harvests panel after Strains: a row per crop (a button), newest first, the expected
   harvest on top; a click opens its trim report under it (flower = bigs + littles, lb per light, bigs %, g per plant, trim
   leaf, dry / wet, against the crop before and the 3 before it, a strain table). The Harvest tile says "about N lb";
   Needs attention says "not on the trim sheets yet" 15 to 45 days after a harvest. No room timeline (the progress bar is
