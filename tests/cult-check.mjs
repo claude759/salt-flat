@@ -884,6 +884,19 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     ok(/tasks = case when p_set \? 'tasks' then p_set->'tasks' else tasks end/.test(sql) && /two tasks share a key/.test(sql), 'cult_room_set saves the task calendar, keys unique'); }
   ok(/sb\.rpc\('cult_room_set', \{ p_room: room\.id, p_set: set \}\)/.test(html) && /\(k === 'tasks' && !!S\.editCal\)/.test(html) && /list="cal-kinds"/.test(html) && /pickFrom\(KINDS, inp\.value\)/.test(html),
     'the task calendar can be edited, kinds picked in a typable box');
+  {   // the Overview's veg: clones and tagged plants by location and strain, the moms from the plant rows
+    const L = 'CCL22-0001216';
+    const rows = [{ license: L, location: 'Veg', kind: 'clones', strain: 'Riptide', planted: '2026-11-12', count: 60 },
+      { license: L, location: 'Veg', kind: 'clones', strain: 'Riptide', planted: '2026-11-02', count: 10 },
+      { license: L, location: 'Veg', kind: 'plants', strain: 'Pool Party', planted: '1900-01-01', count: 3 },
+      { license: 'X', location: 'Veg', kind: 'clones', strain: 'Other', planted: '2026-11-12', count: 5 }];
+    const plants = [{ license: L, location: 'Veg Mom', strain: 'Riptide', state: 'flowering', day: '2026-01-01', plants: 4 },
+      { license: L, location: 'Flower 1', strain: 'Riptide', state: 'flowering', day: '2026-11-01', plants: 40 }];
+    const V = CM.vegView(rows, plants, L, '2026-11-25');
+    assert.deepEqual(V.map(x => [x.location, x.clones, x.tagged, x.moms]), [['Veg', 70, 3, 0], ['Veg Mom', 0, 0, 4]], 'veg rooms, most plants first; moms from their own location'); n++;
+    assert.deepEqual([V[0].strains[0].strain, V[0].strains[0].cuts, V[0].strains[0].age, V[0].strains[1].cuts], ['Riptide', [{ day: '2026-11-02', n: 10 }, { day: '2026-11-12', n: 60 }], 23, []], 'cut days oldest first, the age from the oldest; no planted day: none'); n++;
+  }
+  ok(/<h3>Veg<\/h3><div id="ov-veg">\$\{ovVegHTML\(groups, today\)\}/.test(html) && /from\('cult_metrc_veg'\)\.select\('license,location,kind,strain,planted,count'\)/.test(html), "the Overview's Veg panel, from Metrc's veg");
   {   // a stored key wins, so a task moved or reworded keeps its ticks
     const room = { id: 'K1', harvest_day: 63, tasks: [{ day: 26, kind: 'ACTION', text: 'CUT CLONES NOW', key: '24|CUT CLONES' }] };
     const T = CM.tasks(room, { flip: '2026-10-29', H: 63 }, [{ room_id: 'K1', cycle: '2026-10-29', task_key: '24|CUT CLONES', status: 'done', done_at: '2026-11-22T17:00:00Z' }], '2026-11-25', []);

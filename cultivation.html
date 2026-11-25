@@ -517,6 +517,10 @@
   .ovg td.n b{display:block;font-variant-numeric:tabular-nums} .ovg td.n small{display:block;font-size:11px;color:var(--muted)}
   .ovg td.n.off{background:var(--amber-soft)} .ovg td.n.off b{color:var(--amber)} .ovg td.n.old b{color:var(--faint)}
   .ovg td.ov-none{color:var(--muted)}
+  .ovv tr.ov-vl td{background:var(--ov-band);text-align:left}
+  .ovv tr.ov-vl td span{margin-left:10px;color:var(--muted);font-size:12px}
+  .ovv td.ov-vs{text-align:left;font-weight:600} .ovv td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .ovv td.ov-none{color:var(--muted);text-align:left}
   .ovt thead th.ov-grp{background:var(--ov-hd);color:var(--ov-hd-ink)}
   .ovt .ov-gs{border-left:3px solid var(--ov-hd)}
   .ovg th,.ovg td{padding:5px 7px} .ovg thead th{font-size:10.5px;letter-spacing:.02em}
@@ -1284,6 +1288,32 @@ const CM = (() => {
     return { t0, t1: now, pts, plan, dark, lo: all.length ? Math.min(...all) : null, hi: all.length ? Math.max(...all) : null,
       min: pts.length ? Math.min(...pts.map(p => p[1])) : null, max: pts.length ? Math.max(...pts.map(p => p[1])) : null };
   }
+  // a license's veg for the Overview (Gianni, 2026-11-25: "Yes, add veg"): each Metrc veg location with its strains, the
+  // clones (untagged batch plants) and tagged plants by planted day, and the mothers (flowering plants in a location named
+  // for moms, from the plant rows). rows: cult_metrc_veg; plants: cult_metrc_plants. Locations with the most plants first;
+  // in each, strains by plants, most first.
+  function vegView(rows, plants, license, today) {
+    const locs = new Map();
+    const at = loc => { let L = locs.get(loc); if (!L) locs.set(loc, L = { location: loc, strains: new Map(), clones: 0, tagged: 0, moms: 0 }); return L; };
+    const st = (L, name) => { let x = L.strains.get(name); if (!x) L.strains.set(name, x = { strain: name, clones: 0, tagged: 0, moms: 0, cuts: new Map() }); return x; };
+    for (const r of rows || []) {
+      if (!r || r.license !== license || !(+r.count > 0)) continue;
+      const L = at(r.location), x = st(L, r.strain), n = +r.count, d = isDay(r.planted) && r.planted > '1901-01-01' ? r.planted : null;
+      if (r.kind === 'clones') { x.clones += n; L.clones += n; } else { x.tagged += n; L.tagged += n; }
+      if (d) x.cuts.set(d, (x.cuts.get(d) || 0) + n);
+    }
+    for (const p of plants || []) {
+      if (!p || p.license !== license || p.state !== 'flowering' || !/\bmoms?\b|mother/i.test(String(p.location || ''))) continue;
+      const L = at(p.location), x = st(L, p.strain), n = +p.plants || 0;
+      x.moms += n; L.moms += n;
+    }
+    const out = [...locs.values()].map(L => ({ location: L.location, clones: L.clones, tagged: L.tagged, moms: L.moms,
+      strains: [...L.strains.values()].map(x => {
+        const cuts = [...x.cuts.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([d, n]) => ({ day: d, n }));
+        return { strain: x.strain, clones: x.clones, tagged: x.tagged, moms: x.moms, cuts, age: cuts.length && today ? diff(cuts[0].day, today) : null };
+      }).sort((a, b) => (b.clones + b.tagged + b.moms) - (a.clones + a.tagged + a.moms) || (a.strain < b.strain ? -1 : 1)) }));
+    return out.sort((a, b) => (b.clones + b.tagged + b.moms) - (a.clones + a.tagged + a.moms) || (a.location < b.location ? -1 : 1));
+  }
   function glSpark(pts, w, h, t0, t1) {
     if (!pts || pts.length < 2 || !(t1 > t0)) return '';
     let lo = Infinity, hi = -Infinity;
@@ -1788,7 +1818,7 @@ const CM = (() => {
   }
 
   return { isDay, addDays, diff, todayLA, short, wday, key, nice, strainOf, roomPlants, cycle, taskKey, tasks, envRows, place, colors, tableZone, letter, tableNs, tableLights, capacity, comingUp, attention, runoffPct, latestRunoff, mapModel, PALETTE, taskGroups,
-    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, glDay, glHrs, glEquip, glWeeks, glDays, glChart, LB, skey, history, estimate, trimWait,
+    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, glDay, vegView, glHrs, glEquip, glWeeks, glDays, glChart, LB, skey, history, estimate, trimWait,
     runs, runStages, planFlip, planDay, runKey, ROOT_DAYS };
 })();
 /* ===== CULT MODEL END ===== */
@@ -2450,6 +2480,7 @@ function renderRooms() {
   // next dates and Growlink's live readings, a row per room (Gianni, 2026-11-25: "I want the next dates and growlink data
   // on a single line"); drawn again on its own when Growlink is read again (every 5 minutes)
   h += `<div class="panel ov"><h3>Rooms</h3><div id="ov-gl">${ovRoomsHTML(groups, today)}</div></div>`;
+  h += `<div class="panel ov"><h3>Veg</h3><div id="ov-veg">${ovVegHTML(groups, today)}</div></div>`;
   // every room's tasks, the next 30 days (and the last week's not done)
   const end = CM.addDays(today, 30), list = [];
   for (const x of views) for (const t of x.V.T) {
@@ -2485,6 +2516,49 @@ function renderRooms() {
   el.innerHTML = h;
   ovWire(el);
   ovGlLoad();
+  ovVegLoad();
+}
+/* The Overview's veg: Metrc's veg rooms of each site shown (cult_metrc_veg, written every 3 hours by the veg job on
+   Gianni's Mac), read when the Overview opens, again after 10 minutes, and on Refresh. */
+S.ovVeg = { rows: null, meta: [], err: null, at: 0, busy: false };
+async function ovVegLoad(force) {
+  const G = S.ovVeg;
+  if (!sb || G.busy || (!force && G.rows && Date.now() - G.at < 10 * 60e3) || (!force && G.err && Date.now() - G.at < 60e3)) return;
+  G.busy = true;
+  const res = await Promise.all([sb.from('cult_metrc_veg').select('license,location,kind,strain,planted,count').limit(5000),
+    sb.from('cult_metrc_veg_meta').select('license,synced_at,note')]).catch(e => [{ error: { message: String(e && e.message || e) } }]);
+  G.busy = false; G.at = Date.now();
+  const bad = res.find(x => !x || x.error);
+  if (bad) G.err = /does not exist|schema cache|relation/i.test(bad.error ? bad.error.message : '') ? 'none' : 'read';
+  else { G.err = null; G.rows = res[0].data || []; G.meta = res[1].data || []; }
+  const box = $('ov-veg');
+  if (box && !S.room) { const today = CM.todayLA(); box.innerHTML = ovVegHTML(ovRooms(today), today); }
+}
+function ovVegHTML(groups, today) {
+  const G = S.ovVeg, now = Date.now();
+  if (!G.rows) return `<div class="pbody"><p class="muted" style="margin:0">${G.err === 'none' ? "Metrc's veg isn't on the server yet." : G.err ? "Couldn't read Metrc's veg. It is read again in a few minutes." : 'Reading Metrc’s veg…'}</p></div>`;
+  let h = '', body = '';
+  for (const g of groups) {
+    const lic = g.rooms[0] && g.rooms[0].room.license;
+    const V = CM.vegView(G.rows, S.plants, lic, today);
+    const meta = G.meta.find(m => m.license === lic);
+    if (meta && meta.note) h += `<div class="pbody"><p class="warn" style="margin:0">${esc(g.site.name)}: ${esc(meta.note)}</p></div>`;
+    else if (meta && now - Date.parse(meta.synced_at) > 7 * 3600e3) h += `<div class="pbody"><p class="warn" style="margin:0">${esc(g.site.name)}: Metrc's veg was last read ${esc(CM.glClock(Date.parse(meta.synced_at), now))}</p></div>`;
+    const n = V.reduce((a, L) => a + 1 + L.strains.length, 0);
+    if (!V.length) { body += `<tbody><tr><th class="ov-site" scope="rowgroup">${esc(g.site.name)}</th><td colspan="6" class="ov-none">${meta ? 'Nothing in veg in Metrc' : 'Not read from Metrc yet'}</td></tr></tbody>`; continue; }
+    body += '<tbody>';
+    V.forEach((L, i) => {
+      const tot = [L.clones ? `${num(L.clones)} clones` : '', L.tagged ? `${num(L.tagged)} tagged` : '', L.moms ? `${num(L.moms)} moms` : ''].filter(Boolean).join(' · ');
+      body += `<tr class="ov-vl">${i ? '' : `<th class="ov-site" scope="rowgroup" rowspan="${n}">${esc(g.site.name)}</th>`}<td colspan="6"><b>${esc(L.location)}</b><span>${esc(`${tot} · ${L.strains.length} strain${L.strains.length === 1 ? '' : 's'}`)}</span></td></tr>`;
+      for (const x of L.strains) {
+        const cuts = x.cuts.map(c => `${CM.short(c.day)}${x.cuts.length > 1 ? ` (${num(c.n)})` : ''}`).join(', ');
+        body += `<tr><td class="ov-vs">${esc(x.strain)}</td><td class="n">${x.clones ? esc(num(x.clones)) : ''}</td><td class="n">${x.tagged ? esc(num(x.tagged)) : ''}</td><td class="n">${x.moms ? esc(num(x.moms)) : ''}</td>`
+          + `<td>${esc(cuts)}</td><td class="n">${x.age != null ? esc(`${x.age} days`) : ''}</td></tr>`;
+      }
+    });
+    body += '</tbody>';
+  }
+  return h + `<div class="wrapx"><table class="ovt ovv"><thead><tr><th>Location</th><th>Strain</th><th class="n">Clones</th><th class="n">Tagged</th><th class="n">Moms</th><th>Planted</th><th class="n">Oldest</th></tr></thead>${body}</table></div>`;
 }
 /* The Overview's 24-hour graph: a press on a Growlink cell opens it under that room's row (one at a time; the same cell
    closes it). The room's log for the last 24 hours is read on the first press and again when over 5 minutes old. */
@@ -4275,7 +4349,7 @@ $('refresh').addEventListener('click', async () => {
       if (S.room) { loadHistory(S.room, true); const rr = S.rooms.find(x => x.id === S.room); if (rr && await loadRuns(rr, true) && S.room === rr.id) { if (formOpen()) paintRuns(rr); else renderRoom(rr); } }
     }
     if (S.room && await loadGrowlink(S.room, true)) glRefresh();
-    if (!S.room) ovGlLoad(true);
+    if (!S.room) { ovGlLoad(true); ovVegLoad(true); }
   }
   finally { $('refresh').disabled = false; }
 });

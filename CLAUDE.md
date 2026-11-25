@@ -741,6 +741,13 @@ launch. The check fails if one of the three pieces is missing.
     comes from these.
   - `cult_runs` (runs planned on the page, written only through `cult_run_save()` / `cult_run_delete()`, deleted rows
     kept) and `cult_rooms.turnover_days` (1 to 3, set through `cult_room_set()`).
+  - `cult_metrc_veg` and `cult_metrc_veg_meta` (`supabase/cult-veg.sql`, applied from Gianni's Mac): what each license has
+    in veg now, by Metrc location, kind ('clones': active plant batches, counted untagged; 'plants': tagged plants still in
+    veg), strain and planted day. Written every 3 hours by `~/ar-automation/cult-veg-sync.mjs` (run by cult-metrc-sync.sh
+    after the plant job; its own store `data/cult/veg-store.json` and windows, backfill 120 days, tests
+    `test-cult-veg.mjs`) through the token-gated `cult_metrc_veg_save()`. A tagged veg plant counts until the plant job
+    has a newer copy of it (in flower, harvested or destroyed). Mothers are flowering plants in a mom location, so they
+    come from `cult_metrc_plants`.
   - Each room's harvests and trims come through `cult_room_history(p_room)` (end of `supabase/cultivation.sql`, owned by
     postgres): the room's Metrc harvests from `pipeline_harvests` (the pipeline's 3-hourly copy) and its trim sheet lines
     from `pipeline_trims` (hourly), plus what places lines (Olympic's other lines, lines that name the room, the license's
@@ -889,6 +896,10 @@ launch. The check fails if one of the three pieces is missing.
   here as well"): each row's ⋯ opens the room page's own task editor (`taskMenu`: note, move to another day, skip, delete
   a one-off), the row shows the move and the note, and Add a task (`addTaskPop` with the rooms) picks the room in a
   typable box resolved with `pickFrom`.
+  **Veg** (Gianni, same day: "are the veg rooms tracked in METRC? We might as well include them on the overview too",
+  then "Yes, add veg"): a Veg panel after Rooms, for the sites shown: each Metrc veg location with its totals, then a row
+  per strain with clones, tagged plants, moms, the planted days and the oldest's age (`CM.vegView`, `ovVegHTML`), read on
+  open, after 10 minutes and on Refresh (`ovVegLoad`). Metrc's veg is read only, like every Metrc number.
 - **Almost everything on the page is editable** (Gianni, 2026-11-25: "This should also be editable. Almost everything will
   need to be editable"). Build each new panel with an edit path, and give an existing one that has none an Edit button
   when it is touched. Environment targets: Edit targets (each week's day / night temperature and humidity, VPD, CO2 with
