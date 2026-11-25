@@ -904,6 +904,11 @@ launch. The check fails if one of the three pieces is missing.
   **The room page's Growlink tiles open the same 24-hour graph** as the Overview's cells (Gianni, same day: "these should
   show the same 24 hour view when clicked"): `dayGraphHTML`, from the room's own log read (`S.gl.log`), at the top of the
   tile's details, above its sensors.
+  **Time off plan** (Gianni, same day: "a number that shows how often the growlink actual not aligned with the planned
+  number. like some sort of average"): over the last 24 hours' readings that had a plan, the share off it (beyond
+  `GL.TOL`) and the average gap above or below it (`CM.glDay`'s `offPct`, `avgGap`). The graph's key says "Off plan 38%
+  of the time · 4.2% above it on average" (amber over 25%), and each room tile says "off plan 38% of 24 h" once an hour of
+  readings had a plan. The weekly table keeps its own "% off" per week.
   **Veg is a room** (Gianni, same day: "are the veg rooms tracked in METRC? We might as well include them on the overview
   too", then "Yes, add veg", then "actually veg should be a room" and "Yes, build it" to the mockup; it replaced a Veg
   panel). Each site in Rooms ends with a Veg row (a button, then clones, strains, moms and the oldest batch, `vegSum`;

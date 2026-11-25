@@ -871,6 +871,9 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     assert.deepEqual(D.plan.map(p => p[1]), [76, 78], 'the night plan at 2 AM, the day plan at 2 PM'); n++;
     assert.deepEqual(CM.glDay(rows, 'co2', lights, E, now).plan.map(p => p[1]), [null, 1500], 'CO2 has no plan with the lights off'); n++;
     assert.deepEqual([D.dark.length, new Date(D.dark[0][0]).toISOString(), D.min, D.max], [1, '2026-11-25T09:00:00.000Z', 75, 79], 'one dark stretch (1 AM to 1 PM), low and high'); n++;
+    assert.deepEqual([D.judged, D.offPct, D.avgGap], [2, 0, 0], 'both readings within 2°F of their plan: never off, no gap'); n++;
+    const D2 = CM.glDay([{ at: '2026-11-25T10:00:00Z', temp: 80 }, { at: '2026-11-25T22:00:00Z', temp: 79 }], 'temp', lights, E, now);
+    assert.deepEqual([D2.offPct, D2.avgGap], [50, 2.5], 'one of two off (80 against 76), 2.5°F above the plan on average'); n++;
   }
   ok(/m === 'co2' && gv\.lights && !gv\.lights\.on \? 'lights off'/.test(html) && /data-ovm="\$\{m\}" role="button" tabindex="0"/.test(html), "the Overview's Growlink readings open their 24-hour graph; CO2 says lights off in the dark");
   ok(/V\.placed\.slots\.filter\(z => z\.name && z\.plants > 0\)[\s\S]{0,200}V\.placed\.unplaced\.filter\(x => x\.plants > 0\)/.test(html), "the Overview's next trims list the strains Metrc has in flower in the room, with their plants");
