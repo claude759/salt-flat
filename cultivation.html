@@ -509,6 +509,7 @@
   .ovk tr.closed td.ov-n{color:var(--muted)}
   .ovk td.tact{width:1%}
   .env-ed input[type=number]{padding:4px 6px}
+  .cal-ed input{padding:4px 6px} .cal-ed td{vertical-align:middle}
   .env-ed .pform{margin-top:10px}
   .ovk .ov-ta{display:inline-flex;gap:6px;align-items:center}
   .ovk td.ov-n small.tnote{font-style:italic}
@@ -710,7 +711,9 @@ const CM = (() => {
       harvestDate, daysLeft: diff(today, harvestDate), lastHarvest, notes };
   }
 
-  const taskKey = t => `${t.day}|${String(t.text || '').replace(/\s+/g, ' ').trim().toUpperCase()}`.slice(0, 200);
+  // a task's key: the one stored on it (the calendar editor keeps it through a new day or new words, so ticks stay), else
+  // its calendar day and words
+  const taskKey = t => typeof t.key === 'string' && t.key ? t.key.slice(0, 200) : `${t.day}|${String(t.text || '').replace(/\s+/g, ' ').trim().toUpperCase()}`.slice(0, 200);
   // day N of a cycle is flip + N - 1 (day 1 = the flip), as the sheet counts. A task's row belongs to the cycle it was made
   // in and still counts after the flip is corrected by up to 3 weeks (cycles in a room are at least 30 days apart); the
   // nearest cycle's row wins, and cycles lists every date the task is stored under (an untick clears them all). A row is
@@ -2139,7 +2142,7 @@ function roomView(room, today) {
    ----- */
 const HIST_TTL = 60 * 60e3;
 // a form or card is open: a redraw would lose what is typed in it (the poll, a resize and a late answer wait)
-const formOpen = () => !!(S.editZones || S.arrange || S.runoffForm || S.editNotes || S.planEdit || S.editEnv || !$('pop').hidden);
+const formOpen = () => !!(S.editZones || S.arrange || S.runoffForm || S.editNotes || S.planEdit || S.editEnv || S.editCal || !$('pop').hidden);
 function histOf(room, today) {
   const e = S.hist[room.id];
   if (!e || !e.data) return { e: e || null, R: null };
@@ -2328,7 +2331,7 @@ function route() {
   S.room = id && S.rooms.some(r => r.id === id) ? id : null;
   if (!S.room && S.rooms.length === 1 && !/(^#|&)overview\b/.test(location.hash)) S.room = S.rooms[0].id;   // one room on: open it, unless the Overview was asked for
   S.editZones = false; S.arrange = false; S.zoneOpened = false; S.runoffForm = false; S.editNotes = false; S.hvOpen = null; S.hvAll = false;
-  S.editEnv = false; S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
+  S.editEnv = false; S.editCal = false; S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
   S.peek = /[#&]zone=\d/.test(location.hash) ? { map: 1 } : {}; S.tOpen = {};   // a zone link opens the map for this visit
   closePop();
   render();
@@ -3252,7 +3255,7 @@ function renderRoom(room) {
 /* ----- folding. A panel is open when a form in it is open, when this visit opened it (S.peek), else as this device
    left it (S.fold), else by default (Tasks, Environment and the map open, the rest folded). A press on its title flips
    it in place, with no redraw, so nothing typed or opened in the page is lost. ----- */
-const formIn = k => (k === 'map' && !!S.arrange) || (k === 'zones' && !!S.editZones) || (k === 'env' && !!S.editEnv) || (k === 'runoff' && !!S.runoffForm) || (k === 'notes' && !!S.editNotes) || (k === 'runs' && !!S.planEdit);
+const formIn = k => (k === 'map' && !!S.arrange) || (k === 'zones' && !!S.editZones) || (k === 'env' && !!S.editEnv) || (k === 'tasks' && !!S.editCal) || (k === 'runoff' && !!S.runoffForm) || (k === 'notes' && !!S.editNotes) || (k === 'runs' && !!S.planEdit);
 const isOpen = k => formIn(k) || !!S.peek[k] || (k in S.fold ? S.fold[k] === 1 : !!FOLD_DEFAULT[k]);
 // a panel that folds to one line: its title, a live summary while folded (sum, HTML), a note while open (HTML), the
 // buttons that act on it (they stay on the line), and its body
@@ -3319,6 +3322,74 @@ function paintSums(room) {
 }
 
 /* ----- the panels' bodies and their folded lines ----- */
+/* Editing the room's task calendar (Gianni, 2026-11-25: "Task calendar"): each task's day of the cycle, kind (a typable
+   box, Gianni's rule) and words; add and remove tasks. Each task keeps the key its ticks are stored under, so a task moved
+   to another day or reworded keeps its ticks; a new task's key is its day and words. Saved through cult_room_set's tasks;
+   a HARVEST task's day also sets the room's harvest day (the 8 / 9 week switch), so the two never disagree. */
+function calEditor(V) {
+  const cal = (Array.isArray(V.room.tasks) ? V.room.tasks : []).filter(t => t && +t.day > 0).slice().sort((a, b) => +a.day - +b.day);
+  return `<div class="cal-ed"><datalist id="cal-kinds">${KINDS.map(k => `<option value="${k}"></option>`).join('')}</datalist>
+    <div class="wrapx"><table class="t"><thead><tr><th>Day</th><th>Kind</th><th>Task</th><th></th></tr></thead><tbody id="cal-rows">${cal.map(t => calRow(t)).join('')}</tbody></table></div>
+    <div class="pickmsg" id="cal-msg"></div>
+    <div class="ed act"><button class="btn ghost" type="button" id="cal-add">Add a task</button><span class="grow"></span>
+      <button class="btn" type="button" id="cal-cancel">Cancel</button><button class="btn primary" type="button" id="cal-save">Save calendar</button></div></div>`;
+}
+function calRow(t) {
+  const kind = CM.nice(String(t.kind || 'Action').toUpperCase());
+  const k = KINDS.find(x => x.toUpperCase() === kind.toUpperCase()) || kind;
+  return `<tr data-key="${esc(t.key || CM.taskKey(t))}" data-new="${t.isNew ? 1 : ''}"><td><input type="number" min="1" max="150" step="1" data-c="day" value="${esc(String(t.day || ''))}" style="width:64px"></td>`
+    + `<td><input type="text" list="cal-kinds" data-c="kind" value="${esc(k)}" data-ok="${esc(k)}" autocomplete="off" style="width:96px"></td>`
+    + `<td><input type="text" data-c="text" maxlength="200" value="${esc(String(t.text || '').trim())}" style="width:100%;min-width:260px"></td>`
+    + `<td><button class="btn ghost" type="button" data-cdel aria-label="Remove this task">×</button></td></tr>`;
+}
+function wireCalEditor(room) {
+  const msg = $('cal-msg'), body = $('cal-rows');
+  const kindOk = inp => {   // a kind from the list (Gianni's rule): the exact one in any case, else the one that holds the text
+    const p = pickFrom(KINDS, inp.value);
+    if (p) { inp.value = p; inp.dataset.ok = p; return true; }
+    msg.textContent = `"${inp.value.trim()}" isn't a kind on the list. Kept ${inp.dataset.ok}.`; inp.value = inp.dataset.ok; return false;
+  };
+  const wireRow = tr => {
+    const kd = tr.querySelector('[data-c="kind"]');
+    kd.addEventListener('change', () => { msg.textContent = ''; kindOk(kd); });
+    kd.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); kindOk(kd); } });
+    tr.querySelector('[data-cdel]').addEventListener('click', () => tr.remove());
+  };
+  body.querySelectorAll('tr').forEach(wireRow);
+  $('cal-add').addEventListener('click', () => {
+    const trs = body.querySelectorAll('tr'), last = trs[trs.length - 1];
+    const day = last ? +last.querySelector('[data-c="day"]').value || 1 : 1;
+    body.insertAdjacentHTML('beforeend', calRow({ day, kind: 'ACTION', text: '', key: '', isNew: true }));
+    const tr = body.lastElementChild; wireRow(tr); tr.querySelector('[data-c="text"]').focus();
+  });
+  $('cal-cancel').addEventListener('click', () => { S.editCal = false; renderRoom(room); });
+  $('cal-save').addEventListener('click', async () => {
+    msg.textContent = '';
+    const out = [], bad = [], keys = new Set();
+    for (const tr of body.querySelectorAll('tr')) {
+      const day = Number(tr.querySelector('[data-c="day"]').value), text = tr.querySelector('[data-c="text"]').value.replace(/\s+/g, ' ').trim();
+      const kd = tr.querySelector('[data-c="kind"]');
+      if (!kindOk(kd)) return;
+      if (!text) { if (tr.dataset.new) continue; bad.push('a task with no words'); continue; }
+      if (!Number.isInteger(day) || day < 1 || day > 150) { bad.push(`"${text}" needs a day from 1 to 150`); continue; }
+      let key = tr.dataset.new ? CM.taskKey({ day, text }) : tr.dataset.key;
+      for (let i = 2; keys.has(key); i++) key = `${CM.taskKey({ day, text })}#${i}`;   // two new tasks alike: each its own key
+      keys.add(key);
+      out.push({ day, kind: kd.value.toUpperCase(), text, key });
+    }
+    if (bad.length) { msg.textContent = 'Check ' + [...new Set(bad)].join(', ') + '.'; return; }
+    out.sort((a, b) => a.day - b.day);
+    const set = { tasks: out };
+    const hv = out.find(t => /^HARVEST\b/i.test(t.text));
+    if (hv && hv.day >= 30 && hv.day <= 120 && hv.day !== +room.harvest_day) set.harvest_day = hv.day;
+    $('cal-save').disabled = true;
+    const { error } = await sb.rpc('cult_room_set', { p_room: room.id, p_set: set });
+    if (error) { $('cal-save').disabled = false; msg.textContent = "Couldn't save: " + error.message; return; }
+    S.editCal = false;
+    const r = S.rooms.find(x => x.id === room.id); if (r) { r.tasks = out; if (set.harvest_day) r.harvest_day = set.harvest_day; }   // kept if the re-read fails
+    await loadAll(true, ['rooms']); render();
+  });
+}
 function tasksPanel(V, canWork, today) {
   const { C, T } = V, days = S.range;
   const G = CM.taskGroups(C, T, today, Math.max(0, days));
@@ -3346,7 +3417,9 @@ function tasksPanel(V, canWork, today) {
     }
   }
   const doneN = T.filter(t => t.status === 'done').length;
-  return fpanel('tasks', 'Tasks', tasksSum(V, today), C.flip ? esc(`cycle from ${CM.short(C.flip)}${doneN ? ` · ${doneN} done` : ''}`) : '', seg + add, b);
+  if (S.editCal) return fpanel('tasks', 'Tasks', tasksSum(V, today), 'editing the calendar', '', calEditor(V));
+  const ed = S.me && S.me.edit ? '<button class="btn" type="button" id="cal-edit">Edit calendar</button>' : '';
+  return fpanel('tasks', 'Tasks', tasksSum(V, today), C.flip ? esc(`cycle from ${CM.short(C.flip)}${doneN ? ` · ${doneN} done` : ''}`) : '', seg + add + ed, b);
 }
 // the typed next flip, in the list as a plain row
 const flipRow = t => `<li class="next"><div class="d"><b>${esc(CM.wday(t.date))}</b></div><div class="x"><span><span class="kind">Flip</span>${esc(t.text)}</span></div><span></span><span></span></li>`;
@@ -3972,6 +4045,8 @@ function wireRoom(V, canEdit) {
   const fe = $('flip-edit'); if (fe) fe.addEventListener('click', e => { e.stopPropagation(); flipPop(V, fe); });
   const ze = $('zones-edit'); if (ze) ze.addEventListener('click', () => { S.editZones = true; S.peek.zones = 1; renderRoom(room); });
   const ee = $('env-edit'); if (ee) ee.addEventListener('click', e => { e.stopPropagation(); S.editEnv = true; S.peek.env = 1; renderRoom(room); });
+  const ce = $('cal-edit'); if (ce) ce.addEventListener('click', e => { e.stopPropagation(); S.editCal = true; S.peek.tasks = 1; renderRoom(room); });
+  if (S.editCal) wireCalEditor(room);
   if (S.editEnv) wireEnvEditor(room);
   const ar = $('arrange'); if (ar) ar.addEventListener('click', () => { S.arrange = true; S.peek.map = 1; closePop(); renderRoom(room); });
   for (const b of document.querySelectorAll('#view-room [data-range]')) b.addEventListener('click', () => {

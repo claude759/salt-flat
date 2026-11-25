@@ -894,6 +894,10 @@ launch. The check fails if one of the three pieces is missing.
   when it is touched. Environment targets: Edit targets (each week's day / night temperature and humidity, VPD, CO2 with
   blank for none, the lights note), saved through `cult_room_set`'s `env` in the sheet's own wording ("80f - 78f",
   "62% - 60%", "n/CO2"), numbers held to sane ranges (`ENV_RANGE`).
+  Task calendar (Gianni, same day: "Task calendar"): Edit calendar on Tasks changes each task's day, kind (typable, `KINDS`)
+  and words, adds and removes tasks, through `cult_room_set`'s `tasks`. Each task carries the `key` its ticks are stored
+  under (`CM.taskKey` takes a stored key first), kept through a new day or new words, so ticks stay; a HARVEST task's day
+  also sets `harvest_day`.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went
