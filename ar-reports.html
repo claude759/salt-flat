@@ -166,6 +166,10 @@
   #mom-table thead th:first-child{background:var(--panel2);z-index:2}
   #mom-table .mom-grp td:first-child,#mom-table .mom-sub td:first-child{background:var(--panel2)}
   #mom-table tfoot td:first-child{background:#10131a}   /* keep the pinned corner cell matching the footer row */
+  #mom-table .mom-days{display:block;font-size:10.5px;font-weight:500;color:var(--muted);text-transform:none;letter-spacing:0}
+  .mom-pick{display:inline-block;width:180px}
+  .toolbar .mom-pick input[type=text]{min-width:0;width:100%;box-sizing:border-box}
+  #mom-msg{font-size:12px;color:#f0b35a}
   .grow{flex:1}
   .btn{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:8px 13px;cursor:pointer;font:inherit;font-weight:600}
   .btn:hover{border-color:var(--accent)}
@@ -1150,12 +1154,10 @@
           </div>
         </div>
         <div class="toolbar">
-          <select id="mom-months" title="How many months to show">
-            <option value="5">Last 5 months</option>
-            <option value="3">Last 3 months</option>
-            <option value="6">Last 6 months</option>
-            <option value="12">Last 12 months</option>
-          </select>
+          <span class="cr-ac-wrap mom-pick"><input type="text" id="mom-period" value="Last 5 months" autocomplete="off" spellcheck="false" title="Period: type to search (Year to date, Last 12 months, Custom range…)" /><div id="mom-ac" class="cr-ac hidden"></div></span>
+          <label class="dt">From <input type="date" id="mom-start" /></label>
+          <label class="dt">To <input type="date" id="mom-end" /></label>
+          <span id="mom-msg"></span>
           <div class="grow"></div>
           <button class="btn" id="mom-export">⬇ Export CSV</button>
         </div>
@@ -7940,6 +7942,8 @@ function setRepMode(mode){ repMode=REP_MODES.includes(mode)?mode:'newcust';
   $('#rep-remit').classList.toggle('hidden', repMode!=='remit');
   $('#rep-nymonth').classList.toggle('hidden', repMode!=='nymonth');
   $('#rep-bulkmix').classList.toggle('hidden', repMode!=='bulkmix');
+  if(repMode!=='mom'&&momHashMatch(location.hash)){ const at=document.querySelector('.tab.active');   // leaving Month over Month: its link must not reopen it
+    if(at&&at.dataset.tab==='reports'){ try{ history.replaceState(null,'','#reports'); }catch(e){} } }
   renderRepMode(); saveView(); }
 document.querySelectorAll('#rep-toggle button').forEach(b=>b.onclick=()=>setRepMode(b.dataset.rep));
 ['rep-months','rep-search'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('input',renderReports); });
@@ -9422,30 +9426,92 @@ $('#time-export').onclick=()=>{
 // months (columns), one metric per cell, so several months sit side by side.
 let momMetric='sales';   // 'sales' (actualized $) | 'units'
 const MOM_FMT_ORDER=['jar35','fivepk','pr15','pr1','vape','other'];
+// The period (Gianni 2026-11-25: "this should have a date range picker and YTD as an option"): a typable
+// picker (his rule for every pick-list: type to filter, and only a period from the list is ever used)
+// plus From / To. The presets run from the 1st of their first month to today; Custom is any two days,
+// and a month the range only partly covers shows the days it covers under its name. The period rides in
+// the link: #mom (Last 5 months), #mom~ytd, #mom~12m, #mom~2026-01-01~2026-06-30, then ~units for the
+// Units metric; #mom~mi~... is Michigan's, anything else California's.
+const MOM_PERIODS=[
+  {k:'ytd', l:'Year to date', alias:['ytd','this year']},
+  {k:'3m', l:'Last 3 months', n:3},
+  {k:'5m', l:'Last 5 months', n:5},
+  {k:'6m', l:'Last 6 months', n:6},
+  {k:'12m', l:'Last 12 months', n:12},
+  {k:'custom', l:'Custom range', alias:['custom','range','dates']},
+];
+const MOM_DEFAULT='5m', MOM_MAX_MONTHS=120;
+let momPeriod=MOM_DEFAULT;
+function momHashMatch(h){ return /^mom(~mi)?(?:~(ytd|3m|5m|6m|12m)|~(\d{4}-\d\d-\d\d)~(\d{4}-\d\d-\d\d))?(~units)?$/.exec(String(h||'').replace(/^#/,'').trim()); }
+// a preset's From / To (ISO days) on a given day
+function momPresetRange(k, now){ const p=MOM_PERIODS.find(x=>x.k===k); if(!p||k==='custom') return null; now=now||new Date();
+  const s=k==='ytd'?new Date(now.getFullYear(),0,1):new Date(now.getFullYear(),now.getMonth()-(p.n-1),1);
+  return {s:isoDay(s), e:isoDay(now)}; }
+// what was typed → the one period it names: the label or key in any case, else the one period containing it
+function momPick(t){ const q=String(t||'').trim().toLowerCase(); if(!q) return null;
+  const ex=MOM_PERIODS.find(p=>p.l.toLowerCase()===q||p.k===q||(p.alias||[]).includes(q)); if(ex) return ex;
+  const has=MOM_PERIODS.filter(p=>p.l.toLowerCase().includes(q)||(p.alias||[]).some(a=>a.includes(q)));
+  return has.length===1?has[0]:null; }
+// the range in force: a preset is worked out afresh (a page left open past midnight moves with the day)
+function momRangeNow(){ const a=$('#mom-start'), b=$('#mom-end');
+  if(momPeriod!=='custom'){ const r=momPresetRange(momPeriod); if(a) a.value=r.s; if(b) b.value=r.e; return r; }
+  return {s:(a&&a.value)||'', e:(b&&b.value)||''}; }
+// calendar months from s to e (ISO days), each with the days it covers when that isn't the whole month
+function momMonths(sIso, eIso){
+  const s=parseDate(sIso), e=parseDate(eIso);
+  if(!s||!e) return {err:'Pick a From and a To day.'};
+  if(+s>+e) return {err:'From is after To.'};
+  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'], months=[];
+  for(let d=new Date(s.getFullYear(),s.getMonth(),1); +d<=+e; d=new Date(d.getFullYear(),d.getMonth()+1,1)){
+    if(months.length>=MOM_MAX_MONTHS) return {err:`That is more than ${MOM_MAX_MONTHS} months; pick a shorter range.`};
+    const y=d.getFullYear(), m=d.getMonth(), last=new Date(y,m+1,0).getDate();
+    const from=(y===s.getFullYear()&&m===s.getMonth())?s.getDate():1, to=(y===e.getFullYear()&&m===e.getMonth())?e.getDate():last;
+    months.push({key:y*12+m, label:`${MON[m]} '${String(y).slice(2)}`, days:(from===1&&to===last)?'':(from===to?`${from}`:`${from}–${to}`)}); }
+  const end=new Date(e); end.setHours(23,59,59,999);
+  return {months, t0:+s, t1:+end};
+}
+function momTotalLabel(){ const p=MOM_PERIODS.find(x=>x.k===momPeriod);
+  return momPeriod==='ytd'?'YTD total':(p&&p.n)?`${p.n}-mo total`:'Total'; }
 function momData(){
-  const n=Math.max(2,+(($('#mom-months')||{}).value||5));
-  const now=new Date(); const curM=new Date(now.getFullYear(),now.getMonth(),1);
-  const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const months=[]; for(let i=n-1;i>=0;i--){ const d=new Date(curM.getFullYear(),curM.getMonth()-i,1);
-    months.push({key:d.getFullYear()*12+d.getMonth(), label:`${MON[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`}); }
-  const minK=months[0].key, maxK=months[months.length-1].key;
-  const fmtKeyOf=label=>{ const f=CONC_FORMATS.find(x=>x.label===label); return f?f.key:'other'; };
+  const r=momRangeNow(), M=momMonths(r.s, r.e);
   const SRCS=['Nabis','Distru','QuickBooks'];
   const acc={}; SRCS.forEach(s=>acc[s]={});   // acc[src][fmtKey][monthKey] = {sales, units}
+  const dc={}; SRCS.forEach(s=>dc[s]={});
+  if(M.err) return {err:M.err, months:[], acc, dc, SRCS, totLabel:''};
+  const {months, t0, t1}=M;
+  const fmtKeyOf=label=>{ const f=CONC_FORMATS.find(x=>x.label===label); return f?f.key:'other'; };
   (SKU_EVENTS||[]).forEach(e=>{ if(!acc[e.src]) return; const dt=e.d?new Date(e.d):null; if(!dt) return;
-    const mk=dt.getFullYear()*12+dt.getMonth(); if(mk<minK||mk>maxK) return;
+    const t=+dt; if(!(t>=t0&&t<=t1)) return; const mk=dt.getFullYear()*12+dt.getMonth();
     const fk=fmtKeyOf(e.fmt), fm=acc[e.src][fk]||(acc[e.src][fk]={}), cell=fm[mk]||(fm[mk]={sales:0,units:0});
     cell.sales+=e.rev||0; cell.units+=(e.u||0)+(e.su||0); });   // units incl. free samples (matches Sales by Type)
   // Order/invoice-level discounts + credit memos per source per month (subtracted to get net sales).
-  const dc={}; SRCS.forEach(s=>dc[s]={});
   (CONC_EVENTS||[]).forEach(e=>{ if(dc[e.s]===undefined) return; const dt=e.d?new Date(e.d):null; if(!dt) return;
-    const mk=dt.getFullYear()*12+dt.getMonth(); if(mk<minK||mk>maxK) return;
+    const t=+dt; if(!(t>=t0&&t<=t1)) return; const mk=dt.getFullYear()*12+dt.getMonth();
     dc[e.s][mk]=(dc[e.s][mk]||0)+(e.invoiceDisc||0)+(e.creditMemos||0); });
-  return {months, acc, dc, SRCS};
+  return {months, acc, dc, SRCS, totLabel:momTotalLabel()};
 }
+// the link to the report as it is shown now
+function momHash(){ const parts=['mom']; if(APP_STATE==='MI') parts.push('mi');
+  if(momPeriod==='custom'){ const a=$('#mom-start'), b=$('#mom-end'); if(a&&b&&a.value&&b.value) parts.push(a.value, b.value); }
+  else if(momPeriod!==MOM_DEFAULT) parts.push(momPeriod);
+  if(momMetric==='units') parts.push('units');
+  return '#'+parts.join('~'); }
+// keep the address bar on that link while the report is up, so it can be copied as is
+function momSyncHash(){ if(!_viewReady||repMode!=='mom') return;
+  const at=document.querySelector('.tab.active'); if(!at||at.dataset.tab!=='reports') return;
+  const h=momHash(); if(location.hash!==h){ try{ history.replaceState(null,'',h); }catch(e){} } }
+// open the report from a link: sets the period and metric, says whether the link was one
+function momFromHash(h){ const m=momHashMatch(h); if(!m) return false;
+  if(m[3]){ momPeriod='custom'; const a=$('#mom-start'), b=$('#mom-end'); if(a) a.value=m[3]; if(b) b.value=m[4]; }
+  else momPeriod=m[2]||MOM_DEFAULT;
+  const p=MOM_PERIODS.find(x=>x.k===momPeriod), inp=$('#mom-period'); if(inp&&p) inp.value=p.l;
+  momMetric=m[5]?'units':'sales'; document.querySelectorAll('#mom-toggle button').forEach(b=>b.classList.toggle('on',b.dataset.mom===momMetric));
+  return true; }
 function renderMom(){
   const wrap=$('#mom-wrap'), note=$('#mom-note');
-  const {months, acc, dc, SRCS}=momData();
+  const {months, acc, dc, SRCS, totLabel, err}=momData();
+  momSyncHash();
+  if(err){ wrap.innerHTML=`<div class="empty">${esc(err)}</div>`; note.innerHTML=''; return; }
   const isSales=momMetric==='sales';
   const val=c=> c? (isSales?c.sales:c.units) : 0;
   const fmtCell=v=> v ? (isSales?fmt$(v):Math.round(v).toLocaleString()) : '<span class="neg">—</span>';
@@ -9472,18 +9538,58 @@ function renderMom(){
     months.forEach((m,i)=>colTot[i]+=srcTot[i]); grand+=srcGrand;
     body+=`<tr class="mom-sub"><td>${esc(src)} ${isSales?'net total':'total'}</td>${srcTot.map(v=>`<td class="num money">${fmtCell(v)}</td>`).join('')}<td class="num money">${fmtCell(srcGrand)}</td></tr>`;
   });
-  const thead=`<tr><th>Product</th>${months.map(m=>`<th class="num">${esc(m.label)}</th>`).join('')}<th class="num">${months.length}-mo total</th></tr>`;
+  const thead=`<tr><th>Product</th>${months.map(m=>`<th class="num">${esc(m.label)}${m.days?`<span class="mom-days">${esc(m.days)}</span>`:''}</th>`).join('')}<th class="num">${esc(totLabel)}</th></tr>`;
   const foot=`<tr class="totals"><td>Total ${isSales?'net sales':'units'}</td>${colTot.map(v=>`<td class="num money">${fmtCell(v)}</td>`).join('')}<td class="num money"><b>${fmtCell(grand)}</b></td></tr>`;
   wrap.innerHTML=`<table id="mom-table"><thead>${thead}</thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table>`;
-  note.innerHTML=`Each column is a calendar month; rows are product types grouped by channel. <b>${isSales?'Sales $':'Units'}</b> = ${isSales?'actualized (billed) revenue; the per-channel total is NET (less order discounts + credit memos), matching the Sales by Type "Total for week"':'units sold, including free-sample units'}. Cell shading is relative to each row's peak month. Toggle the metric above; change the window at left. The current month is partial.`;
+  note.innerHTML=`Each column is a calendar month; rows are product types grouped by channel. <b>${isSales?'Sales $':'Units'}</b> = ${isSales?'actualized (billed) revenue; the per-channel total is NET (less order discounts + credit memos), matching the Sales by Type "Total for week"':'units sold, including free-sample units'}. Cell shading is relative to each row's peak month. Toggle the metric above; type or pick a period at left, or set From and To for any range. A month the range covers only part of shows the days it covers under its name. The address bar is the link to this report as shown.`;
 }
 function setMomMetric(m){ momMetric=m; document.querySelectorAll('#mom-toggle button').forEach(b=>b.classList.toggle('on',b.dataset.mom===m)); renderMom(); }
 document.querySelectorAll('#mom-toggle button').forEach(b=>b.onclick=()=>setMomMetric(b.dataset.mom));
-$('#mom-months').addEventListener('change',renderMom);
-$('#mom-export').onclick=()=>{ const {months,acc,dc,SRCS}=momData(); const isSales=momMetric==='sales';
+// The period picker: a text box with the periods under it; a click or Enter picks one, and typed text
+// is used only when it names exactly one period (else the last good period stays, and says so).
+function momSetPeriod(k){ const p=MOM_PERIODS.find(x=>x.k===k); if(!p) return false; momPeriod=k;
+  const inp=$('#mom-period'); if(inp) inp.value=p.l; momMsg(''); return true; }
+let momMsgT=null;
+function momMsg(t){ const el=$('#mom-msg'); if(!el) return; el.textContent=t||''; clearTimeout(momMsgT); if(t) momMsgT=setTimeout(()=>{ el.textContent=''; },6000); }
+(function momPicker(){
+  const inp=$('#mom-period'), box=$('#mom-ac'); if(!inp||!box) return;
+  let shown=[], hi=-1;
+  const cur=()=>MOM_PERIODS.find(x=>x.k===momPeriod)||MOM_PERIODS[0];
+  const close=()=>{ box.classList.add('hidden'); hi=-1; };
+  const paint=all=>{ const q=all?'':inp.value.trim().toLowerCase();
+    shown=MOM_PERIODS.filter(p=>!q||p.l.toLowerCase().includes(q)||(p.alias||[]).some(a=>a.includes(q))||p.k===q);
+    hi=all?shown.indexOf(cur()):(shown.length===1?0:-1);   // typing lights a period only when it names just one
+    box.innerHTML=shown.length?shown.map((p,i)=>`<div class="opt${i===hi?' hi':''}" data-i="${i}">${esc(p.l)}</div>`).join('')
+      :'<div class="none">No period matches. Try Year to date, Last 12 months or Custom range.</div>';
+    box.classList.remove('hidden');
+    box.querySelectorAll('.opt').forEach(o=>o.onmousedown=e=>{ e.preventDefault(); choose(shown[+o.dataset.i]); }); };
+  const choose=p=>{ close(); if(!p) return; const was=momPeriod; momSetPeriod(p.k);
+    if(p.k==='custom'){ const a=$('#mom-start'); if(a) setTimeout(()=>a.focus(),0); }
+    if(p.k!==was||p.k!=='custom') renderMom(); };
+  // typed text: the one period it names, else refuse and put the last good period back
+  const resolve=()=>{ const t=inp.value.trim(), c=cur(); if(!t||t===c.l){ inp.value=c.l; close(); return; }
+    const p=momPick(t); if(p){ choose(p); return; }
+    close(); inp.value=c.l; momMsg(`No single period matches “${t}”, so it stays on ${c.l}.`); };
+  inp.onfocus=()=>{ paint(true); try{ inp.select(); }catch(e){} };
+  inp.oninput=()=>paint(false);
+  inp.onblur=()=>setTimeout(()=>{ if(document.activeElement!==inp) resolve(); },120);
+  inp.onkeydown=e=>{
+    // Enter uses what the box says: a period moved to with the arrows (its name is in the box), or typed text
+    if(e.key==='Enter'){ e.preventDefault(); resolve(); return; }
+    if(e.key==='Escape'){ inp.value=cur().l; close(); inp.blur(); return; }
+    if(e.key!=='ArrowDown'&&e.key!=='ArrowUp') return;
+    e.preventDefault(); if(box.classList.contains('hidden')) paint(true);
+    hi=e.key==='ArrowDown'?Math.min(hi+1,shown.length-1):Math.max(hi-1,0);
+    box.querySelectorAll('.opt').forEach((o,i)=>o.classList.toggle('hi',i===hi));
+    const el=box.querySelector('.opt.hi'); if(el){ el.scrollIntoView({block:'nearest'}); inp.value=shown[hi].l; } };
+})();
+// a day typed or picked in From / To makes it a Custom range
+['mom-start','mom-end'].forEach(id=>{ const el=$('#'+id); if(el) el.addEventListener('change',()=>{ momSetPeriod('custom'); renderMom(); }); });
+{ const r=momPresetRange(MOM_DEFAULT); if($('#mom-start')) $('#mom-start').value=r.s; if($('#mom-end')) $('#mom-end').value=r.e; }
+$('#mom-export').onclick=()=>{ const {months,acc,dc,SRCS,totLabel,err}=momData(); if(err){ momMsg(err); return; } const isSales=momMetric==='sales';
   const fnum=v=>isSales?(+v).toFixed(2):String(Math.round(v));
   const valOf=c=>c?(isSales?c.sales:c.units):0;
-  const out=[['Channel','Product',...months.map(m=>m.label),`${months.length}-mo total`]];
+  const out=[['Channel','Product',...months.map(m=>m.days?`${m.label} (${m.days})`:m.label),totLabel]];
   const grand=months.map(()=>0); let grandTot=0;   // mirror the on-screen subtotals + grand total
   SRCS.forEach(src=>{
     const fmts=MOM_FMT_ORDER.filter(fk=>acc[src][fk] && months.some(m=>valOf(acc[src][fk][m.key])>0.0001));
@@ -10031,6 +10137,10 @@ function activateTab(tab, fromHash){
   // #bulkmix is a CA report: switch to CA first, the same way
   if(tab==='reports'&&fromHash&&/^#bulkmix(~(week|month))?$/.test(location.hash||'')&&APP_STATE!=='CA'&&stateAllowed('CA')){
     const h=location.hash; setAppState('CA'); try{ history.replaceState(null,'',h); }catch(e){} return activateTab('reports',true); }
+  // #mom… is California's Month over Month (#mom~mi… Michigan's): switch to that state first, the same way
+  if(tab==='reports'&&fromHash&&momHashMatch(location.hash)){
+    const h=location.hash, want=momHashMatch(h)[1]?'MI':'CA';
+    if(APP_STATE!==want&&stateAllowed(want)){ setAppState(want); try{ history.replaceState(null,'',h); }catch(e){} return activateTab('reports',true); } }
   if(tab==='sku'&&APP_STATE==='NY'){   // NY: Sales by Type lives on the Reports tab — reroute BEFORE the access guard (the sku tab is always hidden in NY, so the guard would bounce to AR)
     const m=fromHash ? (location.hash||'').match(/^#sku~(\d{4}-\d\d-\d\d)~(\d{4}-\d\d-\d\d)$/) : null;
     if(m && $('#sku-start') && $('#sku-end')){ $('#sku-start').value=m[1]; $('#sku-end').value=m[2]; if($('#sku-preset')) $('#sku-preset').value='custom'; }
@@ -10071,7 +10181,8 @@ function activateTab(tab, fromHash){
   if(tab==='tiers') renderTiers();
   $('#view-reports').classList.toggle('hidden',tab!=='reports');
   if(tab==='reports'){ const h=(location.hash||'').replace(/^#/,'');
-    if(fromHash&&(h==='mom'||h==='time')) setRepMode(h);   // legacy #mom/#time deep links land on the right report
+    if(fromHash&&h==='time') setRepMode('time');   // legacy #time deep link lands on the right report
+    else if(fromHash&&APP_STATE!=='NY'&&momFromHash(h)) setRepMode('mom');   // #mom[~mi][~ytd|~12m|~<from>~<to>][~units] → Month over Month, that period (New York has none)
     else if(fromHash&&APP_STATE==='NY'&&/^nymonth(~\d{4}-\d\d)?$/.test(h)){   // #nymonth → NY Monthly Summary; #nymonth~2026-09 → that month
       const m=h.match(/^nymonth~(\d{4}-\d\d)$/); if(m) nyMonthSel=m[1]; setRepMode('nymonth'); }
     else if(fromHash&&APP_STATE==='CA'&&/^bulkmix(~(week|month))?$/.test(h)){ bmGran=/~month$/.test(h)?'month':'week'; setRepMode('bulkmix'); }   // #bulkmix → CA Bulk vs Packaged
@@ -10088,7 +10199,8 @@ function activateTab(tab, fromHash){
   $('#view-hmops').classList.toggle('hidden',tab!=='hmops');
   if(tab==='hmops') renderHmOps();
   $('#conc-controls').classList.toggle('hidden', tab!=='cd');
-  if(!fromHash){ try{ history.replaceState(null,'','#'+tab); }catch(e){ location.hash=tab; } }
+  if(!fromHash){ const hh=(tab==='reports'&&repMode==='mom')?momHash():'#'+tab;   // on Month over Month the address is its own link
+    try{ history.replaceState(null,'',hh); }catch(e){ location.hash=hh.slice(1); } }
   if(typeof saveView==='function') saveView();
   return true;
 }
@@ -10117,7 +10229,7 @@ function tabFromHash(){ let h=(location.hash||'').replace(/^#/,'').trim();
   if(/^sku~\d{4}-\d\d-\d\d~\d{4}-\d\d-\d\d$/.test(h)) h='sku';   // #sku~<start>~<end> → Sales by Type, that exact week
   if(h==='cd-disp'||h==='cd-brand') h='cd';
   if(h==='invoice'||h==='dispensary'||h==='brand') h='ar';
-  if(h==='mom'||h==='time') h='reports';   // former top-level tabs, now reports on the Reports tab
+  if(h==='time'||momHashMatch(h)) h='reports';   // former top-level tabs, now reports on the Reports tab (#mom[~mi][~period][~units])
   if(/^nymonth(~\d{4}-\d\d)?$/.test(h)) h='reports';   // #nymonth[~YYYY-MM] → NY Monthly Summary
   if(/^bulkmix(~(week|month))?$/.test(h)) h='reports';   // #bulkmix[~week|~month] → CA Bulk vs Packaged
   if(h==='ba'||h.startsWith('ba~')) h='reports';   // #ba~<account> → BA Report with the search prefilled
