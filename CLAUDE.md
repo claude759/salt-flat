@@ -885,6 +885,10 @@ launch. The check fails if one of the three pieces is missing.
   instead of a plan in the dark, since CO2 is held to the plan only with the lights on.
   **Next trims list Metrc's strains** (Gianni, same day: "they should come from real time metrc data"): each room's strains
   in flower in Metrc now with their plants, and the lights of the zone that holds each (none for a strain on no zone).
+  **Tasks are edited from the Overview too** (Gianni, same day: "it would probably be nice to be able to edit these from
+  here as well"): each row's ⋯ opens the room page's own task editor (`taskMenu`: note, move to another day, skip, delete
+  a one-off), the row shows the move and the note, and Add a task (`addTaskPop` with the rooms) picks the room in a
+  typable box resolved with `pickFrom`.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went

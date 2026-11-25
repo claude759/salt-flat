@@ -853,7 +853,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/data-done="1" \$\{data\}>Mark complete<\/button>/.test(html) && /'Completed' : 'Skipped'\}\$\{t\.doneBy \? ` by \$\{esc\(whoName\(t\.doneBy\)\)\}`/.test(html) && /whenSaid\(t\.doneAt\)/.test(html), 'Mark complete, then who completed it and when');
   // the Overview (2026-11-25): the rooms switched on, their next dates, every room's tasks for 30 days, the next trims
   ok(/S\.rooms\.length === 1 && !\/\(\^#\|&\)overview\\b\/\.test\(location\.hash\)/.test(html) && /: 'overview'; \}/.test(html), 'the Overview has its own address; one room on still opens straight into it');
-  ok(/<h1>Overview<\/h1>/.test(html) && /class="ov-grp">Next dates<\/th>/.test(html) && /<h3>Tasks, next 30 days<\/h3>/.test(html) && /<h3>Next trims<\/h3>/.test(html), 'the Overview: next dates, tasks, next trims');
+  ok(/<h1>Overview<\/h1>/.test(html) && /class="ov-grp">Next dates<\/th>/.test(html) && /<h3>Tasks, next 30 days\$\{canWork \?/.test(html) && /<h3>Next trims<\/h3>/.test(html), 'the Overview: next dates, tasks, next trims');
   ok(/function ovTaskRow\(t, room, canWork, today, band\)[\s\S]*?>Mark complete<\/button>/.test(html) && /markTask\(roomView\(room, CM\.todayLA\(\)\), cb\)/.test(html), "the Overview's tasks have Mark complete, saved against their own room");
   ok(/id="crumb-ov">Overview<\/button>/.test(html), 'a room page leads back to the Overview');
   ok(/<h3>Rooms<\/h3><div id="ov-gl">\$\{ovRoomsHTML\(groups, today\)\}/.test(html) && /class="ov-grp ov-gs">Growlink now<\/th>/.test(html) && /from\('cult_growlink_now'\)\.select\('room_id,growlink,reading_at,lights,setpoints,sensors,alerts,note'\)\.in\('room_id', ids\)/.test(html)
@@ -874,6 +874,8 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   }
   ok(/m === 'co2' && gv\.lights && !gv\.lights\.on \? 'lights off'/.test(html) && /data-ovm="\$\{m\}" role="button" tabindex="0"/.test(html), "the Overview's Growlink readings open their 24-hour graph; CO2 says lights off in the dark");
   ok(/V\.placed\.slots\.filter\(z => z\.name && z\.plants > 0\)[\s\S]{0,200}V\.placed\.unplaced\.filter\(x => x\.plants > 0\)/.test(html), "the Overview's next trims list the strains Metrc has in flower in the room, with their plants");
+  ok(/data-tmenu="\$\{esc\(t\.key\)\}" data-room-id="\$\{esc\(room\.id\)\}"/.test(html) && /taskMenu\(roomView\(room, CM\.todayLA\(\)\), b\.dataset\.tmenu, b\)/.test(html)
+    && /addTaskPop\(null, ta, ovRooms\(CM\.todayLA\(\)\)/.test(html) && /id="at-room" list="room-list"/.test(html), "the Overview's tasks can be edited (note, move, skip) and added, the room picked in a typable box");
   ok(/isOpen\('env'\) \|\| isOpen\('chart'\)/.test(html) && /if \(pc\) pc\.innerHTML = glChartsHTML\(D\);/.test(html) && !/h \+= glChartsHTML\(D\);/.test(html), "this crop's charts fold under Growlink; the weekly table keeps the actuals");
   ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
   ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');
