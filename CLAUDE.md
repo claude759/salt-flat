@@ -880,7 +880,8 @@ launch. The check fails if one of the three pieces is missing.
   shown and on Refresh. Every Overview table has the site in its own cell spanning its rooms, and the sheet's colours
   (`--ov-*`): lavender headers and sites, a date to come pale yellow, done green struck through, today or late red,
   tomorrow orange, ACTION red, task rows banded by date; the dark look keeps the hues, darker. Off-plan Growlink cells
-  are amber, as on the room page. **One line per room** (Gianni, same day: "I want the next dates and growlink data on a
+  are amber, as on the room page. The Lights cell is green while Growlink's schedule has the lights on and red while off (Gianni,
+  same day: "maybe on in green and off in red?"). **One line per room** (Gianni, same day: "I want the next dates and growlink data on a
   single line"): a Rooms table, Next dates and Growlink now as two header groups (`ovRoomsHTML`), redrawn whole when
   Growlink is read again. **Every room of a site with a room switched on is listed** (Gianni, same day, of 25th Rooms 2 and
   3: "Show them now"): `cult_rooms` is read whole, `S.rooms` stays the rooms switched on (only they have pages, so only

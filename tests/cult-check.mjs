@@ -898,6 +898,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   }
   ok(/S\.veg = !S\.room && vg && S\.rooms\.some\(r => r\.site === vg\[1\]\) \? vg\[1\] : null/.test(html) && /else if \(vsite\) renderVeg\(vsite\)/.test(html), 'a site\'s Veg room has its own address (#veg=<site>) and page');
   ok(['ovGlPaint', 'ovChartHTML', 'ovLogLoad', 'ovVegLoad', 'renderVeg', 'vegSum'].every(f => new RegExp(`function ${f}\\(`).test(html)), 'the Overview\'s helpers are all defined');
+  ok(/gv\.lights\.on \? 'ov-lon' : 'ov-loff'/.test(html) && /td\.ov-lon\{background:var\(--ov-lon\)/.test(html) && /td\.ov-loff\{background:var\(--ov-loff\)/.test(html), "the Overview's lights: on green, off red");
   ok(/data-veg="\$\{esc\(g\.site\.id\)\}">Veg<\/button>/.test(html) && /rowspan="\$\{rooms\.length \+ \(openHere \? 1 : 0\) \+ 1\}"/.test(html), "the Overview's Rooms list each site's Veg room under its rooms");
   ok(/from\('cult_metrc_veg'\)/.test(html) && /from\('cult_metrc_veg'\)\.select\('license,location,kind,strain,planted,count'\)/.test(html), "the Overview's Veg panel, from Metrc's veg");
   {   // a stored key wins, so a task moved or reworded keeps its ticks
