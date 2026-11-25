@@ -864,7 +864,14 @@ launch. The check fails if one of the three pieces is missing.
   switched on, the bare address still opens that room. Next dates (a row per room under its site: day of flower, the next
   run's clone cut, harvest, trim; done grey, late amber, within 7 days blue), Tasks, next 30 days (every room's calendar,
   the last week's not completed included, with Mark complete saved against the task's own room), and Next trims (each
-  room's trim day with its zones' strains and lights). No explanatory notes.
+  room's trim day with its zones' strains and lights). No explanatory notes. **Growlink now** (Gianni, same day: "I also want
+  the growlink live data in there", with each site beside its rooms, "make the color coding more like the google sheet"): a
+  row per room with its live readings judged like the room page's tiles (`CM.glView` with no log), the lights and the read
+  time, from every switched-on room's `cult_growlink_now` row (no log or equipment), read on open, every 5 minutes while
+  shown and on Refresh. Every Overview table has the site in its own cell spanning its rooms, and the sheet's colours
+  (`--ov-*`): lavender headers and sites, a date to come pale yellow, done green struck through, today or late red,
+  tomorrow orange, ACTION red, task rows banded by date; the dark look keeps the hues, darker. Off-plan Growlink cells
+  are amber, as on the room page.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went
