@@ -862,6 +862,17 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/S\.rooms = all\.filter\(r => r\.active !== false\); S\.ovAll = all\.filter\(r => S\.rooms\.some\(x => x\.site === r\.site\)\)/.test(html) && /S\.rooms\.some\(r => r\.id === room\.id\) \? `<button/.test(html),
     "the Overview lists every room of a site with a room switched on; only rooms switched on open a page");
   ok(/\.ovt \.lnk,\.ov-c \.lnk\{all:unset;box-sizing:border-box;cursor:pointer;display:inline-flex[^}]*border:1px solid var\(--line2\)/.test(html), "the Overview's room names look like buttons");
+  {   // the Overview's 24-hour graph: values, the plan each was held to (CO2 none in the dark), the dark hours
+    const now = Date.parse('2026-11-25T23:00:00Z'), lights = { on: '13:00', off: '01:00', tz: 'America/Los_Angeles' };
+    const E = [{ from: '2026-11-18', to: '2026-12-02', temp: '78f - 76f', hum: '62% - 60%', vpd: 1.2, co2: 1500 }];
+    const rows = [{ at: '2026-11-25T10:00:00Z', temp: 75, co2: 900 }, { at: '2026-11-25T22:00:00Z', temp: 79, co2: 1400 }, { at: '2026-11-24T10:00:00Z', temp: 70 }];
+    const D = CM.glDay(rows, 'temp', lights, E, now);
+    assert.deepEqual(D.pts, [[Date.parse('2026-11-25T10:00:00Z'), 75], [Date.parse('2026-11-25T22:00:00Z'), 79]], 'only the last 24 hours, oldest first'); n++;
+    assert.deepEqual(D.plan.map(p => p[1]), [76, 78], 'the night plan at 2 AM, the day plan at 2 PM'); n++;
+    assert.deepEqual(CM.glDay(rows, 'co2', lights, E, now).plan.map(p => p[1]), [null, 1500], 'CO2 has no plan with the lights off'); n++;
+    assert.deepEqual([D.dark.length, new Date(D.dark[0][0]).toISOString(), D.min, D.max], [1, '2026-11-25T09:00:00.000Z', 75, 79], 'one dark stretch (1 AM to 1 PM), low and high'); n++;
+  }
+  ok(/m === 'co2' && gv\.lights && !gv\.lights\.on \? 'lights off'/.test(html) && /data-ovm="\$\{m\}" role="button" tabindex="0"/.test(html), "the Overview's Growlink readings open their 24-hour graph; CO2 says lights off in the dark");
   ok(/isOpen\('env'\) \|\| isOpen\('chart'\)/.test(html) && /if \(pc\) pc\.innerHTML = glChartsHTML\(D\);/.test(html) && !/h \+= glChartsHTML\(D\);/.test(html), "this crop's charts fold under Growlink; the weekly table keeps the actuals");
   ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
   ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');

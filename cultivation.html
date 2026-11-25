@@ -516,6 +516,22 @@
   .ovg th,.ovg td{padding:5px 7px} .ovg thead th{font-size:10.5px;letter-spacing:.02em}
   /* a room switched on is a button that opens its page (Gianni, 2026-11-25: "make look like a button"); one switched off is
      plain text */
+  .ovg td.ovc{cursor:pointer}
+  .ovg td.ovc:hover{box-shadow:inset 0 0 0 2px var(--ov-hd)}
+  .ovg td.ovc:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .ovg td.ovc.on{box-shadow:inset 0 0 0 2px var(--accent)}
+  .ovg tr.ov-chart td{background:var(--panel);text-align:left;white-space:normal;padding:10px 14px}
+  .ovch-h{display:flex;align-items:center;gap:8px;font-size:13px} .ovch-h .btn{margin-left:auto}
+  svg.ovch{display:block;width:100%;height:auto;max-height:230px;margin-top:6px}
+  svg.ovch .dk{fill:var(--panel2)} svg.ovch .gr{stroke:var(--line);stroke-width:1}
+  svg.ovch .tk{stroke:var(--line);stroke-width:1;stroke-dasharray:2 3}
+  svg.ovch .ax{fill:var(--muted);font-size:11px}
+  svg.ovch .pl{fill:none;stroke:#8e7cc3;stroke-width:1.6;stroke-dasharray:5 4}
+  svg.ovch .vl{fill:none;stroke:var(--accent);stroke-width:2;stroke-linejoin:round} svg.ovch .vl-d{fill:var(--accent)}
+  .ovch-k{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin-top:4px;align-items:center}
+  .ovch-k i{display:inline-block;width:14px;height:0;border-top:2px solid var(--accent);vertical-align:middle;margin-right:5px}
+  .ovch-k i.kp{border-top:2px dashed #8e7cc3} .ovch-k i.kd{height:10px;border:0;background:var(--panel2);border:1px solid var(--line)}
+  .ovch-r{margin-left:auto;color:var(--text)}
   .ovt .lnk,.ov-c .lnk{all:unset;box-sizing:border-box;cursor:pointer;display:inline-flex;align-items:center;gap:6px;padding:4px 10px;
     border:1px solid var(--line2);border-radius:7px;background:var(--panel);color:var(--text);font-weight:700;box-shadow:0 1px 0 var(--line2);white-space:nowrap}
   .ovt .lnk::after,.ov-c .lnk::after{content:'\203A';font-size:15px;line-height:1;color:var(--muted)}
@@ -1236,6 +1252,30 @@ const CM = (() => {
   }
 
   // a line through the last day's values: x from `t0` to `t1`, a break where readings stopped for over GL.GAP minutes
+  // one reading's last 24 hours for the Overview's graph (Gianni, 2026-11-25: "clickable showing the past 24 hours as a
+  // graph"): the log rows' values, the plan each row was held to (the day number with the lights on, the night one off;
+  // none for CO2 in the dark), and the spans Growlink's schedule had the lights off. rows: cult_growlink_log rows.
+  function glDay(rows, m, lights, E, now) {
+    const t0 = now - 864e5, pts = [], plan = [], dark = [];
+    for (const r of rows || []) {
+      const t = Date.parse(r && r.at), v = r ? r[m] : null;
+      if (!isFinite(t) || t < t0 || t > now || v == null || !isFinite(+v)) continue;
+      pts.push([t, +v]);
+      const li = glLights(lights, t), j = glJudge(m, 0, glPlanAt(E, t), li ? li.on : null);
+      plan.push([t, j ? j.target : null]);
+    }
+    pts.sort((a, b) => a[0] - b[0]); plan.sort((a, b) => a[0] - b[0]);
+    let a = null;
+    for (let t = t0; t <= now; t += 5 * 6e4) {
+      const li = glLights(lights, t), off = !!li && !li.on;
+      if (off && a == null) a = t;
+      if (!off && a != null) { dark.push([a, t]); a = null; }
+    }
+    if (a != null) dark.push([a, now]);
+    const all = pts.map(p => p[1]).concat(plan.filter(p => p[1] != null).map(p => p[1]));
+    return { t0, t1: now, pts, plan, dark, lo: all.length ? Math.min(...all) : null, hi: all.length ? Math.max(...all) : null,
+      min: pts.length ? Math.min(...pts.map(p => p[1])) : null, max: pts.length ? Math.max(...pts.map(p => p[1])) : null };
+  }
   function glSpark(pts, w, h, t0, t1) {
     if (!pts || pts.length < 2 || !(t1 > t0)) return '';
     let lo = Infinity, hi = -Infinity;
@@ -1740,7 +1780,7 @@ const CM = (() => {
   }
 
   return { isDay, addDays, diff, todayLA, short, wday, key, nice, strainOf, roomPlants, cycle, taskKey, tasks, envRows, place, colors, tableZone, letter, tableNs, tableLights, capacity, comingUp, attention, runoffPct, latestRunoff, mapModel, PALETTE, taskGroups,
-    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, glHrs, glEquip, glWeeks, glDays, glChart, LB, skey, history, estimate, trimWait,
+    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, glDay, glHrs, glEquip, glWeeks, glDays, glChart, LB, skey, history, estimate, trimWait,
     runs, runStages, planFlip, planDay, runKey, ROOT_DAYS };
 })();
 /* ===== CULT MODEL END ===== */
@@ -2433,7 +2473,72 @@ function renderRooms() {
   ovWire(el);
   ovGlLoad();
 }
+/* The Overview's 24-hour graph: a press on a Growlink cell opens it under that room's row (one at a time; the same cell
+   closes it). The room's log for the last 24 hours is read on the first press and again when over 5 minutes old. */
+S.ovOpen = null; S.ovLog = {};
+async function ovLogLoad(roomId) {
+  const L = S.ovLog[roomId];
+  if (L && (L.busy || Date.now() - L.at < 5 * 60e3)) return;
+  S.ovLog[roomId] = { ...(L || { rows: null }), busy: true, at: L ? L.at : 0 };
+  const r = await sb.from('cult_growlink_log').select('at,temp,hum,vpd,co2,light,vwc,ec,sub_temp').eq('room_id', roomId)
+    .gt('at', new Date(Date.now() - 864e5).toISOString()).order('at').limit(1000).then(x => x, e => ({ error: { message: String(e && e.message || e) } }));
+  S.ovLog[roomId] = r.error ? { rows: L ? L.rows : null, err: true, at: Date.now(), busy: false } : { rows: r.data || [], err: false, at: Date.now(), busy: false };
+  ovGlPaint();
+}
+function ovGlPaint() {
+  const box = $('ov-gl');
+  if (!box || S.room) return;
+  const today = CM.todayLA(); box.innerHTML = ovRoomsHTML(ovRooms(today), today); ovWire(box);
+}
+const LA_H = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric' });
+function ovChartHTML(room, gv, m, now) {
+  const GL = CM.GL, L = S.ovLog[room.id], row = S.ovGl.rows && S.ovGl.rows[room.id];
+  const t = gv.tiles.find(x => x.m === m), unit = t ? t.unit : GL.UNIT[m];
+  const head = `<div class="ovch-h"><b>${esc(room.name)} · ${esc(GL.LABEL[m])}, last 24 hours</b><button class="btn ghost" type="button" data-ovclose aria-label="Close">×</button></div>`;
+  if (!L || !L.rows) return head + `<p class="muted">${L && L.err ? "Couldn't read Growlink's log. Press the reading again to retry." : 'Reading the last 24 hours…'}</p>`;
+  const D = CM.glDay(L.rows, m, row ? row.lights : null, CM.envRows(room, roomView(room, CM.todayLA()).C), now);
+  if (D.pts.length < 2) return head + '<p class="muted">Growlink logged no readings of this in the last 24 hours.</p>';
+  const W = 900, H = 190, pl = 52, pr = 12, pt = 10, pb = 24, iw = W - pl - pr, ih = H - pt - pb;
+  let lo = D.lo, hi = D.hi;
+  if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+  const padv = (hi - lo) * 0.08; lo -= padv; hi += padv;
+  const X = tt => pl + (tt - D.t0) / (D.t1 - D.t0) * iw, Y = v => pt + ih - (v - lo) / (hi - lo) * ih;
+  const f = n => n.toFixed(1);
+  let svg = `<svg class="ovch" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${GL.LABEL[m]} over the last 24 hours`)}">`;
+  for (const [a, z] of D.dark) svg += `<rect class="dk" x="${f(X(a))}" y="${pt}" width="${f(Math.max(0, X(z) - X(a)))}" height="${ih}"/>`;
+  for (const v of D.hi - D.lo > 1e-9 ? [D.lo, (D.lo + D.hi) / 2, D.hi] : [D.lo]) {   // the low, the middle and the high
+    const y = Y(v);
+    svg += `<line class="gr" x1="${pl}" x2="${W - pr}" y1="${f(y)}" y2="${f(y)}"/><text class="ax" x="${pl - 6}" y="${f(y + 4)}" text-anchor="end">${esc(CM.glNum(m, v))}</text>`;
+  }
+  for (let tt = Math.ceil(D.t0 / 36e5) * 36e5; tt <= D.t1; tt += 36e5) {
+    const ap = LA_H.format(new Date(tt));   // every 3 hours on the grows' clock
+    if (!/^(12|3|6|9) /.test(ap)) continue;
+    svg += `<line class="tk" x1="${f(X(tt))}" x2="${f(X(tt))}" y1="${pt}" y2="${pt + ih}"/><text class="ax" x="${f(X(tt))}" y="${H - 6}" text-anchor="middle">${esc(ap.replace(' ', ' '))}</text>`;
+  }
+  const path = (pts, gap) => { let d = '', prev = null; for (const [tt, v] of pts) { if (v == null) { prev = null; continue; } d += `${!d || prev == null || tt - prev > gap ? 'M' : 'L'}${f(X(tt))} ${f(Y(v))}`; prev = tt; } return d; };
+  const pd = path(D.plan, GL.GAP * 6e4);
+  if (pd) svg += `<path class="pl" d="${pd}"/>`;
+  svg += `<path class="vl" d="${path(D.pts, GL.GAP * 6e4)}"/>`;
+  const last = D.pts[D.pts.length - 1];
+  svg += `<circle class="vl-d" cx="${f(X(last[0]))}" cy="${f(Y(last[1]))}" r="3.5"/></svg>`;
+  const key = `<div class="ovch-k"><span><i class="kv"></i>Growlink</span>${pd ? '<span><i class="kp"></i>Plan</span>' : ''}${D.dark.length ? '<span><i class="kd"></i>Lights off</span>' : ''}`
+    + `<span class="ovch-r">Low ${esc(CM.glVal(m, D.min, unit))} · high ${esc(CM.glVal(m, D.max, unit))} · now ${esc(CM.glVal(m, last[1], unit))}</span></div>`;
+  return head + svg + key;
+}
 function ovWire(el) {
+  for (const c of el.querySelectorAll('[data-ovm]')) if (!c.dataset.w) {
+    c.dataset.w = '1';
+    const go_ = e => {
+      e.stopPropagation();
+      const same = S.ovOpen && S.ovOpen.room === c.dataset.ovr && S.ovOpen.m === c.dataset.ovm;
+      S.ovOpen = same ? null : { room: c.dataset.ovr, m: c.dataset.ovm };
+      ovGlPaint();
+      if (!same) { ovLogLoad(c.dataset.ovr); const b = $('ov-gl') && $('ov-gl').querySelector(`[data-ovr="${c.dataset.ovr}"][data-ovm="${c.dataset.ovm}"]`); if (b) b.focus(); }
+    };
+    c.addEventListener('click', go_);
+    c.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go_(e); } });
+  }
+  for (const x of el.querySelectorAll('[data-ovclose]')) if (!x.dataset.w) { x.dataset.w = '1'; x.addEventListener('click', e => { e.stopPropagation(); S.ovOpen = null; ovGlPaint(); }); }
   for (const b of el.querySelectorAll('[data-room]')) if (!b.dataset.w) { b.dataset.w = '1'; b.addEventListener('click', () => go(b.dataset.room)); }
   for (const cb of el.querySelectorAll('.tick')) if (!cb.dataset.w) {
     cb.dataset.w = '1';
@@ -2475,8 +2580,8 @@ async function ovGlLoad(force) {
   const bad = res.find(x => !x || x.error);
   if (bad) G.err = /does not exist|schema cache|relation/i.test(bad.error ? bad.error.message : '') ? 'none' : 'read';
   else { G.err = null; G.rows = Object.fromEntries((res[0].data || []).map(r => [r.room_id, r])); G.meta = (res[1].data || [])[0] || null; }
-  const box = $('ov-gl');
-  if (box && !S.room) { const today = CM.todayLA(); box.innerHTML = ovRoomsHTML(ovRooms(today), today); ovWire(box); }
+  ovGlPaint();
+  if (S.ovOpen) ovLogLoad(S.ovOpen.room);
 }
 function ovRoomsHTML(groups, today) {
   const G = S.ovGl, now = Date.now(), GL = CM.GL;
@@ -2493,24 +2598,29 @@ function ovRoomsHTML(groups, today) {
     + (G.rows ? `${ms.map((m, i) => `<th class="n${i ? '' : ' ov-gs'}">${esc(GL.LABEL[m])}</th>`).join('')}<th>Lights</th><th>Read</th>` : '<th class="ov-gs"></th>') + '</tr></thead>';
   for (const { g, rooms } of rows) {
     h += '<tbody>';
+    const openHere = S.ovOpen && G.rows && rooms.some(x => x.room.id === S.ovOpen.room && x.gv && ms.includes(S.ovOpen.m));
     rooms.forEach(({ room, V, RN, gv }, i) => {
       const C = V.C, nx = RN.next[0];
       const dayTxt = C.state === 'flower' ? `${C.day} of ${C.H}` : C.state === 'upcoming' ? `flips ${CM.wday(C.flip)}` : C.state === 'harvested' ? `harvested ${CM.short(C.lastHarvest.day)}` : 'empty';
       const cut = nx && nx.cut ? ovDateTd(nx.cut.d, nx.cut.done ? 'done' : nx.cut.late ? 'late' : '', today) : ovDateTd(null);
       const hv = C.state === 'harvested' && C.lastHarvest ? ovDateTd(C.lastHarvest.day, 'done', today) : C.flip ? ovDateTd(C.harvestDate, C.harvestDate < today ? 'late' : '', today) : ovDateTd(null);
       const tr = ovTrim(V, RN);
-      h += `<tr>${ovSiteTd(g, i)}${ovRoomTd(room)}<td>${esc(dayTxt)}</td>${cut}${hv}${ovDateTd(tr.d, tr.st, today)}`;
+      const site = i ? '' : `<th class="ov-site" scope="rowgroup" rowspan="${rooms.length + (openHere ? 1 : 0)}">${esc(g.site.short || g.site.name)}</th>`;
+      h += `<tr>${site}${ovRoomTd(room)}<td>${esc(dayTxt)}</td>${cut}${hv}${ovDateTd(tr.d, tr.st, today)}`;
       if (!G.rows) { h += `<td class="ov-gs faint">${G.err ? '' : 'Reading…'}</td></tr>`; return; }
       if (!gv) { h += `<td class="ov-none ov-gs" colspan="${glCols}">No Growlink readings for this room</td></tr>`; return; }
       ms.forEach((m, k) => {
         const t = gv.tiles.find(x => x.m === m), gs = k ? '' : ' ov-gs';
         if (!t) { h += `<td class="n faint${gs}">-</td>`; return; }
         const off = !t.stale && (t.state === 'high' || t.state === 'low' || !!t.odd);
-        const sub = t.plan != null ? `plan ${CM.glVal(m, t.plan, t.unit)}` : t.set != null ? `set ${CM.glVal(m, t.set, t.unit)}` : '';
-        h += `<td class="n${off ? ' off' : ''}${t.stale ? ' old' : ''}${gs}"><b>${esc(CM.glVal(m, t.v, t.unit))}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</td>`;
+        // CO2 is held to the plan only with the lights on (Gianni asked why Room 1 had no plan number with its lights off)
+        const sub = t.plan != null ? `plan ${CM.glVal(m, t.plan, t.unit)}` : m === 'co2' && gv.lights && !gv.lights.on ? 'lights off' : t.set != null ? `set ${CM.glVal(m, t.set, t.unit)}` : '';
+        const open = S.ovOpen && S.ovOpen.room === room.id && S.ovOpen.m === m;
+        h += `<td class="n ovc${off ? ' off' : ''}${t.stale ? ' old' : ''}${open ? ' on' : ''}${gs}" data-ovr="${esc(room.id)}" data-ovm="${m}" role="button" tabindex="0" aria-expanded="${open}" aria-label="${esc(`${room.name} ${GL.LABEL[m]}: the last 24 hours`)}"><b>${esc(CM.glVal(m, t.v, t.unit))}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</td>`;
       });
       const li = gv.lights && gv.schedule ? (gv.lights.on ? `On, off ${glHM(gv.schedule.off)}` : `Off, on ${glHM(gv.schedule.on)}`) : '-';
       h += `<td>${esc(li)}</td><td class="${gv.stale ? 'warn' : 'faint'}">${gv.at ? esc(CM.glClock(gv.at, now)) : 'no reading'}</td></tr>`;
+      if (S.ovOpen && S.ovOpen.room === room.id && ms.includes(S.ovOpen.m)) h += `<tr class="ov-chart"><td colspan="${5 + glCols}">${ovChartHTML(room, gv, S.ovOpen.m, now)}</td></tr>`;
     });
     h += '</tbody>';
   }

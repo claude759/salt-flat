@@ -878,6 +878,11 @@ launch. The check fails if one of the three pieces is missing.
   Growlink is read again. **Every room of a site with a room switched on is listed** (Gianni, same day, of 25th Rooms 2 and
   3: "Show them now"): `cult_rooms` is read whole, `S.rooms` stays the rooms switched on (only they have pages, so only
   their names are links) and `S.ovAll` is what the Overview lists, tasks and Mark complete included.
+  **A press on a Growlink reading opens its last 24 hours** (Gianni, same day: "clickable showing the past 24 hours as a
+  graph"): a graph under the room's row (one at a time; the same reading closes it) of Growlink's log, the plan each
+  reading was held to (dashed) and Growlink's lights-off hours shaded, with the low, high and now (`CM.glDay`,
+  `ovChartHTML`); the room's log is read on the first press and again when over 5 minutes old. CO2 reads "lights off"
+  instead of a plan in the dark, since CO2 is held to the plan only with the lights on.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went
