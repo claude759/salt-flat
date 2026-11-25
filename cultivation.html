@@ -511,6 +511,9 @@
   .ovg td.n b{display:block;font-variant-numeric:tabular-nums} .ovg td.n small{display:block;font-size:11px;color:var(--muted)}
   .ovg td.n.off{background:var(--amber-soft)} .ovg td.n.off b{color:var(--amber)} .ovg td.n.old b{color:var(--faint)}
   .ovg td.ov-none{color:var(--muted)}
+  .ovt thead th.ov-grp{background:var(--ov-hd);color:var(--ov-hd-ink)}
+  .ovt .ov-gs{border-left:3px solid var(--ov-hd)}
+  .ovg th,.ovg td{padding:5px 7px} .ovg thead th{font-size:10.5px;letter-spacing:.02em}
   .ovt .lnk,.ov-c .lnk,#crumb-ov{all:unset;cursor:pointer;color:inherit;font-weight:inherit}
   .ovt .lnk:hover,.ov-c .lnk:hover,#crumb-ov:hover{text-decoration:underline}
   #crumb-ov{font-weight:400;color:var(--muted)}
@@ -1781,7 +1784,7 @@ function setLook(v) {
 // Reads name their columns (egress). only: the tables a save changed (else everything). Metrc's rows are read again
 // only when the job changed them since the last read (cult_metrc_meta.changed_at), or on Refresh (force).
 const READS = {
-  rooms: () => sb.from('cult_rooms').select('id,site,name,license,metrc_location,harvest_day,turnover_days,flip_date,env,tasks,layout,layout_source,notes').eq('active', true).order('sort'),
+  rooms: () => sb.from('cult_rooms').select('id,site,name,license,metrc_location,harvest_day,turnover_days,flip_date,env,tasks,layout,layout_source,notes,active').order('sort'),
   zones: () => sb.from('cult_zones').select('room_id,zone,slot,strain,lights,pack,metrc_strain'),
   codes: () => sb.from('cult_strain_codes').select('license,code,name,source'),
   meta: () => sb.from('cult_metrc_meta').select('license,synced_at,changed_at,note'),
@@ -1807,7 +1810,9 @@ async function loadAll(quiet, only, force) {
     if (S.loadedAt) { $('fresh').textContent = "Couldn't read the rooms again: showing the last copy. Press Refresh."; $('fresh').className = 'stale'; }
     return false;
   }
-  if (got.rooms) S.rooms = got.rooms.data || [];
+  // the rooms switched on have pages; the Overview also lists the other rooms of their sites (Gianni, 2026-11-25: "Show
+  // them now", of 25th Rooms 2 and 3)
+  if (got.rooms) { const all = got.rooms.data || []; S.rooms = all.filter(r => r.active !== false); S.ovAll = all.filter(r => S.rooms.some(x => x.site === r.site)); }
   if (got.zones) S.zones = got.zones.data || [];
   if (got.codes) { S.codeRows = got.codes.data || []; S.codes = Object.fromEntries(S.codeRows.map(x => [`${x.license}|${x.code}`, x])); }
   if (got.meta) S.meta = got.meta.data || [];
@@ -2372,35 +2377,23 @@ function ovTrim(V, RN) {   // the calendar's TRIM, else the run's worked-out tri
 }
 // the rooms switched on, by site, each with its view and runs
 function ovRooms(today) {
-  return SITES.map(site => ({ site, rooms: S.rooms.filter(r => r.site === site.id).map(room => { const V = roomView(room, today); return { site, room, V, RN: runsOf(V, today) }; }) }))
+  return SITES.map(site => ({ site, rooms: (S.ovAll || S.rooms).filter(r => r.site === site.id).map(room => { const V = roomView(room, today); return { site, room, V, RN: runsOf(V, today) }; }) }))
     .filter(g => g.rooms.length);
 }
 // the site's name in its own cell, spanning its rooms (the sheet's LOCATION column)
 const ovSiteTd = (g, i) => i ? '' : `<th class="ov-site" scope="rowgroup" rowspan="${g.rooms.length}">${esc(g.site.short || g.site.name)}</th>`;
-const ovRoomTd = room => `<td class="ov-room"><button class="lnk" type="button" data-room="${esc(room.id)}">${esc(room.name.replace(/^\S+\s+(?=Room\b)/, ''))}</button></td>`;
+// a room switched on opens its page; one switched off is listed by name only
+const ovRoomBtn = (room, name) => S.rooms.some(r => r.id === room.id) ? `<button class="lnk" type="button" data-room="${esc(room.id)}">${esc(name)}</button>` : esc(name);
+const ovRoomTd = room => `<td class="ov-room">${ovRoomBtn(room, room.name.replace(/^\S+\s+(?=Room\b)/, ''))}</td>`;
 function renderRooms() {
   const today = CM.todayLA(), el = $('view-rooms');
   if (!S.rooms.length) { el.innerHTML = '<div class="empty">No rooms are switched on yet.</div>'; return; }
   const canWork = !!(S.me && (S.me.work || S.me.edit));
   const groups = ovRooms(today), views = groups.flatMap(g => g.rooms);
-  let h = `<div class="rhead"><div><h1>Overview</h1><div class="sub">${esc(`${views.length} room${views.length === 1 ? '' : 's'} switched on · ${CM.wday(today)}`)}</div></div></div>`;
-  // next dates
-  h += '<div class="panel ov"><h3>Next dates</h3><div class="wrapx"><table class="ovt"><thead><tr><th>Location</th><th>Room</th><th>Day of flower</th><th>Clone cut</th><th>Harvest</th><th>Trim</th></tr></thead>';
-  for (const g of groups) {
-    h += '<tbody>';
-    g.rooms.forEach(({ room, V, RN }, i) => {
-      const C = V.C, nx = RN.next[0];
-      const dayTxt = C.state === 'flower' ? `Day ${C.day} of ${C.H}` : C.state === 'upcoming' ? `flips ${CM.wday(C.flip)}` : C.state === 'harvested' ? `harvested ${CM.short(C.lastHarvest.day)}` : 'empty';
-      const cut = nx && nx.cut ? ovDateTd(nx.cut.d, nx.cut.done ? 'done' : nx.cut.late ? 'late' : '', today) : ovDateTd(null);
-      const hv = C.state === 'harvested' && C.lastHarvest ? ovDateTd(C.lastHarvest.day, 'done', today) : C.flip ? ovDateTd(C.harvestDate, C.harvestDate < today ? 'late' : '', today) : ovDateTd(null);
-      const tr = ovTrim(V, RN);
-      h += `<tr>${ovSiteTd(g, i)}${ovRoomTd(room)}<td>${esc(dayTxt)}</td>${cut}${hv}${ovDateTd(tr.d, tr.st, today)}</tr>`;
-    });
-    h += '</tbody>';
-  }
-  h += '</table></div></div>';
-  // Growlink's live readings, drawn on their own (they are read again every 5 minutes)
-  h += `<div class="panel ov"><h3>Growlink now</h3><div id="ov-gl">${ovGlHTML(groups)}</div></div>`;
+  let h = `<div class="rhead"><div><h1>Overview</h1><div class="sub">${esc(`${views.length} room${views.length === 1 ? '' : 's'} · ${CM.wday(today)}`)}</div></div></div>`;
+  // next dates and Growlink's live readings, a row per room (Gianni, 2026-11-25: "I want the next dates and growlink data
+  // on a single line"); drawn again on its own when Growlink is read again (every 5 minutes)
+  h += `<div class="panel ov"><h3>Rooms</h3><div id="ov-gl">${ovRoomsHTML(groups, today)}</div></div>`;
   // every room's tasks, the next 30 days (and the last week's not done)
   const end = CM.addDays(today, 30), list = [];
   for (const x of views) for (const t of x.V.T) {
@@ -2422,7 +2415,7 @@ function renderRooms() {
   h += '<div class="panel ov"><h3>Next trims</h3><div class="pbody"><div class="ov-cards">';
   for (const { room, V, RN } of views) {
     const tr = ovTrim(V, RN), slots = V.placed.slots.filter(z => z.name);
-    h += `<div class="ov-c"><div class="ov-ch"><button class="lnk" type="button" data-room="${esc(room.id)}">${esc(room.name)}</button></div>`
+    h += `<div class="ov-c"><div class="ov-ch">${ovRoomBtn(room, room.name)}</div>`
       + `<div class="ov-cd ${tr.st === 'done' ? 'dn' : 'up'}">${tr.d ? esc(CM.wday(tr.d)) : 'No trim day yet'}</div>`
       + (slots.length ? slots.map(z => `<div class="ov-cs"><i class="sw" style="background:${V.col[CM.key(z.name)] || 'var(--faint)'}"></i>${esc(z.name)}<span>${z.lights != null ? `${esc(num(z.lights))} lights` : ''}</span></div>`).join('') : '<div class="ov-cs faint">No zones set</div>')
       + '</div>';
@@ -2438,7 +2431,7 @@ function ovWire(el) {
     cb.dataset.w = '1';
     cb.addEventListener('click', e => {
       e.stopPropagation();
-      const room = S.rooms.find(r => r.id === cb.dataset.roomId);
+      const room = (S.ovAll || S.rooms).find(r => r.id === cb.dataset.roomId);
       if (room) markTask(roomView(room, CM.todayLA()), cb);
     });
   }
@@ -2453,7 +2446,7 @@ function ovTaskRow(t, room, canWork, today, band) {
   const kind = String(t.kind || 'TASK').toUpperCase();
   const st = t.status === 'done' ? 'done' : !closedRow && t.date < today ? 'late' : '';
   return `<tr class="b${band}${closedRow ? ' closed' : ''}">${ovDateTd(t.date, st, today)}`
-    + `<td class="ov-room"><button class="lnk" type="button" data-room="${esc(room.id)}">${esc(room.name)}</button></td>`
+    + `<td class="ov-room">${ovRoomBtn(room, room.name)}</td>`
     + `<td class="ov-day">${t.day != null ? `Day ${t.day}` : ''}</td><td class="ov-k ${kind === 'ACTION' ? 'act' : ''}">${esc(kind)}</td>`
     + `<td class="ov-n">${esc(tidy(t.text))}${by}</td><td class="tact">${act}</td></tr>`;
 }
@@ -2463,7 +2456,7 @@ S.ovGl = { rows: null, meta: null, err: null, at: 0, busy: false };
 async function ovGlLoad(force) {
   const G = S.ovGl;
   if (!sb || G.busy || (!force && G.rows && Date.now() - G.at < 5 * 60e3) || (!force && G.err && Date.now() - G.at < 60e3)) return;
-  const ids = S.rooms.map(r => r.id);
+  const ids = (S.ovAll || S.rooms).map(r => r.id);
   if (!ids.length) return;
   G.busy = true;
   const res = await Promise.all([
@@ -2475,29 +2468,39 @@ async function ovGlLoad(force) {
   if (bad) G.err = /does not exist|schema cache|relation/i.test(bad.error ? bad.error.message : '') ? 'none' : 'read';
   else { G.err = null; G.rows = Object.fromEntries((res[0].data || []).map(r => [r.room_id, r])); G.meta = (res[1].data || [])[0] || null; }
   const box = $('ov-gl');
-  if (box && !S.room) { box.innerHTML = ovGlHTML(ovRooms(CM.todayLA())); ovWire(box); }
+  if (box && !S.room) { const today = CM.todayLA(); box.innerHTML = ovRoomsHTML(ovRooms(today), today); ovWire(box); }
 }
-function ovGlHTML(groups) {
+function ovRoomsHTML(groups, today) {
   const G = S.ovGl, now = Date.now(), GL = CM.GL;
-  if (!G.rows) return `<div class="pbody"><p class="muted" style="margin:0">${G.err === 'none' ? "Live readings from Growlink aren't on the server yet." : G.err ? "Couldn't read Growlink's readings. They are read again every 5 minutes." : 'Reading Growlink…'}</p></div>`;
-  const rows = groups.map(g => ({ g, rooms: g.rooms.map(x => { const row = G.rows[x.room.id]; return { ...x, gv: row ? CM.glView(row, [], CM.envRows(x.room, x.V.C), now, x.V.C.state) : null }; }) }));
+  const rows = groups.map(g => ({ g, rooms: g.rooms.map(x => { const row = G.rows && G.rows[x.room.id]; return { ...x, gv: row ? CM.glView(row, [], CM.envRows(x.room, x.V.C), now, x.V.C.state) : null }; }) }));
   const ms = GL.ORDER.filter(m => rows.some(r => r.rooms.some(x => x.gv && x.gv.tiles.some(t => t.m === m))));
-  const jobOld = G.meta && G.meta.synced_at && now - Date.parse(G.meta.synced_at) > GL.STALE * 6e4;
-  let h = jobOld ? `<div class="pbody"><p class="warn" style="margin:0">The Growlink job last ran ${esc(CM.glClock(Date.parse(G.meta.synced_at), now))}${G.meta.note ? `: ${esc(G.meta.note)}` : ''}</p></div>` : '';
-  if (G.err) h += `<div class="pbody"><p class="warn" style="margin:0">Couldn't read Growlink just now: showing the last readings</p></div>`;
-  h += `<div class="wrapx"><table class="ovt ovg"><thead><tr><th>Location</th><th>Room</th>${ms.map(m => `<th class="n">${esc(GL.LABEL[m])}</th>`).join('')}<th>Lights</th><th>Read</th></tr></thead>`;
+  const jobOld = G.rows && G.meta && G.meta.synced_at && now - Date.parse(G.meta.synced_at) > GL.STALE * 6e4;
+  const msg = !G.rows ? (G.err === 'none' ? "Live readings from Growlink aren't on the server yet." : G.err ? "Couldn't read Growlink's readings. They are read again every 5 minutes." : '')
+    : G.err ? "Couldn't read Growlink just now: showing the last readings"
+    : jobOld ? `The Growlink job last ran ${CM.glClock(Date.parse(G.meta.synced_at), now)}${G.meta.note ? `: ${G.meta.note}` : ''}` : '';
+  let h = msg ? `<div class="pbody"><p class="warn" style="margin:0">${esc(msg)}</p></div>` : '';
+  const glCols = G.rows ? ms.length + 2 : 1;
+  h += `<div class="wrapx"><table class="ovt ovg"><thead><tr><th rowspan="2">Location</th><th rowspan="2">Room</th><th colspan="4" class="ov-grp">Next dates</th><th colspan="${glCols}" class="ov-grp ov-gs">Growlink now</th></tr>`
+    + `<tr><th>Day of flower</th><th>Clone cut</th><th>Harvest</th><th>Trim</th>`
+    + (G.rows ? `${ms.map((m, i) => `<th class="n${i ? '' : ' ov-gs'}">${esc(GL.LABEL[m])}</th>`).join('')}<th>Lights</th><th>Read</th>` : '<th class="ov-gs"></th>') + '</tr></thead>';
   for (const { g, rooms } of rows) {
     h += '<tbody>';
-    rooms.forEach(({ room, gv }, i) => {
-      h += `<tr>${ovSiteTd(g, i)}${ovRoomTd(room)}`;
-      if (!gv) { h += `<td class="ov-none" colspan="${ms.length + 2}">No Growlink readings for this room</td></tr>`; return; }
-      for (const m of ms) {
-        const t = gv.tiles.find(x => x.m === m);
-        if (!t) { h += '<td class="n faint">-</td>'; continue; }
+    rooms.forEach(({ room, V, RN, gv }, i) => {
+      const C = V.C, nx = RN.next[0];
+      const dayTxt = C.state === 'flower' ? `${C.day} of ${C.H}` : C.state === 'upcoming' ? `flips ${CM.wday(C.flip)}` : C.state === 'harvested' ? `harvested ${CM.short(C.lastHarvest.day)}` : 'empty';
+      const cut = nx && nx.cut ? ovDateTd(nx.cut.d, nx.cut.done ? 'done' : nx.cut.late ? 'late' : '', today) : ovDateTd(null);
+      const hv = C.state === 'harvested' && C.lastHarvest ? ovDateTd(C.lastHarvest.day, 'done', today) : C.flip ? ovDateTd(C.harvestDate, C.harvestDate < today ? 'late' : '', today) : ovDateTd(null);
+      const tr = ovTrim(V, RN);
+      h += `<tr>${ovSiteTd(g, i)}${ovRoomTd(room)}<td>${esc(dayTxt)}</td>${cut}${hv}${ovDateTd(tr.d, tr.st, today)}`;
+      if (!G.rows) { h += `<td class="ov-gs faint">${G.err ? '' : 'Reading…'}</td></tr>`; return; }
+      if (!gv) { h += `<td class="ov-none ov-gs" colspan="${glCols}">No Growlink readings for this room</td></tr>`; return; }
+      ms.forEach((m, k) => {
+        const t = gv.tiles.find(x => x.m === m), gs = k ? '' : ' ov-gs';
+        if (!t) { h += `<td class="n faint${gs}">-</td>`; return; }
         const off = !t.stale && (t.state === 'high' || t.state === 'low' || !!t.odd);
         const sub = t.plan != null ? `plan ${CM.glVal(m, t.plan, t.unit)}` : t.set != null ? `set ${CM.glVal(m, t.set, t.unit)}` : '';
-        h += `<td class="n${off ? ' off' : ''}${t.stale ? ' old' : ''}"><b>${esc(CM.glVal(m, t.v, t.unit))}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</td>`;
-      }
+        h += `<td class="n${off ? ' off' : ''}${t.stale ? ' old' : ''}${gs}"><b>${esc(CM.glVal(m, t.v, t.unit))}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</td>`;
+      });
       const li = gv.lights && gv.schedule ? (gv.lights.on ? `On, off ${glHM(gv.schedule.off)}` : `Off, on ${glHM(gv.schedule.on)}`) : '-';
       h += `<td>${esc(li)}</td><td class="${gv.stale ? 'warn' : 'faint'}">${gv.at ? esc(CM.glClock(gv.at, now)) : 'no reading'}</td></tr>`;
     });
