@@ -853,7 +853,12 @@ launch. The check fails if one of the three pieces is missing.
   folded. The Now box is gone. The timeline is a column a day (26 px) under month, weekday and date rows like a calendar,
   today marked in blue, scrolling sideways. Fold choices are kept under `cult.fold2` and the task range under
   `cult.range2`, so each device starts from the new defaults.
-- **Zone hint on the map:** the legend says zones count left to right from the main entrance (the rule above).
+- **No explanatory notes on the room page** (Gianni, 2026-11-25, of the lines under the map and strains and the blue
+  chips: "this is clutter please exclude this kind of thing"). No footnotes saying where data comes from or how it is
+  placed (the diagram's source, how dots are placed, how zones count, "Plants are Metrc's...", "Harvested here lately",
+  the zone light chips, Metrc's flowering-day and "in Metrc as" chips, the targets' "Under each plan" line). Those rules
+  live here, not on the page. Real problems still go to Needs attention; a missing or failed read still says so. Growlink's
+  actuals under each weekly target read "Growlink 76.8 / 79°F · 61% off".
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went

@@ -503,8 +503,9 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   // In Metrc and Zones are one Strains panel (Gianni 2026-11-24: "the in metrc and zones section seem like they're doing the exact same thing?", then "Yes, merge them")
   ok(/fpanel\('zones', 'Strains', strainsSum\(V, cap\)/.test(html) && !/fpanel\('metrc'/.test(html) && !/'In Metrc'/.test(html), 'one Strains panel, no In Metrc panel beside it');
   ok(!/'metrc'/.test((html.match(/const FOLD_KEYS = \[[^\]]*\]/) || [''])[0]) && /n\.text, 'zones'\]/.test(html), "a Metrc warning opens Strains; an old 'metrc' fold choice is ignored");
-  ok(/strainsBody\(V, cap, flags\(metrcNotes\.concat\(zoneNotes\)\), canEdit\)/.test(html) && /class="codebtn" type="button" data-code=/.test(html) && /on no zone<\/span>/.test(html),
-    "the Strains table carries Metrc's notes, the strain-number naming and Metrc's strains on no zone");
+  ok(/strainsBody\(V, cap, '', canEdit\)/.test(html) && /class="codebtn" type="button" data-code=/.test(html) && /on no zone<\/span>/.test(html)
+    && !/Plants are Metrc's \(/.test(html) && !/Dots: plants in Metrc/.test(html) && !/Under each plan: this crop/.test(html),
+    "the Strains table carries the strain-number naming and Metrc's strains on no zone; no explanatory notes under the map, strains or targets (Gianni: \"this is clutter\")");
   ok(!/function (metrcPanel|metrcSum|zonesSum|zonesBody|zonesTable)\(/.test(html), 'the two old panels are gone');
   // a strain Metrc holds under its name and its number: both records' days and each record's own number button
   {
