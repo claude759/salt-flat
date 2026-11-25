@@ -866,14 +866,21 @@ launch. The check fails if one of the three pieces is missing.
 - **Equipment runtime and this crop's history** (Gianni, 2026-11-24: "Build both", after mockups of each). Equipment:
   under the tiles, folded to one line by default (remembered on the device, `cult.glEq`), from Growlink's device log as
   the job reads it (`cult_growlink_now.equipment`): a row per kind of device and identical behaviour (an AC's cooling and
-  fan share a row), its hours in the last 24 hours, 48 half hours (grey: lights off) and 7 days; devices idle for 7 days
-  are listed apart. Growlink lists a run only once it ends. A row is amber, and Needs attention says so (worded to open
-  the reading's tile), when a reading has been off plan 30 minutes and the kind that would correct it (humidity high:
-  dehumidifiers; low: humidifiers; temp high: AC; low: heaters; CO2 low: CO2) ran under 5% of the last 24 hours (Claude's
-  assumption). History: `cult_growlink_hourly` (hourly averages and the lights-on share from Growlink's day flag, kept
-  400 days; the job fills the past a week a run per room). Environment targets shows, under each week's plan, this crop's
-  average with the lights on / off and the share of hours off plan (amber over a quarter), its folded line adds "so far"
-  for this week, and open it draws temperature and humidity by day against the plan. Read from this week's start while
-  folded, from the flip once opened. Growlink's history endpoint scrambles several sensors in one call, so it is asked
-  for one sensor at a time.
+  fan share a row, devices whose numbers read the same share one), its hours in the last 24 hours, 48 half hours (grey:
+  lights off) and 7 days; devices with no finished run in 7 days are listed apart. Growlink's device log lists only
+  finished runs lying wholly inside the window read, up to 8 days a call, so the job reads 3 hours each run, 2 days hourly
+  and 8 days daily: a run still going isn't shown, and the page says what the log shows ("logged only 18 min of finished
+  runs"), never that a device didn't run. When a reading has been off plan 30 minutes and the kind that would correct it
+  (humidity high: dehumidifiers; low: humidifiers; temp high: AC; low: heaters; CO2 low: CO2) logged under 5% of the last
+  24 hours (Claude's assumption), its row is amber and the reading's own Needs attention item (which names the plan) gets
+  ", and Growlink logged only ..." added. An equipment copy over 20 minutes old (the log couldn't be read) raises nothing
+  and is titled with the time its 24 hours end. History: `cult_growlink_hourly` (hourly averages, kept 400 days; the job
+  fills the past a week a run per room, least filled first, within 25 calls and 90 seconds a run). Lights on per hour comes
+  from Growlink's day/night flag where the room's light schedule is used, else from its light sensor (over 1,000 lux), else
+  it isn't known (23rd Rooms 1-3: those hours aren't split or judged). Environment targets shows, under each week's plan,
+  this crop's average with the lights on / off and the share of hours off plan (amber over a quarter, said in words on the
+  folded line, "so far" for this week), and open it draws temperature and humidity by day against the plan, up to the
+  harvest. Read from this week's start while folded, from the flip once opened, 1,000 rows a request (the server's cap),
+  the last good copy kept through a failed read. Growlink's history endpoint scrambles several sensors in one call, so it
+  is asked for one sensor at a time; only the Growlink room the live save filed under an app room is read.
 - **Local preview:** on localhost only, `?demo=<file>.json` beside the page reads data from that file with no sign-in.

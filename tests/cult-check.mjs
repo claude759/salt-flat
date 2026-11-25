@@ -635,24 +635,28 @@ ok(/timeZone: 'America\/Los_Angeles', month: 'numeric'/.test(html), "a tick's da
 // ---- Growlink equipment and this crop's history (Gianni, 2026-11-24: "Build both")
 {
   const at = x => Date.parse(x), NOW = at('2026-11-24T20:30:00Z');
-  assert.deepEqual([CM.glHrs(0), CM.glHrs(0.3), CM.glHrs(9.83), CM.glHrs(0.001)], ['0', '18 min', '9.8 h', '1 min']); n++;
+  assert.deepEqual([CM.glHrs(0), CM.glHrs(0.3), CM.glHrs(9.83), CM.glHrs(0.001)], ['0 h', '18 min', '9.8 h', '1 min']); n++;
   const eq = { at: '2026-11-24T20:29:00Z', rows: [
     { kind: 'AC', n: 4, names: ['AC BACK COOLING', 'AC BACK FAN', 'AC FRONT COOLING', 'AC FRONT FAN'], h24: 8.8, runs24: 470, bins: new Array(48).fill(0.6), days: [8, 8.3, 8.1, 8.1, 8.1, 8.5, 8.8] },
     { kind: 'Dehumidifier', n: 1, names: ['Dehum 710 Attic'], h24: 9.8, runs24: 100, bins: new Array(48).fill(0.4), days: [7, 7, 8, 8, 8, 9, 9.8] },
     { kind: 'Dehumidifier', n: 3, names: ['Dehum Roll In', 'Dehum middle', 'Dehum 710 Inside Room'], h24: 0.3, runs24: 5, bins: [1, 2], days: [0, 0, 0, 0, 0, 0, 0.3] },
     { kind: 'CO2', n: 1, names: ['CO2'], h24: 7.2, runs24: 238, bins: new Array(48).fill(0.3), days: [7, 7, 7, 7, 7, 7, 7.2] }, { nope: true }],
     idle: [{ kind: 'AC', n: 6, names: [] }] };
-  const hiHum = { tiles: [{ m: 'hum', label: 'Humidity', state: 'high', since: NOW - 40 * 6e4, stale: false }] };
+  const hiHum = { tiles: [{ m: 'hum', label: 'Humidity', state: 'high', since: NOW - 40 * 6e4, stale: false, v: 71.3, plan: 62, when: 'day', unit: '%' }] };
   const Q = CM.glEquip(eq, hiHum, NOW);
-  assert.deepEqual(Q.flags.map(f => f.text), ['Humidity is above plan and 3 dehumidifiers ran 18 min in the last 24 hours'],
-    'the dehumidifiers that barely ran are named while humidity is above plan; the one that ran is not'); n++;
+  assert.deepEqual(Q.flags.map(f => f.text), ["Humidity 71.3% is above this week's day plan of 62%, and Growlink logged only 18 min of finished runs for each of the 3 dehumidifiers in the last 24 hours"],
+    'the dehumidifiers that barely ran are named, with the reading and the plan (Gianni: say the plan); the one that ran is not'); n++;
+  assert.equal(Q.flags[0].clause, 'Growlink logged only 18 min of finished runs for each of the 3 dehumidifiers in the last 24 hours', "the clause that joins the reading's own item"); n++;
+  assert.equal(CM.glEquip({ ...eq, at: '2026-11-24T19:00:00Z' }, hiHum, NOW).flags.length, 0, 'an equipment copy over 20 minutes old raises nothing'); n++;
+  assert.equal(CM.glEquip({ ...eq, at: '2026-11-24T19:00:00Z' }, hiHum, NOW).old, true); n++;
+  assert.equal(CM.glEquip({ at: eq.at, rows: [{ kind: 'Dehumidifier', n: 1, names: ['D'], h24: 1.2 }] }, hiHum, NOW).flags.length, 0, 'exactly 5% of the day is not under 5%'); n++;
   assert.deepEqual([Q.rows.length, Q.rows[2].flag, Q.rows[1].flag, Q.rows[2].bins.length, Q.rows[2].bins[0], Q.idle], [4, 'hum', null, 48, 0, [{ kind: 'AC', n: 6 }]],
     'a row with odd half hours gets an empty strip, not an error'); n++;
   assert.deepEqual(Q.related('hum').map(r => r.names[0]), ['Dehum 710 Attic', 'Dehum Roll In']); n++;
   assert.equal(CM.glEquip(eq, { tiles: [{ ...hiHum.tiles[0], since: NOW - 20 * 6e4 }] }, NOW).flags.length, 0, 'not before 30 minutes off the plan'); n++;
   assert.equal(CM.glEquip(eq, { tiles: [{ ...hiHum.tiles[0], state: 'low' }] }, NOW).flags.length, 0, 'humidity low wants humidifiers, not dehumidifiers'); n++;
-  const one = CM.glEquip({ rows: [{ kind: 'Dehumidifier', n: 1, names: ['Dehum middle'], h24: 0 }] }, hiHum, NOW);
-  assert.equal(one.flags[0].text, 'Humidity is above plan and the dehumidifier "Dehum middle" ran 0 in the last 24 hours'); n++;
+  const one = CM.glEquip({ at: eq.at, rows: [{ kind: 'Dehumidifier', n: 1, names: ['Dehum middle'], h24: 0 }] }, hiHum, NOW);
+  assert.equal(one.flags[0].clause, 'Growlink logged no finished run of the dehumidifier "Dehum middle" in the last 24 hours', 'none: said as what the log shows'); n++;
   assert.equal(CM.glEquip(null, hiHum, NOW), null); assert.equal(CM.glEquip({ rows: 'x' }, hiHum, NOW), null); n += 2;
   // this crop's weeks: flipped 11/14 (week 2: 80 / 78°F, 68%), hours on 11/24 by Growlink's day flag
   const E = CM.envRows({ env: [{ week: 1, temp: '82f - 82f', hum: '70%', vpd: 1.0, co2: 1000 }, { week: 2, temp: '80f - 78f', hum: '68%', vpd: 1.1, co2: 1300 }] }, { flip: '2026-11-14', week: 2 });
@@ -670,11 +674,14 @@ ok(/timeZone: 'America\/Los_Angeles', month: 'numeric'/.test(html), "a tick's da
     'humidity off half the hours; CO2 judged with the lights on only'); n++;
   assert.deepEqual([Wk[1].hours, Wk[1].temp.offPct], [1, 0], 'week 1 apart'); n++;
   assert.deepEqual(Object.keys(CM.glWeeks([], E)), []); n++;
+  assert.equal(CM.glWeeks(hrs, E, '2026-11-24')[2].hours, 2, 'nothing after the harvest day is judged'); n++;
   const Dd = CM.glDays(hrs, E);
   assert.deepEqual(Dd.map(d => d.day), ['2026-11-17', '2026-11-24', '2026-11-25'], "days on the grows' clock"); n++;
   assert.deepEqual([Dd[1].temp, Dd[1].plan.temp, Dd[2].hum], [[82, null], { day: 80, night: 78 }, [null, 74.5]]); n++;
   const Cc = CM.glChart(Dd, 'temp', 300, 84);
-  assert.ok(Cc && Cc.lo <= 77 && Cc.hi >= 83 && /^M/.test(Cc.day) && /^M/.test(Cc.planDay) && Cc.first === '2026-11-17', 'a chart of the days with its plan'); n++;
+  assert.ok(Cc && Cc.lo <= 77 && Cc.hi >= 83 && /^M/.test(Cc.planDay) && Cc.first === '2026-11-17', 'a chart of the days with its plan'); n++;
+  assert.ok(/^M0\.0 [\d.]+h0\.01M262\.5 [\d.]+h0\.01$/.test(Cc.day), `days placed by date, a break across the 6 missing days, lone values drawn as dots (${Cc.day})`); n++;
+  assert.ok(/^M300\.0 [\d.]+h0\.01$/.test(Cc.night), `a lone night value is a dot (${Cc.night})`); n++;
   assert.equal(CM.glChart(Dd.slice(0, 1), 'temp', 300, 84), null, 'one day is no chart'); n++;
 }
 ok(/sb\.from\('cult_growlink_hourly'\)\.select\('hour,lit,temp,hum,vpd,co2'\)/.test(html), "this crop's history is read by named columns");

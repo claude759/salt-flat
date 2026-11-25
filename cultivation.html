@@ -973,7 +973,7 @@ const CM = (() => {
   const EQ_WORD = { AC: ['AC', 'ACs'], Dehumidifier: ['dehumidifier', 'dehumidifiers'], Humidifier: ['humidifier', 'humidifiers'], Heater: ['heater', 'heaters'], CO2: ['CO2 valve', 'CO2 valves'] };
   GL.EQ_IDLE = 0.05;
   // hours as people say them: "18 min", "9.8 h"
-  const glHrs = h => (!isFinite(h) || h <= 0 ? '0' : h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : `${(Math.round(h * 10) / 10).toLocaleString('en-US')} h`);
+  const glHrs = h => (!isFinite(h) || h <= 0 ? '0 h' : h < 1 ? `${Math.max(1, Math.round(h * 60))} min` : `${(Math.round(h * 10) / 10).toLocaleString('en-US')} h`);
   function glEquip(eq, V, now) {
     if (!eq || typeof eq !== 'object' || !Array.isArray(eq.rows)) return null;
     const rows = eq.rows.filter(r => r && typeof r.kind === 'string').map(r => ({
@@ -981,30 +981,40 @@ const CM = (() => {
       h24: isFinite(+r.h24) ? Math.max(0, +r.h24) : 0, runs24: isFinite(+r.runs24) ? +r.runs24 : 0,
       bins: Array.isArray(r.bins) && r.bins.length === 48 ? r.bins.map(x => (isFinite(+x) ? Math.max(0, Math.min(1, +x)) : 0)) : new Array(48).fill(0),
       days: Array.isArray(r.days) ? r.days.slice(-7).map(x => (isFinite(+x) ? Math.max(0, +x) : 0)) : [], flag: null }));
+    // flags only from a fresh copy: the job sends equipment every 5 minutes, and an old copy covers another 24 hours
+    const at = Date.parse(eq.at), old = !isFinite(at) || now - at > GL.STALE * 6e4;
     const flags = [];
-    for (const t of (V && V.tiles) || []) {
+    for (const t of old ? [] : (V && V.tiles) || []) {
       const fix = EQ_FIX[t.m] && EQ_FIX[t.m][t.state];
       if (!fix || t.stale || t.since == null || now - t.since < GL.ATTN * 6e4) continue;
-      for (const r of rows.filter(x => x.kind === fix && x.h24 < 24 * GL.EQ_IDLE)) {
+      for (const r of rows.filter(x => x.kind === fix && x.h24 < 24 * GL.EQ_IDLE - 1e-9)) {
         r.flag = t.m;
-        const w = EQ_WORD[fix] || [fix, fix + 's'];
-        flags.push({ m: t.m, text: `${t.label} is ${t.state === 'high' ? 'above' : 'below'} plan and ${r.n > 1 ? `${r.n} ${w[1]}` : `the ${w[0]}${r.names[0] ? ` "${r.names[0]}"` : ''}`} ran ${glHrs(r.h24)} in the last 24 hours` });
+        // only what Growlink's log shows: it lists a run once it ends, so one still going isn't counted
+        const w = EQ_WORD[fix] || [fix, fix + 's'], one = r.names[0] ? `the ${w[0]} "${r.names[0]}"` : `the ${w[0]}`;
+        const clause = r.h24 > 0
+          ? `Growlink logged only ${glHrs(r.h24)} of finished runs for ${r.n > 1 ? `each of the ${r.n} ${w[1]}` : one} in the last 24 hours`
+          : `Growlink logged no finished run of ${r.n > 1 ? `the ${r.n} ${w[1]}` : one} in the last 24 hours`;
+        // standing alone it carries the reading and the plan, as every Growlink warning does
+        flags.push({ m: t.m, label: t.label, clause,
+          text: `${t.label} ${glVal(t.m, t.v, t.unit)} is ${t.state === 'high' ? 'above' : 'below'} this week's ${t.when} plan of ${glVal(t.m, t.plan, t.unit)}, and ${clause}` });
       }
     }
-    const at = Date.parse(eq.at);
-    return { at: isFinite(at) ? at : null, rows, flags, related: m => rows.filter(r => (EQ_RELATED[m] || []).includes(r.kind)),
+    return { at: isFinite(at) ? at : null, old, rows, flags, related: m => rows.filter(r => (EQ_RELATED[m] || []).includes(r.kind)),
       idle: Array.isArray(eq.idle) ? eq.idle.filter(g => g && typeof g.kind === 'string').map(g => ({ kind: g.kind, n: Math.max(1, +g.n || 1) })) : [] };
   }
 
   // ---- Growlink history (cult_growlink_hourly, the job's hourly averages): this crop's weeks beside the plan. An hour
   // counts as lights on when Growlink's day flag covered half of it or more; it is judged as the live readings are
   // (glJudge against its week's plan, GL.TOL). Keyed by week number.
-  function glWeeks(hours, E) {
+  // end: the crop's last day (its harvest), after which the empty room isn't judged
+  function glWeeks(hours, E, end) {
     const W = new Map(), M = ['temp', 'hum', 'vpd', 'co2'];
     for (const h of hours || []) {
       const t = Date.parse(h && h.hour);
       if (!isFinite(t) || h.lit == null || !isFinite(+h.lit)) continue;
-      const d = todayLA(new Date(t)), e = (E || []).find(x => x.from && x.from <= d && d <= x.to);
+      const d = todayLA(new Date(t));
+      if (end && d > end) continue;
+      const e = (E || []).find(x => x.from && x.from <= d && d <= x.to);
       if (!e) continue;
       const lit = +h.lit >= 0.5, plan = glPlan(e);
       let w = W.get(e.week);
@@ -1026,12 +1036,13 @@ const CM = (() => {
     return out;
   }
   // each day's average with the lights on and off (temp and humidity), and that day's plan, for the charts
-  function glDays(hours, E) {
+  function glDays(hours, E, end) {
     const D = new Map();
     for (const h of hours || []) {
       const t = Date.parse(h && h.hour);
       if (!isFinite(t) || h.lit == null || !isFinite(+h.lit)) continue;
       const d = todayLA(new Date(t)), lit = +h.lit >= 0.5;
+      if (end && d > end) continue;
       let x = D.get(d);
       if (!x) D.set(d, x = { day: d, temp: [0, 0, 0, 0], hum: [0, 0, 0, 0] });
       for (const m of ['temp', 'hum']) {
@@ -1053,9 +1064,21 @@ const CM = (() => {
     for (const d of days || []) { for (const v of d[m]) if (v != null) vals.push(v); if (d.plan && d.plan[m]) vals.push(d.plan[m].day, d.plan[m].night); }
     if (!days || days.length < 2 || !vals.length) return null;
     const lo = Math.floor(Math.min(...vals)) - 1, hi = Math.ceil(Math.max(...vals)) + 1;
-    const X = i => (i / (days.length - 1)) * w, Y = v => h - (v - lo) / (hi - lo) * h, f = n => n.toFixed(1);
-    const line = get => { let d = '', pen = false; days.forEach((x, i) => { const v = get(x); if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${f(X(i))} ${f(Y(v))}`; pen = true; }); return d; };
-    const step = get => { let d = '', prev = null; days.forEach((x, i) => { const v = get(x); if (v == null) { prev = null; return; }
+    // days placed by date; a day missing (no hours read) breaks the lines
+    const span = Math.max(1, diff(days[0].day, days[days.length - 1].day));
+    const X = i => diff(days[0].day, days[i].day) / span * w, Y = v => h - (v - lo) / (hi - lo) * h, f = n => n.toFixed(1);
+    const joined = i => i > 0 && diff(days[i - 1].day, days[i].day) === 1;
+    const line = get => {
+      let d = '';
+      days.forEach((x, i) => {
+        const v = get(x);
+        if (v == null) return;
+        const pen = joined(i) && get(days[i - 1]) != null, next = i + 1 < days.length && joined(i + 1) && get(days[i + 1]) != null;
+        d += `${pen ? 'L' : 'M'}${f(X(i))} ${f(Y(v))}${!pen && !next ? 'h0.01' : ''}`;   // a lone value: a dot
+      });
+      return d;
+    };
+    const step = get => { let d = '', prev = null; days.forEach((x, i) => { const v = get(x); if (v == null || !joined(i)) prev = null; if (v == null) return;
       d += prev == null ? `M${f(X(i))} ${f(Y(v))}` : `${v !== prev ? `L${f(X(i))} ${f(Y(prev))}` : ''}L${f(X(i))} ${f(Y(v))}`; prev = v; }); return d; };
     return { lo, hi, first: days[0].day, last: days[days.length - 1].day,
       day: line(x => x[m][0]), night: line(x => x[m][1]),
@@ -1352,7 +1375,8 @@ const S = { me: null, rooms: [], zones: [], codes: {}, codeRows: [], plants: [],
 try { const r = +localStorage.getItem('cult.range'); if ([0, 7, 30].includes(r) && localStorage.getItem('cult.range') !== null) S.range = r; } catch (e) { /* default 7 days */ }
 let sb = null, rawNonce = null, pollTimer = null, glTimer = null;
 S.gl = { room: null, now: null, log: [], meta: null, err: null, at: 0 }; S.glOpen = null; S.attBase = []; S.envE = []; S.envState = null;
-S.glHist = { room: null, from: null, rows: [], at: 0, err: null }; S.envFlip = null; S.glEqOpen = false;
+S.glHist = { room: null, from: null, rows: [], at: 0, errAt: 0, errNone: false }; S.envFlip = null; S.envEnd = null; S.glEqOpen = false;
+let glHistBusy = null;   // the history read in flight ({room, from}), so a second one isn't sent for the same hours
 try { S.glEqOpen = localStorage.getItem('cult.glEq') === '1'; } catch (e) { /* folded */ }
 // folding: the panels that fold, which are open by default, and what this device chose (cult.fold: only the panels someone
 // pressed, 1 open, 0 folded); S.peek opens a panel for this visit only (a zone link, a Needs attention item); S.tOpen the
@@ -1468,39 +1492,67 @@ function glCompute(room) {
 }
 // this crop's Growlink history (cult_growlink_hourly): from the crop's flip while Environment targets is open, else from
 // this week's start (for its folded line); new hours again at most every 30 minutes
-async function loadGlHist(roomId, from, fromDay) {
+// true: read (or failed, the last copy kept and the failure noted); 'stale': another read landed meanwhile; false: another room
+async function loadGlHist(roomId, from) {
   if (!sb || !roomId || !from) return false;
-  const base = S.glHist, same = base.room === roomId && base.from && base.from <= from && !base.err;
-  const last = same && base.rows.length ? base.rows[base.rows.length - 1].hour : null;
-  let q = sb.from('cult_growlink_hourly').select('hour,lit,temp,hum,vpd,co2').eq('room_id', roomId).order('hour').limit(2000);
-  q = last ? q.gt('hour', last) : q.gte('hour', same ? base.from : from);
-  const res = await q.then(r => r, e => ({ error: { message: String(e && e.message || e) } }));
-  if (S.room !== roomId || S.glHist !== base) return false;   // another room, or another read landed first
-  if (res.error) { S.glHist = { ...base, room: roomId, err: true, at: Date.now() }; return true; }
-  S.glHist = { room: roomId, from: same ? base.from : from, fromDay: same ? base.fromDay : fromDay, rows: (same ? base.rows : []).concat(res.data || []), at: Date.now(), err: null };
+  const base = S.glHist, same = base.room === roomId && base.from && base.from <= from;
+  let after = same && base.rows.length ? base.rows[base.rows.length - 1].hour : null, err = null;
+  const got = [];
+  for (let page = 0; page < 20; page++) {   // the server hands out at most 1,000 rows a request: page by the hour
+    let q = sb.from('cult_growlink_hourly').select('hour,lit,temp,hum,vpd,co2').eq('room_id', roomId).order('hour').limit(1000);
+    q = after ? q.gt('hour', after) : q.gte('hour', same ? base.from : from);
+    const res = await q.then(r => r, e => ({ error: { message: String(e && e.message || e) } }));
+    if (res.error) { err = res.error; break; }
+    const rows = res.data || [];
+    got.push(...rows);
+    if (rows.length < 1000) break;
+    after = rows[rows.length - 1].hour;
+  }
+  if (S.room !== roomId) return false;
+  if (S.glHist !== base) {   // another read landed meanwhile: this one counts only if it is the wider whole read
+    const H = S.glHist;
+    if (err || same || !(H.room === roomId && H.from && from < H.from)) return 'stale';
+  }
+  const mine = base.room === roomId;
+  if (err) {
+    S.glHist = { ...(mine ? base : { room: roomId, from: null, rows: [], at: 0 }), room: roomId, errAt: Date.now(), errNone: /does not exist|schema cache|relation/i.test(err.message) };
+    return true;
+  }
+  S.glHist = { room: roomId, from: same ? base.from : from, rows: (same ? base.rows : []).concat(got), at: Date.now(), errAt: 0, errNone: false };
   return true;
 }
 // what the Environment targets panel needs read, given whether it is open: from the crop's flip, or this week's start
-// (the grows' day; read from 06:00 UTC, before the grows' midnight in summer or winter, and the earlier hours left out)
+// (the grows' day; read from 06:00 UTC, before the grows' midnight in summer or winter, and the earlier hours left out).
+// Nothing while it is folded and no week of the plan is under way (its line then shows no actuals).
 function glHistNeed(room) {
   if (!room || !S.envFlip) return null;
-  const w = (S.envE || []).find(e => e.now), day = isOpen('env') || !w ? S.envFlip : w.from;
+  const w = (S.envE || []).find(e => e.now), open = isOpen('env');
+  if (!open && !w) return null;
+  const day = open ? S.envFlip : w.from;
   const t = Date.parse(day + 'T06:00:00Z');
   return isFinite(t) ? { day, iso: new Date(t).toISOString() } : null;
 }
 function glHistEnsure(room) {
   const need = glHistNeed(room);
   if (!need) return;
-  const H = S.glHist, have = H.room === room.id && H.from && H.from <= need.iso;
-  if (have && !H.err && Date.now() - H.at < 30 * 60e3) return;
-  if (have && H.err && Date.now() - H.at < 5 * 60e3) return;
-  loadGlHist(room.id, need.iso, need.day).then(ok => { if (ok) paintEnv(room); });
+  const H = S.glHist, mine = H.room === room.id, have = mine && H.from && H.from <= need.iso;
+  if (glHistBusy && glHistBusy.room === room.id && glHistBusy.from <= need.iso) return;   // a read in flight covers it
+  if (mine && H.errAt && Date.now() - H.errAt < 5 * 60e3) return;                        // it failed just now: wait
+  if (have && Date.now() - H.at < 30 * 60e3) return;
+  const busy = glHistBusy = { room: room.id, from: need.iso };
+  loadGlHist(room.id, need.iso).then(r => {
+    if (glHistBusy === busy) glHistBusy = null;
+    if (r === true) paintEnv(room);
+    else if (r === 'stale') glHistEnsure(room);
+  });
 }
+// this crop's weeks and days from the copy read (the last good one kept through a failed read), from the crop's start
+// (or this week's while the panel is folded) to its harvest
 function glHistOf(room) {
-  const H = S.glHist;
-  if (!room || H.room !== room.id || H.err) return { W: null, D: null };
-  const rows = H.fromDay ? H.rows.filter(h => CM.todayLA(new Date(h.hour)) >= H.fromDay) : H.rows;
-  return { W: CM.glWeeks(rows, S.envE), D: isOpen('env') ? CM.glDays(rows, S.envE) : null };
+  const H = S.glHist, need = room && glHistNeed(room);
+  if (!room || H.room !== room.id || !H.rows.length || !need) return { W: null, D: null, rows: 0, lit: false };
+  const rows = H.rows.filter(h => CM.todayLA(new Date(h.hour)) >= need.day);
+  return { W: CM.glWeeks(rows, S.envE, S.envEnd), D: isOpen('env') ? CM.glDays(rows, S.envE, S.envEnd) : null, rows: rows.length, lit: rows.some(h => h.lit != null) };
 }
 // redraw Environment targets' line and body only (never the rest of the page)
 function paintEnv(room) {
@@ -1514,28 +1566,34 @@ function glAtt(V) {
   if (!V) return [];
   const m = S.gl.meta;
   const now = Date.now(), EQ = CM.glEquip(S.gl.now && S.gl.now.equipment, V, now);
-  return CM.glAttention(V, now, { readErr: !!S.gl.err, readAt: S.gl.at || null, jobAt: m && m.synced_at ? Date.parse(m.synced_at) : null })
-    .concat(EQ ? EQ.flags.map(f => f.text) : []).map(text => ({ k: 'warn', text }));
+  const items = CM.glAttention(V, now, { readErr: !!S.gl.err, readAt: S.gl.at || null, jobAt: m && m.synced_at ? Date.parse(m.synced_at) : null });
+  for (const f of EQ ? EQ.flags : []) {   // one line per reading: its equipment joins its own item, which names the plan
+    const i = items.findIndex(t => t.startsWith(f.label + ' '));
+    if (i >= 0) items[i] += `, and ${f.clause}`; else items.push(f.text);
+  }
+  return items.map(text => ({ k: 'warn', text }));
 }
 // the room's equipment under the tiles (Growlink's device log, read by the job): one line folded, a strip per row open
 function glEqHTML(EQ, now) {
   if (!EQ || (!EQ.rows.length && !EQ.idle.length)) return '';
   const word = r => `${r.kind}${r.n > 1 ? ` × ${r.n}` : ''}`, open = !!S.glEqOpen;
-  const sum = EQ.rows.slice(0, 6).map(r => `<span class="${r.flag ? 'w' : ''}">${esc(word(r))} ${esc(CM.glHrs(r.h24))}</span>`).join(' · ') || 'nothing ran in the last 7 days';
-  let h = `<div class="gl-eq"><button type="button" class="gl-eqh" data-gleq aria-expanded="${open}"><span class="chev" aria-hidden="true"></span><b>Equipment, last 24 hours</b><span class="gl-eqs">${sum}</span></button>`;
+  const end = EQ.at || now;   // the job's 24 hours end when it read them
+  const title = EQ.old ? `Equipment, 24 hours to ${CM.glClock(end, now)}` : 'Equipment, last 24 hours';
+  const sum = EQ.rows.slice(0, 6).map(r => `<span class="${r.flag ? 'w' : ''}">${esc(word(r))} ${esc(CM.glHrs(r.h24))}</span>`).join(' · ') || 'no finished run in the last 7 days';
+  let h = `<div class="gl-eq"><button type="button" class="gl-eqh" data-gleq aria-expanded="${open}"><span class="chev" aria-hidden="true"></span><b${EQ.old ? ' style="color:var(--amber)"' : ''}>${esc(title)}</b><span class="gl-eqs">${sum}</span></button>`;
   if (!open) return h + '</div>';
-  const W1 = now - 864e5, L = S.gl.now && S.gl.now.lights;
+  const W1 = end - 864e5, L = S.gl.now && S.gl.now.lights;
   const dk = Array.from({ length: 48 }, (_, i) => { const li = CM.glLights(L, W1 + (i + 0.5) * 1800e3); return !!li && !li.on; });
   const mx = Math.max(1, ...EQ.rows.flatMap(r => r.days));
-  h += `<div class="gl-eqb"><div class="gl-eqax"><span></span><span><span>${esc(CM.glClock(W1, now))}</span><span>now</span></span><span style="text-align:right">24 h</span><span>7 days</span></div>`;
+  h += `<div class="gl-eqb"><div class="gl-eqax"><span></span><span><span>${esc(CM.glClock(W1, now))}</span><span>${EQ.old ? esc(CM.glClock(end, now)) : 'now'}</span></span><span style="text-align:right">24 h</span><span>7 days</span></div>`;
   for (const r of EQ.rows) {
     h += `<div class="gl-eqr${r.flag ? ' w' : ''}"><span class="gl-eql"><b>${esc(word(r))}</b><small title="${esc(r.names.join(', '))}">${esc(r.names.join(', '))}</small></span>`
       + `<span class="gl-strip" role="img" aria-label="${esc(`${word(r)}: on ${CM.glHrs(r.h24)} in the last 24 hours`)}">${r.bins.map((v, i) => `<i${dk[i] ? ' class="dk"' : ''}>${v ? `<u style="opacity:${Math.max(0.15, v).toFixed(2)}"></u>` : ''}</i>`).join('')}</span>`
       + `<span class="gl-eqn">${esc(CM.glHrs(r.h24))}</span>`
       + `<span class="gl-eqd" title="${esc('Hours a day, last 7 days: ' + r.days.map(d => CM.glHrs(d)).join(', '))}">${r.days.map(d => `<i style="height:${Math.max(1, Math.round(d / mx * 18))}px"></i>`).join('')}</span></div>`;
   }
-  if (EQ.idle.length) h += `<p class="note">Not run in the last 7 days: ${esc(EQ.idle.map(g => `${g.kind}${g.n > 1 ? ` × ${g.n}` : ''}`).join(', '))}.</p>`;
-  h += `<p class="note">Shade: the share of each half hour it ran; grey half hours had the lights off. Growlink lists a run once it ends, so something on right now shows when it switches off.${EQ.at ? ` Read ${esc(CM.glClock(EQ.at, now))}.` : ''}</p>`;
+  if (EQ.idle.length) h += `<p class="note">No finished run in the last 7 days: ${esc(EQ.idle.map(g => `${g.kind}${g.n > 1 ? ` × ${g.n}` : ''}`).join(', '))}.</p>`;
+  h += `<p class="note">Shade: the share of each half hour it ran${L ? '; grey half hours had the lights off' : ". Growlink's light schedule isn't used for this room, so lights-off half hours aren't shaded"}. Growlink logs a run once it ends: one still going, or longer than about 8 days, isn't shown yet.${EQ.at ? ` Read ${esc(CM.glClock(EQ.at, now))}.` : ''}</p>`;
   return h + '</div></div>';
 }
 // Needs attention drawn again: the count, the items, and the item that had focus keeps it
@@ -1620,13 +1678,14 @@ function glRefresh(focus) {
   const room = S.room && S.rooms.find(r => r.id === S.room);
   const el = $('gl');
   if (!room || !el) return;
-  const a = document.activeElement;
+  const a = document.activeElement, eqf = !!(a && el.contains(a) && a.hasAttribute && a.hasAttribute('data-gleq'));
   if (!focus && a && el.contains(a) && a.dataset && a.dataset.gl) focus = a.dataset.gl;   // keep a focused tile focused
   const V = glCompute(room);
   el.innerHTML = glHTML(room, V);
   const all = S.attBase.concat(glAtt(V));
   paintAtt(all);
   if (focus) { const b = el.querySelector(`[data-gl="${focus}"]`); if (b) b.focus(); }
+  else if (eqf) { const b = el.querySelector('[data-gleq]'); if (b) b.focus(); }
 }
 function roomView(room, today) {
   const P = CM.roomPlants(room, S.plants, S.codes);
@@ -2013,6 +2072,7 @@ function renderRoom(room) {
   h += tasksPanel(V, canWork, today);
   h += fpanel('notes', 'Room notes', notesSum(room), '', canEdit && !S.editNotes ? `<button class="btn" type="button" id="notes-edit">${room.notes ? 'Edit' : 'Add'}</button>` : '', notesBody(room));
   S.envFlip = C.flip || null;
+  S.envEnd = (C.state === 'harvested' || C.state === 'empty') && C.lastHarvest && C.flip && C.lastHarvest.day >= C.flip ? C.lastHarvest.day : null;
   const GH = glHistOf(room);
   h += fpanel('env', 'Environment targets', envSum(E, GH.W), C.week ? `week ${C.week} now` : '', '', envBody(E, GH.W, GH.D));
   h += fpanel('runoff', 'Runoff log', runoffSum(V, today), '', canWork && !S.runoffForm ? '<button class="btn" type="button" id="ro-add">Log runoff</button>' : '', runoffBody(V, canWork, canEdit, today));
@@ -2174,12 +2234,13 @@ function envSum(E, W) {
   const w = (E || []).find(e => e.now);
   if (!E || !E.length) return 'No targets set for this room';
   if (!w) return `${E.length} weeks of targets`;
-  const plan = esc(`Week ${w.week}: ${[fmtTemp(w.temp), w.hum ? `humidity ${w.hum}` : '', w.vpd != null && w.vpd !== '' ? `VPD ${Number(w.vpd).toFixed(1)}` : '', fmtCO2(w.co2) ? `CO2 ${fmtCO2(w.co2)}` : ''].filter(Boolean).join(' · ')}`);
+  const head = esc(`Week ${w.week}: ${[fmtTemp(w.temp), w.hum ? `humidity ${w.hum}` : ''].filter(Boolean).join(' · ')}`);
+  const tail = esc([w.vpd != null && w.vpd !== '' ? `VPD ${Number(w.vpd).toFixed(1)}` : '', fmtCO2(w.co2) ? `CO2 ${fmtCO2(w.co2)}` : ''].filter(Boolean).join(' · '));
   const a = W && W[w.week];
-  if (!a || !a.hours) return plan;
-  const part = (m, label, unit) => { const x = a[m]; if (!x || x.day == null && x.night == null) return ''; const t = `${label}${CM.glNum(m, x.day)} / ${CM.glNum(m, x.night)}${unit}`; return x.offPct > GL_OFF_WARN ? `<span class="w">${esc(t)}</span>` : esc(t); };
-  const so = [part('temp', '', '°F'), part('hum', 'humidity ', '%')].filter(Boolean).join(', ');
-  return so ? `${plan} · so far ${so}` : plan;
+  // this week so far, said in words too (the share off the plan), before VPD and CO2 so a short line keeps it
+  const part = (m, label, unit) => { const x = a && a[m]; if (!x || x.day == null && x.night == null) return ''; const t = `${label}${CM.glNum(m, x.day)} / ${CM.glNum(m, x.night)}${unit}${x.offPct > GL_OFF_WARN ? ` (${x.offPct}% off)` : ''}`; return x.offPct > GL_OFF_WARN ? `<span class="w">${esc(t)}</span>` : esc(t); };
+  const so = a && a.hours ? [part('temp', '', '°F'), part('hum', 'humidity ', '%')].filter(Boolean).join(', ') : '';
+  return [head, so ? `so far ${so}` : '', tail].filter(Boolean).join(' · ');
 }
 function envBody(E, W, D) {
   if (!E.length) return '<div class="empty">No targets set for this room.</div>';
@@ -2187,8 +2248,11 @@ function envBody(E, W, D) {
   let h = '<div class="wrapx"><table class="t"><thead><tr><th>Week</th><th>Dates</th><th>Day / night temp</th><th>Humidity</th><th class="n">VPD</th><th class="n">CO2</th></tr></thead><tbody>';
   for (const e of E) h += `<tr class="${e.now ? 'now' : ''}"><td><b>${e.week}</b></td><td class="faint">${e.from ? esc(CM.short(e.from) + ' - ' + CM.short(e.to)) : ''}</td><td>${esc(fmtTemp(e.temp))}${A(e.week, 'temp', '°F')}</td><td>${esc(e.hum || '')}${A(e.week, 'hum', '%')}</td><td class="n">${e.vpd == null ? '' : esc(Number(e.vpd).toFixed(1))}${A(e.week, 'vpd', '')}</td><td class="n">${esc(fmtCO2(e.co2))}${A(e.week, 'co2', ' ppm')}</td></tr>`;
   h += '</tbody></table></div>';
-  if (W && Object.keys(W).length) h += `<p class="note">Under each plan: this crop's average from Growlink with the lights on / off, and the share of hours more than ${esc(CM.glVal('temp', CM.GL.TOL.temp, '°F'))}, ${esc(CM.glVal('hum', CM.GL.TOL.hum, '%'))} humidity, ${esc(CM.glVal('vpd', CM.GL.TOL.vpd, 'kPa'))} or ${esc(CM.glVal('co2', CM.GL.TOL.co2, 'ppm'))} CO2 (lights on) off it; amber over a quarter.</p>`;
-  else if (S.envFlip && S.glHist.room === S.room && !S.glHist.err && S.glHist.at) h += '<p class="note">Growlink has no history for this crop yet.</p>';
+  const H = S.glHist, mine = H.room === S.room;
+  if (W && Object.keys(W).length) h += `<p class="note">Under each plan: this crop's average from Growlink with the lights on / off, and the share of hours more than ${esc(CM.glVal('temp', CM.GL.TOL.temp, '°F'))}, ${esc(CM.glVal('hum', CM.GL.TOL.hum, '%'))} humidity, ${esc(CM.glVal('vpd', CM.GL.TOL.vpd, 'kPa'))} or ${esc(CM.glVal('co2', CM.GL.TOL.co2, 'ppm'))} CO2 (lights on) off it; amber over a quarter.${S.envEnd ? ` Up to the harvest (${esc(CM.short(S.envEnd))}).` : ''}</p>`;
+  else if (mine && H.rows.length && !H.rows.some(x => x.lit != null)) h += "<p class=\"note\">Growlink's history for this room doesn't say when the lights were on, so its hours aren't split into lights on and off or held to the plan.</p>";
+  else if (S.envFlip && mine && H.at && !H.errAt) h += '<p class="note">Growlink has no history for this crop yet.</p>';
+  if (mine && H.errAt) h += `<p class="note" style="color:var(--amber)">${H.errNone ? "This crop's Growlink history isn't on the server yet." : `Couldn't read Growlink's history just now${H.rows.length ? ': showing the last copy' : ''}. It is read again in a few minutes.`}</p>`;
   h += glChartsHTML(D);
   const light = E.find(e => e.light);
   return h + (light ? `<p class="note">Lights: ${esc(light.light)}.</p>` : '');
@@ -2902,7 +2966,8 @@ $('refresh').addEventListener('click', async () => {
 });
 // Environment targets opened: this crop's whole history and its charts (after the panel's own toggle has run)
 document.addEventListener('click', e => {
-  if (!e.target.closest('[data-fold="env"]')) return;
+  const f = e.target.closest('[data-fold]') || (e.target.matches && e.target.matches('.panel>h3') ? e.target.querySelector('[data-fold]') : null);
+  if (!f || f.dataset.fold !== 'env') return;
   setTimeout(() => {
     const room = S.room && S.rooms.find(r => r.id === S.room);
     if (!room || !isOpen('env')) return;

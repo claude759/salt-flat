@@ -173,7 +173,8 @@ create policy cult_growlink_hourly_select on public.cult_growlink_hourly for sel
 revoke insert, update, delete on table public.cult_growlink_hourly from anon, authenticated;
 
 -- p_rows: [{growlink, hour, lit, temp, hum, vpd, co2, light, n}] (at most 5000); each hour filed under the app room of
--- the same name (others listed as unmatched) and replaced if it was there.
+-- the same name, and only from the Growlink room the live save filed there (others listed as unmatched); an hour already
+-- there is replaced. lit is null where the job can't tell lights on from off (no schedule used, no light sensor).
 create or replace function public.cult_growlink_hourly_save(p_token text, p_rows jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare x jsonb; rid text; h timestamptz; n int := 0; um text[] := '{}';
@@ -191,6 +192,10 @@ begin
     h := (x->>'hour')::timestamptz;
     if h > now() then raise exception 'an hour is in the future'; end if;
     rid := public.cult_gl_room(x->>'growlink');
+    -- only the Growlink room the live save filed here (a second room whose name differs by case or spaces is not)
+    if rid is not null and exists (select 1 from public.cult_growlink_now g where g.room_id = rid and g.growlink <> btrim(x->>'growlink')) then
+      rid := null;
+    end if;
     if rid is null then
       if not (coalesce(btrim(x->>'growlink'), '') = any(um)) then um := um || coalesce(btrim(x->>'growlink'), ''); end if;
       continue;
