@@ -896,12 +896,13 @@ launch. The check fails if one of the three pieces is missing.
   here as well"): each row's ⋯ opens the room page's own task editor (`taskMenu`: note, move to another day, skip, delete
   a one-off), the row shows the move and the note, and Add a task (`addTaskPop` with the rooms) picks the room in a
   typable box resolved with `pickFrom`.
-  **Veg** (Gianni, same day: "are the veg rooms tracked in METRC? We might as well include them on the overview too",
-  then "Yes, add veg"): a Veg panel after Rooms, for the sites shown: each Metrc veg location with its totals, then a row
-  per strain with clones, tagged plants, moms, the planted days and the oldest's age (`CM.vegView`, `ovVegHTML`), read on
+  **Veg is a room** (Gianni, same day: "are the veg rooms tracked in METRC? We might as well include them on the overview
+  too", then "Yes, add veg", then "actually veg should be a room" and "Yes, build it" to the mockup; it replaced a Veg
+  panel). Each site in Rooms ends with a Veg row (a button, then clones, strains, moms and the oldest batch, `vegSum`;
+  "No Growlink in veg"). It opens the site's Veg room, `#veg=<site>` (`renderVeg`, not a `cult_rooms` row): totals, then
+  a panel per Metrc veg location with a row per strain (clones, tagged, moms, cut days, the oldest batch's age) and Goes
+  to, the flower rooms whose planned runs (not passed) name the strain (`CM.vegView`, the rooms' `cult_runs`). Read on
   open, after 10 minutes and on Refresh (`ovVegLoad`). Metrc's veg is read only, like every Metrc number.
-  The Veg panel folds to one line by default (Gianni, same day: "ya fold it"): each site's clones, strains, moms and
-  oldest batch; a press opens the list, remembered on the device (`cult.ovVeg`).
 - **Almost everything on the page is editable** (Gianni, 2026-11-25: "This should also be editable. Almost everything will
   need to be editable"). Build each new panel with an edit path, and give an existing one that has none an Edit button
   when it is touched. Environment targets: Edit targets (each week's day / night temperature and humidity, VPD, CO2 with

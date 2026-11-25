@@ -517,6 +517,11 @@
   .ovg td.n b{display:block;font-variant-numeric:tabular-nums} .ovg td.n small{display:block;font-size:11px;color:var(--muted)}
   .ovg td.n.off{background:var(--amber-soft)} .ovg td.n.off b{color:var(--amber)} .ovg td.n.old b{color:var(--faint)}
   .ovg td.ov-none{color:var(--muted)}
+  .ovg tr.ov-vegrow td{background:var(--ov-band)} .ovg td.ov-vsum{text-align:left;color:var(--text)}
+  .veg-k{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 14px}
+  .veg-k div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .veg-k small{display:block;font-size:12px;color:var(--muted)} .veg-k b{font-size:20px}
+  @media (max-width:640px){.veg-k{grid-template-columns:repeat(2,minmax(0,1fr))}}
   .ovv tr.ov-vl td{background:var(--ov-band);text-align:left}
   .ov-ftog{all:unset;cursor:pointer;display:flex;align-items:baseline;gap:8px;width:100%;flex-wrap:wrap}
   .ov-ftog:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -2362,7 +2367,10 @@ function route() {
   const m = location.hash.match(/room=([A-Z][A-Z0-9]{1,3})/);
   const id = m ? m[1] : null;
   S.room = id && S.rooms.some(r => r.id === id) ? id : null;
-  if (!S.room && S.rooms.length === 1 && !/(^#|&)overview\b/.test(location.hash)) S.room = S.rooms[0].id;   // one room on: open it, unless the Overview was asked for
+  // a site's Veg room (Gianni, 2026-11-25: "actually veg should be a room", then "Yes, build it"): #veg=<site>
+  const vg = location.hash.match(/(?:^#|&)veg=([A-Z])\b/);
+  S.veg = !S.room && vg && S.rooms.some(r => r.site === vg[1]) ? vg[1] : null;
+  if (!S.room && !S.veg && S.rooms.length === 1 && !/(^#|&)overview\b/.test(location.hash)) S.room = S.rooms[0].id;   // one room on: open it, unless the Overview was asked for
   S.editZones = false; S.arrange = false; S.zoneOpened = false; S.runoffForm = false; S.editNotes = false; S.hvOpen = null; S.hvAll = false;
   S.editEnv = false; S.editCal = false; S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
   S.peek = /[#&]zone=\d/.test(location.hash) ? { map: 1 } : {}; S.tOpen = {};   // a zone link opens the map for this visit
@@ -2370,6 +2378,7 @@ function route() {
   render();
 }
 function go(id, zone) { location.hash = id ? `room=${id}${zone ? `&zone=${zone}` : ''}` : 'overview'; }
+const goVeg = site => { location.hash = `veg=${site}`; };
 $('home').addEventListener('click', () => go(null));
 $('crumb-ov').addEventListener('click', () => go(null));
 $('home').addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(null); } });
@@ -2377,11 +2386,12 @@ window.addEventListener('hashchange', route);
 
 function render() {
   const one = S.room && S.rooms.find(r => r.id === S.room);
-  $('view-rooms').hidden = !!one; $('view-room').hidden = !one;
-  $('crumbs').hidden = !one; $('crumb-room').textContent = one ? one.name : '';
+  const vsite = !one && S.veg ? SITES.find(x => x.id === S.veg) : null;
+  $('view-rooms').hidden = !!(one || vsite); $('view-room').hidden = !(one || vsite);
+  $('crumbs').hidden = !(one || vsite); $('crumb-room').textContent = one ? one.name : vsite ? `${vsite.name} Veg` : '';
   $('home').title = 'Overview';
-  document.title = one ? `${one.name} · Cultivation` : 'Overview · Cultivation';
-  if (one) renderRoom(one); else renderRooms();
+  document.title = one ? `${one.name} · Cultivation` : vsite ? `${vsite.name} Veg · Cultivation` : 'Overview · Cultivation';
+  if (one) renderRoom(one); else if (vsite) renderVeg(vsite); else renderRooms();
   if (one) {   // a room opened, or reopened with its copy over 5 minutes old (the timer doesn't run on All rooms)
     const moved = S.gl.room !== one.id;
     if (moved || (Date.now() - S.gl.at > 5 * 60e3 && Date.now() - glTried > 60e3)) {
@@ -2483,7 +2493,6 @@ function renderRooms() {
   // next dates and Growlink's live readings, a row per room (Gianni, 2026-11-25: "I want the next dates and growlink data
   // on a single line"); drawn again on its own when Growlink is read again (every 5 minutes)
   h += `<div class="panel ov"><h3>Rooms</h3><div id="ov-gl">${ovRoomsHTML(groups, today)}</div></div>`;
-  h += `<div id="ov-vegp">${ovVegPanel(groups, today)}</div>`;
   // every room's tasks, the next 30 days (and the last week's not done)
   const end = CM.addDays(today, 30), list = [];
   for (const x of views) for (const t of x.V.T) {
@@ -2518,9 +2527,55 @@ function renderRooms() {
   h += '</div></div></div>';
   el.innerHTML = h;
   ovWire(el);
-  ovVegWire();
   ovGlLoad();
   ovVegLoad();
+}
+/* ----- a site's Veg room: Metrc's veg locations (clone batches and tagged plants) and the moms, a row per strain with its
+   cut days and the oldest batch's age, and the flower rooms whose planned runs name that strain ----- */
+function renderVeg(site) {
+  const el = $('view-room'), today = CM.todayLA(), G = S.ovVeg, lic = siteLicense(site.id);
+  const rooms = S.rooms.filter(r => r.site === site.id);
+  for (const r of rooms) if (!S.runsBy[r.id] || !S.runsBy[r.id].at) loadRuns(r).then(ok => { if (ok && S.veg === site.id && !S.room && !formOpen()) renderVeg(site); });
+  if (!G.rows || Date.now() - G.at > 10 * 60e3) ovVegLoad();
+  const V = G.rows ? CM.vegView(G.rows, S.plants, lic, today) : [];
+  const meta = (G.meta || []).find(m => m.license === lic);
+  const locs = [...new Set(V.map(L => L.location))];
+  let h = `<div class="rhead"><div><h1>${esc(site.name)} Veg</h1><div class="sub">${esc(`${site.name} · ${site.sub}${locs.length ? ` · Metrc ${locs.map(x => `“${x}”`).join(', ')}` : ''}`)}</div></div></div>`;
+  if (!G.rows) { el.innerHTML = h + `<div class="panel"><div class="pbody"><p class="muted" style="margin:0">${G.err === 'none' ? "Metrc's veg isn't on the server yet." : G.err ? "Couldn't read Metrc's veg. It is read again in a few minutes." : 'Reading Metrc’s veg…'}</p></div></div>`; return; }
+  if (meta && meta.note) h += `<p class="warn">${esc(meta.note)}</p>`;
+  else if (meta && Date.now() - Date.parse(meta.synced_at) > 7 * 3600e3) h += `<p class="warn">Metrc's veg was last read ${esc(CM.glClock(Date.parse(meta.synced_at), Date.now()))}</p>`;
+  const c = V.reduce((a, L) => a + L.clones + L.tagged, 0), m = V.reduce((a, L) => a + L.moms, 0);
+  const strains = new Set(V.flatMap(L => L.strains.filter(x => x.clones + x.tagged > 0).map(x => x.strain))).size;
+  const age = Math.max(-1, ...V.flatMap(L => L.strains.map(x => x.age == null ? -1 : x.age)));
+  h += `<div class="veg-k"><div><small>Clones</small><b>${esc(num(c))}</b></div><div><small>Strains</small><b>${strains}</b></div><div><small>Moms</small><b>${esc(num(m))}</b></div><div><small>Oldest batch</small><b>${age >= 0 ? `${age} days` : '-'}</b></div></div>`;
+  if (!V.length) { el.innerHTML = h + '<div class="panel"><div class="pbody"><p class="muted" style="margin:0">Nothing in veg in Metrc.</p></div></div>'; return; }
+  // where each strain is headed: the flower rooms whose planned runs (not passed) name it
+  const goes = new Map();
+  for (const r of rooms) for (const p of (S.runsBy[r.id] && S.runsBy[r.id].plans) || []) {
+    const f = CM.planFlip(p);
+    if (p.deleted_at || (f && f < today)) continue;
+    for (const z of Array.isArray(p.zones) ? p.zones : []) {
+      const k = CM.key(z && z.strain);
+      if (!k) continue;
+      const lst = goes.get(k) || []; const t = `${r.name.replace(/^\S+\s+(?=Room\b)/, '')}${f ? ` · ${CM.short(f)}` : ''}`;
+      if (!lst.includes(t)) lst.push(t); goes.set(k, lst);
+    }
+  }
+  const anyGo = goes.size > 0;
+  for (const L of V) {
+    const tagged = L.tagged > 0, moms = L.moms > 0, clones = L.clones > 0;
+    const tot = [clones ? `${num(L.clones)} clones` : '', tagged ? `${num(L.tagged)} tagged` : '', moms ? `${num(L.moms)} moms` : ''].filter(Boolean).join(' · ');
+    h += `<div class="panel"><h3><span class="ptt">${esc(L.location)}</span><span class="po">${esc(`${tot} · ${L.strains.length} strain${L.strains.length === 1 ? '' : 's'}`)}</span></h3><div class="pbody"><div class="wrapx"><table class="t vegt"><thead><tr><th>Strain</th>`
+      + `${clones ? '<th class="n">Clones</th>' : ''}${tagged ? '<th class="n">Tagged</th>' : ''}${moms ? '<th class="n">Moms</th>' : ''}${clones || tagged ? '<th>Cut</th><th class="n">Oldest</th>' : ''}${anyGo && (clones || tagged) ? '<th>Goes to</th>' : ''}</tr></thead><tbody>`;
+    for (const x of L.strains) {
+      const cuts = x.cuts.map(q => `${CM.short(q.day)}${x.cuts.length > 1 ? ` (${num(q.n)})` : ''}`).join(', ');
+      const g = goes.get(CM.key(x.strain));
+      h += `<tr><td><b>${esc(x.strain)}</b></td>${clones ? `<td class="n">${x.clones ? esc(num(x.clones)) : ''}</td>` : ''}${tagged ? `<td class="n">${x.tagged ? esc(num(x.tagged)) : ''}</td>` : ''}${moms ? `<td class="n">${x.moms ? esc(num(x.moms)) : ''}</td>` : ''}`
+        + `${clones || tagged ? `<td>${esc(cuts)}</td><td class="n">${x.age != null ? esc(`${x.age} days`) : ''}</td>` : ''}${anyGo && (clones || tagged) ? `<td>${g ? esc(g.join(', ')) : ''}</td>` : ''}</tr>`;
+    }
+    h += '</tbody></table></div></div></div>';
+  }
+  el.innerHTML = h;
 }
 /* The Overview's veg: Metrc's veg rooms of each site shown (cult_metrc_veg, written every 3 hours by the veg job on
    Gianni's Mac), read when the Overview opens, again after 10 minutes, and on Refresh. */
@@ -2535,66 +2590,17 @@ async function ovVegLoad(force) {
   const bad = res.find(x => !x || x.error);
   if (bad) G.err = /does not exist|schema cache|relation/i.test(bad.error ? bad.error.message : '') ? 'none' : 'read';
   else { G.err = null; G.rows = res[0].data || []; G.meta = res[1].data || []; }
-  const box = $('ov-vegp');
-  if (box && !S.room) { const today = CM.todayLA(); box.innerHTML = ovVegPanel(ovRooms(today), today); ovVegWire(); }
+  if (S.veg && !S.room) { const v = SITES.find(x => x.id === S.veg); if (v && !formOpen()) renderVeg(v); }
+  else ovGlPaint();
 }
-// the Veg panel folds to one line (Gianni, 2026-11-25: "ya fold it"): each site's clones, strains, moms and oldest batch;
-// a press opens the list, remembered on the device (cult.ovVeg)
-const ovVegOpen = () => { try { return localStorage.getItem('cult.ovVeg') === '1'; } catch (e) { return false; } };
-function ovVegSum(groups, today) {
-  const G = S.ovVeg;
-  if (!G.rows) return G.err ? "Couldn't read Metrc's veg" : 'Reading Metrc’s veg…';
-  return groups.map(g => {
-    const V = CM.vegView(G.rows, S.plants, g.rooms[0] && g.rooms[0].room.license, today);
-    const c = V.reduce((a, L) => a + L.clones + L.tagged, 0), m = V.reduce((a, L) => a + L.moms, 0);
-    const strains = new Set(V.flatMap(L => L.strains.filter(x => x.clones + x.tagged > 0).map(x => x.strain))).size;
-    const age = Math.max(-1, ...V.flatMap(L => L.strains.map(x => x.age == null ? -1 : x.age)));
-    return `${g.site.name}: ${[`${num(c)} clones`, `${strains} strain${strains === 1 ? '' : 's'}`, m ? `${num(m)} moms` : '', age >= 0 ? `oldest ${age} days` : ''].filter(Boolean).join(' · ')}`;
-  }).join(' | ');
+// one site's veg in a line: clones, strains, moms and the oldest batch
+function vegSum(V) {
+  const c = V.reduce((a, L) => a + L.clones + L.tagged, 0), m = V.reduce((a, L) => a + L.moms, 0);
+  const strains = new Set(V.flatMap(L => L.strains.filter(x => x.clones + x.tagged > 0).map(x => x.strain))).size;
+  const age = Math.max(-1, ...V.flatMap(L => L.strains.map(x => x.age == null ? -1 : x.age)));
+  return [`${num(c)} clones`, `${strains} strain${strains === 1 ? '' : 's'}`, m ? `${num(m)} moms` : '', age >= 0 ? `oldest ${age} days` : ''].filter(Boolean).join(' · ');
 }
-function ovVegPanel(groups, today) {
-  const open = ovVegOpen();
-  return `<div class="panel ov${open ? '' : ' fold'}"><h3><button type="button" class="ov-ftog" id="ov-veg-tog" aria-expanded="${open}" aria-controls="ov-veg"><i class="ov-chev" aria-hidden="true">${open ? '&#9662;' : '&#9656;'}</i>Veg<span class="ov-fsum">${esc(ovVegSum(groups, today))}</span></button></h3>`
-    + `<div id="ov-veg"${open ? '' : ' hidden'}>${open ? ovVegHTML(groups, today) : ''}</div></div>`;
-}
-function ovVegWire() {
-  const b = $('ov-veg-tog');
-  if (!b || b.dataset.w) return;
-  b.dataset.w = '1';
-  b.addEventListener('click', e => {
-    e.stopPropagation();
-    try { localStorage.setItem('cult.ovVeg', ovVegOpen() ? '0' : '1'); } catch (err) { /* folds again next visit */ }
-    const today = CM.todayLA();
-    $('ov-vegp').innerHTML = ovVegPanel(ovRooms(today), today); ovVegWire();
-    const t = $('ov-veg-tog'); if (t) t.focus();
-  });
-}
-function ovVegHTML(groups, today) {
-  const G = S.ovVeg, now = Date.now();
-  if (!G.rows) return `<div class="pbody"><p class="muted" style="margin:0">${G.err === 'none' ? "Metrc's veg isn't on the server yet." : G.err ? "Couldn't read Metrc's veg. It is read again in a few minutes." : 'Reading Metrc’s veg…'}</p></div>`;
-  let h = '', body = '';
-  for (const g of groups) {
-    const lic = g.rooms[0] && g.rooms[0].room.license;
-    const V = CM.vegView(G.rows, S.plants, lic, today);
-    const meta = G.meta.find(m => m.license === lic);
-    if (meta && meta.note) h += `<div class="pbody"><p class="warn" style="margin:0">${esc(g.site.name)}: ${esc(meta.note)}</p></div>`;
-    else if (meta && now - Date.parse(meta.synced_at) > 7 * 3600e3) h += `<div class="pbody"><p class="warn" style="margin:0">${esc(g.site.name)}: Metrc's veg was last read ${esc(CM.glClock(Date.parse(meta.synced_at), now))}</p></div>`;
-    const n = V.reduce((a, L) => a + 1 + L.strains.length, 0);
-    if (!V.length) { body += `<tbody><tr><th class="ov-site" scope="rowgroup">${esc(g.site.name)}</th><td colspan="6" class="ov-none">${meta ? 'Nothing in veg in Metrc' : 'Not read from Metrc yet'}</td></tr></tbody>`; continue; }
-    body += '<tbody>';
-    V.forEach((L, i) => {
-      const tot = [L.clones ? `${num(L.clones)} clones` : '', L.tagged ? `${num(L.tagged)} tagged` : '', L.moms ? `${num(L.moms)} moms` : ''].filter(Boolean).join(' · ');
-      body += `<tr class="ov-vl">${i ? '' : `<th class="ov-site" scope="rowgroup" rowspan="${n}">${esc(g.site.name)}</th>`}<td colspan="6"><b>${esc(L.location)}</b><span>${esc(`${tot} · ${L.strains.length} strain${L.strains.length === 1 ? '' : 's'}`)}</span></td></tr>`;
-      for (const x of L.strains) {
-        const cuts = x.cuts.map(c => `${CM.short(c.day)}${x.cuts.length > 1 ? ` (${num(c.n)})` : ''}`).join(', ');
-        body += `<tr><td class="ov-vs">${esc(x.strain)}</td><td class="n">${x.clones ? esc(num(x.clones)) : ''}</td><td class="n">${x.tagged ? esc(num(x.tagged)) : ''}</td><td class="n">${x.moms ? esc(num(x.moms)) : ''}</td>`
-          + `<td>${esc(cuts)}</td><td class="n">${x.age != null ? esc(`${x.age} days`) : ''}</td></tr>`;
-      }
-    });
-    body += '</tbody>';
-  }
-  return h + `<div class="wrapx"><table class="ovt ovv"><thead><tr><th>Location</th><th>Strain</th><th class="n">Clones</th><th class="n">Tagged</th><th class="n">Moms</th><th>Planted</th><th class="n">Oldest</th></tr></thead>${body}</table></div>`;
-}
+const siteLicense = site => { const r = S.rooms.find(x => x.site === site); return r ? r.license : null; };
 /* The Overview's 24-hour graph: a press on a Growlink cell opens it under that room's row (one at a time; the same cell
    closes it). The room's log for the last 24 hours is read on the first press and again when over 5 minutes old. */
 S.ovOpen = null; S.ovLog = {};
@@ -2670,6 +2676,7 @@ function ovWire(el) {
   }
   const ta = el.querySelector('#ov-task-add');
   if (ta && !ta.dataset.w) { ta.dataset.w = '1'; ta.addEventListener('click', e => { e.stopPropagation(); addTaskPop(null, ta, ovRooms(CM.todayLA()).flatMap(g => g.rooms.map(x => x.room))); }); }
+  for (const b of el.querySelectorAll('[data-veg]')) if (!b.dataset.w) { b.dataset.w = '1'; b.addEventListener('click', e => { e.stopPropagation(); goVeg(b.dataset.veg); }); }
   for (const x of el.querySelectorAll('[data-ovclose]')) if (!x.dataset.w) { x.dataset.w = '1'; x.addEventListener('click', e => { e.stopPropagation(); S.ovOpen = null; ovGlPaint(); }); }
   for (const b of el.querySelectorAll('[data-room]')) if (!b.dataset.w) { b.dataset.w = '1'; b.addEventListener('click', () => go(b.dataset.room)); }
   for (const cb of el.querySelectorAll('.tick')) if (!cb.dataset.w) {
@@ -2732,13 +2739,14 @@ function ovRoomsHTML(groups, today) {
   for (const { g, rooms } of rows) {
     h += '<tbody>';
     const openHere = S.ovOpen && G.rows && rooms.some(x => x.room.id === S.ovOpen.room && x.gv && ms.includes(S.ovOpen.m));
+    const VG = S.ovVeg.rows ? CM.vegView(S.ovVeg.rows, S.plants, siteLicense(g.site.id), today) : null;
     rooms.forEach(({ room, V, RN, gv }, i) => {
       const C = V.C, nx = RN.next[0];
       const dayTxt = C.state === 'flower' ? `${C.day} of ${C.H}` : C.state === 'upcoming' ? `flips ${CM.wday(C.flip)}` : C.state === 'harvested' ? `harvested ${CM.short(C.lastHarvest.day)}` : 'empty';
       const cut = nx && nx.cut ? ovDateTd(nx.cut.d, nx.cut.done ? 'done' : nx.cut.late ? 'late' : '', today) : ovDateTd(null);
       const hv = C.state === 'harvested' && C.lastHarvest ? ovDateTd(C.lastHarvest.day, 'done', today) : C.flip ? ovDateTd(C.harvestDate, C.harvestDate < today ? 'late' : '', today) : ovDateTd(null);
       const tr = ovTrim(V, RN);
-      const site = i ? '' : `<th class="ov-site" scope="rowgroup" rowspan="${rooms.length + (openHere ? 1 : 0)}">${esc(g.site.short || g.site.name)}</th>`;
+      const site = i ? '' : `<th class="ov-site" scope="rowgroup" rowspan="${rooms.length + (openHere ? 1 : 0) + 1}">${esc(g.site.short || g.site.name)}</th>`;
       h += `<tr>${site}${ovRoomTd(room)}<td>${esc(dayTxt)}</td>${cut}${hv}${ovDateTd(tr.d, tr.st, today)}`;
       if (!G.rows) { h += `<td class="ov-gs faint">${G.err ? '' : 'Reading…'}</td></tr>`; return; }
       if (!gv) { h += `<td class="ov-none ov-gs" colspan="${glCols}">No Growlink readings for this room</td></tr>`; return; }
@@ -2755,6 +2763,10 @@ function ovRoomsHTML(groups, today) {
       h += `<td>${esc(li)}</td><td class="${gv.stale ? 'warn' : 'faint'}">${gv.at ? esc(CM.glClock(gv.at, now)) : 'no reading'}</td></tr>`;
       if (S.ovOpen && S.ovOpen.room === room.id && ms.includes(S.ovOpen.m)) h += `<tr class="ov-chart"><td colspan="${5 + glCols}">${ovChartHTML(room, gv, S.ovOpen.m, now)}</td></tr>`;
     });
+    // the site's Veg room: Metrc's clones, strains, moms and oldest batch; its own page on a press
+    const vs = VG ? (VG.length ? vegSum(VG) : 'Nothing in veg in Metrc') : S.ovVeg.err ? "Couldn't read Metrc's veg" : 'Reading Metrc’s veg…';
+    h += `<tr class="ov-vegrow"><td class="ov-room"><button class="lnk" type="button" data-veg="${esc(g.site.id)}">Veg</button></td><td colspan="4" class="ov-vsum">${esc(vs)}</td>`
+      + `<td class="ov-none ov-gs" colspan="${glCols}">${G.rows ? 'No Growlink in veg' : ''}</td></tr>`;
     h += '</tbody>';
   }
   return h + '</table></div>';
@@ -4491,7 +4503,7 @@ $('gate-out').addEventListener('click', signOut);
 function demoClient(D) {
   const T = { cult_rooms: D.rooms || [], cult_zones: D.zones || [], cult_strain_codes: D.codes || [], cult_metrc_plants: D.plants || [],
     cult_metrc_meta: D.meta || [], cult_task_done: D.done || [], cult_room_tasks: D.oneoffs || [], cult_runoff: D.runoff || [],
-    cult_growlink_now: D.gl_now || [], cult_growlink_log: D.gl_log || [], cult_growlink_meta: D.gl_meta || [], cult_growlink_hourly: D.gl_hourly || [], cult_runs: D.runs || [], cult_metrc_batches: D.batches || [] };
+    cult_growlink_now: D.gl_now || [], cult_growlink_log: D.gl_log || [], cult_growlink_meta: D.gl_meta || [], cult_growlink_hourly: D.gl_hourly || [], cult_runs: D.runs || [], cult_metrc_batches: D.batches || [], cult_metrc_veg: D.veg || [], cult_metrc_veg_meta: D.veg_meta || [] };
   let seq = 1000;
   const DOM = '@' + 'wizardtrees.com', PV = 'preview' + DOM;   // made-up accounts for the local preview only
   const q = rows => {
