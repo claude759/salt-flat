@@ -695,8 +695,8 @@ ok(/glTimer = setInterval\([\s\S]{0,400}5 \* 60e3\)/.test(html), 'the readings a
   const i0 = html.indexOf('function renderRoom(');
   const rr = html.slice(i0, html.indexOf('\n}\n', i0));
   const g = rr.indexOf('<div id="gl"');
-  ok(g > 0 && g > rr.indexOf('class="stats"') && rr.indexOf('class="stats"') > 0 && g < rr.indexOf('<div class="grid2">') && rr.split('id="gl"').length === 2,
-    'the live Growlink tiles sit once, at the top of the room page, under the tiles row and above the panels');
+  ok(g > 0 && g > rr.indexOf('nowBoxHTML(') && rr.indexOf('nowBoxHTML(') > 0 && g < rr.indexOf('<div class="grid2">') && rr.split('id="gl"').length === 2,
+    'the live Growlink tiles sit once, at the top of the room page, under the Now box and above the panels');
 }
 ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-connected note is gone');
 {
@@ -707,6 +707,158 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   }
   ok(/function public\.cult_growlink_save\(p_token text[\s\S]*?raise exception 'bad token'/.test(sql), 'the save checks the job token first');
   ok(!/drop table|truncate/i.test(sql), 'the Growlink SQL drops and truncates nothing');
+}
+
+// ---- step 4: runs, from clone cut to trim (a made-up room; days as the page counts them, flip = day 1)
+{
+  const room = { id: 'F9', harvest_day: 63, turnover_days: 2, flip_date: '2026-10-29',
+    tasks: [{ day: 1, kind: 'ACTION', text: 'FLIP' }, { day: 24, kind: 'ACTION', text: 'CUT CLONES' }, { day: 63, kind: 'ACTION', text: 'HARVEST' }, { day: 73, kind: 'ACTION', text: 'TRIM' }] };
+  const today = '2026-11-24';
+  // a crop as history() gives it: harvest days, the main trim tab (after its key harvest), its verdict
+  const crop = (first, last, tS, tE, fin, o) => ({ first, last, days: first === last ? [first] : [first, last], harvests: [{ day: first, plants: 300 }],
+    trimStart: tS, trimEnd: tE, mainTab: tS ? { start: tS, end: tE } : null, state: tS ? 'trimmed' : 'before', partly: false, full: !!tS,
+    finished: fin, plants: 300, flower: 50000, lights: 30, lbPerLight: 3, ...(o || {}) });
+  const crops = [crop('2026-06-22', '2026-06-22', '2026-07-02', '2026-07-03', '2026-07-17'), crop('2026-08-24', '2026-08-24', '2026-09-03', '2026-09-05', '2026-09-07'),
+    crop('2026-10-29', '2026-10-29', '2026-11-06', '2026-11-07', '2026-11-18')];
+  const b = (flowering_day, planted, o) => ({ flowering_day, planted, batch: 'x', flowering: 0, harvested: 0, destroyed: 0, ...o });
+  const batches = [
+    b('2026-06-27', '2026-05-19', { harvested: 321 }), b('2026-06-27', '2026-06-25', { harvested: 89 }),
+    b('2026-08-26', '2026-07-18', { harvested: 222 }), b('2026-09-01', '2026-07-18', { harvested: 89 }), b('2026-09-05', '2026-07-21', { harvested: 40 }),
+    b('2026-10-31', '2026-09-28', { flowering: 81 }), b('2026-10-31', '2026-08-14', { flowering: 92 }), b('2026-11-03', '2026-09-28', { flowering: 90 }),
+  ];
+  const C = { state: 'flower', flip: '2026-10-29', source: 'typed', H: 63, day: 27, harvestDate: '2026-12-30' };
+  const T = CM.tasks(room, C, [], today, []);
+  const run = o => CM.runs({ room, C, crops, cropsKnown: true, batches, plans: [], T, today, plantsNow: 263, ...o });
+  const R = run();
+  assert.deepEqual(R.runs.map(r => [r.n, r.kind]), [[1, 'past'], [2, 'past'], [3, 'past'], [4, 'cur'], [5, 'next']], 'runs are numbered by the crops Metrc has: the current one next, then the planned'); n++;
+  const [r1, r2, r3] = R.past;
+  assert.deepEqual([r3.flip.d, r3.flip.src, r3.cut.d, r3.cut.src, r3.state, r3.trim.a, r3.trim.z, r3.trim.src], ['2026-08-26', 'metrc', '2026-07-18', 'metrc', 'finished', '2026-11-06', '2026-11-07', 'sheet'],
+    "a past run flips on its first day with a tenth of its plants, its clones cut on the planted day half of them had, its trim from the trim sheets"); n++;
+  assert.deepEqual([r2.flip.d, r2.cut.d], ['2026-06-27', '2026-05-19'], 'the planted day half the plants had, not the earliest'); n++;
+  assert.deepEqual([r1.flip.d, r1.flip.src, r1.cut], ['2026-04-21', 'est', null], 'no batch rows: the flip is worked out from the harvest, and the cut is not known'); n++;
+  assert.deepEqual(R.past[2].entered, [{ d: '2026-07-18', n: 311 }, { d: '2026-07-21', n: 40 }], "when its clones were entered in Metrc, most first"); n++;
+  const cur = R.cur;
+  assert.deepEqual([cur.state, cur.flip.d, cur.flip.src, cur.cut.d, cur.harvest.d, cur.trim.a, cur.trim.z, cur.trim.src],
+    ['flowering', '2026-10-29', 'typed', '2026-09-28', '2026-12-30', '2027-01-09', '2027-01-10', 'est'], 'the current run: its cycle, its clones, then the usual dry and trim'); n++;
+  assert.deepEqual(R.usual, { dry: 10, trimDays: 2, cutLead: 41, turn: 2, H: 63 }, "this room's usual dry and trim days; clones cut 41 days before the next flip (the calendar's day 24)"); n++;
+  const nx = R.next[0];
+  assert.deepEqual([nx.flip.d, nx.flip.src, nx.lined, nx.cut.d, nx.cut.src, nx.cut.late, nx.cut.done, nx.state, nx.harvest.d, nx.key],
+    ['2027-01-01', 'lined', true, '2026-11-21', 'task', true, false, 'planned', '2027-03-04', 'f20270101'], 'the next run: lined up on this harvest + 2 days, its clones on the calendar'); n++;
+  assert.deepEqual(R.align, { k: 'ok', gap: 0 }, 'lined up'); n++;
+  assert.equal(run({ room: { ...room, turnover_days: 3 } }).next[0].flip.d, '2027-01-02', 'three days to turn the room over'); n++;
+  // plans: a flip set by hand, too early, the current run's own plan, two in the queue
+  const P = (k, o) => ({ room_id: 'F9', run_key: k, flip_on: null, cut_by: null, transplant_on: null, plants_per_light: null, zones: [], note: null, ...o });
+  const R5 = run({ plans: [P('f20270101', { flip_on: '2027-01-05', zones: [{ zone: 1, slot: 1, strain: 'Pool Party', lights: 4.5 }] })] });
+  assert.deepEqual([R5.next[0].flip.d, R5.next[0].lined, R5.next[0].plan.run_key, R5.align.k, R5.align.gap], ['2027-01-05', false, 'f20270101', 'empty', 4], 'a flip set by hand: the room sits empty 4 days'); n++;
+  assert.deepEqual([run({ plans: [P('f20270101', { flip_on: '2026-12-28' })] }).align.k, run({ plans: [P('f20270101', { flip_on: '2026-12-28' })] }).align.gap], ['overlap', -4], 'too early: an overlap'); n++;
+  const R6 = run({ plans: [P('f20261030')] });
+  assert.ok(R6.cur.plan && R6.cur.plan.run_key === 'f20261030' && !R6.next[0].plan, 'a plan made for the run now in flower stays with it'); n++;
+  const R7 = run({ plans: [P('f20270305'), P('f20270101', { cut_by: '2026-11-25' })] });
+  assert.deepEqual(R7.next.map(r => [r.n, r.flip.d, r.plan.run_key]), [[5, '2027-01-01', 'f20270101'], [6, '2027-03-06', 'f20270305']], 'planned runs queue in flip order, each lined up on the one before'); n++;
+  assert.deepEqual([R7.next[0].cut.d, R7.next[0].cut.src, R7.next[1].cut.d, R7.next[1].cut.src], ['2026-11-25', 'plan', '2027-01-24', 'est'], 'a cut day typed on the plan wins; later runs cut 41 days before their flip'); n++;
+  // the clones are cut: the calendar's tick
+  const T2 = CM.tasks(room, C, [{ room_id: 'F9', cycle: '2026-10-29', task_key: '24|CUT CLONES', status: 'done', done_at: '2026-11-22T17:00:00Z' }], today, []);
+  const R8 = run({ T: T2 });
+  assert.deepEqual([R8.next[0].state, R8.next[0].cut.done, R8.next[0].cut.late], ['rooting', true, false], 'ticked: the next run is rooting'); n++;
+  const st8 = CM.runStages(R8.next[0], today);
+  assert.deepEqual(st8.slice(0, 2).map(s => [s.k, s.a, s.z, s.rec]), [['root', '2026-11-21', '2026-11-24', true], ['root', '2026-11-24', '2026-12-05', false]], 'its rooting happened up to today, the rest is planned'); n++;
+  assert.ok(run({ cropsKnown: false }).runs.every(r => r.n === null), 'no numbers before the history is read'); n++;
+  // the stretches
+  const sc = CM.runStages(cur, today);
+  assert.deepEqual(sc.map(s => [s.k, s.a, s.z, s.rec]), [['root', '2026-09-28', '2026-10-12', true], ['veg', '2026-10-12', '2026-10-29', true],
+    ['flower', '2026-10-29', '2026-11-24', true], ['flower', '2026-11-24', '2026-12-30', false], ['dry', '2026-12-30', '2027-01-09', false], ['trim', '2027-01-09', '2027-01-11', false]],
+    'the current run: clones, veg and flower so far happened; the rest of its flower, its dry and its trim are planned'); n++;
+  assert.ok(sc[0].est && sc[1].est && !sc[2].est, 'the transplant day is worked out (Metrc has none), the flip is not'); n++;
+  const old = CM.runs({ room, C, crops: [crop('2026-03-01', '2026-03-01', null, null, '2026-03-30')], cropsKnown: true, batches: [], plans: [], T, today });
+  assert.deepEqual(CM.runStages(old.past[0], today).map(s => s.k), ['flower'], 'a past run the trim sheets lack: no dry or trim drawn'); n++;
+  // review fixes (2026-11-24): a part cut early stays with the run in flower; plans keep their own run; the history's
+  // trim verdict; a late harvest; a flip from the plan's own day; the clones' tick day; veg once transplanted
+  const Cl = { ...C, day: 51 };
+  const Rp = CM.runs({ room, C: Cl, crops: crops.concat([crop('2026-12-15', '2026-12-15', null, null, null, { state: 'drying', full: false, plants: 36 })]), cropsKnown: true, batches, plans: [], T, today: '2026-12-18', plantsNow: 227 });
+  assert.deepEqual([Rp.past.length, Rp.cur.n, Rp.cur.state, Rp.cur.early, Rp.next[0].n], [3, 4, 'flowering', ['2026-12-15'], 5], 'plants cut early stay with the run in flower: no run number moves'); n++;
+  const Rq = run({ plans: [P('f20270306', { zones: [{ zone: 1, slot: 1, strain: 'King Tide 23', lights: 4.5 }] })] });
+  assert.deepEqual(Rq.next.map(r => [r.n, r.flip.d, r.plan ? r.plan.run_key : null]), [[5, '2027-01-01', null], [6, '2027-03-06', 'f20270306']], 'a plan for the run after next leaves the next one unplanned (+ Plan new run)'); n++;
+  const Rd = run({ plans: [P('f20270101', { zones: [{ zone: 1, slot: 1, strain: 'Pool Party', lights: 4.5 }] }), P('f20270306')] });
+  assert.deepEqual(Rd.next.map(r => r.plan && r.plan.run_key), ['f20270101', 'f20270306'], 'two plans, each on its own run'); n++;
+  const part = crop('2026-04-06', '2026-04-20', '2026-04-16', '2026-04-16', null, { state: 'drying', partly: true, full: false, mainTab: null, days: ['2026-04-06', '2026-04-20'],
+    harvests: [{ day: '2026-04-06', plants: 36 }, { day: '2026-04-20', plants: 315 }] });
+  const Rh = CM.runs({ room, C: { state: 'harvested', flip: '2026-02-17', source: 'metrc', H: 63 }, crops: [crop('2026-02-16', '2026-02-16', '2026-02-26', '2026-02-27', '2026-03-10'), part], cropsKnown: true, batches: [], plans: [], T: [], today: '2026-04-24' });
+  assert.deepEqual([Rh.cur.state, Rh.cur.trim.src, Rh.cur.lb, Rh.cur.flip.d], ['partly', 'est', null, '2026-02-17'], "a run harvested in parts: the history's verdict (part trimmed, no pounds yet), and Metrc's flip"); n++;
+  const Rn = CM.runs({ room, C: { state: 'harvested', flip: '2026-02-17', source: 'metrc', H: 63 }, crops: [crop('2026-02-16', '2026-02-16', '2026-02-26', '2026-02-27', '2026-03-10'), part], cropsKnown: true, batches: [], plans: [], T: [], today: '2026-04-24' });
+  assert.ok(Rn.past[0].flip.src === 'est' && Rn.past[0].flip.d >= '2025-12-15', 'a worked-out flip comes from the main harvest day'); n++;
+  const Rl = run({ C: { ...C, day: 66 }, today: '2027-01-02' });
+  assert.deepEqual([Rl.cur.harvest.d, Rl.cur.late, Rl.next[0].flip.d, Rl.next[0].flip.src, Rl.align.k], ['2027-01-02', true, '2027-01-04', 'lined', 'ok'], 'still in flower past its day: the next run waits for the harvest'); n++;
+  const Rk = CM.runs({ room, C: { state: 'empty' }, crops: crops.slice(0, 2), cropsKnown: true, batches, plans: [P('f20261201')], T: [], today });
+  assert.deepEqual([Rk.next[0].flip.d, Rk.next[0].flip.src, Rk.next[0].lined], ['2026-12-01', 'key', false], "the room sat empty: a plan flips on its own day, not 'lined up'"); n++;
+  const tick = at => CM.tasks(room, C, [{ room_id: 'F9', cycle: '2026-10-29', task_key: '24|CUT CLONES', status: 'done', done_at: at }], today, []);
+  assert.deepEqual([run({ T: tick('2026-11-15T18:00:00Z') }).next[0].cut.d, run({ T: tick('2026-11-23T18:00:00Z') }).next[0].cut.d, run({ T: tick('2026-11-15T18:00:00Z') }).next[0].cut.src],
+    ['2026-11-15', '2026-11-21', 'tick'], 'the clones were cut on the tick day when it came first, else on the calendar day'); n++;
+  assert.equal(run({ T: tick('2026-11-21T18:00:00Z'), today: '2026-12-06' }).next[0].state, 'veg', 'cut and past the transplant: in veg'); n++;
+  const Rm = CM.runs({ room, C: { state: 'harvested', flip: '2026-10-29', source: 'typed', H: 63, lastHarvest: { day: '2026-12-30', plants: 263 } }, crops, cropsKnown: true, batches, plans: [], T: [], today: '2027-01-01' });
+  assert.deepEqual([Rm.cur.n, Rm.cur.state, Rm.cur.harvest.d, Rm.cur.flip.d], [4, 'drying', '2026-12-30', '2026-10-29'], "harvested by Metrc's plants before the harvest copy has it: still that run"); n++;
+  // second review round: a flip set by hand keeps its run; a plan whose run passed is listed apart; waiting; dry to today
+  const Rf = run({ plans: [P('f20270101', { flip_on: '2027-01-25', note: 'Run 9: Riptide' })] });
+  assert.deepEqual([Rf.next.length, Rf.next[0].plan && Rf.next[0].plan.run_key, Rf.next[0].flip.d, Rf.next[0].flip.src, Rf.align.k, Rf.align.gap], [1, 'f20270101', '2027-01-25', 'plan', 'empty', 24],
+    'a flip set by hand weeks later moves the flip, never the plan to another run'); n++;
+  const Ro = run({ plans: [P('f20270101'), P('f20270103')] });
+  assert.deepEqual([Ro.next.map(r => r.plan && r.plan.run_key), Ro.orphans.map(p => p.run_key)], [['f20270101'], ['f20270103']], 'two plans for one run: the second is listed apart, never pushed onto the run after'); n++;
+  assert.equal(new Set(run({ plans: [P('f20270306')] }).next.map(r => r.key)).size, 2, 'no two runs share a key'); n++;
+  const waitC = crop('2026-10-29', '2026-10-29', null, null, null, { state: 'waiting', full: false });
+  const Rw = CM.runs({ room, C: { state: 'harvested', flip: '2026-08-26', source: 'metrc', H: 63 }, crops: crops.slice(0, 2).concat([waitC]), cropsKnown: true, batches, plans: [], T: [], today: '2026-11-16' });
+  assert.equal(Rw.cur.state, 'waiting', "the history's 'waiting' (not on the trim sheets two weeks on)"); n++;
+  assert.deepEqual(CM.runStages(Rw.cur, '2026-11-16').slice(-1).map(s => [s.k, s.a, s.z, s.rec]), [['dry', '2026-10-29', '2026-11-16', true]], 'still drying past its usual days: its dry runs to today'); n++;
+  const roomT = { ...room, tasks: room.tasks.concat([{ day: 35, kind: 'ACTION', text: 'TRANSPLANT CLONES' }]) };
+  const Tt = CM.tasks(roomT, C, [{ room_id: 'F9', cycle: '2026-10-29', task_key: '24|CUT CLONES', status: 'done', done_at: '2026-11-21T18:00:00Z' }], '2026-12-06', []);
+  assert.equal(CM.runs({ room: roomT, C, crops, cropsKnown: true, batches, plans: [], T: Tt, today: '2026-12-06' }).next[0].state, 'rooting', 'a calendar with TRANSPLANT CLONES: veg only once that is ticked'); n++;
+  const lag = CM.runs({ room, C: { state: 'harvested', flip: '2026-10-29', source: 'typed', H: 63, lastHarvest: { day: '2026-12-30', plants: 227 } },
+    crops: crops.concat([crop('2026-12-22', '2026-12-22', null, null, null, { state: 'drying', full: false, plants: 36 })]), cropsKnown: true, batches, plans: [], T: [], today: '2026-12-31' });
+  assert.deepEqual([lag.cur.harvest.d, lag.cur.harvest.last, lag.next[0].flip.d], ['2026-12-22', '2026-12-30', '2027-01-01'], "the harvest copy has only the early part: Metrc's plants give the last harvest day"); n++;
+  // a room cut down lately (the run in it is the last crop), and one that sat empty
+  const R9 = CM.runs({ room, C: { state: 'harvested', flip: '2026-08-26', source: 'metrc', H: 63 }, crops, cropsKnown: true, batches, plans: [], T: [], today: '2026-10-30' });
+  assert.deepEqual([R9.cur.n, R9.cur.kind, R9.cur.state, R9.next[0].flip.d, R9.past.length], [3, 'cur', 'drying', '2026-10-31', 2], 'harvested lately: that crop is the current run, drying'); n++;
+  const R10 = CM.runs({ room, C: { state: 'empty' }, crops: crops.slice(0, 2), cropsKnown: true, batches, plans: [], T: [], today });
+  assert.deepEqual([R10.cur, R10.next[0].flip, R10.align], [null, null, null], 'empty past its turnover: no flip until one is planned'); n++;
+  assert.equal(CM.runs({ room, C: { state: 'empty' }, crops: crops.slice(0, 2), cropsKnown: true, batches, plans: [P('f20261201')], T: [], today }).next[0].flip.d, '2026-12-01', 'a planned run in an empty room flips on its key day'); n++;
+  // the plan's flip; the 8 or 9 week switch moves the calendar's harvest and what follows it
+  assert.deepEqual([CM.planFlip({ run_key: 'f20270101' }), CM.planFlip({ run_key: 'f20270101', flip_on: '2027-01-05' }), CM.planFlip({ run_key: 'next' }), CM.planFlip({ run_key: 'f20270231' })],
+    ['2027-01-01', '2027-01-05', null, null], "a plan's flip: the day set on it, else its key's day"); n++;
+  const T56 = CM.tasks({ ...room, harvest_day: 56 }, { ...C, H: 56 }, [], today, []);
+  const tk = k => T56.find(t => t.text === k);
+  assert.deepEqual([tk('HARVEST').date, tk('HARVEST').day, tk('HARVEST').key, tk('TRIM').date, tk('CUT CLONES').date], ['2026-12-23', 56, '63|HARVEST', '2027-01-02', '2026-11-21'],
+    'an 8-week flower moves the harvest and the trim (keys kept, so ticks stay), never the tasks before it'); n++;
+}
+{
+  const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
+  ok(/create policy cult_runs_select on public\.cult_runs for select to authenticated using \(public\.cult_can_view\(\) and deleted_at is null\)/.test(sql)
+    && /revoke insert, update, delete on table public\.cult_runs from anon, authenticated/.test(sql), 'runs: read by whoever can open the page, written only through the functions');
+  ok(/function public\.cult_run_save\(p_room text, p_run jsonb\)[\s\S]*?if not public\.cult_can_edit\(\) then raise exception 'not allowed'/.test(sql)
+    && /function public\.cult_run_delete\(p_room text, p_key text\)[\s\S]*?if not public\.cult_can_edit\(\) then raise exception 'not allowed'/.test(sql), 'saving or deleting a run needs edit');
+  ok(/function public\.cult_metrc_batches_save\(p_token text[\s\S]*?raise exception 'bad token'/.test(sql) && /revoke insert, update, delete on table public\.cult_metrc_batches from anon, authenticated/.test(sql),
+    "Metrc's batch rows come only from the job (token first)");
+  ok(/'turnover_days'\)\) then/.test(sql) && /check \(turnover_days between 1 and 3\)/.test(sql), 'turnover days: 1 to 3, set through cult_room_set');
+}
+
+// ---- step 4 on the page: the Now box, Growlink's tiles and the map on top, then the room timeline, the runs, the panels
+{
+  const i0 = html.indexOf('function renderRoom(');
+  const rr = html.slice(i0, html.indexOf('\n}\n', i0));
+  const at = x => rr.indexOf(x);
+  ok(at('nowBoxHTML(') > 0 && at('nowBoxHTML(') < at('<div id="gl"') && at('<div id="gl"') < at("fpanel('map'") && at("fpanel('map'") < at('data-p="tl"')
+    && at('data-p="tl"') < at('runsPanelHTML(') && at('runsPanelHTML(') < at('<div class="grid2">'), 'the Now box, Growlink, the map, the room timeline, the runs, then the panels');
+  ok(at("fpanel('notes'") > at("fpanel('hv'") && at("fpanel('env'") > at("fpanel('hv'") && at('data-p="att"') < at('tasksPanel('), 'Needs attention and the tasks on the left; strains, harvests, the air, runoff and notes on the right');
+  const nb = (html.match(/function nowBoxHTML[\s\S]*?\n\}/) || [''])[0];
+  ok(/id="flip-edit"/.test(nb) && /id="hv-est"/.test(nb) && !/class="nowbar"/.test(nb) && !/href="#/.test(html.match(/function nowNextHTML[\s\S]*?\n\}/)[0]), "the Now box keeps the flip's Change and the harvest's estimate; its link never changes the room's address");
+  ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
+  ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');
+  ok(!/READS = \{[\s\S]*?cult_runs[\s\S]*?\};/.test(html.match(/const READS = \{[\s\S]*?\n\};/)[0]) && /async function loadRuns\(room, force\)/.test(html), "the runs are read apart from loadAll: the page works while they can't be read");
+  ok(/sb\.from\('cult_runs'\)\.select\('room_id,run_key,flip_on,cut_by,transplant_on,plants_per_light,zones,note,updated_at,updated_by'\)\.eq\('room_id', room\.id\)/.test(html)
+    && /sb\.from\('cult_metrc_batches'\)\.select\('license,location,flowering_day,batch,planted,flowering,harvested,destroyed'\)\.eq\('license', room\.license\)\.eq\('location', room\.metrc_location\)/.test(html), "one room's runs and batches, named columns only");
+  ok(/harvest_day,turnover_days,flip_date/.test(html), 'the rooms read their turnover days');
+  ok(/list="plan-strains"/.test(html) && /pickFrom\(list, t\)/.test((html.match(/function wirePlanForm[\s\S]*?\n\}/) || [''])[0]), "the plan's strain boxes are typable and take only a strain on the list");
+  ok(/data-runact="cut" data-task=/.test(html) && !/class="tick"[^>]*data-runact/.test(html), "the run card's clone tick is a button of its own (Needs attention's task routing finds only the Tasks list's boxes)");
+  ok(/if \(map\.dataset\.plan\) return;/.test(html), "the map's planned view opens no zone card (that would be this run's)");
+  ok(/paintRuns\(room\);/.test((html.match(/function paintHv[\s\S]*?\n\}/) || [''])[0]), 'the history landing fills in the run numbers and the past runs');
+  ok(/cult_runs: D\.runs \|\| \[\], cult_metrc_batches: D\.batches \|\| \[\]/.test(html) && /cult_run_save: a =>/.test(html) && /cult_run_delete: a =>/.test(html), 'the local preview has the runs');
 }
 
 console.log(`cultivation page: ${n} checks passed (TZ ${process.env.TZ})`);

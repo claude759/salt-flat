@@ -730,7 +730,15 @@ launch. The check fails if one of the three pieces is missing.
     went into flower, so a harvest never moves a crop's flip). Written every 3 hours by
     `~/ar-automation/cult-metrc-sync.mjs` (launchd `com.wizardtrees.cult-metrc`; read-only, the shared Metrc lock and
     monthly ledger) through the token-gated `cult_metrc_save()`; each send replaces that license's rows. Metrc lists
-    plants only by LastModified window, so the job keeps its own copy of every plant (`data/cult/`).
+    plants only by LastModified window, so the job keeps its own copy of every plant (`data/cult/`), with each plant's
+    planted day and batch since 2026-11-24 (the plants stored before then took them once from two saved Metrc reads,
+    `--fill`, in `data/cult/raw/`; most older harvested plants at 23rd, 15th and Olympic have none).
+  - `cult_metrc_batches`: the plants of each room by flowering day and Metrc plant batch, with the batch's strain, planted
+    day and plants in flower, harvested or destroyed (400 days back), from the same job through the token-gated
+    `cult_metrc_batches_save()`, a separate call so a failed batch send never stops the plant rows. A run's clone cut
+    comes from these.
+  - `cult_runs` (runs planned on the page, written only through `cult_run_save()` / `cult_run_delete()`, deleted rows
+    kept) and `cult_rooms.turnover_days` (1 to 3, set through `cult_room_set()`).
   - Each room's harvests and trims come through `cult_room_history(p_room)` (end of `supabase/cultivation.sql`, owned by
     postgres): the room's Metrc harvests from `pipeline_harvests` (the pipeline's 3-hourly copy) and its trim sheet lines
     from `pipeline_trims` (hourly), plus what places lines (Olympic's other lines, lines that name the room, the license's
@@ -787,8 +795,8 @@ launch. The check fails if one of the three pieces is missing.
   Step 2 shipped 11/24: tick tasks, skip them, add a note or move one to another day (`cult_task_done.status` open /
   done / skipped, `note`, `moved_to`), add one-off tasks (`cult_room_tasks`) and log runoff (`cult_runoff`: day, zone,
   cup ml, feed pH and EC, tray ml, runoff pH and EC; runoff % = tray / cup, worked out by the database; no future days),
-  and room notes (`cult_rooms.notes`). Step 3 shipped 11/24: the Harvests panel (below). Steps 4-5 (run planning; veg
-  and dry rooms, labels) wait on Gianni's answers.
+  and room notes (`cult_rooms.notes`). Step 3 shipped 11/24: the Harvests panel (below). Step 4 shipped 11/24: runs
+  (below). Step 5 (veg and dry rooms, labels) waits on Gianni's answers.
 - **No roles yet** (Gianni, 2026-11-24: "My app doesn't really need login stuff yet. I'm just trying to create cleaner
   more automated Room pages"): one Google sign-in, then anyone at Wizard Trees can do everything on the page. The
   sign-in stays because the page and this repo are public and it keeps the room maps and Metrc's numbers private. Step
@@ -796,15 +804,43 @@ launch. The check fails if one of the three pieces is missing.
   `cult_can_work()` are where roles would come back). Build no login, role or team features until he asks; aim each
   change at cleaner, more automated room pages.
 - **Room pages read in one screen** (Gianni, 2026-11-24: "Yes, tidy it", to folding the panels down so a room page reads
-  in one screen). Needs attention never folds, and a press on an item opens what it is about (the task's row, the crop's
-  trim report, the zones, the map, the flip date, the Growlink tile it names). Tasks opens on what is late and the Today /
-  7 days / 30 days range, with ticks (Coming up merged in; the cycle's earlier and later tasks behind a line each). The
-  progress bar runs along the Day of flower tile; Change is a link on the Flip date tile. Growlink's live tiles sit above
-  the panels, never folded (Growlink's own rule, below). Tasks and the map stay open; Room notes, Environment targets
-  (this week's plan), Runoff log, Strains and Harvests fold to one live line each. A press on a panel's title bar folds
-  or opens it with no redraw, remembered on the device (`cult.fold`); a zone link, a Needs attention item or an open form
-  opens its panel for that visit only. Laptops: warnings, tasks, notes, targets and runoff on the left, Strains,
-  Harvests and the map on the right; phones in that order.
+  in one screen; then the runs layout, below). Needs attention never folds, and a press on an item opens what it is about
+  (the task's row, the crop's trim report, the zones, the map, the flip date, the Growlink tile it names, the runs). Tasks
+  opens on what is late and the Today / 7 days / 30 days range, with ticks (Coming up merged in; the cycle's earlier and
+  later tasks behind a line each). Growlink's live tiles sit at the top, never folded (Growlink's own rule, below). Tasks
+  and the map stay open; Room notes, Environment targets (this week's plan), Runoff log, Strains and Harvests fold to one
+  live line each. A press on a panel's title bar folds or opens it with no redraw, remembered on the device
+  (`cult.fold`); a zone link, a Needs attention item or an open form opens its panel for that visit only. Laptops, top
+  to bottom: the Now box with Growlink's tiles under it on the left and the room map on the right, then the room
+  timeline, then the runs, then Needs attention and Tasks on the left and Strains, Harvests, Environment targets, Runoff
+  log and Room notes on the right; phones in that order.
+- **Runs** (step 4; Gianni, 2026-11-24: "Like our room page should be just like his, but with more real time data from
+  METRC and Growlink and the visualizer", then "Yes, build it" to the mockup; a run is "A whole plant cycle from clone
+  cut to trim", Victoria). Cultivation Command's room page, with our data: a Now box (the run in the room, its day, its
+  harvest and expected pounds, what Metrc holds, and "Next: Run N · cut by ... · flips ..." with the lined-up badge), the
+  room timeline (63 days back to 137 ahead: clones, veg, flower, dry and trim per run, solid where it happened, dashed
+  where planned; diamonds are Metrc's days), and a card per run (the one in the room, then the planned ones). Model:
+  `CM.runs` and `CM.runStages` (pure, in the check). Past runs are the room's crops (`CM.history`), numbered from the oldest
+  crop Metrc has (25th Room 1's current run is Run 8); each flips on the first day with a tenth of its plants in flower
+  (`cult_metrc_batches`), else its harvest less the flower days; its clone cut is the planted day half its plants had
+  (Metrc's PlantedDate, the day clones were entered, a few days after the real cut); its transplant 14 days later (Metrc
+  has no transplant day; worked out, shown "≈"); its dry and trim from the trim sheets. The next run flips on this harvest
+  plus the room's turnover days (1 to 3, the Runs switch), its clones cut on the calendar's CUT CLONES day (the card's
+  "Tick: clones cut" ticks that task; ticked = rooting). Plans (`cult_runs`, Plan run, Same as last run, Edit flip date,
+  + Plan new run) queue in flip order: each holds strains and lights per zone, clones = lights x plants per light (the
+  plan's, else this room's last 3 crops, else 12), and optional cut, transplant and flip days (a flip set by hand isn't
+  lined up: the room sits empty or overlaps, said on the badge and in Needs attention). The 8 wk / 9 wk switch sets
+  `harvest_day` and moves the calendar's HARVEST and every task after it (keys kept, so ticks stay). The map switches
+  between the run now and the next run's plan (no plants, clones per strain). A plan form survives the poll and redraws;
+  while one is open, nothing else that moves a run's day can be pressed. After an independent review (11/24): a plan is
+  placed by the day in its key (the lined-up day it was made for), so a flip set by hand moves the flip, never the plan to
+  another run, and a plan whose run has passed is listed apart with Delete; a run harvested in parts keeps one number
+  (plants cut early stay with the run in flower); a run's state and pounds follow the history's verdict (trimmed, part
+  trimmed, check the sheets, waiting for the trim, drying; pounds only for a full trim); a run still in flower past its
+  day pushes the next run's flip to its harvest; clones ticked early count from the tick day; with no TRANSPLANT task a
+  run is in veg once its worked-out transplant day passes. When the plans read lands, or after Refresh, the whole page
+  is drawn again unless a form or card is open.
+- **Zone hint on the map:** the legend says zones count left to right from the main entrance (the rule above).
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went

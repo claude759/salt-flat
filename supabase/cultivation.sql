@@ -9,6 +9,9 @@
 --       flowering plants of each license, one row per room (Metrc location), strain and flowering day, plus the
 --       plants harvested or destroyed in the last 120 days, through cult_metrc_save() (token-gated; the token hash
 --       is seeded out-of-band, never committed). Each send replaces that license's rows as a whole.
+-- Runs: a run is one plant cycle of a room, from clone cut to trim. Past and current runs come from Metrc and the trim
+--       sheets; the runs planned on the page are in cult_runs; Metrc's plant batches (their planted days, for the clone
+--       cut) come from the same job through cult_metrc_batches_save().
 -- Applied from Gianni's Mac: node ~/claude-sql/run-sql-ca.mjs supabase/cultivation.sql (not the Pipeline deploy:
 -- these are not pipeline_* tables). Safe to run again.
 
@@ -80,6 +83,11 @@ create table if not exists public.cult_rooms (
   updated_by      text
 );
 alter table public.cult_rooms add column if not exists notes text check (length(notes) <= 2000);   -- room notes (editors)
+-- the days from a harvest to the next flip (the room cleaned and set up again), 1 to 3. A planned run with no flip day
+-- of its own flips on the harvest of the run before it plus these days.
+alter table public.cult_rooms add column if not exists turnover_days int not null default 2;
+alter table public.cult_rooms drop constraint if exists cult_rooms_turnover_days_check;
+alter table public.cult_rooms add constraint cult_rooms_turnover_days_check check (turnover_days between 1 and 3);
 alter table public.cult_rooms enable row level security;
 drop policy if exists cult_rooms_select on public.cult_rooms;
 create policy cult_rooms_select on public.cult_rooms for select to authenticated using (public.cult_can_view());
@@ -272,15 +280,16 @@ $$;
 revoke all on function public.cult_whoami() from public, anon;
 grant execute on function public.cult_whoami() to authenticated;
 
--- one room's flip date (null = back to Metrc's), harvest day, or map. Only the keys present in p_set change.
+-- one room's flip date (null = back to Metrc's), harvest day, map, notes, or turnover days (from a harvest to the next
+-- flip, 1 to 3). Only the keys present in p_set change.
 create or replace function public.cult_room_set(p_room text, p_set jsonb)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare r public.cult_rooms;
 begin
   if not public.cult_can_edit() then raise exception 'not allowed'; end if;
   if jsonb_typeof(p_set) is distinct from 'object' then raise exception 'p_set must be an object'; end if;
-  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout', 'notes')) then
-    raise exception 'only flip_date, harvest_day, layout and notes can be changed here';
+  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout', 'notes', 'turnover_days')) then
+    raise exception 'only flip_date, harvest_day, layout, notes and turnover_days can be changed here';
   end if;
   if p_set ? 'notes' and (jsonb_typeof(p_set->'notes') not in ('string', 'null') or length(coalesce(p_set->>'notes', '')) > 2000) then
     raise exception 'notes must be text of up to 2000 characters';
@@ -288,6 +297,8 @@ begin
   if p_set ? 'flip_date' and jsonb_typeof(p_set->'flip_date') <> 'null'
      and coalesce(p_set->>'flip_date', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'flip_date must be a date'; end if;
   if p_set ? 'harvest_day' and coalesce(p_set->>'harvest_day', '') !~ '^\d{2,3}$' then raise exception 'harvest_day must be a number'; end if;
+  if p_set ? 'harvest_day' and (p_set->>'harvest_day')::int not between 30 and 120 then raise exception 'the harvest day is 30 to 120'; end if;
+  if p_set ? 'turnover_days' and coalesce(p_set->>'turnover_days', '') !~ '^[1-3]$' then raise exception 'turnover days are 1, 2 or 3'; end if;
   if p_set ? 'layout' and jsonb_typeof(p_set->'layout') not in ('object', 'null') then raise exception 'layout must be an object'; end if;
   if p_set ? 'layout' and octet_length((p_set->'layout')::text) > 200000 then raise exception 'layout is too big'; end if;
   if jsonb_typeof(p_set->'layout') = 'object' and jsonb_typeof(p_set->'layout'->'tables') is distinct from 'array' then
@@ -310,6 +321,7 @@ begin
     harvest_day = case when p_set ? 'harvest_day' then (p_set->>'harvest_day')::int else harvest_day end,
     layout = case when p_set ? 'layout' then p_set->'layout' else layout end,
     notes = case when p_set ? 'notes' then nullif(btrim(coalesce(p_set->>'notes', '')), '') else notes end,
+    turnover_days = case when p_set ? 'turnover_days' then (p_set->>'turnover_days')::int else turnover_days end,
     updated_at = now(), updated_by = public.cult_jwt_email()
    where id = p_room returning * into r;
   if r.id is null then raise exception 'no such room'; end if;
@@ -608,3 +620,215 @@ begin
 end $$;
 revoke all on function public.cult_room_history(text) from public, anon;
 grant execute on function public.cult_room_history(text) to authenticated;
+
+-- ---------------------------------------------------------------- runs (step 4: Gianni 2026-11-24, "Yes, build it")
+-- Metrc's plant batches: the plants of a room (Metrc location) by the day they went into flower and the plant batch they
+-- came from, with the batch's strain and planted day (Metrc's PlantedDate: the day the clones were entered, 0 to 7 days
+-- after the real cut) and how many of them are in flower, harvested or destroyed now. batch '' holds the plants whose
+-- batch the job doesn't know (read before it kept batches). The page takes a run's clone cut from these. Written only by
+-- cult_metrc_batches_save() from the Metrc job on Gianni's Mac, each license's set replaced whole; it never touches the
+-- plant rows, so a bad batch send can't stop them.
+create table if not exists public.cult_metrc_batches (
+  license        text not null,
+  location       text not null check (length(location) between 1 and 80),
+  flowering_day  date not null,
+  batch          text not null check (length(batch) <= 120),
+  strain         text check (length(strain) <= 80),
+  planted        date,
+  flowering      int not null default 0 check (flowering >= 0),
+  harvested      int not null default 0 check (harvested >= 0),
+  destroyed      int not null default 0 check (destroyed >= 0),
+  primary key (license, location, flowering_day, batch),
+  constraint cult_metrc_batches_some_check check (flowering + harvested + destroyed > 0)
+);
+alter table public.cult_metrc_batches enable row level security;
+drop policy if exists cult_metrc_batches_select on public.cult_metrc_batches;
+create policy cult_metrc_batches_select on public.cult_metrc_batches for select to authenticated using (public.cult_can_view());
+revoke insert, update, delete on table public.cult_metrc_batches from anon, authenticated;   -- written by cult_metrc_batches_save()
+
+-- the job's batch rows for the licenses in p_licenses (each replaced whole; [] empties one). Moves those licenses'
+-- changed_at, so the page reads Metrc's rows again.
+create or replace function public.cult_metrc_batches_save(p_token text, p_licenses jsonb, p_rows jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare lic text; rw jsonb;
+begin
+  if not exists (select 1 from public.cult_job_secret where token_hash = encode(sha256(convert_to(coalesce(p_token, ''), 'utf8')), 'hex')) then
+    raise exception 'bad token';
+  end if;
+  if jsonb_typeof(p_licenses) is distinct from 'array' or jsonb_array_length(p_licenses) = 0 then raise exception 'p_licenses must be a list of licenses'; end if;
+  if exists (select 1 from jsonb_array_elements(p_licenses) l where jsonb_typeof(l) <> 'string' or (l #>> '{}') !~ '^[A-Z0-9]{2,6}-[0-9A-Z-]{5,24}$') then
+    raise exception 'a license is not a license number';
+  end if;
+  if (select count(*) from jsonb_array_elements_text(p_licenses)) <> (select count(distinct l) from jsonb_array_elements_text(p_licenses) l) then
+    raise exception 'a license is listed twice';
+  end if;
+  if jsonb_typeof(p_rows) is distinct from 'array' then raise exception 'p_rows must be a list'; end if;
+  if jsonb_array_length(p_rows) > 20000 then raise exception 'too many batch rows'; end if;
+  for rw in select e from jsonb_array_elements(p_rows) e loop
+    if jsonb_typeof(rw) <> 'object' then raise exception 'a batch row must be an object'; end if;
+    if jsonb_typeof(rw->'license') is distinct from 'string' or not (p_licenses ? (rw->>'license')) then raise exception 'a batch row''s license is not in p_licenses'; end if;
+    if jsonb_typeof(rw->'location') is distinct from 'string' or length(btrim(rw->>'location')) not between 1 and 80 then raise exception 'a batch row needs a location of 1 to 80 characters'; end if;
+    if coalesce(rw->>'flowering_day', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'a batch row needs its flowering day'; end if;
+    if coalesce(jsonb_typeof(rw->'batch'), 'null') not in ('string', 'null') or length(coalesce(rw->>'batch', '')) > 120 then raise exception 'a batch name is up to 120 characters'; end if;
+    if coalesce(jsonb_typeof(rw->'strain'), 'null') not in ('string', 'null') or length(coalesce(rw->>'strain', '')) > 80 then raise exception 'a strain name is up to 80 characters'; end if;
+    if coalesce(jsonb_typeof(rw->'planted'), 'null') <> 'null' and coalesce(rw->>'planted', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'planted must be a date'; end if;
+    if coalesce(rw->>'flowering', '0') !~ '^\d{1,6}$' or coalesce(rw->>'harvested', '0') !~ '^\d{1,6}$' or coalesce(rw->>'destroyed', '0') !~ '^\d{1,6}$' then
+      raise exception 'plant counts must be whole numbers';
+    end if;
+  end loop;
+  for lic in select l from jsonb_array_elements_text(p_licenses) l loop
+    delete from public.cult_metrc_batches b where b.license = lic;
+    insert into public.cult_metrc_batches (license, location, flowering_day, batch, strain, planted, flowering, harvested, destroyed)
+    select lic, btrim(j->>'location'), (j->>'flowering_day')::date, coalesce(j->>'batch', ''),
+           max(nullif(btrim(coalesce(j->>'strain', '')), '')), min((j->>'planted')::date),
+           sum(coalesce((j->>'flowering')::int, 0)), sum(coalesce((j->>'harvested')::int, 0)), sum(coalesce((j->>'destroyed')::int, 0))
+      from jsonb_array_elements(p_rows) j
+     where j->>'license' = lic
+     group by btrim(j->>'location'), (j->>'flowering_day')::date, coalesce(j->>'batch', '')
+    having sum(coalesce((j->>'flowering')::int, 0) + coalesce((j->>'harvested')::int, 0) + coalesce((j->>'destroyed')::int, 0)) > 0;
+    update public.cult_metrc_meta set changed_at = now() where license = lic;
+  end loop;
+  return jsonb_build_object('ok', true, 'v', 1, 'rows', (select count(*) from public.cult_metrc_batches));
+end $$;
+revoke all on function public.cult_metrc_batches_save(text, jsonb, jsonb) from public;
+grant execute on function public.cult_metrc_batches_save(text, jsonb, jsonb) to anon, authenticated;
+
+-- The runs planned on the page, one row per run of a room. run_key: the page's name for the run ('f' and the flip day
+-- it had when first planned, 'f20270101'), kept when its dates move. flip_on null: the run flips on the harvest of the
+-- run before it plus the room's turnover_days (the page works it out); a day here is a flip set by hand. cut_by and
+-- transplant_on null: the room's calendar and usual gaps. zones: the plan's strains [{zone 1-20, slot 1-9, strain,
+-- lights}]. Whoever can open the page reads them (cult_can_view()) and changes them (cult_can_edit()), only through
+-- cult_run_save() and cult_run_delete(). A deleted run stays in the table, marked deleted (Undo saves it again).
+create table if not exists public.cult_runs (
+  room_id           text not null references public.cult_rooms(id) on delete cascade,
+  run_key           text not null check (run_key ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$'),
+  flip_on           date,
+  cut_by            date,
+  transplant_on     date,
+  plants_per_light  numeric check (plants_per_light > 0 and plants_per_light <= 50),
+  zones             jsonb not null default '[]' check (jsonb_typeof(zones) = 'array'),
+  note              text check (length(note) <= 1000),
+  created_at        timestamptz not null default now(),
+  created_by        text,
+  updated_at        timestamptz not null default now(),
+  updated_by        text,
+  deleted_at        timestamptz,
+  deleted_by        text,
+  primary key (room_id, run_key),
+  constraint cult_runs_dates_check check ((cut_by is null or transplant_on is null or cut_by <= transplant_on)
+    and (transplant_on is null or flip_on is null or transplant_on <= flip_on)
+    and (cut_by is null or flip_on is null or cut_by <= flip_on))
+);
+alter table public.cult_runs enable row level security;
+drop policy if exists cult_runs_select on public.cult_runs;
+create policy cult_runs_select on public.cult_runs for select to authenticated using (public.cult_can_view() and deleted_at is null);
+revoke insert, update, delete on table public.cult_runs from anon, authenticated;   -- writes go through cult_run_save() and cult_run_delete()
+
+-- save one run of a room. p_run: {run_key, flip_on, cut_by, transplant_on, plants_per_light, zones, note}; only the keys
+-- present change (a new run, or a deleted one saved again, starts empty). Dates within about a year of today and in
+-- order (cut, transplant, flip); zones at most 20 x 9 slots, lights 0 to 100. Returns the run as saved.
+create or replace function public.cult_run_save(p_room text, p_run jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  who text := public.cult_jwt_email();
+  la date := (now() at time zone 'America/Los_Angeles')::date;
+  k text; f text; d date; z jsonb; zn int; sl int; li numeric; seen text[] := '{}';
+  cur public.cult_runs; fresh boolean; saved public.cult_runs;
+  v_flip date; v_cut date; v_tr date; v_ppl numeric; v_zones jsonb := '[]'; v_note text;
+begin
+  if not public.cult_can_edit() then raise exception 'not allowed'; end if;
+  if not exists (select 1 from public.cult_rooms where id = p_room) then raise exception 'no such room'; end if;
+  if jsonb_typeof(p_run) is distinct from 'object' then raise exception 'p_run must be an object'; end if;
+  if exists (select 1 from jsonb_object_keys(p_run) x
+             where x not in ('run_key', 'flip_on', 'cut_by', 'transplant_on', 'plants_per_light', 'zones', 'note')) then
+    raise exception 'only run_key, flip_on, cut_by, transplant_on, plants_per_light, zones and note';
+  end if;
+  k := btrim(coalesce(p_run->>'run_key', ''));
+  if k !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$' then raise exception 'a run needs a key of up to 40 letters, digits, dots, dashes or underscores'; end if;
+  foreach f in array array['flip_on', 'cut_by', 'transplant_on'] loop
+    if p_run ? f and jsonb_typeof(p_run->f) <> 'null' then
+      if jsonb_typeof(p_run->f) <> 'string' or (p_run->>f) !~ '^\d{4}-\d{2}-\d{2}$' then raise exception '% must be a date', f; end if;
+      begin
+        d := (p_run->>f)::date;
+      exception when others then
+        raise exception '% must be a real date', f;
+      end;
+      if d < la - 400 or d > la + 400 then raise exception '% must be within about a year of today', f; end if;
+    end if;
+  end loop;
+  if p_run ? 'plants_per_light' and jsonb_typeof(p_run->'plants_per_light') not in ('number', 'null') then
+    raise exception 'plants per light must be a number';
+  end if;
+  if (p_run->>'plants_per_light')::numeric <= 0 or (p_run->>'plants_per_light')::numeric > 50 then
+    raise exception 'plants per light must be more than 0 and at most 50';
+  end if;
+  if p_run ? 'note' and (jsonb_typeof(p_run->'note') not in ('string', 'null') or length(coalesce(p_run->>'note', '')) > 1000) then
+    raise exception 'a note is up to 1000 characters';
+  end if;
+  if p_run ? 'zones' then
+    if jsonb_typeof(p_run->'zones') is distinct from 'array' then raise exception 'zones must be a list'; end if;
+    if jsonb_array_length(p_run->'zones') > 180 then raise exception 'a run plans at most 20 zones of 9 strains'; end if;
+    for z in select e from jsonb_array_elements(p_run->'zones') e loop
+      if jsonb_typeof(z) <> 'object' then raise exception 'a zone has only zone, slot, strain and lights'; end if;
+      if (z - array['zone', 'slot', 'strain', 'lights']) <> '{}'::jsonb then raise exception 'a zone has only zone, slot, strain and lights'; end if;
+      if coalesce(z->>'zone', '') !~ '^([1-9]|1[0-9]|20)$' then raise exception 'a zone is 1 to 20'; end if;
+      if coalesce(z->>'slot', '1') !~ '^[1-9]$' then raise exception 'a slot is 1 to 9'; end if;
+      if coalesce(jsonb_typeof(z->'strain'), 'null') not in ('string', 'null') or length(coalesce(z->>'strain', '')) > 80 then
+        raise exception 'a strain name is up to 80 characters';
+      end if;
+      if coalesce(jsonb_typeof(z->'lights'), 'null') not in ('number', 'null') then raise exception 'lights must be a number'; end if;
+      li := (z->>'lights')::numeric;
+      if li < 0 or li > 100 then raise exception 'lights are 0 to 100'; end if;
+      zn := (z->>'zone')::int;
+      sl := coalesce((z->>'slot')::int, 1);
+      if format('%s/%s', zn, sl) = any(seen) then raise exception 'zone % slot % is planned twice', zn, sl; end if;
+      seen := seen || format('%s/%s', zn, sl);
+      v_zones := v_zones || jsonb_build_array(jsonb_build_object('zone', zn, 'slot', sl,
+                   'strain', nullif(btrim(coalesce(z->>'strain', '')), ''), 'lights', li));
+    end loop;
+    select coalesce(jsonb_agg(e order by (e->>'zone')::int, (e->>'slot')::int), '[]'::jsonb) into v_zones
+      from jsonb_array_elements(v_zones) e;
+  end if;
+  -- the run as it stands, merged with what was sent (the row locked, so two saves of one run take turns)
+  select * into cur from public.cult_runs where room_id = p_room and run_key = k for update;
+  fresh := not found or cur.deleted_at is not null;
+  v_flip := case when p_run ? 'flip_on' then (p_run->>'flip_on')::date when fresh then null else cur.flip_on end;
+  v_cut := case when p_run ? 'cut_by' then (p_run->>'cut_by')::date when fresh then null else cur.cut_by end;
+  v_tr := case when p_run ? 'transplant_on' then (p_run->>'transplant_on')::date when fresh then null else cur.transplant_on end;
+  v_ppl := case when p_run ? 'plants_per_light' then (p_run->>'plants_per_light')::numeric when fresh then null else cur.plants_per_light end;
+  v_zones := case when p_run ? 'zones' then v_zones when fresh then '[]'::jsonb else cur.zones end;
+  v_note := case when p_run ? 'note' then nullif(btrim(coalesce(p_run->>'note', '')), '') when fresh then null else cur.note end;
+  if v_cut > v_tr then raise exception 'the transplant day is before the clone cut'; end if;
+  if v_tr > v_flip then raise exception 'the flip is before the transplant day'; end if;
+  if v_cut > v_flip then raise exception 'the flip is before the clone cut'; end if;
+  insert into public.cult_runs as r (room_id, run_key, flip_on, cut_by, transplant_on, plants_per_light, zones, note,
+                                     created_at, created_by, updated_at, updated_by)
+  values (p_room, k, v_flip, v_cut, v_tr, v_ppl, v_zones, v_note, now(), who, now(), who)
+  on conflict (room_id, run_key) do update set
+    flip_on = excluded.flip_on, cut_by = excluded.cut_by, transplant_on = excluded.transplant_on,
+    plants_per_light = excluded.plants_per_light, zones = excluded.zones, note = excluded.note,
+    created_at = case when r.deleted_at is null then r.created_at else excluded.created_at end,
+    created_by = case when r.deleted_at is null then r.created_by else excluded.created_by end,
+    updated_at = now(), updated_by = excluded.updated_by, deleted_at = null, deleted_by = null
+  returning * into saved;
+  return to_jsonb(saved) - 'deleted_at' - 'deleted_by';
+end $$;
+revoke all on function public.cult_run_save(text, jsonb) from public, anon;
+grant execute on function public.cult_run_save(text, jsonb) to authenticated;
+
+-- delete one run of a room. The row is kept, marked deleted; the reply is the run as it was, so the page can offer Undo.
+create or replace function public.cult_run_delete(p_room text, p_key text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare gone public.cult_runs;
+begin
+  if not public.cult_can_edit() then raise exception 'not allowed'; end if;
+  update public.cult_runs set deleted_at = now(), deleted_by = public.cult_jwt_email()
+   where room_id = p_room and run_key = p_key and deleted_at is null
+  returning * into gone;
+  if not found then raise exception 'no such run'; end if;
+  return to_jsonb(gone) - 'deleted_at' - 'deleted_by';
+end $$;
+revoke all on function public.cult_run_delete(text, text) from public, anon;
+grant execute on function public.cult_run_delete(text, text) to authenticated;
+
+notify pgrst, 'reload schema';
