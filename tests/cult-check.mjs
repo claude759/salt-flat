@@ -861,6 +861,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/rowspan="\$\{g\.rooms\.length\}"/.test(html) && /--ov-up:#fff2cc/.test(html) && /--ov-dn:#d9ead3/.test(html) && /td\.ov-k\.act\{background:var\(--ov-act\)/.test(html), "the Overview: each site beside its rooms, in the sheet's colours");
   ok(/S\.rooms = all\.filter\(r => r\.active !== false\); S\.ovAll = all\.filter\(r => S\.rooms\.some\(x => x\.site === r\.site\)\)/.test(html) && /S\.rooms\.some\(r => r\.id === room\.id\) \? `<button/.test(html),
     "the Overview lists every room of a site with a room switched on; only rooms switched on open a page");
+  ok(/\.ovt \.lnk,\.ov-c \.lnk\{all:unset;box-sizing:border-box;cursor:pointer;display:inline-flex[^}]*border:1px solid var\(--line2\)/.test(html), "the Overview's room names look like buttons");
   ok(/isOpen\('env'\) \|\| isOpen\('chart'\)/.test(html) && /if \(pc\) pc\.innerHTML = glChartsHTML\(D\);/.test(html) && !/h \+= glChartsHTML\(D\);/.test(html), "this crop's charts fold under Growlink; the weekly table keeps the actuals");
   ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
   ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');
