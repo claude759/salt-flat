@@ -365,6 +365,10 @@ if(new URLSearchParams(location.search).get('embed')==='schedule')document.docum
   .tsug .sg b{font-size:13px;font-weight:600} .tsug .sg span{font-size:11px;color:var(--muted)}
   .tsug .sg.searching{flex-direction:row;align-items:center;gap:8px;color:var(--muted);cursor:default;font-size:12.5px}
   .tsug .sg.searching .spin{width:13px;height:13px}
+  .tsug .sg.note{cursor:default;color:var(--muted);font-size:12.5px;font-weight:650}
+  .tsug .sg.note:hover{background:none}
+  /* a store form's address with no house number (addrHint): said, never in the way of the save */
+  .addr-hint{color:var(--orange);margin-top:4px;line-height:1.4}
   /* a new store checked against the store list (Stores' Add store, Locations' Add): what may already be it */
   .rm-box{margin-top:12px;padding:10px 11px;border:1px solid color-mix(in srgb,var(--orange) 45%,var(--line));border-radius:12px;
     background:color-mix(in srgb,var(--orange) 7%,var(--panel2))}
@@ -467,7 +471,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-11-25.1';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-11-25.2';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -723,39 +727,81 @@ const dispRank=n=>{ const key=/^\* Office/.test(n||'')?'* Office':n; const i=PLA
 const dispSort=(a,b)=>dispRank(a.name)-dispRank(b.name)||a.name.localeCompare(b.name);
 // Picking "* New retailer" anywhere opens this mini-form on a second layer, creates the
 // store, and hands the new row back to the caller (which selects it in place).
-function quickAddRetailerSheet(onSaved){
+// Since 2026-11-25 it first checks the store list (storesMatch, the same check as Stores' Add store and the Locations
+// form): what may already be this store is shown, Use this one hands that store back to the entry instead (Turn it
+// back on, for managers, one that is turned off), and adding a new one anyway takes a second tap. A check that can't
+// run (no signal, the database update not there yet) adds the store as before. The fields stay still while the check
+// and the add run, so what is added is what was checked. An add that fails after the form was closed offers it back
+// with what was typed (prefill = {name, address}).
+function quickAddRetailerSheet(onSaved, prefill){
   document.getElementById('sheet2')?.remove();
   const b=document.createElement('div'); b.className='backdrop'; b.id='sheet2'; b.style.zIndex='70';
   b.innerHTML=`<div class="sheet" style="max-width:480px">
     <button class="sheetx" aria-label="Close">✕</button>
     <h3>Add the new retailer</h3>
     <div class="small muted">Creates the store so this and future entries can be tagged to it.</div>
-    <label class="fl">Store name</label><input id="qrName" placeholder="e.g. Green Door SF">
-    <label class="fl">Address <span class="muted">(optional — helps auto-mileage)</span></label>
-    <input id="qrAddr" placeholder="street, city" autocomplete="off">
+    <label class="fl">Store name</label><input id="qrName" placeholder="e.g. Green Door SF" value="${esc(prefill?.name||'')}">
+    <label class="fl">Address <span class="muted">(optional, helps auto-mileage)</span></label>
+    <input id="qrAddr" placeholder="street number, street, city" autocomplete="off" value="${esc(prefill?.address||'')}">
+    <div id="qrSug" class="tsug hide"></div>
+    <div id="qrHint" class="small addr-hint" hidden>${esc(ADDR_HINT)}</div>
+    <div id="qrMatch"></div>
     <div id="qrMsg" class="small" style="margin-top:8px;color:var(--red);min-height:1px"></div>
     <button class="btn primary block" id="qrSave" style="margin-top:10px">Add store</button>
     <button class="btn ghost block" id="qrCancel" style="margin-top:8px">Cancel</button>
   </div>`;
+  const q=s=>b.querySelector(s), mine=()=>document.getElementById('sheet2')===b, close=()=>{ if(mine()) b.remove(); };
+  const msg=t=>{ q('#qrMsg').textContent=t||''; };
   b.addEventListener('click',e=>{ if(e.target===b) b.remove(); });
   document.body.appendChild(b);
-  b.querySelector('.sheetx').onclick=()=>b.remove();
-  b.querySelector('#qrCancel').onclick=()=>b.remove();
-  setTimeout(()=>b.querySelector('#qrName').focus(),60);
-  b.querySelector('#qrSave').onclick=async ()=>{
-    const name=b.querySelector('#qrName').value.trim();
-    if(!name){ b.querySelector('#qrMsg').textContent='Give the store a name.'; return; }
-    const st=state.preview || state.profile?.region || 'CA';
-    const btn=b.querySelector('#qrSave'); busy(btn,true);
+  q('.sheetx').onclick=()=>b.remove();
+  q('#qrCancel').onclick=()=>b.remove();
+  setTimeout(()=>q('#qrName').focus(),60);
+  attachPlaceTypeahead(q('#qrAddr'), q('#qrSug'), ()=>{}, {addressOnly:true});
+  const hint=addrHint(q('#qrAddr'), q('#qrHint'));
+  const st=state.preview || state.profile?.region || 'CA', mgr=state.profile?.role==='admin';
+  // what the check found is only for what it checked: a change to the name or the address takes it away
+  let shown=false;
+  const stale=()=>{ if(!shown) return; shown=false; q('#qrMatch').innerHTML=''; q('#qrSave').classList.remove('hide'); };
+  ['#qrName','#qrAddr'].forEach(s=>q(s).addEventListener('input', stale));
+  const lock=on=>b.querySelectorAll('input,#qrMatch button,#qrSave').forEach(x=>{ x.disabled=on; });
+  // a store of the list goes back to the entry as the list has it (read again when this page's copy doesn't have it)
+  const hand=async(row, words)=>{
+    let d=(state.dispensaries||[]).find(x=>x.id===row.id);
+    if(!d){ await reloadDispensaries(); d=(state.dispensaries||[]).find(x=>x.id===row.id); }
+    close(); toast(words,'ok');
+    onSaved&&onSaved(d||{ ...row, active:true });
+  };
+  const use=(row, ub)=>{ lock(true); busy(ub,true); return hand(row, `Using ${row.name}, already in the store list`); };
+  const revive=async(row, rb)=>{ lock(true); busy(rb,true);
+    try{ await storesTurnOn(row.id); await hand(row, `Turned ${row.name} back on`); }
+    catch(e){ if(mine()){ lock(false); busy(rb,false); msg('Couldn\'t turn it back on: '+(e.message||e)); } } };
+  const add=async force=>{
+    const name=q('#qrName').value.trim();
+    if(!name){ msg('Give the store a name.'); return; }
+    const address=q('#qrAddr').value.trim()||null, btn=q('#qrSave');
+    lock(true); busy(btn,true); msg(''); hint(true);
+    if(!force){
+      let ms=[];
+      try{ ms=await withTimeout(storesMatch(st, { name, address }, []), 10000); }
+      catch(e){ console.warn('the store list check did not run', e); }   // no signal, or no check yet: add it as before
+      if(!mine()) return;
+      if(ms.length){ lock(false); busy(btn,false); shown=true; btn.classList.add('hide');
+        regMatchPanel(q('#qrMatch'), ms, { mgr, onUse:use, onRevive:revive, onNew:nb=>{ busy(nb,true); add(true).finally(()=>busy(nb,false)); } });
+        return; }
+    }
     const { data, error }=await supabase.from('dispensaries')
-      .insert({name, state:st, private:false, active:true, address:b.querySelector('#qrAddr').value.trim()||null, created_by:state.session.user.id})
+      .insert({name, state:st, private:false, active:true, address, created_by:state.session.user.id})
       .select('*').single();
-    busy(btn,false);
-    if(error){ b.querySelector('#qrMsg').textContent=error.message; return; }
+    if(error){ lock(false); busy(btn,false);
+      if(mine()) msg(error.message);
+      else toastAction(`Couldn't add ${name}: ${error.message}`,'Open it',()=>quickAddRetailerSheet(onSaved, { name, address }), 30000);
+      return; }
     await reloadDispensaries();
-    b.remove(); toast(`Added ${name} ✓`,'ok');
+    close(); toast(`Added ${name} ✓`,'ok');
     onSaved&&onSaved(data);
   };
+  q('#qrSave').onclick=()=>add(false);
 }
 // plain <select>: picking "* New retailer" opens the mini-form and selects the created store
 function wireNewRetailerSelect(sel, onCreated){
@@ -957,6 +1003,39 @@ async function boot(){
 const LOAD_TIMEOUT_MS = 20000;
 const withTimeout = (p, ms=LOAD_TIMEOUT_MS) => Promise.race([p,
   new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')), ms))]);
+/* ── PAGED READS (no DOM; tests/ba-store-prevent.test.mjs runs this block) ──
+   The API answers at most 1,000 rows a request (PostgREST max_rows on this project) and says nothing about the rest.
+   The store list had 879 rows on 2026-11-25 and grows by about 70 a month: read in one request, past 1,000 the stores
+   late in the alphabet would vanish from every picker, the Schedule's store matching and the Stores page, with no
+   error. readAll reads a query a page of 1,000 at a time, in a stable order (`order`, its last column unique), until a
+   short page, and answers {data, error} as the query itself would: an error on any page is the answer's error, with no
+   rows, so a caller that keeps its last list on an error keeps it whole. When the query asked for its count
+   (select(cols, {count:'exact'})), a short page ends the read only once the count is reached: a cap set lower than
+   1,000 one day (to save egress, say) can't cut the list either, and the 879 stores of today still take one request.
+   build() makes the query afresh for each page (a query runs once), with its columns and filters; readAll adds the
+   order and the range. A row read twice (a store added between two pages moves the rest down one) is kept once. */
+const PAGE_ROWS=1000;
+async function readAll(build, order=['name','id']){
+  const rows=[], seen=new Set();
+  for(let from=0, n=0; n<100; n++){
+    let q=build(); for(const c of order) q=q.order(c);
+    const { data, error, count }=await q.range(from, from+PAGE_ROWS-1);
+    if(error) return { data:null, error };
+    const page=Array.isArray(data)?data:[];
+    let fresh=0;
+    for(const r of page){ const k=r&&r.id; if(k!=null){ if(seen.has(k)) continue; seen.add(k); } rows.push(r); fresh++; }
+    const more=typeof count==='number' ? from+page.length<count : page.length>=PAGE_ROWS;
+    if(!more || !page.length || !fresh) break;   // the last page, or a server that ignored the range
+    from+=page.length;
+  }
+  return { data:rows, error:null };
+}
+// Every read of the store list (public.dispensaries) goes through here, so it comes back whole whatever its size
+// (tests/ba-store-prevent.test.mjs fails on one that doesn't). cols as for select(); where(q) adds the filters.
+function readStores(cols, where){
+  return readAll(()=>{ const q=supabase.from('dispensaries').select(cols, { count:'exact' }); return where?where(q):q; });
+}
+/* ── end PAGED READS ── */
 async function loadMe(){
   try{
     const { data: prof, error } = await withTimeout(
@@ -980,7 +1059,7 @@ async function loadMe(){
     state.period = state.periods.find(p=>p.start_date<=_t && p.end_date>=_t)   // current
       || state.periods.find(p=>p.end_date<_t)                                  // else most recent past (never default to a future period)
       || state.periods[0] || null;
-    const { data: disp } = await withTimeout(supabase.from('dispensaries').select('*').eq('active',true).order('name'));
+    const { data: disp } = await withTimeout(readStores('*', q=>q.eq('active',true)));
     state.dispensaries = (disp||[]).sort(dispSort);
     // labor kinds (admin-editable list); fall back to the defaults if the table isn't reachable
     try{ const { data: lk } = await supabase.from('labor_kinds').select('*').order('sort'); if(lk&&lk.length) state.laborKinds=lk; }catch{}
@@ -1195,6 +1274,9 @@ function searchifySelect(sel, title){
     selected: sel.value===''?[NONE]:[sel.value],
     onSave:ids=>{ const v=ids[0];
       if(v===undefined) return;                                        // unchecked current = no change
+      // a store just added (or turned back on) from the picker's "* New retailer" isn't an option yet: add it
+      if(v!==NONE && ![...sel.options].some(o=>o.value===v)){ const d=(state.dispensaries||[]).find(x=>x.id===v);
+        if(d){ const o=document.createElement('option'); o.value=d.id; o.textContent=d.name; o.dataset.search=dispSearchText(d); sel.appendChild(o); } }
       sel.value = v===NONE?'':v; sel.classList.remove('needs');
       sel.dispatchEvent(new Event('change',{bubbles:true})); label(); } });
 }
@@ -2697,15 +2779,44 @@ function placeItems(q, home){
   const seen=new Set();
   return out.filter(o=>{const k=o.display.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true;}).slice(0,10);
 }
-// onResolve({display,addr,dispId}) fires on pick AND on free typing, so the caller always has the current value
+/* ── ADDRESS CHECK (pure; tests/ba-store-prevent.test.mjs runs this block) ──
+   A house number at the start of an address or of one of its comma parts, then the street: "280 Higuera St",
+   "Unit 102, 3257 W Shaw Ave", "18-33 42nd St", "100 Main St #5". It is the rule of store_address_key in
+   supabase/ba-store-registry-add.sql (the test keeps the two the same), which is how the store list and the registry
+   sync compare premises. An address without one, like a place's name and street as Places lists a business ("NUG
+   Vallejo, Lewis Brown Drive, Vallejo, CA, USA"), names no premises: the store can't be matched to its license, and the
+   sync held real stores for a person because of rows saved that way (12 on 2026-11-25, all made in this app). */
+const ADDR_NUMBER_RE=/(?:^|,)\s*(\d+)[a-z]?(?:-\d+[a-z]?)?\s+(?:(?:n|s|e|w|north|south|east|west|ne|nw|se|sw)\.?\s+)?([a-z0-9]+)/;
+function addrHasNumber(s){ return ADDR_NUMBER_RE.test(String(s||'').toLowerCase()); }
+// a number started at the front of the address or of a comma part: the person is typing one
+function addrNumberStarted(s){ return /(?:^|,)\s*\d/.test(String(s||'')); }
+const ADDR_HINT='No street number: add it so the store can be matched to its license.';
+/* ── end ADDRESS CHECK ── */
+// The short line under a store form's address when it has no house number (ADDR_HINT). It never stops a save. It shows
+// as the form opens and when the field is left (once the tap that left it has landed, so it can't move a button from
+// under the finger), and goes as soon as a number is typed; never while typing, when a number may be half typed.
+// applies() says whether the line is wanted at all (not for a private place). Returns check(show), which a save runs.
+function addrHint(input, el, applies=()=>true){
+  const check=show=>{ const v=input.value.trim(), bad=!!v && applies() && !addrHasNumber(v);
+    if(!bad) el.hidden=true; else if(show) el.hidden=false; };
+  input.addEventListener('input', ()=>check(false));
+  input.addEventListener('blur', ()=>setTimeout(()=>check(true), 200));
+  check(true);
+  return check;
+}
+// onResolve({display,addr,dispId}) fires on pick AND on free typing, so the caller always has the current value.
+// opts.addressOnly (the store forms and the home address): no stores or recent places, and only street addresses with a
+// house number (addrHasNumber); when none is left the list says to type the street number.
 function attachPlaceTypeahead(input, box, onResolve, opts={}){
   let local=[], timer=null;
-  const paint=(items, searching)=>{
-    if(!items.length && !searching){ box.classList.add('hide'); box.innerHTML=''; return; }
+  const paint=(items, searching, note)=>{
+    if(!items.length && !searching && !note){ box.classList.add('hide'); box.innerHTML=''; return; }
     let html=items.map((it,i)=>`<div class="sg" data-i="${i}"><b>${esc(it.label)}</b>${it.sub?`<span>${esc(it.sub)}</span>`:''}</div>`).join('');
     if(searching) html+=`<div class="sg searching"><span class="spin"></span>Searching addresses…</div>`;
+    if(note) html+=`<div class="sg note">${esc(note)}</div>`;
     box.innerHTML=html; box.classList.remove('hide');
     box.querySelectorAll('.sg[data-i]').forEach(el=>el.onmousedown=ev=>{ ev.preventDefault();
+      if(input.disabled) return;   // a form that is checking or saving keeps what it checked
       const it=items[+el.dataset.i]; input.value=it.display; box.classList.add('hide');
       // a pick must behave like typing: fire 'input' FIRST (label/state listeners run,
       // red 'needs' highlights clear), THEN resolve with the richer pick data (dispId,
@@ -2715,17 +2826,22 @@ function attachPlaceTypeahead(input, box, onResolve, opts={}){
       box.classList.add('hide'); box.innerHTML='';
       onResolve({display:it.display, addr:it.addr, dispId:it.dispId}); });
   };
+  // only street numbers when the form says the place is a store (opts.numbered(); always, without one)
+  const numbered=()=>!!opts.addressOnly && (!opts.numbered || !!opts.numbered());
   const render=()=>{
     const q=input.value; local=opts.addressOnly?[]:placeItems(q, opts.home); clearTimeout(timer);
     const wantRemote = !!(q && q.trim().length>=3);
     paint(local, wantRemote);
     if(wantRemote) timer=setTimeout(async()=>{
       let r; try{ r=await callFn('geocode-suggest',{text:q}); }catch{ if(input.value===q) paint(local,false); return; }
-      if(input.value!==q) return;
+      // an answer that comes after the field was left, or locked for a save, opens nothing
+      if(input.value!==q || input.disabled || document.activeElement!==input) return;
       const have=new Set(local.map(x=>x.display.toLowerCase()));
-      const addr=(r?.suggestions||[]).filter(s=>!have.has(s.label.toLowerCase())).slice(0,5)
+      const addr=(r?.suggestions||[]).filter(s=>s && s.label && !have.has(s.label.toLowerCase())
+          && (!numbered() || addrHasNumber(s.label))).slice(0,5)
         .map(s=>({display:s.label, addr:s.label, dispId:null, label:'📍 '+s.label, sub:'address'}));
-      paint([...local, ...addr], false);
+      paint([...local, ...addr], false,
+        numbered() && !addr.length && !addrNumberStarted(q) ? 'Type the street number too' : '');
     },250);
   };
   input.oninput=()=>{ onResolve({display:input.value, addr:input.value, dispId:null}); render(); };
@@ -3516,7 +3632,7 @@ async function adminReport(m){
   const {start,end}=ensureRepRange();
   const [{data:profs},{data:disps},trips,exps,hrs]=await Promise.all([
     supabase.from('profiles').select('id,full_name,region,home_region,non_ba,base_address'),
-    supabase.from('dispensaries').select('id,name,state'),
+    readStores('id,name,state'),
     // `state` on all three: rowRegion below reads the row's own state (it was never selected, so it fell through to
     // the logger's region; event costs from the books carry their event's state)
     supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status,state').gte('trip_date',start).lte('trip_date',end),
@@ -6550,7 +6666,7 @@ async function adminSettings(m){
   m.innerHTML=`<div class="loading"><span class="spin"></span></div>`;
   const [{data:bas},{data:disp}]=await Promise.all([
     supabase.from('profiles').select('*').order('role',{ascending:false}).order('full_name'),
-    supabase.from('dispensaries').select('*').order('name'),
+    readStores('*'),
   ]);
   const rate=Number(state.settings?.mileage_rate??0.76);
   m.innerHTML=`
@@ -6900,7 +7016,7 @@ function editBaSheet(b){
 }
 // the store list again; true when it read. A read that fails keeps the list there was (it never empties it).
 function reloadDispensaries(){
-  return supabase.from('dispensaries').select('*').eq('active',true).order('name')
+  return readStores('*', q=>q.eq('active',true))
     .then(({data, error})=>{ if(error || !Array.isArray(data)) return false; state.dispensaries=data.sort(dispSort); return true; }, ()=>false);
 }
 function dispSheet(d, opts={}){
@@ -6912,9 +7028,10 @@ function dispSheet(d, opts={}){
     <label class="fl">Name</label><input id="dName" value="${esc(d?.name||'')}">
     <label class="fl">Address</label><textarea id="dAddr" placeholder="start typing a street address…" autocomplete="off">${esc(d?.address||'')}</textarea>
     <div id="dSug" class="tsug hide"></div>
+    <div id="dAddrHint" class="small addr-hint" hidden>${esc(ADDR_HINT)}</div>
     ${stateField}
-    <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="dPrivate" ${d?.private?'checked':''} style="width:auto;min-height:auto"> Private — my Home (only I can see it)</label>
-    <label class="row" style="gap:8px;font-size:13px;margin-top:8px;align-items:flex-start"><input type="checkbox" id="dRetail" ${(d?d.retail!==false:true)?'checked':''} style="width:auto;min-height:auto"> Retail store / dispensary <span class="muted">— uncheck for errand stops (post office, food, gas): trips there file under General BA activity</span></label>
+    <label class="row" style="gap:8px;font-size:13px;margin-top:10px"><input type="checkbox" id="dPrivate" ${d?.private?'checked':''} style="width:auto;min-height:auto"> Private: my Home (only I can see it)</label>
+    <label class="row" style="gap:8px;font-size:13px;margin-top:8px;align-items:flex-start"><input type="checkbox" id="dRetail" ${(d?d.retail!==false:true)?'checked':''} style="width:auto;min-height:auto"> Retail store / dispensary <span class="muted">(uncheck for errand stops such as a post office, food or gas: trips there file under General BA activity)</span></label>
     <label class="fl">Legal name <span class="muted">(optional)</span></label><input id="dLegal" value="${esc(d?.legal_name||'')}">
     <label class="fl">License # <span class="muted">(optional)</span></label><input id="dLic" value="${esc(d?.license||'')}">
     ${edit&&isAdmin?`<label class="fl">Active</label><select id="dActive" data-searchable><option value="true" ${d.active?'selected':''}>Active</option><option value="false" ${!d.active?'selected':''}>Inactive</option></select>`:''}
@@ -6923,7 +7040,12 @@ function dispSheet(d, opts={}){
     <button class="btn ghost block" id="dCancel" style="margin-top:8px">Cancel</button>`);
   const sh=$('#sheet'), mine=()=>$('#sheet')===sh;
   $('#dCancel').onclick=closeSheet;
-  attachPlaceTypeahead($('#dAddr'), $('#dSug'), ()=>{}, {addressOnly:true});  // ORS street-address autocomplete
+  // a store (shared and retail) takes a street address with a house number and is told when it has none; a home or an
+  // errand stop (post office, gas) isn't matched to a license, so it keeps the place suggestions and gets no line
+  const shop=()=>!sh.querySelector('#dPrivate').checked && sh.querySelector('#dRetail').checked;
+  attachPlaceTypeahead($('#dAddr'), $('#dSug'), ()=>{}, {addressOnly:true, numbered:shop});
+  const hint=addrHint(sh.querySelector('#dAddr'), sh.querySelector('#dAddrHint'), shop);
+  ['#dPrivate','#dRetail'].forEach(x=>sh.querySelector(x).addEventListener('change', ()=>hint(true)));
   const done=async()=>{ if(mine()) closeSheet(); await reloadDispensaries(); (opts.onSaved||(()=>adminSettings($('#main'))))(); };
   // A new shared place is first checked against the store list (store_registry_match, 2026-11-25): what may already
   // be it is shown, with Use this one (or Turn it back on, for managers), and adding it anyway takes a second tap. A
@@ -6949,6 +7071,7 @@ function dispSheet(d, opts={}){
     if(edit&&isAdmin) patch.active = $('#dActive').value==='true';
     if(addrChanged){ patch.lat=null; patch.lng=null; }
     const btn=$('#dSave');
+    hint(true);
     lock(true); busy(btn,true);
     if(!edit && !patch.private && !force){
       let ms=[];
@@ -7692,6 +7815,8 @@ function schedCss(){
   .sp-facts{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:6px 0 4px;font-size:13px}
   .sp-facts .k{color:var(--muted)}
   /* billed names no store of the list answers to (managers) */
+  .sp-stale{margin:0 0 10px;padding:8px 11px;font-size:12.5px;font-weight:650;line-height:1.45;color:var(--orange);
+    background:color-mix(in srgb,var(--orange) 12%,transparent);border:1px solid color-mix(in srgb,var(--orange) 40%,var(--line));border-radius:10px}
   .sp-unl{margin:0 0 10px;padding:2px 10px;border:1px solid color-mix(in srgb,var(--orange) 40%,var(--line));border-radius:12px;
     background:color-mix(in srgb,var(--orange) 6%,var(--panel))}
   .sp-unl-head,.sp-unl-sub{appearance:none;display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;
@@ -8039,6 +8164,22 @@ function spLicenseNotes(o){
     .map(r=>({ store:byId.get(r.candidate_id), license:r.license, legal:r.legal_name||'', customer:r.customer||'' }))
     .filter(x=>lk(x.store.license)!==lk(x.license) && !seen.has(x.store.id) && seen.add(x.store.id))
     .sort((a,b)=>a.store.name.localeCompare(b.store.name));
+}
+// Has the registry sync stopped? (Gianni 2026-11-25, "implement whatever fixes you think will prevent this in the
+// future", after new stores went missing.) The sync (~/ar-automation/lib/ca-registry.mjs, hourly 4:52 AM to 5:52 PM
+// and at 8:52 PM Pacific) saves its notes whole (store_registry_review_replace) on each run that read everything, so
+// their newest updated_at is the last time it did; more than 26 hours ago it has missed a whole day of runs. No notes
+// at all for CA while billed names no store answers to are waiting: it never saved any. o = {review (the board's
+// state's rows, read without an error), st, unlinked (how many billed names no store answers to), now (ms)}. null when
+// all is well, else {since: the local day of the last save ('YYYY-MM-DD'), or '' when there was none}.
+const SP_SYNC_STALE_MS=26*3600*1000;
+function spSyncStale(o){
+  const ts=(o.review||[]).map(r=>Date.parse(String((r&&r.updated_at)||'').replace(' ','T').replace(/(\.\d{3})\d+/,'$1'))).filter(t=>!isNaN(t));
+  if(!ts.length) return o.st==='CA' && (o.unlinked||0)>0 ? { since:'' } : null;
+  const at=Math.max(...ts);
+  if(!(o.now-at>SP_SYNC_STALE_MS)) return null;
+  const d=new Date(at);
+  return { since:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` };
 }
 // a billing name as a store's name: without the sales app's tags ("[At-Risk] Harvest of Chatsworth")
 function spCleanName(s){ return String(s||'').replace(/\[[^\]]*\]/g,' ').replace(/\s+/g,' ').trim(); }
@@ -9112,8 +9253,10 @@ async function storesLoad(force){
   const bad=[pl,sa,vi].find(r=>r&&r.error);
   if(bad && !S.storesData) throw bad.error;
   const keep=S.storesData&&S.storesData.st===st?S.storesData:{};
+  // reviewOk: this read of the sync's notes worked, so their age says whether the sync is still running (spSyncStale)
   S.storesData={ st, at:Date.now(), plans:pl.error?keep.plans||[]:pl.data||[], sales:sa.error?keep.sales||[]:sa.data||[],
-    visits:vi.error?keep.visits||[]:vi.data||[], review:rv.error?keep.review||[]:rv.data||[], err:bad?(bad.error.message||'error'):'' };
+    visits:vi.error?keep.visits||[]:vi.data||[], review:rv.error?keep.review||[]:rv.data||[], reviewOk:mgr && !rv.error && Array.isArray(rv.data),
+    err:bad?(bad.error.message||'error'):'' };
   return S.storesData;
 }
 function storesRows(){
@@ -9269,7 +9412,12 @@ function storesDrawUnl(m){
   const all=mgr?spUnlinked({ stores:state.dispensaries, sales:D.sales, review:D.review, st }):[];
   const shops=all.filter(u=>!u.notStore), others=all.filter(u=>u.notStore), list=[...shops, ...others];
   const lic=mgr?spLicenseNotes({ stores:state.dispensaries, review:D.review, st }):[];
-  if(!list.length && !lic.length){ box.innerHTML=''; return; }
+  // the registry sync stopped saving its notes: one amber line at the top, whatever else the box shows (managers)
+  const stale=mgr && D.reviewOk ? spSyncStale({ review:D.review, st, unlinked:all.length, now:D.at||Date.now() }) : null;
+  const staleHtml=stale?`<div class="sp-stale" id="spStale" role="status">${esc(stale.since
+    ?`The store list hasn't updated from the sales app since ${spShort(stale.since)}, so new stores may be missing. Tell Gianni.`
+    :'The store list hasn\'t updated from the sales app, so new stores may be missing. Tell Gianni.')}</div>`:'';
+  if(!list.length && !lic.length){ box.innerHTML=staleHtml; return; }
   S.storesUnl=S.storesUnl||{};
   const open=S.storesUnl.open ?? shops.length<=3, oth=!!S.storesUnl.oth;
   const nameOf=id=>((state.dispensaries||[]).find(d=>d.id===id)||{}).name||'';
@@ -9289,8 +9437,8 @@ function storesDrawUnl(m){
       <div class="sp-name">${esc(x.store.name)}</div>
       <div class="small">Its license ${esc(x.store.license||'')} is no longer active. The shop at this address now trades under ${esc(x.license)}${x.legal?' ('+esc(x.legal)+')':''}${x.customer?', billed as '+esc(x.customer):''}.</div>
       <div class="sp-acts"><button class="btn sm primary" data-splic="${i}">Update it</button></div></div>`).join('')}</div></div>`:'';
-  if(!list.length){ box.innerHTML=licHtml; storesLicWire(m, box, lic); return; }
-  box.innerHTML=licHtml+`<div class="sp-unl">
+  if(!list.length){ box.innerHTML=staleHtml+licHtml; storesLicWire(m, box, lic); return; }
+  box.innerHTML=staleHtml+licHtml+`<div class="sp-unl">
     ${shops.length?`<button type="button" class="sp-unl-head" id="spUnlHead" aria-expanded="${open}"><span>Billed but not in the store list (${shops.length})</span><span class="muted">${open?'Hide':'Show'}</span></button>`:''}
     ${shops.length&&open?`<div class="small muted sp-unl-note">Billed in the last 6 months, but no store here answers to these names, so their sales show nowhere on this page.</div>
       <div class="sp-ulist">${shops.map(card).join('')}</div>`:''}
@@ -9390,6 +9538,7 @@ function storeAddSheet(m, o={}){
     <label class="fl">Name</label><input id="saName" value="${val('name', u?spCleanName(u.name):'')}" autocomplete="off">
     <label class="fl">Address</label><textarea id="saAddr" placeholder="start typing a street address…" autocomplete="off">${val('address', r.address)}</textarea>
     <div id="saSug" class="tsug hide"></div>
+    <div id="saAddrHint" class="small addr-hint" hidden>${esc(ADDR_HINT)}</div>
     <label class="fl">License # <span class="muted">(optional)</span></label><input id="saLic" value="${val('license', r.license)}" autocomplete="off">
     <label class="fl">Legal name <span class="muted">(optional)</span></label><input id="saLegal" value="${val('legal_name', r.legal_name)}" autocomplete="off">
     <label class="fl">Territory</label>
@@ -9402,6 +9551,7 @@ function storeAddSheet(m, o={}){
   const msg=t=>{ if(mine()) q('#saMsg').textContent=t||''; };
   q('#saCancel').onclick=closeSheet;
   attachPlaceTypeahead(q('#saAddr'), q('#saSug'), ()=>{}, {addressOnly:true});
+  const hint=addrHint(q('#saAddr'), q('#saAddrHint'));
   const read=()=>({ name:q('#saName').value.trim().replace(/\s+/g,' '), address:q('#saAddr').value.trim(), license:q('#saLic').value.trim(),
     legal_name:q('#saLegal').value.trim(), territory:q('#saTerr').value||'' });
   // what the check found is only for the fields it checked
@@ -9416,6 +9566,7 @@ function storeAddSheet(m, o={}){
   const add=async force=>{
     const p=read();
     if(!p.name){ msg('Give the store a name.'); q('#saName').focus(); return; }
+    hint(true);
     lock(true); msg('');
     try{
       if(!force){
@@ -9909,9 +10060,8 @@ async function bootEmbed(){
   // Round 1, all at once: who you are, which boards you may see, and the store list (only the
   // columns the schedule reads). The store list isn't waited for here: schedLoad waits for it
   // just before it pairs reports and Distru orders, so the workbook and tasks start sooner.
-  const dispP=withTimeout(supabase.from('dispensaries')
-      .select('id,name,address,lat,lng,license,state,private,retail,sales_key,pistil_name,aliases')
-      .eq('active',true).order('name'))
+  const dispP=withTimeout(readStores('id,name,address,lat,lng,license,state,private,retail,sales_key,pistil_name,aliases',
+      q=>q.eq('active',true)))
     .then(r=>r, e=>({ data:null, error:e }));
   const [prof, boardsOk]=await Promise.all([
     withTimeout(supabase.from('profiles').select('id,role,region,home_region,active,full_name').eq('id',embedUid).maybeSingle())
