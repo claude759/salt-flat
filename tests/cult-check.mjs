@@ -864,4 +864,6 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/cult_runs: D\.runs \|\| \[\], cult_metrc_batches: D\.batches \|\| \[\]/.test(html) && /cult_run_save: a =>/.test(html) && /cult_run_delete: a =>/.test(html), 'the local preview has the runs');
 }
 
+ok(/data-pts="\$\{esc\(JSON\.stringify\(pts\)\)\}"/.test(html) && /<i class="hv-l" hidden><\/i><span class="hv-t" hidden><\/span>/.test(html) && /document\.addEventListener\('pointermove'/.test(html),
+  "hovering this crop's charts shows a line on the day, with its date and values, in both charts");
 console.log(`cultivation page: ${n} checks passed (TZ ${process.env.TZ})`);

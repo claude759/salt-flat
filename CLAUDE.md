@@ -845,7 +845,7 @@ launch. The check fails if one of the three pieces is missing.
   Now box, a task schedule "under week by week environment", "a "mark complete" button that will track who marked it's
   complete and when", this crop's charts "expandable under the growlink section", "yes build it"). Top to bottom: Needs
   attention (drawn only when something needs it), Growlink's live tiles with "This crop's temperature and humidity"
-  folded under them (`fpanel('chart')`), the room timeline with the run's line over it (`runLineHTML`: day, week, flip
+  folded under them (`fpanel('chart')`; hovering either chart draws a line on that day in both, with the date, lights on and off and the plan), the room timeline with the run's line over it (`runLineHTML`: day, week, flip
   with Change, harvest with the expected pounds) and the next run under it (`nowNextHTML`), the room map beside the
   Strains (`.pair`, the map's line says what Metrc holds), Environment targets (the sheet's weeks with Growlink's
   actuals), Tasks (the sheet's whole cycle by default; each with Mark complete, then "Completed by <name> · <day, time>"
