@@ -493,7 +493,7 @@ ok(!/access-btn|accessPop|cult_crew_/.test(html), 'no Access list or crew on the
   ok(!/renderRoom/.test((html.match(/function foldToggle[\s\S]*?\n\}/) || [''])[0]), 'a fold never redraws the page (nothing typed is lost)');
   ok(/S\.peek = \/\[#&\]zone=\\d\/\.test\(location\.hash\) \? \{ map: 1 \} : \{\}/.test(html), 'a zone link opens the map for the visit');
   ok(/<button type="button" class="ago" data-ai="\$\{i\}">/.test(html) && /function attGo\(i\)/.test(html), 'a Needs attention item opens what it is about');
-  ok(/const formIn = k => \(k === 'map' && !!S\.arrange\) \|\| \(k === 'zones' && !!S\.editZones\) \|\| \(k === 'runoff' && !!S\.runoffForm\) \|\| \(k === 'notes' && !!S\.editNotes\) \|\| \(k === 'runs' && !!S\.planEdit\);/.test(html), 'a panel with a form open stays open');
+  ok(/const formIn = k => \(k === 'map' && !!S\.arrange\) \|\| \(k === 'zones' && !!S\.editZones\) \|\| \(k === 'env' && !!S\.editEnv\) \|\| \(k === 'runoff' && !!S\.runoffForm\) \|\| \(k === 'notes' && !!S\.editNotes\) \|\| \(k === 'runs' && !!S\.planEdit\);/.test(html), 'a panel with a form open stays open');
   // from the review of the folded page
   ok(/\.ptog \.ptt\{white-space:nowrap\}/.test(html) && !/^\s*\.pt\{white-space:nowrap\}/m.test(html), "a panel title's no-wrap rule leaves the door sheet's tables (table.pt) alone");
   ok(/if \(a\) \{ e\.stopPropagation\(\); closePop\(\); attGo\(\+a\.dataset\.ai\); \}/.test(html), 'a Needs attention press keeps the card it opens open');
@@ -836,7 +836,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     && /function public\.cult_run_delete\(p_room text, p_key text\)[\s\S]*?if not public\.cult_can_edit\(\) then raise exception 'not allowed'/.test(sql), 'saving or deleting a run needs edit');
   ok(/function public\.cult_metrc_batches_save\(p_token text[\s\S]*?raise exception 'bad token'/.test(sql) && /revoke insert, update, delete on table public\.cult_metrc_batches from anon, authenticated/.test(sql),
     "Metrc's batch rows come only from the job (token first)");
-  ok(/'turnover_days'\)\) then/.test(sql) && /check \(turnover_days between 1 and 3\)/.test(sql), 'turnover days: 1 to 3, set through cult_room_set');
+  ok(/'turnover_days', 'env'\)\) then/.test(sql) && /check \(turnover_days between 1 and 3\)/.test(sql), 'turnover days: 1 to 3, set through cult_room_set');
 }
 
 // ---- step 4 on the page: the Now box, Growlink's tiles and the map on top, then the room timeline, the runs, the panels
@@ -876,6 +876,10 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/V\.placed\.slots\.filter\(z => z\.name && z\.plants > 0\)[\s\S]{0,200}V\.placed\.unplaced\.filter\(x => x\.plants > 0\)/.test(html), "the Overview's next trims list the strains Metrc has in flower in the room, with their plants");
   ok(/data-tmenu="\$\{esc\(t\.key\)\}" data-room-id="\$\{esc\(room\.id\)\}"/.test(html) && /taskMenu\(roomView\(room, CM\.todayLA\(\)\), b\.dataset\.tmenu, b\)/.test(html)
     && /addTaskPop\(null, ta, ovRooms\(CM\.todayLA\(\)\)/.test(html) && /id="at-room" list="room-list"/.test(html), "the Overview's tasks can be edited (note, move, skip) and added, the room picked in a typable box");
+  ok(/sb\.rpc\('cult_room_set', \{ p_room: room\.id, p_set: \{ env: out \} \}\)/.test(html) && /\(k === 'env' && !!S\.editEnv\)/.test(html) && /if \(pb && !S\.editEnv\) pb\.innerHTML = envBody/.test(html),
+    'Environment targets can be edited, the form kept through redraws');
+  { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
+    ok(/'turnover_days', 'env'\)\) then/.test(sql) && /env = case when p_set \? 'env' then p_set->'env' else env end/.test(sql), 'cult_room_set saves the weekly targets (env)'); }
   ok(/isOpen\('env'\) \|\| isOpen\('chart'\)/.test(html) && /if \(pc\) pc\.innerHTML = glChartsHTML\(D\);/.test(html) && !/h \+= glChartsHTML\(D\);/.test(html), "this crop's charts fold under Growlink; the weekly table keeps the actuals");
   ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
   ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');

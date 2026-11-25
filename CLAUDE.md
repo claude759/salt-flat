@@ -889,6 +889,11 @@ launch. The check fails if one of the three pieces is missing.
   here as well"): each row's ⋯ opens the room page's own task editor (`taskMenu`: note, move to another day, skip, delete
   a one-off), the row shows the move and the note, and Add a task (`addTaskPop` with the rooms) picks the room in a
   typable box resolved with `pickFrom`.
+- **Almost everything on the page is editable** (Gianni, 2026-11-25: "This should also be editable. Almost everything will
+  need to be editable"). Build each new panel with an edit path, and give an existing one that has none an Edit button
+  when it is touched. Environment targets: Edit targets (each week's day / night temperature and humidity, VPD, CO2 with
+  blank for none, the lights note), saved through `cult_room_set`'s `env` in the sheet's own wording ("80f - 78f",
+  "62% - 60%", "n/CO2"), numbers held to sane ranges (`ENV_RANGE`).
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went

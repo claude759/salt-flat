@@ -508,6 +508,8 @@
   .ovk td.ov-n small{display:block;font-size:11.5px;color:var(--muted);margin-top:2px}
   .ovk tr.closed td.ov-n{color:var(--muted)}
   .ovk td.tact{width:1%}
+  .env-ed input[type=number]{padding:4px 6px}
+  .env-ed .pform{margin-top:10px}
   .ovk .ov-ta{display:inline-flex;gap:6px;align-items:center}
   .ovk td.ov-n small.tnote{font-style:italic}
   .panel.ov>h3 #ov-task-add{margin-left:auto;font-size:12px}
@@ -1991,7 +1993,7 @@ function paintEnv(room) {
   if (!room || S.room !== room.id || (!ps && !pb && !pc)) return;
   const { W, D } = glHistOf(room);
   if (ps) ps.innerHTML = envSum(S.envE, W);
-  if (pb) pb.innerHTML = envBody(S.envE, W, D);
+  if (pb && !S.editEnv) pb.innerHTML = envBody(S.envE, W, D);   // never over the targets being edited
   if (pc) pc.innerHTML = glChartsHTML(D);
 }
 function glAtt(V) {
@@ -2137,7 +2139,7 @@ function roomView(room, today) {
    ----- */
 const HIST_TTL = 60 * 60e3;
 // a form or card is open: a redraw would lose what is typed in it (the poll, a resize and a late answer wait)
-const formOpen = () => !!(S.editZones || S.arrange || S.runoffForm || S.editNotes || S.planEdit || !$('pop').hidden);
+const formOpen = () => !!(S.editZones || S.arrange || S.runoffForm || S.editNotes || S.planEdit || S.editEnv || !$('pop').hidden);
 function histOf(room, today) {
   const e = S.hist[room.id];
   if (!e || !e.data) return { e: e || null, R: null };
@@ -2326,7 +2328,7 @@ function route() {
   S.room = id && S.rooms.some(r => r.id === id) ? id : null;
   if (!S.room && S.rooms.length === 1 && !/(^#|&)overview\b/.test(location.hash)) S.room = S.rooms[0].id;   // one room on: open it, unless the Overview was asked for
   S.editZones = false; S.arrange = false; S.zoneOpened = false; S.runoffForm = false; S.editNotes = false; S.hvOpen = null; S.hvAll = false;
-  S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
+  S.editEnv = false; S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
   S.peek = /[#&]zone=\d/.test(location.hash) ? { map: 1 } : {}; S.tOpen = {};   // a zone link opens the map for this visit
   closePop();
   render();
@@ -3215,7 +3217,8 @@ function renderRoom(room) {
     PV ? mapBody(PV.V, { plan: { r: PV.r, ppl: PV.r.plan && +PV.r.plan.plants_per_light > 0 ? +PV.r.plan.plants_per_light : roomPpl(room, today).v } }) : mapBody(V));
   h += fpanel('zones', 'Strains', strainsSum(V, cap), '', canEdit && !S.editZones ? '<button class="btn" type="button" id="zones-edit">Edit zones</button>' : '', strainsBody(V, cap, '', canEdit));
   h += '</div>';
-  h += fpanel('env', 'Environment targets', envSum(E, GH.W), C.week ? `week ${C.week} now · plan from the sheet, Growlink's actual under it` : '', '', envBody(E, GH.W, GH.D));
+  h += fpanel('env', 'Environment targets', envSum(E, GH.W), C.week ? `week ${C.week} now · plan from the sheet, Growlink's actual under it` : '',
+    canEdit && !S.editEnv ? '<button class="btn" type="button" id="env-edit">Edit targets</button>' : '', S.editEnv ? envEditor(room) : envBody(E, GH.W, GH.D));
   h += tasksPanel(V, canWork, today);
   h += '<div class="more-h">More</div>';
   h += runsPanelHTML(V, RN, canEdit, canWork, today);
@@ -3249,7 +3252,7 @@ function renderRoom(room) {
 /* ----- folding. A panel is open when a form in it is open, when this visit opened it (S.peek), else as this device
    left it (S.fold), else by default (Tasks, Environment and the map open, the rest folded). A press on its title flips
    it in place, with no redraw, so nothing typed or opened in the page is lost. ----- */
-const formIn = k => (k === 'map' && !!S.arrange) || (k === 'zones' && !!S.editZones) || (k === 'runoff' && !!S.runoffForm) || (k === 'notes' && !!S.editNotes) || (k === 'runs' && !!S.planEdit);
+const formIn = k => (k === 'map' && !!S.arrange) || (k === 'zones' && !!S.editZones) || (k === 'env' && !!S.editEnv) || (k === 'runoff' && !!S.runoffForm) || (k === 'notes' && !!S.editNotes) || (k === 'runs' && !!S.planEdit);
 const isOpen = k => formIn(k) || !!S.peek[k] || (k in S.fold ? S.fold[k] === 1 : !!FOLD_DEFAULT[k]);
 // a panel that folds to one line: its title, a live summary while folded (sum, HTML), a note while open (HTML), the
 // buttons that act on it (they stay on the line), and its body
@@ -3386,6 +3389,64 @@ function envSum(E, W) {
   const part = (m, label, unit) => { const x = a && a[m]; if (!x || x.day == null && x.night == null) return ''; const t = `${label}${CM.glNum(m, x.day)} / ${CM.glNum(m, x.night)}${unit}${x.offPct > GL_OFF_WARN ? ` (${x.offPct}% off)` : ''}`; return x.offPct > GL_OFF_WARN ? `<span class="w">${esc(t)}</span>` : esc(t); };
   const so = a && a.hours ? [part('temp', '', '°F'), part('hum', 'humidity ', '%')].filter(Boolean).join(', ') : '';
   return [head, so ? `so far ${so}` : '', tail].filter(Boolean).join(' · ');
+}
+/* Editing the weekly environment targets (Gianni, 2026-11-25: "This should also be editable. Almost everything will need
+   to be editable"): each week's day and night temperature and humidity, VPD and CO2 (blank: no CO2), and the lights
+   note, written back the way the sheet writes them, through cult_room_set's env. */
+const ENV_RANGE = { temp: [40, 100], hum: [10, 100], vpd: [0.1, 3], co2: [200, 3000] };
+function envEditor(room) {
+  const rows = (Array.isArray(room.env) ? room.env : []).slice().sort((a, b) => +a.week - +b.week);
+  const light = (rows.find(e => e.light) || {}).light || '';
+  const cell = (id, v, step, w) => `<input type="number" inputmode="decimal" step="${step}" data-env="${id}" value="${v == null ? '' : esc(String(v))}" style="width:${w || 64}px">`;
+  const row = (e, i) => {
+    const P = CM.glPlan(e) || {};
+    const pd = (k, x) => P[k] ? P[k][x] : null;
+    return `<tr data-row="${i}"><td><b>${esc(String(e.week))}</b></td><td>${cell('td', pd('temp', 'day'), '0.5')} / ${cell('tn', pd('temp', 'night'), '0.5')}</td>`
+      + `<td>${cell('hd', pd('hum', 'day'), '1')} / ${cell('hn', pd('hum', 'night'), '1')}</td><td class="n">${cell('vpd', pd('vpd', 'day'), '0.05')}</td><td class="n">${cell('co2', pd('co2', 'day'), '50', 76)}</td></tr>`;
+  };
+  return `<div class="env-ed"><div class="wrapx"><table class="t"><thead><tr><th>Week</th><th>Day / night temp °F</th><th>Day / night humidity %</th><th class="n">VPD</th><th class="n">CO2 ppm</th></tr></thead>
+    <tbody id="env-rows">${rows.map(row).join('')}</tbody></table></div>
+    <div class="pform"><label>Lights<input type="text" id="env-light" maxlength="200" value="${esc(light)}" placeholder="e.g. Day 1 65% (ramp up 5% daily)"></label></div>
+    <div class="pickmsg" id="env-msg"></div>
+    <div class="ed act"><button class="btn ghost" type="button" id="env-add">Add a week</button><button class="btn ghost" type="button" id="env-drop"${rows.length ? '' : ' disabled'}>Remove the last week</button><span class="grow"></span>
+      <button class="btn" type="button" id="env-cancel">Cancel</button><button class="btn primary" type="button" id="env-save">Save targets</button></div></div>`;
+}
+function wireEnvEditor(room) {
+  const msg = $('env-msg'), body = $('env-rows');
+  const num_ = (tr, id) => { const v = tr.querySelector(`[data-env="${id}"]`).value.trim(); return v === '' ? null : Number(v); };
+  $('env-add').addEventListener('click', () => {   // a new week starts as a copy of the last one
+    const trs = body.querySelectorAll('tr'), last = trs[trs.length - 1];
+    const tr = last ? last.cloneNode(true) : null;
+    if (!tr) { msg.textContent = 'Cancel and ask Gianni: this room has no weeks to copy.'; return; }
+    tr.dataset.row = String(trs.length); tr.querySelector('b').textContent = String(trs.length + 1);
+    body.appendChild(tr); $('env-drop').disabled = false;
+  });
+  $('env-drop').addEventListener('click', () => { const trs = body.querySelectorAll('tr'); if (trs.length) trs[trs.length - 1].remove(); $('env-drop').disabled = body.querySelectorAll('tr').length === 0; });
+  $('env-cancel').addEventListener('click', () => { S.editEnv = false; renderRoom(room); });
+  $('env-save').addEventListener('click', async () => {
+    const out = [], bad = [];
+    const f = n => String(Math.round(n * 100) / 100);
+    [...body.querySelectorAll('tr')].forEach((tr, i) => {
+      const w = i + 1, v = {};
+      for (const id of ['td', 'tn', 'hd', 'hn', 'vpd', 'co2']) {
+        v[id] = num_(tr, id);
+        const k = id === 'td' || id === 'tn' ? 'temp' : id === 'hd' || id === 'hn' ? 'hum' : id;
+        if (v[id] != null && (!isFinite(v[id]) || v[id] < ENV_RANGE[k][0] || v[id] > ENV_RANGE[k][1])) bad.push(`week ${w} ${k === 'temp' ? 'temperature' : k === 'hum' ? 'humidity' : k.toUpperCase()} (${ENV_RANGE[k][0]} to ${ENV_RANGE[k][1]})`);
+      }
+      const pair = (d, n, u) => d == null && n == null ? null : d == null || n == null || d === n ? `${f(d == null ? n : d)}${u}` : `${f(d)}${u} - ${f(n)}${u}`;
+      out.push({ week: w, temp: v.td != null && v.td === v.tn ? `${f(v.td)}f - ${f(v.tn)}f` : pair(v.td, v.tn, 'f'), hum: pair(v.hd, v.hn, '%'),
+        vpd: v.vpd, co2: v.co2 == null ? 'n/CO2' : v.co2, light: null });
+    });
+    if (bad.length) { msg.textContent = 'Check ' + bad.join(', ') + '.'; return; }
+    const light = $('env-light').value.trim();
+    if (out.length) out[0].light = light || null;
+    $('env-save').disabled = true; msg.textContent = '';
+    const { error } = await sb.rpc('cult_room_set', { p_room: room.id, p_set: { env: out } });
+    if (error) { $('env-save').disabled = false; msg.textContent = "Couldn't save: " + error.message; return; }
+    S.editEnv = false;
+    const r = S.rooms.find(x => x.id === room.id); if (r) r.env = out;   // kept if the re-read fails
+    await loadAll(true, ['rooms']); render();
+  });
 }
 function envBody(E, W, D) {
   if (!E.length) return '<div class="empty">No targets set for this room.</div>';
@@ -3910,6 +3971,8 @@ function wireRoom(V, canEdit) {
   for (const cb of document.querySelectorAll('#view-room .tick')) cb.addEventListener('click', e => { e.stopPropagation(); markTask(V, cb); });
   const fe = $('flip-edit'); if (fe) fe.addEventListener('click', e => { e.stopPropagation(); flipPop(V, fe); });
   const ze = $('zones-edit'); if (ze) ze.addEventListener('click', () => { S.editZones = true; S.peek.zones = 1; renderRoom(room); });
+  const ee = $('env-edit'); if (ee) ee.addEventListener('click', e => { e.stopPropagation(); S.editEnv = true; S.peek.env = 1; renderRoom(room); });
+  if (S.editEnv) wireEnvEditor(room);
   const ar = $('arrange'); if (ar) ar.addEventListener('click', () => { S.arrange = true; S.peek.map = 1; closePop(); renderRoom(room); });
   for (const b of document.querySelectorAll('#view-room [data-range]')) b.addEventListener('click', () => {
     S.range = +b.dataset.range; try { localStorage.setItem('cult.range2', String(S.range)); } catch (e) { /* kept for this visit only */ }
