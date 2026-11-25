@@ -896,7 +896,8 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     assert.deepEqual(V.map(x => [x.location, x.clones, x.tagged, x.moms]), [['Veg', 70, 3, 0], ['Veg Mom', 0, 0, 4]], 'veg rooms, most plants first; moms from their own location'); n++;
     assert.deepEqual([V[0].strains[0].strain, V[0].strains[0].cuts, V[0].strains[0].age, V[0].strains[1].cuts], ['Riptide', [{ day: '2026-11-02', n: 10 }, { day: '2026-11-12', n: 60 }], 23, []], 'cut days oldest first, the age from the oldest; no planted day: none'); n++;
   }
-  ok(/<h3>Veg<\/h3><div id="ov-veg">\$\{ovVegHTML\(groups, today\)\}/.test(html) && /from\('cult_metrc_veg'\)\.select\('license,location,kind,strain,planted,count'\)/.test(html), "the Overview's Veg panel, from Metrc's veg");
+  ok(/<div id="ov-vegp">\$\{ovVegPanel\(groups, today\)\}/.test(html) && /localStorage\.getItem\('cult\.ovVeg'\) === '1'/.test(html) && /<div id="ov-veg"\$\{open \? '' : ' hidden'\}>/.test(html), 'the Veg panel folds to one line by default, remembered on the device');
+  ok(/from\('cult_metrc_veg'\)/.test(html) && /from\('cult_metrc_veg'\)\.select\('license,location,kind,strain,planted,count'\)/.test(html), "the Overview's Veg panel, from Metrc's veg");
   {   // a stored key wins, so a task moved or reworded keeps its ticks
     const room = { id: 'K1', harvest_day: 63, tasks: [{ day: 26, kind: 'ACTION', text: 'CUT CLONES NOW', key: '24|CUT CLONES' }] };
     const T = CM.tasks(room, { flip: '2026-10-29', H: 63 }, [{ room_id: 'K1', cycle: '2026-10-29', task_key: '24|CUT CLONES', status: 'done', done_at: '2026-11-22T17:00:00Z' }], '2026-11-25', []);

@@ -900,6 +900,8 @@ launch. The check fails if one of the three pieces is missing.
   then "Yes, add veg"): a Veg panel after Rooms, for the sites shown: each Metrc veg location with its totals, then a row
   per strain with clones, tagged plants, moms, the planted days and the oldest's age (`CM.vegView`, `ovVegHTML`), read on
   open, after 10 minutes and on Refresh (`ovVegLoad`). Metrc's veg is read only, like every Metrc number.
+  The Veg panel folds to one line by default (Gianni, same day: "ya fold it"): each site's clones, strains, moms and
+  oldest batch; a press opens the list, remembered on the device (`cult.ovVeg`).
 - **Almost everything on the page is editable** (Gianni, 2026-11-25: "This should also be editable. Almost everything will
   need to be editable"). Build each new panel with an edit path, and give an existing one that has none an Edit button
   when it is touched. Environment targets: Edit targets (each week's day / night temperature and humidity, VPD, CO2 with
