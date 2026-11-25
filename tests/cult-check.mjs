@@ -632,10 +632,58 @@ ok(/timeZone: 'America\/Los_Angeles', month: 'numeric'/.test(html), "a tick's da
     assert.ok(made <= 1, `glView reuses its date formatters (${made} built)`); n++;
   }
 }
+// ---- Growlink equipment and this crop's history (Gianni, 2026-11-24: "Build both")
+{
+  const at = x => Date.parse(x), NOW = at('2026-11-24T20:30:00Z');
+  assert.deepEqual([CM.glHrs(0), CM.glHrs(0.3), CM.glHrs(9.83), CM.glHrs(0.001)], ['0', '18 min', '9.8 h', '1 min']); n++;
+  const eq = { at: '2026-11-24T20:29:00Z', rows: [
+    { kind: 'AC', n: 4, names: ['AC BACK COOLING', 'AC BACK FAN', 'AC FRONT COOLING', 'AC FRONT FAN'], h24: 8.8, runs24: 470, bins: new Array(48).fill(0.6), days: [8, 8.3, 8.1, 8.1, 8.1, 8.5, 8.8] },
+    { kind: 'Dehumidifier', n: 1, names: ['Dehum 710 Attic'], h24: 9.8, runs24: 100, bins: new Array(48).fill(0.4), days: [7, 7, 8, 8, 8, 9, 9.8] },
+    { kind: 'Dehumidifier', n: 3, names: ['Dehum Roll In', 'Dehum middle', 'Dehum 710 Inside Room'], h24: 0.3, runs24: 5, bins: [1, 2], days: [0, 0, 0, 0, 0, 0, 0.3] },
+    { kind: 'CO2', n: 1, names: ['CO2'], h24: 7.2, runs24: 238, bins: new Array(48).fill(0.3), days: [7, 7, 7, 7, 7, 7, 7.2] }, { nope: true }],
+    idle: [{ kind: 'AC', n: 6, names: [] }] };
+  const hiHum = { tiles: [{ m: 'hum', label: 'Humidity', state: 'high', since: NOW - 40 * 6e4, stale: false }] };
+  const Q = CM.glEquip(eq, hiHum, NOW);
+  assert.deepEqual(Q.flags.map(f => f.text), ['Humidity is above plan and 3 dehumidifiers ran 18 min in the last 24 hours'],
+    'the dehumidifiers that barely ran are named while humidity is above plan; the one that ran is not'); n++;
+  assert.deepEqual([Q.rows.length, Q.rows[2].flag, Q.rows[1].flag, Q.rows[2].bins.length, Q.rows[2].bins[0], Q.idle], [4, 'hum', null, 48, 0, [{ kind: 'AC', n: 6 }]],
+    'a row with odd half hours gets an empty strip, not an error'); n++;
+  assert.deepEqual(Q.related('hum').map(r => r.names[0]), ['Dehum 710 Attic', 'Dehum Roll In']); n++;
+  assert.equal(CM.glEquip(eq, { tiles: [{ ...hiHum.tiles[0], since: NOW - 20 * 6e4 }] }, NOW).flags.length, 0, 'not before 30 minutes off the plan'); n++;
+  assert.equal(CM.glEquip(eq, { tiles: [{ ...hiHum.tiles[0], state: 'low' }] }, NOW).flags.length, 0, 'humidity low wants humidifiers, not dehumidifiers'); n++;
+  const one = CM.glEquip({ rows: [{ kind: 'Dehumidifier', n: 1, names: ['Dehum middle'], h24: 0 }] }, hiHum, NOW);
+  assert.equal(one.flags[0].text, 'Humidity is above plan and the dehumidifier "Dehum middle" ran 0 in the last 24 hours'); n++;
+  assert.equal(CM.glEquip(null, hiHum, NOW), null); assert.equal(CM.glEquip({ rows: 'x' }, hiHum, NOW), null); n += 2;
+  // this crop's weeks: flipped 11/14 (week 2: 80 / 78°F, 68%), hours on 11/24 by Growlink's day flag
+  const E = CM.envRows({ env: [{ week: 1, temp: '82f - 82f', hum: '70%', vpd: 1.0, co2: 1000 }, { week: 2, temp: '80f - 78f', hum: '68%', vpd: 1.1, co2: 1300 }] }, { flip: '2026-11-14', week: 2 });
+  const hrs = [
+    { hour: '2026-11-24T21:00:00Z', lit: 1, temp: 83, hum: 70, vpd: 1.1, co2: 1290 },      // 1 PM: day, 3 over
+    { hour: '2026-11-24T22:00:00Z', lit: 0.83, temp: 81, hum: 68, vpd: 1.1, co2: 1300 },   // day, on plan
+    { hour: '2026-11-25T10:00:00Z', lit: 0, temp: 77, hum: 75, vpd: 0.8, co2: 600 },        // 2 AM: night; CO2 not judged
+    { hour: '2026-11-25T11:00:00Z', lit: 0.2, temp: 79, hum: 74, vpd: null, co2: 620 },
+    { hour: '2026-11-17T21:00:00Z', lit: 1, temp: 82, hum: 70, vpd: 1.0, co2: 1000 },      // week 1
+    { hour: '2026-11-24T23:00:00Z', lit: null, temp: 99 }, { hour: 'x', lit: 1, temp: 99 } ];
+  const Wk = CM.glWeeks(hrs, E);
+  assert.deepEqual([Wk[2].hours, Wk[2].temp.day, Wk[2].temp.night, Wk[2].temp.offPct, Wk[2].temp.dir], [4, 82, 78, 25, 'high'],
+    "lights on averages 82°F (plan 80), off 78°F (plan 78); 1 hour in 4 off, above"); n++;
+  assert.deepEqual([Wk[2].hum.offPct, Wk[2].hum.dir, Wk[2].co2.day, Wk[2].co2.offPct, Wk[2].vpd.night], [50, 'high', 1295, 0, 0.8],
+    'humidity off half the hours; CO2 judged with the lights on only'); n++;
+  assert.deepEqual([Wk[1].hours, Wk[1].temp.offPct], [1, 0], 'week 1 apart'); n++;
+  assert.deepEqual(Object.keys(CM.glWeeks([], E)), []); n++;
+  const Dd = CM.glDays(hrs, E);
+  assert.deepEqual(Dd.map(d => d.day), ['2026-11-17', '2026-11-24', '2026-11-25'], "days on the grows' clock"); n++;
+  assert.deepEqual([Dd[1].temp, Dd[1].plan.temp, Dd[2].hum], [[82, null], { day: 80, night: 78 }, [null, 74.5]]); n++;
+  const Cc = CM.glChart(Dd, 'temp', 300, 84);
+  assert.ok(Cc && Cc.lo <= 77 && Cc.hi >= 83 && /^M/.test(Cc.day) && /^M/.test(Cc.planDay) && Cc.first === '2026-11-17', 'a chart of the days with its plan'); n++;
+  assert.equal(CM.glChart(Dd.slice(0, 1), 'temp', 300, 84), null, 'one day is no chart'); n++;
+}
+ok(/sb\.from\('cult_growlink_hourly'\)\.select\('hour,lit,temp,hum,vpd,co2'\)/.test(html), "this crop's history is read by named columns");
+ok(/fpanel\('env', 'Environment targets', envSum\(E, GH\.W\)/.test(html) && /envBody\(E, GH\.W, GH\.D\)/.test(html), 'Environment targets shows this crop beside the plan');
+ok(/localStorage\.setItem\('cult\.glEq'/.test(html), "the equipment block's fold is remembered on the device");
 // the page reads Growlink's copy and never writes it; the job alone writes, through a token
-ok(/sb\.from\('cult_growlink_now'\)\.select\('room_id,growlink,read_at,reading_at,lights,setpoints,sensors,alerts,note'\)\.eq\('room_id', roomId\)/.test(html), "the page reads only the open room's Growlink row, by name");
+ok(/sb\.from\('cult_growlink_now'\)\.select\('room_id,growlink,read_at,reading_at,lights,setpoints,sensors,alerts,note,equipment'\)\.eq\('room_id', roomId\)/.test(html), "the page reads only the open room's Growlink row, by name");
 ok(!/rpc\('cult_growlink/.test(html) && !/api\.developer\.growlink|Gl-Api-Key/i.test(html), 'the page never writes Growlink data or calls Growlink');
-ok(/glTimer = setInterval\([\s\S]{0,160}5 \* 60e3\)/.test(html), 'the readings are read again every 5 minutes');
+ok(/glTimer = setInterval\([\s\S]{0,400}5 \* 60e3\)/.test(html), 'the readings are read again every 5 minutes');
 {   // Gianni, 2026-11-24: "can we put this real time growlink stuff up at the top of the page?"
   const i0 = html.indexOf('function renderRoom(');
   const rr = html.slice(i0, html.indexOf('\n}\n', i0));

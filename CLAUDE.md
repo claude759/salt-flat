@@ -854,4 +854,17 @@ launch. The check fails if one of the three pieces is missing.
   is in flower; over 20 minutes old they show as old and are never judged. Needs attention names what stopped: the
   page's own reads, the job on Gianni's Mac, or Growlink. The page reads the open room's row every 5 minutes (only the
   log rows since its last read), and again when a room is reopened with an older copy.
+- **Equipment runtime and this crop's history** (Gianni, 2026-11-24: "Build both", after mockups of each). Equipment:
+  under the tiles, folded to one line by default (remembered on the device, `cult.glEq`), from Growlink's device log as
+  the job reads it (`cult_growlink_now.equipment`): a row per kind of device and identical behaviour (an AC's cooling and
+  fan share a row), its hours in the last 24 hours, 48 half hours (grey: lights off) and 7 days; devices idle for 7 days
+  are listed apart. Growlink lists a run only once it ends. A row is amber, and Needs attention says so (worded to open
+  the reading's tile), when a reading has been off plan 30 minutes and the kind that would correct it (humidity high:
+  dehumidifiers; low: humidifiers; temp high: AC; low: heaters; CO2 low: CO2) ran under 5% of the last 24 hours (Claude's
+  assumption). History: `cult_growlink_hourly` (hourly averages and the lights-on share from Growlink's day flag, kept
+  400 days; the job fills the past a week a run per room). Environment targets shows, under each week's plan, this crop's
+  average with the lights on / off and the share of hours off plan (amber over a quarter), its folded line adds "so far"
+  for this week, and open it draws temperature and humidity by day against the plan. Read from this week's start while
+  folded, from the flip once opened. Growlink's history endpoint scrambles several sensors in one call, so it is asked
+  for one sensor at a time.
 - **Local preview:** on localhost only, `?demo=<file>.json` beside the page reads data from that file with no sign-in.

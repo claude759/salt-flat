@@ -21,9 +21,11 @@ create table if not exists public.cult_growlink_now (
   setpoints   jsonb,                            -- Growlink's climate set points {"temp":{"day":70,"night":70},"hum":{..},"vpd":{..},"co2":{"day":1500}}
   sensors     jsonb not null default '[]',      -- [{"m":"temp","name","module","v","unit","at","parts":[{"name","module","v","at"}]}]
   alerts      jsonb not null default '[]',      -- Growlink's own active alerts [{"sensor","dir":"above"|"below","limit"}]
-  note        text                              -- what the job couldn't read or use for this room on its last run
+  note        text,                             -- what the job couldn't read or use for this room on its last run
+  equipment   jsonb                             -- {at, rows: [{kind, names, n, h24, runs24, bins[48], days[7]}], idle: [{kind, n, names}]}
 );
 alter table public.cult_growlink_now add column if not exists note text;   -- a table made before the room note
+alter table public.cult_growlink_now add column if not exists equipment jsonb;   -- a table made before equipment
 alter table public.cult_growlink_now enable row level security;
 drop policy if exists cult_growlink_now_select on public.cult_growlink_now;
 create policy cult_growlink_now_select on public.cult_growlink_now for select to authenticated using (public.cult_can_view());
@@ -64,16 +66,24 @@ drop policy if exists cult_growlink_meta_select on public.cult_growlink_meta;
 create policy cult_growlink_meta_select on public.cult_growlink_meta for select to authenticated using (public.cult_can_view());
 revoke insert, update, delete on table public.cult_growlink_meta from anon, authenticated;
 
--- p_rooms: [{growlink, reading_at, lights, setpoints, sensors, alerts, log:{temp, hum, ...}, note}], one per Growlink room
+-- the app room a Growlink room is filed under: the one cult_rooms row of the same name (case and spaces aside), else null
+create or replace function public.cult_gl_room(p_name text)
+returns text language sql stable security definer set search_path = public as $$
+  select case when count(*) = 1 then min(c.id) end from public.cult_rooms c
+   where lower(regexp_replace(btrim(c.name), '\s+', ' ', 'g')) = lower(regexp_replace(btrim(coalesce(p_name, '')), '\s+', ' ', 'g'))
+$$;
+revoke all on function public.cult_gl_room(text) from public, anon, authenticated;
+
+-- p_rooms: [{growlink, reading_at, lights, setpoints, sensors, alerts, log:{temp, hum, ...}, note, equipment}], one per Growlink room
 -- read this run. A Growlink room is saved under the app room of the same name (case and spaces aside); the others are
 -- listed in the meta's unmatched, and an app room no Growlink room matched on a run that sent rooms loses its row (the
 -- page then says Growlink has no room of that name). p_note: what went wrong this run. A run that could not read
 -- Growlink sends no rooms and a note, so each room keeps its last reading (the page says how old it is) and why.
 -- A room sent with no reading keeps its last reading and sensors (so the page can say since when); one sent without
--- lights, setpoints or alerts (they couldn't be read) keeps its last ones.
+-- lights, setpoints, alerts or equipment (they couldn't be read) keeps its last ones; equipment null: the room has none.
 create or replace function public.cult_growlink_save(p_token text, p_rooms jsonb, p_note text)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare r jsonb; lg jsonb; ids text[]; rid text; at_ timestamptz; n int := 0; um text[] := '{}'; seen text[] := '{}';
+declare r jsonb; lg jsonb; rid text; at_ timestamptz; n int := 0; um text[] := '{}'; seen text[] := '{}';
 begin
   if not exists (select 1 from public.cult_job_secret
                  where token_hash = encode(sha256(convert_to(coalesce(p_token, ''), 'utf8')), 'hex')) then
@@ -92,30 +102,32 @@ begin
     end if;
     if coalesce(jsonb_typeof(r->'lights'), 'null') not in ('object', 'null')
        or coalesce(jsonb_typeof(r->'setpoints'), 'null') not in ('object', 'null')
-       or coalesce(jsonb_typeof(r->'log'), 'null') not in ('object', 'null') then
-      raise exception 'lights, setpoints and log must be objects';
+       or coalesce(jsonb_typeof(r->'log'), 'null') not in ('object', 'null')
+       or coalesce(jsonb_typeof(r->'equipment'), 'null') not in ('object', 'null') then
+      raise exception 'lights, setpoints, log and equipment must be objects';
     end if;
+    if length(coalesce(r->'equipment', 'null'::jsonb)::text) > 100000 then raise exception 'equipment is too big'; end if;
     if coalesce(r->>'reading_at', '') <> '' and r->>'reading_at' !~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$' then
       raise exception 'reading_at must be a time with its zone';
     end if;
     at_ := nullif(r->>'reading_at', '')::timestamptz;
     if at_ > now() + interval '10 minutes' then raise exception 'reading_at is in the future'; end if;
-    select array_agg(c.id) into ids from public.cult_rooms c
-     where lower(regexp_replace(btrim(c.name), '\s+', ' ', 'g')) = lower(regexp_replace(btrim(r->>'growlink'), '\s+', ' ', 'g'));
-    if coalesce(cardinality(ids), 0) <> 1 then um := um || btrim(r->>'growlink'); continue; end if;
-    rid := ids[1];
+    rid := public.cult_gl_room(r->>'growlink');
+    if rid is null then um := um || btrim(r->>'growlink'); continue; end if;
     if rid = any(seen) then um := um || (btrim(r->>'growlink') || ' (a second room of that name)'); continue; end if;
     seen := seen || rid;
-    insert into public.cult_growlink_now as g (room_id, growlink, read_at, reading_at, lights, setpoints, sensors, alerts, note)
+    insert into public.cult_growlink_now as g (room_id, growlink, read_at, reading_at, lights, setpoints, sensors, alerts, note, equipment)
     values (rid, btrim(r->>'growlink'), now(), at_, nullif(r->'lights', 'null'::jsonb), nullif(r->'setpoints', 'null'::jsonb),
             coalesce(r->'sensors', '[]'::jsonb), coalesce(r->'alerts', '[]'::jsonb),
-            nullif(left(btrim(coalesce(case when jsonb_typeof(r->'note') = 'string' then r->>'note' end, '')), 300), ''))
+            nullif(left(btrim(coalesce(case when jsonb_typeof(r->'note') = 'string' then r->>'note' end, '')), 300), ''),
+            nullif(r->'equipment', 'null'::jsonb))
     on conflict (room_id) do update set growlink = excluded.growlink, read_at = excluded.read_at,
       reading_at = coalesce(excluded.reading_at, g.reading_at),
       sensors = case when excluded.reading_at is null and g.reading_at is not null then g.sensors else excluded.sensors end,
       lights = case when r ? 'lights' then excluded.lights else g.lights end,            -- not sent: couldn't be read
       setpoints = case when r ? 'setpoints' then excluded.setpoints else g.setpoints end,
       alerts = case when r ? 'alerts' then excluded.alerts else g.alerts end,
+      equipment = case when r ? 'equipment' then excluded.equipment else g.equipment end,
       note = excluded.note;
     lg := r->'log';
     if at_ is not null and jsonb_typeof(lg) = 'object' then
@@ -138,3 +150,60 @@ begin
 end $$;
 revoke all on function public.cult_growlink_save(text, jsonb, text) from public;
 grant execute on function public.cult_growlink_save(text, jsonb, text) to anon, authenticated;
+
+-- each room's hourly averages from Growlink's history (the job reads it a week a call and fills the past a week a run),
+-- with the share of the hour the lights were on by Growlink's day/night flag; kept 400 days. The page reads a room's
+-- hours since its crop's flip to put this crop's weeks beside the plan.
+create table if not exists public.cult_growlink_hourly (
+  room_id  text not null references public.cult_rooms(id) on delete cascade,
+  hour     timestamptz not null,   -- the hour's start
+  lit      numeric,                -- 0 to 1
+  temp     numeric,
+  hum      numeric,
+  vpd      numeric,
+  co2      numeric,
+  light    numeric,
+  n        int,                    -- 10-minute points in the hour
+  primary key (room_id, hour)
+);
+create index if not exists cult_growlink_hourly_hour on public.cult_growlink_hourly (hour);
+alter table public.cult_growlink_hourly enable row level security;
+drop policy if exists cult_growlink_hourly_select on public.cult_growlink_hourly;
+create policy cult_growlink_hourly_select on public.cult_growlink_hourly for select to authenticated using (public.cult_can_view());
+revoke insert, update, delete on table public.cult_growlink_hourly from anon, authenticated;
+
+-- p_rows: [{growlink, hour, lit, temp, hum, vpd, co2, light, n}] (at most 5000); each hour filed under the app room of
+-- the same name (others listed as unmatched) and replaced if it was there.
+create or replace function public.cult_growlink_hourly_save(p_token text, p_rows jsonb)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare x jsonb; rid text; h timestamptz; n int := 0; um text[] := '{}';
+begin
+  if not exists (select 1 from public.cult_job_secret
+                 where token_hash = encode(sha256(convert_to(coalesce(p_token, ''), 'utf8')), 'hex')) then
+    raise exception 'bad token';
+  end if;
+  if jsonb_typeof(p_rows) is distinct from 'array' then raise exception 'p_rows must be a list'; end if;
+  if jsonb_array_length(p_rows) > 5000 then raise exception 'p_rows lists more than 5000 hours'; end if;
+  for x in select v from jsonb_array_elements(p_rows) v loop
+    if jsonb_typeof(x) <> 'object' or coalesce(x->>'hour', '') !~ '^\d{4}-\d{2}-\d{2}T\d{2}:00(:00(\.0+)?)?(Z|[+-]\d{2}:?\d{2})$' then
+      raise exception 'every row needs an hour, on the hour, with its zone';
+    end if;
+    h := (x->>'hour')::timestamptz;
+    if h > now() then raise exception 'an hour is in the future'; end if;
+    rid := public.cult_gl_room(x->>'growlink');
+    if rid is null then
+      if not (coalesce(btrim(x->>'growlink'), '') = any(um)) then um := um || coalesce(btrim(x->>'growlink'), ''); end if;
+      continue;
+    end if;
+    insert into public.cult_growlink_hourly as y (room_id, hour, lit, temp, hum, vpd, co2, light, n)
+    values (rid, h, cult_gl_num(x->>'lit'), cult_gl_num(x->>'temp'), cult_gl_num(x->>'hum'), cult_gl_num(x->>'vpd'),
+            cult_gl_num(x->>'co2'), cult_gl_num(x->>'light'), case when coalesce(x->>'n', '') ~ '^[0-9]{1,4}$' then (x->>'n')::int end)
+    on conflict (room_id, hour) do update set lit = excluded.lit, temp = excluded.temp, hum = excluded.hum, vpd = excluded.vpd,
+      co2 = excluded.co2, light = excluded.light, n = excluded.n;
+    n := n + 1;
+  end loop;
+  delete from public.cult_growlink_hourly where hour < now() - interval '400 days';
+  return jsonb_build_object('ok', true, 'v', 1, 'rows', n, 'unmatched', to_jsonb(um));
+end $$;
+revoke all on function public.cult_growlink_hourly_save(text, jsonb) from public;
+grant execute on function public.cult_growlink_hourly_save(text, jsonb) to anon, authenticated;
