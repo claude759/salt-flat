@@ -365,6 +365,18 @@ if(new URLSearchParams(location.search).get('embed')==='schedule')document.docum
   .tsug .sg b{font-size:13px;font-weight:600} .tsug .sg span{font-size:11px;color:var(--muted)}
   .tsug .sg.searching{flex-direction:row;align-items:center;gap:8px;color:var(--muted);cursor:default;font-size:12.5px}
   .tsug .sg.searching .spin{width:13px;height:13px}
+  /* a new store checked against the store list (Stores' Add store, Locations' Add): what may already be it */
+  .rm-box{margin-top:12px;padding:10px 11px;border:1px solid color-mix(in srgb,var(--orange) 45%,var(--line));border-radius:12px;
+    background:color-mix(in srgb,var(--orange) 7%,var(--panel2))}
+  .rm-h{font-weight:750;font-size:14px;margin-bottom:2px}
+  .rm-card{display:flex;flex-direction:column;gap:3px;min-width:0;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+  .rm-name{font-weight:700;font-size:13.5px;overflow-wrap:anywhere}
+  .rm-tag{font-size:10.5px;font-weight:700;padding:1px 7px;margin-left:4px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .rm-why{color:var(--orange)}
+  .rm-acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:3px}
+  .rm-stop{margin-top:10px;color:var(--orange);font-weight:650;line-height:1.45}
+  .btn.rm-armed{border-color:var(--orange);color:var(--orange)}
+  #rmNewWhy{margin-top:4px}
 
   .auth-wrap{min-height:100%;display:flex;flex-direction:column;justify-content:center;padding:24px 18px;gap:16px;max-width:420px;margin:0 auto}
   .hero{text-align:center} .hero .logo{width:56px;height:56px;border-radius:15px;margin:0 auto 12px;font-size:28px}
@@ -455,7 +467,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-11-24.1';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-11-25.1';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -6886,13 +6898,15 @@ function editBaSheet(b){
     toast('Saved','ok'); closeSheet(); adminSettings($('#main'));
   };
 }
+// the store list again; true when it read. A read that fails keeps the list there was (it never empties it).
 function reloadDispensaries(){
-  return supabase.from('dispensaries').select('*').eq('active',true).order('name').then(({data})=>{ state.dispensaries=(data||[]).sort(dispSort); });
+  return supabase.from('dispensaries').select('*').eq('active',true).order('name')
+    .then(({data, error})=>{ if(error || !Array.isArray(data)) return false; state.dispensaries=data.sort(dispSort); return true; }, ()=>false);
 }
 function dispSheet(d, opts={}){
   const edit=!!d, isAdmin=state.profile.role==='admin', myRegion=state.profile.region;
   const stateField = isAdmin
-    ? `<label class="fl">State</label><select id="dState"><option value="">Select state…</option>${REGIONS.map(r=>`<option value="${r}" ${d?.state===r?'selected':''}>${r}</option>`).join('')}</select>`
+    ? `<label class="fl">State</label><select id="dState" data-searchable><option value="">Select state…</option>${REGIONS.map(r=>`<option value="${r}" ${d?.state===r?'selected':''}>${r}</option>`).join('')}</select>`
     : `<input id="dState" type="hidden" value="${esc(d?.state||myRegion||'')}">`;
   openSheet(`<h3>${edit?'Edit':'Add'} location</h3>
     <label class="fl">Name</label><input id="dName" value="${esc(d?.name||'')}">
@@ -6903,12 +6917,29 @@ function dispSheet(d, opts={}){
     <label class="row" style="gap:8px;font-size:13px;margin-top:8px;align-items:flex-start"><input type="checkbox" id="dRetail" ${(d?d.retail!==false:true)?'checked':''} style="width:auto;min-height:auto"> Retail store / dispensary <span class="muted">— uncheck for errand stops (post office, food, gas): trips there file under General BA activity</span></label>
     <label class="fl">Legal name <span class="muted">(optional)</span></label><input id="dLegal" value="${esc(d?.legal_name||'')}">
     <label class="fl">License # <span class="muted">(optional)</span></label><input id="dLic" value="${esc(d?.license||'')}">
-    ${edit&&isAdmin?`<label class="fl">Active</label><select id="dActive"><option value="true" ${d.active?'selected':''}>Active</option><option value="false" ${!d.active?'selected':''}>Inactive</option></select>`:''}
+    ${edit&&isAdmin?`<label class="fl">Active</label><select id="dActive" data-searchable><option value="true" ${d.active?'selected':''}>Active</option><option value="false" ${!d.active?'selected':''}>Inactive</option></select>`:''}
+    <div id="dMatch"></div>
     <button class="btn primary block" id="dSave" style="margin-top:14px">${edit?'Save':'Add'}</button>
     <button class="btn ghost block" id="dCancel" style="margin-top:8px">Cancel</button>`);
+  const sh=$('#sheet'), mine=()=>$('#sheet')===sh;
   $('#dCancel').onclick=closeSheet;
   attachPlaceTypeahead($('#dAddr'), $('#dSug'), ()=>{}, {addressOnly:true});  // ORS street-address autocomplete
-  $('#dSave').onclick=async ()=>{
+  const done=async()=>{ if(mine()) closeSheet(); await reloadDispensaries(); (opts.onSaved||(()=>adminSettings($('#main'))))(); };
+  // A new shared place is first checked against the store list (store_registry_match, 2026-11-25): what may already
+  // be it is shown, with Use this one (or Turn it back on, for managers), and adding it anyway takes a second tap. A
+  // private place (a home) isn't a store, so it isn't checked; nor is an edit. A check that can't run (the database
+  // update not applied yet, no signal) adds the place as before.
+  let shown=false;
+  const stale=()=>{ if(!shown) return; shown=false; sh.querySelector('#dMatch').innerHTML=''; sh.querySelector('#dSave').classList.remove('hide'); };
+  ['#dName','#dAddr','#dLic'].forEach(s=>sh.querySelector(s).addEventListener('input', stale));
+  ['#dState','#dPrivate'].forEach(s=>sh.querySelector(s)?.addEventListener('change', stale));
+  const use=row=>{ if(mine()) closeSheet(); toast(`${row.name} is already in the list`,'ok'); };
+  // the fields stay still while the check and the save run, so what is saved is what was checked
+  const lock=on=>sh.querySelectorAll('input,textarea,select,.selpick').forEach(x=>{ x.disabled=on; });
+  const revive=async(row, btn)=>{ busy(btn,true);
+    try{ await storesTurnOn(row.id); toast(`Turned ${row.name} back on`,'ok'); await done(); }
+    catch(e){ busy(btn,false); toast('Couldn\'t turn it back on: '+(e.message||e),'err'); } };
+  const save=async force=>{
     const name=$('#dName').value.trim(); if(!name) return toast('Name required','err');
     const st=isAdmin?$('#dState').value:(myRegion||$('#dState').value);
     if(!st) return toast(isAdmin?'Pick a state':'Your profile has no state set — ask an admin','err');
@@ -6917,12 +6948,24 @@ function dispSheet(d, opts={}){
       retail:$('#dRetail').checked, address:$('#dAddr').value||null, license:$('#dLic').value||null };
     if(edit&&isAdmin) patch.active = $('#dActive').value==='true';
     if(addrChanged){ patch.lat=null; patch.lng=null; }
+    const btn=$('#dSave');
+    lock(true); busy(btn,true);
+    if(!edit && !patch.private && !force){
+      let ms=[];
+      try{ ms=await storesMatch(st, { name, address:patch.address, license:patch.license }, []); }
+      catch(e){ console.warn('the store list check did not run', e); }
+      if(!mine()) return;
+      if(ms.length){ lock(false); busy(btn,false); shown=true; btn.classList.add('hide');
+        regMatchPanel(sh.querySelector('#dMatch'), ms, { mgr:isAdmin, onUse:use, onRevive:revive, onNew:b=>{ busy(b,true); save(true).finally(()=>busy(b,false)); } });
+        return; }
+    }
     let error;
     if(edit) ({error}=await supabase.from('dispensaries').update(patch).eq('id',d.id));
     else     ({error}=await supabase.from('dispensaries').insert({...patch,created_by:state.session.user.id}));
-    if(error) return toast(error.message,'err');
-    toast('Saved','ok'); closeSheet(); await reloadDispensaries(); (opts.onSaved||(()=>adminSettings($('#main'))))();
+    if(error){ if(mine()){ lock(false); busy(btn,false); } return toast(error.message,'err'); }
+    toast('Saved','ok'); await done();
   };
+  $('#dSave').onclick=()=>save(false);
 }
 
 /* ── auto-update: a PWA tab can keep running an old build forever (the shell stays
@@ -7648,6 +7691,20 @@ function schedCss(){
   .sp-checks input{width:auto;margin:0}
   .sp-facts{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:6px 0 4px;font-size:13px}
   .sp-facts .k{color:var(--muted)}
+  /* billed names no store of the list answers to (managers) */
+  .sp-unl{margin:0 0 10px;padding:2px 10px;border:1px solid color-mix(in srgb,var(--orange) 40%,var(--line));border-radius:12px;
+    background:color-mix(in srgb,var(--orange) 6%,var(--panel))}
+  .sp-unl-head,.sp-unl-sub{appearance:none;display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;
+    background:none;border:0;color:var(--text);font:inherit;font-weight:750;font-size:13.5px;padding:9px 0;cursor:pointer;text-align:left}
+  .sp-unl-head .muted,.sp-unl-sub .muted{font-weight:650;font-size:12px;flex:none}
+  .sp-unl-sub{font-weight:650;font-size:12.5px;color:var(--muted);border-top:1px dashed var(--line)}
+  .sp-unl-note{margin:0 0 8px;line-height:1.45}
+  .sp-ulist{display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:10px}
+  @media(min-width:900px){ .sp-ulist{grid-template-columns:1fr 1fr} }
+  .sp-ucard{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:9px 11px;display:flex;flex-direction:column;gap:5px;min-width:0}
+  .sp-uwhy{color:var(--orange);line-height:1.4}
+  .sp-ulink{appearance:none;background:none;border:0;padding:0 2px;color:var(--accent2);font:inherit;font-weight:700;cursor:pointer;text-decoration:underline}
+  .sp-ufull{line-height:1.45;overflow-wrap:anywhere}
   .sb-grp{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding:8px 4px 2px}
   .sb-filt{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:8px 0 0;padding:7px 10px;font-size:12px;
     background:color-mix(in srgb,var(--accent) 12%,transparent);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));border-radius:10px}
@@ -7814,26 +7871,46 @@ const SP_SORTS=[{k:'sales',label:'Highest sales'},{k:'longest',label:'Longest si
 function spDaysBetween(a, b){ return Math.round((Date.parse(b+'T12:00:00')-Date.parse(a+'T12:00:00'))/864e5); }
 // days since a visit, in words: today, yesterday, 12 days ago
 function spAgo(n){ return n==null?'':n<=0?'today':n===1?'yesterday':`${n} days ago`; }
+// the sales app's tierNorm (ar-reports.html; sales_norm in the database): how it compares a billing name with a
+// store's name, sales key, Pistil name and aliases
+function spNorm(s){ return String(s||'').replace(/\s*\[[^\]]*\]\s*$/,'').replace(/[^a-z0-9]+/gi,' ').trim().toLowerCase(); }
+// the board's real stores: on, shared, retail, of this state, not a "* ..." placeholder
+function spBoardStores(stores, st){
+  return (stores||[]).filter(d=>d && d.active!==false && d.state===st && !/^\*\s/.test(d.name||'') && !d.private && d.retail!==false);
+}
+// those stores by every name they answer to in the sales app
+function spNameIndex(stores){
+  const by=new Map();
+  for(const d of stores) for(const k of new Set([d.name, d.sales_key, d.pistil_name, ...(d.aliases||[])].map(spNorm).filter(Boolean))){
+    if(!by.has(k)) by.set(k,[]); by.get(k).push(d.id); }
+  return by;
+}
+// the board's stores a sales account joins: the ones the sales app links it to (dispensary_ids); when it linked none
+// (an empty list: say the store was added after the feed ran), the ones that answer to the account's name by the sales
+// app's own rule; null for an account saved without links (the caller joins it by sales_key)
+function spLinked(x, inBoard, named){
+  if(!Array.isArray(x.dispensary_ids)) return null;
+  if(x.dispensary_ids.length) return x.dispensary_ids.filter(id=>inBoard.has(id));
+  return [...new Set([x.sales_key, x.name].map(spNorm).filter(Boolean).flatMap(k=>named.get(k)||[]))];
+}
 // one row per store of the board: o = {stores, plans, sales, visits, tasks, taskStore(task) -> store id, st, todayIso}
 function spRows(o){
   const planBy=new Map((o.plans||[]).map(x=>[x.dispensary_id,x]));
   const salesBy=new Map((o.sales||[]).map(x=>[x.sales_key,x]));
-  const salesIds=x=>(Array.isArray(x.dispensary_ids)?x.dispensary_ids:null);   // null: saved without links
   const visBy=new Map((o.visits||[]).map(x=>[x.dispensary_id,x]));
-  const stores=(o.stores||[]).filter(d=>d && d.active!==false && d.state===o.st && !/^\*\s/.test(d.name||'')
-    && !d.private && d.retail!==false);
-  // each store's sales accounts: the ones the sales app links to it (dispensary_ids), else (an account saved
-  // without links) the one its sales_key names; an account several stores share shows whole on each, with how many
-  const inBoard=new Set(stores.map(d=>d.id)), accBy=new Map();
+  const stores=spBoardStores(o.stores, o.st);
+  // each store's sales accounts: the ones that join it (spLinked), else (an account saved without links) the one its
+  // sales_key names; an account several stores share shows whole on each, with how many
+  const inBoard=new Set(stores.map(d=>d.id)), named=spNameIndex(stores), accBy=new Map();
   for(const x of o.sales||[]){
-    const ids=(salesIds(x)||[]).filter(id=>inBoard.has(id));
+    const ids=spLinked(x, inBoard, named)||[];
     ids.forEach(id=>{ if(!accBy.has(id)) accBy.set(id,[]); accBy.get(id).push({ x, n:ids.length }); });
   }
   const shared=new Map(); stores.forEach(d=>{ if(d.sales_key) shared.set(d.sales_key,(shared.get(d.sales_key)||0)+1); });
   const accFor=d=>{
     if(accBy.has(d.id)) return accBy.get(d.id);
     const x=d.sales_key?salesBy.get(d.sales_key):null;
-    return x&&!salesIds(x)?[{ x, n:shared.get(d.sales_key)||1 }]:[];
+    return x&&!Array.isArray(x.dispensary_ids)?[{ x, n:shared.get(d.sales_key)||1 }]:[];
   };
   const open=new Map();
   for(const v of o.tasks||[]){
@@ -7885,6 +7962,86 @@ function spFilter(rows, f){
     recent:(a,b)=>((a.daysSince??1e9)-(b.daysSince??1e9))||nm(a,b), name:nm }[f.sort||'sales']||nm;
   return out.sort(cmp);
 }
+// Gianni 2026-11-25 (Amanda: "Can you add the new shops to the store view?"; Gianni: "she should be able to add them
+// manually without asking me"): the board's billed accounts that join no store of the board at all (spLinked, or for
+// an account saved without links its sales_key), newest first order first, each with the registry sync's note on it
+// (store_registry_review, by sales key) and whether that note says it isn't a store. o = {stores, sales, review, st}
+function spUnlinked(o){
+  const stores=spBoardStores(o.stores, o.st), inBoard=new Set(stores.map(d=>d.id)), named=spNameIndex(stores);
+  const keys=new Set(stores.map(d=>d.sales_key).filter(Boolean)), rv=new Map();
+  (o.review||[]).forEach(r=>{ const k=r.sales_key||spNorm(r.customer); if(k && !rv.has(k)) rv.set(k, r); });
+  return (o.sales||[]).filter(x=>{ const ids=spLinked(x, inBoard, named); return ids ? !ids.length : !keys.has(x.sales_key); })
+    .map(x=>{ const r=rv.get(x.sales_key)||rv.get(spNorm(x.name))||null;
+      return { name:x.name||x.sales_key||'', salesKey:x.sales_key||'', net:x.net==null?null:Number(x.net), orders:Number(x.orders)||0,
+        firstOrder:x.first_order||null, lastOrder:x.last_order||null, channel:x.channel||'', review:r, notStore:spNotStore(r) }; })
+    .sort((a,b)=>String(b.firstOrder||'').localeCompare(String(a.firstOrder||''))||a.name.localeCompare(b.name));
+}
+// the sync's note says the account is a distributor or maker, not a store: its kind says so (unless what isn't a store
+// is the registry row the account answers to), or its license is a California distributor's (C11-); a California
+// retailer's license (C9-, C10-) is a store whatever the note says
+function spNotStore(r){
+  if(!r) return false;
+  const lic=String(r.license||'').trim();
+  if(/^C(9|10)-/i.test(lic)) return false;
+  if(/not.?a.?store|distribut|maker|manufactur/i.test(r.kind||'')) return !/^answers to registry row/i.test(String(r.why||'').trim());
+  return /^C11-/i.test(lic);
+}
+// why the registry sync didn't add the account itself, in a few words (the longer reason is spWhyPlain); nameOf(id)
+// names a store of the list. The kinds are the sync's (~/ar-automation/lib/ca-registry.mjs): lookalike, not-a-store,
+// same-door, other-door, several-rows, inactive-row, dead-licence, licence, address, held, other.
+function spHeldWhy(r, nameOf){
+  if(!r) return 'The store sync has no note on it yet';
+  const k=String(r.kind||''), c=(r.candidate_id&&nameOf&&nameOf(r.candidate_id))||(/registry row "([^"]+)"/.exec(r.why||'')||[])[1]||'';
+  if(spNotStore(r)) return 'A distributor or maker, not a store';
+  if(/not.?a.?store/i.test(k)) return c?`It answers to ${c}, which isn't marked as a store`:'It answers to a place that isn\'t marked as a store';
+  if(/lookalike/i.test(k)) return c?`It may be ${c}, so the sync waited`:'It may be a store already in the list, so the sync waited';
+  if(/same.?door/i.test(k)) return c?`Same address as ${c}, under a new license`:'Same address as a store in the list, under a new license';
+  if(/other.?door/i.test(k)) return c?`Its license is on ${c}, at another address`:'Its license is on another store, at another address';
+  if(/several/i.test(k)) return 'More than one store answers to this name';
+  if(/inactive/i.test(k)) return c?`It matches ${c}, which is turned off or not marked as a store`:'It matches a store that is turned off or not marked as a store';
+  if(/dead/i.test(k)) return 'Its license is no longer active';
+  if(/licen[cs]e/i.test(k)) return 'Its license could not be confirmed';
+  if(/address/i.test(k)) return 'Its address does not match the store list';
+  if(/held/i.test(k)) return 'Not decided yet: the sync tries again on its next run';
+  return 'Left for a person to check';
+}
+// The longer reason behind "Why?", in plain words from the note's own fields (the state's license, licensee and
+// address, and the store it was compared with), never the sync's log sentence, which talks about registry rows and
+// the DCC. nameOf(id) names a store of the list.
+function spWhyPlain(r, nameOf){
+  if(!r) return '';
+  const k=String(r.kind||''), c=(r.candidate_id&&nameOf&&nameOf(r.candidate_id))||(/registry row "([^"]+)"/.exec(r.why||'')||[])[1]||'';
+  const lic=r.license?`license ${r.license}${r.legal_name?` (${r.legal_name})`:''}`:'', at=r.address?` at ${r.address}`:'';
+  const out=[];
+  if(lic||at) out.push(`The state lists it${lic?' under '+lic:''}${at}.`);
+  if(spNotStore(r)) out.push('That is a distributor\'s or maker\'s license, not a store\'s, so the sync didn\'t add it. Add it only if the team visits it.');
+  else if(/not.?a.?store/i.test(k)) out.push(c?`Its name belongs to ${c}, which is marked as not a store. If ${c} is this store, change that in Locations.`:'Its name belongs to a place marked as not a store.');
+  else if(/lookalike/i.test(k)) out.push(c?`${c} may be the same store: a similar name, or the same street with no house number to compare. If it is, tap It's one of our stores; if not, Add as a store.`:'A store in the list may be the same one. If it is, tap It\'s one of our stores; if not, Add as a store.');
+  else if(/same.?door/i.test(k)) out.push(c?`${c} is at the same address under another license. If it's the same shop under new owners, tap It's one of our stores and pick ${c}.`:'A store in the list is at the same address under another license.');
+  else if(/other.?door/i.test(k)) out.push(c?`The list has this license on ${c}, at another address. Check which address is right before adding it.`:'The list has this license on another store, at another address.');
+  else if(/several/i.test(k)) out.push('More than one store in the list answers to this name, so the sync can\'t tell which one it is.');
+  else if(/inactive/i.test(k)) out.push(c?`It matches ${c}, which is turned off. If it's this store, turn it back on in Locations.`:'It matches a store that is turned off.');
+  else if(/dead/i.test(k)) out.push('The state lists its license as no longer active, so the sync didn\'t add it.');
+  else if(/licen[cs]e/i.test(k)) out.push('The billing systems don\'t agree on its license, or the state has no record of it, so the sync couldn\'t tell which store it is.');
+  else if(/address/i.test(k)) out.push('The address the billing systems deliver to doesn\'t match the store list.');
+  else if(/held/i.test(k)) out.push('The sync tries again on its next run.');
+  else out.push('The sync left it for a person to check.');
+  return out.join(' ');
+}
+// Stores whose license the state lists as no longer active while the shop at that door now trades under a new one
+// (the sync linked the new billing name to the store and left the license for a person: kind same-door, not a
+// conflict). Gone as soon as the store carries the new license. o = {stores, review, st}
+function spLicenseNotes(o){
+  const byId=new Map(spBoardStores(o.stores, o.st).map(d=>[d.id,d]));
+  const lk=x=>{ const t=String(x||'').toUpperCase().replace(/[^A-Z0-9]/g,''); return /^C\d{1,2}\d{7}LIC$/.test(t)?t.slice(0,-3):t; };
+  const seen=new Set();
+  return (o.review||[]).filter(r=>/same.?door/i.test(r.kind||'') && !r.conflict && r.license && byId.has(r.candidate_id))
+    .map(r=>({ store:byId.get(r.candidate_id), license:r.license, legal:r.legal_name||'', customer:r.customer||'' }))
+    .filter(x=>lk(x.store.license)!==lk(x.license) && !seen.has(x.store.id) && seen.add(x.store.id))
+    .sort((a,b)=>a.store.name.localeCompare(b.store.name));
+}
+// a billing name as a store's name: without the sales app's tags ("[At-Risk] Harvest of Chatsworth")
+function spCleanName(s){ return String(s||'').replace(/\[[^\]]*\]/g,' ').replace(/\s+/g,' ').trim(); }
 // A store's team after a bulk change: 'add' the names, make them the 'whole' team, 'remove' them, or 'swap'
 // (hand over): the names take the place of `from` on a team that has `from`, and a team without them is left
 // as it is. Always a new array, no name twice.
@@ -8937,22 +9094,26 @@ function schedReportSheet(o){
 }
 // ── Stores page (the Schedule's second view) ───────────────────────────────────────────────────────
 // Read once per board, again after 5 minutes or a change: the plans, the 6-month sales (managers only; the
-// database refuses everyone else) and what the BAs logged. The store list itself is state.dispensaries.
+// database refuses everyone else), what the BAs logged and, for managers, the registry sync's notes on billed
+// names it couldn't place (store_registry_review: a read that fails, say before supabase/ba-store-registry-add.sql
+// is applied, only leaves the notes out). The store list itself is state.dispensaries.
 async function storesLoad(force){
   const S=state.sched, st=state.schedState||'CA';
   if(!force && S.storesData && S.storesData.st===st && Date.now()-S.storesData.at<300000) return S.storesData;
   if(state.dispPending) await state.dispPending;
   const mgr=state.profile?.role==='admin';
-  const [pl, sa, vi]=await Promise.all([
+  const [pl, sa, vi, rv]=await Promise.all([
     supabase.from('store_plan').select('*'),
-    mgr ? supabase.from('store_sales').select('sales_key,name,net,orders,last_order,channel,window_from,window_to,updated_at,dispensary_ids').eq('state',st) : Promise.resolve({ data:[] }),
+    mgr ? supabase.from('store_sales').select('sales_key,name,net,orders,first_order,last_order,channel,window_from,window_to,updated_at,dispensary_ids').eq('state',st) : Promise.resolve({ data:[] }),
     supabase.rpc('store_visit_summary',{ p_state:st, p_since:schedIso(schedAdd(new Date(),-365)) }),
+    mgr ? supabase.from('store_registry_review').select('customer,sales_key,kind,why,conflict,license,legal_name,address,candidate_id,updated_at').eq('state',st)
+      .then(r=>r, e=>({ data:null, error:e })) : Promise.resolve({ data:[] }),
   ]);
   const bad=[pl,sa,vi].find(r=>r&&r.error);
   if(bad && !S.storesData) throw bad.error;
   const keep=S.storesData&&S.storesData.st===st?S.storesData:{};
   S.storesData={ st, at:Date.now(), plans:pl.error?keep.plans||[]:pl.data||[], sales:sa.error?keep.sales||[]:sa.data||[],
-    visits:vi.error?keep.visits||[]:vi.data||[], err:bad?(bad.error.message||'error'):'' };
+    visits:vi.error?keep.visits||[]:vi.data||[], review:rv.error?keep.review||[]:rv.data||[], err:bad?(bad.error.message||'error'):'' };
   return S.storesData;
 }
 function storesRows(){
@@ -8982,7 +9143,7 @@ async function storesRender(m){
       <button class="btn sm" id="spRetry" style="margin-left:6px">Try again</button> <button class="btn sm ghost" id="spBack">Back to the calendar</button></div>`;
       $('#spRetry').onclick=()=>storesRender(m); $('#spBack').onclick=()=>{ S.view='cal'; schedRender(m); }; return; }
     if(!here()) return;
-  }else load.then(d=>{ if(d!==had && here() && $('#spList')) storesDrawList(m); }, ()=>{});
+  }else load.then(d=>{ if(d!==had && here() && $('#spList')){ storesDrawUnl(m); storesDrawList(m); } }, ()=>{});
   const F=S.storesF, rows=storesRows();
   const terrs=[...new Set([...(SP_TERRITORIES[st]||[]), ...rows.map(r=>r.territory).filter(Boolean)])];
   const people=storesPeople(rows), known=schedKnownPeople();
@@ -8996,10 +9157,12 @@ async function storesRender(m){
     ${switcher}
     <div class="sb-nav">
       <button class="btn sm ghost" id="spCal">📅 Calendar</button>
-      <div class="sb-wk">Stores</div>
+      <div class="sb-wk" style="min-width:0">Stores</div>
       <span class="grow"></span>
+      ${mgr?'<button class="btn sm" id="spAdd" title="Add a store to the shared store list">＋ Add store</button>':''}
       <button class="btn sm ghost" id="spReload" title="Read the stores again">⟳</button>
     </div>
+    <div id="spUnl"></div>
     <div class="sp-filters">
       <input id="spQ" type="search" placeholder="Search stores or addresses…" value="${esc(F.q)}" autocomplete="off">
       <select id="spTerr" data-searchable>${opt([{k:'all',label:'All territories'},...terrs.map(t=>({k:t,label:t})),{k:'~none',label:'No territory set'}],F.territory)}</select>
@@ -9017,7 +9180,13 @@ async function storesRender(m){
   const titles={spTerr:'Territory', spPerson:'Team member', spShow:'Show', spSort:'Sort by'};
   m.querySelectorAll('select[data-searchable]').forEach(x=>searchifySelect(x, titles[x.id]));
   $('#spCal').onclick=()=>{ S.view='cal'; schedRender(m); };
-  $('#spReload').onclick=async()=>{ try{ await storesLoad(true); await schedReloadTasks(); }catch(e){ toast('Couldn\'t refresh: '+(e.message||e),'err'); } if(S.view==='stores') storesDrawList(m); };
+  // the store list itself too, so a store the registry sync (or someone else) added since this page opened shows up
+  $('#spReload').onclick=async()=>{
+    try{ const [listed]=await Promise.all([reloadDispensaries(), storesLoad(true)]); await schedReloadTasks();
+      if(!listed) toast('Couldn\'t read the store list again; showing the one from before.','err'); }
+    catch(e){ toast('Couldn\'t refresh: '+(e.message||e),'err'); }
+    if(S.view==='stores'){ storesDrawUnl(m); storesDrawList(m); } };
+  if(mgr) $('#spAdd').onclick=()=>storeAddSheet(m);
   m.querySelectorAll('[data-sbst]').forEach(b=>b.onclick=()=>{ const ns=b.dataset.sbst; if(ns===state.schedState) return;
     state.schedState=ns; state.scheduleWb=schedBoard()?.workbook_id||null;
     if(!EMBED) try{ localStorage.setItem('ba.schedstate',ns); }catch(_){}
@@ -9035,6 +9204,7 @@ async function storesRender(m){
     $('#spAssign').onclick=()=>storesAssignSheet(m);
     $('#spClear').onclick=()=>{ S.storesSel.clear(); storesDrawList(m); };
   }
+  storesDrawUnl(m);
   storesDrawList(m);
 }
 // the list, the count line and "Show more"; also after every filter change and save. trim: a search or filter
@@ -9088,6 +9258,226 @@ function storesDrawList(m, trim){
   list.querySelectorAll('[data-sptask]').forEach(b=>b.onclick=()=>{ const r=byId.get(b.dataset.sptask); if(!r) return;
     schedTaskSheet(today, null, { account:r.name, kind:'followup', driver:spAssignee(r.team), onSaved:reopen }); });
   list.querySelectorAll('[data-spprof]').forEach(b=>b.onclick=()=>{ const r=byId.get(b.dataset.spprof); if(r) storeProfileSheet(r, m); });
+}
+// "Billed but not in the store list" (managers, Gianni 2026-11-25): what the sales app billed in the last 6 months that
+// no store of this list answers to (spUnlinked), so its sales show nowhere here, with why the registry sync didn't add
+// it itself, and the two fixes: add it as a store, or link it to the store it is. Folded to its title line when there
+// are more than 3; distributors and makers fold under a line of their own; nothing at all when there are none.
+function storesDrawUnl(m){
+  const S=state.sched, st=state.schedState||'CA', D=S.storesData||{}, box=$('#spUnl'); if(!box) return;
+  const mgr=state.profile?.role==='admin';
+  const all=mgr?spUnlinked({ stores:state.dispensaries, sales:D.sales, review:D.review, st }):[];
+  const shops=all.filter(u=>!u.notStore), others=all.filter(u=>u.notStore), list=[...shops, ...others];
+  const lic=mgr?spLicenseNotes({ stores:state.dispensaries, review:D.review, st }):[];
+  if(!list.length && !lic.length){ box.innerHTML=''; return; }
+  S.storesUnl=S.storesUnl||{};
+  const open=S.storesUnl.open ?? shops.length<=3, oth=!!S.storesUnl.oth;
+  const nameOf=id=>((state.dispensaries||[]).find(d=>d.id===id)||{}).name||'';
+  const card=u=>{ const i=list.indexOf(u), r=u.review, full=r?spWhyPlain(r, nameOf):'';
+    const facts=[u.orders?`${u.orders} order${u.orders!==1?'s':''}`:'', u.firstOrder?'first '+spShort(u.firstOrder):'', u.channel].filter(Boolean);
+    return `<div class="sp-ucard">
+      <div class="sp-name">${esc(u.name)}</div>
+      <div class="small">${u.net!=null?`<b>${spMoney(u.net)}</b> `:''}<span class="muted">${u.net!=null?'in 6 months':''}${facts.length?(u.net!=null?' · ':'')+esc(facts.join(' · ')):''}</span></div>
+      <div class="small sp-uwhy">${esc(spHeldWhy(r, nameOf))}${full?` <button type="button" class="sp-ulink" data-spuwhy="${i}" aria-expanded="false">Why?</button>`:''}</div>
+      ${full?`<div class="small muted sp-ufull" data-spufull="${i}" hidden>${esc(full)}</div>`:''}
+      <div class="sp-acts"><button class="btn sm primary" data-spuadd="${i}">Add as a store</button><button class="btn sm ghost" data-spulink="${i}">It's one of our stores</button></div>
+    </div>`; };
+  const n=others.length, othLine=n===1?'1 distributor or maker, not a store':`${n} distributors and makers, not stores`;
+  const licHtml=lic.length?`<div class="sp-unl sp-lic">
+    <div class="sp-unl-head" style="cursor:default"><span>New license to put on ${lic.length===1?'a store':lic.length+' stores'}</span></div>
+    <div class="sp-ulist">${lic.map((x,i)=>`<div class="sp-ucard">
+      <div class="sp-name">${esc(x.store.name)}</div>
+      <div class="small">Its license ${esc(x.store.license||'')} is no longer active. The shop at this address now trades under ${esc(x.license)}${x.legal?' ('+esc(x.legal)+')':''}${x.customer?', billed as '+esc(x.customer):''}.</div>
+      <div class="sp-acts"><button class="btn sm primary" data-splic="${i}">Update it</button></div></div>`).join('')}</div></div>`:'';
+  if(!list.length){ box.innerHTML=licHtml; storesLicWire(m, box, lic); return; }
+  box.innerHTML=licHtml+`<div class="sp-unl">
+    ${shops.length?`<button type="button" class="sp-unl-head" id="spUnlHead" aria-expanded="${open}"><span>Billed but not in the store list (${shops.length})</span><span class="muted">${open?'Hide':'Show'}</span></button>`:''}
+    ${shops.length&&open?`<div class="small muted sp-unl-note">Billed in the last 6 months, but no store here answers to these names, so their sales show nowhere on this page.</div>
+      <div class="sp-ulist">${shops.map(card).join('')}</div>`:''}
+    ${n&&(open||!shops.length)?`<button type="button" class="sp-unl-sub" id="spUnlOth" aria-expanded="${oth}"><span>${othLine}</span><span class="muted">${oth?'Hide':'Show'}</span></button>
+      ${oth?`<div class="sp-ulist">${others.map(card).join('')}</div>`:''}`:''}
+  </div>`;
+  const hb=$('#spUnlHead'); if(hb) hb.onclick=()=>{ S.storesUnl.open=!open; storesDrawUnl(m); };
+  const ob=$('#spUnlOth'); if(ob) ob.onclick=()=>{ S.storesUnl.oth=!oth; storesDrawUnl(m); };
+  box.querySelectorAll('[data-spuwhy]').forEach(b=>b.onclick=()=>{ const f=box.querySelector(`[data-spufull="${b.dataset.spuwhy}"]`); if(!f) return;
+    f.hidden=!f.hidden; b.setAttribute('aria-expanded', String(!f.hidden)); b.textContent=f.hidden?'Why?':'Less'; });
+  box.querySelectorAll('[data-spuadd]').forEach(b=>b.onclick=()=>storeAddSheet(m, { account:list[+b.dataset.spuadd] }));
+  box.querySelectorAll('[data-spulink]').forEach(b=>b.onclick=()=>storeLinkPick(m, list[+b.dataset.spulink]));
+  storesLicWire(m, box, lic);
+}
+// "Update it": the store's Locations form with the new license and licensee filled in; nothing changes until Save
+function storesLicWire(m, box, lic){
+  box.querySelectorAll('[data-splic]').forEach(b=>b.onclick=()=>{ const x=lic[+b.dataset.splic]; if(!x) return;
+    const d=(state.dispensaries||[]).find(r=>r.id===x.store.id)||x.store;
+    dispSheet({ ...d, license:x.license, legal_name:x.legal||d.legal_name }, { onSaved:()=>storesAfterRegistry(m) }); });
+}
+// the shared store list's own checks and writes (supabase/ba-store-registry-add.sql), in plain words when the
+// database update isn't there yet
+function storesErr(e){
+  const t=String((e&&e.message)||e||'');
+  return /PGRST202|Could not find the function|schema cache/i.test(t+' '+((e&&e.code)||''))
+    ? 'Adding stores here isn\'t switched on yet: the database update for it hasn\'t been applied.' : t;
+}
+// the registry rows that may already be this store: p = {name, address, license}, names = other names it goes by
+async function storesMatch(st, p, names){
+  const { data, error }=await supabase.rpc('store_registry_match',{ p_state:st, p_name:p.name, p_address:p.address||null,
+    p_license:p.license||null, p_names:(names||[]).filter(Boolean) });
+  if(error) throw error;
+  return Array.isArray(data)?data:[];
+}
+async function storesLinkRpc(id, alias){
+  const { data, error }=await supabase.rpc('store_registry_link',{ p_id:id, p_alias:alias });
+  if(error) throw error;
+  return data||{};
+}
+// turn a store that was turned off back on (managers): this one row only; a change the database didn't make is an error
+async function storesTurnOn(id){
+  const { data, error }=await supabase.from('dispensaries').update({ active:true }).eq('id', id).select('id');
+  if(error) throw error;
+  if(Array.isArray(data) && !data.length) throw new Error('That store couldn\'t be turned back on from this account.');
+}
+// after a store was added, linked or turned back on: the store list and the Stores data again, then the page
+async function storesAfterRegistry(m){
+  const S=state.sched;
+  await Promise.all([reloadDispensaries(), S?storesLoad(true).catch(()=>{}):null]);
+  if(S && state.sched===S && S.view==='stores' && schedShowing() && m.isConnected) storesRender(m);
+}
+// What store_registry_match found, in a sheet's box: each row with what it is and why it may be this store, and Use
+// this one, or Turn it back on (managers) for one that is turned off. Below them Add as a new store, which takes a
+// second tap, and isn't offered over an active store with the same license (one license is one store; the database
+// refuses it too). o = {mgr, account (a billing name is being placed), onUse(row), onRevive(row), onNew()}.
+function regMatchPanel(box, ms, o){
+  const lic=ms.find(x=>x.match==='license' && x.active!==false);
+  box.innerHTML=`<div class="rm-box">
+    <div class="rm-h">Already in the store list?</div>
+    <div class="small muted">${ms.length===1?'This store':'These stores'} may be the one you're adding.</div>
+    ${ms.map((x,i)=>{ const off=x.active===false, notShop=x.retail===false;
+      const facts=[x.address, x.license?'License '+x.license:''].filter(Boolean).join(' · ');
+      const act=off ? (o.mgr?`<button class="btn sm" data-rmon="${i}">Turn it back on</button>`:'<span class="small muted">Turned off: ask a manager to turn it back on.</span>')
+        : notShop && o.account ? '<span class="small muted">Marked as not a store (an errand stop): change that in Locations first if this is it.</span>'
+        : `<button class="btn sm" data-rmuse="${i}">Use this one</button>`;
+      return `<div class="rm-card">
+        <div class="rm-name">${esc(x.name)}${off?' <span class="rm-tag">turned off</span>':''}${notShop?' <span class="rm-tag">not a store</span>':''}</div>
+        ${facts?`<div class="small muted">${esc(facts)}</div>`:''}
+        ${x.reason?`<div class="small rm-why">${esc(x.reason)}</div>`:''}
+        <div class="rm-acts">${act}</div></div>`; }).join('')}
+    ${lic?`<div class="small rm-stop">${esc(lic.name)} already has license ${esc(lic.license)}. One license is one store, so this can't be added as a new one: use that store, or correct its license first.</div>`
+      :'<button class="btn block" id="rmNew" style="margin-top:10px">Add as a new store</button><div class="small muted" id="rmNewWhy"></div>'}
+  </div>`;
+  box.querySelectorAll('[data-rmuse]').forEach(b=>b.onclick=()=>o.onUse(ms[+b.dataset.rmuse], b));
+  box.querySelectorAll('[data-rmon]').forEach(b=>b.onclick=()=>o.onRevive(ms[+b.dataset.rmon], b));
+  const nb=box.querySelector('#rmNew');
+  // the second tap must be on purpose: one that comes within 0.7 s of the first is the same double tap
+  if(nb){ let armedAt=0; nb.onclick=()=>{
+    if(!armedAt){ armedAt=Date.now(); nb.textContent='Tap again to add it as a new store'; nb.classList.add('rm-armed');
+      box.querySelector('#rmNewWhy').textContent='Only if none of the stores above is this one.'; return; }
+    if(Date.now()-armedAt<700) return;
+    o.onNew(nb); }; }
+  box.scrollIntoView({ block:'nearest' });
+}
+// Add a store to the shared store list (managers): empty from "＋ Add store", or filled from a billed account and the
+// registry sync's note on it (its name without the [At-Risk] style tags, license, legal name and premises; the billing
+// name goes with it). Add checks the list first (storesMatch) and shows what may already be this store; adding a new
+// one anyway takes a second tap. A change to the name, address or license checks again. Errors keep the form open with
+// what was typed; a save that fails after the sheet was closed offers it back.
+function storeAddSheet(m, o={}){
+  const st=state.schedState||'CA', u=o.account||null, r=(u&&u.review)||{}, f=o.prefill||null;
+  const terrs=[...new Set([...(SP_TERRITORIES[st]||[]), ...storesRows().map(x=>x.territory).filter(Boolean), ...(f&&f.territory?[f.territory]:[])])];
+  const val=(k, def)=>esc(f?f[k]||'':def||'');
+  openSheet(`<h3 style="margin:0 0 2px">Add a store</h3>
+    <div class="small muted">${u?`Billed as <b>${esc(u.name)}</b>${u.net!=null?` · ${spMoney(u.net)} in 6 months`:''}. The store will answer to that name, so its sales show here and in the sales app.`
+      :`Adds it to the shared ${esc(st)} store list, the one the sales app uses too.`}</div>
+    <label class="fl">Name</label><input id="saName" value="${val('name', u?spCleanName(u.name):'')}" autocomplete="off">
+    <label class="fl">Address</label><textarea id="saAddr" placeholder="start typing a street address…" autocomplete="off">${val('address', r.address)}</textarea>
+    <div id="saSug" class="tsug hide"></div>
+    <label class="fl">License # <span class="muted">(optional)</span></label><input id="saLic" value="${val('license', r.license)}" autocomplete="off">
+    <label class="fl">Legal name <span class="muted">(optional)</span></label><input id="saLegal" value="${val('legal_name', r.legal_name)}" autocomplete="off">
+    <label class="fl">Territory</label>
+    <select id="saTerr" data-searchable><option value="">None</option>${terrs.map(t=>`<option${f&&t===f.territory?' selected':''}>${esc(t)}</option>`).join('')}</select>
+    <div id="saMatch"></div>
+    <div id="saMsg" class="small" style="color:var(--red);margin-top:8px"></div>
+    <button class="btn primary block" id="saSave" style="margin-top:12px">Add store</button>
+    <button class="btn ghost block" id="saCancel" style="margin-top:8px">Cancel</button>`);
+  const sh=$('#sheet'), mine=()=>$('#sheet')===sh, q=s=>sh.querySelector(s);
+  const msg=t=>{ if(mine()) q('#saMsg').textContent=t||''; };
+  q('#saCancel').onclick=closeSheet;
+  attachPlaceTypeahead(q('#saAddr'), q('#saSug'), ()=>{}, {addressOnly:true});
+  const read=()=>({ name:q('#saName').value.trim().replace(/\s+/g,' '), address:q('#saAddr').value.trim(), license:q('#saLic').value.trim(),
+    legal_name:q('#saLegal').value.trim(), territory:q('#saTerr').value||'' });
+  // what the check found is only for the fields it checked
+  let shown=false;
+  const stale=()=>{ if(!shown) return; shown=false; q('#saMatch').innerHTML=''; q('#saSave').classList.remove('hide'); };
+  ['#saName','#saAddr','#saLic'].forEach(s=>q(s).addEventListener('input', stale));
+  const lock=on=>sh.querySelectorAll('input,textarea,select,.selpick,#saMatch button,#saSave').forEach(x=>{ x.disabled=on; });
+  const failed=(p, e)=>{
+    if(mine()){ lock(false); msg(storesErr(e)); return; }
+    toastAction(`Couldn't add ${p.name}.`,'Open it',()=>storeAddSheet(m, { ...o, prefill:p }), 30000);
+  };
+  const add=async force=>{
+    const p=read();
+    if(!p.name){ msg('Give the store a name.'); q('#saName').focus(); return; }
+    lock(true); msg('');
+    try{
+      if(!force){
+        const ms=await storesMatch(st, p, u?[u.name]:[]);
+        if(!mine()) return;
+        if(ms.length){ lock(false); shown=true; q('#saSave').classList.add('hide');
+          regMatchPanel(q('#saMatch'), ms, { mgr:true, account:u, onNew:()=>add(true), onUse:use, onRevive:revive }); return; }
+      }
+      const { error }=await supabase.rpc('store_registry_add',{ p:{ name:p.name, state:st, address:p.address||null, license:p.license||null,
+        legal_name:p.legal_name||null, billing:u?u.name:null, territory:p.territory||null, force:!!force } });
+      if(error) throw error;
+      if(mine()) closeSheet();
+      toast(`Added ${p.name}`,'ok');
+      await storesAfterRegistry(m);
+    }catch(e){ failed(p, e); }
+  };
+  // Use this one: from a billed account, that store answers to the billing name from now on; else it is already there
+  const use=async row=>{
+    const p=read(); lock(true); msg('');
+    try{
+      let words=`${row.name} is already in the store list`;
+      if(u){ const res=await storesLinkRpc(row.id, u.name); words=res.added===false?`${row.name} already answers to ${u.name}`:`Linked ${u.name} to ${row.name}`; }
+      else if(state.sched?.storesF && storesRows().some(x=>x.id===row.id)){
+        const S2=state.sched; S2.storesF.q=row.name; S2.storesF.limit=60;
+        // a search change keeps ticked only the stores it still shows, so Assign never writes one off screen
+        const still=new Set(spFilter(storesRows(), S2.storesF).slice(0, S2.storesF.limit).map(x=>x.id));
+        if(S2.storesSel) [...S2.storesSel].forEach(id=>{ if(!still.has(id)) S2.storesSel.delete(id); }); }
+      if(mine()) closeSheet();
+      toast(words,'ok');
+      await storesAfterRegistry(m);
+    }catch(e){ failed(p, e); }
+  };
+  const revive=async row=>{
+    const p=read(); lock(true); msg('');
+    try{
+      await storesTurnOn(row.id);
+      let words=`Turned ${row.name} back on`;
+      if(u){ try{ await storesLinkRpc(row.id, u.name); words+=` and linked ${u.name} to it`; }
+        catch(e){ words+=`, but couldn't link ${u.name} to it: ${storesErr(e)}`; } }
+      if(mine()) closeSheet();
+      toast(words, /couldn't/.test(words)?'err':'ok', /couldn't/.test(words)?9000:2600);
+      await storesAfterRegistry(m);
+    }catch(e){ failed(p, e); }
+  };
+  q('#saSave').onclick=()=>add(false);
+  if(!u && !f) setTimeout(()=>{ if(mine()) q('#saName').focus(); }, 60);
+}
+// "It's one of our stores": pick the board's store this billed account is (by name or address), and it answers to the
+// billing name from then on (store_registry_link), so this page and the sales app put the account's sales there. The
+// store the sync thought it might be comes first.
+function storeLinkPick(m, u){
+  const st=state.schedState||'CA', cand=u.review&&u.review.candidate_id;
+  const stores=spBoardStores(state.dispensaries, st).slice().sort((a,b)=>(a.id===cand?-1:b.id===cand?1:0)||a.name.localeCompare(b.name));
+  cellPickerSheet({ title:`Which store is ${u.name}?`, multi:false, selected:[],
+    options:stores.map(d=>({ id:d.id, name:d.name+(d.address?' · '+d.address:'')+(d.id===cand?' (the store sync\'s guess)':''),
+      search:[dispSearchText(d), d.pistil_name, ...(d.aliases||[])].filter(Boolean).join(' ') })),
+    onSave:async ids=>{ const d=stores.find(x=>x.id===ids[0]); if(!d) return;
+      if(!confirm(`Link "${u.name}" to ${d.name}? Its sales will count there, on this page and in the sales app.`)) return;
+      try{ const res=await storesLinkRpc(d.id, u.name);
+        toast(res.added===false?`${d.name} already answers to ${u.name}`:`Linked ${u.name} to ${d.name}`,'ok');
+        await storesAfterRegistry(m);
+      }catch(e){ toast('Couldn\'t link it: '+storesErr(e),'err',9000); } } });
 }
 // who a visit or task planned from a store starts assigned to: a manager plans for the store's first team
 // member, a BA for herself

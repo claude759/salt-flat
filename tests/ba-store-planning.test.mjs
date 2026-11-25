@@ -63,15 +63,18 @@ test('sales: the stores the sales app links an account to, else the sales_key; s
     { sales_key: 'goat global wholesale', net: 50, orders: 1, last_order: '2026-11-12', dispensary_ids: ['a', 'd', 'n'] },
     // an account saved without links: joined by sales_key
     { sales_key: 'lemonnade', net: 38045, orders: 9, dispensary_ids: null },
-    // linked to no store of the board (a distributor): shown nowhere, even where a sales_key would match
-    { sales_key: 'kush alley', net: 7, orders: 1, dispensary_ids: [] },
+    // linked to no store by the feed (2026-11-25: say the store was added after it ran): the board's stores that answer
+    // to its name by the sales app's rule, here d by its sales key
+    { sales_key: 'kush alley', name: 'Kush Alley', net: 7, orders: 1, dispensary_ids: [] },
+    // linked to nothing and answered to by no store (a distributor): shown nowhere
+    { sales_key: 'torrey holistics inc', name: 'TORREY HOLISTICS INC', net: 3200, orders: 1, dispensary_ids: [] },
   ] });
   const by = id => rows.find(r => r.id === id);
   assert.equal(by('a').sales, 150); assert.equal(by('a').orders, 3); assert.equal(by('a').lastOrder, '2026-11-12');
   assert.equal(by('a').salesShared, 2);           // the wholesale account is shared with d (n is another state's store)
   assert.equal(by('b').sales, null);              // same sales_key, but the sales app doesn't link it
-  assert.equal(by('d').sales, 50); assert.equal(by('d').salesShared, 2);   // not the unlinked 'kush alley' 7
-  assert.equal(by('c').sales, 38045); assert.equal(by('c').salesShared, 1);
+  assert.equal(by('d').sales, 57); assert.equal(by('d').salesShared, 2);   // the shared wholesale 50 and 'kush alley' 7
+  assert.equal(by('c').sales, 38045); assert.equal(by('c').salesShared, 1);   // so the distributor's 3200 is on no store
 });
 
 test('filters: territory, person, training, recency, open tasks; search by name or address', () => {
