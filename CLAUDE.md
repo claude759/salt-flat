@@ -883,6 +883,8 @@ launch. The check fails if one of the three pieces is missing.
   reading was held to (dashed) and Growlink's lights-off hours shaded, with the low, high and now (`CM.glDay`,
   `ovChartHTML`); the room's log is read on the first press and again when over 5 minutes old. CO2 reads "lights off"
   instead of a plan in the dark, since CO2 is held to the plan only with the lights on.
+  **Next trims list Metrc's strains** (Gianni, same day: "they should come from real time metrc data"): each room's strains
+  in flower in Metrc now with their plants, and the lights of the zone that holds each (none for a strain on no zone).
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went

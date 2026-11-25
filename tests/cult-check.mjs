@@ -873,6 +873,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     assert.deepEqual([D.dark.length, new Date(D.dark[0][0]).toISOString(), D.min, D.max], [1, '2026-11-25T09:00:00.000Z', 75, 79], 'one dark stretch (1 AM to 1 PM), low and high'); n++;
   }
   ok(/m === 'co2' && gv\.lights && !gv\.lights\.on \? 'lights off'/.test(html) && /data-ovm="\$\{m\}" role="button" tabindex="0"/.test(html), "the Overview's Growlink readings open their 24-hour graph; CO2 says lights off in the dark");
+  ok(/V\.placed\.slots\.filter\(z => z\.name && z\.plants > 0\)[\s\S]{0,200}V\.placed\.unplaced\.filter\(x => x\.plants > 0\)/.test(html), "the Overview's next trims list the strains Metrc has in flower in the room, with their plants");
   ok(/isOpen\('env'\) \|\| isOpen\('chart'\)/.test(html) && /if \(pc\) pc\.innerHTML = glChartsHTML\(D\);/.test(html) && !/h \+= glChartsHTML\(D\);/.test(html), "this crop's charts fold under Growlink; the weekly table keeps the actuals");
   ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
   ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');
