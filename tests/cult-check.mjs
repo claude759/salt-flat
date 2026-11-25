@@ -901,6 +901,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/gv\.lights\.on \? 'ov-lon' : 'ov-loff'/.test(html) && /td\.ov-lon\{background:var\(--ov-lon\)/.test(html) && /td\.ov-loff\{background:var\(--ov-loff\)/.test(html), "the Overview's lights: on green, off red");
   ok(/id="tm-kind" list="tm-kinds"/.test(html) && /id="tm-text" maxlength="200"/.test(html) && /pickFrom\(KINDS, kd\.value\)/.test(html) && /cal\[i\] = \{ \.\.\.cal\[i\], kind, text, key: t\.key \}/.test(html),
     "a task's editor changes its kind (typable) and words too; a calendar task keeps its key");
+  ok(/<div class="gl-graph">\$\{dayGraphHTML\(room, S\.gl\.log, S\.gl\.now && S\.gl\.now\.lights, o\.m, o\.unit, now\)\}/.test(html) && /return head \+ dayGraphHTML\(room, L\.rows/.test(html), "the room page's tiles open the same 24-hour graph as the Overview");
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
     ok(/k not in \('status', 'note', 'due', 'delete', 'kind', 'text'\)/.test(sql), "a one-off task's kind and words can be saved"); }
   ok(/data-veg="\$\{esc\(g\.site\.id\)\}">Veg<\/button>/.test(html) && /rowspan="\$\{rooms\.length \+ \(openHere \? 1 : 0\) \+ 1\}"/.test(html), "the Overview's Rooms list each site's Veg room under its rooms");

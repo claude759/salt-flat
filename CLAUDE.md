@@ -901,6 +901,9 @@ launch. The check fails if one of the three pieces is missing.
   of the task"): kind (typable), words, note and day, on the room page and the Overview. A calendar task's kind and words
   change the room's calendar through `cult_room_set`'s `tasks` (its key kept); its day and note are this cycle's
   (`cult_task_set`). A one-off's go through `cult_room_task_set` (kind and text since this day).
+  **The room page's Growlink tiles open the same 24-hour graph** as the Overview's cells (Gianni, same day: "these should
+  show the same 24 hour view when clicked"): `dayGraphHTML`, from the room's own log read (`S.gl.log`), at the top of the
+  tile's details, above its sensors.
   **Veg is a room** (Gianni, same day: "are the veg rooms tracked in METRC? We might as well include them on the overview
   too", then "Yes, add veg", then "actually veg should be a room" and "Yes, build it" to the mockup; it replaced a Veg
   panel). Each site in Rooms ends with a Veg row (a button, then clones, strains, moms and the oldest batch, `vegSum`;
