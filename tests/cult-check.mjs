@@ -851,6 +851,11 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/id="flip-edit"/.test(rl) && /id="hv-est"/.test(rl) && !/class="nowbar"/.test(html) && !/href="#/.test(html.match(/function nowNextHTML[\s\S]*?\n\}/)[0]), "the run's line over the timeline keeps the flip's Change and the harvest's estimate");
   ok(/\$\{d === today \? 'td'/.test(html) && /TL_MON\[/.test(html) && /const TL_BACK = 63, TL_DAYS = 200, TL_DW = 26/.test(html), 'the timeline: a column a day under month, weekday and date rows, today marked');
   ok(/data-done="1" \$\{data\}>Mark complete<\/button>/.test(html) && /'Completed' : 'Skipped'\}\$\{t\.doneBy \? ` by \$\{esc\(whoName\(t\.doneBy\)\)\}`/.test(html) && /whenSaid\(t\.doneAt\)/.test(html), 'Mark complete, then who completed it and when');
+  // the Overview (2026-11-25): the rooms switched on, their next dates, every room's tasks for 30 days, the next trims
+  ok(/S\.rooms\.length === 1 && !\/\(\^#\|&\)overview\\b\/\.test\(location\.hash\)/.test(html) && /: 'overview'; \}/.test(html), 'the Overview has its own address; one room on still opens straight into it');
+  ok(/<h1>Overview<\/h1>/.test(html) && /<h3>Next dates<\/h3>/.test(html) && /<h3>Tasks, next 30 days<\/h3>/.test(html) && /<h3>Next trims<\/h3>/.test(html), 'the Overview: next dates, tasks, next trims');
+  ok(/function ovTaskRow\(t, room, canWork, today\)[\s\S]*?>Mark complete<\/button>/.test(html) && /markTask\(roomView\(room, CM\.todayLA\(\)\), cb\)/.test(html), "the Overview's tasks have Mark complete, saved against their own room");
+  ok(/id="crumb-ov">Overview<\/button>/.test(html), 'a room page leads back to the Overview');
   ok(/isOpen\('env'\) \|\| isOpen\('chart'\)/.test(html) && /if \(pc\) pc\.innerHTML = glChartsHTML\(D\);/.test(html) && !/h \+= glChartsHTML\(D\);/.test(html), "this crop's charts fold under Growlink; the weekly table keeps the actuals");
   ok(/const formOpen = \(\) => !!\(S\.editZones \|\| S\.arrange \|\| S\.runoffForm \|\| S\.editNotes \|\| S\.planEdit \|\|/.test(html), 'an open plan form holds the poll and the resize redraw');
   ok(/S\.planEdit = null; S\.planSeed = null; S\.mapRun = 'now';/.test(html), 'a plan form and the map\'s planned view are per visit');

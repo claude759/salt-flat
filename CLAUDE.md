@@ -859,6 +859,12 @@ launch. The check fails if one of the three pieces is missing.
   the zone light chips, Metrc's flowering-day and "in Metrc as" chips, the targets' "Under each plan" line). Those rules
   live here, not on the page. Real problems still go to Needs attention; a missing or failed read still says so. Growlink's
   actuals under each weekly target read "Growlink 76.8 / 79°F · 61% off".
+- **Overview page** (Gianni, 2026-11-25: "We also need to create and Overview page", from the sheet's OVERVIEW tab; "Only
+  rooms that are on"). `#overview`, reached from the brand or the Overview link in a room page's crumbs; with one room
+  switched on, the bare address still opens that room. Next dates (a row per room under its site: day of flower, the next
+  run's clone cut, harvest, trim; done grey, late amber, within 7 days blue), Tasks, next 30 days (every room's calendar,
+  the last week's not completed included, with Mark complete saved against the task's own room), and Next trims (each
+  room's trim day with its zones' strains and lights). No explanatory notes.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went
