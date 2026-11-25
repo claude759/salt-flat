@@ -140,7 +140,15 @@ const C = { ts: 0, rep: 1, store: 2, when: 3, activities: 4, promo: 5, aged: 6, 
 
 async function main() {
   const jwt = await login();
-  const disp = await rest(jwt, '/rest/v1/dispensaries?select=id,name,pistil_name,aliases,state&active=eq.true&private=eq.false&retail=eq.true');
+  // The API hands back at most 1,000 rows a request (max_rows) and the store list grows every week, so it is read in
+  // pages, in a fixed order, until a page comes back empty (2026-11-25): one request would one day drop stores silently.
+  const disp = [];
+  for (let off = 0, n = 1; ; n++) {
+    const got = await rest(jwt, `/rest/v1/dispensaries?select=id,name,pistil_name,aliases,state&active=eq.true&private=eq.false&retail=eq.true&order=id&limit=1000&offset=${off}`);
+    if (!Array.isArray(got) || !got.length) break;
+    disp.push(...got); off += got.length;
+    if (n >= 60) throw new Error('the store list kept going past 60 pages');
+  }
   const idx = buildIndex(disp);
   log(`registry: ${disp.length} stores`);
 

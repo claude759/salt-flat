@@ -8670,9 +8670,19 @@ let REGISTRY=null, REG_BYKEY=null, REG_LOADING=false, REG_ERR=null;
 function loadRegistry(){
   if(REGISTRY||REG_LOADING) return;
   REG_LOADING=true;
-  fetch(`${SUPABASE_URL}/rest/v1/rpc/store_registry`,{method:'POST',
+  // The API hands back at most 1,000 rows a request (the project's max_rows) and the registry grows about 70 stores a
+  // month (833 on 2026-11-25), so one request would one day drop stores without a word: read it in pages, in a fixed
+  // order (id), until a page comes back empty.
+  const rows=[];
+  const page=(off, n)=>fetch(`${SUPABASE_URL}/rest/v1/rpc/store_registry?order=id&limit=1000&offset=${off}`,{method:'POST',
     headers:{apikey:SUPABASE_KEY,Authorization:'Bearer '+SUPABASE_KEY,'Content-Type':'application/json'},body:'{}'})
     .then(r=>r.ok?r.json():Promise.reject(new Error('HTTP '+r.status)))
+    .then(got=>{ if(!Array.isArray(got)) throw new Error('unexpected answer');
+      rows.push(...got);
+      if(!got.length) return rows;
+      if(n>=60) throw new Error('the store registry kept going past 60 pages');
+      return page(off+got.length, n+1); });
+  page(0, 1)
     .then(rows=>{ REGISTRY=rows; REG_BYKEY=new Map();
       rows.forEach(g=>{ const ks=new Set([tierNorm(g.name),tierNorm(g.sales_key),tierNorm(g.pistil_name),...(g.aliases||[]).map(tierNorm)]);
         ks.forEach(k=>{ if(!k) return; if(!REG_BYKEY.has(k)) REG_BYKEY.set(k,[]); REG_BYKEY.get(k).push(g); }); });
