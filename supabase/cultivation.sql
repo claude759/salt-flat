@@ -506,7 +506,8 @@ begin
   select * into t from public.cult_room_tasks where id = p_id and deleted_at is null;
   if t.id is null then raise exception 'no such task'; end if;
   if jsonb_typeof(p_set) is distinct from 'object' then raise exception 'p_set must be an object'; end if;
-  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('status', 'note', 'due', 'delete')) then raise exception 'only status, note, due and delete'; end if;
+  -- kind and text too (Gianni, 2026-11-25: "the edit option needs to allow us to change any aspect of the task")
+  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('status', 'note', 'due', 'delete', 'kind', 'text')) then raise exception 'only status, note, due, kind, text and delete'; end if;
   if p_set ? 'delete' then
     if not (public.cult_can_edit() or t.created_by = who) then raise exception 'only whoever added it, or an editor, can delete it'; end if;
     update public.cult_room_tasks set deleted_at = now(), deleted_by = who where id = p_id;
@@ -515,7 +516,11 @@ begin
   if p_set ? 'status' and coalesce(p_set->>'status', '') not in ('open', 'done', 'skipped') then raise exception 'status must be open, done or skipped'; end if;
   if p_set ? 'note' and (jsonb_typeof(p_set->'note') not in ('string', 'null') or length(coalesce(p_set->>'note', '')) > 500) then raise exception 'a note is up to 500 characters'; end if;
   if p_set ? 'due' and coalesce(p_set->>'due', '') !~ '^\d{4}-\d{2}-\d{2}$' then raise exception 'due must be a date'; end if;
+  if p_set ? 'kind' and coalesce(p_set->>'kind', '') !~ '^[A-Z]{2,12}$' then raise exception 'kind must be a word from the list'; end if;
+  if p_set ? 'text' and (jsonb_typeof(p_set->'text') <> 'string' or length(btrim(p_set->>'text')) not between 1 and 300) then raise exception 'a task needs words (up to 300 characters)'; end if;
   update public.cult_room_tasks set
+    kind = case when p_set ? 'kind' then p_set->>'kind' else kind end,
+    text = case when p_set ? 'text' then btrim(p_set->>'text') else text end,
     status = case when p_set ? 'status' then p_set->>'status' else status end,
     done_at = case when p_set ? 'status' then case when p_set->>'status' = 'open' then null else now() end else done_at end,
     done_by = case when p_set ? 'status' then case when p_set->>'status' = 'open' then null else who end else done_by end,

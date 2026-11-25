@@ -897,6 +897,10 @@ launch. The check fails if one of the three pieces is missing.
   here as well"): each row's ⋯ opens the room page's own task editor (`taskMenu`: note, move to another day, skip, delete
   a one-off), the row shows the move and the note, and Add a task (`addTaskPop` with the rooms) picks the room in a
   typable box resolved with `pickFrom`.
+  **A task's editor changes every part of it** (Gianni, same day: "the edit option needs to allow us to change any aspect
+  of the task"): kind (typable), words, note and day, on the room page and the Overview. A calendar task's kind and words
+  change the room's calendar through `cult_room_set`'s `tasks` (its key kept); its day and note are this cycle's
+  (`cult_task_set`). A one-off's go through `cult_room_task_set` (kind and text since this day).
   **Veg is a room** (Gianni, same day: "are the veg rooms tracked in METRC? We might as well include them on the overview
   too", then "Yes, add veg", then "actually veg should be a room" and "Yes, build it" to the mockup; it replaced a Veg
   panel). Each site in Rooms ends with a Veg row (a button, then clones, strains, moms and the oldest batch, `vegSum`;

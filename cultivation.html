@@ -3827,13 +3827,34 @@ function taskMenu(V, key, anchor) {
   const t = V.T.find(x => x.key === key);
   if (!t) return;
   const canEdit = !!(S.me && S.me.edit), mine = t.src === 'one' && S.me && t.createdBy === S.me.email;
-  let h = `<h4><span>${esc(CM.nice(t.kind || 'Task'))}: ${esc(tidy(t.text))}</span><button class="btn ghost" type="button" data-close aria-label="Close">×</button></h4>
-    <div class="pform"><label>Note<textarea id="tm-note" rows="3" maxlength="500" class="ta">${esc(t.note || '')}</textarea></label>
+  // every part of the task can change (Gianni, 2026-11-25: "the edit option needs to allow us to change any aspect of the
+  // task"): its kind (typable, from the list) and words, the note and the day. A calendar task's kind and words change
+  // the room's calendar (its key kept, so ticks stay); its day and note are this cycle's.
+  const kind0 = KINDS.find(k => k.toUpperCase() === String(t.kind || '').toUpperCase()) || CM.nice(t.kind || 'Action');
+  let h = `<h4><span>Edit task</span><button class="btn ghost" type="button" data-close aria-label="Close">×</button></h4>
+    <datalist id="tm-kinds">${KINDS.map(k => `<option value="${k}"></option>`).join('')}</datalist>
+    <div class="pform"><label>Kind<input type="text" id="tm-kind" list="tm-kinds" value="${esc(kind0)}" data-ok="${esc(kind0)}" autocomplete="off"></label>
+    <label>Task<input type="text" id="tm-text" maxlength="200" value="${esc(String(t.text || '').trim())}"></label>
+    <label>Note<textarea id="tm-note" rows="3" maxlength="500" class="ta">${esc(t.note || '')}</textarea></label>
     <label>Move to<input type="date" id="tm-date" value="${esc(t.date)}"></label></div><div class="pickmsg" id="tm-msg"></div>
     <div class="ed act">${t.src === 'one' && (canEdit || mine) ? '<button class="btn ghost" type="button" id="tm-del">Delete</button>' : ''}<span class="grow"></span>
       <button class="btn" type="button" id="tm-skip">${t.status === 'skipped' ? 'Not skipped' : 'Skip'}</button><button class="btn primary" type="button" id="tm-save">Save</button></div>`;
   showPop(h, anchor);
-  const msg = $('tm-msg');
+  const msg = $('tm-msg'), kd = $('tm-kind');
+  const kindOk = () => { const p = pickFrom(KINDS, kd.value); if (p) { kd.value = p; kd.dataset.ok = p; return true; } msg.textContent = `"${kd.value.trim()}" isn't a kind on the list. Kept ${kd.dataset.ok}.`; kd.value = kd.dataset.ok; return false; };
+  kd.addEventListener('change', () => { msg.textContent = ''; kindOk(); });
+  kd.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); kindOk(); } });
+  // a calendar task's new kind or words go into the room's calendar, the task keeping its key
+  const saveCal = async (kind, text) => {
+    const cal = (Array.isArray(V.room.tasks) ? V.room.tasks : []).map(x => ({ ...x }));
+    const i = cal.findIndex(x => x && CM.taskKey(x) === t.key);
+    if (i < 0) { msg.textContent = "Couldn't find this task in the room's calendar. Refresh and try again."; return false; }
+    cal[i] = { ...cal[i], kind, text, key: t.key };
+    const r = await sb.rpc('cult_room_set', { p_room: V.room.id, p_set: { tasks: cal } });
+    if (r.error) { msg.textContent = "Couldn't save: " + r.error.message; return false; }
+    const rm = S.rooms.find(x => x.id === V.room.id); if (rm) rm.tasks = cal;   // kept if the re-read fails
+    return true;
+  };
   const send = async patch => {
     const r = t.src === 'one'
       ? await sb.rpc('cult_room_task_set', { p_id: t.id, p_set: patch })
@@ -3841,14 +3862,25 @@ function taskMenu(V, key, anchor) {
     if (r.error) { msg.textContent = "Couldn't save: " + r.error.message; return false; }
     closePop(); await loadAll(true, [t.src === 'one' ? 'oneoffs' : 'done']); render(); return true;
   };
-  $('tm-save').addEventListener('click', () => {
-    const note = $('tm-note').value.trim(), d = $('tm-date').value;
+  $('tm-save').addEventListener('click', async () => {
+    const note = $('tm-note').value.trim(), d = $('tm-date').value, text = $('tm-text').value.replace(/\s+/g, ' ').trim();
     if (d && !CM.isDay(d)) { msg.textContent = 'Pick a date.'; return; }
+    if (!text) { msg.textContent = 'Say what the task is.'; $('tm-text').focus(); return; }
+    if (!kindOk()) return;
+    const kind = kd.value.toUpperCase(), reworded = text !== String(t.text || '').trim() || kind !== String(t.kind || '').toUpperCase();
     const patch = {};
     if (note !== (t.note || '')) patch.note = note || null;
     if (d && d !== t.date) { if (t.src === 'one') patch.due = d; else patch.moved_to = d === t.planned ? null : d; }
+    if (reworded && t.src === 'one') { patch.kind = kind; patch.text = text; }
+    if (reworded && t.src !== 'one') {
+      $('tm-save').disabled = true;
+      const ok = await saveCal(kind, text);
+      $('tm-save').disabled = false;
+      if (!ok) return;
+      if (!Object.keys(patch).length) { closePop(); await loadAll(true, ['rooms']); render(); return; }
+    }
     if (!Object.keys(patch).length) { closePop(); return; }
-    send(patch);
+    if (await send(patch) && reworded && t.src !== 'one') { await loadAll(true, ['rooms']); render(); }
   });
   $('tm-skip').addEventListener('click', () => send({ status: t.status === 'skipped' ? 'open' : 'skipped', ...(($('tm-note').value.trim() !== (t.note || '')) ? { note: $('tm-note').value.trim() || null } : {}) }));
   const del = $('tm-del'); if (del) del.addEventListener('click', () => { if (confirm('Delete this task?')) send({ delete: true }); });
