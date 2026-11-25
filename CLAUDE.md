@@ -709,8 +709,10 @@ launch. The check fails if one of the three pieces is missing.
 - **File:** `cultivation.html` (one self-contained page).
 - **Live:** https://claude759.github.io/salt-flat/cultivation.html (beta: not on the app list until Gianni says so).
 - **One room first** (Gianni, 2026-11-24: "start with a single room from a single company ... Let's start with filifera
-  room 1"): only 25th Room 1 (Filifera, Metrc "Flower 1") is switched on (`cult_rooms.active`); the other 11 rooms keep
-  their seed and maps, switched off, until he likes this one. With one room switched on the page opens straight into it.
+  room 1"): 25th Room 1 (Filifera, Metrc "Flower 1") was switched on first (`cult_rooms.active`); 25th Rooms 2 and 3
+  followed on 2026-11-25 (Gianni: "Yes, switch them on"; `~/claude-sql/pending/cult-switch-on-f2-f3.sql`). The other 9
+  rooms keep their seed and maps, switched off. With one room switched on the page opens straight into it; with more, the
+  plain address opens the Overview.
 - **Merging later:** the current cultivation app is Antonio's Lovable project "Cultivation Command" (Gianni: "Once we have
   something working, we'll probably want to merge it into this app"). Keep the feeds in database tables and the room
   logic in the pure CULT MODEL block, so both can move.
