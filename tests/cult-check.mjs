@@ -906,6 +906,15 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     "a task's editor changes its kind (typable) and words too; a calendar task keeps its key");
   ok(/<div class="gl-graph">\$\{dayGraphHTML\(room, S\.gl\.log, S\.gl\.now && S\.gl\.now\.lights, o\.m, o\.unit, now\)\}/.test(html) && /return head \+ dayGraphHTML\(room, L\.rows/.test(html), "the room page's tiles open the same 24-hour graph as the Overview");
   ok(/!H\.errAt && !\(W && Object\.values\(W\)\.some\(w => w && w\.hours\)\)\) h \+= '<p class="note">Growlink has no history for this crop yet\.<\/p>'/.test(html), '"no history yet" only when no week has any');
+  ok(/function offCell\(a, wk, m\)/.test(html) && (html.match(/<th class="n off-c">Off plan<\/th>/g) || []).length === 4 && /\$\{O\(e\.week, 'co2'\)\}<\/tr>/.test(html), 'Environment targets: each reading has its own Off plan column');
+  {   // a week's hours against the plan (Growlink's hourly history)
+    const E = [{ week: 4, from: '2026-11-19', to: '2026-11-25', temp: '78f - 76f' }];
+    const hrs = [{ hour: '2026-11-20T20:00:00Z', lit: 1, temp: 81 }, { hour: '2026-11-20T21:00:00Z', lit: 1, temp: 78 }, { hour: '2026-11-21T10:00:00Z', lit: 0, temp: 72 }, { hour: '2026-11-21T11:00:00Z', lit: 0, temp: 74 }, { hour: '2026-11-27T10:00:00Z', lit: 0, temp: 70 }];
+    const D = CM.glWeekDay(hrs, E, 4, 'temp');
+    assert.deepEqual([D.pts.length, D.judged, D.above, D.below, D.offPct, D.dark.length], [4, 4, 1, 1, 50, 1], 'a week: four hours held to the plan, one above, one below, one dark stretch'); n++;
+    assert.deepEqual(D.plan.map(p => p[1]), [78, 78, 76, 76], 'the day plan with the lights on, the night plan off'); n++;
+  }
+  ok(/data-envoff="\$\{wk\}\|\$\{m\}"/.test(html) && /envOffHTML\(e, S\.envOff\.m\)/.test(html), "a week's Off plan number opens its graph");
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
     ok(/k not in \('status', 'note', 'due', 'delete', 'kind', 'text'\)/.test(sql), "a one-off task's kind and words can be saved"); }
   ok(/data-veg="\$\{esc\(g\.site\.id\)\}">Veg<\/button>/.test(html) && /rowspan="\$\{rooms\.length \+ \(openHere \? 1 : 0\) \+ 1\}"/.test(html), "the Overview's Rooms list each site's Veg room under its rooms");

@@ -908,7 +908,11 @@ launch. The check fails if one of the three pieces is missing.
   number. like some sort of average"): over the last 24 hours' readings that had a plan, the share off it (beyond
   `GL.TOL`) and the average gap above or below it (`CM.glDay`'s `offPct`, `avgGap`). The graph's key says "Off plan 38%
   of the time · 4.2% above it on average" (amber over 25%), and each room tile says "off plan 38% of 24 h" once an hour of
-  readings had a plan. The weekly table keeps its own "% off" per week.
+  readings had a plan. In Environment targets each reading has its own **Off plan** column (Gianni, same day: "I'd rather
+  that on/off plan number to be it's own column", "that can be clicked for more info/graph"): the week's share of hours
+  off the plan (amber over 25%; the Growlink line keeps only the averages); a press opens the week under its row, the
+  hours held to the plan, above and below, and the graph from Growlink's hourly history (`CM.glWeekDay`, `envOffHTML`,
+  `graphHTML` with a tick a day).
   **Veg is a room** (Gianni, same day: "are the veg rooms tracked in METRC? We might as well include them on the overview
   too", then "Yes, add veg", then "actually veg should be a room" and "Yes, build it" to the mockup; it replaced a Veg
   panel). Each site in Rooms ends with a Veg row (a button, then clones, strains, moms and the oldest batch, `vegSum`;

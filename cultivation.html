@@ -169,6 +169,12 @@
   @media (max-width:640px){.gl-eqax{display:none}.gl-eqr{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"l n" "s s"}.gl-eql{grid-area:l}.gl-eqn{grid-area:n}.gl-strip{grid-area:s}.gl-eqd{display:none}}
   .t td small.act{display:block;color:var(--muted);font-size:11.5px;font-weight:400}
   .t td small.act.w{color:var(--amber)}
+  .envt th.off-c{font-size:10.5px;white-space:nowrap} .envt td.off-c{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .envt td.off-c.w{color:var(--amber);font-weight:600}
+  .offb{all:unset;cursor:pointer;border-bottom:1px dotted currentColor;padding:1px 2px}
+  .offb:hover,.offb.on{background:var(--panel2);border-radius:4px}
+  .offb:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .envt tr.env-g td{background:var(--panel);text-align:left;white-space:normal;padding:10px 12px}
   .ps .w{color:var(--amber)}
   .gl-ch{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:10px}
   @media (max-width:640px){.gl-ch{grid-template-columns:minmax(0,1fr)}}
@@ -1330,6 +1336,35 @@ const CM = (() => {
       }).sort((a, b) => (b.clones + b.tagged + b.moms) - (a.clones + a.tagged + a.moms) || (a.strain < b.strain ? -1 : 1)) }));
     return out.sort((a, b) => (b.clones + b.tagged + b.moms) - (a.clones + a.tagged + a.moms) || (a.location < b.location ? -1 : 1));
   }
+  // one reading's week from Growlink's hourly history (cult_growlink_hourly rows: hour, lit, temp, hum, vpd, co2), in
+  // glDay's shape, for the week's graph under Environment targets (Gianni, 2026-11-25: "that can be clicked for more
+  // info/graph"): each hour's value, the plan it was held to (the day number with the lights on that hour), the dark
+  // hours, the share off the plan and the average gap, and how many hours were above and below it.
+  function glWeekDay(hours, E, week, m, end) {
+    const e = (E || []).find(x => +x.week === +week);
+    const pts = [], plan = [], dark = [];
+    let above = 0, below = 0, judged = 0, gap = 0;
+    if (!e || !e.from) return { pts, plan, dark, judged: 0, offPct: null, avgGap: null, above, below, lo: null, hi: null, min: null, max: null, t0: null, t1: null, gap: 2 * 3600e3 };
+    const P = glPlan(e);
+    for (const h of hours || []) {
+      const t = Date.parse(h && h.hour), v = h ? h[m] : null;
+      if (!isFinite(t)) continue;
+      const d = todayLA(new Date(t));
+      if (d < e.from || d > e.to || (end && d > end)) continue;
+      const lit = h.lit == null || !isFinite(+h.lit) ? null : +h.lit >= 0.5;
+      if (lit === false) { const L = dark[dark.length - 1]; if (L && L[1] === t) L[1] = t + 3600e3; else dark.push([t, t + 3600e3]); }
+      if (v == null || !isFinite(+v)) continue;
+      pts.push([t, +v]);
+      const j = lit == null ? null : glJudge(m, +v, P, lit);
+      plan.push([t, j ? j.target : null]);
+      if (j) { judged++; gap += +v - j.target; if (j.state === 'high') above++; else if (j.state === 'low') below++; }
+    }
+    const all = pts.map(p => p[1]).concat(plan.filter(p => p[1] != null).map(p => p[1]));
+    return { t0: pts.length ? pts[0][0] : null, t1: pts.length ? pts[pts.length - 1][0] + 3600e3 : null, pts, plan, dark, gap: 2 * 3600e3,
+      lo: all.length ? Math.min(...all) : null, hi: all.length ? Math.max(...all) : null,
+      min: pts.length ? Math.min(...pts.map(p => p[1])) : null, max: pts.length ? Math.max(...pts.map(p => p[1])) : null,
+      judged, above, below, offPct: judged ? Math.round((above + below) / judged * 100) : null, avgGap: judged ? gap / judged : null };
+  }
   function glSpark(pts, w, h, t0, t1) {
     if (!pts || pts.length < 2 || !(t1 > t0)) return '';
     let lo = Infinity, hi = -Infinity;
@@ -1834,7 +1869,7 @@ const CM = (() => {
   }
 
   return { isDay, addDays, diff, todayLA, short, wday, key, nice, strainOf, roomPlants, cycle, taskKey, tasks, envRows, place, colors, tableZone, letter, tableNs, tableLights, capacity, comingUp, attention, runoffPct, latestRunoff, mapModel, PALETTE, taskGroups,
-    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, glDay, vegView, glHrs, glEquip, glWeeks, glDays, glChart, LB, skey, history, estimate, trimWait,
+    GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, glDay, glWeekDay, vegView, glHrs, glEquip, glWeeks, glDays, glChart, LB, skey, history, estimate, trimWait,
     runs, runStages, planFlip, planDay, runKey, ROOT_DAYS };
 })();
 /* ===== CULT MODEL END ===== */
@@ -2382,7 +2417,7 @@ function route() {
   S.veg = !S.room && vg && S.rooms.some(r => r.site === vg[1]) ? vg[1] : null;
   if (!S.room && !S.veg && S.rooms.length === 1 && !/(^#|&)overview\b/.test(location.hash)) S.room = S.rooms[0].id;   // one room on: open it, unless the Overview was asked for
   S.editZones = false; S.arrange = false; S.zoneOpened = false; S.runoffForm = false; S.editNotes = false; S.hvOpen = null; S.hvAll = false;
-  S.editEnv = false; S.editCal = false; S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
+  S.editEnv = false; S.editCal = false; S.envOff = null; S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
   S.peek = /[#&]zone=\d/.test(location.hash) ? { map: 1 } : {}; S.tOpen = {};   // a zone link opens the map for this visit
   closePop();
   render();
@@ -2644,34 +2679,40 @@ function offWords(m, D, unit) {
   return `Off plan ${D.offPct}% of the time${dir ? ` · ${CM.glVal(m, Math.abs(g), unit)} ${dir} it on average` : ''}`;
 }
 function dayGraphHTML(room, rows, lights, m, unit, now) {
-  const GL = CM.GL;
   const D = CM.glDay(rows, m, lights, CM.envRows(room, roomView(room, CM.todayLA()).C), now);
   if (D.pts.length < 2) return '<p class="muted">Growlink logged no readings of this in the last 24 hours.</p>';
+  return graphHTML(D, m, unit, { label: `${CM.GL.LABEL[m]} over the last 24 hours`, gap: CM.GL.GAP * 6e4 });
+}
+// a reading against its plan as a graph: D in glDay's shape; o: { label, gap (ms between points that breaks the line),
+// days (a tick a day, not every 3 hours), week (no "now"; the hours above and below) }
+function graphHTML(D, m, unit, o) {
+  const GL = CM.GL;
   const W = 900, H = 190, pl = 52, pr = 12, pt = 10, pb = 24, iw = W - pl - pr, ih = H - pt - pb;
   let lo = D.lo, hi = D.hi;
   if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
   const padv = (hi - lo) * 0.08; lo -= padv; hi += padv;
   const X = tt => pl + (tt - D.t0) / (D.t1 - D.t0) * iw, Y = v => pt + ih - (v - lo) / (hi - lo) * ih;
   const f = n => n.toFixed(1);
-  let svg = `<svg class="ovch" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`${GL.LABEL[m]} over the last 24 hours`)}">`;
+  let svg = `<svg class="ovch" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(o.label)}">`;
   for (const [a, z] of D.dark) svg += `<rect class="dk" x="${f(X(a))}" y="${pt}" width="${f(Math.max(0, X(z) - X(a)))}" height="${ih}"/>`;
   for (const v of D.hi - D.lo > 1e-9 ? [D.lo, (D.lo + D.hi) / 2, D.hi] : [D.lo]) {   // the low, the middle and the high
     const y = Y(v);
     svg += `<line class="gr" x1="${pl}" x2="${W - pr}" y1="${f(y)}" y2="${f(y)}"/><text class="ax" x="${pl - 6}" y="${f(y + 4)}" text-anchor="end">${esc(CM.glNum(m, v))}</text>`;
   }
   for (let tt = Math.ceil(D.t0 / 36e5) * 36e5; tt <= D.t1; tt += 36e5) {
-    const ap = LA_H.format(new Date(tt));   // every 3 hours on the grows' clock
-    if (!/^(12|3|6|9) /.test(ap)) continue;
-    svg += `<line class="tk" x1="${f(X(tt))}" x2="${f(X(tt))}" y1="${pt}" y2="${pt + ih}"/><text class="ax" x="${f(X(tt))}" y="${H - 6}" text-anchor="middle">${esc(ap.replace(' ', ' '))}</text>`;
+    const ap = LA_H.format(new Date(tt));   // every 3 hours on the grows' clock, or each midnight for a week
+    if (o.days ? !/^12 AM/.test(ap) : !/^(12|3|6|9) /.test(ap)) continue;
+    const lab = o.days ? CM.wday(CM.todayLA(new Date(tt))) : ap;
+    svg += `<line class="tk" x1="${f(X(tt))}" x2="${f(X(tt))}" y1="${pt}" y2="${pt + ih}"/><text class="ax" x="${f(X(tt))}" y="${H - 6}" text-anchor="${o.days ? 'start' : 'middle'}">${esc(lab.replace(' ', ' '))}</text>`;
   }
   const path = (pts, gap) => { let d = '', prev = null; for (const [tt, v] of pts) { if (v == null) { prev = null; continue; } d += `${!d || prev == null || tt - prev > gap ? 'M' : 'L'}${f(X(tt))} ${f(Y(v))}`; prev = tt; } return d; };
-  const pd = path(D.plan, GL.GAP * 6e4);
+  const pd = path(D.plan, o.gap);
   if (pd) svg += `<path class="pl" d="${pd}"/>`;
-  svg += `<path class="vl" d="${path(D.pts, GL.GAP * 6e4)}"/>`;
+  svg += `<path class="vl" d="${path(D.pts, o.gap)}"/>`;
   const last = D.pts[D.pts.length - 1];
   svg += `<circle class="vl-d" cx="${f(X(last[0]))}" cy="${f(Y(last[1]))}" r="3.5"/></svg>`;
   const key = `<div class="ovch-k"><span><i class="kv"></i>Growlink</span>${pd ? '<span><i class="kp"></i>Plan</span>' : ''}${D.dark.length ? '<span><i class="kd"></i>Lights off</span>' : ''}`
-    + `<span class="ovch-r">${D.offPct != null ? `<b class="${D.offPct > GL_OFF_WARN ? 'w' : ''}">${esc(offWords(m, D, unit))}</b> · ` : ''}Low ${esc(CM.glVal(m, D.min, unit))} · high ${esc(CM.glVal(m, D.max, unit))} · now ${esc(CM.glVal(m, last[1], unit))}</span></div>`;
+    + `<span class="ovch-r">${D.offPct != null ? `<b class="${D.offPct > GL_OFF_WARN ? 'w' : ''}">${esc(offWords(m, D, unit))}</b> · ` : ''}Low ${esc(CM.glVal(m, D.min, unit))} · high ${esc(CM.glVal(m, D.max, unit))}${o.week ? '' : ` · now ${esc(CM.glVal(m, last[1], unit))}`}</span></div>`;
   return svg + key;
 }
 function ovWire(el) {
@@ -3592,7 +3633,23 @@ function glAct(m, a, unit) {
   if (!a) return '';
   const v = x => (x == null ? '–' : CM.glNum(m, x));
   const val = m === 'co2' ? v(a.day) : `${v(a.day)} / ${v(a.night)}`;
-  return `<small class="act${a.offPct > GL_OFF_WARN ? ' w' : ''}">Growlink ${esc(val + (unit || ''))}${a.offPct ? ` · ${a.offPct}% off` : ''}</small>`;   // which line is Growlink's (Gianni, 2026-11-25)
+  return `<small class="act">Growlink ${esc(val + (unit || ''))}</small>`;   // the share off the plan has its own column (offCell)   // which line is Growlink's (Gianni, 2026-11-25)
+}
+// a week's share of hours off the plan for one reading, its own column (Gianni, 2026-11-25: "I'd rather that on/off plan
+// number to be it's own column"): amber over GL_OFF_WARN
+function offCell(a, wk, m) {
+  if (!a || a.offPct == null) return '<td class="n off-c"></td>';
+  const on = S.envOff && S.envOff.week === wk && S.envOff.m === m;
+  return `<td class="n off-c${a.offPct > GL_OFF_WARN ? ' w' : ''}"><button type="button" class="offb${on ? ' on' : ''}" data-envoff="${wk}|${m}" aria-expanded="${on}" aria-label="${esc(`Week ${wk} ${CM.GL.LABEL[m]}: the week against the plan`)}">${a.offPct}%</button></td>`;
+}
+// the week's graph of one reading against the plan, with the hours above and below it
+const ENV_UNIT = { temp: '°F', hum: '%', vpd: ' kPa', co2: ' ppm' };
+function envOffHTML(e, m) {
+  const H = S.glHist, D = CM.glWeekDay(H.room === S.room ? H.rows : [], S.envE, e.week, m, S.envEnd), u = ENV_UNIT[m].trim();
+  const head = `<div class="ovch-h"><b>Week ${e.week} · ${esc(CM.GL.LABEL[m])} against the plan</b><button class="btn ghost" type="button" data-envoff="${e.week}|${m}" aria-label="Close">×</button></div>`;
+  if (D.pts.length < 2) return head + '<p class="muted">Growlink has no hours of this for the week yet.</p>';
+  const line = `${num(D.judged)} hours held to the plan: ${num(D.above)} above, ${num(D.below)} below${D.judged - D.above - D.below ? `, ${num(D.judged - D.above - D.below)} on it` : ''}`;
+  return head + `<p class="muted" style="margin:4px 0 0">${esc(line)}</p>` + graphHTML(D, m, u, { label: `${CM.GL.LABEL[m]} in week ${e.week} against the plan`, gap: D.gap, days: true, week: true });
 }
 function envSum(E, W) {
   const w = (E || []).find(e => e.now);
@@ -3667,8 +3724,9 @@ function wireEnvEditor(room) {
 function envBody(E, W, D) {
   if (!E.length) return '<div class="empty">No targets set for this room.</div>';
   const A = (wk, m, unit) => glAct(m, W && W[wk] && W[wk].hours ? W[wk][m] : null, unit);
-  let h = '<div class="wrapx"><table class="t"><thead><tr><th>Week</th><th>Dates</th><th>Day / night temp</th><th>Humidity</th><th class="n">VPD</th><th class="n">CO2</th></tr></thead><tbody>';
-  for (const e of E) h += `<tr class="${e.now ? 'now' : ''}"><td><b>${e.week}</b></td><td class="faint">${e.from ? esc(CM.short(e.from) + ' - ' + CM.short(e.to)) : ''}</td><td>${esc(fmtTemp(e.temp))}${A(e.week, 'temp', '°F')}</td><td>${esc(e.hum || '')}${A(e.week, 'hum', '%')}</td><td class="n">${e.vpd == null ? '' : esc(Number(e.vpd).toFixed(1))}${A(e.week, 'vpd', '')}</td><td class="n">${esc(fmtCO2(e.co2))}${A(e.week, 'co2', ' ppm')}</td></tr>`;
+  const O = (wk, m) => offCell(W && W[wk] && W[wk].hours ? W[wk][m] : null, wk, m);
+  let h = '<div class="wrapx"><table class="t envt"><thead><tr><th>Week</th><th>Dates</th><th>Day / night temp</th><th class="n off-c">Off plan</th><th>Humidity</th><th class="n off-c">Off plan</th><th class="n">VPD</th><th class="n off-c">Off plan</th><th class="n">CO2</th><th class="n off-c">Off plan</th></tr></thead><tbody>';
+  for (const e of E) h += `<tr class="${e.now ? 'now' : ''}"><td><b>${e.week}</b></td><td class="faint">${e.from ? esc(CM.short(e.from) + ' - ' + CM.short(e.to)) : ''}</td><td>${esc(fmtTemp(e.temp))}${A(e.week, 'temp', '°F')}</td>${O(e.week, 'temp')}<td>${esc(e.hum || '')}${A(e.week, 'hum', '%')}</td>${O(e.week, 'hum')}<td class="n">${e.vpd == null ? '' : esc(Number(e.vpd).toFixed(1))}${A(e.week, 'vpd', '')}</td>${O(e.week, 'vpd')}<td class="n">${esc(fmtCO2(e.co2))}${A(e.week, 'co2', ' ppm')}</td>${O(e.week, 'co2')}</tr>${S.envOff && S.envOff.week === e.week ? `<tr class="env-g"><td colspan="10">${envOffHTML(e, S.envOff.m)}</td></tr>` : ''}`;
   h += '</tbody></table></div>';
   const H = S.glHist, mine = H.room === S.room;
   if (mine && H.rows.length && !H.rows.some(x => x.lit != null)) h += "<p class=\"note\">Growlink's history for this room doesn't say when the lights were on, so its hours aren't split into lights on and off or held to the plan.</p>";
@@ -4357,6 +4415,14 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') closePop(); 
 // the room page's folds, the lines inside a panel, and Needs attention's items: one listener, bound once (renderRoom
 // rebuilds the page; a listener there would add one more each time)
 $('view-room').addEventListener('click', e => {
+  const ob = e.target.closest('[data-envoff]');
+  if (ob) {
+    const [wk, m] = ob.dataset.envoff.split('|'), same = S.envOff && S.envOff.week === +wk && S.envOff.m === m;
+    S.envOff = same ? null : { week: +wk, m };
+    paintEnv(S.rooms.find(r => r.id === S.room));
+    const b = document.querySelector(`#pb-env .offb[data-envoff="${wk}|${m}"]`); if (b) b.focus();
+    return;
+  }
   const f = e.target.closest('[data-fold]') || (e.target.matches('.panel>h3') ? e.target.querySelector('[data-fold]') : null);
   if (f) { foldToggle(f); return; }
   const g = e.target.closest('[data-tgrp]');
