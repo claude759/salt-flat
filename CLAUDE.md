@@ -756,6 +756,15 @@ launch. The check fails if one of the three pieces is missing.
   Arrange zones on the room map sets which zone each table holds (`layout.tables[i].zone`, 0 = none; with none set,
   zone n is table n). Tables are lettered (A, B, C ...) while arranging; a zone sits on one table (picking a taken zone
   swaps the two; the database refuses a zone on two tables).
+- **Zones count left to right from the main entrance** (a grower who runs the rooms, relayed by Gianni 2026-11-24: "All
+  the flower room, I run them the same so main entrance I always count tables from left to right"). Each room's map
+  stores its tables in that order (`layout.tables`, `n` = 1, 2 ...; `layout.zones_from`), so zone n is table n and table
+  A is zone 1: stand in the main entrance facing in, and zone 1 is the table furthest to your left. Done 2026-11-24 for
+  25th Rooms 1-3, 15th Rooms A, B (its 4 x 8 back table comes last, with no zone) and C, and 23rd Rooms 1-2, each checked
+  by two independent passes against the diagrams; in 25th Room 1 zone 1 is the bottom (south) row and zone 4 the top.
+  Not done: 23rd Room 3 has three doors and none is plainly the main one (ask which door the crew counts from), and
+  Olympic keeps the drawing's order (Rooms 1-2 already match; Room 3 would flip if its crew counts the same way). A map
+  traced later stores its tables the same way. Arrange zones still overrides it.
 - **"In Metrc as"** (`cult_zones.metrc_strain`): when Metrc records a zone's plants under another strain, the zone names
   that Metrc strain and takes its plants under its own name (Gianni, 2026-11-24: 25th Room 1's 81 "Cream" plants are zone
   1's Pool Party and King Tide 23, split between them by lights). The fix in Metrc is the crew's; the app only reads it.
