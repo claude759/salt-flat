@@ -915,6 +915,34 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     assert.deepEqual(D.plan.map(p => p[1]), [78, 78, 76, 76], 'the day plan with the lights on, the night plan off'); n++;
   }
   ok(/data-envoff="\$\{wk\}\|\$\{m\}"/.test(html) && /envOffHTML\(e, S\.envOff\.m\)/.test(html), "a week's Off plan number opens its graph");
+  {   // Trim Yields (2026-11-26): yield per plant by strain, a room's usual, trims to come, and the plan's split
+    const st = (name, flower, plants, bigs, o) => ({ name, flower, plants, bigs, littles: flower - bigs, room: false, shared: false, doubt: false, gPerPlant: plants ? flower / plants : null, ...o });
+    const crop = (strains, o) => ({ full: true, flower: strains.reduce((a, s) => a + s.flower, 0), bigs: strains.reduce((a, s) => a + s.bigs, 0), littles: 0, plants: strains.reduce((a, s) => a + (s.plants || 0), 0), lights: 20, strains, ...o });
+    const F = [crop([st('Tidebanger', 16000, 100, 13000), st('Zang Banger', 12000, 100, 10000)]), crop([st('Tidebanger', 17000, 100, 14000), st('Zangbanger', 11000, 100, 9000), st('Phenos', 2000, null, 1000, { room: true })]),
+      crop([st('Tidebanger', 18000, 100, 15000), st('Pool Party', 9000, 60, 7000, { shared: true })])];
+    const Y = CM.strainYields([{ site: 'F', crops: F }, { site: 'S', crops: [crop([st('Tidebanger', 10000, 100, 8000), st('Wizzy', 8000, 100, 6000)])] }]);
+    const tb = CM.yieldFor(Y, 'TIDEBANGER', 'F'), zb = CM.yieldFor(Y, 'Zangbanger', 'F'), tbS = CM.yieldFor(Y, 'Tidebanger', 'S');
+    assert.deepEqual([tb.gpp, tb.scope, tb.crops, tb.low, zb.gpp, zb.scope, zb.low, zb.crops], [170, 'site', 3, false, 115, 'all', true, 2], "a site's own yield from 3 crops, else every site's, low under 3; spellings meet"); n++;
+    assert.deepEqual([tbS.scope, Math.round(tbS.gpp), CM.yieldFor(Y, 'Pool Party', 'F'), CM.yieldFor(Y, 'Phenos', 'F')], ['all', 153, null, null], "a site with 1 crop uses every site's; a shared or room line gives no yield"); n++;
+    const U = CM.roomUsual(F);
+    assert.deepEqual([Math.round(U.gpp), U.plants, Math.round(U.g)], [Math.round(85000 / 560), 200, Math.round(85000 / 3)], "a room's usual: its last 3 trimmed crops (room lines count in its pounds)"); n++;
+    const pr = CM.projectTrim([{ name: 'Tidebanger', plants: 100 }, { name: 'Trichew', plants: 50 }], 'F', Y, U);
+    assert.deepEqual([pr.basis, Math.round(pr.total), pr.rows.map(r => r.scope)], ['strains', Math.round(17000 + 50 * 85000 / 560), ['site', 'room']], 'a trim to come: each strain at its yield, an unknown one at the room’s usual per plant'); n++;
+    const few = CM.projectTrim([{ name: 'Tidebanger', plants: 39 }], 'F', Y, U);
+    assert.deepEqual([few.basis, Math.round(few.total)], ['room', Math.round(85000 / 3)], "Metrc has under half the room's usual plants: the room's usual pounds"); n++;
+    const even = CM.planSplit([{ name: 'A', gpp: 100 }, { name: 'B', gpp: 200 }, { name: 'C', gpp: null }], { n: 90 });
+    assert.deepEqual(even.map(r => [r.plants, r.g]), [[60, 6000], [30, 6000], [null, null]], 'even pounds: plants in inverse to yield per plant, adding up to the plants'); n++;
+    assert.deepEqual(CM.planSplit([{ name: 'A', gpp: 100 }, { name: 'B', gpp: 300 }, { name: 'C', gpp: 150 }], { n: 100 }).map(r => r.plants).reduce((a, x) => a + x, 0), 100, 'whole plants that add up'); n++;
+    assert.deepEqual(CM.planSplit([{ name: 'A', gpp: 120 }], { target: 4536 }).map(r => r.plants), [38], 'a target each: enough plants to reach it'); n++;
+    const RN = { past: [{ kind: 'past', state: 'trimmed', trim: { a: '2026-11-06', z: '2026-11-07' }, harvest: { d: '2026-10-29', last: '2026-10-29' }, crop: F[2] },
+      { kind: 'past', state: 'drying', trim: { a: '2026-11-27', z: '2026-11-28' }, harvest: { d: '2026-11-17', last: '2026-11-17' }, crop: { harvests: [{ label: 'Tidebanger', plants: 100 }, { label: 'Zangbanger', plants: 100 }] } }],
+      cur: { kind: 'cur', state: 'flowering', trim: { a: '2027-01-09', z: '2027-01-10' }, harvest: { d: '2026-12-30' }, crop: null }, next: [{ kind: 'next', trim: { a: '2027-03-14', z: '2027-03-15' }, harvest: { d: '2027-03-04' }, plan: null }] };
+    const TR = CM.roomTrims(RN, { site: 'F', Y, U, nowRows: [{ name: 'Tidebanger', plants: 150 }] });
+    assert.deepEqual([TR.past.length, TR.past[0].total, TR.next.map(x => [x.from, x.a, x.basis])], [1, 27000, [['harvested', '2026-11-27', 'strains'], ['flower', '2027-01-09', 'strains']]],
+      'a room: its trims on the sheets, then the two to come (a harvest waiting, the crop in flower)'); n++;
+  }
+  ok(/S\.trims = !S\.room && !S\.veg && \/\(\?:\^#\|&\)trims\\b\/\.test\(location\.hash\)/.test(html) && /else if \(trims\) renderTrims\(\)/.test(html) && /id="go-trims">Trim Yields<\/button>/.test(html), 'Trim Yields has its own address (#trims), led to from the Overview');
+  ok(/id="tp-room" list="tp-rooms"/.test(html) && /id="tp-add" list="tp-names"/.test(html) && /pickFrom\(names, add\.value\)/.test(html), "Plan a room's pickers are typable");
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
     ok(/k not in \('status', 'note', 'due', 'delete', 'kind', 'text'\)/.test(sql), "a one-off task's kind and words can be saved"); }
   ok(/data-veg="\$\{esc\(g\.site\.id\)\}">Veg<\/button>/.test(html) && /rowspan="\$\{rooms\.length \+ \(openHere \? 1 : 0\) \+ 1\}"/.test(html), "the Overview's Rooms list each site's Veg room under its rooms");

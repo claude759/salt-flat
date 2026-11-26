@@ -929,6 +929,21 @@ launch. The check fails if one of the three pieces is missing.
   and words, adds and removes tasks, through `cult_room_set`'s `tasks`. Each task carries the `key` its ticks are stored
   under (`CM.taskKey` takes a stored key first), kept through a new day or new words, so ticks stay; a HARVEST task's day
   also sets `harvest_day`.
+- **Trim Yields page** (`#trims`, the Overview's Trim Yields button; Gianni, 2026-11-26, from a grower's ask: "have the
+  app record yields for each room for each strain ... how many plants we need to put in to hit a certain yield so I can
+  have an even amount of all the strains we put in a room"; he named it "Trim Yields", a block per room with each trim's
+  dates, total, bigs and smalls "laid out vertically for each trim", past on the left and projected on the right, a
+  trim's strains on a click, Plan a room below). Rooms switched on, by site; a column per trim, aligned on the last one,
+  then Next trim and After that (≈, the sheet's yellow), opening on the newest. Flower = bigs + smalls (the trim sheets'
+  littles), in pounds. Model (CM, tested): `strainYields` (every room's trimmed crops, each strain line whose plants are
+  Metrc's, by `skey`), `yieldFor` (the site's own once it has `SITE_MIN` = 3 crops of the strain, else every site's,
+  "low confidence" under 3), `roomUsual` (the room's last 3 trimmed crops), `projectTrim` (strains x plants at their
+  yield, an unknown strain at the room's usual per plant; under half the room's usual plants in Metrc: the room's usual
+  pounds), `roomTrims` (from `runs()`: trims on the sheets, a part trim, two tabs to check; then a harvest waiting, the
+  crop in flower, the next run by its plan's strains or the room's usual), `planSplit` (even pounds: plants in inverse to
+  yield per plant, whole plants adding up; or a target each). Every room's `cult_room_history` is read for the yields
+  (cached an hour). Plan a room: typable Room and strains (`pickFrom`), plants (default: the room's plants in Metrc, else
+  its usual), Even pounds or Target lb each; strains default to those with 10 or more plants in the room. Not saved.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went
