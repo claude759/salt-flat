@@ -944,6 +944,8 @@ launch. The check fails if one of the three pieces is missing.
   yield per plant, whole plants adding up; or a target each). Every room's `cult_room_history` is read for the yields
   (cached an hour). Plan a room: typable Room and strains (`pickFrom`), plants (default: the room's plants in Metrc, else
   its usual), Even pounds or Target lb each; strains default to those with 10 or more plants in the room. Not saved.
+  A trim's strains open in a bubble beside it (Gianni, same day: "I'd prefer if the more info is a pop up bubble"):
+  `showPop(..., { wide: true })`, the trim's column outlined; the same trim, ×, Escape or a press elsewhere closes it.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went

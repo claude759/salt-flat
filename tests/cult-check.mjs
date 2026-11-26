@@ -943,6 +943,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   }
   ok(/S\.trims = !S\.room && !S\.veg && \/\(\?:\^#\|&\)trims\\b\/\.test\(location\.hash\)/.test(html) && /else if \(trims\) renderTrims\(\)/.test(html) && /id="go-trims">Trim Yields<\/button>/.test(html), 'Trim Yields has its own address (#trims), led to from the Overview');
   ok(/id="tp-room" list="tp-rooms"/.test(html) && /id="tp-add" list="tp-names"/.test(html) && /pickFrom\(names, add\.value\)/.test(html), "Plan a room's pickers are typable");
+  ok(/showPop\(trimDetailHTML\(M\), c, \{ wide: true \}\)/.test(html) && /p\.classList\.toggle\('wide', !!\(o && o\.wide\)\)/.test(html) && !/id="ty-detail"/.test(html), "a trim's strains open in a bubble beside it");
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
     ok(/k not in \('status', 'note', 'due', 'delete', 'kind', 'text'\)/.test(sql), "a one-off task's kind and words can be saved"); }
   ok(/data-veg="\$\{esc\(g\.site\.id\)\}">Veg<\/button>/.test(html) && /rowspan="\$\{rooms\.length \+ \(openHere \? 1 : 0\) \+ 1\}"/.test(html), "the Overview's Rooms list each site's Veg room under its rooms");
