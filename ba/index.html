@@ -471,7 +471,7 @@ const state = {
   period: null, periods: [], dispensaries: [],
   baTab: 'home', adminTab: 'dash', adminRegion: 'all', dispOpen: {}, preview: null, gridMode: 'miles', recentPlaces: [],
 };
-const APP_VERSION = '2026-11-25.2';   // shown top-left; bump on each deploy so we can confirm the live build
+const APP_VERSION = '2026-11-25.3';   // shown top-left; bump on each deploy so we can confirm the live build
 const REGIONS = ['CA','FL','NY'];
 // profile types map to role|region: Universal Admin = admin|, {R} Admin = admin|{R}, {R} BA = ba|{R}
 const isRegionalAdmin = ()=> state.profile?.role==='admin' && !!state.profile?.region;   // admin scoped to one state
@@ -531,6 +531,16 @@ async function selectExpenses(cols, where){
     expEventCols=false;
   }
   return where(supabase.from('expenses').select(cols));
+}
+// selectExpenses read whole: page by page past the API's 1,000 rows a request (readAll, PAGED READS), with the same
+// fallback when the event columns aren't there yet. where(builder) adds the filters, as for selectExpenses.
+async function selectExpensesAll(cols, where, order=['expense_date','id']){
+  if(expEventCols!==false){
+    const r = await readAll(()=>where(supabase.from('expenses').select(cols+','+EXP_EVENT_COLS, { count:'exact' })), order);
+    if(!missingColumn(r.error)){ if(!r.error) expEventCols=true; return r; }
+    expEventCols=false;
+  }
+  return readAll(()=>where(supabase.from('expenses').select(cols, { count:'exact' })), order);
 }
 
 /* ─────────────────────────── helpers ─────────────────────────── */
@@ -1468,14 +1478,14 @@ function setRepPreset(mode){
 function rangeControlsHtml(){
   const r=ensureRepRange();
   return `<div class="row"><div class="small muted grow">Date range</div>
-      <select id="rpPreset">${REPORT_PRESETS.map(([v,l])=>`<option value="${v}" ${r.mode===v?'selected':''}>${l}</option>`).join('')}</select></div>
+      <select id="rpPreset" data-searchable>${REPORT_PRESETS.map(([v,l])=>`<option value="${v}" ${r.mode===v?'selected':''}>${l}</option>`).join('')}</select></div>
     <div class="row" style="margin-top:8px;gap:8px">
       <input type="date" id="rpStart" class="grow" value="${r.start}">
       <span class="muted small">to</span>
       <input type="date" id="rpEnd" class="grow" value="${r.end}"></div>`;
 }
 function wireRangeControls(rerender){
-  const ps=$('#rpPreset'); if(ps) ps.onchange=()=>{ setRepPreset(ps.value); rerender(); };
+  const ps=$('#rpPreset'); if(ps){ ps.onchange=()=>{ setRepPreset(ps.value); rerender(); }; searchifySelect(ps, 'Date range'); }   // typable, like every pick-list
   const s=$('#rpStart'), e=$('#rpEnd');
   const onDate=()=>{ const a=s.value||state.repRange.start, b=e.value||state.repRange.end;
     if(a>b) toast('Swapped so the start date comes first','');
@@ -3634,11 +3644,16 @@ async function adminReport(m){
     supabase.from('profiles').select('id,full_name,region,home_region,non_ba,base_address'),
     readStores('id,name,state'),
     // `state` on all three: rowRegion below reads the row's own state (it was never selected, so it fell through to
-    // the logger's region; event costs from the books carry their event's state)
-    supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status,state').gte('trip_date',start).lte('trip_date',end),
-    selectExpenses('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,payment,expense_date,vendor,category,receipt_path,note,status,state', q=>q.gte('expense_date',start).lte('expense_date',end)),
-    supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,work_date,hours,rate,job,kind,note,status,source,state').gte('work_date',start).lte('work_date',end),
+    // the logger's region; event costs from the books carry their event's state).
+    // All three are read whole, a page of 1,000 at a time (readAll): read in one request, "Last 6 months" (about 3,000
+    // trips and 1,500 hours in November 2026) silently counted only the first 1,000 of each (2026-11-25).
+    readAll(()=>supabase.from('trips').select('id,ba_id,dispensary_id,amount,trip_date,miles,method,kind,start_label,dest_label,start_odo,end_odo,note,status,state', { count:'exact' }).gte('trip_date',start).lte('trip_date',end), ['trip_date','id']),
+    selectExpensesAll('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,payment,expense_date,vendor,category,receipt_path,note,status,state', q=>q.gte('expense_date',start).lte('expense_date',end)),
+    readAll(()=>supabase.from('hours').select('id,ba_id,dispensary_id,dispensary_ids,alloc,amount,work_date,hours,rate,job,kind,note,status,source,state', { count:'exact' }).gte('work_date',start).lte('work_date',end), ['work_date','id']),
   ]);
+  // a page that failed: say so rather than show totals that are short
+  const repErr=[trips,exps,hrs].find(r=>r&&r.error);
+  if(repErr) toast('Some of this range didn\'t load ('+(repErr.error.message||'error')+'). The totals may be short: refresh to try again.','err',9000);
   const dById={}; (disps||[]).forEach(d=>dById[d.id]=d);
   const pById={}; (profs||[]).forEach(p=>pById[p.id]=p);
   const region=state.adminRegion;

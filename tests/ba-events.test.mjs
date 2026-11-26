@@ -268,9 +268,9 @@ test('Spend by dispensary keeps a store a credit left negative, so its total net
 test('the reports read row state, the event columns and offer the Events view', () => {
   const admin = between('async function adminReport(m){', '// ── Visits:'), mine = between('async function baReport(m){', 'function periodItems(){');
   for (const [name, src] of [['adminReport', admin], ['baReport', mine]]) {
-    assert.match(src, /from\('trips'\)\.select\('[^']*,status,state'\)/, name + ' trips state');
-    assert.match(src, /selectExpenses\('[^']*,status,state', q=>q/, name + ' expenses via selectExpenses with state');
-    assert.match(src, /from\('hours'\)\.select\('[^']*,state'\)/, name + ' hours state');
+    assert.match(src, /from\('trips'\)\.select\('[^']*,status,state'(, \{ count:'exact' \})?\)/, name + ' trips state');
+    assert.match(src, /selectExpenses(All)?\('[^']*,status,state', q=>q/, name + ' expenses via selectExpenses with state');
+    assert.match(src, /from\('hours'\)\.select\('[^']*,state'(, \{ count:'exact' \})?\)/, name + ' hours state');
     assert.match(src, /event:x\.event_name\|\|'',books:isBooks\(x\)/, name + ' event on the item');
     assert.match(src, /it&&it\.ba_id&&it\.date&&!it\.books\) dayAuditSheet/, name + ' books lines open their own detail');
   }
