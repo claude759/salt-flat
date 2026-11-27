@@ -921,10 +921,13 @@ launch. The check fails if one of the three pieces is missing.
   a panel per Metrc veg location with a row per strain (clones, tagged, moms, cut days, the oldest batch's age) and Goes
   to, the flower rooms whose planned runs (not passed) name the strain (`CM.vegView`, the rooms' `cult_runs`). Read on
   open, after 10 minutes and on Refresh (`ovVegLoad`). Metrc's veg is read only, like every Metrc number.
-- **Page selector** (Gianni, 2026-11-27: "Page selector should be up here", beside the name in the top bar; it replaced
-  the crumbs): a typable box (`#pagesel`, `pageList()`): Overview, Trim Yields, then each site's rooms and its Veg room.
-  A page picked from the list opens at once; typed text opens the one page it names (`pickFrom`) on Enter or on leaving
-  the box, else the box goes back to the page shown. A new page goes in `pageList()`.
+- **Top buttons and the Overview's filter** (Gianni, 2026-11-27: "Up at the very top I just want buttons for Overview and
+  Trim Yields", replacing the typable page selector of the same day; "Right here I want buttons for All, 25th, 23rd, 15th,
+  Olympic, Veg Only that filter the overview"). The top bar has Overview and Trim Yields (`#topnav`, the page shown
+  pressed); rooms and Veg rooms open from the Overview. The Overview's header has All | 25th | 23rd | 15th | Olympic | Veg
+  Only (`OVF`, `S.ovf`, kept on the device as `cult.ovf`): a facility shows only its rooms in every part (Rooms, Tasks,
+  Next trims; `ovShown`), Veg Only shows every facility's veg (`allVegHTML`: Metrc's veg, clone cuts, veg tasks of the
+  next 30 days), which was the All Veg page (`#allveg` opens it).
 - **Tasks from the Overview, any room** (Gianni, 2026-11-27: "From the overview page we should be able to add/remove tasks
   from any facility seemlessly"): Add a task takes any room (typable) and Once (a one-off) or Every cycle (onto the room's
   calendar at the day of flower its date falls on this cycle, 1 to 150); a task's ⋯ has Skip (this cycle), Delete (a
@@ -949,9 +952,8 @@ launch. The check fails if one of the three pieces is missing.
   Mark complete stores `VEG|day|TEXT` ticks in `cult_task_done` under the room and the run's flip (a tick counts within 3
   weeks of it). A facility's Veg page (`#veg=<site>`) has Clone cuts (each room's next run: cut, transplant, flip; the
   sheet's ROOM / CUTTING DAY list, from the runs, not the sheet's typed days) and Veg schedule (each room's tasks, Edit per
-  room), then Metrc's veg. All Veg (`#allveg`, `renderAllVeg`; a button on the Overview and in the page selector): each
-  facility's Metrc veg in a line, every room's clone cuts, and the veg tasks of the next 30 days (and the last week's not
-  done). Both is a kind (the sheet's veg tasks use it). The tab's ENVIRONMENT table is the 9-week flower one, not shown.
+  room), then Metrc's veg. The Overview's Veg Only (it was the All Veg page, `#allveg`): each facility's Metrc veg in a
+  line, every room's clone cuts, and the veg tasks of the next 30 days (and the last week's not done). Both is a kind (the sheet's veg tasks use it). The tab's ENVIRONMENT table is the 9-week flower one, not shown.
 - **Trim Yields page** (`#trims`, the Overview's Trim Yields button; Gianni, 2026-11-26, from a grower's ask: "have the
   app record yields for each room for each strain ... how many plants we need to put in to hit a certain yield so I can
   have an even amount of all the strains we put in a room"; he named it "Trim Yields", a block per room with each trim's

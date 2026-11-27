@@ -855,8 +855,8 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/S\.rooms\.length === 1 && !\/\(\^#\|&\)overview\\b\/\.test\(location\.hash\)/.test(html) && /: 'overview'; \}/.test(html), 'the Overview has its own address; one room on still opens straight into it');
   ok(/<h1>Overview<\/h1>/.test(html) && /class="ov-grp">Next dates<\/th>/.test(html) && /<h3>Tasks, next 30 days\$\{canWork \?/.test(html) && /<h3>Next trims<\/h3>/.test(html), 'the Overview: next dates, tasks, next trims');
   ok(/function ovTaskRow\(t, room, canWork, today, band\)[\s\S]*?>Mark complete<\/button>/.test(html) && /markTask\(roomView\(room, CM\.todayLA\(\)\), cb\)/.test(html), "the Overview's tasks have Mark complete, saved against their own room");
-  ok(/<input type="text" id="pagesel" list="pagesel-list"/.test(html) && /function pageList\(\)/.test(html) && /pickFrom\(pageList\(\)\.map\(x => x\.name\), typed\)/.test(html) && !/id="crumb-ov"/.test(html),
-    'a typable page selector in the top bar opens any page (it replaced the crumbs)');
+  ok(/<span class="seg topnav" id="topnav" role="group" aria-label="Pages" hidden><button type="button" data-pg="overview">Overview<\/button><button type="button" data-pg="trims">Trim Yields<\/button><\/span>/.test(html) && /function topNav\(\)/.test(html) && !/id="pagesel"/.test(html) && !/id="crumb-ov"/.test(html),
+    'the top bar has buttons for Overview and Trim Yields (they replaced the page selector)');
   ok(/const nowBig = \(C, RN\) =>/.test(html), 'a room harvested lately has its words (nowBig) again');
   ok(/id="tm-rm">Remove from calendar<\/button>/.test(html) && /const CAL_KEEP = \/\^\(FLIP\|HARVEST\)\\b\/i/.test(html) && /data-atrep="every"/.test(html) && /async function calSave\(room, fn, msgEl\)/.test(html),
     'tasks from the Overview: a calendar task removed for good (never the flip or harvest), one added for every cycle');
@@ -974,11 +974,12 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
     ok(/add column if not exists veg_tasks jsonb/.test(sql) && /veg_tasks = case when p_set \? 'veg_tasks' then p_set->'veg_tasks' else veg_tasks end/.test(sql), 'veg schedules are kept on the room, set through cult_room_set');
   }
-  ok(/S\.allVeg = !S\.room && !S\.veg && !S\.trims && \/\(\?:\^#\|&\)allveg\\b\/\.test\(location\.hash\)/.test(html) && /else if \(allveg\) renderAllVeg\(\)/.test(html) && /\{ name: 'All Veg', go: goAllVeg \}/.test(html) && /id="go-allveg">All Veg<\/button>/.test(html),
-    'All Veg has its own address (#allveg), a button on the Overview and a place in the page selector');
+  ok(/const OVF = \[\['all', 'All'\], \['F', '25th'\], \['S', '23rd'\], \['I', '15th'\], \['O', 'Olympic'\], \['veg', 'Veg Only'\]\];/.test(html) && /data-ovf="\$\{k\}"/.test(html) && /box\.innerHTML = ovRoomsHTML\(ovShown\(today\), today\)/.test(html)
+    && /if \(veg\) \{ el\.innerHTML = h \+ allVegHTML\(today, groups\);/.test(html) && /allveg\\b\/\.test\(location\.hash\)\) \{ setOvf\('veg'\);/.test(html),
+    "the Overview's filter: All, each facility, or Veg Only (it was the All Veg page; #allveg opens it)");
   ok(/function renderVeg\(site\) \{ renderVeg0\(site\); vegWire\(\$\('view-room'\)\); \}/.test(html) && /vegSchedPanel\(groups,/.test(html) && /<h3>Clone cuts<\/h3>/.test(html) && /p_set: \{ veg_tasks: out \}/.test(html) && /'Both'/.test(html),
     "a facility's Veg page has its rooms' clone cuts and veg schedules, each editable; Both is a kind");
-  ok(/S\.trims = !S\.room && !S\.veg && \/\(\?:\^#\|&\)trims\\b\/\.test\(location\.hash\)/.test(html) && /else if \(trims\) renderTrims\(\)/.test(html) && /id="go-trims">Trim Yields<\/button>/.test(html), 'Trim Yields has its own address (#trims), led to from the Overview');
+  ok(/S\.trims = !S\.room && !S\.veg && \/\(\?:\^#\|&\)trims\\b\/\.test\(location\.hash\)/.test(html) && /else if \(trims\) renderTrims\(\)/.test(html) && /data-pg="trims">Trim Yields<\/button>/.test(html), 'Trim Yields has its own address (#trims), led to from the top bar');
   ok(/id="tp-room" list="tp-rooms"/.test(html) && /id="tp-add" list="tp-names"/.test(html) && /pickFrom\(names, add\.value\)/.test(html), "Plan a room's pickers are typable");
   ok(/showPop\(trimDetailHTML\(M\), c, \{ wide: true \}\)/.test(html) && /p\.classList\.toggle\('wide', !!\(o && o\.wide\)\)/.test(html) && !/id="ty-detail"/.test(html), "a trim's strains open in a bubble beside it");
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
