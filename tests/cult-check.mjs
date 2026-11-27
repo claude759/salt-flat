@@ -836,7 +836,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     && /function public\.cult_run_delete\(p_room text, p_key text\)[\s\S]*?if not public\.cult_can_edit\(\) then raise exception 'not allowed'/.test(sql), 'saving or deleting a run needs edit');
   ok(/function public\.cult_metrc_batches_save\(p_token text[\s\S]*?raise exception 'bad token'/.test(sql) && /revoke insert, update, delete on table public\.cult_metrc_batches from anon, authenticated/.test(sql),
     "Metrc's batch rows come only from the job (token first)");
-  ok(/'turnover_days', 'env', 'tasks', 'veg_tasks'\)\) then/.test(sql) && /check \(turnover_days between 1 and 3\)/.test(sql), 'turnover days: 1 to 3, set through cult_room_set');
+  ok(/'turnover_days', 'env', 'tasks', 'veg_tasks', 'lights'\)\) then/.test(sql) && /check \(turnover_days between 1 and 3\)/.test(sql), 'turnover days: 1 to 3, set through cult_room_set');
 }
 
 // ---- step 4 on the page: the Now box, Growlink's tiles and the map on top, then the room timeline, the runs, the panels
@@ -855,8 +855,8 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/S\.rooms\.length === 1 && !\/\(\^#\|&\)overview\\b\/\.test\(location\.hash\)/.test(html) && /: 'overview'; \}/.test(html), 'the Overview has its own address; one room on still opens straight into it');
   ok(/<h1>Overview<\/h1>/.test(html) && /class="ov-grp">Next dates<\/th>/.test(html) && /<h3>Tasks, next 30 days\$\{canWork \?/.test(html) && /<h3>Next trims<\/h3>/.test(html), 'the Overview: next dates, tasks, next trims');
   ok(/function ovTaskRow\(t, room, canWork, today, band\)[\s\S]*?>Mark complete<\/button>/.test(html) && /markTask\(roomView\(room, CM\.todayLA\(\)\), cb\)/.test(html), "the Overview's tasks have Mark complete, saved against their own room");
-  ok(/<span class="seg topnav" id="topnav" role="group" aria-label="Pages" hidden><button type="button" data-pg="overview">Overview<\/button><button type="button" data-pg="trims">Trim Yields<\/button><\/span>/.test(html) && /function topNav\(\)/.test(html) && !/id="pagesel"/.test(html) && !/id="crumb-ov"/.test(html),
-    'the top bar has buttons for Overview and Trim Yields (they replaced the page selector)');
+  ok(/<span class="seg topnav" id="topnav" role="group" aria-label="Pages" hidden><button type="button" data-pg="overview">Overview<\/button><button type="button" data-pg="trims">Trim Yields<\/button><button type="button" data-pg="alerts">/.test(html) && /function topNav\(\)/.test(html) && !/id="pagesel"/.test(html) && !/id="crumb-ov"/.test(html),
+    'the top bar has buttons for Overview, Trim Yields and Alerts (they replaced the page selector)');
   ok(/const nowBig = \(C, RN\) =>/.test(html), 'a room harvested lately has its words (nowBig) again');
   ok(/id="tm-rm">Remove from calendar<\/button>/.test(html) && /const CAL_KEEP = \/\^\(FLIP\|HARVEST\)\\b\/i/.test(html) && /data-atrep="every"/.test(html) && /async function calSave\(room, fn, msgEl\)/.test(html),
     'tasks from the Overview: a calendar task removed for good (never the flip or harvest), one added for every cycle');
@@ -886,7 +886,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/sb\.rpc\('cult_room_set', \{ p_room: room\.id, p_set: \{ env: out \} \}\)/.test(html) && /\(k === 'env' && !!S\.editEnv\)/.test(html) && /if \(pb && !S\.editEnv\) pb\.innerHTML = envBody/.test(html),
     'Environment targets can be edited, the form kept through redraws');
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
-    ok(/'turnover_days', 'env', 'tasks', 'veg_tasks'\)\) then/.test(sql) && /env = case when p_set \? 'env' then p_set->'env' else env end/.test(sql), 'cult_room_set saves the weekly targets (env)'); }
+    ok(/'turnover_days', 'env', 'tasks', 'veg_tasks', 'lights'\)\) then/.test(sql) && /env = case when p_set \? 'env' then p_set->'env' else env end/.test(sql), 'cult_room_set saves the weekly targets (env)'); }
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
     ok(/tasks = case when p_set \? 'tasks' then p_set->'tasks' else tasks end/.test(sql) && /two tasks share a key/.test(sql), 'cult_room_set saves the task calendar, keys unique'); }
   ok(/sb\.rpc\('cult_room_set', \{ p_room: room\.id, p_set: set \}\)/.test(html) && /\(k === 'tasks' && !!S\.editCal\)/.test(html) && /list="cal-kinds"/.test(html) && /pickFrom\(KINDS, inp\.value\)/.test(html),
@@ -979,6 +979,22 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     "the Overview's filter: All, each facility, or Veg Only (it was the All Veg page; #allveg opens it)");
   ok(/function renderVeg\(site\) \{ renderVeg0\(site\); vegWire\(\$\('view-room'\)\); \}/.test(html) && /vegSchedPanel\(groups,/.test(html) && /<h3>Clone cuts<\/h3>/.test(html) && /p_set: \{ veg_tasks: out \}/.test(html) && /'Both'/.test(html),
     "a facility's Veg page has its rooms' clone cuts and veg schedules, each editable; Both is a kind");
+  {   // Alerts (2026-11-27): questions for the crew, every room's Needs attention, and the light hours typed there
+    const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
+    ok(/create table if not exists public\.cult_questions/.test(sql) && /revoke insert, update, delete on table public\.cult_questions from anon, authenticated/.test(sql)
+      && /function public\.cult_question_answer\(p_id bigint, p_answer text\)[\s\S]*?if not public\.cult_can_work\(\) then raise exception 'not allowed'/.test(sql)
+      && /add column if not exists lights jsonb/.test(sql) && /raise exception 'lights must be two different times, on and off, as HH:MM'/.test(sql),
+      'questions are read by whoever can open the page and answered only through cult_question_answer; light hours are two times');
+    ok(/S\.alerts = !S\.room && !S\.veg && !S\.trims && \/\(\?:\^#\|&\)alerts\\b\/\.test\(location\.hash\)/.test(html) && /else if \(alerts\) renderAlerts\(\)/.test(html) && /data-pg="alerts">Alerts<b class="anum" id="anum" hidden><\/b><\/button>/.test(html),
+      'Alerts has its own address (#alerts) and a button with a count in the top bar');
+    ok(/const warns = roomWarns\(V, RN\), nx = RN\.next\[0\];/.test(html) && /const cap = CM\.capacity\(room\.layout, placed\);\n  const att = roomAttn\(V, RN, today, warns\);/.test(html) && /const out = roomAttn\(x\.V, x\.RN, today\)\.map\(a => a\.text\);/.test(html),
+      "the room page and the Alerts page list a room's Needs attention from the same code");
+    ok(/now: glRow\(S\.rooms\.find\(r => r\.id === roomId\), \(res\[0\]\.data \|\| \[\]\)\[0\] \|\| null\)/.test(html) && /\[r\.room_id, glRow\(\(S\.ovAll \|\| S\.rooms\)\.find\(x => x\.id === r\.room_id\), r\)\]/.test(html) && /const rows = histLit\(H\)\.filter/.test(html),
+      "a room's typed light hours stand in for Growlink's schedule, live and in the hourly history");
+    const L = { on: '06:00', off: '18:00' }, at = h => Date.parse(`2026-11-27T${h}:00-08:00`);
+    assert.deepEqual([CM.glLights(L, at('05:30')).on, CM.glLights(L, at('06:30')).on, CM.glLights(L, at('17:59')).on, CM.glLights(L, at('18:00')).on, CM.glLights({ on: '20:00', off: '08:00' }, at('02:00')).on],
+      [false, true, true, false, true], 'light hours as typed: on from the on time to the off time, across midnight too'); n++;
+  }
   ok(/S\.trims = !S\.room && !S\.veg && \/\(\?:\^#\|&\)trims\\b\/\.test\(location\.hash\)/.test(html) && /else if \(trims\) renderTrims\(\)/.test(html) && /data-pg="trims">Trim Yields<\/button>/.test(html), 'Trim Yields has its own address (#trims), led to from the top bar');
   ok(/id="tp-room" list="tp-rooms"/.test(html) && /id="tp-add" list="tp-names"/.test(html) && /pickFrom\(names, add\.value\)/.test(html), "Plan a room's pickers are typable");
   ok(/showPop\(trimDetailHTML\(M\), c, \{ wide: true \}\)/.test(html) && /p\.classList\.toggle\('wide', !!\(o && o\.wide\)\)/.test(html) && !/id="ty-detail"/.test(html), "a trim's strains open in a bubble beside it");

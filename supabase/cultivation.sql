@@ -90,6 +90,9 @@ alter table public.cult_rooms add column if not exists turnover_days int not nul
 -- facility veg room page and a page called All Veg"): up to 40 tasks {day, kind, text, key} for the run going into the
 -- room, day 1 the transplant as the sheet counts; set through cult_room_set's veg_tasks
 alter table public.cult_rooms add column if not exists veg_tasks jsonb;
+-- each room's light hours (Gianni, 2026-11-27, of an Alerts page for the crew's answers: "Yes, build it"): {on, off} as
+-- HH:MM, typed on the Alerts page; they stand in for Growlink's light schedule where that isn't kept up
+alter table public.cult_rooms add column if not exists lights jsonb;
 alter table public.cult_rooms drop constraint if exists cult_rooms_turnover_days_check;
 alter table public.cult_rooms add constraint cult_rooms_turnover_days_check check (turnover_days between 1 and 3);
 alter table public.cult_rooms enable row level security;
@@ -292,8 +295,14 @@ declare r public.cult_rooms;
 begin
   if not public.cult_can_edit() then raise exception 'not allowed'; end if;
   if jsonb_typeof(p_set) is distinct from 'object' then raise exception 'p_set must be an object'; end if;
-  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout', 'notes', 'turnover_days', 'env', 'tasks', 'veg_tasks')) then
-    raise exception 'only flip_date, harvest_day, layout, notes, turnover_days, env, tasks and veg_tasks can be changed here';
+  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout', 'notes', 'turnover_days', 'env', 'tasks', 'veg_tasks', 'lights')) then
+    raise exception 'only flip_date, harvest_day, layout, notes, turnover_days, env, tasks, veg_tasks and lights can be changed here';
+  end if;
+  -- the room's light hours: {on, off} as HH:MM, two different times, or null for none
+  if p_set ? 'lights' and jsonb_typeof(p_set->'lights') <> 'null' and (jsonb_typeof(p_set->'lights') <> 'object'
+     or coalesce(p_set->'lights'->>'on', '') !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' or coalesce(p_set->'lights'->>'off', '') !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+     or p_set->'lights'->>'on' = p_set->'lights'->>'off') then
+    raise exception 'lights must be two different times, on and off, as HH:MM';
   end if;
   -- the veg schedule: up to 40 tasks, each {day, kind, text, key}, day 1 (the transplant) to 60
   if p_set ? 'veg_tasks' then
@@ -375,6 +384,8 @@ begin
     env = case when p_set ? 'env' then p_set->'env' else env end,
     tasks = case when p_set ? 'tasks' then p_set->'tasks' else tasks end,
     veg_tasks = case when p_set ? 'veg_tasks' then p_set->'veg_tasks' else veg_tasks end,
+    lights = case when p_set ? 'lights' then case when jsonb_typeof(p_set->'lights') = 'null' then null
+      else jsonb_build_object('on', p_set->'lights'->>'on', 'off', p_set->'lights'->>'off') end else lights end,
     updated_at = now(), updated_by = public.cult_jwt_email()
    where id = p_room returning * into r;
   if r.id is null then raise exception 'no such room'; end if;
@@ -888,5 +899,45 @@ begin
 end $$;
 revoke all on function public.cult_run_delete(text, text) from public, anon;
 grant execute on function public.cult_run_delete(text, text) to authenticated;
+
+-- questions for the crew (the Alerts page; Gianni, 2026-11-27: "we could potentially add these open question to an Alerts
+-- Page?", then "Yes, build it"): what only the people in the rooms know, added by Claude or Gianni by SQL and answered on the
+-- page by any Wizard Trees account (cult_question_answer; an empty answer opens the question again). A lights question
+-- is answered with the room's light hours (cult_room_set's lights), then its answer is written here.
+create table if not exists public.cult_questions (
+  id          bigint generated always as identity primary key,
+  room_id     text references public.cult_rooms(id) on delete cascade,
+  site        text check (site in ('S', 'F', 'I', 'O')),
+  kind        text not null default 'text' check (kind in ('text', 'lights')),
+  question    text not null check (length(question) between 1 and 1000),
+  why         text check (length(why) <= 1000),
+  answer      text check (length(answer) <= 2000),
+  answered_by text,
+  answered_at timestamptz,
+  created_at  timestamptz not null default now(),
+  created_by  text,
+  closed_at   timestamptz
+);
+alter table public.cult_questions enable row level security;
+drop policy if exists cult_questions_select on public.cult_questions;
+create policy cult_questions_select on public.cult_questions for select to authenticated using (public.cult_can_view() and closed_at is null);
+revoke insert, update, delete on table public.cult_questions from anon, authenticated;
+grant select on table public.cult_questions to authenticated;
+
+create or replace function public.cult_question_answer(p_id bigint, p_answer text)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare a text := nullif(btrim(coalesce(p_answer, '')), '');
+begin
+  if not public.cult_can_work() then raise exception 'not allowed'; end if;
+  if a is not null and length(a) > 2000 then raise exception 'an answer is up to 2000 characters'; end if;
+  update public.cult_questions set answer = a,
+    answered_by = case when a is null then null else public.cult_jwt_email() end,
+    answered_at = case when a is null then null else now() end
+   where id = p_id and closed_at is null;
+  if not found then raise exception 'no such question'; end if;
+  return jsonb_build_object('ok', true);
+end $$;
+revoke all on function public.cult_question_answer(bigint, text) from public, anon;
+grant execute on function public.cult_question_answer(bigint, text) to authenticated;
 
 notify pgrst, 'reload schema';

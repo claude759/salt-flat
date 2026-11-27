@@ -928,6 +928,19 @@ launch. The check fails if one of the three pieces is missing.
   Only (`OVF`, `S.ovf`, kept on the device as `cult.ovf`): a facility shows only its rooms in every part (Rooms, Tasks,
   Next trims; `ovShown`), Veg Only shows every facility's veg (`allVegHTML`: Metrc's veg, clone cuts, veg tasks of the
   next 30 days), which was the All Veg page (`#allveg` opens it).
+- **Alerts page** (`#alerts`; Gianni, 2026-11-27, of the open questions he couldn't answer: "we could potentially add these
+  open question to an Alerts Page?", then "Yes, build it"). A third top-bar button, Alerts, with a count (open questions
+  plus every room's alerts, `alertCount`). **Questions for the crew** (`cult_questions`, in `supabase/cultivation.sql`:
+  read by whoever can open the page, answered only through `cult_question_answer`, an empty answer opening it again;
+  added by Claude or Gianni by SQL, `~/claude-sql/pending/cult-alerts-questions.sql` for the first seven): open ones with
+  an answer box, then Answered (who, when, Change). **When Claude needs something only the crew knows, it adds a question
+  here instead of asking Gianni.** A `lights` question (one per room) is answered with lights-on and lights-off times,
+  saved as the room's light hours (`cult_rooms.lights` `{on, off}`, `cult_room_set`'s `lights`); they stand in for
+  Growlink's light schedule (`glRow` on the live rows, `histLit` filling the hourly history's lights where Growlink's
+  doesn't say), so those rooms' readings are judged against the day and night plan. **Needs attention, every room**:
+  each room's Needs attention (`roomWarns` and `roomAttn`, the same code as the room page; Growlink from the Overview's
+  copy of the live rows, so off-plan readings that need the log show on the room page only) and its veg tasks not marked
+  complete in the last 7 days, by site, each room's name opening it.
 - **Tasks from the Overview, any room** (Gianni, 2026-11-27: "From the overview page we should be able to add/remove tasks
   from any facility seemlessly"): Add a task takes any room (typable) and Once (a one-off) or Every cycle (onto the room's
   calendar at the day of flower its date falls on this cycle, 1 to 150); a task's ⋯ has Skip (this cycle), Delete (a
@@ -1026,7 +1039,8 @@ launch. The check fails if one of the three pieces is missing.
   name stops matching an app room loses its row (the page then says Growlink has no room of that name). Growlink's light
   schedule and set points are not used where plainly not kept up (a lights-on day under 10 hours, a Growlink run 14 or
   more days past its length, a CO2 set point under 300 ppm): on 2026-11-24 that is 23rd Rooms 1-3 and Olympic Room 3,
-  whose Growlink profile reads 08:00-16:00 and 75 ppm. Confirm their real light hours before switching those rooms on.
+  whose Growlink profile reads 08:00-16:00 and 75 ppm. Their real light hours are asked on the Alerts page (2026-11-27);
+  once typed there they are used instead.
 - **Live readings beside the plan** (2026-11-24; at the top of the room page under the status line since Gianni asked the
   same day: "can we put this real time growlink stuff up at the top of the page?"; the Environment targets panel keeps
   only the weekly table; each tile's line covers the readings it has, up to a day): a tile per kind of reading (temp, humidity, VPD, CO2,
