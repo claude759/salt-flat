@@ -1929,12 +1929,13 @@ const CM = (() => {
     for (const y of Y.values()) y.name = [...y.names.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))[0][0];
     return Y;
   }
-  // one strain's yield for a site: the site's own once it has SITE_MIN crops of it, else every site's; low under SITE_MIN
+  // one strain's yield at a site: its average per plant over that site's own trimmed crops of it, never another site's
+  // (Gianni, 2026-11-27: "I don't think I want to do all sites for the estimate ... make it clear what the average per
+  // plant yield for the strain is at this specific facility"); low under SITE_MIN crops; none when the site has none
   function yieldFor(Y, name, site) {
-    const y = Y && Y.get(skey(name));
-    if (!y) return null;
-    const s = y.by[site], a = s && s.crops >= SITE_MIN ? s : y.all;
-    return { name: y.name, gpp: a.g / a.plants, bigsShare: a.g > 0 ? a.bigs / a.g : null, crops: a.crops, scope: a === s ? 'site' : 'all', low: a.crops < SITE_MIN };
+    const y = Y && Y.get(skey(name)), a = y && y.by[site];
+    if (!a || !(a.plants > 0)) return null;
+    return { name: y.name, gpp: a.g / a.plants, bigsShare: a.g > 0 ? a.bigs / a.g : null, crops: a.crops, scope: 'site', low: a.crops < SITE_MIN };
   }
   // a room's own usual, from its last 3 trimmed crops: flower per plant, bigs' share, pounds (as grams) and plants a crop
   function roomUsual(crops) {
@@ -2772,7 +2773,11 @@ const lbFmt = (g, d) => (g == null ? '' : (g / CM.LB).toLocaleString('en-US', { 
 const trimDays = t => (!t.a ? '' : t.z && t.z !== t.a ? `${CM.short(t.a)}–${CM.short(t.z)}` : CM.short(t.a));
 // the density rule in words, when it moved a plant's yield by 2% or more
 const densWords = (f, n, u) => (!(u > 0) || !(f > 0) || Math.abs(f - 1) < 0.02 ? ''
-  : `${num(n)} plants against the room's usual ${num(Math.round(u))}, so each plant counts ${Math.round(Math.abs(f - 1) * 100)}% ${f > 1 ? 'above' : 'below'} its usual yield (${f > 1 ? 'fewer plants grow bigger' : 'more plants grow smaller'}).`);
+  : `${num(n)} plants against the room's usual ${num(Math.round(u))}, so each plant counts ${Math.round(Math.abs(f - 1) * 100)}% ${f > 1 ? 'above' : 'below'} its average (${f > 1 ? 'fewer plants grow bigger' : 'more plants grow smaller'}).`);
+// the facility's short name, and where a strain's average per plant comes from
+const facShort = site => (site === 'F' ? '25th' : site === 'S' ? '23rd' : site === 'I' ? '15th' : 'Olympic');
+const ySrc = (r, fac) => (r.scope === 'site' ? `${fac} average · ${r.crops} crop${r.crops === 1 ? '' : 's'}${r.low ? ' · low confidence' : ''}`
+  : r.scope === 'room' ? `not trimmed at ${fac} yet · the room’s average` : 'no yield yet');
 // everything the page draws, worked out once per draw
 function trimsModel(today) {
   const all = S.allRooms || S.rooms;
@@ -2852,16 +2857,16 @@ function trimDetailHTML(M) {
     + `${t.harvest ? `<p class="ty-sub">${esc(`Harvest ${CM.short(t.harvest)}`)}</p>` : ''}`;
   if (t.kind === 'check') return h + `<p class="muted">${esc(`Two full trim tabs for this harvest${t.tabs.length ? ` (${t.tabs.join(' and ')})` : ''}: check the trim sheets.`)}</p></div>`;
   if (est) {
+    const fac = facShort(x.room.site);
     const why = t.basis === 'room' ? `The room's usual, from its last ${x.U ? x.U.n : 3} trims${t.plants ? ` (Metrc has ${num(t.plants)} plants here so far)` : ''}.`
-      : t.from === 'harvested' ? 'From the plants Metrc harvested, at each strain’s yield per plant.'
-      : t.from === 'plan' ? 'From the run plan’s strains, at the room’s usual plants per light.' : 'From the strains Metrc has in flower here, at each strain’s yield per plant.';
+      : t.from === 'harvested' ? `From the plants Metrc harvested, at each strain’s average per plant at ${fac}.`
+      : t.from === 'plan' ? `From the run plan’s strains, at the room’s usual plants per light and each strain’s average per plant at ${fac}.`
+      : `From the strains Metrc has in flower here, at each strain’s average per plant at ${fac}.`;
     const dw = t.basis === 'strains' ? densWords(t.f, t.plants, t.usual) : '';
     h += `<p class="muted" style="margin:4px 0 8px">${esc(dw ? `${why} ${dw}` : why)}</p>`;
     if (t.rows.length) {
-      const src = r => r.scope === 'site' ? `${x.room.site === 'F' ? '25th' : x.room.site === 'S' ? '23rd' : x.room.site === 'I' ? '15th' : 'Olympic'}, ${r.crops} crops`
-        : r.scope === 'all' ? `all sites, ${r.crops} crop${r.crops === 1 ? '' : 's'}${r.low ? ' · low confidence' : ''}` : r.scope === 'room' ? 'room’s usual (no trimmed crops of it)' : 'no yield';
-      h += '<div class="wrapx"><table class="t tyd"><thead><tr><th>Strain</th><th class="n">Plants</th><th class="n">Per plant</th><th class="n">Total lb</th><th class="n">Bigs</th><th class="n">Smalls</th></tr></thead><tbody>'
-        + t.rows.map(r => `<tr><td><b>${esc(r.name || 'Plants (strains not read yet)')}</b><small>${esc(src(r))}</small></td><td class="n">${esc(num(r.plants))}</td><td class="n">${r.gpp ? esc(`${Math.round(r.gpp)} g`) : ''}</td><td class="n">${r.total != null ? esc(ap + lbFmt(r.total, 1)) : ''}</td><td class="n">${r.bigs != null ? esc(ap + lbFmt(r.bigs, 1)) : ''}</td><td class="n">${r.total != null && r.bigs != null ? esc(ap + lbFmt(r.total - r.bigs, 1)) : ''}</td></tr>`).join('')
+      h += `<div class="wrapx"><table class="t tyd"><thead><tr><th>Strain</th><th class="n">Plants</th><th class="n">${esc(fac)} avg per plant</th><th class="n">Total lb</th><th class="n">Bigs</th><th class="n">Smalls</th></tr></thead><tbody>`
+        + t.rows.map(r => `<tr><td><b>${esc(r.name || 'Plants (strains not read yet)')}</b><small>${esc(ySrc(r, fac))}</small></td><td class="n">${esc(num(r.plants))}</td><td class="n">${r.base ? esc(`${Math.round(r.base)} g`) : ''}</td><td class="n">${r.total != null ? esc(ap + lbFmt(r.total, 1)) : ''}</td><td class="n">${r.bigs != null ? esc(ap + lbFmt(r.bigs, 1)) : ''}</td><td class="n">${r.total != null && r.bigs != null ? esc(ap + lbFmt(r.total - r.bigs, 1)) : ''}</td></tr>`).join('')
         + `<tr class="ty-sum"><td>Total</td><td class="n">${esc(num(t.plants))}</td><td></td><td class="n">${esc(ap + lbFmt(t.total, 1))}</td><td class="n">${t.bigs != null ? esc(ap + lbFmt(t.bigs, 1)) : ''}</td><td class="n">${t.bigs != null ? esc(ap + lbFmt(t.total - t.bigs, 1)) : ''}</td></tr></tbody></table></div>`;
     }
     return h + '</div>';
@@ -2892,8 +2897,7 @@ function planHTML(M, today) {
   const names = [...new Set([...M.Y.values()].map(y => y.name).concat(x.nowRows.map(r => r.name)))].sort((a, b) => a.localeCompare(b));
   const rows = strains.map(n => { const y = CM.yieldFor(M.Y, n, x.room.site); return y ? { name: n, gpp: y.gpp, scope: y.scope, crops: y.crops, low: y.low } : { name: n, gpp: x.U ? x.U.gpp : null, scope: 'room', crops: x.U ? x.U.n : 0, low: false }; });
   const out = CM.planSplit(rows, P.mode === 'target' ? { target: (P.target || 0) * CM.LB, U: x.U } : { n: plants, U: x.U });
-  const site = x.room.site === 'F' ? '25th' : x.room.site === 'S' ? '23rd' : x.room.site === 'I' ? '15th' : 'Olympic';
-  const src = r => r.scope === 'site' ? `${site}, ${r.crops} crops` : r.scope === 'all' ? `all sites, ${r.crops} crop${r.crops === 1 ? '' : 's'}${r.low ? ' · low confidence' : ''}` : 'room’s usual (no trimmed crops of it)';
+  const fac = facShort(x.room.site);
   let h = `<datalist id="tp-rooms">${rooms.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist><datalist id="tp-names">${names.map(n => `<option value="${esc(n)}"></option>`).join('')}</datalist>`
     + `<div class="tp-row"><label>Room<input type="text" id="tp-room" list="tp-rooms" value="${esc(x.room.name)}" data-ok="${esc(x.room.name)}" autocomplete="off"></label>`
     + `<span class="seg" role="group" aria-label="Plan by"><button type="button" data-tpmode="even" aria-pressed="${P.mode !== 'target'}">Even pounds</button><button type="button" data-tpmode="target" aria-pressed="${P.mode === 'target'}">Target lb each</button></span>`
@@ -2905,8 +2909,8 @@ function planHTML(M, today) {
   const sumP = out.reduce((a, r) => a + (r.plants || 0), 0), sumG = out.reduce((a, r) => a + (r.g || 0), 0), f = CM.density(x.U, sumP);
   const dw = densWords(f, sumP, x.U && x.U.pAvg);
   if (dw) h += `<p class="muted" style="margin:0 0 6px">${esc(dw)}</p>`;
-  h += '<div class="wrapx"><table class="t tyd"><thead><tr><th>Strain</th><th class="n">Per plant</th><th class="n">Plants</th><th class="n">Expected lb</th></tr></thead><tbody>'
-    + out.map(r => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.gpp ? src(r) : 'no yield yet')}</small></td><td class="n">${r.gpp ? esc(`${Math.round(r.gpp * f)} g`) : ''}</td><td class="n tp-n">${r.plants != null ? esc(num(r.plants)) : ''}</td><td class="n">${r.g != null ? esc(lbFmt(r.g, 1)) : ''}</td></tr>`).join('')
+  h += `<div class="wrapx"><table class="t tyd"><thead><tr><th>Strain</th><th class="n">${esc(fac)} avg per plant</th><th class="n">Plants</th><th class="n">Expected lb</th></tr></thead><tbody>`
+    + out.map(r => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.gpp ? ySrc(r, fac) : 'no yield yet')}</small></td><td class="n">${r.gpp ? esc(`${Math.round(r.gpp)} g`) : ''}</td><td class="n tp-n">${r.plants != null ? esc(num(r.plants)) : ''}</td><td class="n">${r.g != null ? esc(lbFmt(r.g, 1)) : ''}</td></tr>`).join('')
     + `<tr class="ty-sum"><td>Total</td><td></td><td class="n">${esc(num(sumP))}</td><td class="n">${esc(lbFmt(sumG, 1))}</td></tr></tbody></table></div>`;
   return h;
 }

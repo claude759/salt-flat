@@ -922,8 +922,9 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
       crop([st('Tidebanger', 18000, 100, 15000), st('Pool Party', 9000, 60, 7000, { shared: true })])];
     const Y = CM.strainYields([{ site: 'F', crops: F }, { site: 'S', crops: [crop([st('Tidebanger', 10000, 100, 8000), st('Wizzy', 8000, 100, 6000)])] }]);
     const tb = CM.yieldFor(Y, 'TIDEBANGER', 'F'), zb = CM.yieldFor(Y, 'Zangbanger', 'F'), tbS = CM.yieldFor(Y, 'Tidebanger', 'S');
-    assert.deepEqual([tb.gpp, tb.scope, tb.crops, tb.low, zb.gpp, zb.scope, zb.low, zb.crops], [170, 'site', 3, false, 115, 'all', true, 2], "a site's own yield from 3 crops, else every site's, low under 3; spellings meet"); n++;
-    assert.deepEqual([tbS.scope, Math.round(tbS.gpp), CM.yieldFor(Y, 'Pool Party', 'F'), CM.yieldFor(Y, 'Phenos', 'F')], ['all', 153, null, null], "a site with 1 crop uses every site's; a shared or room line gives no yield"); n++;
+    assert.deepEqual([tb.gpp, tb.scope, tb.crops, tb.low, zb.gpp, zb.scope, zb.low, zb.crops], [170, 'site', 3, false, 115, 'site', true, 2], "a strain's average per plant at the site, low under 3 crops; spellings meet"); n++;
+    assert.deepEqual([tbS.scope, Math.round(tbS.gpp), tbS.crops, tbS.low, CM.yieldFor(Y, 'Wizzy', 'F'), CM.yieldFor(Y, 'Pool Party', 'F'), CM.yieldFor(Y, 'Phenos', 'F')], ['site', 100, 1, true, null, null, null],
+      "only the facility's own crops, never another site's (Wizzy is grown only at 23rd); a shared or room line gives no yield"); n++;
     const U = CM.roomUsual(F);
     assert.deepEqual([Math.round(U.gpp), U.plants, Math.round(U.g), Math.round(U.pAvg * 3)], [Math.round(85000 / 560), 200, Math.round(85000 / 3), 560], "a room's usual: its last 3 trimmed crops (room lines count in its pounds), and its mean plants a crop"); n++;
     const pr = CM.projectTrim([{ name: 'Tidebanger', plants: 100 }, { name: 'Trichew', plants: 50 }], 'F', Y, U), f150 = Math.sqrt(560 / 3 / 150);

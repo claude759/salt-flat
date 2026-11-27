@@ -936,8 +936,8 @@ launch. The check fails if one of the three pieces is missing.
   trim's strains on a click, Plan a room below). Rooms switched on, by site; a column per trim, aligned on the last one,
   then Next trim and After that (≈, the sheet's yellow), opening on the newest. Flower = bigs + smalls (the trim sheets'
   littles), in pounds. Model (CM, tested): `strainYields` (every room's trimmed crops, each strain line whose plants are
-  Metrc's, by `skey`), `yieldFor` (the site's own once it has `SITE_MIN` = 3 crops of the strain, else every site's,
-  "low confidence" under 3), `roomUsual` (the room's last 3 trimmed crops), `projectTrim` (strains x plants at their
+  Metrc's, by `skey`), `yieldFor` (the strain's average per plant at the room's own facility only, never another
+  site's; "low confidence" under `SITE_MIN` = 3 crops; one the facility hasn't trimmed: the room's average), `roomUsual` (the room's last 3 trimmed crops), `projectTrim` (strains x plants at their
   yield, an unknown strain at the room's usual per plant; under half the room's usual plants in Metrc: the room's usual
   pounds), `roomTrims` (from `runs()`: trims on the sheets, a part trim, two tabs to check; then a harvest waiting, the
   crop in flower, the next run by its plan's strains or the room's usual), `planSplit` (even pounds: plants in inverse to
@@ -951,8 +951,13 @@ launch. The check fails if one of the three pieces is missing.
   plant's yield is scaled by the square root of the room's usual plants (`roomUsual`'s `pAvg`, the mean of its last 3
   trimmed crops) over the plants in it, held to half to double (`CM.density`), in trims to come and in Plan a room (its
   target mode finds the fewest whole plants that reach each target at the yield their total gives). Backtested that day
-  on 18 trims, each against the strains' yields from before it: 11.0% average miss, 12.8% without; Room 1 came to 91 lb.
-  The trim's bubble and Plan a room say it in one line when it moves a plant's yield 2% or more.
+  on 18 trims, each against the strains' yields from before it: 10.4% average miss with each facility's own averages (11.0%
+  with other sites' mixed in, 12.8% with neither); Room 1 came to 91 lb. The trim's bubble and Plan a room say it in one
+  line when it moves a plant's yield 2% or more. **Each facility's own numbers only** (Gianni, same day: "I don't think I
+  want to do all sites for the estimate, I think I'd rather make it clear what the average per plant yield for the strain
+  is at this specific facility"): the bubble's and Plan a room's "25th avg per plant" column is the strain's average at
+  that facility before the rule ("25th average · 3 crops", "low confidence" under 3), the rule moving only the pounds; a
+  strain not trimmed there yet takes the room's average and says so.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went
