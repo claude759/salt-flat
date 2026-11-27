@@ -946,6 +946,13 @@ launch. The check fails if one of the three pieces is missing.
   its usual), Even pounds or Target lb each; strains default to those with 10 or more plants in the room. Not saved.
   A trim's strains open in a bubble beside it (Gianni, same day: "I'd prefer if the more info is a pop up bubble"):
   `showPop(..., { wide: true })`, the trim's column outlined; the same trim, ×, Escape or a press elsewhere closes it.
+  **Fewer plants grow bigger** (Gianni, 2026-11-27, of 25th Room 1's next trim at 76 lb from the 266 plants Metrc has, its
+  usual 375: "that doesn't seem like an accurate estimate"; the room had made 105 to 121 lb from 351 to 410 plants). A
+  plant's yield is scaled by the square root of the room's usual plants (`roomUsual`'s `pAvg`, the mean of its last 3
+  trimmed crops) over the plants in it, held to half to double (`CM.density`), in trims to come and in Plan a room (its
+  target mode finds the fewest whole plants that reach each target at the yield their total gives). Backtested that day
+  on 18 trims, each against the strains' yields from before it: 11.0% average miss, 12.8% without; Room 1 came to 91 lb.
+  The trim's bubble and Plan a room say it in one line when it moves a plant's yield 2% or more.
 - **Strains: In Metrc and Zones are one panel** (Gianni, 2026-11-24: "the in metrc and zones section seem like they're
   doing the exact same thing?", then "Yes, merge them"). One table, a row per zone: its strain (Metrc's name beside it
   when Metrc records it as another; a strain number, named here), lights, Metrc's plants placed on it, the days they went

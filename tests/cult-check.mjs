@@ -925,15 +925,27 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     assert.deepEqual([tb.gpp, tb.scope, tb.crops, tb.low, zb.gpp, zb.scope, zb.low, zb.crops], [170, 'site', 3, false, 115, 'all', true, 2], "a site's own yield from 3 crops, else every site's, low under 3; spellings meet"); n++;
     assert.deepEqual([tbS.scope, Math.round(tbS.gpp), CM.yieldFor(Y, 'Pool Party', 'F'), CM.yieldFor(Y, 'Phenos', 'F')], ['all', 153, null, null], "a site with 1 crop uses every site's; a shared or room line gives no yield"); n++;
     const U = CM.roomUsual(F);
-    assert.deepEqual([Math.round(U.gpp), U.plants, Math.round(U.g)], [Math.round(85000 / 560), 200, Math.round(85000 / 3)], "a room's usual: its last 3 trimmed crops (room lines count in its pounds)"); n++;
-    const pr = CM.projectTrim([{ name: 'Tidebanger', plants: 100 }, { name: 'Trichew', plants: 50 }], 'F', Y, U);
-    assert.deepEqual([pr.basis, Math.round(pr.total), pr.rows.map(r => r.scope)], ['strains', Math.round(17000 + 50 * 85000 / 560), ['site', 'room']], 'a trim to come: each strain at its yield, an unknown one at the room’s usual per plant'); n++;
+    assert.deepEqual([Math.round(U.gpp), U.plants, Math.round(U.g), Math.round(U.pAvg * 3)], [Math.round(85000 / 560), 200, Math.round(85000 / 3), 560], "a room's usual: its last 3 trimmed crops (room lines count in its pounds), and its mean plants a crop"); n++;
+    const pr = CM.projectTrim([{ name: 'Tidebanger', plants: 100 }, { name: 'Trichew', plants: 50 }], 'F', Y, U), f150 = Math.sqrt(560 / 3 / 150);
+    assert.deepEqual([pr.basis, Math.round(pr.total), pr.rows.map(r => r.scope), +pr.f.toFixed(4), Math.round(pr.rows[0].base), Math.round(pr.rows[0].gpp)],
+      ['strains', Math.round((17000 + 50 * 85000 / 560) * f150), ['site', 'room'], +f150.toFixed(4), 170, Math.round(170 * f150)],
+      'a trim to come: each strain at its yield (an unknown one at the room’s usual per plant), raised since the room has fewer plants than usual'); n++;
+    // fewer plants grow bigger: 25th Room 1, 2026-11-27, 266 plants against its usual 375 (pounds move half as fast as plants)
+    assert.deepEqual([+CM.density({ pAvg: 375 }, 266).toFixed(3), CM.density({ pAvg: 375 }, 375), CM.density({ pAvg: 400 }, 100), CM.density({ pAvg: 100 }, 400), CM.density(null, 266), CM.density({ pAvg: null }, 266)],
+      [1.187, 1, Math.SQRT2, Math.SQRT1_2, 1, 1], 'the density rule: the square root of the usual plants over the plants, held to half to double, none without a usual'); n++;
     const few = CM.projectTrim([{ name: 'Tidebanger', plants: 39 }], 'F', Y, U);
     assert.deepEqual([few.basis, Math.round(few.total)], ['room', Math.round(85000 / 3)], "Metrc has under half the room's usual plants: the room's usual pounds"); n++;
     const even = CM.planSplit([{ name: 'A', gpp: 100 }, { name: 'B', gpp: 200 }, { name: 'C', gpp: null }], { n: 90 });
     assert.deepEqual(even.map(r => [r.plants, r.g]), [[60, 6000], [30, 6000], [null, null]], 'even pounds: plants in inverse to yield per plant, adding up to the plants'); n++;
     assert.deepEqual(CM.planSplit([{ name: 'A', gpp: 100 }, { name: 'B', gpp: 300 }, { name: 'C', gpp: 150 }], { n: 100 }).map(r => r.plants).reduce((a, x) => a + x, 0), 100, 'whole plants that add up'); n++;
     assert.deepEqual(CM.planSplit([{ name: 'A', gpp: 120 }], { target: 4536 }).map(r => r.plants), [38], 'a target each: enough plants to reach it'); n++;
+    assert.deepEqual(CM.planSplit([{ name: 'A', gpp: 100 }, { name: 'B', gpp: 200 }], { n: 90, U: { pAvg: 120 } }).map(r => [r.plants, Math.round(r.g)]), [[60, 6928], [30, 6928]],
+      "even pounds in a room: the same split, each plant at the density rule's yield"); n++;
+    {
+      const tg = CM.planSplit([{ name: 'A', gpp: 120 }, { name: 'B', gpp: 150 }], { target: 4536, U: { pAvg: 80 } }), fN = CM.density({ pAvg: 80 }, 59);
+      assert.deepEqual([tg.map(r => r.plants), tg.every(r => r.g >= 4536 - 1e-6), Math.round(tg[0].g), Math.round(33 * 120 * fN)], [[33, 26], true, Math.round(33 * 120 * fN), Math.round(33 * 120 * fN)],
+        'a target each in a room: the fewest whole plants that reach it, each plant at the yield its total plants give'); n++;
+    }
     const RN = { past: [{ kind: 'past', state: 'trimmed', trim: { a: '2026-11-06', z: '2026-11-07' }, harvest: { d: '2026-10-29', last: '2026-10-29' }, crop: F[2] },
       { kind: 'past', state: 'drying', trim: { a: '2026-11-27', z: '2026-11-28' }, harvest: { d: '2026-11-17', last: '2026-11-17' }, crop: { harvests: [{ label: 'Tidebanger', plants: 100 }, { label: 'Zangbanger', plants: 100 }] } }],
       cur: { kind: 'cur', state: 'flowering', trim: { a: '2027-01-09', z: '2027-01-10' }, harvest: { d: '2026-12-30' }, crop: null }, next: [{ kind: 'next', trim: { a: '2027-03-14', z: '2027-03-15' }, harvest: { d: '2027-03-04' }, plan: null }] };
