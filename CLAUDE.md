@@ -710,8 +710,9 @@ launch. The check fails if one of the three pieces is missing.
 - **Live:** https://claude759.github.io/salt-flat/cultivation.html (beta: not on the app list until Gianni says so).
 - **One room first** (Gianni, 2026-11-24: "start with a single room from a single company ... Let's start with filifera
   room 1"): 25th Room 1 (Filifera, Metrc "Flower 1") was switched on first (`cult_rooms.active`); 25th Rooms 2 and 3
-  followed on 2026-11-25 (Gianni: "Yes, switch them on"; `~/claude-sql/pending/cult-switch-on-f2-f3.sql`). The other 9
-  rooms keep their seed and maps, switched off. With one room switched on the page opens straight into it; with more, the
+  followed on 2026-11-25 (Gianni: "Yes, switch them on"; `~/claude-sql/pending/cult-switch-on-f2-f3.sql`), and the other
+  9 rooms (23rd Rooms 1-3, 15th Rooms A, B and the 6 Lighter, Olympic Rooms 1-3) on 2026-11-27 (Gianni: "can we also add
+  all the other facilities and rooms the same way we did 25th?"; `cult-switch-on-all.sql`). With one room switched on the page opens straight into it; with more, the
   plain address opens the Overview.
 - **Merging later:** the current cultivation app is Antonio's Lovable project "Cultivation Command" (Gianni: "Once we have
   something working, we'll probably want to merge it into this app"). Keep the feeds in database tables and the room
@@ -920,6 +921,15 @@ launch. The check fails if one of the three pieces is missing.
   a panel per Metrc veg location with a row per strain (clones, tagged, moms, cut days, the oldest batch's age) and Goes
   to, the flower rooms whose planned runs (not passed) name the strain (`CM.vegView`, the rooms' `cult_runs`). Read on
   open, after 10 minutes and on Refresh (`ovVegLoad`). Metrc's veg is read only, like every Metrc number.
+- **Page selector** (Gianni, 2026-11-27: "Page selector should be up here", beside the name in the top bar; it replaced
+  the crumbs): a typable box (`#pagesel`, `pageList()`): Overview, Trim Yields, then each site's rooms and its Veg room.
+  A page picked from the list opens at once; typed text opens the one page it names (`pickFrom`) on Enter or on leaving
+  the box, else the box goes back to the page shown. A new page goes in `pageList()`.
+- **Tasks from the Overview, any room** (Gianni, 2026-11-27: "From the overview page we should be able to add/remove tasks
+  from any facility seemlessly"): Add a task takes any room (typable) and Once (a one-off) or Every cycle (onto the room's
+  calendar at the day of flower its date falls on this cycle, 1 to 150); a task's ⋯ has Skip (this cycle), Delete (a
+  one-off) and Remove from calendar (every cycle from now on; never the FLIP or HARVEST task, `CAL_KEEP`), through
+  `calSave` and `cult_room_set`'s `tasks`.
 - **Almost everything on the page is editable** (Gianni, 2026-11-25: "This should also be editable. Almost everything will
   need to be editable"). Build each new panel with an edit path, and give an existing one that has none an Edit button
   when it is touched. Environment targets: Edit targets (each week's day / night temperature and humidity, VPD, CO2 with

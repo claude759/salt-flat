@@ -855,7 +855,11 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/S\.rooms\.length === 1 && !\/\(\^#\|&\)overview\\b\/\.test\(location\.hash\)/.test(html) && /: 'overview'; \}/.test(html), 'the Overview has its own address; one room on still opens straight into it');
   ok(/<h1>Overview<\/h1>/.test(html) && /class="ov-grp">Next dates<\/th>/.test(html) && /<h3>Tasks, next 30 days\$\{canWork \?/.test(html) && /<h3>Next trims<\/h3>/.test(html), 'the Overview: next dates, tasks, next trims');
   ok(/function ovTaskRow\(t, room, canWork, today, band\)[\s\S]*?>Mark complete<\/button>/.test(html) && /markTask\(roomView\(room, CM\.todayLA\(\)\), cb\)/.test(html), "the Overview's tasks have Mark complete, saved against their own room");
-  ok(/id="crumb-ov">Overview<\/button>/.test(html), 'a room page leads back to the Overview');
+  ok(/<input type="text" id="pagesel" list="pagesel-list"/.test(html) && /function pageList\(\)/.test(html) && /pickFrom\(pageList\(\)\.map\(x => x\.name\), typed\)/.test(html) && !/id="crumb-ov"/.test(html),
+    'a typable page selector in the top bar opens any page (it replaced the crumbs)');
+  ok(/const nowBig = \(C, RN\) =>/.test(html), 'a room harvested lately has its words (nowBig) again');
+  ok(/id="tm-rm">Remove from calendar<\/button>/.test(html) && /const CAL_KEEP = \/\^\(FLIP\|HARVEST\)\\b\/i/.test(html) && /data-atrep="every"/.test(html) && /async function calSave\(room, fn, msgEl\)/.test(html),
+    'tasks from the Overview: a calendar task removed for good (never the flip or harvest), one added for every cycle');
   ok(/<h3>Rooms<\/h3><div id="ov-gl">\$\{ovRoomsHTML\(groups, today\)\}/.test(html) && /class="ov-grp ov-gs">Growlink now<\/th>/.test(html) && /from\('cult_growlink_now'\)\.select\('room_id,growlink,reading_at,lights,setpoints,sensors,alerts,note'\)\.in\('room_id', ids\)/.test(html)
     && /CM\.glView\(row, \[\], CM\.envRows\(x\.room, x\.V\.C\), now, x\.V\.C\.state\)/.test(html) && /if \(!S\.room\) \{ ovGlLoad\(true\); return; \}/.test(html), "the Overview: Growlink's live readings for every room switched on, judged like the room page, read every 5 minutes");
   ok(/rowspan="\$\{g\.rooms\.length\}"/.test(html) && /--ov-up:#fff2cc/.test(html) && /--ov-dn:#d9ead3/.test(html) && /td\.ov-k\.act\{background:var\(--ov-act\)/.test(html), "the Overview: each site beside its rooms, in the sheet's colours");
