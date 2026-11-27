@@ -836,7 +836,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     && /function public\.cult_run_delete\(p_room text, p_key text\)[\s\S]*?if not public\.cult_can_edit\(\) then raise exception 'not allowed'/.test(sql), 'saving or deleting a run needs edit');
   ok(/function public\.cult_metrc_batches_save\(p_token text[\s\S]*?raise exception 'bad token'/.test(sql) && /revoke insert, update, delete on table public\.cult_metrc_batches from anon, authenticated/.test(sql),
     "Metrc's batch rows come only from the job (token first)");
-  ok(/'turnover_days', 'env', 'tasks'\)\) then/.test(sql) && /check \(turnover_days between 1 and 3\)/.test(sql), 'turnover days: 1 to 3, set through cult_room_set');
+  ok(/'turnover_days', 'env', 'tasks', 'veg_tasks'\)\) then/.test(sql) && /check \(turnover_days between 1 and 3\)/.test(sql), 'turnover days: 1 to 3, set through cult_room_set');
 }
 
 // ---- step 4 on the page: the Now box, Growlink's tiles and the map on top, then the room timeline, the runs, the panels
@@ -886,7 +886,7 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
   ok(/sb\.rpc\('cult_room_set', \{ p_room: room\.id, p_set: \{ env: out \} \}\)/.test(html) && /\(k === 'env' && !!S\.editEnv\)/.test(html) && /if \(pb && !S\.editEnv\) pb\.innerHTML = envBody/.test(html),
     'Environment targets can be edited, the form kept through redraws');
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
-    ok(/'turnover_days', 'env', 'tasks'\)\) then/.test(sql) && /env = case when p_set \? 'env' then p_set->'env' else env end/.test(sql), 'cult_room_set saves the weekly targets (env)'); }
+    ok(/'turnover_days', 'env', 'tasks', 'veg_tasks'\)\) then/.test(sql) && /env = case when p_set \? 'env' then p_set->'env' else env end/.test(sql), 'cult_room_set saves the weekly targets (env)'); }
   { const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
     ok(/tasks = case when p_set \? 'tasks' then p_set->'tasks' else tasks end/.test(sql) && /two tasks share a key/.test(sql), 'cult_room_set saves the task calendar, keys unique'); }
   ok(/sb\.rpc\('cult_room_set', \{ p_room: room\.id, p_set: set \}\)/.test(html) && /\(k === 'tasks' && !!S\.editCal\)/.test(html) && /list="cal-kinds"/.test(html) && /pickFrom\(KINDS, inp\.value\)/.test(html),
@@ -958,6 +958,26 @@ ok(!/Live readings from Growlink are not connected yet/.test(html), 'the not-con
     assert.deepEqual([TR.past.length, TR.past[0].total, TR.next.map(x => [x.from, x.a, x.basis])], [1, 27000, [['harvested', '2026-11-27', 'strains'], ['flower', '2027-01-09', 'strains']]],
       'a room: its trims on the sheets, then the two to come (a harvest waiting, the crop in flower)'); n++;
   }
+  {   // the veg schedule (2026-11-27): a room's veg tasks dated from the transplant of the run going into it, ticks under its flip
+    const room = { id: 'F9', veg_tasks: [{ day: 1, kind: 'ACTION', text: 'TRANSPLANT' }, { day: 2, kind: 'SPRAY', text: 'CAL 58 - ( @8GR PER GALLON )' }, { day: 21, kind: 'ACTION', text: 'READY FOR FLOWER' }] };
+    const run = { kind: 'next', n: 9, tr: { d: '2026-12-05', src: 'est' }, flip: { d: '2027-01-01', src: 'lined' } };
+    const done = [{ room_id: 'F9', cycle: '2026-12-30', task_key: 'VEG|1|TRANSPLANT', status: 'done', done_by: 'a@b', done_at: '2026-12-05T18:00:00Z' },
+      { room_id: 'F9', cycle: '2026-10-01', task_key: 'VEG|2|CAL 58 - ( @8GR PER GALLON )', status: 'done' },
+      { room_id: 'F8', cycle: '2027-01-01', task_key: 'VEG|21|READY FOR FLOWER', status: 'done' }];
+    const V = CM.vegSchedule(room, run, done, '2026-12-08');
+    assert.deepEqual(V.rows.map(r => [r.day, r.date, r.status, r.late]), [[1, '2026-12-05', 'done', false], [2, '2026-12-06', 'open', true], [21, '2026-12-25', 'open', false]],
+      "day 1 is the transplant; a tick counts under a flip within 3 weeks of the run's, never an earlier run's or another room's"); n++;
+    assert.deepEqual([V.t0, V.anchor, V.est, V.end, V.pastFlip, V.rows[0].cycles], ['2026-12-05', '2027-01-01', true, '2026-12-25', false, ['2026-12-30']], "the run's transplant, its flip as the ticks' day, the last day"); n++;
+    assert.equal(CM.vegSchedule(room, { ...run, flip: { d: '2026-12-20', src: 'plan' } }, [], '2026-12-08').pastFlip, true, 'a schedule that runs past the flip says so'); n++;
+    assert.deepEqual([CM.vegSchedule(room, null, [], '2026-12-08').rows.length, CM.vegSchedule({ id: 'O1' }, run, [], '2026-12-08').n], [0, 0], 'no run: no dates; no schedule: none'); n++;
+    assert.deepEqual([CM.vegKey({ day: 2, text: ' cal  58 ' }), CM.vegKey({ day: 2, text: 'x', key: 'VEG|3|Y' })], ['VEG|2|CAL 58', 'VEG|3|Y'], "a veg task's key: its own, else its day and words"); n++;
+    const sql = readFileSync(new URL('../supabase/cultivation.sql', import.meta.url), 'utf8');
+    ok(/add column if not exists veg_tasks jsonb/.test(sql) && /veg_tasks = case when p_set \? 'veg_tasks' then p_set->'veg_tasks' else veg_tasks end/.test(sql), 'veg schedules are kept on the room, set through cult_room_set');
+  }
+  ok(/S\.allVeg = !S\.room && !S\.veg && !S\.trims && \/\(\?:\^#\|&\)allveg\\b\/\.test\(location\.hash\)/.test(html) && /else if \(allveg\) renderAllVeg\(\)/.test(html) && /\{ name: 'All Veg', go: goAllVeg \}/.test(html) && /id="go-allveg">All Veg<\/button>/.test(html),
+    'All Veg has its own address (#allveg), a button on the Overview and a place in the page selector');
+  ok(/function renderVeg\(site\) \{ renderVeg0\(site\); vegWire\(\$\('view-room'\)\); \}/.test(html) && /vegSchedPanel\(groups,/.test(html) && /<h3>Clone cuts<\/h3>/.test(html) && /p_set: \{ veg_tasks: out \}/.test(html) && /'Both'/.test(html),
+    "a facility's Veg page has its rooms' clone cuts and veg schedules, each editable; Both is a kind");
   ok(/S\.trims = !S\.room && !S\.veg && \/\(\?:\^#\|&\)trims\\b\/\.test\(location\.hash\)/.test(html) && /else if \(trims\) renderTrims\(\)/.test(html) && /id="go-trims">Trim Yields<\/button>/.test(html), 'Trim Yields has its own address (#trims), led to from the Overview');
   ok(/id="tp-room" list="tp-rooms"/.test(html) && /id="tp-add" list="tp-names"/.test(html) && /pickFrom\(names, add\.value\)/.test(html), "Plan a room's pickers are typable");
   ok(/showPop\(trimDetailHTML\(M\), c, \{ wide: true \}\)/.test(html) && /p\.classList\.toggle\('wide', !!\(o && o\.wide\)\)/.test(html) && !/id="ty-detail"/.test(html), "a trim's strains open in a bubble beside it");

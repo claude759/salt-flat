@@ -939,6 +939,19 @@ launch. The check fails if one of the three pieces is missing.
   and words, adds and removes tasks, through `cult_room_set`'s `tasks`. Each task carries the `key` its ticks are stored
   under (`CM.taskKey` takes a stored key first), kept through a new day or new words, so ticks stay; a HARVEST task's day
   also sets `harvest_day`.
+- **The veg schedule, on each facility's Veg page and All Veg** (Gianni, 2026-11-27, of the sheet's VEG - ALL LOCATIONS
+  tab: "I think this info should be on the per facility veg room page and a page called All Veg"). Each flower room has a
+  veg schedule (`cult_rooms.veg_tasks`, up to 40 `{day, kind, text, key}`, day 1 the transplant as the sheet counts; set
+  through `cult_room_set`'s `veg_tasks`; seeded from the sheet's tab as of 2026-11-24 by
+  `~/claude-sql/pending/cult-veg-seed.sql`: 23rd Room 1 has its own, the other 25th, 23rd and 15th rooms share one, Olympic
+  has none on the sheet). `CM.vegSchedule` dates it from the transplant of the run going into the room (the plan's
+  transplant day, the calendar's TRANSPLANT, else 14 days after the clone cut, "≈" in the room's line and Clone cuts);
+  Mark complete stores `VEG|day|TEXT` ticks in `cult_task_done` under the room and the run's flip (a tick counts within 3
+  weeks of it). A facility's Veg page (`#veg=<site>`) has Clone cuts (each room's next run: cut, transplant, flip; the
+  sheet's ROOM / CUTTING DAY list, from the runs, not the sheet's typed days) and Veg schedule (each room's tasks, Edit per
+  room), then Metrc's veg. All Veg (`#allveg`, `renderAllVeg`; a button on the Overview and in the page selector): each
+  facility's Metrc veg in a line, every room's clone cuts, and the veg tasks of the next 30 days (and the last week's not
+  done). Both is a kind (the sheet's veg tasks use it). The tab's ENVIRONMENT table is the 9-week flower one, not shown.
 - **Trim Yields page** (`#trims`, the Overview's Trim Yields button; Gianni, 2026-11-26, from a grower's ask: "have the
   app record yields for each room for each strain ... how many plants we need to put in to hit a certain yield so I can
   have an even amount of all the strains we put in a room"; he named it "Trim Yields", a block per room with each trim's

@@ -86,6 +86,10 @@ alter table public.cult_rooms add column if not exists notes text check (length(
 -- the days from a harvest to the next flip (the room cleaned and set up again), 1 to 3. A planned run with no flip day
 -- of its own flips on the harvest of the run before it plus these days.
 alter table public.cult_rooms add column if not exists turnover_days int not null default 2;
+-- each room's veg schedule (Gianni, 2026-11-27, of the sheet's VEG - ALL LOCATIONS tab: "this info should be on the per
+-- facility veg room page and a page called All Veg"): up to 40 tasks {day, kind, text, key} for the run going into the
+-- room, day 1 the transplant as the sheet counts; set through cult_room_set's veg_tasks
+alter table public.cult_rooms add column if not exists veg_tasks jsonb;
 alter table public.cult_rooms drop constraint if exists cult_rooms_turnover_days_check;
 alter table public.cult_rooms add constraint cult_rooms_turnover_days_check check (turnover_days between 1 and 3);
 alter table public.cult_rooms enable row level security;
@@ -288,8 +292,22 @@ declare r public.cult_rooms;
 begin
   if not public.cult_can_edit() then raise exception 'not allowed'; end if;
   if jsonb_typeof(p_set) is distinct from 'object' then raise exception 'p_set must be an object'; end if;
-  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout', 'notes', 'turnover_days', 'env', 'tasks')) then
-    raise exception 'only flip_date, harvest_day, layout, notes, turnover_days, env and tasks can be changed here';
+  if exists (select 1 from jsonb_object_keys(p_set) k where k not in ('flip_date', 'harvest_day', 'layout', 'notes', 'turnover_days', 'env', 'tasks', 'veg_tasks')) then
+    raise exception 'only flip_date, harvest_day, layout, notes, turnover_days, env, tasks and veg_tasks can be changed here';
+  end if;
+  -- the veg schedule: up to 40 tasks, each {day, kind, text, key}, day 1 (the transplant) to 60
+  if p_set ? 'veg_tasks' then
+    if jsonb_typeof(p_set->'veg_tasks') <> 'array' or jsonb_array_length(p_set->'veg_tasks') > 40 then raise exception 'veg_tasks must be a list of up to 40'; end if;
+    if exists (select 1 from jsonb_array_elements(p_set->'veg_tasks') t
+               where jsonb_typeof(t) <> 'object' or coalesce(t->>'day', '') !~ '^[1-9][0-9]?$' or (t->>'day')::int > 60
+                  or length(btrim(coalesce(t->>'text', ''))) not between 1 and 200 or length(coalesce(t->>'kind', '')) > 20
+                  or (t ? 'key' and (jsonb_typeof(t->'key') <> 'string' or length(t->>'key') not between 1 and 200))) then
+      raise exception 'each veg task needs a day (1 to 60) and words (up to 200 characters)';
+    end if;
+    if (select count(distinct t->>'key') from jsonb_array_elements(p_set->'veg_tasks') t where t ? 'key')
+       <> (select count(*) from jsonb_array_elements(p_set->'veg_tasks') t where t ? 'key') then
+      raise exception 'two veg tasks share a key';
+    end if;
   end if;
   -- the task calendar (Gianni, 2026-11-25: "Task calendar", to make it editable): up to 80 tasks, each {day, kind, text,
   -- key}; key is what the task's ticks are stored under, kept through edits so a moved or reworded task keeps its ticks
@@ -356,6 +374,7 @@ begin
     turnover_days = case when p_set ? 'turnover_days' then (p_set->>'turnover_days')::int else turnover_days end,
     env = case when p_set ? 'env' then p_set->'env' else env end,
     tasks = case when p_set ? 'tasks' then p_set->'tasks' else tasks end,
+    veg_tasks = case when p_set ? 'veg_tasks' then p_set->'veg_tasks' else veg_tasks end,
     updated_at = now(), updated_by = public.cult_jwt_email()
    where id = p_room returning * into r;
   if r.id is null then raise exception 'no such room'; end if;

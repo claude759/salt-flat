@@ -63,6 +63,12 @@
   .psel input{width:210px;font-weight:600;padding-right:26px;background-repeat:no-repeat;background-position:right 9px center;
     background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23889' stroke-width='1.6'/%3E%3C/svg%3E")}
   .at-rep{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+  .vgt tr.vg-h th{background:var(--ov-site);color:var(--ov-ink);text-align:left;font-size:12.5px;text-transform:none;letter-spacing:0}
+  .vgt tr.vg-h th .btn{float:right;font-size:12px;padding:3px 10px}
+  .vg-hl{display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .vg-hl .vg-w{color:var(--amber)}
+  .vgt td.ov-none{color:var(--muted);text-align:left}
+  .vgt td.vg-edc{text-align:left;white-space:normal}
   @media (max-width:640px){.psel input{width:150px}}
   .bar .grow{flex:1}
   .seg{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
@@ -2048,9 +2054,33 @@ const CM = (() => {
     return out;
   }
 
+  /* ----- the veg schedule (Gianni, 2026-11-27, of the sheet's VEG - ALL LOCATIONS tab: "I think this info should be on
+     the per facility veg room page and a page called All Veg"). A room's veg_tasks [{ day, kind, text, key }] are dated
+     from the transplant of the run going into it (run.tr: the plan's day, the calendar's TRANSPLANT, else 14 days after
+     the clone cut), day 1 the transplant as the sheet counts. Ticks are cult_task_done rows of the room keyed VEG|day|TEXT,
+     stored under the run's flip (else its transplant); one counts while that day is within 3 weeks of the run's. ----- */
+  const vegKey = t => (typeof t.key === 'string' && t.key ? t.key : `VEG|${+t.day}|${String(t.text || '').replace(/\s+/g, ' ').trim().toUpperCase()}`).slice(0, 200);
+  function vegSchedule(room, run, done, today) {
+    const L = (Array.isArray(room && room.veg_tasks) ? room.veg_tasks : []).filter(t => t && +t.day >= 1 && String(t.text || '').trim());
+    const tr = run && run.tr && isDay(run.tr.d) ? run.tr : null;
+    if (!tr || !L.length) return { run: run || null, rows: [], t0: null, anchor: null, est: false, end: null, pastFlip: false, n: L.length };
+    const anchor = run.flip && isDay(run.flip.d) ? run.flip.d : tr.d, near = d => Math.abs(diff(d, anchor));
+    const mine = (done || []).filter(d => d && d.room_id === room.id && /^VEG\|/.test(String(d.task_key || '')) && isDay(d.cycle) && near(d.cycle) <= 21);
+    const rows = L.map(t => {
+      const key = vegKey(t), planned = addDays(tr.d, +t.day - 1);
+      const ticks = mine.filter(d => d.task_key === key).sort((a, b) => near(a.cycle) - near(b.cycle));
+      const k = ticks[0] || null, status = k && k.status !== 'open' ? k.status : 'open';
+      const date = k && isDay(k.moved_to) ? k.moved_to : planned;
+      return { key, day: +t.day, kind: String(t.kind || 'ACTION').toUpperCase(), text: String(t.text).replace(/\s+/g, ' ').trim(), date, planned, moved: date !== planned,
+        status, late: status === 'open' && date < today, doneBy: k && k.done_by || null, doneAt: k && k.done_at || null, note: k && k.note || null, cycles: ticks.map(x => x.cycle) };
+    }).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.day - b.day));
+    const end = addDays(tr.d, Math.max(...rows.map(r => r.day)) - 1);
+    return { run, rows, t0: tr.d, anchor, est: tr.src === 'est', end, pastFlip: !!(run.flip && isDay(run.flip.d) && end > run.flip.d), n: L.length };
+  }
+
   return { isDay, addDays, diff, todayLA, short, wday, key, nice, strainOf, roomPlants, cycle, taskKey, tasks, envRows, place, colors, tableZone, letter, tableNs, tableLights, capacity, comingUp, attention, runoffPct, latestRunoff, mapModel, PALETTE, taskGroups,
     GL, glPlan, glPlanAt, glLights, glJudge, glLightOdd, glRun, glView, glNum, glVal, glClock, glAttention, glSpark, glDay, glWeekDay, vegView, glHrs, glEquip, glWeeks, glDays, glChart, LB, skey, history, estimate, trimWait,
-    runs, runStages, planFlip, planDay, runKey, ROOT_DAYS, strainYields, yieldFor, roomUsual, density, projectTrim, roomTrims, planSplit, SITE_MIN };
+    runs, runStages, planFlip, planDay, runKey, ROOT_DAYS, strainYields, yieldFor, roomUsual, density, projectTrim, roomTrims, planSplit, SITE_MIN, vegKey, vegSchedule };
 })();
 /* ===== CULT MODEL END ===== */
 
@@ -2101,7 +2131,7 @@ function setLook(v) {
 // Reads name their columns (egress). only: the tables a save changed (else everything). Metrc's rows are read again
 // only when the job changed them since the last read (cult_metrc_meta.changed_at), or on Refresh (force).
 const READS = {
-  rooms: () => sb.from('cult_rooms').select('id,site,name,license,metrc_location,harvest_day,turnover_days,flip_date,env,tasks,layout,layout_source,notes,active').order('sort'),
+  rooms: () => sb.from('cult_rooms').select('id,site,name,license,metrc_location,harvest_day,turnover_days,flip_date,env,tasks,veg_tasks,layout,layout_source,notes,active').order('sort'),
   zones: () => sb.from('cult_zones').select('room_id,zone,slot,strain,lights,pack,metrc_strain'),
   codes: () => sb.from('cult_strain_codes').select('license,code,name,source'),
   meta: () => sb.from('cult_metrc_meta').select('license,synced_at,changed_at,note'),
@@ -2405,7 +2435,7 @@ function roomView(room, today) {
    ----- */
 const HIST_TTL = 60 * 60e3;
 // a form or card is open: a redraw would lose what is typed in it (the poll, a resize and a late answer wait)
-const formOpen = () => !!(S.editZones || S.arrange || S.runoffForm || S.editNotes || S.planEdit || S.editEnv || S.editCal || !$('pop').hidden);
+const formOpen = () => !!(S.editZones || S.arrange || S.runoffForm || S.editNotes || S.planEdit || S.editEnv || S.editCal || S.vegEdit || !$('pop').hidden);
 function histOf(room, today) {
   const e = S.hist[room.id];
   if (!e || !e.data) return { e: e || null, R: null };
@@ -2597,8 +2627,10 @@ function route() {
   const vg = location.hash.match(/(?:^#|&)veg=([A-Z])\b/);
   S.veg = !S.room && vg && S.rooms.some(r => r.site === vg[1]) ? vg[1] : null;
   S.trims = !S.room && !S.veg && /(?:^#|&)trims\b/.test(location.hash);   // Trim Yields
+  S.allVeg = !S.room && !S.veg && !S.trims && /(?:^#|&)allveg\b/.test(location.hash);   // All Veg
+  S.vegEdit = null;
   if (S.trims) S.trimOpen = null;
-  if (!S.room && !S.veg && !S.trims && S.rooms.length === 1 && !/(^#|&)overview\b/.test(location.hash)) S.room = S.rooms[0].id;   // one room on: open it, unless the Overview was asked for
+  if (!S.room && !S.veg && !S.trims && !S.allVeg && S.rooms.length === 1 && !/(^#|&)overview\b/.test(location.hash)) S.room = S.rooms[0].id;   // one room on: open it, unless the Overview was asked for
   S.editZones = false; S.arrange = false; S.zoneOpened = false; S.runoffForm = false; S.editNotes = false; S.hvOpen = null; S.hvAll = false;
   S.editEnv = false; S.editCal = false; S.envOff = null; S.planEdit = null; S.planSeed = null; S.mapRun = 'now';
   S.peek = /[#&]zone=\d/.test(location.hash) ? { map: 1 } : {}; S.tOpen = {};   // a zone link opens the map for this visit
@@ -2608,12 +2640,13 @@ function route() {
 function go(id, zone) { location.hash = id ? `room=${id}${zone ? `&zone=${zone}` : ''}` : 'overview'; }
 const goVeg = site => { location.hash = `veg=${site}`; };
 const goTrims = () => { location.hash = 'trims'; };
+const goAllVeg = () => { location.hash = 'allveg'; };
 $('home').addEventListener('click', () => go(null));
 /* ----- the page selector (Gianni, 2026-11-27: "Page selector should be up here", beside the name in the top bar):
    every page, typable like every pick-list here. A page picked from the list opens at once; typed text opens the one page
    it names (pickFrom) on Enter or on leaving the box, else the box goes back to the page shown. ----- */
 function pageList() {
-  const out = [{ name: 'Overview', go: () => go(null) }, { name: 'Trim Yields', go: goTrims }];
+  const out = [{ name: 'Overview', go: () => go(null) }, { name: 'Trim Yields', go: goTrims }, { name: 'All Veg', go: goAllVeg }];
   for (const site of SITES) {
     const rooms = S.rooms.filter(r => r.site === site.id);
     if (!rooms.length) continue;
@@ -2624,7 +2657,7 @@ function pageList() {
 }
 function pageNow() {
   const one = S.room && S.rooms.find(r => r.id === S.room), vsite = !one && S.veg ? SITES.find(x => x.id === S.veg) : null;
-  return one ? one.name : vsite ? `${vsite.name} Veg` : S.trims ? 'Trim Yields' : 'Overview';
+  return one ? one.name : vsite ? `${vsite.name} Veg` : S.trims ? 'Trim Yields' : S.allVeg ? 'All Veg' : 'Overview';
 }
 function pageSel() {
   const box = $('pagesel'), L = pageList();
@@ -2657,12 +2690,12 @@ window.addEventListener('hashchange', route);
 
 function render() {
   const one = S.room && S.rooms.find(r => r.id === S.room);
-  const vsite = !one && S.veg ? SITES.find(x => x.id === S.veg) : null, trims = !one && !vsite && !!S.trims;
-  $('view-rooms').hidden = !!(one || vsite || trims); $('view-room').hidden = !(one || vsite || trims);
+  const vsite = !one && S.veg ? SITES.find(x => x.id === S.veg) : null, trims = !one && !vsite && !!S.trims, allveg = !one && !vsite && !trims && !!S.allVeg;
+  $('view-rooms').hidden = !!(one || vsite || trims || allveg); $('view-room').hidden = !(one || vsite || trims || allveg);
   pageSel();
   $('home').title = 'Overview';
-  document.title = one ? `${one.name} · Cultivation` : vsite ? `${vsite.name} Veg · Cultivation` : trims ? 'Trim Yields · Cultivation' : 'Overview · Cultivation';
-  if (one) renderRoom(one); else if (vsite) renderVeg(vsite); else if (trims) renderTrims(); else renderRooms();
+  document.title = one ? `${one.name} · Cultivation` : vsite ? `${vsite.name} Veg · Cultivation` : trims ? 'Trim Yields · Cultivation' : allveg ? 'All Veg · Cultivation' : 'Overview · Cultivation';
+  if (one) renderRoom(one); else if (vsite) renderVeg(vsite); else if (trims) renderTrims(); else if (allveg) renderAllVeg(); else renderRooms();
   if (one) {   // a room opened, or reopened with its copy over 5 minutes old (the timer doesn't run on All rooms)
     const moved = S.gl.room !== one.id;
     if (moved || (Date.now() - S.gl.at > 5 * 60e3 && Date.now() - glTried > 60e3)) {
@@ -2760,7 +2793,7 @@ function renderRooms() {
   if (!S.rooms.length) { el.innerHTML = '<div class="empty">No rooms are switched on yet.</div>'; return; }
   const canWork = !!(S.me && (S.me.work || S.me.edit));
   const groups = ovRooms(today), views = groups.flatMap(g => g.rooms);
-  let h = `<div class="rhead"><div><h1>Overview</h1><div class="sub">${esc(`${views.length} room${views.length === 1 ? '' : 's'} · ${CM.wday(today)}`)}</div></div><span class="grow"></span><button class="btn" type="button" id="go-trims">Trim Yields</button></div>`;
+  let h = `<div class="rhead"><div><h1>Overview</h1><div class="sub">${esc(`${views.length} room${views.length === 1 ? '' : 's'} · ${CM.wday(today)}`)}</div></div><span class="grow"></span><button class="btn" type="button" id="go-allveg">All Veg</button><button class="btn" type="button" id="go-trims">Trim Yields</button></div>`;
   // next dates and Growlink's live readings, a row per room (Gianni, 2026-11-25: "I want the next dates and growlink data
   // on a single line"); drawn again on its own when Growlink is read again (every 5 minutes)
   h += `<div class="panel ov"><h3>Rooms</h3><div id="ov-gl">${ovRoomsHTML(groups, today)}</div></div>`;
@@ -2799,6 +2832,7 @@ function renderRooms() {
   el.innerHTML = h;
   ovWire(el);
   const gt = $('go-trims'); if (gt) gt.addEventListener('click', goTrims);
+  const ga = $('go-allveg'); if (ga) ga.addEventListener('click', goAllVeg);
   ovGlLoad();
   ovVegLoad();
 }
@@ -3003,7 +3037,8 @@ function wireTrims(M, today) {
     add.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); put(); } });
   }
 }
-function renderVeg(site) {
+function renderVeg(site) { renderVeg0(site); vegWire($('view-room')); }
+function renderVeg0(site) {
   const el = $('view-room'), today = CM.todayLA(), G = S.ovVeg, lic = siteLicense(site.id);
   const rooms = S.rooms.filter(r => r.site === site.id);
   for (const r of rooms) if (!S.runsBy[r.id] || !S.runsBy[r.id].at) loadRuns(r).then(ok => { if (ok && S.veg === site.id && !S.room && !formOpen()) renderVeg(site); });
@@ -3012,6 +3047,9 @@ function renderVeg(site) {
   const meta = (G.meta || []).find(m => m.license === lic);
   const locs = [...new Set(V.map(L => L.location))];
   let h = `<div class="rhead"><div><h1>${esc(site.name)} Veg</h1><div class="sub">${esc(`${site.name} · ${site.sub}${locs.length ? ` · Metrc ${locs.map(x => `“${x}”`).join(', ')}` : ''}`)}</div></div></div>`;
+  const groups = ovRooms(today).filter(g => g.site.id === site.id);
+  if (groups.length) h += `<div class="panel ov"><h3>Clone cuts</h3>${vegCutsHTML(groups, today, false)}</div>`
+    + vegSchedPanel(groups, !!(S.me && (S.me.work || S.me.edit)), !!(S.me && S.me.edit), today);
   if (!G.rows) { el.innerHTML = h + `<div class="panel"><div class="pbody"><p class="muted" style="margin:0">${G.err === 'none' ? "Metrc's veg isn't on the server yet." : G.err ? "Couldn't read Metrc's veg. It is read again in a few minutes." : 'Reading Metrc’s veg…'}</p></div></div>`; return; }
   if (meta && meta.note) h += `<p class="warn">${esc(meta.note)}</p>`;
   else if (meta && Date.now() - Date.parse(meta.synced_at) > 7 * 3600e3) h += `<p class="warn">Metrc's veg was last read ${esc(CM.glClock(Date.parse(meta.synced_at), Date.now()))}</p>`;
@@ -3062,6 +3100,7 @@ async function ovVegLoad(force) {
   if (bad) G.err = /does not exist|schema cache|relation/i.test(bad.error ? bad.error.message : '') ? 'none' : 'read';
   else { G.err = null; G.rows = res[0].data || []; G.meta = res[1].data || []; }
   if (S.veg && !S.room) { const v = SITES.find(x => x.id === S.veg); if (v && !formOpen()) renderVeg(v); }
+  else if (S.allVeg && !S.room) { if (!formOpen()) render(); }
   else ovGlPaint();
 }
 // one site's veg in a line: clones, strains, moms and the oldest batch
@@ -3072,6 +3111,171 @@ function vegSum(V) {
   return [`${num(c)} clones`, `${strains} strain${strains === 1 ? '' : 's'}`, m ? `${num(m)} moms` : '', age >= 0 ? `oldest ${age} days` : ''].filter(Boolean).join(' · ');
 }
 const siteLicense = site => { const r = S.rooms.find(x => x.site === site); return r ? r.license : null; };
+/* ----- the veg schedule on the Veg pages (Gianni, 2026-11-27, of the sheet's VEG - ALL LOCATIONS tab: "I think this info
+   should be on the per facility veg room page and a page called All Veg"): each room's next clone cut, transplant and flip
+   (the sheet's ROOM / CUTTING DAY list), and its veg tasks dated for the run going into it (CM.vegSchedule) with Mark
+   complete; a facility's Veg page edits its rooms' schedules. All Veg (#allveg) has every facility's Metrc veg, clone
+   cuts and the veg tasks of the next 30 days. ----- */
+const vegOf = (x, today) => CM.vegSchedule(x.room, x.RN.next[0] || null, S.done, today);
+const ovDateEst = (d, st, today, est) => (est ? ovDateTd(d, st, today).replace(/>([^<>]*)<\/td>$/, (m, w) => `>≈ ${w}</td>`) : ovDateTd(d, st, today));
+function vegCutsHTML(groups, today, withSite) {
+  let h = `<div class="wrapx"><table class="ovt"><thead><tr>${withSite ? '<th>Location</th>' : ''}<th>Room</th><th>Next run</th><th>Clone cut</th><th>Transplant</th><th>Flip</th></tr></thead><tbody>`;
+  for (const g of groups) g.rooms.forEach((x, i) => {
+    const r = x.RN.next[0] || null, c = r && r.cut, t = r && r.tr, f = r && r.flip;
+    h += `<tr>${withSite ? ovSiteTd(g, i) : ''}${ovRoomTd(x.room)}<td class="ov-day">${esc(r ? runName(r) : 'None planned')}</td>`
+      + (c ? ovDateTd(c.d, c.done ? 'done' : c.late ? 'late' : '', today) : '<td class="ov-d">-</td>')
+      + (t ? ovDateEst(t.d, t.done ? 'done' : '', today, t.src === 'est') : '<td class="ov-d">-</td>')
+      + (f ? ovDateTd(f.d, '', today) : '<td class="ov-d">-</td>') + '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
+function vegTaskRow(t, x, vs, canWork, today, band, withLoc) {
+  const closed = t.status === 'done' || t.status === 'skipped';
+  const by = closed ? `<small class="${t.status === 'done' ? 'tdone' : ''}">${t.status === 'done' ? 'Completed' : 'Skipped'}${t.doneBy ? ` by ${esc(whoName(t.doneBy))}` : ''}${t.doneAt ? ` · ${esc(whenSaid(t.doneAt))}` : ''}</small>` : '';
+  const data = `data-vroom="${esc(x.room.id)}" data-vkey="${esc(t.key)}" data-vanchor="${esc(vs.anchor)}" data-vcycles="${esc(t.cycles.join(','))}"`;
+  const act = !canWork ? '' : t.status === 'done' ? `<button class="lnk vtick" type="button" data-done="0" ${data} aria-label="Undo complete: ${esc(t.text)}">Undo</button>`
+    : t.status === 'skipped' ? '' : `<button class="btn vtick" type="button" data-done="1" ${data}>Mark complete</button>`;
+  const loc = withLoc ? `<td class="ov-room"><button class="lnk" type="button" data-veg="${esc(x.room.site)}">${esc(`Veg · ${x.room.name}`)}</button></td>` : '';
+  return `<tr class="b${band}${closed ? ' closed' : ''}">${ovDateTd(t.date, t.status === 'done' ? 'done' : t.late ? 'late' : '', today)}${loc}<td class="ov-day">Day ${t.day}</td>`
+    + `<td class="ov-k ${t.kind === 'ACTION' ? 'act' : ''}">${esc(t.kind)}</td><td class="ov-n">${esc(tidy(t.text))}${t.moved ? `<small>Moved from ${esc(CM.wday(t.planned))}</small>` : ''}${t.note ? `<small class="tnote">${esc(t.note)}</small>` : ''}${by}</td>`
+    + `<td class="tact"><span class="ov-ta">${act}</span></td></tr>`;
+}
+// a facility's rooms, each with the veg schedule of the run going into it (or its editor)
+function vegSchedPanel(groups, canWork, canEdit, today) {
+  let body = '', band = 0;
+  for (const x of groups.flatMap(g => g.rooms)) {
+    if (S.vegEdit === x.room.id) {
+      body += `<tr class="vg-h"><th colspan="5"><span class="vg-hl">${esc(`${x.room.name} · editing its veg schedule (day 1 is the transplant)`)}</span></th></tr><tr><td colspan="5" class="vg-edc">${vegEditorHTML(x.room)}</td></tr>`;
+      continue;
+    }
+    const vs = vegOf(x, today), r = vs.run;
+    const head = !r ? 'no next run planned' : vs.t0 ? `${runName(r)} · day 1 = transplant ${vs.est ? '≈ ' : ''}${CM.wday(vs.t0)}${r.flip ? ` · flips ${CM.wday(r.flip.d)}` : ''}` : runName(r);
+    body += `<tr class="vg-h"><th colspan="5"><span class="vg-hl">${ovRoomBtn(x.room, x.room.name)}<span>${esc(head)}</span>${vs.pastFlip ? `<b class="vg-w">${esc(`day ${vs.rows[vs.rows.length - 1].day} falls after the flip`)}</b>` : ''}</span>`
+      + `${canEdit && !S.vegEdit ? `<button class="btn" type="button" data-vedit="${esc(x.room.id)}">Edit</button>` : ''}</th></tr>`;
+    if (!vs.n) { body += `<tr><td colspan="5" class="ov-none">${esc(`No veg schedule for ${x.room.name} yet.`)}</td></tr>`; continue; }
+    if (!vs.rows.length) { body += `<tr><td colspan="5" class="ov-none">${esc(r ? 'The next run has no transplant day yet.' : 'No next run, so its veg schedule has no dates yet.')}</td></tr>`; continue; }
+    let last = null;
+    for (const t of vs.rows) { if (t.date !== last) { band = (band + 1) % 2; last = t.date; } body += vegTaskRow(t, x, vs, canWork, today, band, false); }
+  }
+  return `<div class="panel ov"><h3>Veg schedule</h3><div class="wrapx"><table class="ovt ovk vgt"><thead><tr><th>Date</th><th>Day</th><th>Task</th><th>Notes</th><th></th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
+function vegEditorHTML(room) {
+  const L = (Array.isArray(room.veg_tasks) ? room.veg_tasks : []).filter(t => t && +t.day > 0).slice().sort((a, b) => +a.day - +b.day);
+  return `<div class="cal-ed"><datalist id="veg-kinds">${KINDS.map(k => `<option value="${k}"></option>`).join('')}</datalist>
+    <div class="wrapx"><table class="t"><thead><tr><th>Day</th><th>Kind</th><th>Task</th><th></th></tr></thead><tbody id="veg-rows">${L.map(vegEdRow).join('')}</tbody></table></div>
+    <div class="pickmsg" id="veg-msg"></div>
+    <div class="ed act"><button class="btn ghost" type="button" id="veg-add">Add a task</button><span class="grow"></span>
+      <button class="btn" type="button" id="veg-cancel">Cancel</button><button class="btn primary" type="button" id="veg-save">Save veg schedule</button></div></div>`;
+}
+function vegEdRow(t) {
+  const kind = CM.nice(String(t.kind || 'Action').toUpperCase()), k = KINDS.find(x => x.toUpperCase() === kind.toUpperCase()) || kind;
+  return `<tr data-key="${esc(t.isNew ? '' : CM.vegKey(t))}" data-new="${t.isNew ? 1 : ''}"><td><input type="number" min="1" max="60" step="1" data-c="day" value="${esc(String(t.day || ''))}" style="width:64px"></td>`
+    + `<td><input type="text" list="veg-kinds" data-c="kind" value="${esc(k)}" data-ok="${esc(k)}" autocomplete="off" style="width:96px"></td>`
+    + `<td><input type="text" data-c="text" maxlength="200" value="${esc(String(t.text || '').trim())}" style="width:100%;min-width:260px"></td>`
+    + `<td><button class="btn ghost" type="button" data-vdel aria-label="Remove this task">×</button></td></tr>`;
+}
+// each task keeps the key its ticks are stored under (a new one's is its day and words); saved through cult_room_set
+function wireVegEditor(room) {
+  const msg = $('veg-msg'), body = $('veg-rows');
+  if (!msg || !body || body.dataset.w) return;
+  body.dataset.w = '1';
+  const kindOk = inp => {   // a kind from the list (Gianni's rule): the exact one in any case, else the one that holds the text
+    const p = pickFrom(KINDS, inp.value);
+    if (p) { inp.value = p; inp.dataset.ok = p; return true; }
+    msg.textContent = `"${inp.value.trim()}" isn't a kind on the list. Kept ${inp.dataset.ok}.`; inp.value = inp.dataset.ok; return false;
+  };
+  const wireRow = tr => {
+    const kd = tr.querySelector('[data-c="kind"]');
+    kd.addEventListener('change', () => { msg.textContent = ''; kindOk(kd); });
+    kd.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); kindOk(kd); } });
+    tr.querySelector('[data-vdel]').addEventListener('click', () => tr.remove());
+  };
+  body.querySelectorAll('tr').forEach(wireRow);
+  $('veg-add').addEventListener('click', () => {
+    const trs = body.querySelectorAll('tr'), last = trs[trs.length - 1];
+    const day = last ? +last.querySelector('[data-c="day"]').value || 1 : 1;
+    body.insertAdjacentHTML('beforeend', vegEdRow({ day, kind: 'ACTION', text: '', isNew: true }));
+    const tr = body.lastElementChild; wireRow(tr); tr.querySelector('[data-c="text"]').focus();
+  });
+  $('veg-cancel').addEventListener('click', () => { S.vegEdit = null; render(); });
+  $('veg-save').addEventListener('click', async () => {
+    msg.textContent = '';
+    const out = [], bad = [], keys = new Set();
+    for (const tr of body.querySelectorAll('tr')) {
+      const day = Number(tr.querySelector('[data-c="day"]').value), text = tr.querySelector('[data-c="text"]').value.replace(/\s+/g, ' ').trim();
+      const kd = tr.querySelector('[data-c="kind"]');
+      if (!kindOk(kd)) return;
+      if (!text) { if (tr.dataset.new) continue; bad.push('a task with no words'); continue; }
+      if (!Number.isInteger(day) || day < 1 || day > 60) { bad.push(`"${text}" needs a day from 1 to 60`); continue; }
+      let key = tr.dataset.new || !tr.dataset.key ? CM.vegKey({ day, text }) : tr.dataset.key;
+      for (let i = 2; keys.has(key); i++) key = `${CM.vegKey({ day, text })}#${i}`;   // two alike: each its own key
+      keys.add(key);
+      out.push({ day, kind: kd.value.toUpperCase(), text, key });
+    }
+    if (bad.length) { msg.textContent = 'Check ' + [...new Set(bad)].join(', ') + '.'; return; }
+    if (out.length > 40) { msg.textContent = 'A veg schedule holds up to 40 tasks.'; return; }
+    out.sort((a, b) => a.day - b.day);
+    $('veg-save').disabled = true;
+    const { error } = await sb.rpc('cult_room_set', { p_room: room.id, p_set: { veg_tasks: out } });
+    if (error) { $('veg-save').disabled = false; msg.textContent = "Couldn't save: " + error.message; return; }
+    S.vegEdit = null;
+    for (const L of [S.rooms, S.ovAll || []]) { const r = L.find(y => y.id === room.id); if (r) r.veg_tasks = out; }   // kept if the re-read fails
+    await loadAll(true, ['rooms']); render();
+  });
+}
+// Mark complete on a veg task: stored under the run's flip; an untick clears it under every day it is stored under
+async function vegMark(b) {
+  const room = S.rooms.find(r => r.id === b.dataset.vroom), anchor = b.dataset.vanchor;
+  if (!room || !CM.isDay(anchor)) return;
+  const done = b.dataset.done === '1', key = b.dataset.vkey;
+  const cycles = done || !b.dataset.vcycles ? [anchor] : b.dataset.vcycles.split(',').filter(CM.isDay);
+  b.disabled = true;
+  for (const cy of cycles) {
+    const { error } = await sb.rpc('cult_task_mark', { p_room: room.id, p_cycle: cy, p_task: key, p_done: done });
+    if (error) { b.disabled = false; alert("Couldn't save that: " + error.message); await loadAll(true, ['done']); render(); return; }
+  }
+  S.done = S.done.filter(d => !(d.room_id === room.id && cycles.includes(d.cycle) && d.task_key === key));
+  if (done) S.done.push({ room_id: room.id, cycle: anchor, task_key: key, status: 'done', done_at: new Date().toISOString(), done_by: S.me && S.me.email || '' });
+  await loadAll(true, ['done']); render();
+}
+function vegWire(el) {
+  ovWire(el);   // the room and Veg buttons
+  for (const b of el.querySelectorAll('.vtick')) if (!b.dataset.w) { b.dataset.w = '1'; b.addEventListener('click', e => { e.stopPropagation(); vegMark(b); }); }
+  for (const b of el.querySelectorAll('[data-vedit]')) if (!b.dataset.w) { b.dataset.w = '1'; b.addEventListener('click', e => { e.stopPropagation(); S.vegEdit = b.dataset.vedit; render(); }); }
+  if (S.vegEdit) { const room = S.rooms.find(r => r.id === S.vegEdit); if (room) wireVegEditor(room); }
+}
+// All Veg: every facility's Metrc veg, its rooms' clone cuts, and the veg tasks of the next 30 days (and the last week's not done)
+function renderAllVeg() {
+  const el = $('view-room'), today = CM.todayLA(), G = S.ovVeg;
+  for (const r of S.rooms) if (!S.runsBy[r.id] || !S.runsBy[r.id].at) loadRuns(r).then(ok => { if (ok && S.allVeg && !S.room && !formOpen()) render(); });
+  if (!G.rows || Date.now() - G.at > 10 * 60e3) ovVegLoad();
+  const groups = ovRooms(today), canWork = !!(S.me && (S.me.work || S.me.edit));
+  let h = `<div class="rhead"><div><h1>All Veg</h1><div class="sub">${esc(`${groups.length} ${groups.length === 1 ? 'facility' : 'facilities'} · ${CM.wday(today)}`)}</div></div></div>`;
+  h += '<div class="panel ov"><h3>In veg now</h3><div class="wrapx"><table class="ovt ovv"><tbody>';
+  for (const g of groups) {
+    const VG = G.rows ? CM.vegView(G.rows, S.plants, siteLicense(g.site.id), today) : null;
+    const vs = VG ? (VG.length ? vegSum(VG) : 'Nothing in veg in Metrc') : G.err ? "Couldn't read Metrc's veg" : 'Reading Metrc’s veg…';
+    h += `<tr><th class="ov-site" scope="row">${esc(g.site.short || g.site.name)}</th><td class="ov-room"><button class="lnk" type="button" data-veg="${esc(g.site.id)}">Veg</button></td><td class="ov-vs">${esc(vs)}</td></tr>`;
+  }
+  h += '</tbody></table></div></div>';
+  h += `<div class="panel ov"><h3>Clone cuts</h3>${vegCutsHTML(groups, today, true)}</div>`;
+  const end = CM.addDays(today, 30), from = CM.addDays(today, -7), list = [], views = groups.flatMap(g => g.rooms);
+  for (const x of views) {
+    const vs = vegOf(x, today);
+    for (const t of vs.rows) { if (t.date > end || t.date < from || (t.date < today && t.status !== 'open')) continue; list.push({ t, x, vs }); }
+  }
+  list.sort((a, b) => (a.t.date < b.t.date ? -1 : a.t.date > b.t.date ? 1 : views.indexOf(a.x) - views.indexOf(b.x) || a.t.day - b.t.day));
+  h += '<div class="panel ov"><h3>Veg tasks, next 30 days</h3>';
+  if (!list.length) h += '<div class="pbody"><p class="muted" style="margin:0">No veg tasks in the next 30 days.</p></div>';
+  else {
+    let band = 0, last = null;
+    h += '<div class="wrapx"><table class="ovt ovk"><thead><tr><th>Date</th><th>Location</th><th>Day</th><th>Task</th><th>Notes</th><th></th></tr></thead><tbody>';
+    for (const { t, x, vs } of list) { if (t.date !== last) { band = (band + 1) % 2; last = t.date; } h += vegTaskRow(t, x, vs, canWork, today, band, true); }
+    h += '</tbody></table></div>';
+  }
+  el.innerHTML = h + '</div>';
+  vegWire(el);
+}
 /* The Overview's 24-hour graph: a press on a Growlink cell opens it under that room's row (one at a time; the same cell
    closes it). The room's log for the last 24 hours is read on the first press and again when over 5 minutes old. */
 S.ovOpen = null; S.ovLog = {};
@@ -4327,7 +4531,7 @@ function taskRow(t, canWork) {
 /* ----- step 2: a task's menu (note, new date, skip; delete a one-off), Add a task, the runoff log and room notes.
    No roles yet (Gianni 2026-11-24: "My app doesn't really need login stuff yet"): everyone signed in can do all of it;
    canEdit and canWork stay as the place roles come back. ----- */
-const KINDS = ['Action', 'Spray', 'Feed', 'IPM', 'Check', 'Clean', 'Note'];
+const KINDS = ['Action', 'Spray', 'Both', 'Feed', 'IPM', 'Check', 'Clean', 'Note'];
 function taskMenu(V, key, anchor) {
   const t = V.T.find(x => x.key === key);
   if (!t) return;
