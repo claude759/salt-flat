@@ -16,7 +16,8 @@ person asking for a change should never have to touch git. These rules keep that
 3. **Check it.** Run the check for the app you changed: NY Packaging `node tests/ny-check.mjs`,
    Production Pipeline `node tests/pipeline-check.mjs`, `node tests/pipeline-write-check.mjs`,
    `node tests/pipeline-sync-check.mjs` and `node scripts/pipeline-ci/check-sql.mjs`,
-   Cultivation `node tests/cult-check.mjs`.
+   Cultivation `node tests/cult-check.mjs`, Crew hours `node tests/crew-hours-check.mjs` (and
+   `node tests/timesheets-check.mjs` / `node tests/ca-labor-check.mjs` when those pages change).
    If anything fails, fix it before pushing.
    Never push a failing check.
 4. **Commit only your files, by name.** `git add <file> <file>`, never `git add -A` or `git add .`:
@@ -703,6 +704,27 @@ launch. The check fails if one of the three pieces is missing.
   when the tab opens and `{source:'pipeline', type:'refresh'}` for Refresh. The frame shows only
   after it has answered; with no answer in 12 seconds (an old BA build) the page drops it and offers
   a link to the BA app, so the whole BA app never shows inside the pipeline.
+
+## Crew hours page
+
+- **File:** `crew-hours.html` (one self-contained page), opened from the Timesheet app's Crew hours button
+  (`timesheets.html`, shown only to accounts `crew_me()` lets in). Same Supabase project and sign-in.
+- **What it is** (Gianni, 2026-11-28): the deleaf crew's hours that aren't on Gusto (Norma's Team crew pay), entered
+  by Diana from photos of the sign-in sheets (read by the `read-timesheet` function, the CA tracker's reader), submitted
+  once a pay period and approved by Gianni. Only Diana enters and only Gianni approves (`crew_hours_access`).
+- **Data:** the lines are `distro_shifts` rows, the CA tracker's own table (`labor-calculator.html`), so they show
+  there at once; `entered_via = 'crew-hours'`. `supabase/crew-hours.sql` (applied from Gianni's Mac with
+  `node ~/claude-sql/run-sql-ca.mjs`, never by the Pipeline deploy) adds the access list, `crew_submissions` (one row
+  per pay period: submitted, approved; no row = open), a lock (`crew_lock_guard`: once a period is submitted its crew
+  rows change only through Gianni or server jobs), and the RPCs. Norma's Team on the tracker's Combined page says
+  where its period stands, on the page and in every copy and print.
+- **Emails** (`supabase/functions/crew-hours-notify`, deployed with `--no-verify-jwt`; cron `crew-hours-reminders` every
+  half hour): Diana on the pay period's last Friday from 6:30 pm ("submit all hours by Saturday 11 am"), then Saturday
+  and Sunday from 11 am only if it still isn't submitted; Gianni the moment she submits. Gmail SMTP with the BA app's
+  account; callers prove themselves with the `crew_notify_secret` in Vault.
+- **Rules:** hours only on the page, never pay (like the Timesheet app); a person Gusto pays that day (the roster's
+  Gusto date, or their Gusto name on the day) is never saved as crew; an unreadable lunch is never saved as 0; a day of
+  a period already submitted pays with the open one ("missed, paid here"). Every pick-list is typable.
 
 ## Cultivation app
 
